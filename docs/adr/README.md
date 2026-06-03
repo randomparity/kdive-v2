@@ -51,3 +51,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0019](0019-tool-response-envelope.md) | Uniform tool-response envelope | Proposed |
 | [0020](0020-rbac-audit-gate-implementation.md) | RBAC roles, audit record, destructive-op gate (M0 shapes) | Proposed |
 | [0021](0021-reconciler-loop-drift-repair.md) | Reconciler loop: drift-repair seam, leaked-domain reaping, lease-expiry compensation | Proposed |
+| [0022](0022-capability-registry-dispatch-impl.md) | Capability registry & dispatch implementation shapes (refines 0009) | Proposed |
