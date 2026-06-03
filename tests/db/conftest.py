@@ -15,6 +15,8 @@ from collections.abc import Iterator
 import psycopg
 import pytest
 
+from kdive.db import migrate
+
 _POSTGRES_IMAGE = "postgres:17"
 
 
@@ -46,3 +48,15 @@ def pg_conn(postgres_url: str) -> Iterator[psycopg.Connection]:
     with psycopg.connect(postgres_url, autocommit=True) as conn:
         conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
         yield conn
+
+
+@pytest.fixture
+def migrated_url(pg_conn: psycopg.Connection, postgres_url: str) -> str:
+    """A migrated, freshly-emptied database; yields the conninfo for async tests.
+
+    Depends on ``pg_conn`` (which drops and recreates ``public``) so each test starts
+    from a clean schema, then applies the migrations on that same autocommit
+    connection before handing back the URL for async connections.
+    """
+    migrate.apply_migrations(pg_conn)
+    return postgres_url

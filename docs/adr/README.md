@@ -45,3 +45,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0013](0013-object-store-layout-retention.md) | Object-store layout & retention | Proposed |
 | [0014](0014-structured-logging.md) | Structured logging via stdlib `logging` + `contextvars` | Proposed |
 | [0015](0015-sql-migration-runner.md) | Forward-only SQL migration runner | Proposed |
+| [0016](0016-repository-layer-locks-idempotency.md) | Repository layer, advisory locks, idempotency ledger | Proposed |
