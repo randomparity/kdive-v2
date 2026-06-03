@@ -17,6 +17,13 @@ from datetime import timedelta
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
+from psycopg import AsyncConnection
+from psycopg.rows import dict_row
+
+from kdive.db.locks import LockScope, advisory_xact_lock
+from kdive.domain.models import JobKind
+from kdive.jobs import queue
+
 _log = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL = timedelta(seconds=30)
@@ -68,3 +75,49 @@ class ReconcileReport:
     dead_sessions: int
     leaked_domains: int
     failures: tuple[str, ...]
+
+
+async def _repair_orphaned_systems(conn: AsyncConnection) -> int:
+    """Enqueue an idempotent GC teardown for each System whose Allocation is gone.
+
+    A System is orphaned when it is non-terminal but its Allocation is ``released`` or
+    ``failed`` ("a System never outlives its Allocation"). The teardown job carries the
+    ``system:reconciler`` attribution and bypasses the tool-layer destructive gate by
+    design (ADR-0021); the teardown handler (#15) drives the System to ``torn_down``.
+    Counts only a genuinely new enqueue (a re-pass on an already-queued teardown is 0).
+    """
+    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT s.id, s.project FROM systems s "
+            "JOIN allocations a ON a.id = s.allocation_id "
+            "WHERE s.state NOT IN ('torn_down', 'failed') "
+            "  AND a.state IN ('released', 'failed')"
+        )
+        candidates = await cur.fetchall()
+    enqueued = 0
+    for candidate in candidates:
+        system_id: UUID = candidate["id"]
+        dedup_key = f"{system_id}:teardown"
+        async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (system_id,))
+                fresh = await cur.fetchone()
+                if fresh is None or fresh["state"] in ("torn_down", "failed"):
+                    continue
+                await cur.execute("SELECT 1 FROM jobs WHERE dedup_key = %s", (dedup_key,))
+                already_queued = await cur.fetchone() is not None
+            await queue.enqueue(
+                conn,
+                JobKind.TEARDOWN,
+                {"system_id": str(system_id)},
+                {
+                    "principal": SYSTEM_RECONCILER_PRINCIPAL,
+                    "agent_session": None,
+                    "project": candidate["project"],
+                },
+                dedup_key,
+            )
+        if not already_queued:
+            enqueued += 1
+            _log.info("reconciler: orphaned system %s -> teardown job enqueued", system_id)
+    return enqueued
