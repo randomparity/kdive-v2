@@ -32,6 +32,16 @@ def test_build_app_registers_jobs_tools() -> None:
     asyncio.run(_run())
 
 
+def test_build_app_produces_a_streamable_http_asgi_app() -> None:
+    # The server entrypoint serves build_app(...).http_app() over streamable HTTP;
+    # assert the ASGI app assembles (no DB/network needed) so the run path is covered
+    # beyond tool registration.
+    pool = AsyncConnectionPool("postgresql://unused", open=False)
+    app = build_app(pool, verifier=_verifier())
+    asgi = app.http_app()
+    assert callable(asgi)
+
+
 def test_build_handler_registry_is_empty_in_m0() -> None:
     registry = build_handler_registry()
     assert isinstance(registry, HandlerRegistry)
