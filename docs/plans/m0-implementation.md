@@ -33,6 +33,7 @@ src/kdive/
   reconciler/  loop.py
   providers/   capability.py · interfaces.py · local_libvirt/{discovery,provisioning,build,install,connect,debug_gdbmi,introspect_drgn,control,retrieve}.py
   profiles/    provisioning.py · build.py
+  log.py       structured-logging config (JSON, stdlib logging)
   __main__.py  (server | worker | reconciler entrypoints)
 tests/         mirrors src/kdive/ ; tests/integration/ for the live_vm path
 ```
@@ -44,10 +45,12 @@ tests/         mirrors src/kdive/ ; tests/integration/ for the live_vm path
 1 (core, gating path): #3 domain → #4 schema → #5 repo/locks → #6 store
                           #5 → #7 jobs → #8 mcp/auth → #9 rbac/audit/gate → #10 reconciler
 2: #11 provider framework  (needs #3, #5)
-3 (planes, fan out behind #11): #12 discovery/alloc → #13 profile → #14 provision
-   #15 run/investigation lifecycle → #16 build → #17 install/boot
-   #18 connect → #19 gdb-MI ; #21 control → #22 retrieve → #20 drgn-from-vmcore
-   #23 safety/secrets — Phase-1 foundation, needed by #18 and #22 (redaction)
+3 (planes, behind #11; "←" = depends on):
+   #13 profile(←#3) · #12 discovery+alloc(←#11,#9) · #14 provision(←#11,#13)
+   #15 run/investigation(←#5,#8) → #16 build(←#11,#15) → #17 install/boot(←#16,#14)
+   #18 connect(←#11,#17,#23) → #19 gdb-MI(←#18)
+   #21 control(←#11,#14,#9) → #22 retrieve(←#21,#6,#23) → #20 drgn-from-vmcore(←#22)
+   #23 safety/secrets(←#1) — Phase-1 foundation, needed by #18 and #22 (redaction)
 4: #24 end-to-end integration (needs #1–#23)
 ```
 
@@ -74,6 +77,7 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
   - `.gitignore` includes `*.swp`, `.venv/`, `__pycache__/`, `*.pyc`, `.ruff_cache/`.
   - prek hooks: ruff, ruff-format, ty, end-of-file/trailing-whitespace.
   - Document the `live_vm` test-runner prerequisites (KVM/nested-virt host, libvirt, kdump-enabled guest image) in `README.md` (see "Test environments").
+  - Structured-logging foundation: a `kdive/log.py` configuring stdlib `logging` for JSON/key-value output (context: request id, job id, principal, object id, transition) — no new dependency. Server, worker, and reconciler initialize it; later issues emit through it.
 - **Acceptance:** `uv sync` succeeds; `uv run ruff check .` and `uv run ty check` pass; `uv run pytest -q` runs `test_smoke.py` green; `prek run -a` passes.
 
 ### Issue 2 — CI workflow & Dependabot
@@ -157,7 +161,7 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
   - `auth.py`: FastMCP `JWTVerifier` against `KDIVE_OIDC_JWKS_URI`, enforcing `iss` + `aud` (ADR-0002/0010); derive `principal` (sub), `agent_session` (claim, optional in M0), and validate `project` against the request param.
   - `app.py`: `FastMCP(name=..., auth=...)`, `transport="http"`; a request-context accessor returning `(principal, agent_session, project)`. **`app.py` aggregates the tool surface**: each `tools/<plane>.py` exposes a `register(app)` function and `app.py` calls every module's `register` at startup, so a plane issue surfaces its tools via that hook without editing the others.
   - `tools/jobs.py`: `jobs.get/.wait/.cancel/.list` returning the spec's job-handle shape.
-  - `__main__.py`: `server` and `worker` subcommands — `server` runs the app; `worker` runs the `worker.run` loop from #7 (the process that executes jobs).
+  - `__main__.py`: `server` and `worker` subcommands — `server` runs the app; `worker` runs the `worker.run` loop from #7 (the process that executes jobs). Both initialize the `kdive/log.py` structured logger (#1) and emit per-request/per-job logs keyed by id + principal.
 - **Acceptance:** a request with no/invalid token is rejected; a valid token resolves the principal context; `jobs.get` on a known job returns its status; structured JSON shape matches the spec (object id, status, suggested_next_actions, refs).
 
 ### Issue 9 — RBAC, audit log, destructive-op gate
@@ -179,6 +183,7 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Scope:**
   - Orphaned System (Allocation `released`/`failed`) → teardown job; abandoned job (lapsed lease past `max_attempts`) → `failed` + compensation; dead DebugSession (`live`, stale heartbeat) → `detached`; leaked libvirt domain via provider `list_owned` (tagged `system_id` with no live row, outside the provision grace window).
   - Lease-expiry policy: drain grace window → force-kill → Run `failed` (`lease_expired`).
+  - Each repair emits a structured log line (object kind/id + action taken) via `kdive/log.py` (#1), so drift events are observable.
 - **Acceptance:** seeded drift rows are repaired on one loop pass (one test per case); a domain mid-provision (job in-flight) is **not** reaped.
 
 ### Issue 23 — Port safety modules + file-ref secret backend
