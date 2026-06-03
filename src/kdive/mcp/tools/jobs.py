@@ -90,7 +90,15 @@ async def wait_job(
 
 
 async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str) -> ToolResponse:
-    """Transition the job to ``canceled`` (cooperative); error on a terminal job."""
+    """Transition the job to ``canceled`` (cooperative); error on a terminal job.
+
+    Cancelling a job that has already reached a terminal state is a no-op the agent
+    must be able to act on, so the error envelope carries the job's actual current
+    status in ``data["current_status"]`` (the agent learns *why* without a second
+    ``jobs.get``). ``error_category`` stays paired with ``status="error"``, honoring
+    the envelope's "category iff failure-status" invariant — the terminal lifecycle
+    state goes in ``data``, not in ``status``.
+    """
     uid = _as_uuid(job_id)
     if uid is None:
         return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
@@ -98,8 +106,18 @@ async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str
         try:
             async with pool.connection() as conn:
                 job = await JOBS.update_state(conn, uid, JobState.CANCELED)
-        except (ObjectNotFound, IllegalTransition):
+        except ObjectNotFound:
             return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
+        except IllegalTransition:
+            async with pool.connection() as conn:
+                current = await JOBS.get(conn, uid)
+            data = {"current_status": current.state.value} if current else {}
+            return ToolResponse(
+                object_id=job_id,
+                status="error",
+                error_category=ErrorCategory.CONFIGURATION_ERROR.value,
+                data=data,
+            )
         return ToolResponse.from_job(job)
 
 

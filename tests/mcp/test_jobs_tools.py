@@ -73,6 +73,8 @@ def test_cancel_terminal_job_is_error_envelope(migrated_url: str) -> None:
             resp = await jobs_tools.cancel_job(pool, CTX, job_id)  # again
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
+        # The agent learns the current state without a second jobs.get.
+        assert resp.data == {"current_status": "canceled"}
 
     asyncio.run(_run())
 
