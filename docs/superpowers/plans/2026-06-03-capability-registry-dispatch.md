@@ -600,10 +600,15 @@ git commit -m "feat(providers): eight plane Protocols and handle aliases"
 
 ---
 
-## Task 3: `CapabilityRegistry.register` — atomic validation + candidate storage
+## Task 3: `CapabilityRegistry` — atomic register + deterministic dispatch (TDD)
+
+`register` and `dispatch` ship in **one commit**: the register tests reference
+`dispatch` (atomicity is only observable through it), so both methods must exist
+before the single green commit. Intermediate run-steps are TDD red/green
+checkpoints, **not** commits.
 
 **Files:**
-- Modify: `src/kdive/providers/capability.py` (append the registry)
+- Modify: `src/kdive/providers/capability.py` (append the registry: `register` + `dispatch`)
 - Create: `tests/providers/test_registry.py`
 
 - [ ] **Step 1: Write the failing register tests**
@@ -776,7 +781,7 @@ def test_equal_contract_second_provider_registers() -> None:
 Run: `uv run python -m pytest tests/providers/test_registry.py -q`
 Expected: FAIL with `ImportError: cannot import name 'CapabilityRegistry'`.
 
-- [ ] **Step 3: Append the registry (register only) to `capability.py`**
+- [ ] **Step 3: Append the registry skeleton + `register` to `capability.py`**
 
 Add these imports to the existing `from __future__`/import block at the top of `src/kdive/providers/capability.py` (merge into the existing lines; keep them sorted):
 
@@ -893,38 +898,7 @@ class CapabilityRegistry:
             )
 ```
 
-- [ ] **Step 4: Run the register tests**
-
-Run: `uv run python -m pytest tests/providers/test_registry.py -q -k "register or divergence or contract or unhonored or atomic or provider_id or twice"`
-Expected: the register-focused tests PASS. `test_register_then_dispatch_returns_bound_op`, `test_same_key_twice...`, `test_register_is_atomic...`, and `test_equal_contract...` reference `dispatch`, which does not exist yet — they FAIL with `AttributeError: 'CapabilityRegistry' object has no attribute 'dispatch'`. That is expected; Task 4 adds `dispatch`.
-
-- [ ] **Step 5: Guardrails (partial)**
-
-Run:
-```bash
-uv run ruff check --fix tests/providers src/kdive/providers
-uv run ruff format src/kdive/providers/capability.py tests/providers/test_registry.py
-uv run ruff check src/kdive/providers tests/providers
-uv run ty check src tests
-```
-Expected: clean. (Tests that need `dispatch` still fail at runtime, but the files lint/type-check.)
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/kdive/providers/capability.py tests/providers/test_registry.py
-git commit -m "feat(providers): atomic capability registration with validation"
-```
-
----
-
-## Task 4: `CapabilityRegistry.dispatch` — deterministic selection + typed failures
-
-**Files:**
-- Modify: `src/kdive/providers/capability.py` (add `dispatch` + a selection helper)
-- Modify: `tests/providers/test_registry.py` (add dispatch/ordering tests)
-
-- [ ] **Step 1: Add the failing dispatch tests**
+- [ ] **Step 4: Append the dispatch & ordering tests**
 
 Append to `tests/providers/test_registry.py`:
 
@@ -1056,14 +1030,14 @@ def test_dispatch_logs_the_selection(caplog: pytest.LogCaptureFixture) -> None:
     assert any("p-a" in record.getMessage() for record in caplog.records)
 ```
 
-- [ ] **Step 2: Run to verify the new tests fail**
+- [ ] **Step 5: Run to verify the dispatch tests fail**
 
 Run: `uv run python -m pytest tests/providers/test_registry.py -q`
-Expected: the dispatch tests FAIL with `AttributeError: 'CapabilityRegistry' object has no attribute 'dispatch'`.
+Expected: the dispatch tests FAIL with `AttributeError: 'CapabilityRegistry' object has no attribute 'dispatch'` (the register tests still fail too — `register` exists but the dispatch-dependent ones can't resolve `dispatch` yet). This is the TDD red for `dispatch`.
 
-- [ ] **Step 3: Add `dispatch` and the selection helper**
+- [ ] **Step 6: Add `dispatch` and the selection helper**
 
-Append these two methods inside the `CapabilityRegistry` class in `src/kdive/providers/capability.py` (after `register`):
+Append these two methods inside the `CapabilityRegistry` class (after `register`):
 
 ```python
     def dispatch(
@@ -1163,12 +1137,12 @@ Append these two methods inside the `CapabilityRegistry` class in `src/kdive/pro
         return winner, "provider_id"
 ```
 
-- [ ] **Step 4: Run the full provider test suite**
+- [ ] **Step 7: Run the full provider test suite**
 
 Run: `uv run python -m pytest tests/providers -q`
-Expected: PASS (all tests across the three test files — value types, interfaces, registry).
+Expected: PASS (all tests across the three test files — value types, interfaces, registry — now that both `register` and `dispatch` exist).
 
-- [ ] **Step 5: Guardrails**
+- [ ] **Step 8: Guardrails**
 
 Run:
 ```bash
@@ -1179,16 +1153,18 @@ uv run ty check src tests
 ```
 Expected: clean.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 9: Commit**
+
+One green commit carrying both methods and all registry tests:
 
 ```bash
 git add src/kdive/providers/capability.py tests/providers/test_registry.py
-git commit -m "feat(providers): capability dispatch with deterministic selection"
+git commit -m "feat(providers): capability registry with atomic register and dispatch"
 ```
 
 ---
 
-## Task 5: Full-suite verification
+## Task 4: Full-suite verification
 
 No new code — confirm the change is green across the whole repo and the guardrails are clean.
 
