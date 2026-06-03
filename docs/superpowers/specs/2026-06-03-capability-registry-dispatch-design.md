@@ -165,8 +165,8 @@ with the provider (#15). Aliases:
 | `KernelArtifact`, `ArtifactRef` | `NewType(str)` (object-store ref) | #11 / store |
 | `BreakLocation`, `Registers`, `PowerAction`, `BreakpointId` | minimal `TypeAlias` | debug/control #15+ |
 | `ResourceRecord`, `OwnedInfra` | `TypeAlias` to a `TypedDict` shape | discovery / reconciler |
-| `Allocation`, `Run` | `domain.models` (existing) | #5 |
-| `ProvisioningProfile`, `BuildProfile` | `domain.models` jsonb dicts (existing) | #5 / #11 |
+| `Allocation`, `Run` | imported from `domain.models` (existing) | #5 |
+| `ProvisioningProfile`, `BuildProfile` | **defined here** as `TypeAlias = dict[str, Any]` (M0 placeholder; the models hold these as inline `provisioning_profile`/`build_profile` jsonb fields, not named types) | a typed model arrives with ADR-0011 / #11 |
 
 The Protocols (Discovery, Provisioning, Build, Install, Connect, Debug, Control,
 Retrieve) carry exactly the methods the spec lists. The `read_memory` `length ≤ 4096`
