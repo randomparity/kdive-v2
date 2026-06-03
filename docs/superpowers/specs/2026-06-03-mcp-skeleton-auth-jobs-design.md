@@ -39,7 +39,22 @@ handler) or *role/destructive-op authorization* (#11, RBAC/gate).
   the three-check destructive gate are issue #11. This skeleton authenticates
   (proves who the caller is) and resolves the context tuple; it does **not**
   authorize a job read against the job's `authorizing` tuple or the caller's role.
-  `jobs.*` are read/cancel tools available to any authenticated principal in M0.
+
+  **M0 isolation posture (explicit, not "single-tenant").** ADR-0002 is *multi-user*
+  OIDC, so several human principals can authenticate against one M0 deployment.
+  Until RBAC (#11), `jobs.get`/`jobs.list`/`jobs.cancel` are **not** scoped to the
+  caller: any authenticated principal can read and **list every principal's jobs**,
+  and `jobs.cancel` is a **state mutation** any authenticated principal can apply to
+  any job. This is a deliberate, bounded exposure, not an oversight:
+
+  - M0 *cannot* scope on the job's `authorizing` tuple yet — its interior shape is
+    "owned by a later issue" (`domain/models.py`: `authorizing: dict[str, Any]`), so
+    no stable key exists to filter on. Scoping arrives with #11, which pins the
+    tuple and adds the role/ownership checks together.
+  - **Risk window:** the cross-principal read/cancel exposure is accepted only for
+    M0's trusted-operator deployment (a small known set of principals). #11 **must**
+    close it before any broader/untrusted multi-principal use. Recorded here so #11
+    treats it as a gating prerequisite, not a nice-to-have.
 - **No audit log.** The append-only `audit_log` write on every transition is #11.
   This issue emits structured **logs** (ADR-0014) per request/job, which are not the
   audit record.
@@ -138,6 +153,24 @@ class RequestContext:
   token without a usable subject is an auth failure (`AuthError`, below), not a
   silent empty principal. `agent_session` is optional (M0). `projects` reads a
   `projects` list claim, defaulting to `()`.
+
+  **Verified (fastmcp 3.4.0).** `JWTVerifier.verify_token` constructs
+  `AccessToken(claims=<full decoded claim set>)`, so *custom* claims
+  (`agent_session`, `projects`) survive verification — confirmed empirically by
+  minting a token with both and asserting they appear in `token.claims`. **Gotcha:**
+  the same check showed `AccessToken.subject` is `None` even for a token with a valid
+  `sub` claim (FastMCP does not populate it from `sub`). Therefore
+  `context_from_claims` reads the principal from `claims["sub"]`, **not**
+  `token.subject`; a test asserts this so an upstream change that starts populating
+  `subject` (or stops passing custom claims) is caught.
+
+  **Provisional — the `projects` claim name/shape is not yet pinned by ADR-0002.**
+  ADR-0006 defers token/claim shape to ADR-0010, and the IdP membership claim's name
+  (`projects` vs. `groups` vs. a `project→role` map) is not established in any cited
+  ADR. `projects: list[str]` is this spec's provisional choice; **#11/#13 must
+  confirm it against the real IdP/ADR-0002 before consuming it**, and may rename it.
+  It is pinned here only so `require_project` has a shape to compile against; no M0
+  tool depends on its value.
 - `current_context() -> RequestContext` is the FastMCP-facing accessor: it calls
   `fastmcp.server.dependencies.get_access_token()`, and if that returns `None`
   (no/unverified token reached the tool) raises `AuthError`; otherwise delegates to
@@ -179,8 +212,19 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None: ...
   terminal (`succeeded`/`failed`/`canceled`) or `timeout_s` elapses, then returns
   the latest envelope (terminal or the last-seen running state). `timeout_s` is
   clamped to `[0, MAX_WAIT_S]` (`MAX_WAIT_S = 300`) — an agent cannot hold a request
-  open unbounded. A non-positive timeout means "one read, no wait". Uses the DB
-  clock is unnecessary here; `asyncio` monotonic elapsed time bounds the loop.
+  open unbounded. A non-positive timeout means "one read, no wait". The loop deadline
+  is an `asyncio` monotonic elapsed-time bound (no DB clock needed).
+
+  **Connection discipline:** each poll acquires a pool connection for the single
+  `JOBS.get` read and **releases it before sleeping** (`async with
+  pool.connection()` scoped to the read), so a waiting request holds **zero**
+  connections between polls — N concurrent waiters cost N connections only at the
+  poll instant, not for the whole wait. **`MAX_WAIT_S` must be ≤ the transport's
+  request timeout** (the ASGI server's, and any reverse proxy's, idle/request
+  timeout); otherwise a proxy closes the connection and the agent sees a transport
+  error instead of an envelope. The `server` entrypoint pins the ASGI request
+  timeout (or documents the proxy requirement) so this invariant holds — see
+  `__main__.py §server`.
 - **`cancel_job`** — `JOBS.update_state(conn, job_id, CANCELED)`. The state guard
   (`state.py`) permits `queued→canceled` and `running→canceled`; a terminal job
   raises `IllegalTransition`, which the tool maps to a `configuration_error`
@@ -189,12 +233,21 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None: ...
   the cancel when its fenced `complete`/`fail` misses (`state='running'` no longer
   holds) — no in-flight interrupt (that, and compensation for half-applied ops, is
   the reconciler, #12).
-- **`list_jobs`** — newest-first read capped at `limit` (default 50, max 200). M0
-  has one tenant and no project scoping on jobs, so the M0 filter is `ORDER BY
-  created_at DESC LIMIT`. A `state`/`kind`/`project` filter arrives with RBAC (#11)
-  when a caller may only see its project's jobs; shipping an unfiltered-by-project
-  list now is safe **only because M0 is single-tenant** — called out so #11 tightens
-  it deliberately.
+- **`list_jobs`** — newest-first read capped at `limit` (default 50, max 200): the
+  M0 query is `ORDER BY created_at DESC LIMIT`. A `state`/`kind`/`project` filter and
+  per-principal scoping arrive with RBAC (#11) — see the M0 isolation posture in
+  Non-goals for why the list is unscoped now.
+
+  **Per-row failure isolation.** `list_jobs` maps `ToolResponse.from_job` over every
+  returned row, and `from_job` raises on a row that violates the "category iff
+  failed" invariant (ADR-0019). A single malformed row (e.g. a future plane writes a
+  `failed` job with no `error_category`) must **not** blank the entire list. So
+  `list_jobs` builds each envelope in isolation: a row whose `from_job` raises is
+  logged (with its job id) and replaced by a degraded error envelope
+  (`status="error"`, `error_category=infrastructure_failure`, `object_id` = the bad
+  row's id) rather than propagating. The agent still sees every other job. The strict
+  validator stays fail-closed for single-object `jobs.get`, where one bad row *is*
+  the whole answer.
 
 `list_jobs` needs a query the repository does not expose (`get` is by-id only). A
 small `recent_jobs(conn, limit) -> list[Job]` read is added to
@@ -212,21 +265,41 @@ accordingly. Mapping these two domain exceptions to `CONFIGURATION_ERROR` (calle
 supplied a bad/again-bad id) is deliberate; an infrastructure failure
 (`CategorizedError` from the pool) keeps its own category.
 
-### `app.py` — application assembly
+### `app.py` — application assembly + the two plane seams
+
+A plane issue (#11+) ships **two** things: a tool surface *and* a job handler. The
+skeleton therefore exposes **two symmetric registrar seams**, so a plane is added by
+appending to a tuple in one place and never edits the entrypoint:
 
 ```python
-_PLANE_REGISTRARS = (jobs.register,)  # plane issues append their register here
+# Tool seam: each plane module exposes register(app, pool); app.py calls them all.
+_PLANE_REGISTRARS = (jobs.register,)
+
+# Handler seam: each plane module exposes register_handlers(registry); the worker
+# calls them all. Empty of real handlers in M0 (jobs.* register no JobHandler — they
+# are read/cancel tools, not job kinds), but the seam exists now so a plane plugs in
+# without touching __main__.py.
+_HANDLER_REGISTRARS: tuple[Callable[[HandlerRegistry], None], ...] = ()
 
 def build_app(pool: AsyncConnectionPool, *, verifier: JWTVerifier | None = None) -> FastMCP:
     app = FastMCP(name="kdive", auth=verifier or build_verifier())
     for register in _PLANE_REGISTRARS:
         register(app, pool)
     return app
+
+def build_handler_registry() -> HandlerRegistry:
+    registry = HandlerRegistry()
+    for register in _HANDLER_REGISTRARS:
+        register(registry)
+    return registry
 ```
 
-`verifier` is injectable so a test builds the app with a local-keypair verifier
-(no JWKS network). `build_app` does not open the pool or bind a port — the
-entrypoint owns process lifecycle.
+Both seams live in `app.py` so the list of planes is in one file. `verifier` is
+injectable so a test builds the app with a local-keypair verifier (no JWKS network).
+`build_app` does not open the pool or bind a port — the entrypoint owns process
+lifecycle. The asymmetry the review flagged — a tool hook with no handler twin — is
+closed: `__main__.py worker` calls `build_handler_registry()` instead of hand-wiring
+an empty `HandlerRegistry`, so the M0 worker and every future plane share one seam.
 
 ### `__main__.py` — the CLI
 
@@ -238,10 +311,21 @@ also `KDIVE_LOG_LEVEL`). Shared pool construction via `db/pool.create_pool()`.
   host=HOST, port=PORT)`. `KDIVE_HTTP_HOST` (default `127.0.0.1`) and
   `KDIVE_HTTP_PORT` (default `8000`). Default host is loopback — binding `0.0.0.0`
   is an explicit operator choice, not a default, since there is no RBAC yet (#11).
+
+  **Server pool sizing + long-poll timeout.** The server pool is opened with
+  `min_size=1, max_size=KDIVE_HTTP_POOL_MAX` (default `10`). Because `wait_job`
+  releases its connection between polls (see `wait_job`), concurrent waiters do not
+  pin the pool; `max_size=10` bounds simultaneous *in-flight* tool reads, and the
+  default is overridable for load. The ASGI request/keep-alive timeout is configured
+  **≥ `MAX_WAIT_S`** (300 s) so a long `jobs.wait` is not severed mid-poll; if an
+  operator fronts the server with a reverse proxy, the proxy's read timeout must also
+  be ≥ `MAX_WAIT_S` — documented as a deployment requirement, since the proxy is
+  outside this process's control.
 - **`worker`** — open a pool with `min_size`/`max_size ≥ 2` (the worker invariant,
-  `Worker.__init__` raises otherwise), build a `HandlerRegistry` (**empty in M0** —
-  plane issues register handlers; an empty registry dead-letters every job kind as
-  `not_implemented`, which is the correct M0 behavior until a plane lands), construct
+  `Worker.__init__` raises otherwise), build the registry via
+  `app.build_handler_registry()` (the handler seam — **empty of real handlers in
+  M0**, so the worker dead-letters every job kind as `not_implemented`, the correct
+  M0 behavior until a plane registers a handler), construct
   `Worker(pool, registry, worker_id=…)`, install a SIGINT/SIGTERM handler that sets
   the `stop` event, and `await worker.run(stop)`. `worker_id` defaults to
   `f"{hostname}:{pid}"` so two workers never collide on the queue fence.
@@ -249,8 +333,17 @@ also `KDIVE_LOG_LEVEL`). Shared pool construction via `db/pool.create_pool()`.
 Per-request/per-job context binding (`bind_context`, ADR-0014): the worker already
 binds `job_id`; tool calls bind `request_id` + `principal` around the handler so logs
 carry the attribution. `request_id` is the MCP request id when available, else a
-process-monotonic counter (no `uuid4`/`Random` — deterministic, and ADR-0014's
-context is for correlation, not security).
+`uuid4` hex (a bare per-process counter would collide across server processes and
+restarts, defeating cross-fleet log correlation — the very purpose of the id).
+
+**Auth-rejection observability.** A no/invalid/expired-token request is rejected by
+FastMCP's auth middleware *before* a tool runs, so kdive's `bind_context` JSON logs
+never fire for it. To keep an auth-failure spike (misconfig or attack) from being a
+blind spot, the `server` entrypoint leaves FastMCP/Starlette's access logging enabled
+(rejections appear there as 401s) and sets the FastMCP auth logger to propagate to the
+root handler, so its "Bearer token rejected …" warnings land in the same stderr JSON
+stream. No bespoke auth-metric is built in M0; the requirement is only that rejections
+are *visible*, not silent.
 
 ## Failure modes & edges (drives the tests)
 
@@ -258,6 +351,10 @@ context is for correlation, not security).
   `None` → FastMCP 401; tool never runs. Tested at the verifier level with
   `RSAKeyPair`-minted tokens (valid, wrong-iss, wrong-aud, expired) asserting
   `verify_token` returns a token only for the fully-valid one.
+- **Valid token, custom claims present** → `context_from_claims` reads `principal`
+  from `claims["sub"]` (not `token.subject`, which FastMCP leaves `None`), and
+  `agent_session`/`projects` from their claims; a test mints a token carrying all
+  three and asserts they survive verification and land in the context.
 - **Valid token, missing `sub`** → `context_from_claims` raises `AuthError` (not an
   empty principal).
 - **Valid token, `agent_session` absent** → context has `agent_session=None`
@@ -275,6 +372,9 @@ context is for correlation, not security).
   after ≤ `timeout_s`. **negative/oversized timeout** → clamped.
 - **`jobs.list` empty / fewer-than-limit / more-than-limit** → correct count, order
   newest-first, never exceeds `limit`.
+- **`jobs.list` with one invariant-violating row** → that row becomes a degraded
+  error envelope; every other job still appears (per-row isolation), and the list
+  call does not raise.
 - **`from_job` invariant** → a `failed` job missing `error_category`, or a
   non-`failed` job carrying one, raises `ValueError`.
 - **`build_verifier` missing any env var** → `CategorizedError(CONFIGURATION_ERROR)`

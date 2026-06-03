@@ -64,6 +64,12 @@ time, so "category iff failed" is enforced once here rather than per tool.
   immediate reuse: the four `jobs.*` tools all return it, and ADR-0010 already
   fixed the shape as a surface-wide requirement, so this is the agreed contract,
   not a speculative one.
+- The "category iff failed" validator is fail-closed: constructing an envelope from
+  a malformed object raises. That is correct for a single-object tool (the bad
+  object *is* the answer), but a **batch** caller (`*.list`) must isolate per-row
+  construction so one poisoned row cannot blank the whole list — the validator's
+  strictness is intentional, and the isolation obligation it imposes on list-style
+  tools is recorded in their handlers (M0: `tools/jobs.py §list_jobs`).
 - `*.list` returns a sequence of objects, which a single `ToolResponse` does not
   model. M0's `jobs.list` returns `list[ToolResponse]` (one envelope per job); a
   paginated list envelope is deferred until a plane needs cursors.
