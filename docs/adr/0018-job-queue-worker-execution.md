@@ -62,8 +62,13 @@ cooperative handler can abort early.
 
 **5. Handler failures map to the closed `ErrorCategory`.** A `CategorizedError`
 contributes its `.category`; any other exception maps to `INFRASTRUCTURE_FAILURE`
-(matching the object-store client's precedent); a job kind with no registered handler
-maps to `NOT_IMPLEMENTED`. Only `result_ref` (an object-store reference) and
+(matching the object-store client's precedent). Handler exceptions are *retryable*
+(requeue until `max_attempts`). A job kind with **no registered handler** is a
+different, non-retryable failure: it maps to `NOT_IMPLEMENTED` and dead-letters at
+once (the worker passes a `terminal` flag to `fail`), because no retry can make a
+handler appear — and because `attempt` was already charged at claim, a plain
+attempt-based `fail` would otherwise *requeue* the unrunnable job and spin it to
+`max_attempts`. Only `result_ref` (an object-store reference) and
 `error_category` (a taxonomy value) are ever written to the job row — never a
 free-form exception message — so the "redact before persist" contract holds *by
 construction*. The worker logs the category plus job/worker ids, not the exception

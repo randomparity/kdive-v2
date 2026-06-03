@@ -106,7 +106,7 @@ async def heartbeat(conn, job_id, worker_id, *, lease=DEFAULT_LEASE) -> bool: ..
 
 async def complete(conn, job_id, worker_id, result_ref) -> Job | None: ...
 
-async def fail(conn, job, error_category) -> Job: ...
+async def fail(conn, job, error_category, *, terminal=False) -> Job: ...
 ```
 
 **`enqueue` — admission idempotency (upsert-then-fetch).** In one transaction:
@@ -170,11 +170,12 @@ handler (see "No in-flight cancellation" in Non-goals).
 AND state = 'running' RETURNING *`. Returns the updated `Job`, or `None` if the
 fence did not match (the worker lost the job; it logs and drops the result).
 
-**`fail` — requeue-or-dead-letter, fenced.** Decides from the claimed job's
+**`fail` — requeue-or-dead-letter, fenced.** `terminal` forces dead-letter for a
+**non-retryable** failure; otherwise the branch is the claimed job's
 already-incremented `attempt`:
 
 ```
-if job.attempt >= job.max_attempts:
+if terminal or job.attempt >= job.max_attempts:
     UPDATE … SET state = 'failed', error_category = %s
         WHERE id AND worker_id AND state = 'running' RETURNING *   # dead-letter
 else:
@@ -187,6 +188,12 @@ Both writes use the `running → {failed,queued}` edges already legal in `JobSta
 The fence makes a `fail` against a reclaimed job a no-op (`RETURNING` yields no row);
 `fail` returns the job's post-write state, or the unchanged input job when the fence
 missed. `error_category` is ignored on the requeue branch (the job will retry).
+`terminal=True` is for a deterministic failure that a retry cannot fix — at M0, the
+**no-handler-for-kind** dispatch failure (decision below). Handler exceptions are
+*retryable* (`terminal=False`): even a `CategorizedError` may be transient, and M0
+does not give handlers a terminal signal (that is a later, additive change). Without
+`terminal`, a no-handler job — claimed with `attempt = 1 < max_attempts` — would
+*requeue* and spin until it exhausted its attempts instead of failing at once.
 
 ### `worker.py` — the claim/dispatch loop
 
@@ -223,20 +230,27 @@ reconciler GCs.
 
 1. Acquire a pooled connection, `job = await dequeue(conn, worker_id, lease=…)` (its
    own transaction), release. Return `None` if no job.
-2. `handler = registry.get(job.kind)`. If `None`: `await fail(conn, job,
-   NOT_IMPLEMENTED)` and return the job.
-3. Start a background heartbeat task on its **own** pooled connection that loops
-   `await heartbeat(...)` every `heartbeat_interval`, stopping when `heartbeat`
-   returns `False` or it is cancelled.
-4. Acquire a dispatch connection; `result_ref = await handler(conn, job)` (the
-   handler commits its own steps as it goes); then `await complete(conn, job.id,
-   worker_id, result_ref)` in its own short transaction. If `complete` fences out
+2. `handler = registry.get(job.kind)`. If `None`: dead-letter at once — `await
+   fail(conn, job, NOT_IMPLEMENTED, terminal=True)` on a fresh pooled connection — and
+   return the job. (`terminal` because no retry can conjure a handler.)
+3. Start a background heartbeat task that, inside `async with pool.connection()`
+   (so cancellation releases the connection), loops `await heartbeat(...)` every
+   `heartbeat_interval`, stopping when `heartbeat` returns `False` or it is cancelled.
+4. Acquire a **dispatch** connection; `result_ref = await handler(conn, job)` (the
+   handler commits its own steps as it goes); then `await complete(conn2, job.id,
+   worker_id, result_ref)` on a **fresh** pooled connection. If `complete` fences out
    (the job was reclaimed), the handler's already-committed steps and any object
    writes still stand — they benefit the reclaiming worker via `run_step` — and the
    worker logs and drops the result.
-5. On a handler exception: map to `error_category` (decision 5), `await fail(conn,
-   job, category)`, log the category + ids (never the exception text).
+5. On a handler exception: map to `error_category` (decision 5) and `await fail(conn3,
+   job, category)` on a **fresh** pooled connection — the dispatch connection may be
+   left `INERROR` by the handler's aborted transaction, so it is released, not reused —
+   then log the category + ids (never the exception text).
 6. Cancel and await the heartbeat task in a `finally`; return the job.
+
+`complete` and `fail` run on their own pooled connections (not the dispatch
+connection) precisely so a handler that poisoned its connection cannot block the
+worker from finalizing the job.
 
 `run` is `while not stop.is_set(): job = await run_once(); if job is None: await
 asyncio.sleep(poll_interval)`. The split keeps the loop body (`run_once`) testable
@@ -275,7 +289,7 @@ the authorizing tuple on the job already admitted.
 | Re-`enqueue` with an existing `dedup_key` | returns the existing `Job` (no duplicate) |
 | Handler raises `CategorizedError` | `fail` with `error.category`; requeue if attempts remain, else dead-letter |
 | Handler raises any other exception | `fail` with `INFRASTRUCTURE_FAILURE` |
-| No handler registered for `job.kind` | `fail` with `NOT_IMPLEMENTED` |
+| No handler registered for `job.kind` | `fail` with `NOT_IMPLEMENTED`, `terminal=True` — dead-letters at once (no retry) |
 | Handler succeeds but job was reclaimed | `complete` fence misses → `None`; the handler's committed steps stand and aid the reclaiming worker via `run_step`; this worker logs and drops |
 | `heartbeat` on a reclaimed/finished job | returns `False` (handler may abort) |
 | Job abandoned, `attempt < max_attempts` | next `dequeue` reclaims it |
@@ -309,9 +323,10 @@ libvirt/gdb/drgn integration tests are untouched and stay gated.
   changes nothing.
 - **`queue.complete` / `queue.fail`** — `complete` moves `running → succeeded` and
   stores `result_ref` for the owner, `None` for a non-owner; `fail` with
-  `attempt < max_attempts` requeues (`running → queued`, `worker_id` cleared) and
-  with `attempt >= max_attempts` dead-letters (`running → failed`,
-  `error_category` set); a `fail`/`complete` whose fence misses returns the unchanged
+  `attempt < max_attempts` requeues (`running → queued`, `worker_id` cleared), with
+  `attempt >= max_attempts` dead-letters (`running → failed`, `error_category` set),
+  and with `terminal=True` dead-letters even when `attempt < max_attempts`
+  (the no-retry path); a `fail`/`complete` whose fence misses returns the unchanged
   job / `None`.
 - **`HandlerRegistry`** — `get` returns a registered handler and `None` for an
   unregistered kind; a second `register` for a kind raises `DuplicateHandler`.
