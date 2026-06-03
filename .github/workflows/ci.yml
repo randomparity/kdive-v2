@@ -84,3 +84,89 @@ jobs:
 
       - name: Test (live_vm)
         run: uv run python -m pytest -m live_vm -q
+
+  pre-commit:
+    name: pre-commit hooks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.11.18"
+          enable-cache: true
+
+      - name: Run hooks
+        # The ty hook shells out to `uv run ty check`, which would sync the whole
+        # project (and need libvirt-dev) just to type-check; the lint-type-test
+        # job already covers ty, so skip it here and keep this job venv-free.
+        env:
+          SKIP: ty
+        run: uvx prek@0.4.3 run --all-files --show-diff-on-failure
+
+  workflow-hygiene:
+    name: workflow security scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.11.18"
+          enable-cache: true
+
+      - name: Scan workflows with zizmor
+        run: uvx zizmor@1.25.2 .github/workflows
+
+  supply-chain-runtime:
+    name: supply chain (runtime)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.11.18"
+          enable-cache: true
+
+      - name: Audit runtime dependencies
+        # Reads the lockfile only (no build), so libvirt-dev is not needed.
+        run: |
+          uv export --no-emit-project --no-dev --no-default-groups \
+            --format requirements-txt > runtime-reqs.txt
+          uvx pip-audit@2.10.0 --strict -r runtime-reqs.txt
+
+  supply-chain-dev:
+    name: supply chain (dev)
+    runs-on: ubuntu-latest
+    # Dev-only advisories are informational: they do not ship to users, so a
+    # finding here annotates the run without failing it.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.11.18"
+          enable-cache: true
+
+      - name: Audit all dependencies (including dev)
+        run: |
+          uv export --no-emit-project --format requirements-txt > dev-reqs.txt
+          uvx pip-audit@2.10.0 -r dev-reqs.txt

@@ -10,6 +10,9 @@ Requirements
 ------------
 
 - Python 3.13 and [`uv`](https://docs.astral.sh/uv/).
+- [`just`](https://github.com/casey/just) (task runner) and
+  [`prek`](https://github.com/j178/prek) (git hooks). `just setup` cannot bootstrap the
+  runner itself, so install it first: `uv tool install rust-just && uv tool install prek`.
 - A host build dependency for `libvirt-python`, which has no prebuilt wheels and
   compiles against the system libvirt headers:
 
@@ -24,15 +27,30 @@ Setup
 -----
 
 ```bash
-uv sync                  # create the venv and install pinned dependencies
-uv run ruff check .      # lint
-uv run ruff format .     # format
-uv run ty check src      # type-check
-uv run python -m pytest -q   # run the test suite
+just setup   # check host deps, create the venv, install and run the git hooks
 ```
 
-Install the git hooks once with `prek install`; run them across the tree with
-`prek run -a`.
+`just check-deps` reports any missing host packages — grouped by tier, with a single
+distro-specific install command (apt/dnf/pacman/zypper) — and never installs anything
+itself. Run `just` (or `just --list`) to see every task:
+
+| task | what it runs |
+|------|--------------|
+| `just lint`    | `ruff check` + `ruff format --check` |
+| `just format`  | `ruff check --fix` + `ruff format` |
+| `just type`    | `ty check src` |
+| `just test`    | the suite, excluding the gated `live_vm` tests |
+| `just ci`      | the full gate PR CI runs (lint, type, shell, workflows, mermaid, test) |
+
+The underlying commands still work directly if you prefer not to use `just`:
+
+```bash
+uv sync                      # create the venv and install pinned dependencies
+uv run ruff check .          # lint
+uv run ty check src          # type-check
+uv run python -m pytest -q   # run the test suite
+prek install && prek run -a  # install and run the git hooks
+```
 
 Test environments
 -----------------
