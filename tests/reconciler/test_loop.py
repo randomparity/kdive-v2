@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.domain.state import AllocationState, RunState, SystemState
+from kdive.domain.state import AllocationState, DebugSessionState, RunState, SystemState
 from kdive.reconciler import loop
 from kdive.reconciler.loop import InfraReaper, NullReaper, ReconcileReport
 from tests.reconciler.conftest import (
     connect,
     run_repair,
+    seed_debug_session,
     seed_run,
     seed_running_job,
     seed_system,
@@ -204,5 +206,72 @@ def test_live_lease_and_attempts_remaining_not_swept(migrated_url: str) -> None:
             cur = await check.execute("SELECT count(*) FROM jobs WHERE state = 'failed'")
             row = await cur.fetchone()
             assert row is not None and row[0] == 0
+
+    asyncio.run(_run())
+
+
+def _detach(stale_after: timedelta):
+    return lambda conn: loop._repair_dead_sessions(conn, stale_after)
+
+
+def test_stale_live_session_detached(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed)
+            run_id = await seed_run(seed, system_id)
+            session_id = await seed_debug_session(
+                seed, run_id, state=DebugSessionState.LIVE, heartbeat_ago=timedelta(hours=1)
+            )
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, _detach(loop.DEFAULT_DEBUG_SESSION_STALE_AFTER))
+        assert count == 1
+        async with await connect(migrated_url) as check:
+            cur = await check.execute(
+                "SELECT state FROM debug_sessions WHERE id = %s", (session_id,)
+            )
+            row = await cur.fetchone()
+            assert row is not None and row[0] == "detached"
+
+    asyncio.run(_run())
+
+
+def test_recent_heartbeat_session_not_touched(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed)
+            run_id = await seed_run(seed, system_id)
+            session_id = await seed_debug_session(
+                seed, run_id, state=DebugSessionState.LIVE, heartbeat_ago=timedelta(seconds=1)
+            )
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, _detach(loop.DEFAULT_DEBUG_SESSION_STALE_AFTER))
+        assert count == 0
+        async with await connect(migrated_url) as check:
+            cur = await check.execute(
+                "SELECT state FROM debug_sessions WHERE id = %s", (session_id,)
+            )
+            row = await cur.fetchone()
+            assert row is not None and row[0] == "live"
+
+    asyncio.run(_run())
+
+
+def test_null_heartbeat_session_not_touched(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed)
+            run_id = await seed_run(seed, system_id)
+            session_id = await seed_debug_session(
+                seed, run_id, state=DebugSessionState.LIVE, heartbeat_ago=None
+            )
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, _detach(loop.DEFAULT_DEBUG_SESSION_STALE_AFTER))
+        assert count == 0
+        async with await connect(migrated_url) as check:
+            cur = await check.execute(
+                "SELECT state FROM debug_sessions WHERE id = %s", (session_id,)
+            )
+            row = await cur.fetchone()
+            assert row is not None and row[0] == "live"  # NULL heartbeat never swept
 
     asyncio.run(_run())

@@ -161,3 +161,23 @@ async def _repair_abandoned_jobs(conn: AsyncConnection) -> int:
         swept += 1
         _log.info("reconciler: abandoned job %s -> failed (lease_expired)", job_id)
     return swept
+
+
+async def _repair_dead_sessions(conn: AsyncConnection, stale_after: timedelta) -> int:
+    """Detach ``live`` debug sessions whose heartbeat is stale (non-NULL and old).
+
+    A NULL heartbeat is never swept — it may be a session that just attached and has
+    not beaten yet. ``stale_after`` is a provisional cadence contract (ADR-0021): the
+    debug plane (#16) must beat at most every ``stale_after / 3``.
+    """
+    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "UPDATE debug_sessions SET state = 'detached' "
+            "WHERE state = 'live' AND worker_heartbeat_at IS NOT NULL "
+            "  AND worker_heartbeat_at < now() - %s RETURNING id",
+            (stale_after,),
+        )
+        rows = await cur.fetchall()
+    for row in rows:
+        _log.info("reconciler: dead debug_session %s -> detached", row["id"])
+    return len(rows)
