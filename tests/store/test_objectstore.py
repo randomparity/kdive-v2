@@ -17,6 +17,7 @@ from kdive.store.objectstore import (
     ObjectStore,
     StoredArtifact,
     _normalize_etag,
+    object_store_from_env,
     register_artifact_row,
 )
 
@@ -66,3 +67,31 @@ def test_register_artifact_row_maps_stored_and_owner() -> None:
     assert row.owner_id == owner_id
     # id is minted; created_at/updated_at are populated (advisory pre-insert).
     assert row.id is not None
+
+
+def test_object_store_from_env_requires_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KDIVE_S3_ENDPOINT_URL", raising=False)
+    monkeypatch.setenv("KDIVE_S3_BUCKET", "bucket")
+
+    with pytest.raises(CategorizedError) as excinfo:
+        object_store_from_env()
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_object_store_from_env_requires_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KDIVE_S3_ENDPOINT_URL", "http://localhost:9000")
+    monkeypatch.delenv("KDIVE_S3_BUCKET", raising=False)
+
+    with pytest.raises(CategorizedError) as excinfo:
+        object_store_from_env()
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_object_store_from_env_defaults_region(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KDIVE_S3_ENDPOINT_URL", "http://localhost:9000")
+    monkeypatch.setenv("KDIVE_S3_BUCKET", "bucket")
+    monkeypatch.delenv("KDIVE_S3_REGION", raising=False)
+
+    store = object_store_from_env()
+
+    assert store._client.meta.region_name == "us-east-1"
