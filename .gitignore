@@ -13,6 +13,9 @@ __pycache__/
 .pytest_cache/
 .ty_cache/
 
+# Node (mermaid doc checker tooling)
+node_modules/
+
 # Build artifacts
 dist/
 build/

@@ -1,0 +1,17 @@
+{
+  "name": "kdive-mermaid-check",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browserless Mermaid syntax check for KDIVE docs (CI tooling).",
+  "bin": {
+    "mermaid-check": "./mermaid-check.mjs"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "jsdom": "29.1.1",
+    "mermaid": "11.15.0"
+  }
+}
