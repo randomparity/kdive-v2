@@ -89,16 +89,20 @@ Module-level instances (the eight durable objects):
 | `JOBS` | `StatefulRepository` | `Job` | `jobs` | `state` (`JobState`) |
 | `ARTIFACTS` | `Repository` | `Artifact` | `artifacts` | — (write-once) |
 
-**Column mapping.** Column names are `tuple(model.model_fields)`; they already
-match the SQL columns one-for-one (verified against `0001_init.sql`). Rows are read
-with psycopg's `dict_row` factory and re-validated through `model.model_validate`.
+**Column mapping.** The model's field names (`tuple(model.model_fields)`) match the
+SQL columns one-for-one (verified against `0001_init.sql`). The **read/validate**
+path uses the full field set: rows are read with psycopg's `dict_row` factory and
+re-validated through `model.model_validate`. The **insert** path uses a narrower
+column set — see below.
 
-**Insert contract.** `insert` persists the object as given, with one exception:
-`created_at` / `updated_at` take their database defaults and are returned via
-`RETURNING *`, so the **database is the authority for timestamps**. `id` is
-caller-minted (the model already requires it; minting it client-side avoids a
-pre-insert round-trip). The model's `created_at` / `updated_at` are therefore
-advisory on insert — documented on the method. This keeps a future move to
+**Insert contract.** `insert`'s `INSERT` column/value lists are `model_fields` minus
+`{created_at, updated_at}` (caller-minted `id` is retained). The two timestamp
+columns are deliberately omitted so they take their database defaults; the inserted
+row is read back with `RETURNING *` and validated into the full model, so the
+**database is the authority for timestamps**. `id` is caller-minted (the model
+already requires it; minting it client-side avoids a pre-insert round-trip). The
+model's `created_at` / `updated_at` are therefore advisory on insert (whatever the
+caller sets is ignored) — documented on the method. This keeps a future move to
 server-generated-id + `*Create` models purely additive: no code can come to depend
 on caller-supplied timestamps. jsonb columns (`json_columns`) are wrapped in
 psycopg's `Jsonb` adapter; all other values adapt natively (`UUID`→uuid,
@@ -201,11 +205,14 @@ Logic:
 4. Otherwise a concurrent caller inserted first; re-`SELECT` and return theirs.
 
 **Return consistency.** Every path returns the value as read back from jsonb (steps
-1, 3, 4), never the raw in-memory `fn()` result. So the first call and every replay
-return *equal* values even when `fn` returns a non-canonical JSON value (a `dict`
-with non-`str` keys, a tuple, etc.) that the jsonb round-trip would normalize —
-which is the whole point of a replay ledger. A test asserts this with a
-non-canonical result.
+1, 3, 4), never the raw in-memory `fn()` result, so the first call and every replay
+return the same stored form. For a type-conformant `JsonValue` the jsonb round-trip
+is already identity under Python `==` (dict equality ignores key order; `list` stays
+`list`), so this guarantee is robustness against an `Any`-typed or non-conformant
+value that the round-trip would normalize. The regression test therefore uses a
+value that genuinely differs under `==` after the round-trip — a tuple, which jsonb
+returns as a `list` — and asserts the first call and the replay are equal (both the
+`list`); it deliberately steps outside `JsonValue` to exercise the stored-form path.
 
 **Failure semantics.** If `fn` raises, nothing is inserted, so the step is not
 recorded and a later call retries — a failed step never poisons the ledger.
@@ -281,11 +288,11 @@ the conninfo for async connections.
   deterministic and scope-sensitive.
 - **idempotency** (the headline acceptance) — `run_step` runs `fn` once across two
   calls (`call count == 1`), both return the same result; `None`/`list`/`dict`
-  results round-trip; a **non-canonical** result (e.g. a `dict` with integer keys or
-  a tuple) returns *equal* values on first call and replay (proving every path
-  returns the round-tripped form); distinct steps are independent; `fn` raising
-  leaves no row and the next call re-executes; concurrent first-call race resolves to
-  one stored result.
+  results round-trip; a result that differs under `==` after the jsonb round-trip (a
+  tuple, returned as a `list`) gives *equal* values on first call and replay, proving
+  every path returns the stored form rather than the in-memory `fn()` result; distinct
+  steps are independent; `fn` raising leaves no row and the next call re-executes;
+  concurrent first-call race resolves to one stored result.
 
 The env-gated libvirt/gdb/drgn integration tests are untouched and stay gated.
 
