@@ -263,3 +263,25 @@ def test_fail_fence_miss_returns_input(migrated_url: str) -> None:
             assert out is claimed  # fence missed: unchanged input returned
 
     asyncio.run(_run())
+
+
+def test_recent_jobs_newest_first_and_capped(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            for i in range(3):
+                await queue.enqueue(conn, JobKind.BUILD, {"i": i}, {"principal": "p"}, f"d{i}")
+            recent = await queue.recent_jobs(conn, limit=2)
+        assert len(recent) == 2
+        # newest-first: the last-enqueued dedup_key appears first
+        assert recent[0].dedup_key == "d2"
+        assert recent[1].dedup_key == "d1"
+
+    asyncio.run(_run())
+
+
+def test_recent_jobs_empty(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            assert await queue.recent_jobs(conn, limit=10) == []
+
+    asyncio.run(_run())

@@ -168,3 +168,20 @@ async def fail(
         await cur.execute(query, params)
         row = await cur.fetchone()
     return job if row is None else Job.model_validate(row)
+
+
+async def recent_jobs(conn: AsyncConnection, limit: int) -> list[Job]:
+    """Return the most recently created jobs, newest first, capped at ``limit``.
+
+    The ``id`` tiebreaker makes the order total when two jobs share a ``created_at``
+    microsecond, so the cap never drops an arbitrary one of a tied pair. M0 is
+    single-project with no per-principal scoping on this read (see issue #10 design);
+    a ``state``/``kind``/``project`` filter arrives with RBAC (#11).
+    """
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT %s",
+            (limit,),
+        )
+        rows = await cur.fetchall()
+    return [Job.model_validate(row) for row in rows]
