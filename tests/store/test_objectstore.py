@@ -95,3 +95,86 @@ def test_object_store_from_env_defaults_region(monkeypatch: pytest.MonkeyPatch) 
     store = object_store_from_env()
 
     assert store._client.meta.region_name == "us-east-1"
+
+
+def test_put_get_round_trip(minio_store: ObjectStore, key_ns: str) -> None:
+    stored = minio_store.put_artifact(
+        key_ns,
+        "vmcore",
+        "sys-1",
+        "core.bin",
+        data=b"payload-bytes",
+        sensitivity=Sensitivity.REDACTED,
+        retention_class="vmcore",
+    )
+
+    assert '"' not in stored.etag  # stored etag is the bare value
+    fetched = minio_store.get_artifact(stored.key, stored.etag)
+    assert fetched.data == b"payload-bytes"
+
+
+def test_put_uses_the_key_scheme(minio_store: ObjectStore, key_ns: str) -> None:
+    stored = minio_store.put_artifact(
+        key_ns,
+        "vmcore",
+        "oid",
+        "core",
+        data=b"x",
+        sensitivity=Sensitivity.REDACTED,
+        retention_class="vmcore",
+    )
+    assert stored.key == f"{key_ns}/vmcore/oid/core"
+
+
+def test_sensitivity_persisted_as_object_metadata(minio_store: ObjectStore, key_ns: str) -> None:
+    stored = minio_store.put_artifact(
+        key_ns,
+        "transcript",
+        "sys-1",
+        "gdb.log",
+        data=b"raw-transcript",
+        sensitivity=Sensitivity.SENSITIVE,
+        retention_class="transcript",
+    )
+
+    fetched = minio_store.get_artifact(stored.key, stored.etag)
+    assert fetched.sensitivity is Sensitivity.SENSITIVE
+    assert fetched.retention_class == "transcript"
+
+    raw = minio_store._client.head_object(Bucket=minio_store._bucket, Key=stored.key)
+    assert raw["Metadata"]["sensitivity"] == "sensitive"
+    assert raw["Metadata"]["retention-class"] == "transcript"
+
+
+def test_get_with_stale_etag_raises_stale_handle(minio_store: ObjectStore, key_ns: str) -> None:
+    stored = minio_store.put_artifact(
+        key_ns,
+        "vmcore",
+        "sys-1",
+        "core.bin",
+        data=b"payload",
+        sensitivity=Sensitivity.REDACTED,
+        retention_class="vmcore",
+    )
+
+    with pytest.raises(CategorizedError) as excinfo:
+        minio_store.get_artifact(stored.key, "0" * 32)
+    assert excinfo.value.category is ErrorCategory.STALE_HANDLE
+
+
+def test_get_missing_object_raises_stale_handle(minio_store: ObjectStore, key_ns: str) -> None:
+    with pytest.raises(CategorizedError) as excinfo:
+        minio_store.get_artifact(f"{key_ns}/vmcore/none/missing", "abc123")
+    assert excinfo.value.category is ErrorCategory.STALE_HANDLE
+
+
+def test_get_object_without_metadata_raises_infrastructure_failure(
+    minio_store: ObjectStore, key_ns: str
+) -> None:
+    key = f"{key_ns}/vmcore/sys-1/bare"
+    resp = minio_store._client.put_object(Bucket=minio_store._bucket, Key=key, Body=b"no-metadata")
+    etag = resp["ETag"].strip('"')
+
+    with pytest.raises(CategorizedError) as excinfo:
+        minio_store.get_artifact(key, etag)
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
