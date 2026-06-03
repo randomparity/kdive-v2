@@ -1,0 +1,19 @@
+# Editor
+*.swp
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+
+# Tool caches
+.ruff_cache/
+.pytest_cache/
+.ty_cache/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
