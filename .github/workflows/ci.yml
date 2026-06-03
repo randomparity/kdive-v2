@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-type-test:
+    name: lint · type · test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install libvirt build headers
+        # libvirt-python has no wheels; it compiles against the system libvirt
+        # headers, so `uv sync` fails without libvirt-dev present.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvirt-dev
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.11.18"
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run ty check src
+
+      - name: Test
+        run: uv run python -m pytest -m "not live_vm" -q
+
+  live-vm:
+    name: live_vm (self-hosted KVM)
+    # Gated to manual dispatch: the live_vm suite needs a KVM/nested-virt host
+    # with libvirt and a kdump-enabled guest image, which GitHub-hosted runners
+    # do not provide. It never runs on pull_request, so PR CI stays green.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, kvm]
+    # Runner prerequisite: the self-hosted KVM host must provide the libvirt-dev
+    # headers (not just the libvirt runtime), since `uv sync` builds
+    # libvirt-python from source. This job does not apt-install them, because a
+    # self-hosted runner is operator-provisioned and may lack passwordless sudo.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.11.18"
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Test (live_vm)
+        run: uv run python -m pytest -m live_vm -q

@@ -1,0 +1,5 @@
+# Custom self-hosted runner labels used by this repo. Declaring them here lets
+# actionlint distinguish an intentional label from a typo.
+self-hosted-runner:
+  labels:
+    - kvm
