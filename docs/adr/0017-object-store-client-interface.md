@@ -25,8 +25,9 @@ alternatives.
 
 **1. A synchronous `ObjectStore` wrapping a boto3 S3 client; async callers offload.**
 `ObjectStore(client, bucket)` holds a boto3 client and a bucket; an
-`object_store_from_env()` factory reads `KDIVE_S3_ENDPOINT_URL` and
-`KDIVE_S3_BUCKET` and lets boto3's default chain resolve credentials/region.
+`object_store_from_env()` factory reads `KDIVE_S3_ENDPOINT_URL`, `KDIVE_S3_BUCKET`,
+and `KDIVE_S3_REGION` (default `us-east-1` — boto3 signs with SigV4 and raises
+`NoRegionError` without one), and lets boto3's default chain resolve credentials.
 `put_artifact` and `get_artifact` are synchronous (boto3 is synchronous). Callers
 in the async worker/handler offload with `asyncio.to_thread` — the storage module
 does not depend on the event loop.
@@ -43,8 +44,10 @@ what may reach a response.
 (`IfMatch=etag`). A missing object (404) and an etag mismatch (412) both raise
 `CategorizedError(STALE_HANDLE)` — the single failure
 [0005](0005-postgres-object-store-state.md)/[0013](0013-object-store-layout-retention.md)
-name for "the row's object is gone or rotated". Other S3 errors raise
-`CategorizedError(INFRASTRUCTURE_FAILURE)`.
+name for "the row's object is gone or rotated". Other S3 errors — and an object the
+layer cannot interpret (absent or out-of-enum `sensitivity` metadata) — raise
+`CategorizedError(INFRASTRUCTURE_FAILURE)`; no bare `ClientError`/`KeyError`/
+`ValueError` escapes, so the layer's only failure type is `CategorizedError`.
 
 **4. Sensitivity and retention are stored as S3 user metadata.** `put_artifact`
 writes `sensitivity` and `retention_class` as object user metadata
@@ -52,12 +55,17 @@ writes `sensitivity` and `retention_class` as object user metadata
 to the ops issue that configures lifecycle rules; M0 records both on the object so
 the values round-trip and the redaction rule is enforceable at fetch.
 
-**5. `register_artifact_row` constructs the `Artifact` row; the caller commits.**
-It is a pure function — given the storage result (`key`, `etag`), the owner
-(`owner_kind`, `owner_id`), and `sensitivity` / `retention_class`, it mints an
-`Artifact` model. It does **not** touch the database, so the storage module has no
-dependency on `kdive.db`. The caller (#24) writes the object first, then inserts
-and commits the row in its own transaction — the write-before-commit ordering of
+**5. `register_artifact_row` constructs the `Artifact` row from the storage result;
+the caller commits.** It is a pure function — given the `StoredArtifact` `put`
+returned and the owner (`owner_kind`, `owner_id`), it mints an `Artifact`. The
+row's `sensitivity` / `retention_class` are read off `StoredArtifact` (which carries
+the values actually written to the object), not re-supplied, so the row cannot
+disagree with the object — closing a silent-drift path that would defeat redaction.
+The row's `sensitivity` is authoritative for the handler's response gate; the
+metadata `get_artifact` returns is defense-in-depth. It does **not** touch the
+database, so the storage module has no dependency on `kdive.db`. The caller (#24)
+writes the object first, then inserts and commits the row in its own transaction —
+the write-before-commit ordering of
 [0005](0005-postgres-object-store-state.md) stays in the caller's hands.
 
 **6. Keys are built and validated by one helper.** `put_artifact` derives
@@ -105,6 +113,13 @@ forecloses key injection; tenant isolation itself remains an access-control conc
 - **`register_artifact_row` inserts the row itself.** Rejected: it would couple the
   storage module to `kdive.db` and bury the commit point, obscuring the
   write-before-commit ordering the caller must own.
+- **`put_artifact` returns a bare `(key, etag)` 2-tuple; `register_artifact_row`
+  re-takes `sensitivity`/`retention_class`.** Rejected: re-supplying the class on the
+  row lets it silently diverge from the object's metadata — a raw object recorded as
+  redacted is exactly the redaction failure [0013](0013-object-store-layout-retention.md)
+  forbids. The return is a `StoredArtifact` named record carrying the written class so
+  the row derives it from one source; `.key`/`.etag` still expose the issue's
+  documented pair.
 - **Enforce write-once with a conditional `PutObject` (`IfNoneMatch=*`).** Rejected
   for M0 (out of issue scope): write-once is a property of the key-allocation
   discipline and the retention rule, not yet a client guard; revisit if clobbering
