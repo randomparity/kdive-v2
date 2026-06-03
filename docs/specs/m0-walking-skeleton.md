@@ -149,7 +149,6 @@ grouping imposes no allocation constraint.
 
 ```mermaid
 erDiagram
-    PROJECT       ||--o{ INVESTIGATION : scopes
     RESOURCE      ||--o{ ALLOCATION : "booked as"
     ALLOCATION    ||--o{ SYSTEM : "hosts (sequential)"
     SYSTEM        ||--o{ RUN : executes
@@ -163,6 +162,15 @@ Allocations). Lower layers outlive higher ones — a Resource outlives its
 Allocations, which outlive their Systems, which outlive their Runs. In M0 the
 `ALLOCATION → SYSTEM` and `RUN → DEBUGSESSION` relationships are 1:1 (no
 reprovision; one boot per Run).
+
+These are the **six durable objects** in full — `project` (and `principal`) are
+deliberately **not** entities here: they are an identity/RBAC scope, not a domain
+object. `project` lives as a column on rows and in the
+`(principal, agent_session, project)` attribution tuple, with per-project budgets
+([0007](../adr/0007-metering-budgets-admission.md)) and project-scoped roles
+([0006](../adr/0006-oidc-rbac-attribution.md)); there is no `projects` table in the
+core domain. So Investigation appears as a root grouping rather than a seventh
+entity.
 
 ## Postgres schema (M0 subset)
 
