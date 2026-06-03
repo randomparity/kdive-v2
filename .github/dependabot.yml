@@ -1,0 +1,36 @@
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # The browserless mermaid checker (.github/scripts/mermaid-check) pins its own
+  # npm lockfile; keep it on the same weekly, grouped, 7-day-cooldown cadence.
+  - package-ecosystem: "npm"
+    directory: "/.github/scripts/mermaid-check"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      mermaid-check:
+        patterns:
+          - "*"
