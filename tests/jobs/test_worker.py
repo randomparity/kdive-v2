@@ -11,7 +11,7 @@ import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import JOBS
-from kdive.domain.errors import ErrorCategory
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
 from kdive.jobs import queue
@@ -90,5 +90,136 @@ def test_run_once_unknown_kind_dead_letters(migrated_url: str) -> None:
             assert final.state is JobState.FAILED
             assert final.error_category is ErrorCategory.NOT_IMPLEMENTED
             assert final.attempt == 1  # claimed once, dead-lettered at once (terminal)
+
+    asyncio.run(_run())
+
+
+def test_run_once_dedup_runs_handler_once(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:
+            calls = 0
+
+            async def handler(conn: psycopg.AsyncConnection, job: Job) -> str:
+                nonlocal calls
+                calls += 1
+                return "s3://out"
+
+            reg = HandlerRegistry()
+            reg.register(JobKind.BUILD, handler)
+            worker = Worker(pool, reg, worker_id="w1")
+            async with pool.connection() as conn:
+                first = await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-dedup")
+                second = await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-dedup")
+            assert second.id == first.id
+
+            await worker.run_once()
+            assert await worker.run_once() is None  # only one job ever existed
+            assert calls == 1
+
+    asyncio.run(_run())
+
+
+def test_run_once_dead_letters_after_max_attempts(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:
+            calls = 0
+
+            async def always_raises(conn: psycopg.AsyncConnection, job: Job) -> str:
+                nonlocal calls
+                calls += 1
+                raise CategorizedError("boom", category=ErrorCategory.BUILD_FAILURE)
+
+            reg = HandlerRegistry()
+            reg.register(JobKind.BUILD, always_raises)
+            worker = Worker(pool, reg, worker_id="w1")
+            async with pool.connection() as conn:
+                job = await queue.enqueue(
+                    conn, JobKind.BUILD, {}, {"p": "a"}, "dk-poison", max_attempts=3
+                )
+
+            for _ in range(3):
+                await worker.run_once()
+            assert calls == 3
+            final = await _final_state(migrated_url, job.id)
+            assert final.state is JobState.FAILED
+            assert final.error_category is ErrorCategory.BUILD_FAILURE
+            assert await worker.run_once() is None  # dead-lettered: not re-dequeued
+
+    asyncio.run(_run())
+
+
+def test_run_once_reclaims_lapsed_lease(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:
+            calls = 0
+
+            async def handler(conn: psycopg.AsyncConnection, job: Job) -> str:
+                nonlocal calls
+                calls += 1
+                return "s3://out"
+
+            reg = HandlerRegistry()
+            reg.register(JobKind.BUILD, handler)
+            worker = Worker(pool, reg, worker_id="w1")
+            async with pool.connection() as conn:
+                job = await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-lapse")
+                # Simulate a dead worker holding a now-lapsed lease.
+                await conn.execute(
+                    "UPDATE jobs SET state = 'running', worker_id = 'dead', "
+                    "lease_expires_at = now() - interval '1 min' WHERE id = %s",
+                    (job.id,),
+                )
+            processed = await worker.run_once()  # reclaims and runs it
+            assert processed is not None and processed.id == job.id
+            assert calls == 1
+            final = await _final_state(migrated_url, job.id)
+            assert final.state is JobState.SUCCEEDED
+            assert final.attempt == 1  # 0 -> 1 on reclaim (the dead worker never charged it)
+
+    asyncio.run(_run())
+
+
+def test_heartbeat_renews_live_lease(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, min_size=3, max_size=10) as pool:
+            started = asyncio.Event()
+
+            async def slow(conn: psycopg.AsyncConnection, job: Job) -> str:
+                started.set()
+                await asyncio.sleep(2.0)  # outlives the 1 s lease
+                return "s3://out"
+
+            reg = HandlerRegistry()
+            reg.register(JobKind.BUILD, slow)
+            worker = Worker(
+                pool,
+                reg,
+                worker_id="w1",
+                lease=timedelta(seconds=1),
+                heartbeat_interval=timedelta(milliseconds=250),
+            )
+            async with pool.connection() as conn:
+                job = await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-hb-live")
+
+            task = asyncio.create_task(worker.run_once())
+            await started.wait()
+
+            await asyncio.sleep(0.5)
+            async with pool.connection() as c:
+                cur = await c.execute("SELECT lease_expires_at FROM jobs WHERE id = %s", (job.id,))
+                r1 = await cur.fetchone()
+            await asyncio.sleep(0.6)
+            async with pool.connection() as c:
+                cur = await c.execute(
+                    "SELECT lease_expires_at, worker_id FROM jobs WHERE id = %s", (job.id,)
+                )
+                r2 = await cur.fetchone()
+
+            assert r1 is not None and r2 is not None
+            assert r2[0] > r1[0]  # the heartbeat advanced the lease mid-run
+            assert r2[1] == "w1"  # never reclaimed
+            await task
+            final = await _final_state(migrated_url, job.id)
+            assert final.state is JobState.SUCCEEDED
 
     asyncio.run(_run())
