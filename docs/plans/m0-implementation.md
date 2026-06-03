@@ -207,7 +207,7 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Goal:** The provider seam — typed plane `Protocol`s, an `OpContract`, and capability-match dispatch (never by name).
 - **Files:** Create `src/kdive/providers/capability.py`, `providers/interfaces.py`; `tests/providers/`.
 - **Scope:**
-  - `interfaces.py`: the nine `Protocol`s from the spec (Discovery, Provisioning, Build, Install, Connect, Debug, Control, Retrieve; Allocation handled in core).
+  - `interfaces.py`: the **eight** provider-plane `Protocol`s (Discovery, Provisioning, Build, Install, Connect, Debug, Control, Retrieve); the ninth plane, Allocation, is handled in core, not as a provider Protocol.
   - `capability.py`: `Capability{plane,operation,resource_kind,contract}`, `OpContract{idempotent,destructive,cancelable,long_running,cleanup}`, a `register(provider, capabilities)` and `dispatch(plane, op, resource_kind) -> bound op`; multiple matches resolved by explicit pin → health → cost_class → stable tiebreak (ADR-0009); advertised-but-unhonored → typed `not_implemented`.
 - **Acceptance:** dispatch selects a registered fake provider by capability; an unregistered op raises `not_implemented`; two providers matching are resolved deterministically by the documented order (test asserts the winner).
 
