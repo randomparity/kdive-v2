@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_access_token
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.security.rbac import Role, roles_from_claims
 
 _JWKS_URI_ENV = "KDIVE_OIDC_JWKS_URI"
 _ISSUER_ENV = "KDIVE_OIDC_ISSUER"
@@ -35,11 +36,18 @@ class AuthError(Exception):
 
 @dataclass(frozen=True)
 class RequestContext:
-    """The `(principal, agent_session, project)` attribution tuple (ADR-0006)."""
+    """The `(principal, agent_session, project)` attribution tuple (ADR-0006).
+
+    ``roles`` carries the principal's per-project role (ADR-0020). It is excluded from
+    ``__eq__``/``__hash__`` (``compare=False``) so a ``dict`` field cannot make the
+    frozen dataclass unhashable; the annotation is a string at runtime
+    (``from __future__ import annotations``), so ``Role`` is only a typing dependency.
+    """
 
     principal: str
     agent_session: str | None
     projects: tuple[str, ...]
+    roles: Mapping[str, Role] = field(default_factory=dict, compare=False)
 
 
 def _require_env(name: str) -> str:
@@ -82,7 +90,12 @@ def context_from_claims(claims: Mapping[str, object]) -> RequestContext:
     if not isinstance(raw_projects, (list, tuple)):
         raise AuthError("projects claim is not a list")
     projects = tuple(str(p) for p in raw_projects)
-    return RequestContext(principal=subject, agent_session=agent_session, projects=projects)
+    return RequestContext(
+        principal=subject,
+        agent_session=agent_session,
+        projects=projects,
+        roles=roles_from_claims(claims),
+    )
 
 
 def current_context() -> RequestContext:
