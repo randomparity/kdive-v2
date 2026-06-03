@@ -1,8 +1,8 @@
-"""Process entrypoints: `python -m kdive server|worker` (issue #10).
+"""Process entrypoints: `python -m kdive server|worker|reconciler` (issues #10, #12).
 
 `server` runs the FastMCP streamable-HTTP app; `worker` runs the job-queue worker
-loop. Both configure the structured logger first (ADR-0014). The `reconciler`
-subcommand is added by #12; the parser is structured so it slots in.
+loop; `reconciler` runs the drift-repair loop (ADR-0021). All three configure the
+structured logger first (ADR-0014).
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("server", help="run the MCP streamable-HTTP server")
     sub.add_parser("worker", help="run the job-queue worker loop")
+    sub.add_parser("reconciler", help="run the drift-repair reconciler loop")
     return parser
 
 
@@ -64,6 +65,22 @@ async def _run_worker() -> None:
         await pool.close()
 
 
+async def _run_reconciler() -> None:
+    from kdive.reconciler.loop import NullReaper, Reconciler
+
+    pool = create_pool(min_size=1)
+    await pool.open()
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    try:
+        reconciler = Reconciler(pool, NullReaper())
+        await reconciler.run(stop)
+    finally:
+        await pool.close()
+
+
 def main(argv: list[str] | None = None) -> None:
     """Parse arguments, configure logging, and dispatch to the chosen subcommand."""
     args = build_parser().parse_args(argv)
@@ -74,6 +91,8 @@ def main(argv: list[str] | None = None) -> None:
         asyncio.run(_run_server(host, port))
     elif args.command == "worker":
         asyncio.run(_run_worker())
+    elif args.command == "reconciler":
+        asyncio.run(_run_reconciler())
 
 
 if __name__ == "__main__":
