@@ -142,7 +142,7 @@ an Allocation.
 
 ### Investigation
 
-A bug-chasing campaign that groups the Runs iterating toward a fix.
+A campaign that groups the Runs iterating toward a goal — a bug fix or a feature.
 
 - States: `open → active → closed`, plus `abandoned`. `investigations.open`
   creates it `open`; it becomes `active` when its first Run is created. Closing is
@@ -153,7 +153,7 @@ A bug-chasing campaign that groups the Runs iterating toward a fix.
   it reaches a terminal state (the Investigation is a grouping, not a resource
   owner).
 - Scoped to a `(principal / project)`, **not** to a single Allocation. Groups the
-  sequence of Runs; carries narrative/notes and rolled-up cost attribution.
+  sequence of Runs; carries narrative/notes, external references (e.g. Bugzilla/JIRA), and rolled-up cost attribution.
 - **May span System reprovisions, Allocations, and resource kinds**: if the chase
   moves from a local VM to bare metal — a new Allocation on a different Resource —
   the Investigation continues. Each Run records which System it used, and cost

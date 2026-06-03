@@ -39,3 +39,7 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0007](0007-metering-budgets-admission.md) | Metering + budgets/quotas with admission control | Proposed |
 | [0008](0008-async-worker-tier-job-queue.md) | Async worker tier + durable job queue | Proposed |
 | [0009](0009-capability-provider-dispatch.md) | Capability-based provider dispatch | Proposed |
+| [0010](0010-fastmcp-framework-auth.md) | FastMCP server framework + streamable-HTTP auth | Proposed |
+| [0011](0011-provisioning-profile-schema.md) | Provisioning-profile schema | Proposed |
+| [0012](0012-secret-backend.md) | Secret backend (file-ref for M0) | Proposed |
+| [0013](0013-object-store-layout-retention.md) | Object-store layout & retention | Proposed |
