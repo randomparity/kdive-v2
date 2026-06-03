@@ -13,11 +13,13 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any
+from uuid import UUID
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 
 DEFAULT_MAX_ATTEMPTS = 3
@@ -93,3 +95,76 @@ async def dequeue(
         )
         row = await cur.fetchone()
     return None if row is None else Job.model_validate(row)
+
+
+async def heartbeat(
+    conn: AsyncConnection, job_id: UUID, worker_id: str, *, lease: timedelta = DEFAULT_LEASE
+) -> bool:
+    """Renew the lease for ``job_id`` if ``worker_id`` still owns the running job.
+
+    Returns:
+        ``True`` when a row matched; ``False`` when the job is no longer this worker's
+        running job (reclaimed, completed, failed, or canceled).
+    """
+    async with conn.transaction(), conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE jobs SET heartbeat_at = now(), lease_expires_at = now() + %s "
+            "WHERE id = %s AND worker_id = %s AND state = 'running' "
+            "RETURNING id",
+            (lease, job_id, worker_id),
+        )
+        row = await cur.fetchone()
+    return row is not None
+
+
+async def complete(
+    conn: AsyncConnection, job_id: UUID, worker_id: str, result_ref: str | None
+) -> Job | None:
+    """Mark ``job_id`` succeeded with ``result_ref`` if ``worker_id`` still owns it.
+
+    Returns:
+        The updated :class:`Job`, or ``None`` if the fence did not match (the worker
+        lost the job to a reclaim; the caller logs and drops the result).
+    """
+    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "UPDATE jobs SET state = 'succeeded', result_ref = %s "
+            "WHERE id = %s AND worker_id = %s AND state = 'running' "
+            "RETURNING *",
+            (result_ref, job_id, worker_id),
+        )
+        row = await cur.fetchone()
+    return None if row is None else Job.model_validate(row)
+
+
+async def fail(
+    conn: AsyncConnection, job: Job, error_category: ErrorCategory, *, terminal: bool = False
+) -> Job:
+    """Dead-letter or requeue a claimed ``job``, fenced on its ``worker_id``.
+
+    Dead-letters (``running → failed`` with ``error_category``) when ``terminal`` is
+    set (a non-retryable failure, e.g. no handler for the kind) or the already-charged
+    ``job.attempt`` has reached ``job.max_attempts``; otherwise requeues
+    (``running → queued``, clearing the lease) for another attempt.
+
+    Returns:
+        The job's post-write state, or the unchanged ``job`` when the fence missed
+        (another worker reclaimed it).
+    """
+    if terminal or job.attempt >= job.max_attempts:
+        query = (
+            "UPDATE jobs SET state = 'failed', error_category = %s "
+            "WHERE id = %s AND worker_id = %s AND state = 'running' RETURNING *"
+        )
+        params: tuple[object, ...] = (error_category, job.id, job.worker_id)
+    else:
+        query = (
+            "UPDATE jobs SET state = 'queued', worker_id = NULL, "
+            "    lease_expires_at = NULL, heartbeat_at = NULL "
+            "WHERE id = %s AND worker_id = %s AND state = 'running' RETURNING *"
+        )
+        params = (job.id, job.worker_id)
+    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(query, params)
+        row = await cur.fetchone()
+    return job if row is None else Job.model_validate(row)

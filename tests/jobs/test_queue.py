@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 import psycopg
 import pytest
 from psycopg.rows import dict_row
 
+from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
 from kdive.jobs import queue
@@ -157,5 +159,107 @@ def test_dequeue_skips_exhausted_attempts(migrated_url: str) -> None:
         async with await _connect(migrated_url) as conn:
             await _insert_running_job(conn, "dk-done", lease_seconds=-60, attempt=3, max_attempts=3)
             assert await queue.dequeue(conn, "w1") is None  # attempt == max: left for reconciler
+
+    asyncio.run(_run())
+
+
+def test_heartbeat_renews_for_owner(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-hb")
+            claimed = await queue.dequeue(conn, "w1", lease=timedelta(seconds=10))
+            assert claimed is not None
+            assert claimed.lease_expires_at is not None
+            assert await queue.heartbeat(conn, claimed.id, "w1", lease=timedelta(minutes=5)) is True
+            cur = await conn.execute(
+                "SELECT lease_expires_at FROM jobs WHERE id = %s", (claimed.id,)
+            )
+            row = await cur.fetchone()
+            assert row is not None
+            assert row[0] > claimed.lease_expires_at
+
+    asyncio.run(_run())
+
+
+def test_heartbeat_false_for_non_owner(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-hb2")
+            claimed = await queue.dequeue(conn, "w1")
+            assert claimed is not None
+            assert await queue.heartbeat(conn, claimed.id, "intruder") is False
+
+    asyncio.run(_run())
+
+
+def test_complete_for_owner_and_none_for_non_owner(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-c1")
+            claimed = await queue.dequeue(conn, "w1")
+            assert claimed is not None
+            done = await queue.complete(conn, claimed.id, "w1", "s3://result")
+            assert done is not None
+            assert done.state is JobState.SUCCEEDED
+            assert done.result_ref == "s3://result"
+
+            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-c2")
+            other = await queue.dequeue(conn, "w1")
+            assert other is not None
+            assert await queue.complete(conn, other.id, "intruder", "s3://x") is None
+
+    asyncio.run(_run())
+
+
+def test_fail_requeues_below_max(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-f1", max_attempts=3)
+            claimed = await queue.dequeue(conn, "w1")  # attempt -> 1
+            assert claimed is not None
+            out = await queue.fail(conn, claimed, ErrorCategory.INFRASTRUCTURE_FAILURE)
+            assert out.state is JobState.QUEUED
+            assert out.worker_id is None
+            assert out.lease_expires_at is None
+
+    asyncio.run(_run())
+
+
+def test_fail_dead_letters_at_max(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            claimed = await _insert_running_job(
+                conn, "dk-f2", worker_id="w1", lease_seconds=300, attempt=3, max_attempts=3
+            )
+            out = await queue.fail(conn, claimed, ErrorCategory.BUILD_FAILURE)
+            assert out.state is JobState.FAILED
+            assert out.error_category is ErrorCategory.BUILD_FAILURE
+
+    asyncio.run(_run())
+
+
+def test_fail_terminal_dead_letters_below_max(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-f3", max_attempts=3)
+            claimed = await queue.dequeue(conn, "w1")  # attempt -> 1, below max
+            assert claimed is not None
+            out = await queue.fail(conn, claimed, ErrorCategory.NOT_IMPLEMENTED, terminal=True)
+            assert out.state is JobState.FAILED
+            assert out.error_category is ErrorCategory.NOT_IMPLEMENTED
+
+    asyncio.run(_run())
+
+
+def test_fail_fence_miss_returns_input(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-f4")
+            claimed = await queue.dequeue(conn, "w1")
+            assert claimed is not None
+            # Simulate a reclaim by another worker: change worker_id out from under it.
+            await conn.execute("UPDATE jobs SET worker_id = 'w2' WHERE id = %s", (claimed.id,))
+            out = await queue.fail(conn, claimed, ErrorCategory.INFRASTRUCTURE_FAILURE)
+            assert out is claimed  # fence missed: unchanged input returned
 
     asyncio.run(_run())
