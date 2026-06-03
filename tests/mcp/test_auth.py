@@ -73,3 +73,15 @@ def test_build_verifier_constructs_with_full_env(monkeypatch: pytest.MonkeyPatch
     verifier = build_verifier()
     assert verifier.issuer == ISSUER
     assert verifier.audience == AUDIENCE
+
+
+def test_context_from_claims_parses_roles() -> None:
+    from kdive.security.rbac import Role
+
+    ctx = context_from_claims({"sub": "alice", "projects": ["a"], "roles": {"a": "admin"}})
+    assert ctx.roles == {"a": Role.ADMIN}
+
+
+def test_context_from_claims_absent_roles_is_empty() -> None:
+    ctx = context_from_claims({"sub": "alice", "projects": ["a"]})
+    assert ctx.roles == {}

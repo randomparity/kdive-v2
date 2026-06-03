@@ -49,3 +49,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0017](0017-object-store-client-interface.md) | Object-store client interface & failure contract | Proposed |
 | [0018](0018-job-queue-worker-execution.md) | Job-queue enqueue/dequeue + worker execution contract | Proposed |
 | [0019](0019-tool-response-envelope.md) | Uniform tool-response envelope | Proposed |
+| [0020](0020-rbac-audit-gate-implementation.md) | RBAC roles, audit record, destructive-op gate (M0 shapes) | Proposed |
