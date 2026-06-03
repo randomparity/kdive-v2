@@ -23,11 +23,13 @@ updates:
           - "*"
 
   # The browserless mermaid checker (.github/scripts/mermaid-check) pins its own
-  # npm lockfile; keep it on the same weekly, grouped, 7-day-cooldown cadence.
+  # npm lockfile. It is dev/CI-only tooling that never ships, so it rides a
+  # slower monthly cadence than the product-facing uv and github-actions
+  # ecosystems; grouping and the 7-day cooldown still apply.
   - package-ecosystem: "npm"
     directory: "/.github/scripts/mermaid-check"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     cooldown:
       default-days: 7
     groups:
