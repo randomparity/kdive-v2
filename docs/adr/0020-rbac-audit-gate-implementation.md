@@ -34,7 +34,12 @@ We will ship the three primitives with these shapes:
    for types only), `rbac.py` imports `RequestContext` under `TYPE_CHECKING` and is
    duck-typed at runtime. `require_role(ctx, project, role)` denies unless `project`
    is in `ctx.projects` (membership) **and** the principal's role on it ranks ≥ the
-   required role.
+   required role; a member carrying no role on the project is a denial, guarded before
+   any rank lookup so it never raises `KeyError`. The `roles` field is declared
+   `compare=False` so the still-`frozen` `RequestContext` stays hashable (a `dict`
+   field would otherwise make `__hash__` raise `TypeError`); roles are a derived view of
+   the same token as the attribution tuple, so excluding them from equality changes no
+   real outcome.
 
 2. **`record` writes exactly one append-only row inside the caller's transaction.**
    `audit.record(conn, ctx, *, tool, object_kind, object_id, transition, args,
@@ -44,8 +49,13 @@ We will ship the three primitives with these shapes:
    atomically — the foundation for "every state transition writes exactly one audit
    row". `args_digest` is the SHA-256 hex of a canonical JSON encoding of `args`
    (`sort_keys=True`, compact separators, `default=str`); the raw `args` are never
-   stored. `project` is a required argument because `ctx.projects` is the *granted
-   set*, not the single project the audited object belongs to.
+   stored. The digest is tamper-evidence/correlation, **not** confidentiality of
+   low-entropy values (those are brute-forceable from the log); secret confidentiality
+   is ADR-0012's job — callers pass secret references, not raw values, in `args`.
+   `project` is a required argument because `ctx.projects` is the *granted set*, not the
+   single project the audited object belongs to; `record` asserts `project in
+   ctx.projects` and raises `AuthError` otherwise, a last-line integrity guard on the
+   attribution the append-only row carries forever.
 
 3. **The gate's third factor rides on `op`.** `assert_destructive_allowed(ctx,
    allocation, op)` composes three independent checks and raises

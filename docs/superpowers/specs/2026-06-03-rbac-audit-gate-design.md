@@ -91,12 +91,24 @@ def require_role(ctx: RequestContext, project: str, role: Role) -> None: ...
     and never treat it as a known role). Keys are coerced to `str`.
   - Returns a plain `dict[str, Role]`.
 - **`require_role(ctx, project, role)`** raises `AuthorizationError` unless **both**:
-  (1) `project in ctx.projects` — membership; and (2)
-  `_RANK[ctx.roles.get(project)] >= _RANK[role]` — the principal holds at least the
-  required role on that project. Returns `None` on success. Re-checking membership
-  here makes a stray `roles` entry on a non-granted project unusable without trusting
-  claim consistency. The message names the principal, project, required vs. held role
-  (no secret material).
+  (1) `project in ctx.projects` — membership; and (2) the principal holds at least the
+  required role on that project. The algorithm is exactly:
+
+  ```python
+  if project not in ctx.projects:
+      raise AuthorizationError(...)          # not a member
+  held = ctx.roles.get(project)              # Role | None
+  if held is None or _RANK[held] < _RANK[role]:
+      raise AuthorizationError(...)          # no role, or role too low
+  ```
+
+  `held is None` (member granted via `projects` but carrying no role on it) and
+  `_RANK[held] < _RANK[role]` (role too low) are **both** denials — the `None` case is
+  guarded *before* any `_RANK` lookup, so a member-without-a-role yields a clean
+  `AuthorizationError`, never a `KeyError` escaping the security layer. Returns `None`
+  on success. Re-checking membership makes a stray `roles` entry on a non-granted
+  project unusable without trusting claim consistency. The message names the principal,
+  project, required vs. held role (no secret material).
 
 ### `audit.py` — the append-only record
 
@@ -120,16 +132,27 @@ def args_digest(args: Mapping[str, object]) -> str: ...   # sha256 hex
   `json.dumps(args, sort_keys=True, separators=(",", ":"), default=str)`, UTF-8
   encoded, hex digest. Canonicalization makes the digest stable across key order;
   `default=str` keeps non-JSON-native values (UUID, datetime) encodable. The digest is
-  one-way, so any secret value present in `args` is committed-to but never
-  **revealed** by the stored row — satisfying "args_digest never contains secret
-  material".
+  one-way, so no plaintext from `args` is stored — satisfying "args_digest never
+  contains secret material" literally. See "Threat model & guarantees" for what this
+  does and does **not** protect (it is tamper-evidence/correlation, not confidentiality
+  of low-entropy values).
 - **`record(...)`** issues exactly one
   `INSERT INTO audit_log (principal, agent_session, project, tool, object_kind,
   object_id, transition, args_digest) VALUES (…) RETURNING id`. `id`/`ts` are
   DB-generated (defaults). `principal`/`agent_session` come from `ctx`; `project` is
-  the explicit argument (the audited object's project, which the caller authorized via
-  `require_project`/`require_role`), **not** `ctx.projects` (the granted *set*).
-  Returns the new row's `id`.
+  the explicit argument (the audited object's project), **not** `ctx.projects` (the
+  granted *set*). Returns the new row's `id`.
+- **`project` is cross-checked, not trusted.** The audit log is the append-only
+  security-of-record; a wrong `project` writes a permanently un-rewritable,
+  misattributed row and silently breaks per-project audit queries. `record` therefore
+  asserts `project in ctx.projects` and raises `AuthError` otherwise — cheap, and it
+  catches the common handler bug (auditing object A under project B, or passing a
+  project the principal was never granted) before the row is written. This is the
+  audited object's *own* project (the one the handler authorized via
+  `require_project`/`require_role`); it must be a member of `ctx.projects` by
+  construction, so the assertion only ever fires on a caller bug. It is **not** a
+  substitute for the handler having authorized the operation — it is a last-line
+  integrity guard on the attribution the row will carry forever.
 - **Transactionality.** `record` runs its `INSERT` on the passed `conn` and does
   **not** open a transaction. The caller composes the state transition and `record`
   inside one `conn.transaction()` so both commit atomically (or neither does). This is
@@ -170,6 +193,18 @@ audit/log line shows the full reason, not just the first failure):
   handler that forgets to resolve and pass the opt-in is denied (deny-by-default).
 - `capability_scope.get` tolerates a non-dict/absent scope as "no destructive ops
   granted" → check (a) fails closed.
+- **Residual risk on factor (c) — a handler can collapse the gate to two checks.**
+  Factors (a) and (b) are data-driven (the gate reads `allocation.capability_scope` and
+  `ctx.roles` itself); factor (c) is a boolean the *handler* constructs, so a handler
+  that hardcodes `profile_opt_in=True` defeats it and the gate cannot tell. ADR-0020
+  deliberately keeps the gate from reading the provisioning-profile schema, so this
+  residual trust in the handler is accepted — but it is **contained**, not ignored: (1)
+  each destructive handler's tests **must** assert `profile_opt_in` is resolved from the
+  System's provisioning profile, not a constant (a contract on those later issues,
+  recorded here so it is not forgotten); and (2) the destructive op's `record(...)` call
+  audits `args` that include the opt-in's source key, so a hardcoded bypass is visible
+  in the audit trail after the fact. The gate's job is to compose three inputs
+  fail-closed; proving factor (c)'s input is real is the handler's job and its test's.
 
 ### `auth.py` — context plumbing (minimal change)
 
@@ -179,7 +214,7 @@ class RequestContext:
     principal: str
     agent_session: str | None
     projects: tuple[str, ...]
-    roles: Mapping[str, Role] = field(default_factory=dict)
+    roles: Mapping[str, Role] = field(default_factory=dict, compare=False)
 ```
 
 `context_from_claims` sets `roles=roles_from_claims(claims)`. The default keeps every
@@ -187,6 +222,18 @@ existing direct construction of `RequestContext` (tests, handlers) valid with an
 role map. To avoid a runtime import cycle, `rbac.py` imports `RequestContext` only
 under `TYPE_CHECKING`; `auth.py` imports `Role`/`roles_from_claims` from `rbac` at
 runtime.
+
+**Hashability.** `RequestContext` is `frozen=True`, so its autogenerated `__hash__`
+hashes every comparable field. A `dict` field is unhashable, which would silently turn
+the previously-hashable context into one that raises `TypeError` the first time it is
+put in a set / used as a dict key / passed to `lru_cache`. The new field therefore
+uses `compare=False`, excluding `roles` from **both** `__eq__` and `__hash__`:
+`RequestContext` stays hashable over `(principal, agent_session, projects)`. This loses
+nothing real — roles are a *derived authorization view* of the same verified token that
+produced the attribution tuple, so two contexts with equal `(principal, agent_session,
+projects)` necessarily carry equal `roles` (both parsed from one token). A test asserts
+`hash(ctx)` does not raise and that `roles` is still readable, so a future change back
+to a hashable-but-compared mapping is a deliberate choice, not an accident.
 
 ### Errors
 
@@ -202,6 +249,39 @@ class DestructiveOpDenied(AuthorizationError):           # gate.py
 missing checks (a subset of `{"capability_scope", "admin_role", "profile_opt_in"}`).
 Neither authz error carries an `ErrorCategory` (ADR-0020).
 
+## Threat model & guarantees
+
+What each primitive does and does **not** promise, so callers do not over-trust it:
+
+- **`args_digest` — tamper-evidence and correlation, not confidentiality.** The SHA-256
+  guarantees no plaintext is stored and lets two audit rows be compared for "same
+  args", and detects after-the-fact tampering if the raw args were re-derivable.
+  It does **not** keep a *low-entropy* value secret: anyone with read access to
+  `audit_log` can brute-force a short token, PIN, enum, or boolean by hashing the
+  candidate space and matching the digest. Confidentiality of secret material is **not**
+  the digest's job — it is owned by ADR-0012 (secrets-by-reference) and the redactor
+  (#23). The contract on callers is therefore: per ADR-0012, `args` carry secret
+  *references*, not raw secret values; the digest then commits to a reference, and the
+  brute-force concern does not arise. The digest is a defence-in-depth backstop for the
+  case a caller violates that contract, not the primary control.
+- **`record` — integrity of attribution rests on one cheap guard plus caller
+  discipline.** `record` asserts `project in ctx.projects` (above) so a misattributed
+  project is caught, but it does **not** verify that `object_id`/`object_kind`/
+  `transition` describe a real, just-performed transition — a handler that calls
+  `record` without performing the transition (or vice versa) is not detected here. The
+  "exactly one row per transition" property holds only when the handler wraps the
+  transition and the `record` call in one transaction (the contract above); `record`
+  cannot enforce that its caller did so. Correct pairing is the handler's
+  responsibility and is covered by the handler-level issues.
+- **The gate — fail-closed composition, with factor (c) trusting the handler.** See the
+  gate's "Residual risk" note: (a) and (b) are gate-verified against data; (c) trusts a
+  handler-supplied boolean, contained by a handler-test contract and the audit trail.
+- **`object_kind` / `transition` vocabulary is not enforced.** Both are free `text` in
+  the schema and free `str` here. Inconsistent values across handlers (`"system"` vs
+  `"systems"`) would fragment audit queries. M0 does not pin the vocabulary (no handlers
+  exist yet to standardize); the convention is recorded for the plane issues:
+  `object_kind` = the durable object's table name, `transition` = `f"{old}->{new}"`.
+
 ## Failure modes & edges (drives the tests)
 
 **rbac**
@@ -209,8 +289,12 @@ Neither authz error carries an `ErrorCategory` (ADR-0020).
   non-dict claim → `AuthError`; unknown role value → `AuthError`; non-str keys coerced.
 - `require_role`: held > required (admin for operator-required) → ok; held == required
   → ok; held < required (operator for admin) → `AuthorizationError`; project not in
-  `ctx.projects` → `AuthorizationError`; project granted but absent from `roles` →
-  `AuthorizationError`.
+  `ctx.projects` → `AuthorizationError`; project granted but **absent from `roles`**
+  (`held is None`) → `AuthorizationError`, **not** `KeyError` (the regression guard for
+  finding 1).
+- `RequestContext` hashability: a context with a non-empty `roles` map → `hash(ctx)`
+  does not raise, and `roles` is still readable (the regression guard for the
+  `frozen`+`dict` hazard).
 
 **audit**
 - `args_digest`: deterministic across key reorder; differs for differing args; a known
@@ -220,6 +304,8 @@ Neither authz error carries an `ErrorCategory` (ADR-0020).
   principal/agent_session/project/tool/object_kind/object_id/transition and a digest
   matching `args_digest(args)`; `agent_session=None` persists as SQL `NULL`; returns
   the row id.
+- `record` project guard: a `project` **not** in `ctx.projects` → `AuthError` and
+  **no** row written (the integrity guard for finding 4).
 - transition+audit atomicity: a real `update_state` plus `record` in one transaction →
   exactly one audit row (the "per transition" property); rolling back the transaction
   leaves **zero** audit rows (proves enlistment in the caller's transaction).
