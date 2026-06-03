@@ -59,7 +59,17 @@ Three forces bound the implementation shapes, which the spec leaves open:
      **not** change the System state; the teardown handler (#15) drives
      `→ torn_down`. Re-running a pass returns the same job (`dedup_key` admission
      idempotency), so the repair never duplicates work even while no teardown handler
-     is registered.
+     is registered. **The job carries a system-principal attribution**
+     (`authorizing.principal = "system:reconciler"`), not the owning user's tuple:
+     `teardown` is a gated destructive op, but that gate
+     (`assert_destructive_allowed`, ADR-0020) is a **tool-boundary** check over an
+     interactive `RequestContext` the reconciler does not have. A reconciler teardown
+     is system-initiated GC of a System whose Allocation is already gone — a platform
+     invariant ("a System never outlives its Allocation"), not a user privilege — so it
+     bypasses the interactive gate **by design**, made explicit and auditable by the
+     reserved principal. The teardown handler (#15) must treat a `system:reconciler`
+     job as pre-authorized GC (skip the gate) while still writing its audit row. This
+     reserved principal is a provisional contract for #15.
    - **Leaked domain** (a libvirt domain whose tag points at *no live row*) → the
      reconciler calls **`reaper.destroy(name)` directly**, inline in the pass. A truly
      leaked domain has no live `systems` row to key a job on and no teardown handler

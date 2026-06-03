@@ -54,9 +54,9 @@ The four repairs (parent spec):
   `worker_heartbeat_at` may be freshly attached and not yet beating; only a *stale*
   (non-NULL, old) heartbeat is unambiguous drift (ADR-0021).
 - **No time-based provision grace window in M0.** Row-first provisioning ordering
-  (ADR-0009: `systems` row `provisioning` written before the domain is defined) plus
-  the in-flight-job guard already protect a mid-create domain; a domain-age grace
-  window waits for the provider to expose a `provisioned_at` tag (#15).
+  (ADR-0009: `systems` row `provisioning` written before the domain is defined) already
+  protects a mid-create domain (it has a non-`torn_down` row, so guard (a) fails); a
+  domain-age grace window waits for the provider to expose a `provisioned_at` tag (#15).
 - **No deeper reconciliation.** Idle-Investigation sweep and mid-job
   secret-resolution failure are M1.5 (parent spec); not here.
 - **No schema change.** Every column the reconciler reads/writes — `systems.state`,
@@ -92,7 +92,7 @@ idempotent so a domain already gone (reaped, or torn down between `list_owned` a
 ```python
 @dataclass(frozen=True, slots=True)
 class ReconcileReport:
-    orphaned_systems: int      # orphaned Systems with a teardown job queued this pass
+    orphaned_systems: int      # teardown jobs newly enqueued this pass (0 if already queued)
     abandoned_jobs: int        # zombies dead-lettered
     dead_sessions: int         # sessions detached
     leaked_domains: int        # domains destroyed
@@ -136,18 +136,38 @@ For each candidate, in its own `async with conn.transaction(): async with
 advisory_xact_lock(conn, LockScope.SYSTEM, system_id):` block, re-read the System
 state (it may have changed while unlocked), and if still non-terminal,
 `queue.enqueue(conn, JobKind.TEARDOWN, payload={"system_id": str(id)},
-authorizing={principal, agent_session, project}, dedup_key=f"{system_id}:teardown")`.
+authorizing=<system-initiated GC tuple>, dedup_key=f"{system_id}:teardown")`.
 (`enqueue` opens its own `conn.transaction()`, which nests as a savepoint under the
 lock transaction — verified against `queue.py:50` — so the advisory lock, held by the
-outer transaction, is not released by the enqueue.) The lock serializes against a
-concurrent live teardown; the `dedup_key` makes a re-enqueue across passes return the
-same job (no duplicate). `ReconcileReport.orphaned_systems` counts **orphaned Systems
-for which a teardown job is queued after this pass** (candidates processed), not
-"newly inserted jobs" — `enqueue` returns the same row whether it inserted or found an
-existing job and gives no insert-vs-found signal (`queue.py:57-61`), so a
-new-vs-existing count would require fragile timestamp heuristics. Idempotency is
-asserted separately by the test ("a second pass leaves exactly one `jobs` row"). Emit
-a log line per orphaned System processed.
+outer transaction, is not released by the enqueue.) The lock serializes the read +
+enqueue against a concurrent live teardown.
+
+**Authorization of a reconciler-originated teardown.** `teardown` is a *gated*
+destructive op (parent spec "Auth, RBAC": `force_crash`/`control.power`/`teardown`
+require capability scope + `admin` role + profile opt-in, all three). But that gate —
+`assert_destructive_allowed(ctx, allocation, op)` (`security/gate.py:52`) — is a
+**tool-boundary** check over an interactive `RequestContext`. The reconciler is a
+background loop with no `RequestContext`, and it enqueues the teardown job *directly*
+(not via the `systems.teardown` tool), so it does not — and cannot — traverse that
+gate. This is **intended**: an orphaned-System teardown is system-initiated garbage
+collection (the System's Allocation is already `released`/`failed`), not a user request,
+and "a System never outlives its Allocation" is a platform invariant, not a privilege.
+To keep this honest rather than a silent bypass: the job carries an **explicit
+system-principal attribution** — `authorizing = {"principal": "system:reconciler",
+"agent_session": None, "project": <system.project>}` — so the teardown is auditable as
+reconciler-originated and never misattributed to the owning user, and the teardown
+handler (#15) MUST treat a `system:reconciler` job as pre-authorized GC (skip the
+interactive gate) while still writing its audit row. This is a **provisional contract**
+for #15, pinned here (see [ADR-0021](../../adr/0021-reconciler-loop-drift-repair.md)).
+
+The `dedup_key` makes a re-enqueue across passes return the same job (no duplicate).
+`ReconcileReport.orphaned_systems` counts only a **genuinely new** teardown enqueue:
+the repair does `SELECT 1 FROM jobs WHERE dedup_key = %s` before `enqueue` and counts
+the candidate only when no row pre-existed — a precise "new repairs this pass" signal
+(no timestamp heuristics, since the `dedup_key` existence is an exact check). So a
+steady-state orphan whose teardown job is already queued counts `0`, and the report is
+a rate, not a persistently-nonzero backlog gauge. Emit a log line per orphaned System
+for which a teardown is newly enqueued.
 
 **`_repair_abandoned_jobs(conn) -> int`.** The dead-letter and its Run compensation
 **must commit atomically** — otherwise a failure between them leaves a `failed` job
@@ -243,15 +263,23 @@ domain.
 > non-`torn_down` row exists). A `teardown` job, by contrast, is keyed
 > `(system_id, "teardown")` and runs while the row is `torn_down`/`releasing` — exactly
 > the window where guard (a) would permit a reap — so guard (b) is the one that
-> prevents racing a live teardown. This is the corrected version of the original
+> suppresses reaping a domain a live teardown is already handling (the residual race
+> after the lock releases is closed by idempotent `destroy`, above). This is the
+> corrected version of the original
 > "in-flight provision/teardown" check, which assumed a provision payload shape that
 > issue #9's dedup-key scheme does not produce.
 
-> **`destroy` runs outside the advisory-lock transaction.** The lock is released when
-> the read transaction commits; `reaper.destroy` (an out-of-process libvirt call) then
-> runs unlocked, so a slow/blocked provider call never holds a Postgres lock. The
-> idempotent-`destroy` contract covers the small window where a concurrent teardown
-> destroys the same domain first. (See Open question O1 for `destroy` failure.)
+> **What the lock guarantees here — and what it does not.** The advisory lock is held
+> only for the **read** of guards (a)/(b); the read transaction then commits (releasing
+> the lock) and `reaper.destroy` (an out-of-process libvirt call) runs **unlocked**, so
+> a slow/blocked provider call never holds a Postgres lock. So the lock provides
+> **read-consistency** for the two guard SELECTs and orders the reconciler against an
+> *already-committed* teardown — it is **not** mutual exclusion over the destroy: a
+> teardown handler can acquire the same SYSTEM lock the instant the reconciler releases
+> it and destroy the same domain concurrently. The collision safety therefore rests on
+> the **idempotent-`destroy` contract**, not on the lock — so that contract is
+> load-bearing and the real libvirt reaper's `destroy` must be tested to no-op on an
+> already-absent domain. (See Open question O1 for `destroy` *failure*.)
 
 ### `Reconciler` — the loop
 
@@ -314,7 +342,7 @@ not a stub to delete (it is what "no provider yet" *means* operationally).
 
 | Condition | Outcome |
 |-----------|---------|
-| Orphaned System, Allocation `released`/`failed` | idempotent teardown job enqueued; System state untouched (handler tears down) |
+| Orphaned System, Allocation `released`/`failed` | idempotent teardown job enqueued with `system:reconciler` attribution (GC, bypasses the tool-layer gate by design); System state untouched (handler tears down) |
 | Orphaned System already terminal (`torn_down`/`failed`) | skipped (query excludes it; re-read under lock re-checks) |
 | Zombie job (`running`, lapsed, `attempt >= max_attempts`) | `→ failed`/`lease_expired`, fenced on `running` |
 | Zombie job carrying a non-terminal `run_id` | owning Run `→ failed`/`lease_expired` (compensation) |
@@ -345,8 +373,10 @@ investigation → run → debug_session/job) since the FK chain is required; it 
 `tests/reconciler/conftest.py`.
 
 - **Orphaned System** — seed a `ready` System on a `released` Allocation; one pass
-  enqueues exactly one `(system_id, teardown)` job and leaves the System `ready`; a
-  **second** pass enqueues no new job (assert one `jobs` row — idempotent); a System
+  enqueues exactly one `(system_id, teardown)` job (returns `orphaned_systems == 1`),
+  leaves the System `ready`, and the job's `authorizing.principal == "system:reconciler"`
+  (system-initiated GC attribution, not the owner's); a **second** pass enqueues no new
+  job and returns `orphaned_systems == 0` (assert one `jobs` row — idempotent); a System
   on an `active` Allocation is **not** touched; a `torn_down` System on a `failed`
   Allocation is **not** touched.
 - **Abandoned job** — seed a `running` job with `lease_expires_at` in the past and
