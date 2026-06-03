@@ -144,16 +144,23 @@ an Allocation.
 
 A bug-chasing campaign that groups the Runs iterating toward a fix.
 
-- States: `open → active → closed`, plus `abandoned`. Closing is explicit (the
-  agent resolves the bug or gives up); an Investigation idle past a retention
-  window is reconciled to `abandoned`. Closure never cascades to its Runs — they
-  stay queryable for narrative and cost audit.
+- States: `open → active → closed`, plus `abandoned`. `investigations.open`
+  creates it `open`; it becomes `active` when its first Run is created. Closing is
+  explicit (the agent resolves the bug or gives up); the reconciler moves an
+  Investigation idle past a retention window to `abandoned`. Neither closing nor
+  abandoning cascades to its Runs — they stay queryable for narrative and cost
+  audit, and any still-in-flight Run keeps running under its own Allocation until
+  it reaches a terminal state (the Investigation is a grouping, not a resource
+  owner).
 - Scoped to a `(principal / project)`, **not** to a single Allocation. Groups the
   sequence of Runs; carries narrative/notes and rolled-up cost attribution.
 - **May span System reprovisions, Allocations, and resource kinds**: if the chase
   moves from a local VM to bare metal — a new Allocation on a different Resource —
   the Investigation continues. Each Run records which System it used, and cost
-  attribution **rolls up across allocations and `cost_class` boundaries**.
+  attribution **rolls up across allocations and `cost_class` boundaries** in a
+  single normalized unit (reference cost-model units, not raw wall-clock), so a
+  local-VM Run and a cloud Run sum meaningfully. The cost-model coefficients and
+  how `cost_class` is assigned per Resource are an ADR-0007 concern.
 
 ### Run
 
@@ -171,12 +178,12 @@ it.
 
 A sub-object of a Run, bounded by a single boot of a single kernel.
 
-- States: `attach → live → detached`.
+- States: `attach ↔ live ↔ detached` — within one boot the session may re-attach
+  after detaching (and interrupt/continue) any number of times; the cycle ends
+  only at reboot.
 - **A durable row**, not just worker-side state: persists `(state, transport
   handle, worker heartbeat)` so the reconciler can detect a `live` session whose
   transport has died and move it to `detached` (see Reconciliation & teardown).
-- Within one boot it can cycle attach ↔ detach (and interrupt/continue) any
-  number of times.
 - A **reboot ends it**: the transport drops and, for a patched kernel, symbols
   and addresses change. The next attach after a reboot is a new DebugSession
   belonging to the next Run.
@@ -341,6 +348,9 @@ periodic **reconciler loop** in the core detects and repairs that drift:
 - **Leaked provider infra** — the reconciler reconciles against a provider
   `list-owned` / `reconcile` capability (Discovery plane) to find, e.g., a libvirt
   domain with no owning System row.
+- **Idle Investigations** — an Investigation in `open` / `active` whose last Run
+  was created beyond the retention window is moved to `abandoned`. Closure is
+  otherwise explicit, and abandoning never cascades to its Runs.
 
 **Lease-expiry policy.** On `lease_expiry`, in-flight jobs are drained within a
 grace window, then force-killed; the owning Run transitions to `failed`
