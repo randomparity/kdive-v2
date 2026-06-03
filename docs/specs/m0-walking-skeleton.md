@@ -37,6 +37,81 @@ Each long-running step returns a `{job_id, status}` handle polled via `jobs.wait
 ([0008](../adr/0008-async-worker-tier-job-queue.md)). The path runs under a single
 `(principal, agent_session, project)` and every transition writes an audit row.
 
+The same path as a sequence, showing the tier that owns each step and the
+enqueue → worker → poll spine for long-running operations:
+
+```mermaid
+sequenceDiagram
+    actor A as Agent
+    participant C as Core (MCP/API)
+    participant W as Worker
+    participant P as Provider (libvirt)
+    participant DB as Postgres
+    participant OS as Object store
+
+    A->>C: allocations.request(selector, project)
+    C->>DB: capacity check + insert Allocation (granted)
+    C-->>A: {allocation_id, granted}
+
+    A->>C: investigations.open(project, title)
+    C->>DB: insert Investigation (open)
+    C-->>A: {investigation_id}
+
+    A->>C: systems.provision(allocation_id, profile)
+    C->>DB: insert System (provisioning) + enqueue provision job
+    C-->>A: {job_id, running}
+    W->>DB: dequeue (SKIP LOCKED)
+    W->>P: provision(alloc, profile)
+    P->>P: define + start domain (tagged system_id)
+    W->>DB: System → ready; job succeeded
+    A->>C: jobs.wait(job_id)
+    C-->>A: succeeded {system_id}
+
+    A->>C: runs.create(investigation, system, build_profile)
+    C->>DB: insert Run (created); Investigation → active
+    C-->>A: {run_id}
+
+    loop each of build, install, boot — enqueue then poll jobs.wait
+        A->>C: runs.build / .install / .boot (run_id)
+        C->>DB: enqueue job (dedup_key = run_id, step, kind)
+        C-->>A: {job_id, running}
+        W->>P: make / stage kernel / boot domain
+        W->>DB: run_steps(step) result; job succeeded
+    end
+
+    A->>C: debug.start_session(run_id, gdbstub)
+    C->>P: open gdbstub transport (single-attach)
+    C->>DB: insert DebugSession (attach → live)
+    C-->>A: {debug_session_id}
+
+    A->>C: debug.set_breakpoint / read_memory (≤4096)
+    C->>P: gdb-MI op
+    P-->>C: result
+    C-->>A: redacted result
+
+    A->>C: control.force_crash(system_id)
+    C->>C: destructive gate — scope + admin + opt-in
+    C->>DB: enqueue force_crash; DebugSession → detached; System → crashed
+    W->>P: sysrq-c → kdump captures vmcore
+
+    A->>C: vmcore.fetch(system_id)
+    C-->>A: {job_id, running}
+    W->>P: capture_vmcore (waits for kdump)
+    W->>OS: write raw (sensitive) + redacted derivative
+    W->>DB: insert Artifact (key + etag)
+
+    A->>C: artifacts.get(ref)
+    C->>OS: get redacted derivative
+    C-->>A: redacted artifact
+
+    A->>C: allocations.release(allocation_id)
+    C->>DB: Allocation → released; System → torn_down
+    C->>P: destroy domain
+    C-->>A: released
+
+    note over A,OS: every state transition and force_crash writes an append-only audit row
+```
+
 ## Non-goals (deferred to M1+)
 
 M0 is a skeleton, not a product. Explicitly out of scope:
@@ -71,6 +146,23 @@ M0, with reduced state machines. `→` is a transition; terminal states are bold
 `run.system → allocation` is the binding invariant: a Run's Allocation is fixed by
 its System ([0003](../adr/0003-six-durable-objects.md)). The Investigation
 grouping imposes no allocation constraint.
+
+```mermaid
+erDiagram
+    PROJECT       ||--o{ INVESTIGATION : scopes
+    RESOURCE      ||--o{ ALLOCATION : "booked as"
+    ALLOCATION    ||--o{ SYSTEM : "hosts (sequential)"
+    SYSTEM        ||--o{ RUN : executes
+    INVESTIGATION ||--o{ RUN : groups
+    RUN           ||--o{ DEBUGSESSION : "per boot"
+```
+
+A Run is the **join point**: it belongs to exactly one System (which fixes its
+Allocation) and exactly one Investigation (which may group Runs across
+Allocations). Lower layers outlive higher ones — a Resource outlives its
+Allocations, which outlive their Systems, which outlive their Runs. In M0 the
+`ALLOCATION → SYSTEM` and `RUN → DEBUGSESSION` relationships are 1:1 (no
+reprovision; one boot per Run).
 
 ## Postgres schema (M0 subset)
 
