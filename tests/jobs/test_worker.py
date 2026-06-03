@@ -223,3 +223,62 @@ def test_heartbeat_renews_live_lease(migrated_url: str) -> None:
             assert final.state is JobState.SUCCEEDED
 
     asyncio.run(_run())
+
+
+def test_heartbeat_error_does_not_crash_dispatch(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, min_size=3, max_size=10) as pool:
+
+            async def boom(*args: object, **kwargs: object) -> bool:
+                raise RuntimeError("heartbeat db error")
+
+            monkeypatch.setattr(queue, "heartbeat", boom)
+
+            async def handler(conn: psycopg.AsyncConnection, job: Job) -> str:
+                await asyncio.sleep(0.5)  # long enough for a heartbeat to fire and fail
+                return "s3://out"
+
+            reg = HandlerRegistry()
+            reg.register(JobKind.BUILD, handler)
+            worker = Worker(
+                pool,
+                reg,
+                worker_id="w1",
+                lease=timedelta(seconds=1),
+                heartbeat_interval=timedelta(milliseconds=100),
+            )
+            async with pool.connection() as conn:
+                job = await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-hberr")
+
+            processed = await worker.run_once()  # a failing heartbeat must not raise here
+            assert processed is not None
+            final = await _final_state(migrated_url, job.id)
+            assert final.state is JobState.SUCCEEDED  # finalized despite the bad heartbeat
+
+    asyncio.run(_run())
+
+
+def test_run_survives_run_once_error(migrated_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:
+            worker = Worker(
+                pool, HandlerRegistry(), worker_id="w1", poll_interval=timedelta(milliseconds=10)
+            )
+            stop = asyncio.Event()
+            calls = 0
+
+            async def fake_run_once() -> Job | None:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise RuntimeError("transient dequeue error")
+                stop.set()
+                return None
+
+            monkeypatch.setattr(worker, "run_once", fake_run_once)
+            await asyncio.wait_for(worker.run(stop), timeout=2)
+            assert calls >= 2  # the loop survived the first iteration's error and ran again
+
+    asyncio.run(_run())

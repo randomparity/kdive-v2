@@ -75,10 +75,21 @@ class Worker:
         return job
 
     async def run(self, stop: asyncio.Event) -> None:
-        """Loop :meth:`run_once`, sleeping ``poll_interval`` when the queue is empty."""
+        """Loop :meth:`run_once`, sleeping ``poll_interval`` when idle or after an error.
+
+        A transient per-iteration error (e.g. a brief database outage in ``dequeue``)
+        is logged and the loop continues — a durable worker must not die on one bad
+        iteration. The sleep after an error avoids a hot error-loop while the
+        dependency recovers.
+        """
         poll = self._poll_interval.total_seconds()
         while not stop.is_set():
-            job = await self.run_once()
+            try:
+                job = await self.run_once()
+            except Exception:  # noqa: BLE001 - a durable worker survives a transient per-iteration error
+                _log.exception("run_once failed; continuing after %ss", poll)
+                await asyncio.sleep(poll)
+                continue
             if job is None:
                 await asyncio.sleep(poll)
 
@@ -108,9 +119,21 @@ class Worker:
                 await heartbeat
 
     async def _heartbeat_loop(self, job_id: UUID) -> None:
+        """Renew the lease until cancelled, the fence misses, or a heartbeat errors.
+
+        A failed heartbeat (DB blip, lost connection) is logged and ends the loop
+        rather than escaping the task — the lease then lapses and the reconciler/
+        next ``dequeue`` reclaims the job (the designed fallback). Letting it escape
+        would re-raise out of ``_dispatch``'s ``finally`` and crash the worker.
+        ``asyncio.CancelledError`` is a ``BaseException`` and so is not caught here,
+        so normal cancellation still stops the loop.
+        """
         interval = self._heartbeat_interval.total_seconds()
-        async with self._pool.connection() as conn:
-            while True:
-                await asyncio.sleep(interval)
-                if not await queue.heartbeat(conn, job_id, self._worker_id, lease=self._lease):
-                    return
+        try:
+            async with self._pool.connection() as conn:
+                while True:
+                    await asyncio.sleep(interval)
+                    if not await queue.heartbeat(conn, job_id, self._worker_id, lease=self._lease):
+                        return
+        except Exception:  # noqa: BLE001 - a failing heartbeat must not crash the worker; stop beating and let the lease lapse
+            _log.warning("heartbeat for job %s failed; stopping (lease will lapse)", job_id)
