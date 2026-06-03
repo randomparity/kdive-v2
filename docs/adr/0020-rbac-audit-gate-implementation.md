@@ -32,7 +32,9 @@ We will ship the three primitives with these shapes:
    parsing) live in `rbac.py`; `auth.py` only calls the parser to populate the field.
    To avoid a runtime import cycle (`auth → rbac` at runtime; `rbac → RequestContext`
    for types only), `rbac.py` imports `RequestContext` under `TYPE_CHECKING` and is
-   duck-typed at runtime. `require_role(ctx, project, role)` denies unless `project`
+   duck-typed at runtime; the one genuine runtime edge — `roles_from_claims` raising
+   `auth.AuthError` on a malformed claim — uses a function-level import so `rbac`'s
+   module-level dependency on `auth` stays type-only. `require_role(ctx, project, role)` denies unless `project`
    is in `ctx.projects` (membership) **and** the principal's role on it ranks ≥ the
    required role; a member carrying no role on the project is a denial, guarded before
    any rank lookup so it never raises `KeyError`. The `roles` field is declared
