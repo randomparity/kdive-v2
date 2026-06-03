@@ -46,12 +46,17 @@ tests/         mirrors src/kdive/ ; tests/integration/ for the live_vm path
 2: #11 provider framework  (needs #3, #5)
 3 (planes, fan out behind #11): #12 discovery/alloc → #13 profile → #14 provision
    #15 run/investigation lifecycle → #16 build → #17 install/boot
-   #18 connect → #19 gdb-MI → #20 drgn ; #21 control → #22 retrieve
-   #23 safety/secrets is needed by #18-#22 (redaction on transcripts/vmcore)
-4: #24 end-to-end integration (needs all)
+   #18 connect → #19 gdb-MI ; #21 control → #22 retrieve → #20 drgn-from-vmcore
+   #23 safety/secrets — Phase-1 foundation, needed by #18 and #22 (redaction)
+4: #24 end-to-end integration (needs #1–#23)
 ```
 
 The core platform (#3–#10) is the gating path; planes parallelize once #11 lands.
+
+## Test environments
+
+- **Unit + service tests** run anywhere: a disposable Postgres + MinIO + a mock OIDC issuer (the compose file from #24) — used by #4–#11, #13, #15, #20, #23.
+- **`live_vm` tests** (#14, #17, #18, #19, #21, #22 acceptance) require a **KVM/nested-virt-capable host** with libvirt and a **kdump-enabled guest image** (`crashkernel=` reservation + kdump service). They run on a self-hosted KVM runner or as a manual pre-merge gate — **not** on stock GitHub-hosted runners. #1 documents the runner prerequisites; CI marks `live_vm` as a separate, manually-triggered job.
 
 ---
 
@@ -67,6 +72,7 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
   - `src/` layout per "Package layout"; create empty `__init__.py` for each package.
   - `.gitignore` includes `*.swp`, `.venv/`, `__pycache__/`, `*.pyc`, `.ruff_cache/`.
   - prek hooks: ruff, ruff-format, ty, end-of-file/trailing-whitespace.
+  - Document the `live_vm` test-runner prerequisites (KVM/nested-virt host, libvirt, kdump-enabled guest image) in `README.md` (see "Test environments").
 - **Acceptance:** `uv sync` succeeds; `uv run ruff check .` and `uv run ty check` pass; `uv run pytest -q` runs `test_smoke.py` green; `prek run -a` passes.
 
 ### Issue 2 — CI workflow & Dependabot
@@ -134,7 +140,7 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Goal:** Durable jobs with at-least-once delivery, lease/heartbeat, bounded retries, and admission idempotency.
 - **Files:** Create `src/kdive/jobs/models.py`, `jobs/queue.py`, `jobs/worker.py`; `tests/jobs/`.
 - **Scope:**
-  - `queue.enqueue(kind, payload, authorizing, dedup_key)` — `INSERT ... ON CONFLICT (dedup_key) DO NOTHING RETURNING` so a re-issue returns the existing job (admission idempotency).
+  - `queue.enqueue(kind, payload, authorizing, dedup_key)` — upsert-then-fetch so a re-issue returns the **existing** job (admission idempotency): `INSERT ... ON CONFLICT (dedup_key) DO NOTHING` followed by `SELECT id, status FROM jobs WHERE dedup_key = $1` in the same transaction. (`DO NOTHING RETURNING` returns no row on conflict, so it cannot return the existing job — do not use it.)
   - `queue.dequeue()` — `SELECT ... FOR UPDATE SKIP LOCKED`, set `worker_id`/`lease_expires_at`.
   - `worker.run(handlers)` — claim, heartbeat, dispatch by `kind`, on success store `result_ref`; on exception increment `attempt`, requeue or dead-letter to `failed` past `max_attempts`.
   - A `JobHandler` registry keyed by kind (handlers registered by the plane issues).
@@ -172,6 +178,16 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
   - Orphaned System (Allocation `released`/`failed`) → teardown job; abandoned job (lapsed lease past `max_attempts`) → `failed` + compensation; dead DebugSession (`live`, stale heartbeat) → `detached`; leaked libvirt domain via provider `list_owned` (tagged `system_id` with no live row, outside the provision grace window).
   - Lease-expiry policy: drain grace window → force-kill → Run `failed` (`lease_expired`).
 - **Acceptance:** seeded drift rows are repaired on one loop pass (one test per case); a domain mid-provision (job in-flight) is **not** reaped.
+
+### Issue 23 — Port safety modules + file-ref secret backend
+- **Labels:** `area:security`
+- **Depends on:** #1
+- **Goal:** Redaction, path-safety, and a by-reference secret backend, ported and wired. (Phase-1 foundation — the debug/retrieve planes depend on it for transcript/vmcore redaction.)
+- **Files:** Create `src/kdive/security/redaction.py`, `security/secret_registry.py`, `security/paths.py`, `security/secrets.py` (port `~/src/kdive-v1/src/kdive/safety/{redaction,secret_registry,paths}.py`); tests.
+- **Scope:**
+  - Port the three safety modules behind the new package; keep `PROCESS_SECRET_REGISTRY` semantics.
+  - `secrets.py`: `SecretBackend` Protocol + `FileRefBackend` resolving only within an allowlisted root (path-safety check), registering the value into the redaction registry **before** use; pre-registration output quarantined.
+- **Acceptance:** a registered secret value is masked by exact-value replacement in sample output; a file-ref escaping the allowlisted root is rejected; resolution registers before returning the value (ordering test).
 
 ---
 
@@ -214,7 +230,7 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 
 ### Issue 14 — Provisioning plane (libvirt)
 - **Labels:** `area:provisioning` · `provider:local-libvirt`
-- **Depends on:** #13, #11, #14-dep(#5,#7)
+- **Depends on:** #11, #13
 - **Goal:** Provision and tear down a libvirt System as a job.
 - **Files:** Create `src/kdive/providers/local_libvirt/provisioning.py`, `src/kdive/mcp/tools/systems.py`; register a `provision`/`teardown` job handler; tests.
 - **Scope:**
@@ -274,15 +290,16 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
   - All transcript output passes through the redactor (#23) before persistence/response.
 - **Acceptance (live_vm):** set a breakpoint at a symbol, continue, hit it, read registers and ≤4096 bytes of memory; a >4096 read is rejected; a known secret in gdb output is masked in the response.
 
-### Issue 20 — Debug plane: port drgn introspection (M0 subset)
+### Issue 20 — Debug plane: drgn introspection from vmcore (offline)
 - **Labels:** `area:debug`
-- **Depends on:** #18
-- **Goal:** Live drgn introspection over the running System.
-- **Files:** Create `src/kdive/providers/local_libvirt/introspect_drgn.py` (port the M0-needed subset of `~/src/kdive-v1/.../introspect/*` and `prereqs/drgn_probe.py`); add `introspect.run`; tests.
+- **Depends on:** #22
+- **Goal:** Offline drgn introspection of a captured vmcore on the host — no live guest, no SSH.
+- **Files:** Create `src/kdive/providers/local_libvirt/introspect_drgn.py` (port the M0 subset of the vmcore path in `~/src/kdive-v1/src/kdive/introspect/*` + `prereqs/drgn_probe.py`); add `introspect.from_vmcore`; tests.
 - **Scope:**
-  - Port the drgn runner + a minimal set of helpers (tasks, modules, sysinfo) sufficient for the walking skeleton; defer the full helper set.
+  - drgn opens the fetched vmcore on the host (`drgn.program_from_core`-style) and runs a minimal helper set (tasks, modules, sysinfo).
+  - **Live drgn (`introspect.run`) is deferred to M1.** v1 implements it as drgn-over-SSH (`local-drgn-introspect`, `transports=["ssh"]`), which needs a guest SSH transport + credentials (secret backend) that the M0 walking-skeleton path does not otherwise require; introducing it here is scope creep and `introspect.run` is not in the M0 tool subset.
   - Output redacted before persistence.
-- **Acceptance (live_vm):** `introspect.run` returns at least task/module/sysinfo data from the live kernel; output is redacted.
+- **Acceptance:** `introspect.from_vmcore` returns task/module/sysinfo data from a captured vmcore; output is redacted. Runs offline against the artifact from #22 — no `live_vm` host needed.
 
 ### Issue 21 — Control plane: power + force_crash (gated)
 - **Labels:** `area:control-retrieve` · `provider:local-libvirt`
@@ -306,21 +323,11 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 
 ---
 
-## Phase 4 — Cross-cutting & integration
-
-### Issue 23 — Port safety modules + file-ref secret backend
-- **Labels:** `area:security`
-- **Depends on:** #1
-- **Goal:** Redaction, path-safety, and a by-reference secret backend, ported and wired.
-- **Files:** Create `src/kdive/security/redaction.py`, `security/secret_registry.py`, `security/paths.py`, `security/secrets.py` (port `~/src/kdive-v1/src/kdive/safety/{redaction,secret_registry,paths}.py`); tests.
-- **Scope:**
-  - Port the three safety modules behind the new package; keep `PROCESS_SECRET_REGISTRY` semantics.
-  - `secrets.py`: `SecretBackend` Protocol + `FileRefBackend` resolving only within an allowlisted root (path-safety check), registering the value into the redaction registry **before** use; pre-registration output quarantined.
-- **Acceptance:** a registered secret value is masked by exact-value replacement in sample output; a file-ref escaping the allowlisted root is rejected; resolution registers before returning the value (ordering test).
+## Phase 4 — Integration
 
 ### Issue 24 — End-to-end walking-skeleton integration test
 - **Labels:** `type:test` · `area:core-platform`
-- **Depends on:** #12–#23
+- **Depends on:** #1–#23 (the full stack — notably #9 gate and #10 reconciler, which the acceptance below exercises)
 - **Goal:** Prove the six exit criteria end-to-end on a real libvirt host.
 - **Files:** Create `tests/integration/test_walking_skeleton.py` (marker `live_vm`); a `docker-compose`/`justfile` for Postgres + MinIO + a mock OIDC issuer.
 - **Scope:** Drive the full path: `allocations.request → investigations.open(external_refs) → systems.provision → runs.create → build → install → boot → debug.start_session → set_breakpoint/read_memory → force_crash → vmcore.fetch → artifacts.get → allocations.release`.
