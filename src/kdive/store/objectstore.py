@@ -185,7 +185,13 @@ class ObjectStore:
                 category=ErrorCategory.INFRASTRUCTURE_FAILURE,
                 details={"key": key},
             ) from err
-        return FetchedArtifact(resp["Body"].read(), sensitivity, retention_class)
+        try:
+            data = resp["Body"].read()
+        except (BotoCoreError, ClientError) as err:
+            # The download streams here, after the headers; a mid-stream timeout or
+            # dropped connection raises a BotoCoreError that must stay typed too.
+            raise _infrastructure_error("get_object", key, err) from err
+        return FetchedArtifact(data, sensitivity, retention_class)
 
 
 def register_artifact_row(stored: StoredArtifact, *, owner_kind: str, owner_id: UUID) -> Artifact:

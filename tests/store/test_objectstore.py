@@ -10,7 +10,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-from botocore.exceptions import EndpointConnectionError
+from botocore.exceptions import EndpointConnectionError, ReadTimeoutError
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
@@ -81,6 +81,27 @@ def test_put_artifact_maps_transport_error_to_infrastructure_failure() -> None:
 
 def test_get_artifact_maps_transport_error_to_infrastructure_failure() -> None:
     store = ObjectStore(_UnreachableClient(), "bucket")
+    with pytest.raises(CategorizedError) as excinfo:
+        store.get_artifact("t/vmcore/oid/core", "etag")
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+class _MidStreamFailureClient:
+    """A stub whose ``get_object`` succeeds but whose body read fails mid-stream."""
+
+    class _Body:
+        def read(self) -> bytes:
+            raise ReadTimeoutError(endpoint_url="http://unreachable")
+
+    def get_object(self, **_kwargs: object) -> dict[str, object]:
+        return {
+            "Metadata": {"sensitivity": "redacted", "retention-class": "vmcore"},
+            "Body": _MidStreamFailureClient._Body(),
+        }
+
+
+def test_get_artifact_maps_body_read_failure_to_infrastructure_failure() -> None:
+    store = ObjectStore(_MidStreamFailureClient(), "bucket")
     with pytest.raises(CategorizedError) as excinfo:
         store.get_artifact("t/vmcore/oid/core", "etag")
     assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
