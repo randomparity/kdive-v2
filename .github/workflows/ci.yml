@@ -49,6 +49,11 @@ jobs:
         run: uv run ty check src
 
       - name: Test
+        # KDIVE_REQUIRE_DOCKER turns the db suite's skip-when-no-Docker into a hard
+        # failure, so a broken daemon on the runner can't mask the schema tests
+        # (ADR-0015). GitHub-hosted ubuntu runners provide Docker.
+        env:
+          KDIVE_REQUIRE_DOCKER: "1"
         run: uv run python -m pytest -m "not live_vm" -q
 
   live-vm:

@@ -11,6 +11,7 @@ requires-python = "==3.13.*"
 dependencies = [
   "fastmcp==3.4.0",
   "psycopg[binary]==3.3.4",
+  "psycopg-pool==3.3.1",
   "boto3==1.43.21",
   "libvirt-python==12.3.0",
   "drgn==0.2.0",
@@ -22,6 +23,7 @@ dev = [
   "ruff==0.15.15",
   "ty==0.0.42",
   "pytest==9.0.3",
+  "testcontainers==4.14.2",
 ]
 
 [tool.ruff]
