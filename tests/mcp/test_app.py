@@ -1,0 +1,39 @@
+"""app.py: tool registration via the seam, with an injected verifier."""
+
+from __future__ import annotations
+
+import asyncio
+
+from fastmcp.server.auth.providers.jwt import JWTVerifier
+from psycopg_pool import AsyncConnectionPool
+
+from kdive.domain.models import JobKind
+from kdive.jobs.models import HandlerRegistry
+from kdive.mcp.app import build_app, build_handler_registry
+from tests.mcp.conftest import AUDIENCE, ISSUER, make_keypair
+
+
+def _verifier() -> JWTVerifier:
+    kp = make_keypair()
+    return JWTVerifier(public_key=kp.public_key, issuer=ISSUER, audience=AUDIENCE)
+
+
+def test_build_app_registers_jobs_tools() -> None:
+    pool = AsyncConnectionPool("postgresql://unused", open=False)
+    app = build_app(pool, verifier=_verifier())
+
+    async def _run() -> None:
+        # Verified against fastmcp 3.4.0: FastMCP.list_tools() is async and returns
+        # list[Tool], each with a .name (there is no get_tools()).
+        tools = await app.list_tools()
+        names = {t.name for t in tools}
+        assert {"jobs.get", "jobs.wait", "jobs.cancel", "jobs.list"} <= names
+
+    asyncio.run(_run())
+
+
+def test_build_handler_registry_is_empty_in_m0() -> None:
+    registry = build_handler_registry()
+    assert isinstance(registry, HandlerRegistry)
+    # No real handlers in M0; an unknown kind has no handler.
+    assert registry.get(JobKind.BUILD) is None
