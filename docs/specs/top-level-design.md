@@ -144,6 +144,10 @@ an Allocation.
 
 A bug-chasing campaign that groups the Runs iterating toward a fix.
 
+- States: `open → active → closed`, plus `abandoned`. Closing is explicit (the
+  agent resolves the bug or gives up); an Investigation idle past a retention
+  window is reconciled to `abandoned`. Closure never cascades to its Runs — they
+  stay queryable for narrative and cost audit.
 - Scoped to a `(principal / project)`, **not** to a single Allocation. Groups the
   sequence of Runs; carries narrative/notes and rolled-up cost attribution.
 - **May span System reprovisions, Allocations, and resource kinds**: if the chase
@@ -324,6 +328,10 @@ periodic **reconciler loop** in the core detects and repairs that drift:
 
 - **Orphaned Systems** — a System whose Allocation is `released` / `expired` /
   `failed` is torn down (a System never outlives its Allocation).
+- **Runs on torn-down Systems** — a Run whose System is torn down has its
+  in-flight job canceled and the Run marked `failed` (`lease_expired`). The Run
+  row is **retained, not deleted**, so the Investigation's cross-allocation
+  narrative and cost rollup stay intact even though the Run's Allocation is gone.
 - **Abandoned jobs** — each job carries a **worker heartbeat/lease**; when it
   lapses the job is marked abandoned and the op's declared compensation runs.
   (Advisory locks release on connection close and the PoC's `O_CREAT|O_EXCL` lock
@@ -335,8 +343,11 @@ periodic **reconciler loop** in the core detects and repairs that drift:
   domain with no owning System row.
 
 **Lease-expiry policy.** On `lease_expiry`, in-flight jobs are drained within a
-grace window, then force-killed; the accounting ledger attributes the partial
-spend to the Allocation regardless of completion. **Cancel/abandon cleanup** is
+grace window, then force-killed; the owning Run transitions to `failed`
+(`lease_expired`) — distinct from a `canceled` Run, which records an explicit
+`jobs.cancel` or agent abort, so audit and SLO tracking can tell an
+infrastructure kill from a deliberate one. The accounting ledger attributes the
+partial spend to the Allocation regardless of completion. **Cancel/abandon cleanup** is
 part of every plane op's declared contract (see Provider / capability model):
 each op declares whether cancel yields clean-rollback, best-effort, or
 orphan-flagged state — `jobs.cancel` on a half-done `provision` / `install` is
@@ -378,8 +389,8 @@ Each gets its own spec → plan → implementation cycle.
 Milestone-based. ("Sprint" is avoided per the project doc-style guard.)
 
 - **M0 — Walking skeleton.** Core platform (#1) plus the thinnest path through
-  every plane for **local-libvirt only**: request always-yes allocation →
-  provision a libvirt System → build → install → boot → attach gdbstub → set
+  every plane for **local-libvirt only**: request always-yes allocation
+  (capacity-checked) → provision a libvirt System → build → install → boot → attach gdbstub → set
   breakpoint / read memory → force-crash → fetch vmcore. One resource kind, real
   end-to-end, on the new architecture. Proves the model and the seams.
 - **M1 — Allocation/accounting depth.** Real reservation/lease semantics,
