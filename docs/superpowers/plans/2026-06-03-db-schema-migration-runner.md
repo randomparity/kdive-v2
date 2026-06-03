@@ -119,15 +119,33 @@ def pg_conn(postgres_url: str) -> Iterator[psycopg.Connection]:
         yield conn
 ```
 
-- [ ] **Step 2: Sanity-check the harness**
+- [ ] **Step 2: Write a connectivity test that actually exercises the fixtures**
 
-Run: `KDIVE_REQUIRE_DOCKER=1 uv run python -m pytest tests/db -q`
-Expected: collects 0 tests (no test files yet), exit 0 (or "no tests ran"). Confirms the container starts.
+Create `tests/db/test_harness.py`:
 
-- [ ] **Step 3: Commit**
+```python
+"""Smoke test that the disposable-Postgres fixtures connect."""
+
+from __future__ import annotations
+
+import psycopg
+
+
+def test_pg_conn_connects(pg_conn: psycopg.Connection) -> None:
+    row = pg_conn.execute("SELECT 1").fetchone()
+    assert row is not None and row[0] == 1
+```
+
+- [ ] **Step 3: Run it — this is what proves the container starts and the URL API is right**
+
+Run: `KDIVE_REQUIRE_DOCKER=1 uv run python -m pytest tests/db/test_harness.py -q`
+Expected: PASS. A failure here means `get_connection_url(driver=None)` returned an
+unexpected shape or Docker is misconfigured — fix the fixture before proceeding.
+
+- [ ] **Step 4: Commit**
 
 ```bash
-git add tests/db/conftest.py
+git add tests/db/conftest.py tests/db/test_harness.py
 git commit -m "test(db): add disposable-Postgres fixtures"
 ```
 
@@ -154,6 +172,20 @@ import psycopg
 import pytest
 
 from kdive.db import migrate
+from kdive.domain import errors, state
+
+# Each lifecycle/category CHECK constraint and the enum it must mirror (ADR-0015).
+CHECK_ENUMS = [
+    ("resources_status_check", state.ResourceStatus),
+    ("allocations_state_check", state.AllocationState),
+    ("systems_state_check", state.SystemState),
+    ("investigations_state_check", state.InvestigationState),
+    ("runs_state_check", state.RunState),
+    ("debug_sessions_state_check", state.DebugSessionState),
+    ("jobs_state_check", state.JobState),
+    ("runs_failure_category_check", errors.ErrorCategory),
+    ("jobs_error_category_check", errors.ErrorCategory),
+]
 
 OBJECT_TABLES = {
     "resources", "allocations", "systems", "investigations", "runs",
@@ -280,6 +312,39 @@ def test_checksum_matches_file_bytes(pg_conn: psycopg.Connection) -> None:
     sql_path = migrate.SCHEMA_DIR / "0001_init.sql"
     expected = hashlib.sha256(sql_path.read_bytes()).hexdigest()
     assert version == "0001" and checksum == expected
+
+
+@pytest.mark.parametrize("constraint, enum", CHECK_ENUMS)
+def test_check_constraint_covers_every_enum_value(
+    pg_conn: psycopg.Connection, constraint: str, enum: type
+) -> None:
+    """Every Python enum value must appear in its SQL CHECK (ties SQL to the model)."""
+    migrate.apply_migrations(pg_conn)
+    row = pg_conn.execute(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = %s",
+        (constraint,),
+    ).fetchone()
+    assert row is not None, f"constraint {constraint} not found in the schema"
+    definition = row[0]
+    missing = [m.value for m in enum if f"'{m.value}'" not in definition]
+    assert not missing, f"{constraint} is missing enum values {missing}"
+
+
+def test_advisory_lock_serializes_migrators(
+    pg_conn: psycopg.Connection, postgres_url: str
+) -> None:
+    """A second migrator blocks on the migration advisory lock until the first frees it."""
+    with psycopg.connect(postgres_url) as holder:  # autocommit=False: holds the xact lock
+        holder.execute(
+            "SELECT pg_advisory_xact_lock(%s, %s)",
+            (migrate._LOCK_CLASS_MIGRATION, migrate._LOCK_OBJID),
+        )
+        pg_conn.execute("SET lock_timeout = '500ms'")
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            migrate.apply_migrations(pg_conn)
+        holder.rollback()  # release the lock
+    pg_conn.execute("SET lock_timeout = '0'")
+    assert migrate.apply_migrations(pg_conn) == ["0001"]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -809,7 +874,8 @@ git commit -m "ci: require Docker for the db test suite"
 - Forward-only runner, `schema_migrations`, idempotent re-run → Task 3; `test_rerun_is_a_noop`. ✓
 - `\d`-visible unique constraints → introspected via `information_schema` in `test_unique_constraints_present`. ✓
 - Async pool from `KDIVE_DATABASE_URL` → Task 4. ✓
-- Columns/enums match `domain/models.py` → CHECK lists mirror `state.py`/`errors.py`; `test_state_check_rejects_unknown_value` ties SQL to the enum behaviorally. ✓
-- ADR-0015 hardening (lock-space, checksum immutability, validation rules) → Task 3 (`apply_migrations`, `discover_migrations`); `test_checksum_mismatch_raises`, `test_bad_filename_rejected`, `test_duplicate_version_rejected`, `test_applied_file_missing_raises`. ✓
+- Columns/enums match `domain/models.py` → CHECK lists mirror `state.py`/`errors.py`; `test_check_constraint_covers_every_enum_value` asserts **every** value of all seven lifecycle enums and the 16-member `ErrorCategory` (both columns) appears in its CHECK, and `test_state_check_rejects_unknown_value` proves a valid value inserts and an off-list value is rejected. ✓
+- ADR-0015 hardening (lock-space, checksum immutability, validation rules, concurrency) → Task 3 (`apply_migrations`, `discover_migrations`); `test_checksum_mismatch_raises`, `test_bad_filename_rejected`, `test_duplicate_version_rejected`, `test_applied_file_missing_raises`, `test_advisory_lock_serializes_migrators`. ✓
+- Harness actually exercised before use → Task 2 `test_harness.py::test_pg_conn_connects`. ✓
 
 **Packaging note:** the `.sql` files live inside the `kdive.db` package; `uv_build` includes package-directory data, and `uv run` resolves them from the source tree. No extra packaging config is needed for M0/CI.
