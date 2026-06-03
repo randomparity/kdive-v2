@@ -81,7 +81,7 @@ class JsonFormatter(logging.Formatter):
         payload.update(getattr(record, _CTX_RECORD_ATTR, {}))
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
-        return json.dumps(payload)
+        return json.dumps(payload, default=str)
 
 
 class _KdiveHandler(logging.StreamHandler):

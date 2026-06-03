@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import logging
+import uuid
 
 import pytest
 
@@ -126,6 +127,15 @@ def test_exception_traceback_is_captured() -> None:
     record = _last_record(stream)
     assert record["msg"] == "operation failed"
     assert "RuntimeError: boom" in record["exc"]
+
+
+def test_non_serializable_context_value_is_coerced_not_crashed() -> None:
+    formatter = klog.JsonFormatter()
+    record = logging.LogRecord("kdive.test.serial", logging.INFO, __file__, 0, "msg", None, None)
+    object_id = uuid.uuid4()
+    setattr(record, klog._CTX_RECORD_ATTR, {"object_id": object_id})
+    payload = json.loads(formatter.format(record))
+    assert payload["object_id"] == str(object_id)
 
 
 def test_context_is_isolated_between_concurrent_tasks() -> None:
