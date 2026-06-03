@@ -1,0 +1,234 @@
+"""Behavior and edge tests for the object-store client (ADR-0017).
+
+The MinIO-backed tests use the session ``minio_store`` fixture and gate on Docker
+exactly as the db tests do; the pure tests (key validation, etag normalization,
+``register_artifact_row``, env config) run without a container.
+"""
+
+from __future__ import annotations
+
+from uuid import uuid4
+
+import pytest
+from botocore.exceptions import EndpointConnectionError, ReadTimeoutError
+
+from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.models import Sensitivity
+from kdive.store.objectstore import (
+    ObjectStore,
+    StoredArtifact,
+    _normalize_etag,
+    object_store_from_env,
+    register_artifact_row,
+)
+
+
+def test_normalize_etag_strips_surrounding_quotes() -> None:
+    assert _normalize_etag('"abc123"') == "abc123"
+    assert _normalize_etag("abc123") == "abc123"
+
+
+@pytest.mark.parametrize(
+    ("tenant", "kind", "object_id", "name"),
+    [
+        ("", "vmcore", "oid", "core"),
+        ("t", "vmcore", "oid", ""),
+        ("t", "with/slash", "oid", "core"),
+        ("t", "vmcore", "oid", "bad\nname"),
+    ],
+)
+def test_put_artifact_rejects_invalid_key_component(
+    tenant: str, kind: str, object_id: str, name: str
+) -> None:
+    store = ObjectStore(object(), "bucket")  # client never touched: validation precedes it
+    with pytest.raises(CategorizedError) as excinfo:
+        store.put_artifact(
+            tenant,
+            kind,
+            object_id,
+            name,
+            data=b"x",
+            sensitivity=Sensitivity.REDACTED,
+            retention_class="vmcore",
+        )
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+class _UnreachableClient:
+    """A stub S3 client whose calls raise a transport-level ``BotoCoreError``."""
+
+    def put_object(self, **_kwargs: object) -> object:
+        raise EndpointConnectionError(endpoint_url="http://unreachable")
+
+    def get_object(self, **_kwargs: object) -> object:
+        raise EndpointConnectionError(endpoint_url="http://unreachable")
+
+
+def test_put_artifact_maps_transport_error_to_infrastructure_failure() -> None:
+    store = ObjectStore(_UnreachableClient(), "bucket")
+    with pytest.raises(CategorizedError) as excinfo:
+        store.put_artifact(
+            "t",
+            "vmcore",
+            "oid",
+            "core",
+            data=b"x",
+            sensitivity=Sensitivity.REDACTED,
+            retention_class="vmcore",
+        )
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+def test_get_artifact_maps_transport_error_to_infrastructure_failure() -> None:
+    store = ObjectStore(_UnreachableClient(), "bucket")
+    with pytest.raises(CategorizedError) as excinfo:
+        store.get_artifact("t/vmcore/oid/core", "etag")
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+class _MidStreamFailureClient:
+    """A stub whose ``get_object`` succeeds but whose body read fails mid-stream."""
+
+    class _Body:
+        def read(self) -> bytes:
+            raise ReadTimeoutError(endpoint_url="http://unreachable")
+
+    def get_object(self, **_kwargs: object) -> dict[str, object]:
+        return {
+            "Metadata": {"sensitivity": "redacted", "retention-class": "vmcore"},
+            "Body": _MidStreamFailureClient._Body(),
+        }
+
+
+def test_get_artifact_maps_body_read_failure_to_infrastructure_failure() -> None:
+    store = ObjectStore(_MidStreamFailureClient(), "bucket")
+    with pytest.raises(CategorizedError) as excinfo:
+        store.get_artifact("t/vmcore/oid/core", "etag")
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+def test_register_artifact_row_maps_stored_and_owner() -> None:
+    stored = StoredArtifact("t/vmcore/oid/core", "etag123", Sensitivity.REDACTED, "vmcore")
+    owner_id = uuid4()
+
+    row = register_artifact_row(stored, owner_kind="system", owner_id=owner_id)
+
+    assert row.object_key == "t/vmcore/oid/core"
+    assert row.etag == "etag123"
+    assert row.sensitivity is Sensitivity.REDACTED
+    assert row.retention_class == "vmcore"
+    assert row.owner_kind == "system"
+    assert row.owner_id == owner_id
+    # id is minted; created_at/updated_at are populated (advisory pre-insert).
+    assert row.id is not None
+
+
+def test_object_store_from_env_requires_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KDIVE_S3_ENDPOINT_URL", raising=False)
+    monkeypatch.setenv("KDIVE_S3_BUCKET", "bucket")
+
+    with pytest.raises(CategorizedError) as excinfo:
+        object_store_from_env()
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_object_store_from_env_requires_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KDIVE_S3_ENDPOINT_URL", "http://localhost:9000")
+    monkeypatch.delenv("KDIVE_S3_BUCKET", raising=False)
+
+    with pytest.raises(CategorizedError) as excinfo:
+        object_store_from_env()
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_object_store_from_env_defaults_region(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KDIVE_S3_ENDPOINT_URL", "http://localhost:9000")
+    monkeypatch.setenv("KDIVE_S3_BUCKET", "bucket")
+    monkeypatch.delenv("KDIVE_S3_REGION", raising=False)
+
+    store = object_store_from_env()
+
+    assert store._client.meta.region_name == "us-east-1"
+
+
+def test_put_get_round_trip(minio_store: ObjectStore, key_ns: str) -> None:
+    stored = minio_store.put_artifact(
+        key_ns,
+        "vmcore",
+        "sys-1",
+        "core.bin",
+        data=b"payload-bytes",
+        sensitivity=Sensitivity.REDACTED,
+        retention_class="vmcore",
+    )
+
+    assert '"' not in stored.etag  # stored etag is the bare value
+    fetched = minio_store.get_artifact(stored.key, stored.etag)
+    assert fetched.data == b"payload-bytes"
+
+
+def test_put_uses_the_key_scheme(minio_store: ObjectStore, key_ns: str) -> None:
+    stored = minio_store.put_artifact(
+        key_ns,
+        "vmcore",
+        "oid",
+        "core",
+        data=b"x",
+        sensitivity=Sensitivity.REDACTED,
+        retention_class="vmcore",
+    )
+    assert stored.key == f"{key_ns}/vmcore/oid/core"
+
+
+def test_sensitivity_persisted_as_object_metadata(minio_store: ObjectStore, key_ns: str) -> None:
+    stored = minio_store.put_artifact(
+        key_ns,
+        "transcript",
+        "sys-1",
+        "gdb.log",
+        data=b"raw-transcript",
+        sensitivity=Sensitivity.SENSITIVE,
+        retention_class="transcript",
+    )
+
+    fetched = minio_store.get_artifact(stored.key, stored.etag)
+    assert fetched.sensitivity is Sensitivity.SENSITIVE
+    assert fetched.retention_class == "transcript"
+
+    raw = minio_store._client.head_object(Bucket=minio_store._bucket, Key=stored.key)
+    assert raw["Metadata"]["sensitivity"] == "sensitive"
+    assert raw["Metadata"]["retention-class"] == "transcript"
+
+
+def test_get_with_stale_etag_raises_stale_handle(minio_store: ObjectStore, key_ns: str) -> None:
+    stored = minio_store.put_artifact(
+        key_ns,
+        "vmcore",
+        "sys-1",
+        "core.bin",
+        data=b"payload",
+        sensitivity=Sensitivity.REDACTED,
+        retention_class="vmcore",
+    )
+
+    with pytest.raises(CategorizedError) as excinfo:
+        minio_store.get_artifact(stored.key, "0" * 32)
+    assert excinfo.value.category is ErrorCategory.STALE_HANDLE
+
+
+def test_get_missing_object_raises_stale_handle(minio_store: ObjectStore, key_ns: str) -> None:
+    with pytest.raises(CategorizedError) as excinfo:
+        minio_store.get_artifact(f"{key_ns}/vmcore/none/missing", "abc123")
+    assert excinfo.value.category is ErrorCategory.STALE_HANDLE
+
+
+def test_get_object_without_metadata_raises_infrastructure_failure(
+    minio_store: ObjectStore, key_ns: str
+) -> None:
+    key = f"{key_ns}/vmcore/sys-1/bare"
+    resp = minio_store._client.put_object(Bucket=minio_store._bucket, Key=key, Body=b"no-metadata")
+    etag = resp["ETag"].strip('"')
+
+    with pytest.raises(CategorizedError) as excinfo:
+        minio_store.get_artifact(key, etag)
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
