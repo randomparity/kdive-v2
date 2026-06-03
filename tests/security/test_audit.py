@@ -129,6 +129,29 @@ def test_record_writes_one_row(migrated_url: str) -> None:
     asyncio.run(_run_test())
 
 
+def test_record_persists_null_agent_session(migrated_url: str) -> None:
+    async def _run_test() -> None:
+        async with await _connect(migrated_url) as conn:
+            ctx = RequestContext(principal="alice", agent_session=None, projects=("proj",))
+            audit_id = await record(
+                conn,
+                ctx,
+                tool="systems.teardown",
+                object_kind="systems",
+                object_id=uuid4(),
+                transition="ready->torn_down",
+                args={},
+                project="proj",
+            )
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT agent_session FROM audit_log WHERE id = %s", (audit_id,))
+                row = await cur.fetchone()
+            assert row is not None
+            assert row[0] is None  # principal-only attribution persists as SQL NULL
+
+    asyncio.run(_run_test())
+
+
 def test_record_rejects_ungranted_project(migrated_url: str) -> None:
     async def _run_test() -> None:
         async with await _connect(migrated_url) as conn:
