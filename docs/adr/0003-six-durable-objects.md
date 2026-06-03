@@ -29,6 +29,9 @@ the join of exactly one System and exactly one Investigation.
 - Reprovision-in-place (a new System under the same Allocation) and investigations
   that span Allocations and resource kinds become expressible without special
   cases.
+- An Investigation groups Runs toward a goal — a bug fix or a feature — and may
+  carry mutable external references (Bugzilla/JIRA); it is a campaign, not limited
+  to bug-chasing.
 - Every object needs its own transition rules, idempotency, and audit — one
   uniform pattern applied six times.
 - Reconciliation operates per object (orphaned System, dead DebugSession, idle

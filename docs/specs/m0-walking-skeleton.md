@@ -160,7 +160,9 @@ erDiagram
 The model has **two independent hierarchies that meet at Run**: the provisioning
 chain `Resource → Allocation → System`, and the **Investigation** campaign. An
 Investigation is *not* below System — it is a project-scoped **root** that groups
-the Runs iterating toward a fix, and because each Run executes on exactly one
+the Runs iterating toward a goal — a bug fix or a feature, optionally linked to
+external trackers (Bugzilla/JIRA) via mutable `external_refs`; and because each Run
+executes on exactly one
 System, an Investigation **spans every System (and Allocation, and resource kind)
 its Runs touched** — the local-VM-to-bare-metal chase from the top-level design.
 That span is the dashed `INVESTIGATION ⋯ SYSTEM` edge above: it is *derived through
@@ -196,7 +198,8 @@ allocations(id, resource_id→resources, project, state, lease_expiry,
             principal, agent_session, capability_scope jsonb)
 systems(id, allocation_id→allocations, state, provisioning_profile jsonb,
         target_fingerprint, domain_name)            -- domain_name = libvirt domain
-investigations(id, project, title, state, last_run_at)
+investigations(id, project, title, external_refs jsonb, state, last_run_at)
+                                                        -- external_refs: mutable [{tracker, id, url}] (bugzilla/jira)
 runs(id, investigation_id→investigations, system_id→systems, state,
      build_profile jsonb, kernel_ref, failure_category)
 run_steps(run_id→runs, step, state, result jsonb,
@@ -289,8 +292,9 @@ Allocation  allocations.request({selector, project}) → {allocation_id, status:
             allocations.get(allocation_id) / .release(allocation_id) / .list(project?)
 Provision   systems.provision(allocation_id, provisioning_profile) → {job_id, status:"running"}
             systems.get(system_id) / .teardown(system_id) → {job_id}
-Investigate investigations.open(project, title) → {investigation_id}
-            investigations.get(investigation_id) / .close(investigation_id)
+Investigate investigations.open(project, title, external_refs?) → {investigation_id}
+            # external_refs: [{tracker, id, url}] — e.g. bugzilla, jira; mutable
+            investigations.get / .close / .link / .unlink(investigation_id, ref)
 Run         runs.create(investigation_id, system_id, build_profile) → {run_id}
             runs.build(run_id) → {job_id}   runs.install(run_id) → {job_id}
             runs.boot(run_id)  → {job_id}   runs.get(run_id)
