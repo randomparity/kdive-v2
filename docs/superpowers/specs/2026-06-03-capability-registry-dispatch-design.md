@@ -107,6 +107,18 @@ class BoundOp:
   state and commits the candidates only if every check passes:
   - `provider_id` is non-empty and **unique** across all prior registrations
     (`ValueError` — a programming error, not an `ErrorCategory`);
+  - the call's own capability **keys** `(plane, operation, resource_kind)` are unique —
+    a provider may not advertise the same op twice (`ValueError`). Without this, one
+    provider could plant two candidates with identical `(health, cost_class,
+    provider_id)` under one key, and the tiebreak (below) could not resolve them;
+  - for every capability whose key is already advertised by a *different* provider, the
+    incoming `contract` must **equal** the existing candidates' contract for that key
+    (`ValueError`). A contract is a property of the `(plane, operation)` semantics
+    (ADR-0009), not of the provider; allowing divergence would let dispatch's
+    health/cost ordering silently decide whether an op is `destructive` (gated) or
+    `long_running` (job-routed) — a safety-relevant flag chosen by an ordering policy
+    that never considered safety. Equal contracts make `BoundOp.contract` independent
+    of which provider wins;
   - for every capability, `getattr(provider, capability.operation)` is callable —
     else `CategorizedError(NOT_IMPLEMENTED)` (advertised-but-unhonored, caught early).
 
@@ -121,6 +133,11 @@ class BoundOp:
   - else order candidates by the key `(health_rank, cost_class, provider_id)` and take
     the first, where `health_rank` maps `available→0, degraded→1, offline→2`;
   - re-check the honored method (defence in depth) → `not_implemented` if gone;
+  - emit a debug-level structured log via a module logger
+    (`logging.getLogger(__name__)`, formatted by the ADR-0014 `kdive.log` setup) of the
+    selection — `(plane, operation, resource_kind, candidate provider_ids, winner,
+    deciding_step)` — so a mis-selection (a stale `cost_class`/`health` snapshot
+    binding the wrong provider) is diagnosable in production rather than silent;
   - return `BoundOp(provider_id, operation, capability.contract, bound_method)`.
 
   **Health orders, it never filters, in M0.** An `offline` candidate is deprioritized
@@ -167,9 +184,10 @@ For candidates advertising the same `(plane, operation, resource_kind)`:
 | 3 | `cost_class` ascending (lexicographic, placeholder) | one sorts earlier |
 | 4 | `provider_id` ascending | stable final tiebreak |
 
-The order is **total** — two registrations cannot share a `provider_id` (enforced at
-`register`), so step 4 always resolves. The acceptance test asserts the winner at each
-level.
+The order is **total** — no `provider_id` is shared across registrations, and a single
+provider may not advertise one key twice (both enforced at `register`), so each
+`provider_id` appears at most once per key and step 4 always resolves. The acceptance
+test asserts the winner at each level.
 
 ## Error handling
 
@@ -182,6 +200,8 @@ Every failure is a typed `CategorizedError` or a `ValueError`, never a silent de
 | advertised capability whose `operation` is not a provider method | `CategorizedError(NOT_IMPLEMENTED)` — at `register` and at `dispatch` |
 | duplicate `provider_id` at `register` | `ValueError` (construction bug) |
 | empty `provider_id` at `register` | `ValueError` |
+| same provider advertising one `(plane, op, kind)` twice in a call | `ValueError` |
+| a provider advertising a key with a `contract` unequal to an existing provider's | `ValueError` |
 
 `CategorizedError.details` carries the lookup key (`plane`, `operation`,
 `resource_kind`, and `pin` when set) so a handler can populate a failure response and
@@ -224,6 +244,11 @@ that advertises an op for which it has no method.
   **zero** entries (none of the keys resolve afterward) and leaves the `provider_id`
   free to re-register a corrected list.
 - **duplicate / empty `provider_id` → ValueError.**
+- **same key advertised twice in one call → ValueError**, and the registry is unchanged
+  (atomic).
+- **contract divergence → ValueError** — a second provider advertising an existing key
+  with a different `OpContract` is rejected; a second provider advertising it with the
+  *equal* contract registers fine (two candidates, contract-independent dispatch).
 - **`OpContract`/`Capability` are frozen and hashable** — assignment raises;
   usable in a `set` / as a dict key.
 - **malformed `cleanup`** — constructing `OpContract` with a non-`CleanupGuarantee`

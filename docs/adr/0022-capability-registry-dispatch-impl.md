@@ -59,13 +59,19 @@ the provider object and its selection metadata. `health` reuses
 `domain.state.ResourceStatus` (`available`/`degraded`/`offline` — already an ordered
 health notion). `provider_id` is the stable tiebreak and must be unique across
 registrations. Capabilities are keyed by `(plane, operation, resource_kind)` to a
-list of candidates. `register` is **atomic**: it validates `provider_id`
-(non-empty, unique) and every capability's honored method *before* mutating any
-registry state, and commits the candidates only if all checks pass — a failed
+list of candidates. `register` is **atomic**: it validates *before* mutating any
+registry state and commits the candidates only if all checks pass — a failed
 validation records none of the call's capabilities and leaves the `provider_id` free.
-The M0 registry is built once at startup and is **immutable thereafter**; there is no
-update/replace path (re-registering an existing `provider_id` is the duplicate-id
-error, not a refresh).
+The checks are: `provider_id` non-empty and unique; the call's own capability *keys*
+unique (a provider may not advertise one `(plane, operation, resource_kind)` twice);
+every capability's `operation` is an honored method; and — because a contract is a
+property of the `(plane, operation)` semantics, not of the provider — a key already
+advertised by a *different* provider must carry an **equal** `OpContract` (divergence
+is a `ValueError`). The contract-equality rule keeps the dispatched `contract`
+independent of which provider wins, so an ordering policy can never flip an op's
+`destructive`/`long_running` flags. The M0 registry is built once at startup and is
+**immutable thereafter**; there is no update/replace path (re-registering an existing
+`provider_id` is the duplicate-id error, not a refresh).
 
 **Deterministic ordering.** `dispatch(plane, operation, resource_kind, *, pin=None)
 -> BoundOp`. Candidate selection:
@@ -102,6 +108,11 @@ it.
 
 - The registry is a pure in-memory structure with no I/O; its tests are fast and
   need neither Postgres nor libvirt (unlike most M0 layers).
+- `dispatch` emits a debug-level structured log via a module logger
+  (`logging.getLogger(__name__)`, formatted by the ADR-0014 `kdive.log` setup) of the
+  selection — candidate `provider_id`s, the winner, and the deciding step — so a
+  mis-selection from a stale `health`/`cost_class` snapshot is diagnosable rather than
+  silent. This is the only side effect on the otherwise pure dispatch path.
 - Selection metadata (`health`, `cost_class`, `provider_id`) is passed to `register`
   explicitly rather than read off a `Resource` row. In M0 the caller supplies it; a
   later issue may wire it from the Discovery plane / `resources` table without
