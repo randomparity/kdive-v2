@@ -14,7 +14,9 @@ Two readings of that table are pinned here because its notation is ambiguous:
 * **DebugSession is forward-only in M0.** The spec draws ``attach ↔ live ↔
   detached`` conceptually, but no M0 tool reattaches or steps backward, and the
   session "ends at reboot/crash" — so M0 drives ``attach → live → detached`` with
-  ``detached`` terminal. Reattach returns when M1 needs it.
+  ``detached`` terminal. ``attach → detached`` is also legal: a failed attach
+  aborts straight to the terminal rather than stranding the row in ``attach``
+  (no reconciler rule sweeps a stuck ``attach``). Reattach returns when M1 needs it.
 
 ``failed`` is reachable from every non-terminal state of the objects that carry
 it. Resource health (``available``/``degraded``/``offline``) is not a lifecycle —
@@ -187,7 +189,10 @@ def can_transition(frm: StrEnum, to: StrEnum) -> bool:
     table = _TRANSITIONS.get(type(frm))
     if table is None:
         raise TypeError(f"{type(frm).__name__} is not a known lifecycle")
-    return to in table[frm]
+    successors = table.get(frm)
+    if successors is None:
+        raise TypeError(f"{type(frm).__name__}.{frm.name} is not a known lifecycle state")
+    return to in successors
 
 
 def ensure_transition(frm: StrEnum, to: StrEnum) -> None:

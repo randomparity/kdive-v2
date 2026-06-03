@@ -14,6 +14,12 @@ tuple (:class:`_Attribution`). Three objects deviate, per their schema rows:
 ``jsonb`` columns whose interior shape is owned by a later issue (capabilities,
 provisioning/build profiles, job payload, authorizing tuple) are typed as
 ``dict[str, Any]`` here; the typed models land with the issues that own them.
+
+The "failure category set iff the object reached a failure state" invariant on
+:class:`Run` and :class:`Job` is not enforced at this layer. The repository
+(issue #5) sets the category atomically with the terminal transition; a
+model-level cross-field check would fire on every field assignment under
+``validate_assignment`` and break incremental updates.
 """
 
 from __future__ import annotations

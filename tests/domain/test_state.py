@@ -122,6 +122,15 @@ def test_self_transitions_are_not_allowed(enum_cls: type[StrEnum]) -> None:
         assert can_transition(state, state) is False
 
 
+@pytest.mark.parametrize("enum_cls", list(LEGAL), ids=lambda c: c.__name__)
+def test_every_lifecycle_member_is_covered_by_the_guard_table(enum_cls: type[StrEnum]) -> None:
+    # A member missing from the implementation's table makes can_transition raise
+    # TypeError; iterating the enum itself (the source of truth) locks the table to
+    # stay complete as the enums grow.
+    for member in enum_cls.__members__.values():
+        assert can_transition(member, member) is False
+
+
 def test_representative_illegal_transition_raises_with_context() -> None:
     # A terminal state has no exits; attempting one is the canonical illegal move.
     with pytest.raises(IllegalTransition, match="torn_down"):
