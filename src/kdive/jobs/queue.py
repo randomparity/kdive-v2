@@ -57,3 +57,39 @@ async def enqueue(
     if row is None:  # Invariant: we just inserted the row, or it already existed.
         raise RuntimeError(f"enqueue found no job for dedup_key {dedup_key!r}")
     return Job.model_validate(row)
+
+
+async def dequeue(
+    conn: AsyncConnection, worker_id: str, *, lease: timedelta = DEFAULT_LEASE
+) -> Job | None:
+    """Claim the oldest eligible job for ``worker_id``, charging an attempt.
+
+    Eligible: ``queued``, or ``running`` with a lapsed lease (an abandoned job), and
+    ``attempt < max_attempts``. The single ``UPDATE`` sets ``running``/``worker_id``/
+    lease/``heartbeat_at`` and ``attempt = attempt + 1`` (charging the claim bounds
+    retries across worker death). ``FOR UPDATE SKIP LOCKED`` lets parallel workers
+    claim disjoint rows without blocking. ``now()`` is the database clock, so no
+    worker clocks need to agree.
+
+    Returns:
+        The claimed :class:`Job`, or ``None`` when nothing is eligible.
+    """
+    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "UPDATE jobs SET "
+            "    state = 'running', worker_id = %s, attempt = attempt + 1, "
+            "    lease_expires_at = now() + %s, heartbeat_at = now() "
+            "WHERE id = ( "
+            "    SELECT id FROM jobs "
+            "    WHERE (state = 'queued' "
+            "           OR (state = 'running' AND lease_expires_at < now())) "
+            "      AND attempt < max_attempts "
+            "    ORDER BY created_at "
+            "    FOR UPDATE SKIP LOCKED "
+            "    LIMIT 1 "
+            ") "
+            "RETURNING *",
+            (worker_id, lease),
+        )
+        row = await cur.fetchone()
+    return None if row is None else Job.model_validate(row)
