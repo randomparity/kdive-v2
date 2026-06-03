@@ -96,6 +96,7 @@ class ReconcileReport:
     abandoned_jobs: int        # zombies dead-lettered
     dead_sessions: int         # sessions detached
     leaked_domains: int        # domains destroyed
+    failures: tuple[str, ...]  # names of repairs that raised this pass (empty = all ran)
 
 async def reconcile_once(
     pool: AsyncConnectionPool,
@@ -109,6 +110,18 @@ Runs the four repairs in this order, returns the counts. Each repair is a
 module-level `async def _repair_*(conn, …) -> int` so it is unit-testable in
 isolation; `reconcile_once` is the thin composition the acceptance tests drive. All
 time comparisons use Postgres `now()` (never a Python clock).
+
+**Per-repair isolation.** `reconcile_once` wraps **each** of the four repair calls in
+its own `try/except`: a repair that raises (a transient DB error, or
+`reaper.list_owned()` failing) is logged with the repair name, its name is recorded in
+`ReconcileReport.failures`, and the pass **continues to the next repair** — one repair
+never starves the others. This extends the per-item catch-log-continue (Open question
+O1) up to the repair level, covering a throw *before* a repair's item loop (the
+candidate `SELECT`, or `list_owned`). Without it, a persistently-failing early repair
+would silently reduce the loop to a partial reconciler while `Reconciler.run` logged
+only a generic "bad pass" — so `failures` is the observable signal that a specific
+repair is stuck. The counts returned are the partial results of the repairs that did
+run.
 
 **Connection & transaction discipline.** `reconcile_once` draws a **fresh pooled
 connection per repair** (`async with pool.connection() as conn`), never sharing one
@@ -421,7 +434,10 @@ investigation → run → debug_session/job) since the FK chain is required; it 
   **not** call `destroy` (guard b). With the `torn_down` row but **no** teardown job,
   the same domain **is** reaped (the leaked-after-failed-teardown case).
 - **`reconcile_once` report** — a pass over a mix of the above returns the correct
-  per-category counts.
+  per-category counts with `failures == ()`.
+- **Per-repair isolation** — with one `_repair_*` monkeypatched to raise, the other
+  three still run and report their counts, and the raised repair's name appears in
+  `ReconcileReport.failures` (the partial-pass / observable-failure property).
 - **`Reconciler.run`** — a `run_once` that raises once (monkeypatched) is logged and
   the loop continues to a clean pass, then `stop.set()` ends it (the durable-loop
   property); driven with a sub-second `interval`.
