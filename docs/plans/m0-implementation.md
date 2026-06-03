@@ -61,6 +61,7 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Unit + service tests** run anywhere: a disposable Postgres + MinIO + a mock OIDC issuer (the compose file from #24) — used by #4–#11, #13, #15, #20, #23.
 - **`live_vm` tests** (#14, #17, #18, #19, #21, #22 acceptance) require a **KVM/nested-virt-capable host** with libvirt and a **kdump-enabled guest image** (`crashkernel=` reservation + kdump service). They run on a self-hosted KVM runner or as a manual pre-merge gate — **not** on stock GitHub-hosted runners. #1 documents the runner prerequisites; CI marks `live_vm` as a separate, manually-triggered job.
 - **Kernel builds** (#16, and #24's build step) need a kernel **toolchain** (gcc/clang, make, bc, flex, bison, libelf-dev) and a **warm kernel source tree** in the build workspace. M0 builds **incrementally** from the warm tree (minutes), not from scratch (tens of minutes); #1's runner docs name the source location and ccache/workspace path.
+- **Fixtures are repo-owned and reproducible**, not hand-built: #24 provides `scripts/live-vm/build-guest-image.sh` (a kdump+`crashkernel=` guest image via mkosi/virt-builder) and `scripts/live-vm/fetch-kernel-tree.sh` (clone/cache the kernel source at `$KDIVE_KERNEL_SRC`). A `live_vm` **preflight** fails fast with a clear message if the image or tree is absent, so a missing fixture is a typed error, not a confusing mid-test failure.
 
 ---
 
@@ -112,7 +113,7 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Goal:** The M0 schema applied by a minimal forward-only migration runner.
 - **Files:** Create `src/kdive/db/schema/0001_init.sql`, `db/migrate.py`, `db/pool.py`; `tests/db/test_migrate.py`.
 - **Scope:**
-  - `0001_init.sql`: the tables from the spec (resources, allocations, systems, investigations[+`external_refs jsonb`], runs[+`kernel_ref`, `debuginfo_ref`], run_steps[`UNIQUE(run_id,step)`], debug_sessions, jobs[`dedup_key UNIQUE`], artifacts, audit_log) with the attribution columns and FKs.
+  - `0001_init.sql`: the tables from the spec (resources, allocations, systems, investigations[+`external_refs jsonb`], runs[+`kernel_ref`, `debuginfo_ref`], run_steps[`UNIQUE(run_id,step)`], debug_sessions, jobs[`dedup_key NOT NULL UNIQUE`], artifacts, audit_log) with the attribution columns and FKs.
   - `migrate.py`: applies `schema/NNNN_*.sql` in order, tracked in a `schema_migrations` table; idempotent re-run.
   - `pool.py`: async `psycopg_pool.AsyncConnectionPool` from env (`KDIVE_DATABASE_URL`).
 - **Acceptance:** against a disposable Postgres (testcontainers or a CI service), `migrate.py` creates all tables; re-running is a no-op; `\d` shows the unique constraints.
@@ -337,7 +338,7 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `type:test` · `area:core-platform`
 - **Depends on:** #1–#23 (the full stack — notably #9 gate and #10 reconciler, which the acceptance below exercises)
 - **Goal:** Prove the six exit criteria end-to-end on a real libvirt host.
-- **Files:** Create `tests/integration/test_walking_skeleton.py` (marker `live_vm`); a `docker-compose`/`justfile` for Postgres + MinIO + a mock OIDC issuer.
+- **Files:** Create `tests/integration/test_walking_skeleton.py` (marker `live_vm`); `scripts/live-vm/build-guest-image.sh` and `scripts/live-vm/fetch-kernel-tree.sh` (reproducible fixtures) plus a `live_vm` preflight that fails fast if the image/tree is absent; a `docker-compose`/`justfile` for Postgres + MinIO + a mock OIDC issuer.
 - **Scope:** Drive the full path: `allocations.request → investigations.open(external_refs) → systems.provision → runs.create → build → install → boot → debug.start_session → set_breakpoint/read_memory → force_crash → vmcore.fetch → artifacts.get → allocations.release`.
 - **Acceptance:** the spec's six exit criteria each have an assertion — path completes; every transition + force_crash wrote an audit row; a planted secret is redacted; replaying a completed step doesn't re-execute; release tears down with no orphaned domain; force_crash is refused when a gate check is absent.
 

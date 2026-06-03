@@ -210,7 +210,7 @@ debug_sessions(id, run_id→runs, state, transport, transport_handle,
 jobs(id, kind, payload jsonb, state, attempt, max_attempts, worker_id,
      lease_expires_at, heartbeat_at, result_ref, error_category,
      authorizing jsonb,                             -- (principal, agent_session, project, scope)
-     dedup_key, UNIQUE(dedup_key))                  -- admission idempotency, e.g. (run_id, step, kind)
+     dedup_key NOT NULL, UNIQUE(dedup_key))         -- admission idempotency, e.g. (run_id, step, kind)
 artifacts(id, owner_kind, owner_id, object_key, etag, sensitivity,
           retention_class)
 audit_log(id, ts, principal, agent_session, project, tool, object_kind,
