@@ -48,3 +48,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0016](0016-repository-layer-locks-idempotency.md) | Repository layer, advisory locks, idempotency ledger | Proposed |
 | [0017](0017-object-store-client-interface.md) | Object-store client interface & failure contract | Proposed |
 | [0018](0018-job-queue-worker-execution.md) | Job-queue enqueue/dequeue + worker execution contract | Proposed |
+| [0019](0019-tool-response-envelope.md) | Uniform tool-response envelope | Proposed |
