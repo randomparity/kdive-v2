@@ -121,3 +121,43 @@ async def _repair_orphaned_systems(conn: AsyncConnection) -> int:
             enqueued += 1
             _log.info("reconciler: orphaned system %s -> teardown job enqueued", system_id)
     return enqueued
+
+
+async def _repair_abandoned_jobs(conn: AsyncConnection) -> int:
+    """Dead-letter zombie jobs the worker can never reclaim, compensating their Run.
+
+    A zombie is ``running`` with a lapsed lease and ``attempt >= max_attempts`` —
+    ``dequeue``'s ``attempt < max_attempts`` predicate excludes it, so only the
+    reconciler can sweep it. Each zombie is processed in its own transaction that
+    dead-letters the job (fenced on ``state = 'running'``) and, when the payload carries
+    a ``run_id`` whose Run is non-terminal, fails that Run — atomically, so a crash
+    cannot strand the Run un-compensated.
+    """
+    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT id FROM jobs "
+            "WHERE state = 'running' AND lease_expires_at < now() "
+            "  AND attempt >= max_attempts"
+        )
+        zombie_ids: list[UUID] = [row["id"] for row in await cur.fetchall()]
+    swept = 0
+    for job_id in zombie_ids:
+        async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "UPDATE jobs SET state = 'failed', error_category = 'lease_expired' "
+                "WHERE id = %s AND state = 'running' RETURNING payload",
+                (job_id,),
+            )
+            row = await cur.fetchone()
+            if row is None:  # fence missed: a worker finalized it first
+                continue
+            run_id = row["payload"].get("run_id")
+            if run_id is not None:
+                await cur.execute(
+                    "UPDATE runs SET state = 'failed', failure_category = 'lease_expired' "
+                    "WHERE id = %s AND state IN ('created', 'running')",
+                    (UUID(run_id),),
+                )
+        swept += 1
+        _log.info("reconciler: abandoned job %s -> failed (lease_expired)", job_id)
+    return swept
