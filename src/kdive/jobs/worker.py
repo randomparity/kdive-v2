@@ -45,12 +45,20 @@ class Worker:
         Raises:
             ValueError: ``heartbeat_interval > lease / 3`` — too coarse to keep the
                 lease alive across a missed beat, which would let the job be reclaimed
-                and double-run.
+                and double-run; or ``pool.max_size < 2`` — a job in flight holds two
+                connections at once (its handler's dispatch connection and the
+                background heartbeat's), so a smaller pool would stall every dispatch
+                until the heartbeat acquisition timed out.
         """
         if heartbeat_interval > lease / 3:
             raise ValueError(
                 f"heartbeat_interval ({heartbeat_interval}) must be <= lease/3 "
                 f"({lease / 3}); a coarser interval risks mid-job reclaim and double-run"
+            )
+        if pool.max_size < 2:
+            raise ValueError(
+                f"pool.max_size ({pool.max_size}) must be >= 2: a dispatched job holds "
+                "its handler connection and a concurrent heartbeat connection at once"
             )
         self._pool = pool
         self._registry = registry

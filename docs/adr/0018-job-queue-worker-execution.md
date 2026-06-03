@@ -80,7 +80,9 @@ transaction-agnostic, so they are unit-tested directly and compose under a calle
 transaction (an MCP handler enqueues inside its own). The `Worker` holds the pool,
 acquires short-lived connections per claim/dispatch/heartbeat, and exposes a
 single-iteration `run_once` beneath the continuous `run` loop so the loop body is
-testable without sleeping.
+testable without sleeping. Because a dispatched job holds two pool connections at
+once (its handler's and the heartbeat's), the constructor rejects a pool with
+`max_size < 2` — a fast, clear error instead of a per-dispatch stall.
 
 **7. No transaction spans the handler.** A handler runs 30+ minutes, so the worker
 holds no transaction across it: each `run_step` (#7) commits in its own short

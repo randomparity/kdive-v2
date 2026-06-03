@@ -26,9 +26,16 @@ async def _final_state(url: str, job_id: UUID) -> Job:
     return job
 
 
-def _unopened_pool() -> AsyncConnectionPool:
+def _unopened_pool(max_size: int = 4) -> AsyncConnectionPool:
     """A type-correct pool that never connects — the construct guard runs before use."""
-    return AsyncConnectionPool("postgresql://localhost/unused", open=False)
+    return AsyncConnectionPool(
+        "postgresql://localhost/unused", min_size=1, max_size=max_size, open=False
+    )
+
+
+def test_init_rejects_pool_too_small_for_dispatch_plus_heartbeat() -> None:
+    with pytest.raises(ValueError, match="max_size"):
+        Worker(_unopened_pool(max_size=1), HandlerRegistry(), worker_id="w1")
 
 
 def test_init_rejects_interval_above_third_of_lease() -> None:

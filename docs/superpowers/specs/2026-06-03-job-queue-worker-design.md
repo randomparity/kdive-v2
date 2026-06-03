@@ -209,7 +209,7 @@ class Worker:
         lease=DEFAULT_LEASE,
         heartbeat_interval=timedelta(seconds=30),
         poll_interval=timedelta(seconds=1),
-    ) -> None: ...  # raises ValueError unless heartbeat_interval <= lease / 3
+    ) -> None: ...  # raises ValueError unless heartbeat_interval <= lease / 3 and pool.max_size >= 2
 
     async def run_once(self) -> Job | None: ...      # claim+dispatch one job; None if queue empty
     async def run(self, stop: asyncio.Event) -> None: ...  # loop run_once; sleep poll_interval when idle; exit on stop
@@ -217,9 +217,13 @@ class Worker:
 
 `__init__` rejects `heartbeat_interval > lease / 3`: the `/ 3` margin lets two
 heartbeats be missed (a transient DB blip) before the lease lapses, so a sane
-configuration cannot silently cause mid-job reclaim and double-run. `lease`,
-`heartbeat_interval`, and `poll_interval` are otherwise injectable so tests can drive
-the loop with sub-second values.
+configuration cannot silently cause mid-job reclaim and double-run. It also rejects
+`pool.max_size < 2`: a dispatched job holds its handler's dispatch connection and the
+background heartbeat's connection at the same time, so a single-connection pool would
+stall every dispatch until the heartbeat acquisition timed out — a fast, clear
+construction error beats that runtime stall. `lease`, `heartbeat_interval`, and
+`poll_interval` are otherwise injectable so tests can drive the loop with sub-second
+values.
 
 **Transaction granularity.** The worker holds **no** transaction spanning the
 handler — a handler runs 30+ minutes (provision/build, ADR-0008), and a transaction
