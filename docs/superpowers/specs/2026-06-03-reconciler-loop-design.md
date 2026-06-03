@@ -114,15 +114,32 @@ time comparisons use Postgres `now()` (never a Python clock).
 connection per repair** (`async with pool.connection() as conn`), never sharing one
 across repairs, so a repair that leaves its connection mid-transaction or in an error
 state cannot corrupt the next — the worker's "fresh connection per finalize"
-discipline (ADR-0018). Each repair owns its transaction boundaries explicitly: the
-single-`UPDATE` sweeps (abandoned jobs, dead sessions) and each per-zombie/per-orphan
-unit wrap their statements in `async with conn.transaction()` (a pooled psycopg
-connection is **not** autocommit — a bare `UPDATE` would otherwise sit in an
-uncommitted transaction). The orphan and leak repairs additionally require the
-enclosing `conn.transaction()` for `advisory_xact_lock` to hold its lock (locks.py
+discipline (ADR-0018). Each repair owns its transaction boundaries explicitly: every
+`UPDATE`/`enqueue` unit wraps its statements in `async with conn.transaction()` (a
+pooled psycopg connection is **not** autocommit — `create_pool` sets no autocommit and
+no `configure` hook, `pool.py:57-59`).
+
+**Every statement must run inside a `conn.transaction()` — including the candidate
+reads.** This is load-bearing on a non-autocommit pool because psycopg's
+`conn.transaction()` emits a real `BEGIN`/`COMMIT` **only when the connection is `IDLE`
+on entry**; if a transaction is already open it emits a named `SAVEPOINT`/`RELEASE`
+with **no `COMMIT`** (`psycopg.transaction.BaseTransaction._push_savepoint` /
+`_get_commit_commands`, verified against psycopg 3.3.4). So a repair that runs a *bare*
+candidate `SELECT` first (leaving the connection `INTRANS`) and then loops with
+per-unit `conn.transaction()` blocks would make every per-unit block an inner
+savepoint that `RELEASE`s but never commits — and `psycopg_pool` rolls the open
+implicit transaction back when the connection is returned, **silently discarding every
+repair while the counts still report success**. Therefore the orphan and abandoned-job
+repairs run their candidate `SELECT` **inside its own `async with conn.transaction()`**
+and materialize the id list before the block exits (committing), so the connection is
+back to `IDLE` before each per-unit transaction — making each per-unit
+`conn.transaction()` a true top-level transaction. The orphan and leak repairs'
+per-unit blocks additionally hold `advisory_xact_lock` for the duration (locks.py
 raises `RuntimeError` if the connection is not `INTRANS`).
 
-**`_repair_orphaned_systems(conn) -> int`.** One query finds candidates:
+**`_repair_orphaned_systems(conn) -> int`.** One query finds candidates, **inside its
+own `async with conn.transaction()`** so the connection returns to `IDLE` before the
+per-candidate write loop (see "Connection & transaction discipline"):
 
 ```sql
 SELECT s.id, s.allocation_id, s.principal, s.agent_session, s.project
@@ -132,7 +149,7 @@ WHERE s.state NOT IN ('torn_down', 'failed')
   AND a.state IN ('released', 'failed')
 ```
 
-For each candidate, in its own `async with conn.transaction(): async with
+Then, for each candidate, in its own `async with conn.transaction(): async with
 advisory_xact_lock(conn, LockScope.SYSTEM, system_id):` block, re-read the System
 state (it may have changed while unlocked), and if still non-terminal,
 `queue.enqueue(conn, JobKind.TEARDOWN, payload={"system_id": str(id)},
@@ -173,11 +190,12 @@ for which a teardown is newly enqueued.
 **must commit atomically** — otherwise a failure between them leaves a `failed` job
 whose owning Run is still `running`, and the next pass cannot re-find the job (it is
 no longer `running`), so the Run is stranded un-compensated forever. So the repair
-first selects the zombie ids (read-only), then processes **each zombie in its own
-`async with conn.transaction()`** that wraps both writes:
+first selects the zombie ids **inside their own `async with conn.transaction()`**
+(materializing the list so the connection returns to `IDLE`), then processes **each
+zombie in its own `async with conn.transaction()`** that wraps both writes:
 
 ```sql
--- 1. select candidates (read-only, no lock)
+-- 1. select candidates inside their own conn.transaction(), no lock
 SELECT id FROM jobs
 WHERE state = 'running' AND lease_expires_at < now() AND attempt >= max_attempts;
 
