@@ -75,20 +75,30 @@ Three forces bound the implementation shapes, which the spec leaves open:
    non-terminal (`created`/`running`), transition that Run `→ failed` with
    `failure_category = lease_expired`. The `payload` is read **defensively**
    (`payload.get("run_id")`); a job without a `run_id` (a system-scoped job) is
-   dead-lettered with no Run compensation. Reclaim-with-attempts-remaining stays
+   dead-lettered with no Run compensation. The dead-letter and its Run compensation
+   **commit in one transaction, per zombie** — never a batched dead-letter followed by
+   separate compensation — so a crash between them cannot leave a `failed` job whose
+   Run is still `running` (which the next pass could not re-find, since the job is no
+   longer `running`, stranding the Run forever). Reclaim-with-attempts-remaining stays
    `dequeue`'s job; the reconciler does not requeue.
 
 4. **A leaked domain is reaped only under a three-part predicate; row-first ordering
    protects mid-create.** For each owned domain `d` with `d.system_id is not None`,
    reap iff **all** hold: (a) the `systems` row for `d.system_id` is **absent or
-   `torn_down`**; (b) **no `provision` or `teardown` job** for that `system_id` is in a
-   non-terminal state (`queued`/`running`) — the in-flight guard; (c) `d.system_id` is
-   tagged (untagged domains are never reaped — they are not kdive-owned). Because
+   `torn_down`**; (b) **no `teardown` job** for that `system_id` is in a non-terminal
+   state (`queued`/`running`) — the don't-race-a-live-teardown guard; (c) `d.system_id`
+   is tagged (untagged domains are never reaped — they are not kdive-owned). Because
    provisioning writes the `systems` row (`provisioning`) **before** defining the
-   domain (ADR-0009 ordering), any mid-create domain already has a non-terminal row,
-   so predicate (a) fails and it is never mistaken for a leak; the in-flight-job guard
-   (b) is the belt-and-suspenders the acceptance test exercises ("a domain
-   mid-provision is not reaped").
+   domain (ADR-0009 ordering), any mid-create domain already has a non-terminal row, so
+   predicate (a) fails and it is never mistaken for a leak — that, not a job check, is
+   what protects "a domain mid-provision is not reaped." Guard (b) checks **only
+   `teardown`**, not `provision`: a `provision` job is enqueued from
+   `systems.provision(allocation_id, …)` before the System exists (the handler mints
+   the `system_id`), so it is keyed on `allocation_id` and its `payload` carries no
+   `system_id` to match — and it needs no match, since guard (a) covers mid-provision.
+   A `teardown` job is keyed `(system_id, "teardown")` and runs while the row is
+   `torn_down`/`releasing` — exactly the window guard (a) would permit a reap — so guard
+   (b) is the one that stops a double-destroy.
 
 5. **`reconcile_once` is pure and testable; `run` wraps it; the DB clock is
    authoritative.** `reconcile_once(pool, reaper, *, thresholds…) -> ReconcileReport`
@@ -119,10 +129,18 @@ Three forces bound the implementation shapes, which the spec leaves open:
   owns the heartbeat cadence.
 - A finer **time-based provision grace window** (skip a leaked-looking domain younger
   than N seconds) is **deferred to the provider (#15)**: libvirt does not expose a
-  domain define-time cheaply, and the row-first ordering plus the in-flight-job guard
-  already satisfy the M0 acceptance criterion. When #15 tags a `provisioned_at` into
-  the domain metadata, `OwnedDomain` can carry it and the grace window becomes a
-  one-line age check — an additive change to this ADR, not a rewrite.
+  domain define-time cheaply, and row-first ordering alone already satisfies the M0
+  acceptance criterion (a mid-provision domain has a `provisioning` row, so it is never
+  reaped). When #15 tags a `provisioned_at` into the domain metadata, `OwnedDomain` can
+  carry it and the grace window becomes a one-line age check — an additive change to
+  this ADR, not a rewrite.
+- The **`debug_session_stale_after` threshold is a provisional contract**, not a
+  derived value: no M0 code writes `worker_heartbeat_at` (the debug plane, #16, owns
+  the heartbeat cadence). The reconciler pins the contract — a `live` session must beat
+  at most every `debug_session_stale_after / 3` — and makes the threshold injectable
+  with a deliberately-long default, because the failure it guards against is detaching a
+  *healthy, actively-debugging* session (an irreversible `detached` at M0). #16 sets the
+  production default to honor the contract or updates this ADR.
 - `lease_expired` now has two producers with one meaning: the worker's `fail` path
   (a handler that raised it) and the reconciler's zombie sweep. Both are the existing
   `ErrorCategory.LEASE_EXPIRED`; no new string.

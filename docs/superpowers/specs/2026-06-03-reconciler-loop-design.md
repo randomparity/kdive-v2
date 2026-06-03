@@ -34,7 +34,7 @@ The four repairs (parent spec):
 | **Orphaned System** | a `systems` row, not terminal, whose `Allocation` is `released`/`failed` | enqueue an idempotent `(system_id, teardown)` job |
 | **Abandoned (zombie) job** | `running`, `lease_expires_at < now()`, `attempt >= max_attempts` | dead-letter `→ failed`/`lease_expired`; compensate the owning Run |
 | **Dead DebugSession** | `live`, `worker_heartbeat_at` non-NULL and older than `debug_session_stale_after` | `→ detached` |
-| **Leaked libvirt domain** | a tagged domain whose `system_id` row is absent/`torn_down` and has no in-flight provision/teardown job | `reaper.destroy(name)` |
+| **Leaked libvirt domain** | a tagged domain whose `system_id` row is absent/`torn_down` and has no in-flight `teardown` job (mid-provision is excluded by the `provisioning` row, not a job check — see below) | `reaper.destroy(name)` |
 
 ## Non-goals
 
@@ -92,7 +92,7 @@ idempotent so a domain already gone (reaped, or torn down between `list_owned` a
 ```python
 @dataclass(frozen=True, slots=True)
 class ReconcileReport:
-    orphaned_systems: int      # teardown jobs enqueued
+    orphaned_systems: int      # orphaned Systems with a teardown job queued this pass
     abandoned_jobs: int        # zombies dead-lettered
     dead_sessions: int         # sessions detached
     leaked_domains: int        # domains destroyed
@@ -105,10 +105,22 @@ async def reconcile_once(
 ) -> ReconcileReport: ...
 ```
 
-Runs the four repairs in this order on connections drawn from `pool`, returns the
-counts. Each repair is a module-level `async def _repair_*(conn, …) -> int` so it is
-unit-testable in isolation; `reconcile_once` is the thin composition the acceptance
-tests drive. All time comparisons use Postgres `now()` (never a Python clock).
+Runs the four repairs in this order, returns the counts. Each repair is a
+module-level `async def _repair_*(conn, …) -> int` so it is unit-testable in
+isolation; `reconcile_once` is the thin composition the acceptance tests drive. All
+time comparisons use Postgres `now()` (never a Python clock).
+
+**Connection & transaction discipline.** `reconcile_once` draws a **fresh pooled
+connection per repair** (`async with pool.connection() as conn`), never sharing one
+across repairs, so a repair that leaves its connection mid-transaction or in an error
+state cannot corrupt the next — the worker's "fresh connection per finalize"
+discipline (ADR-0018). Each repair owns its transaction boundaries explicitly: the
+single-`UPDATE` sweeps (abandoned jobs, dead sessions) and each per-zombie/per-orphan
+unit wrap their statements in `async with conn.transaction()` (a pooled psycopg
+connection is **not** autocommit — a bare `UPDATE` would otherwise sit in an
+uncommitted transaction). The orphan and leak repairs additionally require the
+enclosing `conn.transaction()` for `advisory_xact_lock` to hold its lock (locks.py
+raises `RuntimeError` if the connection is not `INTRANS`).
 
 **`_repair_orphaned_systems(conn) -> int`.** One query finds candidates:
 
@@ -120,42 +132,59 @@ WHERE s.state NOT IN ('torn_down', 'failed')
   AND a.state IN ('released', 'failed')
 ```
 
-For each, under `advisory_xact_lock(SYSTEM, system_id)` in one transaction,
-re-read the System state (it may have changed while unlocked), and if still
-non-terminal, `queue.enqueue(conn, JobKind.TEARDOWN, payload={"system_id": str(id)},
+For each candidate, in its own `async with conn.transaction(): async with
+advisory_xact_lock(conn, LockScope.SYSTEM, system_id):` block, re-read the System
+state (it may have changed while unlocked), and if still non-terminal,
+`queue.enqueue(conn, JobKind.TEARDOWN, payload={"system_id": str(id)},
 authorizing={principal, agent_session, project}, dedup_key=f"{system_id}:teardown")`.
-The lock serializes against a concurrent live teardown; the `dedup_key` makes a
-re-enqueue across passes return the same job. The pass counts only a *genuinely new*
-enqueue (see Open question O1) so `ReconcileReport.orphaned_systems` measures work
-done, not candidates seen. Emit a log line per enqueue.
+(`enqueue` opens its own `conn.transaction()`, which nests as a savepoint under the
+lock transaction — verified against `queue.py:50` — so the advisory lock, held by the
+outer transaction, is not released by the enqueue.) The lock serializes against a
+concurrent live teardown; the `dedup_key` makes a re-enqueue across passes return the
+same job (no duplicate). `ReconcileReport.orphaned_systems` counts **orphaned Systems
+for which a teardown job is queued after this pass** (candidates processed), not
+"newly inserted jobs" — `enqueue` returns the same row whether it inserted or found an
+existing job and gives no insert-vs-found signal (`queue.py:57-61`), so a
+new-vs-existing count would require fragile timestamp heuristics. Idempotency is
+asserted separately by the test ("a second pass leaves exactly one `jobs` row"). Emit
+a log line per orphaned System processed.
 
-**`_repair_abandoned_jobs(conn) -> int`.** One query claims zombies (fenced so two
-reconcilers do not both compensate):
+**`_repair_abandoned_jobs(conn) -> int`.** The dead-letter and its Run compensation
+**must commit atomically** — otherwise a failure between them leaves a `failed` job
+whose owning Run is still `running`, and the next pass cannot re-find the job (it is
+no longer `running`), so the Run is stranded un-compensated forever. So the repair
+first selects the zombie ids (read-only), then processes **each zombie in its own
+`async with conn.transaction()`** that wraps both writes:
 
 ```sql
+-- 1. select candidates (read-only, no lock)
+SELECT id FROM jobs
+WHERE state = 'running' AND lease_expires_at < now() AND attempt >= max_attempts;
+
+-- 2. per zombie, in one transaction: dead-letter (fenced), then compensate
 UPDATE jobs SET state = 'failed', error_category = 'lease_expired'
-WHERE state = 'running'
-  AND lease_expires_at < now()
-  AND attempt >= max_attempts
-RETURNING id, payload
-```
-
-For each returned row, **compensation**: `run_id = payload.get("run_id")`; if present
-and the Run is non-terminal, `RUNS.update_state` is insufficient (it sets only
-`state`, not `failure_category`), so compensation runs a single guarded `UPDATE`:
-
-```sql
+WHERE id = %s AND state = 'running'                       -- fence
+RETURNING payload;
+-- if the fence matched and payload has a run_id:
 UPDATE runs SET state = 'failed', failure_category = 'lease_expired'
-WHERE id = %s AND state IN ('created', 'running')
+WHERE id = %s AND state IN ('created', 'running');
 ```
 
-(The `created|running → failed` edges are legal; the `WHERE` makes a Run already
-terminal a no-op.) A job whose `payload` has no `run_id` (a system-scoped job) is
-dead-lettered with no Run compensation. The `UPDATE … RETURNING` over `state =
-'running'` is the fence: a worker that finalized the job first leaves no row to
-sweep. Emit a log line per dead-lettered job (and per compensated Run).
+The job `UPDATE … RETURNING` fenced on `state = 'running'` is the concurrency guard: a
+worker (or another reconciler) that finalized the job first leaves no row, the
+transaction's `RETURNING` is empty, and compensation is skipped (no row to sweep).
+When the fence matches, `run_id = payload.get("run_id")` is read **defensively**; if
+present and the Run is non-terminal, the second `UPDATE` fails it
+(`created|running → failed` are legal edges; the `WHERE` makes an already-terminal Run
+a no-op). `RUNS.update_state` is **not** used — it sets only `state`, not
+`failure_category` (`repositories.py:113`) — so compensation is the explicit two-column
+`UPDATE`. A job whose `payload` has no `run_id` (a system-scoped job) is dead-lettered
+with no Run compensation. Both writes share the one transaction, so they commit or roll
+back together. Count one per job whose fence matched. Emit a log line per dead-lettered
+job (and per compensated Run).
 
-**`_repair_dead_sessions(conn) -> int`.** One fenced `UPDATE`:
+**`_repair_dead_sessions(conn) -> int`.** One fenced `UPDATE`, inside its own
+`conn.transaction()`:
 
 ```sql
 UPDATE debug_sessions SET state = 'detached'
@@ -168,31 +197,61 @@ RETURNING id
 `live → detached` is legal; NULL heartbeats are excluded by the `IS NOT NULL`
 predicate. Emit a log line per detached session.
 
+**Provisional cadence contract (the threshold is not arbitrary).** A `live` session's
+`worker_heartbeat_at` is maintained by the debug plane, which is a later issue (#16+);
+no M0 code writes it yet. So `debug_session_stale_after` cannot be derived from a real
+cadence here — it is **pinned as a provisional contract**, exactly as the `run_id`
+payload key is: the debug plane MUST heartbeat a `live` session at an interval no
+longer than `debug_session_stale_after / 3` (the same "tolerate two missed beats
+before acting" ratio the worker uses, `Worker.__init__`'s `heartbeat_interval <=
+lease / 3`). The default (`timedelta(minutes=2)`) and the value are **injectable** so
+the operator/`#16` can align them; the danger this guards against is detaching a
+*healthy, actively-debugging* session (a terminal, irreversible `detached` in M0), so
+the default errs long. When #16 lands the real cadence, it sets the production default
+and this contract is honored or this spec/ADR is updated — recorded so the dependency
+is designed, not discovered.
+
 **`_repair_leaked_domains(conn, reaper) -> int`.** `domains = await
 reaper.list_owned()`. For each `d` with `d.system_id is not None`, decide *reap*
 under one read (in a transaction holding `advisory_xact_lock(SYSTEM, d.system_id)`):
 
 ```sql
--- live row present and not torn_down → not a leak
+-- (a) live row present and not torn_down → not a leak (this also covers
+--     mid-provision: row-first ordering means a provisioning domain has a
+--     `provisioning` row, which is not torn_down).
 SELECT 1 FROM systems WHERE id = %s AND state <> 'torn_down';
--- an in-flight provision/teardown job for this system → mid-op, do not reap
+-- (b) an in-flight TEARDOWN job for this system → a teardown is mid-destroy,
+--     do not double-destroy. Only `teardown` is checked here (see note).
 SELECT 1 FROM jobs
 WHERE state IN ('queued', 'running')
-  AND kind IN ('provision', 'teardown')
+  AND kind = 'teardown'
   AND payload->>'system_id' = %s;
 ```
 
-Reap (`await reaper.destroy(d.name)`) iff **both** selects return no row. The lock +
-the in-flight-job guard mean a teardown actively destroying the domain is not raced;
-row-first ordering means a mid-provision domain has a `provisioning` row and so is
-never reaped. Untagged domains (`system_id is None`) are skipped. Emit a log line per
-reaped domain.
+Reap (`await reaper.destroy(d.name)`) iff **both** selects return no row. Untagged
+domains (`system_id is None`) are skipped (not kdive-owned). Emit a log line per reaped
+domain.
+
+> **Why the in-flight guard checks only `teardown`, not `provision`.** A `provision`
+> job is enqueued by `systems.provision(allocation_id, …)` **before** the System row
+> exists — the handler *creates* the `system_id` (parent spec line 22:
+> `provision(allocation, profile) → job → system_id`). So a provision job is keyed on
+> `allocation_id`, and its `payload` does **not** carry the `system_id` a domain is
+> tagged with; a `payload->>'system_id'` check could never match it. Crucially, it
+> doesn't need to: row-first ordering (ADR-0009) writes the `provisioning` row before
+> the domain is defined, so any mid-provision domain is protected by guard (a) (a
+> non-`torn_down` row exists). A `teardown` job, by contrast, is keyed
+> `(system_id, "teardown")` and runs while the row is `torn_down`/`releasing` — exactly
+> the window where guard (a) would permit a reap — so guard (b) is the one that
+> prevents racing a live teardown. This is the corrected version of the original
+> "in-flight provision/teardown" check, which assumed a provision payload shape that
+> issue #9's dedup-key scheme does not produce.
 
 > **`destroy` runs outside the advisory-lock transaction.** The lock is released when
 > the read transaction commits; `reaper.destroy` (an out-of-process libvirt call) then
 > runs unlocked, so a slow/blocked provider call never holds a Postgres lock. The
 > idempotent-`destroy` contract covers the small window where a concurrent teardown
-> destroys the same domain first. (See Open question O2.)
+> destroys the same domain first. (See Open question O1 for `destroy` failure.)
 
 ### `Reconciler` — the loop
 
@@ -226,11 +285,14 @@ not a stub to delete (it is what "no provider yet" *means* operationally).
 
 ## Concurrency & correctness
 
-- **Fenced writes, like the queue.** Every state-changing repair is a single
-  `UPDATE … WHERE <precondition> RETURNING` (abandoned jobs, dead sessions) or runs
-  under the per-System advisory lock with a re-read (orphans, leaks). Two reconcilers,
-  or a reconciler and a worker, cannot double-apply: the loser's `UPDATE` matches zero
-  rows. This is the same exactly-one-writer discipline ADR-0018 uses for job finalize.
+- **Fenced writes, like the queue.** Every state-changing repair is fenced on a
+  precondition in the `WHERE`: the dead-session sweep is one `UPDATE … WHERE state =
+  'live' … RETURNING`; the abandoned-job dead-letter is a per-zombie `UPDATE … WHERE
+  state = 'running' … RETURNING` (its Run compensation in the same transaction); the
+  orphan and leak repairs run under the per-System advisory lock with a re-read. Two
+  reconcilers, or a reconciler and a worker, cannot double-apply: the loser's `UPDATE`
+  matches zero rows. This is the same exactly-one-writer discipline ADR-0018 uses for
+  job finalize.
 - **The DB clock is the only clock.** `now()` in every time predicate (lease lapse,
   heartbeat staleness) means skewed reconciler/worker process clocks never disagree
   about drift — the property the queue already relies on (#9).
@@ -259,8 +321,9 @@ not a stub to delete (it is what "no provider yet" *means* operationally).
 | Zombie job with no `run_id` / a terminal Run | dead-lettered only; Run untouched |
 | `live` session, stale (non-NULL, old) heartbeat | `→ detached` |
 | `live` session, NULL heartbeat | not swept (may be freshly attached) |
-| Domain tagged, no live row, no in-flight job | reaped via `reaper.destroy` |
-| Domain tagged, mid-provision (`provisioning` row or in-flight job) | not reaped |
+| Domain tagged, no live row, no in-flight teardown job | reaped via `reaper.destroy` |
+| Domain tagged, mid-provision | not reaped — protected by the `provisioning` row (guard a), not a job check |
+| Domain tagged, `torn_down` row, in-flight `teardown` job | not reaped — a live teardown is mid-destroy (guard b) |
 | Domain untagged (`system_id is None`) | skipped (not kdive-owned) |
 | `reaper.destroy` on an already-gone domain | no-op (idempotent contract) |
 | Transient error in a pass | logged; `run` sleeps `interval` and continues |
@@ -300,10 +363,15 @@ investigation → run → debug_session/job) since the FK chain is required; it 
   domain (`system_id is None`) is **not** destroyed; a `torn_down` row **with** a
   lingering domain **is** destroyed.
 - **Mid-provision not reaped (headline guard)** — a domain tagged `system_id` S with a
-  `provisioning` System row **and** a `running` `provision` job for S; one pass does
-  **not** call `destroy` (both the row-state and in-flight-job guards hold). Removing
-  the in-flight job but keeping the `provisioning` row still does not reap (row guard);
-  this is the acceptance criterion's falsifiable test.
+  `provisioning` System row; one pass does **not** call `destroy` — guard (a) holds
+  (the row exists and is not `torn_down`). This is the acceptance criterion's
+  falsifiable test, and it deliberately does **not** depend on an in-flight provision
+  job: the `provisioning` row is the operative protection (a provision job is keyed on
+  `allocation_id` and carries no `system_id`, so it could not be matched anyway).
+- **Live-teardown not double-destroyed** — a domain tagged S with a `torn_down` System
+  row **and** a `running` `teardown` job whose `payload.system_id == S`; one pass does
+  **not** call `destroy` (guard b). With the `torn_down` row but **no** teardown job,
+  the same domain **is** reaped (the leaked-after-failed-teardown case).
 - **`reconcile_once` report** — a pass over a mix of the above returns the correct
   per-category counts.
 - **`Reconciler.run`** — a `run_once` that raises once (monkeypatched) is logged and
@@ -324,15 +392,16 @@ investigation → run → debug_session/job) since the FK chain is required; it 
 - Create `docs/adr/0021-reconciler-loop-drift-repair.md`; add it to
   `docs/adr/README.md`. (done)
 
-## Open questions (resolve in review / plan)
+## Open questions (resolve in plan)
 
-- **O1 — orphan re-enqueue counting.** Should `_repair_orphaned_systems` count a pass
-  where `enqueue` returned a *pre-existing* job (no new work) as a repair? Proposed:
-  count only when the returned job's `created_at` equals this pass (a genuinely new
-  enqueue), so `ReconcileReport.orphaned_systems` measures work done, not candidates
-  seen. The idempotency test asserts "second pass enqueues no new job" regardless.
-- **O2 — `destroy` failure handling.** If `reaper.destroy` raises (libvirt
-  unreachable), should the pass abort or continue to the next domain? Proposed:
-  catch per-domain, log, and continue (a `CategorizedError`/any exception on one
-  domain must not strand the others); the domain is retried next pass. The count
-  reflects only domains actually destroyed.
+- **O1 — `destroy` failure handling.** If `reaper.destroy` raises (libvirt
+  unreachable), should the pass abort or continue to the next domain? **Resolved:**
+  catch per-domain, log at `warning`, and continue — one bad domain must not strand the
+  others; the domain is retried next pass. `ReconcileReport.leaked_domains` counts only
+  domains actually destroyed (a raised `destroy` is not counted). The same
+  catch-log-continue applies per-candidate to the orphan repair so one failed `enqueue`
+  does not abort the pass.
+
+*(The earlier "orphan re-enqueue counting" question is resolved inline:
+`orphaned_systems` counts orphaned Systems processed this pass, since `enqueue` gives
+no insert-vs-found signal — see `_repair_orphaned_systems`.)*
