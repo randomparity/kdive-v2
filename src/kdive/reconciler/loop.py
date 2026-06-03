@@ -11,7 +11,9 @@ clock). The local-libvirt :class:`InfraReaper` implementation lands with the pro
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Protocol, runtime_checkable
@@ -19,6 +21,7 @@ from uuid import UUID
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.domain.models import JobKind
@@ -229,3 +232,84 @@ async def _repair_leaked_domains(conn: AsyncConnection, reaper: InfraReaper) -> 
         reaped += 1
         _log.info("reconciler: leaked domain %s (system %s) reaped", domain.name, domain.system_id)
     return reaped
+
+
+async def reconcile_once(
+    pool: AsyncConnectionPool,
+    reaper: InfraReaper,
+    *,
+    debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
+) -> ReconcileReport:
+    """Run the four repairs once, each isolated, each on a fresh pooled connection.
+
+    A repair that raises is logged, its name recorded in ``failures``, and the pass
+    continues — one repair never starves the others. Returns the partial counts.
+    """
+    counts: dict[str, int] = {
+        "orphaned_systems": 0,
+        "abandoned_jobs": 0,
+        "dead_sessions": 0,
+        "leaked_domains": 0,
+    }
+    failures: list[str] = []
+
+    async def _isolated(name: str, repair: Callable[[AsyncConnection], Awaitable[int]]) -> None:
+        try:
+            async with pool.connection() as conn:
+                counts[name] = await repair(conn)
+        except Exception:  # noqa: BLE001 - isolate each repair; one failure must not starve the rest
+            _log.warning("reconciler: repair %s failed this pass", name, exc_info=True)
+            failures.append(name)
+
+    await _isolated("orphaned_systems", _repair_orphaned_systems)
+    await _isolated("abandoned_jobs", _repair_abandoned_jobs)
+    await _isolated(
+        "dead_sessions", lambda conn: _repair_dead_sessions(conn, debug_session_stale_after)
+    )
+    await _isolated("leaked_domains", lambda conn: _repair_leaked_domains(conn, reaper))
+
+    return ReconcileReport(
+        orphaned_systems=counts["orphaned_systems"],
+        abandoned_jobs=counts["abandoned_jobs"],
+        dead_sessions=counts["dead_sessions"],
+        leaked_domains=counts["leaked_domains"],
+        failures=tuple(failures),
+    )
+
+
+class Reconciler:
+    """Runs :func:`reconcile_once` on an interval until stopped."""
+
+    def __init__(
+        self,
+        pool: AsyncConnectionPool,
+        reaper: InfraReaper,
+        *,
+        interval: timedelta = DEFAULT_INTERVAL,
+        debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
+    ) -> None:
+        self._pool = pool
+        self._reaper = reaper
+        self._interval = interval
+        self._debug_session_stale_after = debug_session_stale_after
+
+    async def run_once(self) -> ReconcileReport:
+        """Run one reconciliation pass."""
+        return await reconcile_once(
+            self._pool, self._reaper, debug_session_stale_after=self._debug_session_stale_after
+        )
+
+    async def run(self, stop: asyncio.Event) -> None:
+        """Loop :meth:`run_once` every ``interval``, surviving a transient pass error.
+
+        ``reconcile_once`` already isolates each repair, so a raise here is a rare
+        whole-pass failure (e.g. pool acquisition); it is logged and the loop continues
+        — a durable reconciler must not die on one bad pass.
+        """
+        interval = self._interval.total_seconds()
+        while not stop.is_set():
+            try:
+                await self.run_once()
+            except Exception:  # noqa: BLE001 - a durable reconciler survives a transient per-pass error
+                _log.exception("reconcile pass failed; continuing after %ss", interval)
+            await asyncio.sleep(interval)
