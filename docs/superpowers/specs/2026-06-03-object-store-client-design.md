@@ -132,9 +132,21 @@ Body=data, Metadata={"sensitivity": sensitivity.value, "retention-class":
 retention_class})`. Returns
 `StoredArtifact(key, _normalize_etag(resp["ETag"]), sensitivity, retention_class)`.
 S3 returns the ETag wrapped in double quotes; `_normalize_etag` strips them so the
-stored etag matches what a later conditional GET compares against.
+value persisted on the `artifacts` row is the bare hex (stable to compare and log).
 
-**`get_artifact`.** Issues `get_object(Bucket=bucket, Key=key, IfMatch=etag)`:
+**etag form: stored vs `If-Match`.** The *stored* etag is the normalized bare hex.
+The *`If-Match` header* is a different concern: HTTP entity-tags are quoted, and a
+server may compare `If-Match` literally. `get_artifact` therefore re-quotes when
+issuing the conditional GET (`IfMatch=f'"{etag}"'`) rather than assuming the bare
+form is accepted. This separates "what we store" from "what the wire expects" so a
+healthy object is never mis-read as stale. Two assumptions ride on the pinned MinIO
+and are the etag tests' job to verify (they fail loudly if either is false): that
+MinIO honors `If-Match` on `GetObject`, and that it accepts the quoted form. If a
+future S3 backend ignores `If-Match` on GET, the fallback is a `HeadObject` etag
+compare before returning, so `stale_handle` is never silently lost — called out here
+so the implementer treats the conditional-GET contract as verified, not assumed.
+
+**`get_artifact`.** Issues `get_object(Bucket=bucket, Key=key, IfMatch=f'"{etag}"')`:
 
 - Success → reads `sensitivity` / `retention-class` from `resp["Metadata"]` (boto3
   lowercases metadata keys and strips the `x-amz-meta-` prefix) and returns
@@ -244,8 +256,11 @@ Tests (behavior and edges, not implementation):
   `t/vmcore/oid/core` (assert the returned `key`).
 - **key validation** — empty, `/`-bearing, and control-char components each raise
   `CONFIGURATION_ERROR`; the offending component is named.
-- **etag normalization** — the returned `etag` has no surrounding quotes, and it is
-  exactly the value a successful `IfMatch` GET accepts.
+- **etag normalization & `If-Match` form** — the returned `etag` has no surrounding
+  quotes; the round-trip and stale-etag tests are the verification of record that a
+  conditional GET built from that stored etag (re-quoted by `get_artifact`) both
+  succeeds for the current object and raises `STALE_HANDLE` for a non-matching one —
+  i.e. MinIO honors `If-Match` on GET and accepts the quoted form.
 - **`register_artifact_row`** — maps a `StoredArtifact` + owner to an `Artifact`
   with `object_key` / `etag` / `sensitivity` / `retention_class` taken from `stored`,
   a minted `id`, and no database access (pure; unit test, no container).
