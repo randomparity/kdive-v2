@@ -151,15 +151,26 @@ grouping imposes no allocation constraint.
 erDiagram
     RESOURCE      ||--o{ ALLOCATION : "booked as"
     ALLOCATION    ||--o{ SYSTEM : "hosts (sequential)"
-    SYSTEM        ||--o{ RUN : executes
-    INVESTIGATION ||--o{ RUN : groups
+    SYSTEM        ||--o{ RUN : "executes"
+    INVESTIGATION ||--o{ RUN : "groups (across Systems)"
+    INVESTIGATION }o..o{ SYSTEM : "spans, via its Runs (derived)"
     RUN           ||--o{ DEBUGSESSION : "per boot"
 ```
 
-A Run is the **join point**: it belongs to exactly one System (which fixes its
-Allocation) and exactly one Investigation (which may group Runs across
-Allocations). Lower layers outlive higher ones — a Resource outlives its
-Allocations, which outlive their Systems, which outlive their Runs. In M0 the
+The model has **two independent hierarchies that meet at Run**: the provisioning
+chain `Resource → Allocation → System`, and the **Investigation** campaign. An
+Investigation is *not* below System — it is a project-scoped **root** that groups
+the Runs iterating toward a fix, and because each Run executes on exactly one
+System, an Investigation **spans every System (and Allocation, and resource kind)
+its Runs touched** — the local-VM-to-bare-metal chase from the top-level design.
+That span is the dashed `INVESTIGATION ⋯ SYSTEM` edge above: it is *derived through
+Run*, with no `investigation_system` table.
+
+A Run is therefore the **join point**: exactly one System (which fixes its
+Allocation) and exactly one Investigation. Within the provisioning chain, lower
+layers outlive higher ones — a Resource outlives its Allocations, which outlive
+their Systems, which outlive their Runs — but an Investigation's lifetime is
+**independent** and may outlive any single System or Allocation. In M0 the
 `ALLOCATION → SYSTEM` and `RUN → DEBUGSESSION` relationships are 1:1 (no
 reprovision; one boot per Run).
 
