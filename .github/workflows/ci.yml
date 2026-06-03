@@ -58,6 +58,10 @@ jobs:
     # do not provide. It never runs on pull_request, so PR CI stays green.
     if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, kvm]
+    # Runner prerequisite: the self-hosted KVM host must provide the libvirt-dev
+    # headers (not just the libvirt runtime), since `uv sync` builds
+    # libvirt-python from source. This job does not apt-install them, because a
+    # self-hosted runner is operator-provisioned and may lack passwordless sudo.
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
