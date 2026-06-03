@@ -63,12 +63,12 @@ sequenceDiagram
     W->>DB: dequeue (SKIP LOCKED)
     W->>P: provision(alloc, profile)
     P->>P: define + start domain (tagged system_id)
-    W->>DB: System → ready; job succeeded
+    W->>DB: set System ready, job succeeded
     A->>C: jobs.wait(job_id)
     C-->>A: succeeded {system_id}
 
     A->>C: runs.create(investigation, system, build_profile)
-    C->>DB: insert Run (created); Investigation → active
+    C->>DB: insert Run (created), Investigation active
     C-->>A: {run_id}
 
     loop each of build, install, boot — enqueue then poll jobs.wait
@@ -76,23 +76,23 @@ sequenceDiagram
         C->>DB: enqueue job (dedup_key = run_id, step, kind)
         C-->>A: {job_id, running}
         W->>P: make / stage kernel / boot domain
-        W->>DB: run_steps(step) result; job succeeded
+        W->>DB: run_steps(step) result, job succeeded
     end
 
     A->>C: debug.start_session(run_id, gdbstub)
     C->>P: open gdbstub transport (single-attach)
-    C->>DB: insert DebugSession (attach → live)
+    C->>DB: insert DebugSession (attach, then live)
     C-->>A: {debug_session_id}
 
-    A->>C: debug.set_breakpoint / read_memory (≤4096)
+    A->>C: debug.set_breakpoint / read_memory (<=4096)
     C->>P: gdb-MI op
     P-->>C: result
     C-->>A: redacted result
 
     A->>C: control.force_crash(system_id)
     C->>C: destructive gate — scope + admin + opt-in
-    C->>DB: enqueue force_crash; DebugSession → detached; System → crashed
-    W->>P: sysrq-c → kdump captures vmcore
+    C->>DB: enqueue force_crash, DebugSession detached, System crashed
+    W->>P: sysrq-c, kdump captures vmcore
 
     A->>C: vmcore.fetch(system_id)
     C-->>A: {job_id, running}
@@ -105,7 +105,7 @@ sequenceDiagram
     C-->>A: redacted artifact
 
     A->>C: allocations.release(allocation_id)
-    C->>DB: Allocation → released; System → torn_down
+    C->>DB: Allocation released, System torn_down
     C->>P: destroy domain
     C-->>A: released
 
