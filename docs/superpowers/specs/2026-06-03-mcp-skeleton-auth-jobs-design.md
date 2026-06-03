@@ -219,12 +219,11 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None: ...
   `JOBS.get` read and **releases it before sleeping** (`async with
   pool.connection()` scoped to the read), so a waiting request holds **zero**
   connections between polls — N concurrent waiters cost N connections only at the
-  poll instant, not for the whole wait. **`MAX_WAIT_S` must be ≤ the transport's
-  request timeout** (the ASGI server's, and any reverse proxy's, idle/request
-  timeout); otherwise a proxy closes the connection and the agent sees a transport
-  error instead of an envelope. The `server` entrypoint pins the ASGI request
-  timeout (or documents the proxy requirement) so this invariant holds — see
-  `__main__.py §server`.
+  poll instant, not for the whole wait. **`MAX_WAIT_S` must be ≤ any intermediary's
+  read/idle timeout** (a reverse proxy or load balancer in front of the server);
+  otherwise the intermediary closes the connection and the agent sees a transport
+  error instead of an envelope. uvicorn itself imposes no per-request cap — see the
+  accurate treatment under `__main__.py §server`.
 - **`cancel_job`** — `JOBS.update_state(conn, job_id, CANCELED)`. The state guard
   (`state.py`) permits `queued→canceled` and `running→canceled`; a terminal job
   raises `IllegalTransition`, which the tool maps to a `configuration_error`
@@ -234,7 +233,9 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None: ...
   holds) — no in-flight interrupt (that, and compensation for half-applied ops, is
   the reconciler, #12).
 - **`list_jobs`** — newest-first read capped at `limit` (default 50, max 200): the
-  M0 query is `ORDER BY created_at DESC LIMIT`. A `state`/`kind`/`project` filter and
+  M0 query is `ORDER BY created_at DESC, id DESC LIMIT` (the `id` tiebreaker makes the
+  order total and stable when two jobs share a `created_at` microsecond, so the cap
+  never drops an arbitrary one of a tied pair). A `state`/`kind`/`project` filter and
   per-principal scoping arrive with RBAC (#11) — see the M0 isolation posture in
   Non-goals for why the list is unscoped now.
 
@@ -316,11 +317,16 @@ also `KDIVE_LOG_LEVEL`). Shared pool construction via `db/pool.create_pool()`.
   `min_size=1, max_size=KDIVE_HTTP_POOL_MAX` (default `10`). Because `wait_job`
   releases its connection between polls (see `wait_job`), concurrent waiters do not
   pin the pool; `max_size=10` bounds simultaneous *in-flight* tool reads, and the
-  default is overridable for load. The ASGI request/keep-alive timeout is configured
-  **≥ `MAX_WAIT_S`** (300 s) so a long `jobs.wait` is not severed mid-poll; if an
-  operator fronts the server with a reverse proxy, the proxy's read timeout must also
-  be ≥ `MAX_WAIT_S` — documented as a deployment requirement, since the proxy is
-  outside this process's control.
+  default is overridable for load. **Long-poll vs. timeouts (accurate):** uvicorn
+  (FastMCP's default ASGI server) imposes **no** per-request duration cap on a
+  streaming HTTP request — `timeout_keep_alive` governs idle time *between* requests,
+  not the life of an in-flight one — so a 300 s `jobs.wait` held in a single
+  streamable-HTTP POST is not severed by the server itself, and no special uvicorn
+  knob is required. The real cut-off risk is an **intermediary**: a reverse proxy or
+  load balancer in front of the server applies its own read/idle timeout, which
+  **must be ≥ `MAX_WAIT_S`** (300 s) or a long wait returns a transport error instead
+  of an envelope. This is a deployment requirement, since the proxy is outside this
+  process's control.
 - **`worker`** — open a pool with `min_size`/`max_size ≥ 2` (the worker invariant,
   `Worker.__init__` raises otherwise), build the registry via
   `app.build_handler_registry()` (the handler seam — **empty of real handlers in
