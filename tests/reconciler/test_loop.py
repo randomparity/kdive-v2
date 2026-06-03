@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from uuid import uuid4
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -11,6 +12,8 @@ from kdive.domain.state import AllocationState, DebugSessionState, RunState, Sys
 from kdive.reconciler import loop
 from kdive.reconciler.loop import InfraReaper, NullReaper, ReconcileReport
 from tests.reconciler.conftest import (
+    FakeReaper,
+    _FakeDomain,
     connect,
     run_repair,
     seed_debug_session,
@@ -273,5 +276,94 @@ def test_null_heartbeat_session_not_touched(migrated_url: str) -> None:
             )
             row = await cur.fetchone()
             assert row is not None and row[0] == "live"  # NULL heartbeat never swept
+
+    asyncio.run(_run())
+
+
+def _reap(reaper: FakeReaper):
+    return lambda conn: loop._repair_leaked_domains(conn, reaper)
+
+
+def test_leaked_domain_with_no_row_is_reaped(migrated_url: str) -> None:
+    async def _run() -> None:
+        reaper = FakeReaper(_FakeDomain(name="vm-leak", system_id=uuid4()))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, _reap(reaper))
+        assert count == 1
+        assert reaper.destroyed == ["vm-leak"]
+
+    asyncio.run(_run())
+
+
+def test_domain_with_ready_row_not_reaped(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed, system_state=SystemState.READY)
+        reaper = FakeReaper(_FakeDomain(name="vm-ready", system_id=system_id))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, _reap(reaper))
+        assert count == 0
+        assert reaper.destroyed == []
+
+    asyncio.run(_run())
+
+
+def test_untagged_domain_not_reaped(migrated_url: str) -> None:
+    async def _run() -> None:
+        reaper = FakeReaper(_FakeDomain(name="vm-untagged", system_id=None))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, _reap(reaper))
+        assert count == 0
+        assert reaper.destroyed == []
+
+    asyncio.run(_run())
+
+
+def test_torn_down_row_without_teardown_job_is_reaped(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed, system_state=SystemState.TORN_DOWN)
+        reaper = FakeReaper(_FakeDomain(name="vm-leftover", system_id=system_id))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, _reap(reaper))
+        assert count == 1
+        assert reaper.destroyed == ["vm-leftover"]
+
+    asyncio.run(_run())
+
+
+def test_torn_down_row_with_inflight_teardown_not_reaped(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed, system_state=SystemState.TORN_DOWN)
+            await seed_running_job(
+                seed,
+                f"{system_id}:teardown",
+                kind="teardown",
+                payload={"system_id": str(system_id)},
+                lease_seconds=300,
+                attempt=1,
+                max_attempts=3,
+            )
+        reaper = FakeReaper(_FakeDomain(name="vm-mid-teardown", system_id=system_id))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, _reap(reaper))
+        assert count == 0
+        assert reaper.destroyed == []  # a live teardown is mid-destroy (guard b)
+
+    asyncio.run(_run())
+
+
+def test_mid_provision_domain_not_reaped(migrated_url: str) -> None:
+    async def _run() -> None:
+        # Headline acceptance: a provisioning row protects the domain (guard a),
+        # independent of any provision job (which keys on allocation_id, not system_id).
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed, system_state=SystemState.PROVISIONING)
+        reaper = FakeReaper(_FakeDomain(name="vm-provisioning", system_id=system_id))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, _reap(reaper))
+        assert count == 0
+        assert reaper.destroyed == []
 
     asyncio.run(_run())

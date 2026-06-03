@@ -181,3 +181,51 @@ async def _repair_dead_sessions(conn: AsyncConnection, stale_after: timedelta) -
     for row in rows:
         _log.info("reconciler: dead debug_session %s -> detached", row["id"])
     return len(rows)
+
+
+async def _repair_leaked_domains(conn: AsyncConnection, reaper: InfraReaper) -> int:
+    """Destroy libvirt domains whose tagged System is gone and no teardown is in flight.
+
+    Reap a tagged domain iff its ``systems`` row is absent or ``torn_down`` (guard a)
+    and no ``teardown`` job for it is in flight (guard b). Guard (a) protects a
+    mid-provision domain (row-first ordering gives it a ``provisioning`` row). The guards
+    are read under the per-System advisory lock; ``destroy`` then runs **unlocked** (a
+    slow provider call never holds a Postgres lock), so the idempotent-``destroy``
+    contract — not the lock — is what makes a concurrent teardown safe. A ``destroy``
+    that raises is logged and the pass continues to the next domain.
+    """
+    domains = await reaper.list_owned()
+    reaped = 0
+    for domain in domains:
+        if domain.system_id is None:
+            continue
+        async with (
+            conn.transaction(),
+            advisory_xact_lock(conn, LockScope.SYSTEM, domain.system_id),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            await cur.execute(
+                "SELECT 1 FROM systems WHERE id = %s AND state <> 'torn_down'",
+                (domain.system_id,),
+            )
+            has_live_row = await cur.fetchone() is not None
+            await cur.execute(
+                "SELECT 1 FROM jobs WHERE state IN ('queued', 'running') "
+                "  AND kind = 'teardown' AND payload->>'system_id' = %s",
+                (str(domain.system_id),),
+            )
+            teardown_in_flight = await cur.fetchone() is not None
+        if has_live_row or teardown_in_flight:
+            continue
+        try:
+            await reaper.destroy(domain.name)
+        except Exception:  # noqa: BLE001 - one domain's failure must not strand the others
+            _log.warning(
+                "reconciler: destroy of leaked domain %s failed; retry next pass",
+                domain.name,
+                exc_info=True,
+            )
+            continue
+        reaped += 1
+        _log.info("reconciler: leaked domain %s (system %s) reaped", domain.name, domain.system_id)
+    return reaped
