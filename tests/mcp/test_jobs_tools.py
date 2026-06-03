@@ -55,6 +55,17 @@ def test_get_unknown_job_is_error_envelope(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_get_malformed_id_is_error_envelope(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await jobs_tools.get_job(pool, CTX, "not-a-uuid")
+        assert resp.object_id == "not-a-uuid"
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
 def test_cancel_queued_job_transitions(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -138,5 +149,29 @@ def test_list_jobs_empty(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             resp = await jobs_tools.list_jobs(pool, CTX, limit=50)
         assert resp == []
+
+    asyncio.run(_run())
+
+
+def test_list_jobs_isolates_invariant_violating_row(migrated_url: str) -> None:
+    """A single producer-bug row (failed with no category) degrades to an error
+    envelope without blanking the rest of the list."""
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            good_id = await _enqueue(pool, "good")
+            bad_id = await _enqueue(pool, "bad")
+            # Force the bad row into a state that violates "category iff failed".
+            async with pool.connection() as conn, conn.transaction():
+                await conn.execute(
+                    "UPDATE jobs SET state = 'failed', error_category = NULL WHERE id = %s",
+                    (bad_id,),
+                )
+            resp = await jobs_tools.list_jobs(pool, CTX, limit=50)
+        by_id = {r.object_id: r for r in resp}
+        assert len(resp) == 2  # the bad row did not blank the list
+        assert by_id[good_id].status == "queued"
+        assert by_id[bad_id].status == "error"
+        assert by_id[bad_id].error_category == "infrastructure_failure"
 
     asyncio.run(_run())
