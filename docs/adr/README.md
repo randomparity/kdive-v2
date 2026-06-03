@@ -43,3 +43,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0011](0011-provisioning-profile-schema.md) | Provisioning-profile schema | Proposed |
 | [0012](0012-secret-backend.md) | Secret backend (file-ref for M0) | Proposed |
 | [0013](0013-object-store-layout-retention.md) | Object-store layout & retention | Proposed |
+| [0014](0014-structured-logging.md) | Structured logging via stdlib `logging` + `contextvars` | Proposed |
