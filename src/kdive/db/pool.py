@@ -32,14 +32,25 @@ def database_url() -> str:
     return url
 
 
-def create_pool(conninfo: str | None = None) -> AsyncConnectionPool:
+def create_pool(
+    conninfo: str | None = None,
+    *,
+    min_size: int = 1,
+    max_size: int = 10,
+) -> AsyncConnectionPool:
     """Build an unopened async connection pool.
 
     Args:
         conninfo: Postgres conninfo; read from :func:`database_url` when omitted.
+        min_size: Minimum pooled connections kept open.
+        max_size: Maximum concurrent connections. The worker needs ``>= 2`` (a
+            dispatched job holds its handler connection and a heartbeat connection at
+            once); :class:`kdive.jobs.worker.Worker` rejects a smaller pool.
 
     Returns:
         A pool that is not yet open — enter it (``async with``) or call
         ``await pool.open()`` before use.
     """
-    return AsyncConnectionPool(conninfo or database_url(), open=False)
+    return AsyncConnectionPool(
+        conninfo or database_url(), min_size=min_size, max_size=max_size, open=False
+    )
