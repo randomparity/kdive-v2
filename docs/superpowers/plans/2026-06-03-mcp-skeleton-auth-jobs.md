@@ -122,12 +122,11 @@ def test_category_without_failure_is_rejected() -> None:
 
 
 def test_failure_without_category_is_rejected() -> None:
+    # The validator treats status in {"failed", "error"} as a failure status, which
+    # therefore requires a category.
     with pytest.raises(ValueError, match="error_category"):
-        ToolResponse(object_id="x", status="error", error_category=None,
-                     _require_category=True)  # see Step 4 note
+        ToolResponse(object_id="x", status="error", error_category=None)
 ```
-
-> Note: the `_require_category` knob in the last test is a placeholder; replace the final test per Step 4's actual model (the validator keys off `status`, see implementation). If the implementation uses `status == "failed"` as the trigger, rewrite the last test as shown in Step 4.
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
@@ -209,19 +208,8 @@ class ToolResponse(BaseModel):
         )
 ```
 
-Then fix the two validator tests in `test_responses.py` to match the real trigger
-(`status in {"failed", "error"}`):
-
-```python
-def test_category_without_failure_is_rejected() -> None:
-    with pytest.raises(ValueError, match="error_category"):
-        ToolResponse(object_id="x", status="running", error_category="build_failure")
-
-
-def test_failure_without_category_is_rejected() -> None:
-    with pytest.raises(ValueError, match="error_category"):
-        ToolResponse(object_id="x", status="error", error_category=None)
-```
+The validator trigger (`status in {"failed", "error"}`) matches the two validator
+tests written in Step 2 — no test changes are needed here.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -699,12 +687,32 @@ def test_wait_returns_immediately_for_terminal(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_wait_times_out_on_running_job(migrated_url: str) -> None:
+def test_wait_zero_timeout_is_single_read(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             job_id = await _enqueue(pool, "d1")  # stays queued (no worker)
             resp = await jobs_tools.wait_job(pool, CTX, job_id, timeout_s=0.0)
         assert resp.status == "queued"  # one read, no wait
+
+    asyncio.run(_run())
+
+
+def test_wait_loops_until_terminal(migrated_url: str) -> None:
+    """Exercise the sleep-then-re-poll branch: a concurrent task cancels the job
+    after one poll interval, and wait must return the canceled envelope having
+    looped at least once (timeout long enough to require a real poll)."""
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            job_id = await _enqueue(pool, "d1")
+
+            async def _cancel_after_delay() -> None:
+                await asyncio.sleep(jobs_tools.POLL_INTERVAL_S + 0.1)
+                await jobs_tools.cancel_job(pool, CTX, job_id)
+
+            canceller = asyncio.create_task(_cancel_after_delay())
+            resp = await jobs_tools.wait_job(pool, CTX, job_id, timeout_s=5.0)
+            await canceller
+        assert resp.status == "canceled"
 
     asyncio.run(_run())
 
@@ -886,7 +894,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
 - [ ] **Step 4: Run to verify pass**
 
 Run: `uv run python -m pytest tests/mcp/test_jobs_tools.py -q`
-Expected: PASS (8 tests) or SKIP without Docker.
+Expected: PASS (9 tests) or SKIP without Docker.
 
 - [ ] **Step 5: Guardrails + commit**
 
@@ -935,8 +943,10 @@ def test_build_app_registers_jobs_tools() -> None:
     app = build_app(pool, verifier=_verifier())
 
     async def _run() -> None:
-        tools = await app.get_tools()
-        names = set(tools)
+        # Verified against fastmcp 3.4.0: FastMCP.list_tools() is async and returns
+        # list[Tool], each with a .name (there is no get_tools()).
+        tools = await app.list_tools()
+        names = {t.name for t in tools}
         assert {"jobs.get", "jobs.wait", "jobs.cancel", "jobs.list"} <= names
 
     asyncio.run(_run())
@@ -948,8 +958,6 @@ def test_build_handler_registry_is_empty_in_m0() -> None:
     # No real handlers in M0; an unknown kind has no handler.
     assert registry.get("build") is None
 ```
-
-> Verify `app.get_tools()` is the correct introspection call for fastmcp 3.4.0: `python -c "from fastmcp import FastMCP; print([m for m in dir(FastMCP) if 'tool' in m.lower()])"`. If the accessor differs (e.g. `get_tools` is async vs. a `_tool_manager`), adjust the test to the real API.
 
 - [ ] **Step 2: Run to verify failure**
 
