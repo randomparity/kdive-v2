@@ -35,9 +35,12 @@ are the fastest in the M0 suite.
   realization is #15.
 - **No `AllocationPlane` Protocol.** Allocation is core, not a provider plane (spec,
   ADR-0009). It does not appear in `interfaces.py`.
-- **No health re-polling.** `health` is a registration-time snapshot
-  (ADR-0022); dispatch does not re-query a provider's health. A changed health
-  re-registers.
+- **No health re-polling, and no re-registration.** The registry is built once
+  (providers registered at startup) and is **immutable thereafter** for M0; `health`
+  is a registration-time snapshot that is fixed for the registry's lifetime
+  (ADR-0022). Dispatch never re-queries a provider's health, and there is no
+  update/replace path — re-registering an existing `provider_id` is the duplicate-id
+  `ValueError`, not a refresh. A health-refresh (or rebuild) path is a later issue.
 - **No structured `cost_class` order.** M0 orders `cost_class` lexicographically as a
   documented placeholder (ADR-0022); a cost rank is an M1+ concern.
 - **No reconcile-surface honesty check.** Advertised-but-unhonored is detected by
@@ -93,13 +96,22 @@ class BoundOp:
 
 `CapabilityRegistry`:
 
-- `register(provider, capabilities, *, provider_id, health, cost_class)` — for each
-  `Capability`, append a candidate `(provider, provider_id, health, cost_class,
-  capability)` under the key `(plane, operation, resource_kind)`. Validates:
+- `register(provider, capabilities, *, provider_id, health, cost_class)` records a
+  candidate `(provider, provider_id, health, cost_class, capability)` under each
+  capability's key `(plane, operation, resource_kind)`. A `Capability.operation` is
+  the **plane Protocol method name** (e.g. `capture_vmcore`, `force_crash`,
+  `list_resources`) — *not* the MCP tool verb (`vmcore.fetch`, `control.power`); the
+  honored-method check resolves `getattr(provider, capability.operation)`, so the
+  provider (#15) must keep its method names equal to the operations it advertises.
+  `register` is **atomic** — it validates everything *before* mutating any registry
+  state and commits the candidates only if every check passes:
   - `provider_id` is non-empty and **unique** across all prior registrations
     (`ValueError` — a programming error, not an `ErrorCategory`);
   - for every capability, `getattr(provider, capability.operation)` is callable —
     else `CategorizedError(NOT_IMPLEMENTED)` (advertised-but-unhonored, caught early).
+
+  If any check fails, the registry is left exactly as it was: **zero** of the call's
+  capabilities are recorded and the `provider_id` stays free for a corrected retry.
 - `dispatch(plane, operation, resource_kind, *, pin=None) -> BoundOp` — look up the
   candidate list:
   - empty / missing key → `CategorizedError(NOT_IMPLEMENTED)`;
@@ -110,6 +122,15 @@ class BoundOp:
     the first, where `health_rank` maps `available→0, degraded→1, offline→2`;
   - re-check the honored method (defence in depth) → `not_implemented` if gone;
   - return `BoundOp(provider_id, operation, capability.contract, bound_method)`.
+
+  **Health orders, it never filters, in M0.** An `offline` candidate is deprioritized
+  but still eligible; a key whose only candidate is `offline` dispatches that
+  candidate (deterministically), and the host-down condition surfaces as an
+  operational failure when the bound op runs — not as a `not_implemented` at dispatch,
+  because the operation *is* implemented. Filtering `offline` out (so an all-`offline`
+  key refuses at dispatch) waits for a real health probe (the registry holds only a
+  startup snapshot, not a live signal); inventing a refusal here would mislabel a
+  transient outage as an unimplemented capability.
 
 `health` is typed `ResourceStatus`; `cost_class` is `str`; `pin` is `str | None`.
 
@@ -171,9 +192,10 @@ the registry).
 ## Testing
 
 Behavior, edges, and every error path — no DB, no libvirt. Fakes live in
-`tests/providers/conftest.py`: a `FakeProvider` exposing the plane methods named by
-the operations it advertises, plus a `partial` variant that advertises an op it has no
-method for.
+`tests/providers/conftest.py`: a `FullFakeProvider` exposing a method for every plane
+operation it advertises; a `PartialFakeProvider` that implements only some planes
+(e.g. Build + Discovery) and advertises only those; and an `UnhonoredFakeProvider`
+that advertises an op for which it has no method.
 
 `tests/providers/test_capability.py`:
 
@@ -185,11 +207,22 @@ method for.
   winner for each tiebreak in isolation: pin overrides a healthier/cheaper rival;
   health beats cost_class; cost_class beats provider_id; provider_id breaks an
   otherwise-equal tie (acceptance #3).
+- **partial provider is first-class** — register `PartialFakeProvider`'s Build +
+  Discovery capabilities only; assert dispatch binds those planes and raises
+  `not_implemented` for an unadvertised plane (e.g. Control) on the *same* provider.
+  This is the ADR-0009 bet (a provider implements only the planes it supports), not a
+  side case.
 - **pin to a non-advertising provider → not_implemented** (not a fall-through to the
   default order).
-- **advertised-but-unhonored** — the `partial` fake raises `not_implemented` at
+- **health orders but never filters** — a key whose only candidate is `offline` still
+  dispatches that candidate (deterministically); a `degraded` candidate is chosen over
+  an `offline` one for the same key.
+- **advertised-but-unhonored** — `UnhonoredFakeProvider` raises `not_implemented` at
   `register`; a fake mutated to drop the method after registration raises at
   `dispatch` (ADR-0009 / issue scope).
+- **`register` is atomic** — registering `[honored, unhonored]` capabilities records
+  **zero** entries (none of the keys resolve afterward) and leaves the `provider_id`
+  free to re-register a corrected list.
 - **duplicate / empty `provider_id` → ValueError.**
 - **`OpContract`/`Capability` are frozen and hashable** — assignment raises;
   usable in a `set` / as a dict key.
@@ -198,9 +231,14 @@ method for.
 
 `tests/providers/test_interfaces.py`:
 
-- a `FakeProvider` is accepted where each plane `Protocol` is expected
-  (`isinstance`-against-`runtime_checkable` or a typed assignment), proving the
-  Protocols are structurally satisfiable and the method names match.
+- a typed assignment (`x: ProvisioningPlane = FullFakeProvider()`, checked by `ty`)
+  is the **signature** gate — it proves the fake's method signatures match the
+  Protocol, not just the names. A `runtime_checkable` `isinstance` check is included
+  only as a presence smoke-test; the spec does not rely on it for conformance
+  (`runtime_checkable` checks method *presence*, not signatures, so it over-reports).
+- `PartialFakeProvider` satisfies the planes it implements and does **not** satisfy an
+  unimplemented one — proving the Protocols are independently satisfiable, not an
+  all-or-nothing bundle.
 - the eight planes are all present and distinct in `Plane`; `AllocationPlane` is
   absent from `interfaces.py`.
 

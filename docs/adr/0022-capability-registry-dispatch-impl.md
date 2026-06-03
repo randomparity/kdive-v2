@@ -59,7 +59,13 @@ the provider object and its selection metadata. `health` reuses
 `domain.state.ResourceStatus` (`available`/`degraded`/`offline` — already an ordered
 health notion). `provider_id` is the stable tiebreak and must be unique across
 registrations. Capabilities are keyed by `(plane, operation, resource_kind)` to a
-list of candidates.
+list of candidates. `register` is **atomic**: it validates `provider_id`
+(non-empty, unique) and every capability's honored method *before* mutating any
+registry state, and commits the candidates only if all checks pass — a failed
+validation records none of the call's capabilities and leaves the `provider_id` free.
+The M0 registry is built once at startup and is **immutable thereafter**; there is no
+update/replace path (re-registering an existing `provider_id` is the duplicate-id
+error, not a refresh).
 
 **Deterministic ordering.** `dispatch(plane, operation, resource_kind, *, pin=None)
 -> BoundOp`. Candidate selection:
@@ -77,9 +83,11 @@ arbitrary; a structured cost rank arrives when M1+ gives `cost_class` meaning. T
 order is total and deterministic regardless, which is what the acceptance test pins.
 
 **Advertised-but-unhonored.** A capability is *honored* iff the provider exposes a
-callable attribute named for its `operation`. This is checked **twice**: at
-`register` (fail fast — a provider that advertises an op it has no method for is a
-construction error) and again at `dispatch` (defence in depth) — both raise
+callable attribute named for its `operation` — where `operation` is the plane
+Protocol method name (`capture_vmcore`, `force_crash`, `list_resources`), not the MCP
+tool verb (`vmcore.fetch`, `control.power`). This is checked **twice**: at `register`
+(fail fast — a provider that advertises an op it has no method for is a construction
+error) and again at `dispatch` (defence in depth) — both raise
 `CategorizedError(ErrorCategory.NOT_IMPLEMENTED)`. The deeper ADR-0009 check
 (advertised claims reconciled against a `list_owned`/`reconcile` surface) is M2; M0
 checks method presence only.
@@ -98,9 +106,16 @@ it.
   explicitly rather than read off a `Resource` row. In M0 the caller supplies it; a
   later issue may wire it from the Discovery plane / `resources` table without
   changing the registry contract.
-- `health` is a registration-time snapshot. M0 does not re-poll health on dispatch;
-  a provider whose health changes re-registers (or a later issue adds a refresh
-  path). Recorded as a limitation, not a silent gap.
+- `health` is a registration-time snapshot, fixed for the registry's lifetime (the
+  registry is built once and immutable in M0). M0 does not re-poll health on dispatch
+  and has no re-registration/refresh path; that lands with a later issue. Recorded as
+  a limitation, not a silent gap.
+- Health **orders, never filters**, in M0. A key whose only candidate is `offline`
+  still dispatches it; the host-down condition surfaces as an operational failure when
+  the op runs, not as a `not_implemented` at dispatch (the op *is* implemented).
+  Filtering `offline` out waits for a live health probe — the registry holds only a
+  startup snapshot, and refusing on a stale snapshot would mislabel a transient outage
+  as an unimplemented capability.
 - The lexicographic `cost_class` order will reorder if M1 introduces a cost rank;
   any test that pins a `cost_class` winner is coupled to the placeholder order and
   must be revisited then. Flagged here so that coupling is intentional.
