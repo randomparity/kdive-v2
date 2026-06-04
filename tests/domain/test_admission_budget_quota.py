@@ -18,6 +18,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 from psycopg import sql
+from psycopg.types.json import Jsonb
 
 from kdive.db.repositories import BUDGETS, QUOTAS, RESOURCES
 from kdive.domain.allocation_admission import CONCURRENT_ALLOCATION_CAP_KEY, admit
@@ -356,6 +357,47 @@ def test_same_key_two_principals_are_isolated(migrated_url: str) -> None:
             # Same key, different principals → two distinct grants (not a replay).
             assert a.allocation.id != b.allocation.id
             assert await _count(conn, "allocations") == 2
+
+    asyncio.run(_run())
+
+
+def test_request_does_not_replay_a_renew_key(migrated_url: str) -> None:
+    # The mirror of test_key_reused_across_request_kind_is_rejected (renew side): a
+    # (principal, key) already stored under the *renew* kind must not resolve as a request
+    # replay. Returning the renew's allocation as a "grant" would be a cross-kind replay
+    # (the same key cannot mean a grant and a renew). admit must fail closed, with no second
+    # grant, ledger row, or spend.
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            res = await _seed_resource(conn)
+            await _seed_budget(conn, limit="100")
+            await _seed_quota(conn)
+            # An existing allocation a prior renew (under key "dup") targeted.
+            original = await _admit(conn, resource=res, idempotency_key="orig")
+            assert original.granted is True
+            assert original.allocation is not None
+            allocs_before = await _count(conn, "allocations")
+            ledger_before = await _count(conn, "ledger")
+            spent_before = await _spent(conn)
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO idempotency_keys (key, principal, project, kind, result) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (
+                        "dup",
+                        CTX.principal,
+                        "proj",
+                        "allocations.renew",
+                        Jsonb({"allocation_id": str(original.allocation.id)}),
+                    ),
+                )
+            clash = await _admit(conn, resource=res, idempotency_key="dup")
+            assert clash.granted is False
+            assert clash.category is ErrorCategory.CONFIGURATION_ERROR
+            assert clash.allocation is None
+            assert await _count(conn, "allocations") == allocs_before
+            assert await _count(conn, "ledger") == ledger_before
+            assert await _spent(conn) == spent_before
 
     asyncio.run(_run())
 
