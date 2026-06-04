@@ -70,6 +70,17 @@ The remaining three (#1 path completes, #2 every transition audited, #5 teardown
 no orphan) are asserted inside the gated full-path test, where a real domain exists to
 provision and tear down.
 
+**Queue-drive contract (gated test).** Five steps are async job kinds (`provision`,
+`build`, `install`, `boot`, `capture_vmcore`); each returns a job handle and only its
+*committed* result unblocks the next dependent tool — `runs.boot` returns
+`install_first` until a succeeded `install` `run_steps` row commits, and
+`debug.start_session` requires a succeeded `boot` step. So the gated test drives each
+enqueued job to `succeeded` through the **production worker spine** — `Worker.run_once()`
+(`jobs/worker.py`) dequeuing under the real lease, dispatching the registered handler —
+before issuing the next dependent tool, rather than calling handlers inline. This keeps
+criterion #1's "real path" honest (the dequeue/lease/handler path is what ships) and makes
+the ordering edges deterministic instead of racing admission against the next call.
+
 **Considered & rejected — a non-gated "inline-worker" full path with fakes for every
 plane.** We could drive the *entire* spine in CI by injecting a fake `Provisioner`,
 `Builder`, `Installer`, `Booter`, `Connector`, gdb-MI engine, and `Retriever`, then
