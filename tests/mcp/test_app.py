@@ -46,6 +46,7 @@ def test_build_app_registers_jobs_tools() -> None:
             "postmortem.crash",
             "postmortem.triage",
         } <= names
+        assert {"introspect.from_vmcore"} <= names
 
     asyncio.run(_run())
 

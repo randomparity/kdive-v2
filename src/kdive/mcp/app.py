@@ -22,6 +22,7 @@ from kdive.mcp.tools import (
     allocations,
     artifacts,
     control,
+    introspect,
     investigations,
     jobs,
     resources,
@@ -41,6 +42,7 @@ _PLANE_REGISTRARS: tuple[Callable[[FastMCP, AsyncConnectionPool], None], ...] = 
     control.register,
     artifacts.register,
     vmcore.register,
+    introspect.register,
 )
 
 # Handler seam: each plane exposes register_handlers(registry); the worker calls them all.
