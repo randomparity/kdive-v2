@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import subprocess  # noqa: S404 - make is invoked with a fixed argv, no shell
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple, Protocol
@@ -97,11 +98,14 @@ def parse_gnu_build_id(notes: bytes) -> str:
         desc_start = name_end + (-namesz % 4)
         desc_end = desc_start + descsz
         if desc_end > end:
-            break
+            break  # truncated/corrupt note stream — treat as no build-id
         name = notes[name_start:name_end].rstrip(b"\x00")
         if note_type == _NT_GNU_BUILD_ID and name == b"GNU":
             return notes[desc_start:desc_end].hex()
-        offset = desc_end + (-descsz % 4)
+        next_offset = desc_end + (-descsz % 4)
+        if next_offset <= offset:
+            break  # defensive: a note must advance the cursor (never loop on a malformed one)
+        offset = next_offset
     raise CategorizedError(
         "vmlinux carries no GNU build-id note",
         category=ErrorCategory.BUILD_FAILURE,
@@ -247,20 +251,26 @@ def _real_run_make(workspace: Path) -> int:  # pragma: no cover - live_vm
 
 
 def _real_read_build_id(workspace: Path) -> str:  # pragma: no cover - live_vm
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["readelf", "-n", str(workspace / "vmlinux")],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    for line in result.stdout.splitlines():
-        marker = "Build ID:"
-        if marker in line:
-            return line.split(marker, 1)[1].strip()
-    raise CategorizedError(
-        "readelf reported no build-id for vmlinux",
-        category=ErrorCategory.BUILD_FAILURE,
-    )
+    """Extract the produced ``vmlinux``'s GNU build-id via the tested note parser.
+
+    Dumps the ``.note.gnu.build-id`` section as raw bytes with ``objcopy`` and feeds them
+    to :func:`parse_gnu_build_id`, so the shipped extraction is the unit-tested logic (not
+    a locale-fragile ``readelf`` text scrape).
+    """
+    with tempfile.NamedTemporaryFile(suffix=".note") as note_file:
+        subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [
+                "objcopy",
+                "-O",
+                "binary",
+                "--only-section=.note.gnu.build-id",
+                str(workspace / "vmlinux"),
+                note_file.name,
+            ],
+            check=True,
+        )
+        notes = Path(note_file.name).read_bytes()
+    return parse_gnu_build_id(notes)
 
 
 __all__ = ["BuildOutput", "Builder", "LocalLibvirtBuild", "parse_gnu_build_id"]

@@ -154,6 +154,22 @@ def test_parse_gnu_build_id_absent_raises() -> None:
     assert caught.value.category is ErrorCategory.BUILD_FAILURE
 
 
+def test_parse_gnu_build_id_truncated_note_raises_not_loops() -> None:
+    # A note header claiming a descsz that runs past the buffer is corrupt: the parser
+    # stops (no build-id) rather than reading out of bounds or looping.
+    truncated = struct.pack("<III", 4, 999, _NT_GNU_BUILD_ID) + b"GNU\x00" + b"\x01\x02"
+    with pytest.raises(CategorizedError) as caught:
+        parse_gnu_build_id(truncated)
+    assert caught.value.category is ErrorCategory.BUILD_FAILURE
+
+
+def test_parse_gnu_build_id_zero_length_note_terminates() -> None:
+    # A run of zero-length non-build-id notes must advance the cursor and terminate.
+    zero_notes = (struct.pack("<III", 0, 0, 1)) * 4
+    with pytest.raises(CategorizedError):
+        parse_gnu_build_id(zero_notes)
+
+
 # --- build() happy path --------------------------------------------------------------
 
 

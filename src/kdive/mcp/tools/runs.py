@@ -375,7 +375,12 @@ async def _fail_build(conn: AsyncConnection, job: Job, run: Run, category: Error
                 project=run.project,
             )
     except IllegalTransition:
-        _log.info("build of run %s failed but it is already terminal", run.id)
+        _log.warning(
+            "build of run %s failed (%s) but it is already terminal; failure not recorded "
+            "on the Run (a concurrent cancel won)",
+            run.id,
+            category.value,
+        )
 
 
 async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> str | None:
