@@ -47,7 +47,11 @@ LEGAL: dict[type[StrEnum], dict[StrEnum, set[StrEnum]]] = {
     },
     SystemState: {
         SystemState.DEFINED: {SystemState.PROVISIONING, SystemState.FAILED},
-        SystemState.PROVISIONING: {SystemState.READY, SystemState.FAILED},
+        SystemState.PROVISIONING: {
+            SystemState.READY,
+            SystemState.FAILED,
+            SystemState.TORN_DOWN,
+        },
         SystemState.READY: {SystemState.CRASHED, SystemState.TORN_DOWN, SystemState.FAILED},
         SystemState.CRASHED: {SystemState.TORN_DOWN, SystemState.FAILED},
         SystemState.TORN_DOWN: set(),
