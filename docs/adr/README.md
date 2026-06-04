@@ -59,3 +59,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0027](0027-safety-modules-secret-backend-impl.md) | Safety modules & file-ref secret backend (impl, refines 0012) | Proposed |
 | [0028](0028-control-plane-power-force-crash.md) | Control plane: power + force_crash on local libvirt (M0) | Proposed |
 | [0029](0029-build-plane-local-make.md) | Build plane (local make): runs.build, BuildProfile, build handler (M0) | Proposed |
+| [0031](0031-retrieve-plane-vmcore-postmortem.md) | Retrieve plane: vmcore capture/fetch + crash postmortem (M0) | Proposed |
