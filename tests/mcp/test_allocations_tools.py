@@ -8,11 +8,12 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import ALLOCATIONS
 from kdive.domain.models import Allocation
-from kdive.domain.state import AllocationState
+from kdive.domain.state import AllocationState, IllegalTransition
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import allocations as alloc_tools
 from kdive.providers.local_libvirt.discovery import (
@@ -209,6 +210,29 @@ def test_release_requested_allocation_is_error(migrated_url: str) -> None:
             resp = await alloc_tools.release_allocation(pool, _ctx(), alloc_id)
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_release_illegal_transition_backstop_returns_failure(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Force the backstop: a state change slips past the locked re-read (a future
+    # provision path could do this). update_state raising IllegalTransition must map to a
+    # clean configuration_error envelope carrying the actual current state, not a 500.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool, cap=2)
+            alloc_id = await _seed_alloc(pool, res_id, AllocationState.GRANTED)
+
+            async def _boom(*args: object, **kwargs: object) -> object:
+                raise IllegalTransition("forced")
+
+            monkeypatch.setattr(ALLOCATIONS, "update_state", _boom)
+            resp = await alloc_tools.release_allocation(pool, _ctx(), alloc_id)
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == "granted"  # re-read on a fresh connection
 
     asyncio.run(_run())
 

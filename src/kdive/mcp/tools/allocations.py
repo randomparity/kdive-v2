@@ -37,7 +37,6 @@ DEFAULT_LIST_LIMIT = 50
 MAX_LIST_LIMIT = 200
 _DEFAULT_KIND = "local-libvirt"
 _RELEASABLE = (AllocationState.GRANTED, AllocationState.ACTIVE)
-_TERMINAL = (AllocationState.RELEASED, AllocationState.FAILED)
 
 
 def _config_error(object_id: str) -> ToolResponse:
@@ -195,10 +194,7 @@ async def _release_locked(
         current = await ALLOCATIONS.get(conn, uid)
         if current is None:
             return _config_error(str(uid))
-        if current.state in _TERMINAL or current.state not in (
-            *_RELEASABLE,
-            AllocationState.RELEASING,
-        ):
+        if current.state not in (*_RELEASABLE, AllocationState.RELEASING):
             return ToolResponse.failure(
                 str(uid),
                 ErrorCategory.CONFIGURATION_ERROR,
