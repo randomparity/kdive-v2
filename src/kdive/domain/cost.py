@@ -35,6 +35,15 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 if TYPE_CHECKING:
     from psycopg import AsyncConnection
 
+    from kdive.domain.models import Resource
+
+# Resource-capabilities keys advertising the host's billable size ceiling (the discovery
+# provider populates them). A selector may not exceed these — the admission-only
+# ≤ resource-caps check (ADR-0007 §2): you cannot be billed for more than the host has.
+_CAP_VCPUS_KEY = "vcpus"
+_CAP_MEMORY_MB_KEY = "memory_mb"
+_MB_PER_GB = 1024
+
 # Global reference weights (ADR-0007 §1): one vcpu-hour costs 1.0 kcu, one GB-hour 0.25.
 W_CPU = Decimal("1.0")
 W_MEM = Decimal("0.25")
@@ -161,6 +170,50 @@ def validate_window(window: Decimal) -> None:
         raise _window_error(window, "must be a finite number")
     if window <= 0:
         raise _window_error(window, "must be > 0")
+
+
+def validate_against_resource(selector: Selector, resource: Resource) -> None:
+    """Reject a selector that exceeds the chosen Resource's advertised size (fail closed).
+
+    The admission-only ≤ resource-caps check (ADR-0007 §2): ``accounting.estimate`` has
+    no target host, so this lives off the read path. The Resource advertises its host's
+    ``vcpus`` (count) and ``memory_mb`` ceiling under ``capabilities``; a selector asking
+    for more than the host has — or a host that advertises no valid ceiling — is a
+    ``configuration_error``, never silently admitted (you cannot be billed for more
+    capacity than exists).
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` if the resource has no valid
+            ``vcpus`` / ``memory_mb`` capability, or the selector exceeds either.
+    """
+    cap_vcpus = _resource_cap(resource, _CAP_VCPUS_KEY)
+    cap_memory_mb = _resource_cap(resource, _CAP_MEMORY_MB_KEY)
+    if selector.vcpus > cap_vcpus:
+        raise _caps_error("vcpus", selector.vcpus, cap_vcpus, resource)
+    requested_mb = selector.memory_gb * _MB_PER_GB
+    if requested_mb > cap_memory_mb:
+        raise _caps_error("memory_mb", requested_mb, cap_memory_mb, resource)
+
+
+def _resource_cap(resource: Resource, key: str) -> int:
+    """Read a non-negative integer capability ceiling; fail closed on anything invalid."""
+    value = resource.capabilities.get(key)
+    # bool is an int subclass — reject it so `True` is not read as a ceiling of 1.
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise CategorizedError(
+            f"resource {resource.id} has no valid {key!r} capability",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"resource_id": str(resource.id), "key": key, "value": repr(value)},
+        )
+    return value
+
+
+def _caps_error(field: str, requested: int, ceiling: int, resource: Resource) -> CategorizedError:
+    return CategorizedError(
+        f"selector {field}={requested} exceeds resource {resource.id} ceiling {ceiling}",
+        category=ErrorCategory.CONFIGURATION_ERROR,
+        details={"field": field, "requested": str(requested), "ceiling": str(ceiling)},
+    )
 
 
 async def resolve_coeff(conn: AsyncConnection, cost_class: str) -> Decimal:
