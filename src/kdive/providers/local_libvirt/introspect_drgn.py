@@ -85,6 +85,17 @@ class VmcoreIntrospector(Protocol):
     ) -> IntrospectOutput: ...
 
 
+class LiveIntrospector(Protocol):
+    """The handler-facing live-introspection port (ADR-0039 §3).
+
+    Runs the same three helpers as the offline port but against a **live** guest kernel
+    reached over the session's transport handle (drgn-over-SSH), returning the same
+    redacted, byte-bounded :class:`IntrospectOutput`.
+    """
+
+    def run(self, *, transport_handle: str) -> IntrospectOutput: ...
+
+
 # --- helpers (M0 subset ported from v1 introspect/helpers/) --------------------------------
 
 
@@ -276,43 +287,122 @@ class LocalLibvirtVmcoreIntrospect:
         modules: dict[str, object],
         sysinfo: dict[str, object],
     ) -> IntrospectOutput:
-        """Redact first (the single redaction boundary), then byte-cap the redacted report.
+        return assemble_report(tasks, modules, sysinfo, byte_cap=self._report_byte_cap)
 
-        Redaction precedes the byte-cap so the cap bounds the *returned* (redacted) payload
-        exactly (ADR-0033 §"Output bounds"), not a pre-redaction size that never ships.
-        """
-        helper_truncated = bool(tasks.get("truncated"))
-        redactor = Redactor()
-        tasks = redactor.redact_value(tasks)
-        modules = redactor.redact_value(modules)
-        sysinfo = redactor.redact_value(sysinfo)
-        tasks, byte_trimmed = self._byte_cap(tasks, modules, sysinfo)
-        return IntrospectOutput(
-            tasks=tasks,
-            modules=modules,
-            sysinfo=sysinfo,
-            truncated=helper_truncated or byte_trimmed,
-        )
 
-    def _byte_cap(
+def assemble_report(
+    tasks: dict[str, object],
+    modules: dict[str, object],
+    sysinfo: dict[str, object],
+    *,
+    byte_cap: int,
+) -> IntrospectOutput:
+    """Redact first (the single redaction boundary), then byte-cap the redacted report.
+
+    Shared by the offline and live ports. Redaction precedes the byte-cap so the cap bounds
+    the *returned* (redacted) payload exactly (ADR-0033 §"Output bounds"), not a
+    pre-redaction size that never ships.
+    """
+    helper_truncated = bool(tasks.get("truncated"))
+    redactor = Redactor()
+    tasks = redactor.redact_value(tasks)
+    modules = redactor.redact_value(modules)
+    sysinfo = redactor.redact_value(sysinfo)
+    tasks, byte_trimmed = _byte_cap(tasks, modules, sysinfo, byte_cap=byte_cap)
+    return IntrospectOutput(
+        tasks=tasks,
+        modules=modules,
+        sysinfo=sysinfo,
+        truncated=helper_truncated or byte_trimmed,
+    )
+
+
+def _byte_cap(
+    tasks: dict[str, object],
+    modules: dict[str, object],
+    sysinfo: dict[str, object],
+    *,
+    byte_cap: int,
+) -> tuple[dict[str, object], bool]:
+    """Trim the ``tasks`` row list until the serialized report fits the byte cap."""
+    raw = tasks.get("tasks")
+    rows = list(raw) if isinstance(raw, list) else []
+    trimmed = False
+    while rows and _report_size(rows, modules, sysinfo) > byte_cap:
+        rows = rows[: len(rows) // 2]
+        trimmed = True
+    return {**tasks, "tasks": rows}, trimmed
+
+
+def _report_size(rows: list[object], modules: dict[str, object], sysinfo: dict[str, object]) -> int:
+    payload = {"tasks": rows, "modules": modules, "sysinfo": sysinfo}
+    return len(json.dumps(payload).encode("utf-8"))
+
+
+def _normalize_attach_error(exc: Exception, message: str) -> CategorizedError:
+    """A categorized fault passes through; any other open fault becomes an attach failure."""
+    if isinstance(exc, CategorizedError):
+        return exc
+    return CategorizedError(message, category=ErrorCategory.DEBUG_ATTACH_FAILURE)
+
+
+# --- LocalLibvirtLiveIntrospect (the live drgn-over-SSH port, ADR-0039) ---------------------
+
+type _OpenLiveProgram = Callable[[str], _Program]
+
+
+class LocalLibvirtLiveIntrospect:
+    """The realized live-introspection port (ADR-0039 §3).
+
+    Attaches drgn to the **running** guest kernel over the session's transport handle
+    (drgn-over-SSH), runs the same three helpers as the offline port, and returns the same
+    redacted, byte-bounded report — the port is the single redaction boundary.
+
+    The drgn seams (``open_live_program``/``run_helper``) are ``None`` off-gate; ``run`` then
+    raises ``MISSING_DEPENDENCY``, mirroring the offline port's seam guard. The ``live_vm``
+    runner injects the real ``open_live_program`` (which opens drgn against the live kernel
+    over the already-authenticated transport).
+    """
+
+    def __init__(
         self,
-        tasks: dict[str, object],
-        modules: dict[str, object],
-        sysinfo: dict[str, object],
-    ) -> tuple[dict[str, object], bool]:
-        """Trim the ``tasks`` row list until the serialized report fits the byte cap."""
-        raw = tasks.get("tasks")
-        rows = list(raw) if isinstance(raw, list) else []
-        trimmed = False
-        while rows and self._size(rows, modules, sysinfo) > self._report_byte_cap:
-            rows = rows[: len(rows) // 2]
-            trimmed = True
-        return {**tasks, "tasks": rows}, trimmed
+        *,
+        open_live_program: _OpenLiveProgram | None = None,
+        run_helper: _RunHelper | None = None,
+    ) -> None:
+        self._open_live_program = open_live_program
+        self._run_helper = run_helper
+        self._report_byte_cap = _REPORT_BYTE_CAP
 
-    @staticmethod
-    def _size(rows: list[object], modules: dict[str, object], sysinfo: dict[str, object]) -> int:
-        payload = {"tasks": rows, "modules": modules, "sysinfo": sysinfo}
-        return len(json.dumps(payload).encode("utf-8"))
+    @classmethod
+    def from_env(cls) -> LocalLibvirtLiveIntrospect:
+        """Build from env; the drgn seam is left ``None`` so ``run`` raises off-gate."""
+        return cls()
+
+    def run(self, *, transport_handle: str) -> IntrospectOutput:
+        """Attach drgn to the live kernel, run the helpers, return a redacted report.
+
+        Raises:
+            CategorizedError: ``MISSING_DEPENDENCY`` if the drgn seams were not configured
+                (off-gate); a transport-layer ``CategorizedError`` (``transport_failure`` /
+                ``debug_attach_failure``) propagated from the live seam; ``DEBUG_ATTACH_FAILURE``
+                if drgn cannot attach to the live kernel for any other reason.
+        """
+        if self._open_live_program is None or self._run_helper is None:
+            raise CategorizedError(
+                "live drgn introspection runs only under the live_vm gate",
+                category=ErrorCategory.MISSING_DEPENDENCY,
+            )
+        try:
+            program = self._open_live_program(transport_handle)
+        except Exception as exc:  # noqa: BLE001 - any live-attach fault becomes a typed failure
+            raise _normalize_attach_error(
+                exc, "drgn could not attach to the live guest kernel"
+            ) from exc
+        tasks = self._run_helper(program, "tasks")
+        modules = self._run_helper(program, "modules")
+        sysinfo = self._run_helper(program, "sysinfo")
+        return assemble_report(tasks, modules, sysinfo, byte_cap=self._report_byte_cap)
 
 
 def _real_fetch_object(ref: str) -> bytes:  # pragma: no cover - live_vm
@@ -330,8 +420,11 @@ def _real_read_vmcore_build_id(data: bytes) -> str:  # pragma: no cover - live_v
 
 __all__ = [
     "IntrospectOutput",
+    "LiveIntrospector",
+    "LocalLibvirtLiveIntrospect",
     "LocalLibvirtVmcoreIntrospect",
     "VmcoreIntrospector",
+    "assemble_report",
     "helper_modules",
     "helper_sysinfo",
     "helper_tasks",
