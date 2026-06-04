@@ -52,6 +52,17 @@ role factor as a per-op parameter precisely so this one op can require `operator
 reversible lifecycle move, `operator`; the destructive power actions
 (`off`/`cycle`/`reset`) tear into a running guest and require `admin`.
 
+**The operator/teardown asymmetry is intentional and does not strand resources.** An
+`operator` may `systems.provision` (consuming quota) but not `systems.teardown` — yet
+the operator's self-service cleanup path is *not* `teardown`, it is
+`allocations.release` (`operator`). Releasing the Allocation orphans its System, and the
+reconciler's orphaned-System repair (principal-less GC teardown, ADR-0021) drives the
+System to `torn_down`. So an operator always has an operator-reachable path to free the
+quota they hold; direct `systems.teardown` is the privileged, attribution-bearing
+*administrative* destruction of a still-allocated System, which is `admin`. Idle-lease
+expiry feeds the same reconciler teardown automatically (plan issue ⑤), so neither path
+depends on an admin being present.
+
 **Role checks bind to the *target* project, not just any project the caller is in.**
 Every read and write resolves the project of the object it touches and checks
 `require_project` + `require_role` against **that** project. This matters most for
@@ -60,6 +71,21 @@ checks `viewer` there — a `viewer` in project A cannot read project B's spend 
 a B-owned `investigation_id` (ADR-0007 decision 6). Without per-object project resolution
 the `viewer` grant would be a cross-project read bypass, so it carries its own negative
 test (decision 3).
+
+**Read-side floor and the member-without-role case.** The accounting read surface
+(`accounting.usage`/`estimate`) is the read tool M1 introduces, and it is the read tool
+this ADR pins to `require_role(viewer)` — its negative tests are issue ⑥'s acceptance.
+`require_role` is fail-closed: a token that grants project *membership* but carries no
+`roles` entry for that project (`held is None`) is **denied**, not silently allowed.
+M1 does **not** retrofit `require_role(viewer)` onto every pre-existing `*.get`/`*.list`
+read handler — those keep their M0 membership check (`require_project` /
+`project in ctx.projects`) so this issue stays a localized, bisectable change and does
+not silently revoke read access from membership-only tokens issued before the role claim
+was populated. The decision-1 table records the intended end-state floor (reads ⇒
+`viewer`); retrofitting the remaining read handlers is tracked as follow-up, not folded
+into the RBAC-hardening issue. The deployment contract is that M1 tokens carry a `roles`
+entry for every granted project (decision 3 mints them that way), so the membership-only
+reads and the `viewer`-pinned reads agree in practice for any correctly-issued M1 token.
 
 ### 2. The destructive-op gate's role factor is **`admin`**, no longer collapsed
 
@@ -91,7 +117,12 @@ mints distinct principals — a `viewer`, an `operator`, and an `admin` per test
 project — so the suite can assert the boundary in **both** directions: the
 `admin`/`operator` succeeds at what it should, and the lower role is **refused**
 (`AuthorizationError` → the tool's `authorization_error`/`allocation_denied` mapping)
-at what it should not. Every new privileged M1 tool ships with its negative test.
+at what it should not. Every privileged op the decision-1 table marks `admin` ships with
+a negative test that the next-lower role (`operator`) is refused: the `admin` ops M1 must
+cover are `accounting.set_budget`, `accounting.set_quota`, `control.force_crash`,
+`control.power off`/`cycle`/`reset`, and `systems.teardown`, plus the cross-project
+`accounting.usage(investigation_id)` viewer refusal. That table is the authoritative
+privileged-op list the negative-test set is checked against.
 
 ## Consequences
 
