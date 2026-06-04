@@ -536,7 +536,12 @@ def test_teardown_handler_provisioning_system_one_transition(migrated_url: str) 
     asyncio.run(_run())
 
 
-def test_teardown_handler_already_torn_down_is_noop(migrated_url: str) -> None:
+def test_teardown_handler_already_torn_down_reattempts_destroy_no_transition(
+    migrated_url: str,
+) -> None:
+    # A re-run on an already-torn_down System makes no state change but STILL attempts the
+    # idempotent destroy — so a teardown that failed after committing ->torn_down self-heals
+    # on retry rather than leaking the domain.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
@@ -545,7 +550,15 @@ def test_teardown_handler_already_torn_down_is_noop(migrated_url: str) -> None:
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
                 await systems_tools.teardown_handler(conn, job, prov)
-            assert prov.torn_down == []  # provider not called
+            assert prov.torn_down == [f"kdive-{sys_id}"]  # idempotent destroy re-attempted
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT count(*) AS n FROM audit_log WHERE object_id = %s "
+                    "AND transition LIKE '%%->torn_down'",
+                    (sys_id,),
+                )
+                row = await cur.fetchone()
+        assert row is not None and row["n"] == 0  # no transition audited (already torn_down)
 
     asyncio.run(_run())
 

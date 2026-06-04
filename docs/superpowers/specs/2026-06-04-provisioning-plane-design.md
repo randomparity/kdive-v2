@@ -272,22 +272,25 @@ handler is the audited path.)
 `(conn, job, provisioning)`:
 
 1. One transaction under `advisory_xact_lock(SYSTEM, system_id)`: `system = SYSTEMS.get`.
-   Absent → return (nothing to tear down). If `TORN_DOWN` → return (idempotent). Else
-   `SYSTEMS.update_state(system_id, → TORN_DOWN)` and audit `"<old>->torn_down"`, then commit
-   (release the lock). Every non-terminal System state reaches `torn_down` directly —
-   `ready`/`crashed`/`failed → torn_down` already exist, and **this issue adds
-   `provisioning → torn_down`** (see "Domain/state change" below) so a stuck or abandoned
-   mid-provision System tears down in one legal transition. Recording the state **before** the
-   libvirt destroy (under the lock) is what makes the provision/teardown race safe: a
-   concurrent `provision` re-reads `torn_down` under the same lock (provision step 5) and
+   Absent → return (nothing to tear down). Read `domain_name = system.domain_name or
+   domain_name_for(system_id)` (a System torn down *before* `provision` set `domain_name` still
+   has a deterministically-named domain to reap). **Transition only if not already terminal:**
+   if `state is not TORN_DOWN`, `SYSTEMS.update_state(→ TORN_DOWN)` and audit `"<old>->torn_down"`;
+   if already `torn_down`, skip the transition (no second audit row). Every non-terminal System
+   state reaches `torn_down` directly — `ready`/`crashed`/`failed → torn_down` already exist, and
+   **this issue adds `provisioning → torn_down`** (see "Domain/state change" below) so a stuck or
+   abandoned mid-provision System tears down in one legal transition. Recording the state
+   **before** the libvirt destroy (under the lock) is what makes the provision/teardown race
+   safe: a concurrent `provision` re-reads `torn_down` under the same lock (provision step 5) and
    cleans up the domain it created.
-2. `domain_name = system.domain_name or domain_name_for(system_id)` — a System torn down
-   *before* `provision` set `domain_name` still has a deterministically-named domain to reap
-   (or none, which `teardown` no-ops over).
-3. `provisioning.teardown(domain_name)` **outside the lock** (idempotent; "already gone" is
-   success). Return `str(system_id)`. The destroy running after the committed `→ torn_down`
-   (not before) means a crash between them leaves a `torn_down` row whose domain a teardown
-   *retry* (same dedup key) reaps — and, once wired, the leaked-domain reaper as a backstop.
+2. `provisioning.teardown(domain_name)` **outside the lock**, **unconditionally** (idempotent;
+   "already gone" is a no-op success). Return `str(system_id)`. Running the destroy after the
+   committed `→ torn_down` — and running it *even when the row was already `torn_down`* — is what
+   lets a teardown whose destroy **failed after** the state commit (dead-lettered, then requeued)
+   recover on retry: the retry re-reads `torn_down`, skips the transition, but re-attempts the
+   destroy. Without the unconditional destroy a post-commit destroy failure would leak the domain
+   until the (deferred) leaked-domain reaper ran. The reaper remains the backstop for a System
+   whose *row* is gone entirely.
 
 #### Registration
 
@@ -403,8 +406,9 @@ calls; no DB, no `live_vm`)
 - `provisioning` System (stuck) → `provisioning → torn_down` in one transition (the new
   edge); provider teardown called with the deterministic name.
 - `failed` System → `failed → torn_down`; provider teardown called.
-- already `torn_down` → no-op (provider not called, no transition).
-- absent System → no-op.
+- already `torn_down` → no state transition (no second audit row), but the idempotent provider
+  `teardown` **is** re-attempted (so a destroy that failed post-commit self-heals on retry).
+- absent System → no-op (provider not called).
 - a System whose `domain_name` is NULL (failed pre-rename) → teardown uses
   `domain_name_for(id)`; provider no-ops over an absent domain.
 

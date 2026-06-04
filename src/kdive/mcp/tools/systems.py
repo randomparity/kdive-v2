@@ -329,23 +329,29 @@ async def teardown_handler(
 ) -> str | None:
     """Destroy+undefine the domain and drive the System ``-> torn_down`` (idempotent)."""
     system_id = UUID(job.payload["system_id"])
-    domain_name: str | None = None
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
         system = await SYSTEMS.get(conn, system_id)
-        if system is None or system.state is SystemState.TORN_DOWN:
-            return str(system_id) if system is not None else None
+        if system is None:
+            return None  # nothing to tear down
         domain_name = system.domain_name or domain_name_for(system_id)
-        old = system.state
-        await SYSTEMS.update_state(conn, system_id, SystemState.TORN_DOWN)
-        await _audit_transition(
-            conn,
-            job,
-            project=system.project,
-            object_id=system_id,
-            transition=f"{old.value}->torn_down",
-            tool="systems.teardown",
-        )
-    provisioning.teardown(domain_name)  # outside the lock (slow libvirt call)
+        # Transition only if not already terminal; a re-run (e.g. after a post-commit destroy
+        # failure dead-lettered and requeued) still proceeds to the destroy below.
+        if system.state is not SystemState.TORN_DOWN:
+            old = system.state
+            await SYSTEMS.update_state(conn, system_id, SystemState.TORN_DOWN)
+            await _audit_transition(
+                conn,
+                job,
+                project=system.project,
+                object_id=system_id,
+                transition=f"{old.value}->torn_down",
+                tool="systems.teardown",
+            )
+    # Always attempt the idempotent destroy outside the lock (slow libvirt call). The state is
+    # committed *before* the destroy so a concurrent provision re-reads ``torn_down`` and cleans
+    # up the domain it created; running the destroy unconditionally (even when the row was
+    # already ``torn_down``) lets a retry recover a destroy that failed after that commit.
+    provisioning.teardown(domain_name)
     return str(system_id)
 
 
