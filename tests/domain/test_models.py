@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from decimal import Decimal
 from typing import Any, TypedDict
 
 import pytest
@@ -13,11 +14,16 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import (
     Allocation,
     Artifact,
+    Budget,
+    CostClassCoefficient,
     DebugSession,
     ExternalRef,
     Investigation,
     Job,
     JobKind,
+    LedgerEntry,
+    LedgerEventType,
+    Quota,
     Resource,
     ResourceKind,
     Run,
@@ -220,6 +226,118 @@ def test_models_reject_unknown_fields() -> None:
     }
     with pytest.raises(ValidationError):
         Resource(**kwargs)
+
+
+def test_allocation_carries_m1_size_and_billing_columns() -> None:
+    allocation = Allocation(
+        **_base(),
+        **_attrib(),
+        resource_id=_ID2,
+        state=AllocationState.GRANTED,
+        requested_vcpus=4,
+        requested_memory_gb=16,
+        active_started_at=_NOW,
+    )
+    assert allocation.requested_vcpus == 4
+    assert allocation.requested_memory_gb == 16
+    assert allocation.active_started_at == _NOW
+    assert allocation.active_ended_at is None
+
+
+def test_allocation_m1_columns_default_to_none() -> None:
+    # M0 allocations carry no size/billing columns; they default null and round-trip.
+    allocation = Allocation(
+        **_base(),
+        **_attrib(),
+        resource_id=_ID2,
+        state=AllocationState.REQUESTED,
+    )
+    assert allocation.requested_vcpus is None
+    assert allocation.requested_memory_gb is None
+    assert allocation.active_started_at is None
+    assert allocation.active_ended_at is None
+
+
+def test_cost_class_coefficient_holds_a_decimal_coeff() -> None:
+    coeff = CostClassCoefficient(cost_class="local", coeff=Decimal("1.0"), updated_at=_NOW)
+    assert coeff.cost_class == "local"
+    assert coeff.coeff == Decimal("1.0")
+    assert "id" not in CostClassCoefficient.model_fields  # keyed by cost_class PK
+
+
+def test_budget_carries_limit_and_running_spent_total() -> None:
+    budget = Budget(
+        project="kernel-team",
+        limit_kcu=Decimal("100.0"),
+        spent_kcu=Decimal("12.5"),
+        updated_at=_NOW,
+    )
+    assert budget.limit_kcu == Decimal("100.0")
+    assert budget.spent_kcu == Decimal("12.5")
+    assert "id" not in Budget.model_fields  # keyed by project PK
+
+
+def test_quota_carries_two_concurrency_caps() -> None:
+    quota = Quota(
+        project="kernel-team",
+        max_concurrent_allocations=5,
+        max_concurrent_systems=10,
+        updated_at=_NOW,
+    )
+    assert quota.max_concurrent_allocations == 5
+    assert quota.max_concurrent_systems == 10
+    assert "id" not in Quota.model_fields  # keyed by project PK
+
+
+def test_ledger_entry_records_signed_delta_and_event_type() -> None:
+    entry = LedgerEntry(
+        id=_ID,
+        ts=_NOW,
+        project="kernel-team",
+        allocation_id=_ID2,
+        resource_id=_ID,
+        cost_class="local",
+        event_type=LedgerEventType.RESERVED,
+        kcu_delta=Decimal("4.0"),
+        note="grant reservation",
+    )
+    assert entry.event_type is LedgerEventType.RESERVED
+    assert entry.kcu_delta == Decimal("4.0")
+    assert "created_at" not in LedgerEntry.model_fields  # append-only, uses `ts`
+
+
+def test_ledger_event_type_is_the_two_signed_event_kinds() -> None:
+    assert {e.value for e in LedgerEventType} == {"reserved", "reconciled"}
+
+
+def test_ledger_reconciled_delta_may_be_negative() -> None:
+    # reconciled credits the unused reservation: kcu_delta = actual − Σ reserved < 0.
+    entry = LedgerEntry(
+        id=_ID,
+        ts=_NOW,
+        project="kernel-team",
+        allocation_id=_ID2,
+        resource_id=_ID,
+        cost_class="local",
+        event_type=LedgerEventType.RECONCILED,
+        kcu_delta=Decimal("-3.5"),
+        note=None,
+    )
+    assert entry.kcu_delta == Decimal("-3.5")
+    assert entry.note is None
+
+
+def test_accounting_models_reject_unknown_fields() -> None:
+    with pytest.raises(ValidationError):
+        Budget.model_validate(
+            {
+                "project": "p",
+                "limit_kcu": Decimal("1"),
+                "spent_kcu": Decimal("0"),
+                "updated_at": _NOW,
+                "bogus": "nope",
+            }
+        )
 
 
 def test_run_round_trips_through_json() -> None:
