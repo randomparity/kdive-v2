@@ -92,7 +92,11 @@ is an **idempotent upsert**: it removes any existing `(tracker, id)` match and a
 supplied ref, so re-linking yields one entry and a changed `url` is a correction, not a
 duplicate. `investigations.unlink` is an **idempotent remove-if-present**: unlinking an
 absent `(tracker, id)` is a success no-op (the postcondition "not linked" holds), so a
-retry is forward-progressing.
+retry is forward-progressing. Because the identity is `(tracker, id)`, `unlink`'s input
+contract requires only `{tracker, id}` — a `url` is neither required nor consulted
+(supplying one is accepted and ignored) — so a caller holding only the tracked-item
+identity can unlink without fabricating the stored `url`. `link`, by contrast, takes the
+full `{tracker, id, url}` because it writes the `url`.
 
 `link`, `unlink`, and `close` mutate the Investigation only when it is **non-terminal**
 (`open` / `active`); a `closed` / `abandoned` Investigation is immutable and these tools

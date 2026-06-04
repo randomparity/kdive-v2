@@ -141,7 +141,12 @@ while serving are attributed. `_as_uuid` (malformed → `configuration_error`) a
     `Jsonb(...)` — psycopg3 does not adapt a bare `list` to `jsonb`). Audit
     `transition="link"`, `args={"tracker": ref.tracker, "id": ref.id}`.
   - return `_envelope_for_investigation(updated)`.
-- **`investigations.unlink(investigation_id, ref)`** — same guard/lock shape; remove the ref
+- **`investigations.unlink(investigation_id, ref)`** — `ref` is keyed on the **`(tracker,
+  id)`** natural key only: unlink accepts `{tracker, id}` (a `url` is **not** required, and
+  any supplied `url` is ignored — matching never consults it), so a caller that holds only
+  the tracked-item identity can unlink without fabricating a `url`. Parse `ref` for a
+  non-empty string `tracker` and `id` (a missing/empty either → `configuration_error`);
+  **do not** require the full `ExternalRef`. Same guard/lock shape as `link`; remove the ref
   whose `(tracker, id)` matches (absent match → idempotent: write the unchanged list / skip
   the write, still `success`). Audit `transition="unlink"` only when a ref was actually
   removed. Return the updated envelope.
@@ -188,9 +193,12 @@ _INVESTIGATION_OPEN_FOR_RUN = frozenset({InvestigationState.OPEN, InvestigationS
      - state ∉ `_RUN_HOSTABLE` (i.e. `defined`/`provisioning`) →
        `failure(CONFIGURATION_ERROR, data={"current_status": <state>})`.
      - state == `ready` → proceed.
-  6. Re-read the Investigation state under the lock (`FOR UPDATE`); a terminal
-     (`closed`/`abandoned`) Investigation → `failure(CONFIGURATION_ERROR,
-     data={"current_status": …})` (cannot add a Run to a closed campaign).
+  6. Re-read the Investigation state under the lock (`FOR UPDATE`); admit **only** when the
+     state ∈ `_INVESTIGATION_OPEN_FOR_RUN` (i.e. `open`/`active`), else
+     `failure(CONFIGURATION_ERROR, data={"current_status": …})` (cannot add a Run to a
+     `closed`/`abandoned` campaign). This is an **allowlist**, uniform with the System and
+     Allocation checks: a future non-terminal Investigation state is rejected-by-default
+     until the gate is revisited, rather than silently admitted by a terminal-only denylist.
   7. `RUNS.insert` a Run: `state=CREATED`, `investigation_id`, `system_id`, `build_profile`,
      attribution = `inv.project` + `ctx.principal`/`ctx.agent_session`, `failure_category=None`.
      Audit `transition="->created"`, `object_kind="runs"`,
@@ -297,6 +305,9 @@ explicit `roles` — mirroring `test_systems_tools.py` / `test_allocations_tools
   (still one entry for that key — upsert), not duplicated.
 - `link` the identical ref twice → one entry (idempotent).
 - `unlink` an existing ref → removed from the row; one `"unlink"` audit row.
+- `unlink` with `{tracker, id}` **and no `url`** → removes the matching ref (the input
+  contract needs only the natural key); `unlink` with a `url` that differs from the stored
+  ref's still removes it (matching ignores `url`).
 - `unlink` an absent `(tracker, id)` → idempotent `success`, list unchanged, **no** audit row.
 - `link`/`unlink` on a `closed`/`abandoned` Investigation → `failure(CONFIGURATION_ERROR,
   data.current_status=…)`, row unchanged.
