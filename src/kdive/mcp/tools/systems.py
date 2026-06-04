@@ -248,7 +248,16 @@ async def provision_handler(
             details={"system_id": str(system_id)},
         )
     if system.state is not SystemState.PROVISIONING:
-        return str(system_id)  # ready (retry), or terminal (a teardown/failure raced ahead)
+        # ready/crashed: a concurrent same-job run already finalized — the domain belongs to the
+        # live System, so leave it. terminal (torn_down/failed): a teardown or failure raced
+        # ahead; idempotently reap any domain a prior run of THIS job may have created before it
+        # was superseded. Doing it here (not only inline after provisioning) makes the
+        # compensation durable: a requeue after a failed finalize-reap retries it rather than
+        # leaking the domain — the teardown job may have already no-op'd before the domain
+        # existed, and the reaper that would otherwise catch it is deferred (ADR-0025 §8).
+        if system.state in _TERMINAL_SYSTEM:
+            provisioning.teardown(system.domain_name or domain_name_for(system_id))
+        return str(system_id)
     profile = ProvisioningProfile.parse(system.provisioning_profile)
     try:
         domain_name = provisioning.provision(system_id, profile)

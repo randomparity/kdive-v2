@@ -415,7 +415,10 @@ def test_provision_handler_failure_when_already_terminal_preserves_category(
     asyncio.run(_run())
 
 
-def test_provision_handler_terminal_system_short_circuits(migrated_url: str) -> None:
+def test_provision_handler_terminal_system_reaps_without_provisioning(migrated_url: str) -> None:
+    # A provision job whose System is already terminal on entry does not re-provision, but it
+    # idempotently reaps the deterministic domain — the durable retry point for a compensation
+    # that failed on an earlier run (NULL domain_name -> deterministic name).
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
@@ -425,7 +428,49 @@ def test_provision_handler_terminal_system_short_circuits(migrated_url: str) -> 
             async with pool.connection() as conn:
                 result = await systems_tools.provision_handler(conn, job, prov)
         assert result == sys_id
-        assert prov.provisioned == []
+        assert prov.provisioned == []  # not re-provisioned
+        assert prov.torn_down == [f"kdive-{sys_id}"]  # but the domain is idempotently reaped
+
+    asyncio.run(_run())
+
+
+def test_provision_handler_failed_compensation_retries_reap_on_requeue(migrated_url: str) -> None:
+    # provision creates the domain, a concurrent teardown drives torn_down, and the finalize
+    # compensation teardown fails transiently (handler raises -> job requeues). The requeue must
+    # re-attempt the reap from the terminal-entry path rather than leaking the created domain.
+    class _RacingThenTeardownFails(_FakeProvisioning):
+        def __init__(self, url: str) -> None:
+            super().__init__()
+            self._url = url
+            self._fail_next_teardown = True
+
+        def provision(self, system_id: UUID, profile: Any) -> str:
+            name = super().provision(system_id, profile)
+            with psycopg.connect(self._url, autocommit=True) as c:
+                c.execute("UPDATE systems SET state = 'torn_down' WHERE id = %s", (system_id,))
+            return name
+
+        def teardown(self, domain_name: str) -> None:
+            if self._fail_next_teardown:
+                self._fail_next_teardown = False
+                raise CategorizedError("transient", category=ErrorCategory.INFRASTRUCTURE_FAILURE)
+            super().teardown(domain_name)
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.PROVISIONING)
+            job = await _enqueue_provision(pool, sys_id, alloc_id)
+            prov = _RacingThenTeardownFails(migrated_url)
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError):  # finalize compensation teardown failed
+                    await systems_tools.provision_handler(conn, job, prov)
+            assert prov.torn_down == []  # nothing reaped yet — the domain is still leaked
+            async with pool.connection() as conn:  # requeue
+                result = await systems_tools.provision_handler(conn, job, prov)
+            assert result == sys_id
+            assert prov.provisioned == [UUID(sys_id)]  # provider NOT re-invoked on the requeue
+            assert prov.torn_down == [f"kdive-{sys_id}"]  # the created domain is finally reaped
 
     asyncio.run(_run())
 
