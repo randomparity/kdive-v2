@@ -35,8 +35,10 @@ from kdive.domain.state import DebugSessionState, RunState, SystemState
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools.debug_ops import DebugEngineRuntime, register_debug_ops
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.local_libvirt.connect import Connector, LocalLibvirtConnect
+from kdive.providers.local_libvirt.debug_gdbmi import GdbMiEngine, default_attach_seam
 from kdive.security import audit
 from kdive.security.rbac import Role, require_role
 
@@ -240,8 +242,15 @@ async def end_session(
     session_id: str,
     *,
     connector: Connector,
+    runtime: DebugEngineRuntime | None = None,
 ) -> ToolResponse:
-    """Drive a live/attach DebugSession `-> detached` (idempotent on detached; operator)."""
+    """Drive a live/attach DebugSession `-> detached` (idempotent on detached; operator).
+
+    Also reaps the lazy gdb-MI engine (ADR-0034 §4d): under the per-session lock it exits the
+    gdb subprocess and drops the registry entry, so an ended session never strands a subprocess
+    or holds the single-attach stub. Reaping a session that never ran a Debug-plane op is a
+    no-op.
+    """
     uid = _as_uuid(session_id)
     if uid is None:
         return _config_error(session_id)
@@ -255,7 +264,11 @@ async def end_session(
             if resolved is None:
                 return _config_error(session_id)
             _, system_id = resolved
-            return await _detach_locked(conn, ctx, uid, system_id, connector)
+            envelope = await _detach_locked(conn, ctx, uid, system_id, connector)
+        if runtime is not None:
+            async with runtime.lock_for(session_id):
+                runtime.reap(session_id)
+        return envelope
 
 
 async def _detach_locked(
@@ -309,10 +322,13 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `debug.*` tools on ``app``, bound to ``pool``.
 
     The `Connector` is built once via `LocalLibvirtConnect.from_env()` (no libvirt connection
-    at registration — the resolver/prober are lazy `live_vm` seams) and injected into both
-    handlers as their `connector` keyword.
+    at registration — the resolver/prober are lazy `live_vm` seams). The Debug-plane gdb-MI
+    tier (ADR-0034) shares one process-scoped :class:`DebugEngineRuntime` (registry +
+    per-session locks + the `live_vm`-gated attach seam); its seven tools register here too, so
+    `app.py` is untouched. `end_session` reaps the lazy engine via the shared runtime.
     """
     connector: Connector = LocalLibvirtConnect.from_env()
+    runtime = DebugEngineRuntime(engine=GdbMiEngine(), attach=default_attach_seam)
 
     @app.tool(name="debug.start_session")
     async def debug_start_session(run_id: str, transport: str = _GDBSTUB) -> ToolResponse:
@@ -322,4 +338,8 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
 
     @app.tool(name="debug.end_session")
     async def debug_end_session(session_id: str) -> ToolResponse:
-        return await end_session(pool, current_context(), session_id, connector=connector)
+        return await end_session(
+            pool, current_context(), session_id, connector=connector, runtime=runtime
+        )
+
+    register_debug_ops(app, pool, runtime)
