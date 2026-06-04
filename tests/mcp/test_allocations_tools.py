@@ -189,14 +189,16 @@ def test_release_active_allocation(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_release_terminal_allocation_is_error(migrated_url: str) -> None:
+def test_release_terminal_allocation_is_stale_handle(migrated_url: str) -> None:
+    # A terminal allocation was already reconciled (by a prior release or the ->expired
+    # sweep); re-releasing it is a stale handle, not a config error (ADR-0040 §4).
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             res_id = await _register(pool, cap=2)
             alloc_id = await _seed_alloc(pool, res_id, AllocationState.RELEASED)
             resp = await alloc_tools.release_allocation(pool, _ctx(), alloc_id)
         assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
+        assert resp.error_category == "stale_handle"
         assert resp.data["current_status"] == "released"
 
     asyncio.run(_run())

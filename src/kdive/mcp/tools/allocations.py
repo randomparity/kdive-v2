@@ -12,6 +12,7 @@ project membership. Authz denials raise (ADR-0020: no authz `ErrorCategory`).
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastmcp import FastMCP
@@ -21,6 +22,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, RESOURCES
+from kdive.domain import accounting
 from kdive.domain.allocation_admission import admit
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Resource
@@ -37,6 +39,7 @@ DEFAULT_LIST_LIMIT = 50
 MAX_LIST_LIMIT = 200
 _DEFAULT_KIND = "local-libvirt"
 _RELEASABLE = (AllocationState.GRANTED, AllocationState.ACTIVE)
+_TERMINAL = (AllocationState.RELEASED, AllocationState.EXPIRED, AllocationState.FAILED)
 
 
 def _config_error(object_id: str) -> ToolResponse:
@@ -189,11 +192,30 @@ async def release_allocation(
 async def _release_locked(
     conn: AsyncConnection, ctx: RequestContext, uid: UUID, *, project: str
 ) -> ToolResponse:
-    """Read the state under the per-allocation lock and drive it to ``released``."""
-    async with conn.transaction(), advisory_xact_lock(conn, LockScope.ALLOCATION, uid):
+    """Drive an allocation to ``released`` and reconcile its spend in one transaction.
+
+    Holds ``PROJECT → ALLOCATION`` (the global lock order, ADR-0040 §1): the project lock
+    so the ``reconcile`` debit to ``budgets.spent_kcu`` is race-free against admission and
+    the ``→expired`` sweep, the allocation lock so release and the sweep cannot both
+    reconcile one allocation (ADR-0040 §4). On the ``active → releasing`` edge the billing
+    interval is closed (``active_ended_at``) before ``reconcile`` reads it; a terminal
+    allocation is a ``stale_handle`` (the sweep or a prior release already reconciled it).
+    """
+    async with (
+        conn.transaction(),
+        advisory_xact_lock(conn, LockScope.PROJECT, project),
+        advisory_xact_lock(conn, LockScope.ALLOCATION, uid),
+    ):
         current = await ALLOCATIONS.get(conn, uid)
         if current is None:
             return _config_error(str(uid))
+        if current.state in _TERMINAL:
+            return ToolResponse.failure(
+                str(uid),
+                ErrorCategory.STALE_HANDLE,
+                suggested_next_actions=["allocations.get"],
+                data={"current_status": current.state.value},
+            )
         if current.state not in (*_RELEASABLE, AllocationState.RELEASING):
             return ToolResponse.failure(
                 str(uid),
@@ -204,9 +226,11 @@ async def _release_locked(
             await _transition_and_audit(
                 conn, ctx, uid, current.state, AllocationState.RELEASING, project=project
             )
+            current = await accounting.stamp_active_ended(conn, current, datetime.now(UTC))
         await _transition_and_audit(
             conn, ctx, uid, AllocationState.RELEASING, AllocationState.RELEASED, project=project
         )
+        await accounting.reconcile(conn, current)
     return ToolResponse.success(str(uid), "released")
 
 

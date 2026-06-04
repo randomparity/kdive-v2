@@ -30,6 +30,7 @@ reconciled credit that price one selector agree to the last place.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, LiteralString
 from uuid import UUID, uuid4
@@ -96,13 +97,22 @@ async def reconcile(conn: AsyncConnection, allocation: Allocation) -> Decimal:
     transaction under the caller's per-allocation lock (ADR-0040 §4), so release and the
     ``→expired`` sweep can never double-reconcile one allocation.
 
+    An allocation whose project has **no budget row** was never metered (an M0-style
+    allocation, or any path that did not reserve against a budget): there is nothing to
+    reconcile, so this is a no-op returning ``0`` with no ledger or ``spent_kcu`` write.
+    This lets ``allocations.release`` call ``reconcile`` unconditionally without charging
+    a phantom credit to a project that never opted into metering.
+
     Returns:
-        The signed ``kcu_delta`` written (negative for a credit).
+        The signed ``kcu_delta`` written (negative for a credit), or ``0`` for an
+        unmetered allocation (no budget row → no write).
 
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` if an active allocation has no
             persisted ``requested_vcpus`` / ``requested_memory_gb`` to price ``actual``.
     """
+    if not await _has_budget(conn, allocation.project):
+        return Decimal(0)
     reserved_sum = await _reserved_sum(conn, allocation.id)
     actual = await _actual_cost(conn, allocation)
     delta = quantize_kcu(actual - reserved_sum)
@@ -113,6 +123,27 @@ async def reconcile(conn: AsyncConnection, allocation: Allocation) -> Decimal:
         delta=delta,
     )
     return delta
+
+
+async def stamp_active_ended(
+    conn: AsyncConnection, allocation: Allocation, ended_at: datetime
+) -> Allocation:
+    """Stamp ``active_ended_at`` on an allocation that reached ``active``, return it updated.
+
+    The billing interval closes when work stops (``active → releasing`` / ``→ expired``).
+    A no-op (returns the allocation unchanged) when the allocation never went ``active``
+    (``active_started_at`` null), so a release-from-``granted`` keeps a null interval →
+    ``active_hours = 0`` → a full credit (ADR-0007 §3). The caller holds the per-Allocation
+    lock and stamps before :func:`reconcile`, which reads the stamped value.
+    """
+    if allocation.active_started_at is None:
+        return allocation
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE allocations SET active_ended_at = %s WHERE id = %s",
+            (ended_at, allocation.id),
+        )
+    return allocation.model_copy(update={"active_ended_at": ended_at})
 
 
 async def usage(conn: AsyncConnection, project: str) -> ProjectUsage:
@@ -236,6 +267,13 @@ def _active_hours(allocation: Allocation) -> Decimal:
         return Decimal(0)
     seconds = Decimal((allocation.active_ended_at - allocation.active_started_at).total_seconds())
     return seconds / _SECONDS_PER_HOUR
+
+
+async def _has_budget(conn: AsyncConnection, project: str) -> bool:
+    """Report whether ``project`` has a budget row (i.e. opted into metering)."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT 1 FROM budgets WHERE project = %s", (project,))
+        return await cur.fetchone() is not None
 
 
 async def _budget_totals(conn: AsyncConnection, project: str) -> tuple[Decimal, Decimal]:
