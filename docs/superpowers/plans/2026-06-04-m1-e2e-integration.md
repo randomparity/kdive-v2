@@ -81,9 +81,13 @@ quota (generous) and:
 - *alloc quota*: `set_quota(max_allocations=1, ...)`, grant one, then a second
   `request_allocation` → `quota_exceeded`; assert the project's non-terminal allocation
   count stays 1 and no second ledger row was written.
-- *system quota*: `set_quota(max_systems=1, ...)`, provision one System for a granted
-  allocation, then `provision_system` against a second granted allocation → `quota_exceeded`;
-  assert exactly one System row and no provision job for the denied request.
+- *system quota*: `set_quota(max_systems=1, ...)`, then provision one System for a granted
+  allocation and call `provision_system` against a **second, distinct** granted allocation
+  in the same project → `quota_exceeded`. The two distinct allocations are required: a
+  second `provision_system` on the *same* allocation short-circuits to the existing
+  System's job and never reaches the new-System quota branch (`systems.py:_within_system_quota`
+  counts non-terminal Systems; the first insert as `provisioning` already occupies the slot).
+  Assert exactly one System row and no provision job for the denied request.
 
 ## Phase 3 — ledger reconciliation + rollup (3) — non-gated
 
@@ -117,12 +121,21 @@ shared allocation's spend; and per-investigation sums never exceed the project t
 
 **Criterion 4 (idle lease expiry).** Seed an active, sized, metered allocation with
 `lease_expiry` in the past and a `ready` System on it (the `_seed_expired_alloc` shape).
-Run `reconcile_once` (NullReaper). Assert: the allocation is `expired` (≠ `released`); a
-`teardown` job was enqueued for the System (orphaned-System repair in the same pass); the
-ledger shows `reserved` then `reconciled` (the unused reservation credited back); and
-`active_ended_at` is stamped. The Run `failed(lease_expired)` compensation is asserted via
-the seeded Run's terminal state after the sweep + teardown handler chain that the existing
-M0 path provides. The mid-job race is explicitly out of scope (M1.5).
+Run `reconcile_once` (NullReaper). Assert the signals the **idle** sweep genuinely
+produces: the allocation is `expired` (≠ `released`); a `teardown` job was enqueued for the
+System (the orphaned-System repair runs in the same pass); the ledger shows `reserved` then
+`reconciled` (the unused reservation credited back); and `active_ended_at` is stamped.
+
+The Run `failed(lease_expired)` transition is **not** produced by the idle sweep: the
+reconciler fails a Run with `lease_expired` only through `_repair_abandoned_jobs`
+(`loop.py`), which acts on an **in-flight job** whose `run_id` is non-terminal. The idle
+case the spec scopes to (criterion 4 — "with no in-flight job") has no such job, so the
+Run-fail is the lease-expiry-mid-job path that is explicitly an M1.5 target. This test
+therefore asserts the Run-fail-on-`lease_expired` contract on the path that owns it — drive
+`_repair_abandoned_jobs` with a seeded `running` job referencing a non-terminal Run whose
+lease lapsed and assert the Run reaches `failed` with `failure_category = lease_expired` —
+keeping it distinct from the idle-sweep allocation reclaim above. The expiry-mid-job
+**race** (worker death during the drain) remains out of scope (M1.5).
 
 **Criterion 5 (renewal).** Through `renew_allocation`:
 - *success*: a `+extend` renew on a metered allocation extends `lease_expiry` by the clamped
