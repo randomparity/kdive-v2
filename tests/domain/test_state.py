@@ -35,7 +35,11 @@ LEGAL: dict[type[StrEnum], dict[StrEnum, set[StrEnum]]] = {
     },
     AllocationState: {
         AllocationState.REQUESTED: {AllocationState.GRANTED, AllocationState.FAILED},
-        AllocationState.GRANTED: {AllocationState.ACTIVE, AllocationState.FAILED},
+        AllocationState.GRANTED: {
+            AllocationState.ACTIVE,
+            AllocationState.RELEASING,
+            AllocationState.FAILED,
+        },
         AllocationState.ACTIVE: {AllocationState.RELEASING, AllocationState.FAILED},
         AllocationState.RELEASING: {AllocationState.RELEASED, AllocationState.FAILED},
         AllocationState.RELEASED: set(),

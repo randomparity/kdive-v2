@@ -37,7 +37,11 @@ class ResourceStatus(StrEnum):
 
 
 class AllocationState(StrEnum):
-    """Always-yes, capacity-checked allocation lifecycle."""
+    """Always-yes, capacity-checked allocation lifecycle.
+
+    ``granted → releasing`` lets an admitted-but-unprovisioned allocation be released
+    without first reaching ``active`` (which provisioning produces); see ADR-0023.
+    """
 
     REQUESTED = "requested"
     GRANTED = "granted"
@@ -116,7 +120,9 @@ _TRANSITIONS: dict[type[StrEnum], dict[StrEnum, frozenset[StrEnum]]] = {
     },
     AllocationState: {
         AllocationState.REQUESTED: frozenset({AllocationState.GRANTED, AllocationState.FAILED}),
-        AllocationState.GRANTED: frozenset({AllocationState.ACTIVE, AllocationState.FAILED}),
+        AllocationState.GRANTED: frozenset(
+            {AllocationState.ACTIVE, AllocationState.RELEASING, AllocationState.FAILED}
+        ),
         AllocationState.ACTIVE: frozenset({AllocationState.RELEASING, AllocationState.FAILED}),
         AllocationState.RELEASING: frozenset({AllocationState.RELEASED, AllocationState.FAILED}),
         AllocationState.RELEASED: frozenset(),
