@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from psycopg import AsyncConnection
+from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 
 from kdive.db.locks import LockScope, advisory_xact_lock
@@ -339,15 +340,19 @@ async def _within_budget(conn: AsyncConnection, project: str, estimate: Decimal)
 
 
 async def _resolve_replay(conn: AsyncConnection, principal: str, key: str) -> Allocation | None:
-    """Return the allocation a prior ``(principal, key)`` grant stored, or ``None``.
+    """Return the allocation a prior ``(principal, key)`` **request** grant stored, or ``None``.
 
-    A stored key whose allocation row is somehow gone is a consistency violation
-    surfaced loudly rather than silently re-granting under a key already consumed.
+    Scoped to ``_REQUEST_KIND``: a key the same principal used for a *renew* must not
+    resolve here, or a request would return that renew's allocation as a fresh grant
+    (a cross-kind replay — the same key cannot mean a grant and a renew). The renew path
+    is symmetrically scoped to its own kind; a genuine cross-kind reuse is then caught by
+    :func:`_record_key`'s shared-PK fence. A stored key whose allocation row is somehow
+    gone is a consistency violation surfaced loudly rather than silently re-granting.
     """
     async with conn.cursor() as cur:
         await cur.execute(
-            "SELECT result FROM idempotency_keys WHERE principal = %s AND key = %s",
-            (principal, key),
+            "SELECT result FROM idempotency_keys WHERE principal = %s AND key = %s AND kind = %s",
+            (principal, key, _REQUEST_KIND),
         )
         row = await cur.fetchone()
     if row is None:
@@ -364,10 +369,31 @@ async def _resolve_replay(conn: AsyncConnection, principal: str, key: str) -> Al
 async def _record_key(
     conn: AsyncConnection, principal: str, key: str, project: str, allocation_id: UUID
 ) -> None:
-    """Record the ``(principal, key) → allocation_id`` idempotency row in the grant txn."""
-    async with conn.cursor() as cur:
-        await cur.execute(
-            "INSERT INTO idempotency_keys (key, principal, project, kind, result) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (key, principal, project, _REQUEST_KIND, Jsonb({"allocation_id": str(allocation_id)})),
-        )
+    """Record the ``(principal, key) → allocation_id`` request idempotency row in the grant txn.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` if ``(principal, key)`` is already used
+            for a different ``kind`` (a renew) — the same key cannot mean a grant and a
+            renew. The ``(principal, key)`` PK is shared across kinds, so the replay scope
+            in :func:`_resolve_replay` passed this through; the INSERT then fails closed
+            here (symmetric with the renew path), rolling the grant back.
+    """
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO idempotency_keys (key, principal, project, kind, result) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (
+                    key,
+                    principal,
+                    project,
+                    _REQUEST_KIND,
+                    Jsonb({"allocation_id": str(allocation_id)}),
+                ),
+            )
+    except UniqueViolation as exc:
+        raise CategorizedError(
+            f"idempotency key ({principal}, {key}) is already in use",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"principal": principal},
+        ) from exc
