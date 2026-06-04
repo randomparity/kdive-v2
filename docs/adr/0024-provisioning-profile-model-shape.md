@@ -64,6 +64,43 @@ unit names with the discovery capability set means the value a host advertises a
 the value a profile requests are directly comparable without a unit conversion
 that an un-suffixed name would hide.
 
+### 2a. `boot_method` is a closed `StrEnum`; M0 ships one value
+
+`boot_method` is a provider-agnostic core field, so it is validated by the core,
+not the provider section. It is a closed `BootMethod` `StrEnum` with the single M0
+value `direct-kernel` (the install plane's "direct-kernel boot",
+`m0-walking-skeleton.md`), mirroring the one-value `ResourceKind.LOCAL_LIBVIRT`
+precedent. A closed set means an unknown boot method fails as `configuration_error`
+at parse rather than reaching a provider that cannot honor it; new methods (ISO,
+PXE) add enum members when their providers land, not speculatively now.
+
+### 2b. Required string fields are non-empty; "present" must mean "usable"
+
+"A missing required field raises `configuration_error`" and "the `crashkernel`
+field is present" are the acceptance criteria, but a bare `str` accepts `""` —
+present yet useless, and for `crashkernel` that silently defeats the kdump
+prerequisite the field exists to guarantee. Every required string field —
+`arch`, `kernel_source_ref`, and the libvirt section's `rootfs_image_ref` and
+`crashkernel` — is therefore `Field(min_length=1)` with `str_strip_whitespace=True`
+in the model config, so a blank or whitespace-only value is a `configuration_error`,
+not a hollow pass. `crashkernel` is otherwise an **opaque non-empty token** in M0:
+its grammar (`"256M"`, `"auto"`, range syntax) is the kernel's, and a format
+validator here would be brittle and reject valid forms — non-empty is the contract,
+and the booted kernel is the real arbiter. `domain_xml_params` values follow the
+same rule via decision 2c.
+
+### 2c. `domain_xml_params` is `dict[str, str]`, not `dict[str, Any]`
+
+The libvirt section's `domain_xml_params` is `dict[str, str]` (default
+`{}`), with non-empty values per decision 2b. Domain-XML parameters are text
+substituted into an XML template, so a string map is the faithful type; `Any`
+would admit arbitrary nested structure and is the one core field whose looseness
+would contradict the "no inline secrets" posture decision 3 relies on. The schema
+models **references** (`rootfs_image_ref`, `kernel_source_ref`) and opaque
+text params, not inline secrets; secret *resolution* is
+[ADR-0012](0012-secret-backend.md)'s job, so the schema does not scan
+`domain_xml_params` for secret material — it constrains the shape, not the meaning.
+
 ### 3. The `configuration_error` contract is produced at a parse boundary, not inside the model
 
 Every model in this file sets `extra="forbid"`, which makes Pydantic raise its
@@ -73,15 +110,23 @@ native `ValidationError` on an unknown or missing field. The taxonomy
 `ValidationError` as `CategorizedError(category=CONFIGURATION_ERROR)`. This mirrors
 the existing boundary pattern in `store/objectstore.py` and
 `domain/allocation_admission.py`: the model declares structure; one function maps a
-structural failure onto the wire taxonomy. Callers (the future provision handler)
-parse once at the boundary and never see a raw `ValidationError`.
+structural failure onto the wire taxonomy. `parse` is the **sanctioned entry
+point**; constructing `ProvisioningProfile(**data)` or calling `model_validate`
+directly bypasses the mapping and surfaces a raw `ValidationError`, which is a
+caller error (the future provision handler parses at the boundary). The model
+cannot prevent direct construction; review keeps callers on `parse`.
 
 The error `details` are built from `ValidationError.errors(include_url=False,
 include_input=False, include_context=False)`. Excluding `input`/`context` keeps the
 **submitted field values out of the error** — a profile may carry references that
 resolve to secrets ([ADR-0012](0012-secret-backend.md)) or guest-derived strings,
-and the redaction contract forbids echoing them into a response or a log. Only
-field locations, types, and messages survive.
+and the redaction contract forbids echoing them into a response or a log. This
+guarantee holds only if **custom validators do not interpolate the submitted value
+into their message**: Pydantic copies a validator's `ValueError` text into `msg`,
+which `details` keeps even with `include_input=False`. M0's added constraints are
+declarative (`min_length`, `gt`, `Literal`, enum membership), whose built-in
+messages name the constraint, not the value; any future custom validator must keep
+the offending value out of its message text to preserve the guarantee.
 
 ### 4. Profiles are frozen (`frozen=True`)
 
@@ -125,6 +170,13 @@ next milestone step, and the parse boundary is the seam it will call.
   unknown provider key or a missing `local-libvirt` section fails closed.
 - Unit names match the discovery capability set, so a later admission/fit check
   compares `memory_mb` to `memory_mb` with no hidden conversion.
+- Every required field is validity-checked, not just presence-checked: `boot_method`
+  is a closed enum, the numeric fields are `gt=0`, and the required strings
+  (including `crashkernel`) are non-empty. "Present" means "usable", so the kdump
+  prerequisite the `crashkernel` field encodes cannot be satisfied by a blank value.
+- The redaction guarantee is bounded and stated: declarative constraints never echo
+  the submitted value; a future custom validator must keep the value out of its
+  message to preserve it.
 - One boundary owns the `ValidationError → configuration_error` mapping; handlers
   get a typed failure and never re-implement the mapping. Error details cannot leak
   submitted values.
@@ -151,6 +203,20 @@ next milestone step, and the parse boundary is the seam it will call.
 - **Bare `memory: int` / `disk: int` (the issue's literal field names).** Rejected:
   unit-ambiguous and inconsistent with the discovery seam's `memory_mb`. The suffix
   is the cheapest possible defense against a GiB/MiB mix-up at the admission seam.
+- **`boot_method` as a free `str`.** Rejected: an arbitrary string would reach a
+  provider that can only honor `direct-kernel` and fail late as a provisioning
+  error; a closed enum fails it early as `configuration_error`, which is where an
+  unsupported boot method belongs.
+- **A `crashkernel` format validator (regex for `256M` / range syntax).** Rejected:
+  the grammar is the kernel's and is broad (`auto`, sizes, ranges, conditional
+  ranges); a schema-level regex would reject valid forms and rot as the kernel adds
+  syntax. M0 requires non-empty and lets the booted kernel be the arbiter.
+- **Bare `str` for the required string fields.** Rejected: it makes "present" hollow
+  — `crashkernel: ""` would pass while defeating the kdump prerequisite. `min_length=1`
+  with whitespace stripping makes presence mean usability.
+- **`domain_xml_params: dict[str, Any]`.** Rejected: it admits arbitrary nested
+  structure and an inline-secret surface that contradicts the no-inline-secrets
+  posture; XML params are text, so `dict[str, str]` is both faithful and strict.
 - **Raise `CategorizedError` from inside a model validator.** Rejected: it scatters
   the taxonomy mapping across field validators and fights Pydantic, which wraps
   exceptions raised in validators back into `ValidationError` anyway. One parse
