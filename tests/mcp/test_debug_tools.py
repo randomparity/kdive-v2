@@ -531,8 +531,8 @@ class _OrderRecordingBackend:
 class _OrderRecordingConnector(_FakeConnector):
     """A connector that appends to a shared log when open_transport is invoked."""
 
-    def __init__(self, log: list[str], **kwargs: object) -> None:
-        super().__init__(**kwargs)  # type: ignore[arg-type]
+    def __init__(self, log: list[str], *, raises: CategorizedError | None = None) -> None:
+        super().__init__(raises=raises)
         self._log = log
 
     def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle:
