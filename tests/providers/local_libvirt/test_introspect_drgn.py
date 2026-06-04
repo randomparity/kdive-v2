@@ -7,12 +7,18 @@ and injected seams — never importing drgn.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import cast
 
+import pytest
+
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.local_libvirt.introspect_drgn import (
     IntrospectOutput,
+    LocalLibvirtVmcoreIntrospect,
     VmcoreIntrospector,
     _Module,
+    _Program,
     _Task,
     helper_modules,
     helper_sysinfo,
@@ -246,3 +252,100 @@ def test_sysinfo_returns_uts_and_counters() -> None:
     assert out["boot_cmdline"] == "root=/dev/vda1 quiet"
     assert out["cpus_online"] == 4
     assert out["mem_total_pages"] == 1048576
+
+
+# --- LocalLibvirtVmcoreIntrospect orchestration --------------------------------------------
+
+
+def _introspector(
+    *,
+    program: _FakeProgram | None = None,
+    observed_build_id: str = "deadbeef",
+    open_raises: CategorizedError | None = None,
+) -> LocalLibvirtVmcoreIntrospect:
+    """Build an introspector with every seam injected as a fake (no drgn, no store)."""
+    prog = program if program is not None else _FakeProgram()
+
+    def _open(vmcore: Path, vmlinux: Path) -> _Program:
+        if open_raises is not None:
+            raise open_raises
+        return prog
+
+    return LocalLibvirtVmcoreIntrospect(
+        fetch_object=lambda ref: ref.encode("utf-8"),
+        read_vmcore_build_id=lambda data: observed_build_id,
+        open_program=_open,
+        run_helper=lambda program, name: (
+            helper_modules(program)
+            if name == "modules"
+            else helper_sysinfo(program)
+            if name == "sysinfo"
+            else helper_tasks(program)
+        ),
+    )
+
+
+def test_from_vmcore_happy_path_populates_report() -> None:
+    out = _introspector().from_vmcore(
+        vmcore_ref="v", debuginfo_ref="d", expected_build_id="deadbeef"
+    )
+    assert out.sysinfo["release"] == "6.8.0"
+    assert cast("list[object]", out.tasks["tasks"])  # the canned blocked task is present
+    assert out.truncated is False
+
+
+def test_from_vmcore_build_id_mismatch_is_configuration_error() -> None:
+    introspector = _introspector(observed_build_id="0ther")
+    with pytest.raises(CategorizedError) as exc:
+        introspector.from_vmcore(vmcore_ref="v", debuginfo_ref="d", expected_build_id="deadbeef")
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_from_vmcore_open_failure_is_debug_attach_failure() -> None:
+    boom = CategorizedError("drgn cannot open", category=ErrorCategory.DEBUG_ATTACH_FAILURE)
+    introspector = _introspector(open_raises=boom)
+    with pytest.raises(CategorizedError) as exc:
+        introspector.from_vmcore(vmcore_ref="v", debuginfo_ref="d", expected_build_id="deadbeef")
+    assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
+
+
+def test_from_vmcore_redacts_guest_strings_at_the_port_boundary() -> None:
+    prog = _FakeProgram(tasks=[_FakeTask(13, "token=hunter2", "D")])
+    out = _introspector(program=prog).from_vmcore(
+        vmcore_ref="v", debuginfo_ref="d", expected_build_id="deadbeef"
+    )
+    rows = cast("list[dict[str, object]]", out.tasks["tasks"])
+    assert "hunter2" not in str(rows)
+    assert "[REDACTED]" in str(rows)
+
+
+def test_from_vmcore_byte_cap_trims_tasks_and_sets_truncated() -> None:
+    prog = _FakeProgram(tasks=[_FakeTask(i, "blocked", "D", stack=["x" * 64]) for i in range(200)])
+    introspector = _introspector(program=prog)
+    # A tiny cap forces trimming of the (capped-at-200) tasks list.
+    introspector._report_byte_cap = 256
+    out = introspector.from_vmcore(vmcore_ref="v", debuginfo_ref="d", expected_build_id="deadbeef")
+    assert out.truncated is True
+    trimmed = cast("list[object]", out.tasks["tasks"])
+    assert len(trimmed) < 200
+
+
+def test_from_env_real_seams_raise_missing_dependency() -> None:
+    introspector = LocalLibvirtVmcoreIntrospect.from_env()
+    with pytest.raises(CategorizedError) as exc:
+        introspector.from_vmcore(vmcore_ref="v", debuginfo_ref="d", expected_build_id="deadbeef")
+    assert exc.value.category is ErrorCategory.MISSING_DEPENDENCY
+
+
+# --- live_vm-gated real drgn smoke (deselected in CI via -m "not live_vm") ------------------
+
+
+@pytest.mark.live_vm
+def test_live_vm_real_drgn_from_vmcore() -> None:  # pragma: no cover - live_vm
+    import os
+
+    vmcore = os.environ.get("KDIVE_VMCORE")
+    vmlinux = os.environ.get("KDIVE_VMLINUX")
+    if not vmcore or not vmlinux:
+        pytest.skip("KDIVE_VMCORE/KDIVE_VMLINUX unavailable")
+    raise NotImplementedError("live_vm real drgn introspection harness wired by the live_vm runner")
