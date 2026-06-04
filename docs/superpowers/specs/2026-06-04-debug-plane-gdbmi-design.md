@@ -136,6 +136,25 @@ and materializing the debuginfo object to a local file is the seam's `live_vm` w
 everything above it (handler authz, the per-session lock, registry lookup, every engine op
 against the fake `MiController`) is unit-tested off the gate.
 
+### 4d. `end_session` reaps the engine — the engine lifecycle is bound to the session lifecycle
+
+#20's `end_session` only drives the row `→ detached` and calls the (no-op) `close_transport`;
+it knows nothing of the gdb/MI engine #21 introduces. With #21 spawning a **real gdb
+subprocess** on first op, an ended session would otherwise strand that subprocess **and** its
+RSP attach — and because the gdbstub is single-attach, a leaked attach makes every *future*
+`start_session` on the same System fail `transport_conflict` forever, while gdb processes
+accumulate. So `end_session` is extended (in the same `debug.py`) to, under the per-session
+lock, `reap(session_id)` the registry entry and `controller.exit()` the engine
+(best-effort, never blocking the detach — exactly as #20's `_close` is best-effort), and drop
+the per-session `asyncio.Lock` from the lock table (bounding its growth). Reaping a session
+with no live engine (the common case — most sessions never run a Debug-plane op) is a no-op.
+This is the v1 `GdbMiSessionRegistry.reap()` contract, ported and wired to `end_session`.
+The crash/reboot `live → detached` path (#23's `_detach_sessions`) runs in a **different
+process** from the one holding the engine in M0 (the worker vs. the MCP server), so it cannot
+reap the in-process engine; that stranded-engine case is the `no_live_session` path (§5a) the
+next op on a since-detached session would hit anyway — the row is already `detached`, so the
+state gate rejects it as `not_live` first.
+
 ## 5. Tool surface and contracts
 
 All seven handlers follow the established envelope contract (ADR-0019): they return
@@ -251,7 +270,11 @@ list of pygdbmi record dicts, so every engine op is driven deterministically. Te
   invocations is called exactly once across two ops on the same session, and the second op
   reuses the registered attachment (no second spawn);
 - the `MISSING_DEPENDENCY` debuginfo-resolver default (M0, no live host) surfaces as
-  `DEBUG_ATTACH_FAILURE` through a real-resolver-but-faked path.
+  `DEBUG_ATTACH_FAILURE` through a real-resolver-but-faked path;
+- **`end_session` reaps the engine**: after a Debug-plane op registers a fake engine,
+  `debug.end_session` calls the fake controller's `exit()` and drops the registry entry, and
+  a subsequent op on the (now `detached`) session is rejected at the state gate. `end_session`
+  on a session that never ran a Debug-plane op still succeeds (reap is a no-op).
 
 `asyncio.to_thread` dispatch (§4b) is exercised implicitly — the fake `MiController` is
 plain blocking code, so the handler under test runs it through the real `to_thread` path.
@@ -266,7 +289,8 @@ The `PygdbmiController` real subprocess and the real attach (gdb spawn + RSP con
 - **edit** `src/kdive/mcp/tools/debug.py` — add the seven handlers + their `@app.tool`
   registrations to the existing `register(app, pool)`; build one process-scoped
   `GdbMiSessionRegistry` + per-session lock table + attach seam there and inject into
-  handlers; dispatch each blocking engine op via `await asyncio.to_thread(...)`.
+  handlers; dispatch each blocking engine op via `await asyncio.to_thread(...)`; extend the
+  existing `end_session` to reap + `exit()` the engine under the per-session lock (§4d).
 - **edit** `pyproject.toml` — add `pygdbmi==0.11.0.0`.
 - **new** `tests/providers/local_libvirt/test_debug_gdbmi.py` — engine + record tests.
 - **edit** `tests/mcp/test_debug_tools.py` — Debug-plane handler tests (added to the existing
