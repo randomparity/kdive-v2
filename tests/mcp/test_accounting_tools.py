@@ -161,6 +161,21 @@ def test_estimate_nan_window_is_config_error(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_estimate_huge_finite_window_fails_closed(migrated_url: str) -> None:
+    # validate_window has no upper bound (clamping is admission-only), so a viewer can
+    # price an arbitrarily large finite window. The quantize boundary must map the
+    # value-too-large case to configuration_error, never an unhandled exception.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await acct_tools.estimate(
+                pool, _ctx(), project="proj", vcpus=1, memory_gb=0, window="1e30"
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
 def test_estimate_requires_viewer_role(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:

@@ -122,9 +122,12 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         project: str,
         vcpus: int,
         memory_gb: int,
-        window: float,
+        window: float | str,
         cost_class: str = _DEFAULT_COST_CLASS,
     ) -> ToolResponse:
+        # `window` accepts a number or a decimal string so a precise caller can pass an
+        # exact window; `parse_window_hours` does one `Decimal(str(window))` conversion
+        # shared with admission, and a non-numeric value fails closed (configuration_error).
         return await estimate(
             pool,
             current_context(),

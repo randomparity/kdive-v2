@@ -61,6 +61,15 @@ def test_quantize_rounds_half_even_to_quantum() -> None:
     assert quantize_kcu(Decimal("0.000150000")) == Decimal("0.0002")  # half to even
 
 
+def test_quantize_too_large_fails_closed() -> None:
+    # A value whose quantized form exceeds the default decimal precision would raise
+    # InvalidOperation; quantize_kcu maps it to configuration_error instead of letting it
+    # escape as an unhandled exception on the viewer-callable estimate tool.
+    with pytest.raises(CategorizedError) as exc:
+        quantize_kcu(Decimal("1e30"))
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
 def test_validate_size_accepts_minimum() -> None:
     validate_size(Selector(vcpus=1, memory_gb=0))
 

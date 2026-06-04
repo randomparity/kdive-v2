@@ -70,8 +70,25 @@ def quantize_kcu(value: Decimal) -> Decimal:
     The single rounding point for every kcu the system records or reports, so the
     estimate and the ledger deltas that price one selector cannot diverge by a rounding
     rule (ADR-0007 §2).
+
+    ``validate_window`` deliberately has no upper bound (clamping is admission-only), so a
+    read-side estimate can price an arbitrarily large finite window. A product whose
+    quantized form would exceed the default decimal precision (``> ~24`` integer digits)
+    would raise :class:`~decimal.InvalidOperation`; that is mapped to
+    ``configuration_error`` so the value-too-large case fails closed in-category rather
+    than escaping as an unhandled exception on a ``viewer``-callable tool.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` if ``value`` is too large to quantize.
     """
-    return value.quantize(KCU_QUANTUM)
+    try:
+        return value.quantize(KCU_QUANTUM)
+    except InvalidOperation:
+        raise CategorizedError(
+            f"kcu value {value} is too large to price",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"value": str(value)},
+        ) from None
 
 
 def rate(coeff: Decimal, *, vcpus: int, memory_gb: int) -> Decimal:
