@@ -112,20 +112,28 @@ are written before either `artifacts` row (ADR-0013); the handler inserts the ro
 ### `mcp/tools/vmcore.py`
 
 - `fetch_vmcore(pool, ctx, system_id)` — resolve System (project-scoped), require
-  `operator`; admit only when the System is in a state that can have produced a core
-  (`crashed`, or terminal `torn_down`/`failed` if a row already exists — see below);
-  enqueue `JobKind.CAPTURE_VMCORE` (dedup `{system_id}:capture_vmcore`) and return the job
-  handle carrying `system_id`. A System that never crashed (`ready`/`provisioning`/…) is a
-  `configuration_error` with `current_status`.
-- `capture_handler(conn, job, retriever)` — re-resolve the System under the per-System
-  advisory lock; if it is no longer present, `INFRASTRUCTURE_FAILURE`. **Idempotency:** if
-  a `vmcore` artifact row already exists for the System, return its key (no re-capture).
-  Otherwise `await asyncio.to_thread(retriever.capture, system_id)`; on `CategorizedError`
-  re-raise (the worker dead-letters the job with the category — `readiness_failure` for
-  no-core); on success insert the two `artifacts` rows (`register_artifact_row`) in one
-  transaction and return the raw ref as `result_ref`. Inserting the `vmcore`-named raw row
-  is gated by a unique `(owner_kind, owner_id, object_key)` check / `ON CONFLICT DO
-  NOTHING` so a re-dispatch after the objects were stored but before commit is safe.
+  `operator`; admit only when `System.state is CRASHED` (the only state a `force_crash` can
+  have produced a core from); enqueue `JobKind.CAPTURE_VMCORE` (dedup
+  `{system_id}:capture_vmcore`) and return the job handle carrying `system_id`. A System
+  that never crashed (`ready`/`provisioning`/…) or is terminal (`torn_down`/`failed`) is a
+  `configuration_error` with `current_status`. A retry of `vmcore.fetch` while the job is
+  still in flight returns the **same** job via the dedup key regardless of the System's
+  current state (the dedup row already exists), so a teardown racing admission cannot strand
+  a second job.
+- `capture_handler(conn, job, retriever)` — under the per-System advisory lock
+  (`LockScope.SYSTEM`): re-resolve the System; if its row is gone, `INFRASTRUCTURE_FAILURE`.
+  **Execution idempotency (lock-guarded, no schema change):** check whether a `vmcore`
+  artifact row already exists for the System and, if so, return its key without
+  re-capturing. Otherwise `await asyncio.to_thread(retriever.capture, system_id)` (the
+  capture runs with **no DB transaction held** — the worker contract — then the rows commit
+  under the lock); on `CategorizedError` re-raise (the worker dead-letters the job with the
+  category — `readiness_failure` for no-core); on success insert the two `artifacts` rows
+  (`register_artifact_row`) in one lock-held transaction and return the raw ref as
+  `result_ref`. The per-System lock serializes capture against teardown and against a
+  concurrent re-dispatch, and the object keys are deterministic
+  (`{tenant}/systems/{system_id}/vmcore`), so a re-dispatch re-puts the same S3 key
+  (idempotent overwrite) and the existing-row check prevents a duplicate row — **no
+  `artifacts` unique constraint and no migration are needed**.
 - `list_vmcores(pool, ctx, system_id)` — read the System's `vmcore`/`vmcore-redacted`
   artifacts; envelope each, isolating bad rows.
 - `postmortem_crash(pool, ctx, run_id, commands)` — resolve Run + its `debuginfo_ref` and
@@ -191,10 +199,10 @@ so the test asserts redaction actually occurred, not merely that bytes were retu
   a `vmcore.fetch` retry returns the same job (in whatever state it has reached). The
   `{system_id}` key makes capture once-per-System (one System per Allocation, one crash).
 - **Execution:** the `vmcore` `artifacts` row is the execution ledger — a worker
-  re-dispatch finds the existing row and returns its key without re-capturing (object-
-  before-row, ADR-0013). The raw-row insert uses `ON CONFLICT DO NOTHING` on
-  `(owner_kind, owner_id, object_key)` so the deterministic System-keyed object key makes
-  the second insert a no-op. No Run-step ledger is involved (capture is not a Run step).
+  re-dispatch, holding the per-System advisory lock, finds the existing row and returns its
+  key without re-capturing (object-before-row, ADR-0013). The lock plus the deterministic
+  System-keyed object key make the existing-row check sufficient — no `artifacts` unique
+  constraint and no migration. No Run-step ledger is involved (capture is not a Run step).
 
 ## Testing
 
