@@ -256,6 +256,34 @@ def test_teardown_other_libvirt_error_is_infrastructure_failure() -> None:
     assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
 
+def test_reprovision_tears_down_then_redefines_same_name() -> None:
+    # Reprovision-in-place (ADR-0038): destroy+undefine the current domain, then define+start
+    # the new profile under the SAME deterministic domain name (same system_id).
+    name = domain_name_for(_SYS)
+    old = _ProvDomain(name)
+    conn = _ProvConn(defined={name: old})
+    result = _prov(conn).reprovision(_SYS, _profile())
+    assert result == name  # same domain name (same system_id)
+    assert old.destroyed is True and old.undefined is True  # prior install wiped (destructive)
+    assert conn.defined[name].created is True  # the new domain is defined and started
+
+
+def test_reprovision_on_absent_domain_still_provisions() -> None:
+    # A reprovision whose prior domain is already gone (e.g. a retry after a partial wipe)
+    # tears down idempotently (NO_DOMAIN swallowed) and provisions the new install.
+    conn = _ProvConn()
+    name = _prov(conn).reprovision(_SYS, _profile())
+    assert conn.defined[name].created is True
+
+
+def test_reprovision_define_failure_is_provisioning_failure() -> None:
+    name = domain_name_for(_SYS)
+    conn = _ProvConn(defined={name: _ProvDomain(name)}, define_error=libvirt.VIR_ERR_INTERNAL_ERROR)
+    with pytest.raises(CategorizedError) as caught:
+        _prov(conn).reprovision(_SYS, _profile())
+    assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE
+
+
 def test_from_env_does_not_connect(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("KDIVE_LIBVIRT_URI", "qemu:///system")
     prov = LocalLibvirtProvisioning.from_env()  # building must not open a connection

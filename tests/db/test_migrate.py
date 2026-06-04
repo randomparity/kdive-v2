@@ -10,7 +10,7 @@ import psycopg
 import pytest
 
 from kdive.db import migrate
-from kdive.domain import errors, state
+from kdive.domain import errors, models, state
 
 # Each lifecycle/category CHECK constraint and the enum it must mirror (ADR-0015).
 CHECK_ENUMS = [
@@ -21,6 +21,7 @@ CHECK_ENUMS = [
     ("runs_state_check", state.RunState),
     ("debug_sessions_state_check", state.DebugSessionState),
     ("jobs_state_check", state.JobState),
+    ("jobs_kind_check", models.JobKind),
     ("runs_failure_category_check", errors.ErrorCategory),
     ("jobs_error_category_check", errors.ErrorCategory),
 ]
@@ -84,7 +85,7 @@ def test_creates_all_tables(pg_conn: psycopg.Connection) -> None:
 def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
     first = migrate.apply_migrations(pg_conn)
     second = migrate.apply_migrations(pg_conn)
-    assert first == ["0001", "0002"]
+    assert first == ["0001", "0002", "0003"]
     assert second == []
 
 
@@ -352,4 +353,4 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
             migrate.apply_migrations(pg_conn)
         holder.rollback()  # release the lock
     pg_conn.execute("SET lock_timeout = '0'")
-    assert migrate.apply_migrations(pg_conn) == ["0001", "0002"]
+    assert migrate.apply_migrations(pg_conn) == ["0001", "0002", "0003"]

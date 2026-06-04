@@ -53,13 +53,15 @@ class ResourceKind(StrEnum):
 class JobKind(StrEnum):
     """The async job kinds — every tool that returns a ``{job_id}`` handle.
 
-    The spec's "Job queue" section names the five long-running provider ops;
+    The spec's "Job queue" section names the long-running provider ops;
     ``teardown``/``force_crash``/``power`` are also job-dispatched per the tool
     surface (``systems.teardown``/``control.*`` return ``{job_id}``) and the
-    implementation plan's ``dedup_key`` set.
+    implementation plan's ``dedup_key`` set. ``reprovision`` is the M1 in-place
+    reprovision op (ADR-0038), long-running like ``provision``.
     """
 
     PROVISION = "provision"
+    REPROVISION = "reprovision"
     TEARDOWN = "teardown"
     BUILD = "build"
     INSTALL = "install"

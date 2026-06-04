@@ -78,6 +78,7 @@ class Provisioner(Protocol):
 
     def provision(self, system_id: UUID, profile: ProvisioningProfile) -> str: ...
     def teardown(self, domain_name: str) -> None: ...
+    def reprovision(self, system_id: UUID, profile: ProvisioningProfile) -> str: ...
 
 
 def domain_name_for(system_id: UUID) -> str:
@@ -185,6 +186,23 @@ class LocalLibvirtProvisioning:
                 details={"system_id": str(system_id)},
             ) from exc
         return domain_name_for(system_id)
+
+    def reprovision(self, system_id: UUID, profile: ProvisioningProfile) -> str:
+        """Wipe the System's current install and define+start the new profile in place.
+
+        Destructive (ADR-0038 §3): destroys+undefines the System's current domain, then
+        defines+starts the new profile under the **same** deterministic domain name (the
+        ``system_id`` is stable). Built from the idempotent ``teardown``/``provision``
+        primitives — an absent prior domain is swallowed by ``teardown`` (so a retry after a
+        partial wipe still provisions), and a ``provision`` failure surfaces as
+        ``PROVISIONING_FAILURE`` (so the handler drives ``reprovisioning -> failed``).
+
+        Raises:
+            CategorizedError: ``PROVISIONING_FAILURE`` if the new domain cannot be
+                defined/started; ``INFRASTRUCTURE_FAILURE`` if the wipe cannot be completed.
+        """
+        self.teardown(domain_name_for(system_id))
+        return self.provision(system_id, profile)
 
     def teardown(self, domain_name: str) -> None:
         """Destroy and undefine the domain; idempotent over an already-absent domain.
