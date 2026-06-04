@@ -61,11 +61,16 @@ unit-tested with a fake drgn program; the real drgn path runs only under the exi
 
 ```python
 class IntrospectOutput(NamedTuple):
-    tasks: dict[str, object]; modules: dict[str, object]; sysinfo: dict[str, object]
+    tasks: dict[str, object]; modules: dict[str, object]
+    sysinfo: dict[str, object]; truncated: bool
 class VmcoreIntrospector(Protocol):
     def from_vmcore(self, *, vmcore_ref: str, debuginfo_ref: str,
                     expected_build_id: str) -> IntrospectOutput: ...
 ```
+
+The helpers use fixed in-tree caps (no caller args in M0: `tasks` blocked-only, `limit=200`)
+and the assembled report is bounded by a total byte cap (`truncated` set on overflow,
+`tasks` trimmed first), so the response can never be an unbounded multi-megabyte string.
 
 `LocalLibvirtVmcoreIntrospect` realizes it, reusing the `fetch_object` and
 `read_vmcore_build_id` seams `LocalLibvirtRetrieve` established, plus an `open_program`
@@ -87,9 +92,12 @@ drgn loading the wrong `vmlinux` against a core silently yields wrong symbols. S
 running any helper the port verifies the captured core's GNU build-id equals the build-id
 the build plane recorded for the Run (`run_steps` `build` result `build_id`, ADR-0029 §5),
 reusing `read_vmcore_build_id`. A mismatch is a `configuration_error` — the identical
-provenance gate `LocalLibvirtRetrieve.run` enforces. A drgn open/load failure is a
-`debug_attach_failure`; the `modules` helper's all-failed decode (a fully-wrong decode
-path for this kernel) is also `debug_attach_failure`.
+provenance gate `LocalLibvirtRetrieve.run` enforces. The only whole-call
+`debug_attach_failure` is drgn failing to **open** the core or **load** the vmlinux (the
+genuine attach boundary). A helper raising mid-decode — including `modules`' all-failed
+case (kernel-version/struct-offset skew, not an attach failure) — degrades to a per-helper
+error marker / `all_failed` flag and the call still succeeds with a partial report;
+escalating it would mislabel a decode-coverage gap as `debug_attach_failure`.
 
 ### 6. The report is redacted before it is returned and before any persistence
 

@@ -67,8 +67,9 @@ Introspection is a synchronous read that **moves no durable object's lifecycle s
 and writes no artifact row by default (the acceptance asks only that it *returns* the
 data, redacted). It records nothing on the Run, the System, or a Job. (Persisting a
 redacted introspection report as an `artifacts` row is deferred — see Out of scope. The
-"redacted before persistence" requirement is satisfied because redaction happens before
-the value leaves the port, so any later persistence is of already-redacted text.)
+"redacted before persistence" requirement is satisfied structurally: redaction is the
+port's last step before it returns `IntrospectOutput` (§Redaction), so there is no
+code path on which an un-redacted report exists outside the port to persist.)
 
 ## Components
 
@@ -82,12 +83,17 @@ class IntrospectOutput(NamedTuple):
     tasks: dict[str, object]
     modules: dict[str, object]
     sysinfo: dict[str, object]
+    truncated: bool          # any helper hit its cap, or the report hit the byte cap
 
 class VmcoreIntrospector(Protocol):
     def from_vmcore(
         self, *, vmcore_ref: str, debuginfo_ref: str, expected_build_id: str
     ) -> IntrospectOutput: ...
 ```
+
+The `IntrospectOutput` the port returns is **already redacted** (see §Redaction): the port
+is the sole redaction boundary, so any later persistence of the port's output is of
+already-redacted text.
 
 `LocalLibvirtVmcoreIntrospect` realizes it, seam-injected exactly like `LocalLibvirtRetrieve`:
 
@@ -111,11 +117,18 @@ class VmcoreIntrospector(Protocol):
 3. stage `vmcore_bytes` and `fetch_object(debuginfo_ref)` to temp files.
 4. `program = open_program(core_file, vmlinux_file)`; an open failure raises
    `CategorizedError(DEBUG_ATTACH_FAILURE)`.
-5. run the three helpers; assemble `IntrospectOutput(tasks, modules, sysinfo)`.
+5. run the three helpers (each capped, see §"Output bounds"); **redact the assembled
+   report inside the port** (see §Redaction); assemble `IntrospectOutput(tasks, modules,
+   sysinfo, truncated)`.
 
-The orchestration (provenance, temp staging, dispatch) is host-free and unit-tested; the
-`open_program`/`run_helper`/`read_vmcore_build_id` real impls are `# pragma: no cover -
-live_vm`. `fetch_object`'s real impl reads the store (already gated in `retrieve.py`).
+The provenance **comparison logic** (the build-id equality check), the temp staging, the
+helper dispatch, and the redaction are host-free and **unit-tested with the seams
+injected as fakes** — exactly as the retrieve tests inject a `_FakeCrash`/`_FakeRetriever`.
+The provenance *test* injects a fake `read_vmcore_build_id` returning a planted build-id;
+it never calls the real reader. The **real** `open_program`/`run_helper`/`read_vmcore_build_id`
+impls are `# pragma: no cover - live_vm` (the real build-id reader raises `MISSING_DEPENDENCY`
+off-gate, identical to `retrieve.py`). `fetch_object`'s real impl reads the store (already
+gated in `retrieve.py`).
 
 If the `open_program`/`run_helper` seams were not configured (the default `from_env`
 real seams raise), the port raises `CategorizedError(MISSING_DEPENDENCY)` — the same shape
@@ -137,8 +150,29 @@ In M0 these run **in-process** against the opened `Program` (no subprocess wrapp
 the helper bodies become small typed functions over the `_Program` protocol rather than
 string scripts piped to `python3 -`. A helper that raises mid-decode degrades to an
 error marker in its own sub-dict (e.g. `{"error": "<type>"}`) rather than failing the
-whole call, **except** `modules`' all-failed case which the v1 helper raises on (a
-fully-wrong decode path) — that becomes a `DEBUG_ATTACH_FAILURE` for the whole call.
+whole call. `modules`' all-failed case (the v1 helper raised on it — a fully-wrong decode
+path) is **also kept as a per-helper degrade** in M0: `modules` returns `{"modules": [],
+"decode_errors": N, "all_failed": true}` rather than escalating to a whole-call failure,
+because an all-failed module decode is a kernel-version/struct-offset skew, not a drgn
+*attach* failure — escalating it would mislabel a decode-coverage gap as
+`debug_attach_failure`. The only whole-call `debug_attach_failure` is drgn failing to
+**open** the core or **load** the vmlinux (step 4), which is the genuine attach boundary.
+
+### Output bounds
+
+There are no caller args in M0, so the helpers use **fixed in-tree caps**, not request
+parameters:
+
+- `tasks`: `states={"D"}` (blocked tasks only), `include_stack=True`, `limit=200` (the v1
+  default); a per-frame stack is bounded by drgn's own stack depth. Hitting `limit` sets
+  the helper's `truncated`.
+- `modules`/`sysinfo`: naturally bounded by the loaded-module count / fixed uts fields.
+- The **assembled report** is JSON-serialized and bounded by a fixed total byte cap
+  (`_REPORT_BYTE_CAP`); if serialization exceeds it, the `tasks` list is the first thing
+  trimmed and `IntrospectOutput.truncated` is set. The cap prevents an unbounded
+  multi-megabyte `data["report"]` string from a core with deep/many stacks.
+
+`truncated` surfaces in `data` so an agent knows the report is partial and can narrow.
 
 ### `mcp/tools/introspect.py`  (NOT `debug.py` — see ADR §placement)
 
@@ -147,10 +181,11 @@ fully-wrong decode path) — that becomes a `DEBUG_ATTACH_FAILURE` for the whole
   build-id from the Run's `build` `run_steps` result (`result["build_id"]`); load the
   System's raw `vmcore` object key. (This resolution is the same `_resolve_postmortem`
   shape `vmcore.py` already uses; the shared parts are reused, not re-derived.) Then call
-  `introspector.from_vmcore(...)`; on `CategorizedError` return a typed failure (never a
-  500); **redact** the assembled report via the ADR-0027 `Redactor` and return it as
-  `data["report"]` (JSON string). A Run with null `debuginfo_ref` (not built), no recorded
-  `build` step result, or a System with no captured core is a `configuration_error`.
+  `introspector.from_vmcore(...)`, which returns an **already-redacted** `IntrospectOutput`
+  (the port is the redaction boundary, §Redaction); on `CategorizedError` return a typed
+  failure (never a 500); JSON-serialize the report into `data["report"]` and surface
+  `data["truncated"]`. A Run with null `debuginfo_ref` (not built), no recorded `build`
+  step result, or a System with no captured core is a `configuration_error`.
 - `register(app, pool)` — registers the `introspect.from_vmcore` tool, building the
   introspector lazily from env (no drgn import at registration).
 
@@ -175,11 +210,16 @@ ADR-0029 §5). A mismatch is a `configuration_error` — the exact provenance ga
 ## Redaction (before return AND before any persistence)
 
 The helper output can carry guest-derived strings (`comm`, module names, kernel-stack
-frames, the boot cmdline, uts `version`). The assembled report is run through the
-ADR-0027 `Redactor.redact_value` (structure-aware) **before it leaves the port / is
-returned**, so any later persistence is of already-redacted text. The unit test plants a
+frames, the boot cmdline, uts `version`). The **port** runs the assembled
+`{tasks, modules, sysinfo}` report through the ADR-0027 `Redactor.redact_value`
+(structure-aware) **before constructing `IntrospectOutput`** — so the value the port
+returns is already redacted, and the tool handler never sees un-redacted guest text. The
+port is the **single redaction boundary**: this is deliberate so that any future
+persistence (whether added at the port, the worker, or the handler) is necessarily of
+already-redacted text, with no second redaction site to forget. The unit test plants a
 secret-shaped token (e.g. a `comm` of `token=hunter2`) in the fake program's output and
-asserts it is `[REDACTED]` in the response.
+asserts it is `[REDACTED]` in the `IntrospectOutput` the port returns **and** in the
+handler's `data["report"]`.
 
 ## Error contract
 
@@ -187,8 +227,13 @@ asserts it is `[REDACTED]` in the response.
 |-----------|----------|
 | malformed `run_id`, unknown Run, Run not built (`debuginfo_ref` null), no recorded `build` step result, System with no captured core | `configuration_error` |
 | captured core build-id ≠ the Run's recorded build-id (provenance) | `configuration_error` |
-| drgn cannot open the core / load the vmlinux; `modules` all-failed decode | `debug_attach_failure` |
+| drgn cannot **open** the core or **load** the vmlinux (the attach boundary) | `debug_attach_failure` |
 | the drgn seams are not configured on the introspector (default real seams) | `missing_dependency` |
+
+A helper raising mid-decode (including `modules`' all-failed case) is **not** a whole-call
+failure — it degrades to a per-helper error marker / `all_failed` flag and the call still
+succeeds (a partial report is more useful than a hard failure, and an all-failed module
+decode is version skew, not an attach failure).
 | caller lacks project membership | authz raises (no category, ADR-0020) |
 
 ## Testing
@@ -197,13 +242,16 @@ The handler + port are unit-tested with a `_FakeIntrospector` / a `_FakeProgram`
 migrated DB fixture, called directly — never through MCP. Edges: Run with null
 `debuginfo_ref` → `configuration_error`; no recorded build step → `configuration_error`;
 System with no captured core → `configuration_error`; build-id provenance mismatch →
-`configuration_error`; drgn open failure → `debug_attach_failure`; `modules` all-failed
-decode → `debug_attach_failure`; a single helper raising mid-decode degrades to an error
-marker (not a whole-call failure); a planted secret-shaped guest string is `[REDACTED]`
-in the returned report (redaction asserted over attacker-controlled content); the
-port runs the **real `Redactor`** so the test proves redaction, not mock theater;
-`register` adds the tool. The real drgn open/helper path is `live_vm`-gated and never run
-in CI.
+`configuration_error` (with a fake `read_vmcore_build_id` returning a non-matching id);
+drgn open failure → `debug_attach_failure`; `modules` all-failed decode → the call still
+succeeds with `all_failed: true` (per-helper degrade, **not** `debug_attach_failure`); a
+single helper raising mid-decode degrades to an error marker (not a whole-call failure); a
+report exceeding `_REPORT_BYTE_CAP` sets `truncated: true` and trims `tasks`; a planted
+secret-shaped guest string is `[REDACTED]` in the `IntrospectOutput` the port returns
+**and** in the handler's `data["report"]` (redaction asserted over attacker-controlled
+content, at the port boundary); the port runs the **real `Redactor`** so the test proves
+redaction, not mock theater; `register` adds the tool. The real drgn open/helper path is
+`live_vm`-gated and never run in CI.
 
 ## Out of scope
 
