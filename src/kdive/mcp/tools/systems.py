@@ -34,6 +34,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.local_libvirt.provisioning import (
     LocalLibvirtProvisioning,
+    Provisioner,
     domain_name_for,
     validate_profile,
 )
@@ -235,7 +236,7 @@ async def _provision_locked(
 
 
 async def provision_handler(
-    conn: AsyncConnection, job: Job, provisioning: LocalLibvirtProvisioning
+    conn: AsyncConnection, job: Job, provisioning: Provisioner
 ) -> str | None:
     """Define+start the tagged domain and drive the System ``provisioning -> ready``."""
     system_id = UUID(job.payload["system_id"])
@@ -324,7 +325,7 @@ async def teardown_system(
 
 
 async def teardown_handler(
-    conn: AsyncConnection, job: Job, provisioning: LocalLibvirtProvisioning
+    conn: AsyncConnection, job: Job, provisioning: Provisioner
 ) -> str | None:
     """Destroy+undefine the domain and drive the System ``-> torn_down`` (idempotent)."""
     system_id = UUID(job.payload["system_id"])
@@ -367,7 +368,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
 
 
 def register_handlers(
-    registry: HandlerRegistry, *, provisioning: LocalLibvirtProvisioning | None = None
+    registry: HandlerRegistry, *, provisioning: Provisioner | None = None
 ) -> None:
     """Bind the `provision`/`teardown` job handlers; build the provider lazily from env.
 

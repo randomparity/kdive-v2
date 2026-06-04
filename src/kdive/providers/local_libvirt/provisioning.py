@@ -47,6 +47,23 @@ class _LibvirtConn(Protocol):
 type Connect = Callable[[], _LibvirtConn]
 
 
+class Provisioner(Protocol):
+    """The handler-facing provisioning port (the realized M0 contract).
+
+    Distinct from :class:`kdive.providers.interfaces.ProvisioningPlane`, the capability-dispatch
+    placeholder that keys on the *Allocation*: row-first ordering (ADR-0021/0025) mints the
+    System **before** provisioning, so this port keys on the already-minted ``system_id`` and
+    returns the libvirt domain name the handler stores and later tears down.
+    :class:`LocalLibvirtProvisioning` satisfies it structurally; the `systems.*` job handlers
+    depend on it so tests can inject a fake provider without a libvirt host. Reconciling the
+    capability-dispatch Protocol with the realized providers is deferred to the
+    capability-dispatch integration (provisioning is not dispatched through the registry in M0).
+    """
+
+    def provision(self, system_id: UUID, profile: ProvisioningProfile) -> str: ...
+    def teardown(self, domain_name: str) -> None: ...
+
+
 def domain_name_for(system_id: UUID) -> str:
     """The deterministic libvirt domain name for a System."""
     return f"kdive-{system_id}"
