@@ -1115,19 +1115,20 @@ def test_provision_handler_provider_failure_sets_system_failed(migrated_url: str
     asyncio.run(_run())
 
 
-def test_provision_handler_superseded_by_teardown_cleans_up(migrated_url: str) -> None:
+def test_provision_handler_terminal_system_short_circuits(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
-            # Seed already torn_down: the provider creates the domain, but the finalize sees
-            # a terminal System and tears the just-created domain down instead of -> ready.
+            # A System already torn_down before the job runs: the handler short-circuits at
+            # step 2 (state is not provisioning) and never calls the provider. (The mid-flight
+            # superseded-cleanup path — System driven terminal *after* the provider call — is
+            # Task 8.)
             sys_id = await _seed_system(pool, alloc_id, SystemState.TORN_DOWN)
             job = await _enqueue_provision(pool, sys_id, alloc_id)
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
                 result = await systems_tools.provision_handler(conn, job, prov)
         assert result == sys_id
-        # torn_down is terminal, so step-2 returns before provisioning: provider not called.
         assert prov.provisioned == []
 
     asyncio.run(_run())
@@ -1198,11 +1199,15 @@ async def provision_handler(
     try:
         domain_name = provisioning.provision(system_id, profile)
     except CategorizedError:
-        await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
-        await _audit_transition(
-            conn, job, project=system.project, object_id=system_id,
-            transition="provisioning->failed", tool="systems.provision",
-        )
+        # update_state + audit MUST share one transaction: audit.record does not open its own,
+        # so on a non-autocommit pool connection a bare audit INSERT would be rolled back when
+        # the connection is returned. (update_state's own transaction nests as a savepoint.)
+        async with conn.transaction():
+            await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
+            await _audit_transition(
+                conn, job, project=system.project, object_id=system_id,
+                transition="provisioning->failed", tool="systems.provision",
+            )
         raise
     superseded = True
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
@@ -1425,7 +1430,9 @@ git commit -m "feat(systems): teardown tool + handler (destroy/undefine, ->torn_
 **Files:**
 - Modify: `tests/mcp/test_systems_tools.py`
 
-This task adds the one test the spec's threat model headlines: a provision whose System is driven `torn_down` by a concurrent teardown *after* the provider created the domain but *before* the locked finalize. The handler must not set `ready`, must tear down the domain it created, and must not raise.
+This task adds the one test the spec's threat model headlines: a provision whose System is driven `torn_down` *after* the provider created the domain but *before* the locked finalize. The handler must not set `ready`, must tear down the domain it created, and must not raise.
+
+Because `LocalLibvirtProvisioning.provision` is a **sync** method called from inside the handler coroutine, the deterministic way to inject the race is to have the fake provider's `provision` drive the System terminal *synchronously* (on its own psycopg connection) before it returns the domain name — guaranteeing the System is `torn_down` by the time `provision_handler` re-reads it under the SYSTEM lock. No timing dependence.
 
 - [ ] **Step 1: Write the failing interleave test**
 
@@ -1433,27 +1440,31 @@ Append to `tests/mcp/test_systems_tools.py`:
 
 ```python
 def test_provision_handler_superseded_midflight_tears_down_created_domain(migrated_url: str) -> None:
+    import psycopg
+
+    class _RacingProvisioning(_FakeProvisioning):
+        """A provider whose provision() drives the System torn_down before returning.
+
+        Simulates a concurrent teardown landing between the (slow) provider call and the
+        handler's locked finalize — synchronously, so the race is deterministic.
+        """
+
+        def __init__(self, url: str) -> None:
+            super().__init__()
+            self._url = url
+
+        def provision(self, system_id: UUID, profile: Any) -> str:
+            name = super().provision(system_id, profile)
+            with psycopg.connect(self._url, autocommit=True) as c:
+                c.execute("UPDATE systems SET state = 'torn_down' WHERE id = %s", (system_id,))
+            return name
+
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.PROVISIONING)
             job = await _enqueue_provision(pool, sys_id, alloc_id)
-
-            # A provider whose provision() drives the System torn_down as a side effect,
-            # simulating a concurrent teardown landing between provider.provision and finalize.
-            class _RacingProvisioning(_FakeProvisioning):
-                def provision(self, system_id_inner: UUID, profile: Any) -> str:
-                    name = super().provision(system_id_inner, profile)
-
-                    async def _terminate() -> None:
-                        async with pool.connection() as c:
-                            await SYSTEMS.update_state(c, system_id_inner, SystemState.TORN_DOWN)
-
-                    asyncio.run_coroutine_threadsafe  # noqa: B018 - import guard placeholder
-                    fut = asyncio.ensure_future(_terminate())
-                    return name  # the terminate runs before the locked finalize awaits
-
-            prov = _RacingProvisioning()
+            prov = _RacingProvisioning(migrated_url)
             async with pool.connection() as conn:
                 result = await systems_tools.provision_handler(conn, job, prov)
             assert result == sys_id
@@ -1466,59 +1477,17 @@ def test_provision_handler_superseded_midflight_tears_down_created_domain(migrat
     asyncio.run(_run())
 ```
 
-> If the `ensure_future` interleave proves flaky (timing-dependent), replace the racing provider with a deterministic variant: a `provision` that itself performs the `SYSTEMS.update_state(..., TORN_DOWN)` synchronously on a fresh connection before returning the name. The assertion (no `ready`, domain cleaned up) is the invariant; the mechanism only needs to make the System terminal before `provision_handler`'s locked re-read.
-
-- [ ] **Step 2: Run to verify it fails or is flaky, then make it deterministic**
+- [ ] **Step 2: Run to verify it fails (before the finalize-guard exists, the handler would try `provisioning->ready`)**
 
 Run: `uv run python -m pytest tests/mcp/test_systems_tools.py -k superseded_midflight -q`
-Expected: FAIL or flaky. Rewrite the racing provider's `provision` to terminate synchronously:
+Expected: PASS if Task 6's finalize-guard is already implemented (the `superseded` branch handles it); this task pins the behavior with a dedicated test. If it fails, the Task 6 finalize re-read under the lock is missing or wrong — fix `provision_handler` so a non-`provisioning` re-read tears down the created domain instead of transitioning.
 
-```python
-            class _RacingProvisioning(_FakeProvisioning):
-                def provision(self, system_id_inner: UUID, profile: Any) -> str:
-                    name = super().provision(system_id_inner, profile)
-
-                    async def _terminate() -> None:
-                        async with pool.connection() as c:
-                            await SYSTEMS.update_state(c, system_id_inner, SystemState.TORN_DOWN)
-
-                    asyncio.get_event_loop().run_until_complete  # not usable inside a running loop
-                    return name
-```
-
-Because `provision` is a sync method called from inside the running handler coroutine, drive the terminal state from the **test** instead: seed the System `provisioning`, then have `provision` schedule nothing — directly set it terminal via a synchronous psycopg connection:
-
-```python
-            class _RacingProvisioning(_FakeProvisioning):
-                def __init__(self, url: str) -> None:
-                    super().__init__()
-                    self._url = url
-
-                def provision(self, system_id_inner: UUID, profile: Any) -> str:
-                    name = super().provision(system_id_inner, profile)
-                    import psycopg
-                    with psycopg.connect(self._url, autocommit=True) as c:
-                        c.execute(
-                            "UPDATE systems SET state = 'torn_down' WHERE id = %s", (system_id_inner,)
-                        )
-                    return name
-
-            prov = _RacingProvisioning(migrated_url)
-```
-
-This makes the System `torn_down` synchronously inside `provision()`, before `provision_handler` re-reads under the lock — deterministic.
-
-- [ ] **Step 3: Run to verify it passes**
-
-Run: `uv run python -m pytest tests/mcp/test_systems_tools.py -k superseded_midflight -q`
-Expected: PASS — the handler finds `torn_down` under the lock, tears down the created domain, returns without error, leaves the System `torn_down`.
-
-- [ ] **Step 4: Run the full systems suite**
+- [ ] **Step 3: Run the full systems suite**
 
 Run: `uv run python -m pytest tests/mcp/test_systems_tools.py -q`
 Expected: PASS (all tasks 4–8).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add tests/mcp/test_systems_tools.py
