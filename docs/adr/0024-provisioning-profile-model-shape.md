@@ -81,23 +81,30 @@ field is present" are the acceptance criteria, but a bare `str` accepts `""` —
 present yet useless, and for `crashkernel` that silently defeats the kdump
 prerequisite the field exists to guarantee. Every required string field —
 `arch`, `kernel_source_ref`, and the libvirt section's `rootfs_image_ref` and
-`crashkernel` — is therefore `Field(min_length=1)` with `str_strip_whitespace=True`
-in the model config, so a blank or whitespace-only value is a `configuration_error`,
-not a hollow pass. `crashkernel` is otherwise an **opaque non-empty token** in M0:
-its grammar (`"256M"`, `"auto"`, range syntax) is the kernel's, and a format
-validator here would be brittle and reject valid forms — non-empty is the contract,
-and the booted kernel is the real arbiter. `domain_xml_params` values follow the
-same rule via decision 2c.
+`crashkernel` — is therefore a non-empty `str` (`Field(min_length=1)`) with
+`str_strip_whitespace=True` in the model config, so a blank or whitespace-only value
+is a `configuration_error`, not a hollow pass. `crashkernel` is otherwise an
+**opaque non-empty token** in M0: its grammar (`"256M"`, `"auto"`, range syntax) is
+the kernel's, and a format validator here would be brittle and reject valid forms —
+non-empty is the contract, and the booted kernel is the real arbiter.
+`domain_xml_params` is a map, not a scalar, so its emptiness rule is split out in
+decision 2c — `min_length` on a scalar field and on a `dict` field mean different
+things and must not be conflated.
 
 ### 2c. `domain_xml_params` is `dict[str, str]`, not `dict[str, Any]`
 
-The libvirt section's `domain_xml_params` is `dict[str, str]` (default
-`{}`), with non-empty values per decision 2b. Domain-XML parameters are text
-substituted into an XML template, so a string map is the faithful type; `Any`
-would admit arbitrary nested structure and is the one core field whose looseness
-would contradict the "no inline secrets" posture decision 3 relies on. The schema
-models **references** (`rootfs_image_ref`, `kernel_source_ref`) and opaque
-text params, not inline secrets; secret *resolution* is
+The libvirt section's `domain_xml_params` is
+`dict[str, Annotated[str, Field(min_length=1)]]` with default `{}`. The **map is
+optionally empty** (a profile may inject no params); the `min_length=1` rides on the
+**value type**, so any param that *is* present has a non-empty value. This is
+deliberately not `Field(min_length=1)` on the dict itself — that constrains the
+entry *count* (it would forbid the `{}` default while doing nothing about value
+emptiness), which is the conflation decision 2b warns against. Domain-XML parameters
+are text substituted into an XML template, so a string map is the faithful type;
+`dict[str, Any]` would admit arbitrary nested structure and is the one core field
+whose looseness would contradict the "no inline secrets" posture decision 3 relies
+on. The schema models **references** (`rootfs_image_ref`, `kernel_source_ref`) and
+opaque text params, not inline secrets; secret *resolution* is
 [ADR-0012](0012-secret-backend.md)'s job, so the schema does not scan
 `domain_xml_params` for secret material — it constrains the shape, not the meaning.
 
@@ -216,7 +223,12 @@ next milestone step, and the parse boundary is the seam it will call.
   with whitespace stripping makes presence mean usability.
 - **`domain_xml_params: dict[str, Any]`.** Rejected: it admits arbitrary nested
   structure and an inline-secret surface that contradicts the no-inline-secrets
-  posture; XML params are text, so `dict[str, str]` is both faithful and strict.
+  posture; XML params are text, so a string-valued map is both faithful and strict.
+- **`Field(min_length=1)` on the `domain_xml_params` dict itself.** Rejected: on a
+  collection `min_length` bounds the entry *count*, so it would forbid the intended
+  empty-map default while leaving individual values unconstrained. The value
+  non-emptiness rides on the value type (`Annotated[str, Field(min_length=1)]`); the
+  map stays optionally empty.
 - **Raise `CategorizedError` from inside a model validator.** Rejected: it scatters
   the taxonomy mapping across field validators and fights Pydantic, which wraps
   exceptions raised in validators back into `ValidationError` anyway. One parse
