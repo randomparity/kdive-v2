@@ -48,6 +48,16 @@ def test_run_scope_key_is_distinct_from_other_scopes() -> None:
     assert _lock_key(LockScope.RUN, key) == run_key  # deterministic
 
 
+def test_project_scope_keyed_by_string_is_deterministic_and_distinct() -> None:
+    # PROJECT is keyed by the `project` string (ADR-0040), not a UUID. Distinct
+    # projects get distinct keys; the same project is deterministic; the value fits
+    # the signed 64-bit advisory-lock space.
+    key = _lock_key(LockScope.PROJECT, "kernel-team")
+    assert key == _lock_key(LockScope.PROJECT, "kernel-team")
+    assert key != _lock_key(LockScope.PROJECT, "other-team")
+    assert -(2**63) <= key < 2**63
+
+
 async def _wait_until_lock_waiting(observer: psycopg.AsyncConnection, waiter_pid: int) -> None:
     """Poll pg_locks until ``waiter_pid`` is blocked on an advisory lock (not merely slow)."""
     for _ in range(200):
@@ -87,6 +97,55 @@ def test_lock_blocks_until_holder_commits(postgres_url: str) -> None:
                 assert not acquired_b.is_set()
             # a's transaction committed above, releasing the lock.
             assert await asyncio.wait_for(task, timeout=5) == "acquired"
+
+    asyncio.run(_run())
+
+
+def test_project_lock_serializes_two_connections_on_one_project(postgres_url: str) -> None:
+    """Two connections taking PROJECT for the same project serialize; the waiter
+    unblocks only after the holder's transaction commits (issue ① acceptance)."""
+    project = "kernel-team"
+
+    async def _run() -> None:
+        async with (
+            await psycopg.AsyncConnection.connect(postgres_url) as a,
+            await psycopg.AsyncConnection.connect(postgres_url) as b,
+        ):
+            acquired_b = asyncio.Event()
+
+            async def acquire_b() -> str:
+                async with b.transaction(), advisory_xact_lock(b, LockScope.PROJECT, project):
+                    acquired_b.set()
+                    return "acquired"
+
+            async with (  # noqa: SIM117
+                a.transaction(),
+                advisory_xact_lock(a, LockScope.PROJECT, project),
+            ):
+                task = asyncio.create_task(acquire_b())
+                await _wait_until_lock_waiting(a, b.info.backend_pid)
+                assert not task.done()
+                assert not acquired_b.is_set()
+            # a committed, releasing the PROJECT lock; b may now proceed.
+            assert await asyncio.wait_for(task, timeout=5) == "acquired"
+
+    asyncio.run(_run())
+
+
+def test_project_lock_does_not_block_distinct_projects(postgres_url: str) -> None:
+    async def _run() -> None:
+        async with (
+            await psycopg.AsyncConnection.connect(postgres_url) as a,
+            await psycopg.AsyncConnection.connect(postgres_url) as b,
+            a.transaction(),
+            advisory_xact_lock(a, LockScope.PROJECT, "team-a"),
+        ):
+
+            async def acquire_b() -> str:
+                async with b.transaction(), advisory_xact_lock(b, LockScope.PROJECT, "team-b"):
+                    return "acquired"
+
+            assert await asyncio.wait_for(acquire_b(), timeout=5) == "acquired"
 
     asyncio.run(_run())
 

@@ -20,14 +20,19 @@ from psycopg.pq import TransactionStatus
 
 
 class LockScope(StrEnum):
-    """The advisory-lock scopes M0 serializes on (ADR-0016, ADR-0023, ADR-0026).
+    """The advisory-lock scopes the platform serializes on (ADR-0016, ADR-0040).
 
     Operations that hold more than one scope at once acquire them in the fixed global
-    order ``ALLOCATION → SYSTEM → INVESTIGATION → RUN`` to avoid deadlock; e.g.
-    ``runs.create`` takes ``SYSTEM`` then ``INVESTIGATION``, and ``runs.build`` takes
-    ``RUN`` (ADR-0027).
+    total order ``PROJECT → RESOURCE → ALLOCATION → SYSTEM`` (and then
+    ``INVESTIGATION → RUN`` for the M0 run paths) to avoid deadlock; e.g. M1's
+    ``allocations.request`` takes ``PROJECT`` then ``RESOURCE`` (ADR-0040 §1), and M0's
+    ``runs.create`` takes ``SYSTEM`` then ``INVESTIGATION`` (ADR-0027).
+
+    ``PROJECT`` (added in M1) is keyed by the ``project`` string; every other scope is
+    keyed by an object :class:`~uuid.UUID`.
     """
 
+    PROJECT = "project"
     ALLOCATION = "allocation"
     SYSTEM = "system"
     RESOURCE = "resource"
@@ -35,12 +40,13 @@ class LockScope(StrEnum):
     RUN = "run"
 
 
-def _lock_key(scope: LockScope, key: UUID) -> int:
+def _lock_key(scope: LockScope, key: UUID | str) -> int:
     """Derive a deterministic signed 64-bit advisory-lock key from ``(scope, key)``.
 
     The digest folds an unbounded key space onto 64 bits: a collision over-serializes
     two unrelated keys (safe — never under-serializes). A ``0x00`` separator keeps the
-    scope and key boundaries unambiguous for the NUL-free identifiers used here.
+    scope and key boundaries unambiguous for the NUL-free identifiers used here
+    (object UUIDs and ``project`` strings).
     """
     digest = hashlib.blake2b(digest_size=8)
     digest.update(scope.value.encode())
@@ -51,7 +57,7 @@ def _lock_key(scope: LockScope, key: UUID) -> int:
 
 @asynccontextmanager
 async def advisory_xact_lock(
-    conn: AsyncConnection, scope: LockScope, key: UUID
+    conn: AsyncConnection, scope: LockScope, key: UUID | str
 ) -> AsyncIterator[None]:
     """Hold a transaction-scoped advisory lock for ``(scope, key)`` over the block.
 
@@ -61,7 +67,8 @@ async def advisory_xact_lock(
     Args:
         conn: An async connection with an open (or about-to-open) transaction.
         scope: The lock scope.
-        key: The object id the lock protects.
+        key: The object id (a :class:`~uuid.UUID`) the lock protects, or the
+            ``project`` string for :attr:`LockScope.PROJECT`.
 
     Raises:
         RuntimeError: After acquiring, the connection is not in a transaction, so the

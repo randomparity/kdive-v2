@@ -41,3 +41,18 @@ def test_distinct_scopes_separate_the_same_uuid(a: LockScope, b: LockScope, key:
 def test_distinct_keys_in_one_scope_separate(scope: LockScope, a: UUID, b: UUID) -> None:
     if a != b:
         assert _lock_key(scope, a) != _lock_key(scope, b)
+
+
+@given(project=st.text())
+def test_string_keyed_project_lock_is_deterministic_and_in_range(project: str) -> None:
+    # PROJECT is keyed by the `project` string (ADR-0040); the same derivation must
+    # hold for str keys: pure function, signed 64-bit range.
+    first = _lock_key(LockScope.PROJECT, project)
+    assert first == _lock_key(LockScope.PROJECT, project)
+    assert _INT64_MIN <= first <= _INT64_MAX
+
+
+@given(a=st.text(), b=st.text())
+def test_distinct_project_strings_separate(a: str, b: str) -> None:
+    if a != b:
+        assert _lock_key(LockScope.PROJECT, a) != _lock_key(LockScope.PROJECT, b)
