@@ -1,4 +1,4 @@
-"""Local-libvirt Build plane: make a kernel in a warm workspace and store two artifacts (ADR-0027).
+"""Local-libvirt Build plane: make a kernel in a warm workspace and store two artifacts (ADR-0029).
 
 `LocalLibvirtBuild` checks out a warm source tree (base ref + the profile's optional
 patch), preflights the resolved ``.config`` for the kdump/debuginfo prerequisites, runs
@@ -52,7 +52,7 @@ class BuildOutput(NamedTuple):
 
 
 class Builder(Protocol):
-    """The handler-facing build port (the realized M0 contract, ADR-0027 §4).
+    """The handler-facing build port (the realized M0 contract, ADR-0029 §4).
 
     Distinct from :class:`kdive.providers.interfaces.BuildPlane`, the capability-dispatch
     placeholder that returns a single artifact: the realized port stores **two** artifacts
@@ -130,7 +130,7 @@ type _ReadBuildId = Callable[[Path], str]
 
 
 class LocalLibvirtBuild:
-    """The realized Build port: warm-tree ``make`` + two-artifact store (ADR-0027 §5)."""
+    """The realized Build port: warm-tree ``make`` + two-artifact store (ADR-0029 §5)."""
 
     def __init__(
         self,

@@ -226,7 +226,7 @@ _RUN_BUILD_TERMINAL = frozenset({RunState.FAILED, RunState.CANCELED})
 
 
 def _authorizing(ctx: RequestContext, project: str) -> dict[str, Any]:
-    """The job's authorizing tuple (ADR-0027); mirrors `systems._authorizing`."""
+    """The job's authorizing tuple (ADR-0029); mirrors `systems._authorizing`."""
     return {"principal": ctx.principal, "agent_session": ctx.agent_session, "project": project}
 
 
@@ -389,7 +389,7 @@ async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> st
     The build (`make` + the two artifact puts) runs with **no DB transaction held** (the
     worker contract). The ledger record and the Run finalize commit together in one short
     transaction under the per-Run lock; a re-dispatch with a recorded ledger row skips the
-    rebuild (ADR-0027). On a build failure the Run is driven `failed` with the build's
+    rebuild (ADR-0029). On a build failure the Run is driven `failed` with the build's
     category and the error re-raised so the worker dead-letters the job.
     """
     run_id = UUID(job.payload["run_id"])

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 · `psycopg` 3 (async) · Pydantic v2 · FastMCP 3.x · `boto3` (object store) · `pytest` (testcontainers Postgres) · `ruff`/`ty`.
 
-**Design source:** [`../specs/2026-06-04-build-plane-design.md`](../specs/2026-06-04-build-plane-design.md) · [`../../adr/0027-build-plane-local-make.md`](../../adr/0027-build-plane-local-make.md). The spec's §6/§7 are the authoritative handler/error contracts; each task references its slice.
+**Design source:** [`../specs/2026-06-04-build-plane-design.md`](../specs/2026-06-04-build-plane-design.md) · [`../../adr/0029-build-plane-local-make.md`](../../adr/0029-build-plane-local-make.md). The spec's §6/§7 are the authoritative handler/error contracts; each task references its slice.
 
 ---
 

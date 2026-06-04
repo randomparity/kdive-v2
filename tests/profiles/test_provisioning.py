@@ -233,3 +233,24 @@ def test_public_names_exported_from_package() -> None:
     assert profiles.BootMethod is BootMethod
     assert hasattr(profiles, "LibvirtProfile")
     assert hasattr(profiles, "ProviderSection")
+
+
+def test_destructive_ops_defaults_empty() -> None:
+    profile = ProvisioningProfile.parse(_valid())
+    assert profile.provider.local_libvirt.destructive_ops == []
+
+
+def test_destructive_ops_accepts_force_crash() -> None:
+    data = _valid()
+    data["provider"]["local-libvirt"]["destructive_ops"] = ["force_crash"]
+    profile = ProvisioningProfile.parse(data)
+    assert profile.provider.local_libvirt.destructive_ops == ["force_crash"]
+
+
+def test_destructive_ops_rejects_blank_entry() -> None:
+    from kdive.domain.errors import CategorizedError
+
+    data = _valid()
+    data["provider"]["local-libvirt"]["destructive_ops"] = [" "]
+    with pytest.raises(CategorizedError):
+        ProvisioningProfile.parse(data)

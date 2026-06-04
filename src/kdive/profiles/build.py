@@ -1,4 +1,4 @@
-"""The build-profile schema and its parse boundary (ADR-0027).
+"""The build-profile schema and its parse boundary (ADR-0029).
 
 A build profile is a versioned, declarative document naming the kernel source tree,
 the kernel ``.config`` to build with, and an optional patch applied on top of the base
@@ -16,7 +16,7 @@ mapping and is a caller error.
 The kdump/debuginfo *config-correctness* requirements (``CONFIG_CRASH_DUMP``/
 ``crashkernel`` and ``CONFIG_DEBUG_INFO(_DWARF)``/BTF) are **not** checked here: the
 profile only names a config by reference, so its contents are not in this document. The
-builder resolves the config and preflights it against the kernel tree (ADR-0027 §3).
+builder resolves the config and preflights it against the kernel tree (ADR-0029 §3).
 """
 
 from __future__ import annotations

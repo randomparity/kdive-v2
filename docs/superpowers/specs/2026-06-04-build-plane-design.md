@@ -6,7 +6,7 @@
 - **Depends on:** #13 (provisioning-profile schema, the `ProvisioningProfile`
   pattern this mirrors), #17 (Investigation + Run lifecycle, the `runs.*` surface and
   the `Run`/`run_steps`/idempotency ledger this builds on).
-- **ADR:** [ADR-0027](../../adr/0027-build-plane-local-make.md) (the open decisions
+- **ADR:** [ADR-0029](../../adr/0029-build-plane-local-make.md) (the open decisions
   this spec settles).
 
 ## 1. Problem

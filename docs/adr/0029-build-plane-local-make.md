@@ -1,4 +1,4 @@
-# ADR 0027 — Build plane (local make): runs.build, BuildProfile, build handler (M0)
+# ADR 0029 — Build plane (local make): runs.build, BuildProfile, build handler (M0)
 
 - **Status:** Proposed
 - **Date:** 2026-06-04
