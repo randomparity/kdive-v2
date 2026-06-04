@@ -76,6 +76,18 @@ reconciler loop (separate issue).
   parameter.
 - **No widening of `ToolResponse.data`.** It stays `dict[str, str]`; resources are
   projected to flat strings (ADR-0023 §6).
+- **`allocations.request` is not idempotent in M0 (deliberate).** The parent spec's
+  admission idempotency (`dedup_key`, "re-issuing returns the existing handle") applies
+  to **long-running job** tools; allocation is synchronous and carries no dedup key, so
+  a client retry inserts a *second* `granted` Allocation and consumes another capacity
+  slot. The blast radius is bounded — the per-host cap is the ceiling (a retry that
+  would overshoot is simply denied), and any over-booked slot is reclaimable via
+  `allocations.release` — and there is **no** natural uniqueness rule to enforce (an
+  agent may legitimately hold several allocations up to the cap). A client-supplied
+  idempotency token is the proper fix; it is out of the issue's
+  `allocations.request({selector, project})` surface and is deferred to the M1 leasing
+  work (ADR-0007), where reservation identity lands. Stated here so non-idempotent
+  retries are a recorded decision, not an oversight.
 
 ## Components
 
@@ -123,9 +135,15 @@ async def register_local_libvirt_resource(
   libvirt metadata (namespace below), skipping untagged domains (not ours). The
   metadata read uses
   `domain.metadata(libvirt.VIR_DOMAIN_METADATA_ELEMENT, _KDIVE_METADATA_NS, 0)`; a
-  domain with no such metadata raises a libvirt error, caught and treated as "untagged
-  → skip". The tag XML shape and namespace are pinned here as the contract #15's
-  provisioning must honor:
+  domain with no kdive metadata raises `libvirtError` with
+  `get_error_code() == libvirt.VIR_ERR_NO_DOMAIN_METADATA`, caught **narrowly** and
+  treated as "untagged → skip". **Any other libvirt error** (dropped connection,
+  RPC timeout, permission denied) is **re-raised** as
+  `CategorizedError(INFRASTRUCTURE_FAILURE)`, never swallowed as "untagged" — the
+  reconciler consumes `list_owned` to decide reaping, so a silently-dropped owned
+  domain or an empty set masking a connection failure would corrupt that decision and
+  hide the failure. The tag XML shape and namespace are pinned here as the contract
+  #15's provisioning must honor:
   - namespace `_KDIVE_METADATA_NS = "https://kdive.dev/libvirt/1"`
   - element `<kdive:system xmlns:kdive="…">{system_id}</kdive:system>` — the text is the
     System uuid.
@@ -171,8 +189,11 @@ async def admit(
 2. `async with conn.transaction():` then `async with advisory_xact_lock(conn,
    LockScope.RESOURCE, resource.id):` — the count and the insert are one atomic,
    per-host-serialized critical section.
-3. `SELECT count(*) FROM allocations WHERE resource_id=%s AND state = ANY(%s)` over
-   `_NON_TERMINAL` → `in_use`.
+3. `SELECT count(*) FROM allocations WHERE resource_id=%s AND state = ANY(%s)`, binding
+   `[s.value for s in _NON_TERMINAL]` → `in_use`. **psycopg3 adapts a `list` to a
+   Postgres array but a `tuple` to a record**, so the parameter must be a `list` of the
+   `.value` strings, not the `_NON_TERMINAL` tuple itself — otherwise `ANY(...)` is a
+   record comparison, not array membership. The admission test pins this.
 4. If `in_use >= cap`: return `AdmissionOutcome(granted=False, allocation=None,
    reason="at_capacity", cap=cap, in_use=in_use)` — **no row inserted**, and the
    transaction commits with no allocation change (the lock releases).
@@ -244,17 +265,27 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None: ...
   project the caller was not granted → `failure(..., CONFIGURATION_ERROR)`, identical to
   "not found" so the tool does not leak the existence of other projects' allocations).
   Returns `success(str(alloc.id), alloc.state.value, …)`.
-- **`allocations.release(allocation_id)`** — `require_role(ctx, alloc.project,
-  Role.OPERATOR)`; then drive the Allocation to `released`:
+- **`allocations.release(allocation_id)`** — parse the uuid, `RESOURCES`-style
+  `ALLOCATIONS.get` to read `alloc.project`, then `require_role(ctx, alloc.project,
+  Role.OPERATOR)`. The state read for the *release decision* must happen **under a
+  per-allocation lock**, not on the earlier unlocked read, or two concurrent releases
+  (or a release racing a future `granted → active` provision in #15) both branch on a
+  stale `granted` and the loser's `update_state` raises `IllegalTransition`. So:
+  `async with conn.transaction():` → `async with advisory_xact_lock(conn,
+  LockScope.ALLOCATION, alloc.id):` → re-read the current state under the lock, then:
   - current `granted` or `active` → `update_state(... RELEASING)`, audit
     `"<old>->releasing"`; then `update_state(... RELEASED)`, audit `"releasing->released"`
-    — both inside one `conn.transaction()` so a release is all-or-nothing and writes
-    exactly two audit rows.
+    — inside the locked transaction, so a release is all-or-nothing and writes exactly
+    two audit rows.
   - current already `releasing` → drive `→ released` (single transition + audit), so a
     retried release is forward-progressing rather than an error.
   - current terminal (`released`/`failed`) → `failure(..., CONFIGURATION_ERROR,
-    data={"current_status": alloc.state.value})` — the agent learns *why* (mirrors
-    `jobs.cancel` on a terminal job); no `IllegalTransition` escapes.
+    data={"current_status": <state>})` (read under the lock).
+  - **Backstop:** the transitions are additionally wrapped so any `IllegalTransition`
+    that still escapes (e.g. an interleaving the lock does not cover) is caught,
+    re-reads the row, and returns the same `failure(CONFIGURATION_ERROR,
+    data={"current_status": …})` — `jobs.cancel` (jobs.py) is the pattern. No
+    `IllegalTransition` reaches the transport.
   - returns `success(str(alloc.id), "released", suggested_next_actions=[])`.
 - **`allocations.list(project, limit=50)`** — `require_project(ctx, project)`; return the
   newest allocations for `project` (capped, `MAX_LIST_LIMIT=200`), each as a
@@ -327,11 +358,14 @@ as arguments so it is tested directly, never through MCP transport.
 - a `released`/`requested`/`active`/`releasing` mix is counted exactly per `_NON_TERMINAL`.
 - cap missing from `resource.capabilities` / non-int / negative → `CategorizedError`
   (`CONFIGURATION_ERROR`), no row.
-- serialization: two `admit` calls racing on one host with `cap=1` yield exactly one
-  grant and one denial (proves the lock spans count+insert). (Exercised with two
-  connections; if the harness cannot drive true concurrency deterministically, a
-  sequential count-then-insert ordering test stands in, plus the lock is asserted to be
-  acquired inside the transaction.)
+- serialization (**mandatory** — this is the test that falsifies ADR-0023 §1's whole
+  reason to exist): two `admit` coroutines racing on one host with `cap=1`, on **two
+  separate async connections** via `asyncio.gather`, yield exactly one grant and one
+  denial. `advisory_xact_lock(RESOURCE, id)` blocks the second `admit` until the first
+  commits its `granted` insert, so the second's count observes it and denies. This is
+  deterministically reproducible (the lock is a hard block, not a timing window); there
+  is **no** sequential stand-in — a sequential test would not exercise the lock and the
+  concurrency guarantee would ship unverified.
 
 **resources tools** (real Postgres; registered host)
 - `resources.list` returns the host with the flat capability projection
@@ -362,6 +396,12 @@ as arguments so it is tested directly, never through MCP transport.
   one audit row).
 - `release` of a terminal (`released`/`failed`) allocation → `failure(CONFIGURATION_ERROR,
   data.current_status=…)`; no `IllegalTransition` escapes; row unchanged.
+- concurrent `release` of one `granted` allocation (two coroutines, two connections):
+  exactly one returns `released`; the loser, blocked on `advisory_xact_lock(ALLOCATION,
+  id)`, re-reads `released` under the lock and returns
+  `failure(CONFIGURATION_ERROR, data.current_status="released")` — never an unhandled
+  `IllegalTransition`. (The `IllegalTransition` backstop is also unit-tested by forcing
+  the catch path.)
 - `list(project)` → newest-first allocations for that project; another project's rows
   excluded; `limit` capped at 200; a malformed row isolated to a `failure` entry.
 
@@ -375,7 +415,7 @@ as arguments so it is tested directly, never through MCP transport.
   `ToolResponse.failure("x", ErrorCategory.ALLOCATION_DENIED)` → `status="error"`,
   `error_category="allocation_denied"`.
 
-## Open question (resolve before code)
+## Resolved decision — RBAC/membership denial on the wire
 
 **How does a handler surface an RBAC/membership denial on the wire?** `require_role` /
 `require_project` raise `AuthorizationError` / `AuthError`; the M0 taxonomy has **no**
@@ -391,9 +431,11 @@ decide the mapping the later handlers inherit. Two options, decided in the spec
    closest existing category. Keeps the uniform envelope, but overloads
    `CONFIGURATION_ERROR` with "you may not".
 
-This spec's default is **option 1** (let it raise) — it honors ADR-0020 literally and
-adds nothing; the tests assert the handler raises rather than returns an envelope. The
-`/challenge` pass confirms or overrides.
+**Resolved (spec `/challenge`, iteration 1): option 1 — let it raise.** It honors
+ADR-0020 literally (no invented authz `ErrorCategory`) and adds nothing; the tests
+assert the handler propagates `AuthorizationError`/`AuthError` rather than returning an
+envelope. The first handler to need a structured authz denial (a later issue) revisits
+this with a real producer, per ADR-0020's "no category without a producer" rule.
 
 ## Testing strategy
 
