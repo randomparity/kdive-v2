@@ -66,6 +66,19 @@ def test_transport_handle_decode_malformed_is_configuration_error() -> None:
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
+def test_ssh_transport_handle_roundtrips() -> None:
+    handle = TransportHandleData(kind="ssh", host="127.0.0.1", port=22)
+    encoded = handle.encode()
+    assert encoded.startswith("ssh://")
+    assert TransportHandleData.decode(encoded) == handle
+
+
+def test_transport_handle_decode_unknown_scheme_is_configuration_error() -> None:
+    with pytest.raises(CategorizedError) as exc:
+        TransportHandleData.decode("telnet://127.0.0.1:23")
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
 # --- Connector orchestration ---------------------------------------------------------------
 
 
@@ -158,3 +171,123 @@ def test_close_transport_tolerates_malformed_handle() -> None:
     connect_mod.LocalLibvirtConnect(
         resolve_endpoint=lambda _s: ("127.0.0.1", 1), probe=probe
     ).close_transport(connect_mod.TransportHandle("garbage"))  # no raise
+
+
+# --- SSH transport orchestration (ADR-0039) ------------------------------------------------
+
+
+class _FakeSshConnect:
+    """Records (host, port) calls; returns True or raises a canned error."""
+
+    def __init__(self, *, result: bool = True, raises: Exception | None = None) -> None:
+        self._result = result
+        self._raises = raises
+        self.calls: list[tuple[str, int]] = []
+
+    def __call__(self, host: str, port: int) -> bool:
+        self.calls.append((host, port))
+        if self._raises is not None:
+            raise self._raises
+        return self._result
+
+
+def _ssh_connector(
+    ssh_connect: _FakeSshConnect, *, host: str = "127.0.0.1", port: int = 22
+) -> LocalLibvirtConnect:
+    return LocalLibvirtConnect(
+        resolve_endpoint=lambda _system: ("127.0.0.1", 1234),
+        probe=_FakeProbe(),
+        resolve_ssh_endpoint=lambda _system: (host, port),
+        ssh_connect=ssh_connect,
+    )
+
+
+def test_open_ssh_transport_returns_decodable_ssh_handle() -> None:
+    ssh = _FakeSshConnect(result=True)
+    handle = _ssh_connector(ssh).open_transport(_SYSTEM, "ssh")
+    decoded = TransportHandleData.decode(str(handle))
+    assert decoded == TransportHandleData(kind="ssh", host="127.0.0.1", port=22)
+    assert ssh.calls == [("127.0.0.1", 22)]
+
+
+def test_open_ssh_transport_non_loopback_host_is_configuration_error_without_io() -> None:
+    ssh = _FakeSshConnect()
+    with pytest.raises(CategorizedError) as exc:
+        _ssh_connector(ssh, host="10.0.0.1").open_transport(_SYSTEM, "ssh")
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert ssh.calls == []  # F2: no outbound SSH connect to a non-loopback host
+
+
+def test_open_ssh_transport_hostname_host_is_configuration_error_without_io() -> None:
+    ssh = _FakeSshConnect()
+    with pytest.raises(CategorizedError) as exc:
+        _ssh_connector(ssh, host="guest.example").open_transport(_SYSTEM, "ssh")
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert ssh.calls == []  # a hostname is not a loopback IP literal — reject without DNS
+
+
+def test_open_ssh_transport_unreachable_is_debug_attach_failure() -> None:
+    ssh = _FakeSshConnect(result=False)
+    with pytest.raises(CategorizedError) as exc:
+        _ssh_connector(ssh).open_transport(_SYSTEM, "ssh")
+    assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
+
+
+def test_open_ssh_transport_socket_fault_is_transport_failure() -> None:
+    ssh = _FakeSshConnect(raises=OSError("connection reset"))
+    with pytest.raises(CategorizedError) as exc:
+        _ssh_connector(ssh).open_transport(_SYSTEM, "ssh")
+    assert exc.value.category is ErrorCategory.TRANSPORT_FAILURE
+
+
+def test_open_unsupported_kind_is_configuration_error() -> None:
+    with pytest.raises(CategorizedError) as exc:
+        _ssh_connector(_FakeSshConnect()).open_transport(_SYSTEM, "telnet")
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_from_env_ssh_resolver_raises_missing_dependency() -> None:
+    connector = LocalLibvirtConnect.from_env()
+    with pytest.raises(CategorizedError) as exc:
+        connector.open_transport(_SYSTEM, "ssh")
+    assert exc.value.category is ErrorCategory.MISSING_DEPENDENCY
+
+
+def test_close_ssh_transport_is_noop_and_never_raises() -> None:
+    connector = _ssh_connector(_FakeSshConnect())
+    handle = connector.open_transport(_SYSTEM, "ssh")
+    connector.close_transport(handle)  # no raise
+
+
+# --- capability dispatch (ADR-0039 §1: dispatch selects the ssh backend by capability) -----
+
+
+def test_connect_capability_is_open_transport_on_connect_plane() -> None:
+    from kdive.domain.models import ResourceKind
+    from kdive.providers.capability import Plane
+    from kdive.providers.local_libvirt.connect import connect_capability
+
+    cap = connect_capability()
+    assert cap.plane is Plane.CONNECT
+    assert cap.operation == "open_transport"
+    assert cap.resource_kind is ResourceKind.LOCAL_LIBVIRT
+
+
+def test_dispatch_selects_ssh_backend_by_capability() -> None:
+    from kdive.domain.models import ResourceKind
+    from kdive.domain.state import ResourceStatus
+    from kdive.providers.capability import CapabilityRegistry, Plane
+    from kdive.providers.local_libvirt.connect import connect_capability
+
+    registry = CapabilityRegistry()
+    connector = _ssh_connector(_FakeSshConnect())
+    registry.register(
+        connector,
+        [connect_capability()],
+        provider_id="local-libvirt",
+        health=ResourceStatus.AVAILABLE,
+        cost_class="local",
+    )
+    bound = registry.dispatch(Plane.CONNECT, "open_transport", ResourceKind.LOCAL_LIBVIRT)
+    handle = bound.call(_SYSTEM, "ssh")
+    assert TransportHandleData.decode(str(handle)).kind == "ssh"
