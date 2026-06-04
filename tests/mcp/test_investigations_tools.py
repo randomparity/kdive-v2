@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
+from uuid import UUID
 
 import pytest
 from psycopg.rows import dict_row
@@ -257,5 +258,139 @@ def test_close_backstop_maps_illegal_transition(
             monkeypatch.setattr(INVESTIGATIONS, "update_state", _boom)
             resp = await inv_tools.close_investigation(pool, _ctx(), inv_id)
         assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def _refs_of(pool: AsyncConnectionPool, inv_id: str):
+    async def _q() -> dict[tuple[str, str], str]:
+        async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT external_refs FROM investigations WHERE id = %s", (inv_id,))
+            row = await cur.fetchone()
+        assert row is not None
+        return {(r["tracker"], r["id"]): r["url"] for r in row["external_refs"]}
+
+    return _q
+
+
+def test_link_then_unlink_round_trip(migrated_url: str) -> None:
+    # The issue's first acceptance criterion: open -> link -> unlink mutates external_refs.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = (await _open(pool, _ctx(), project="proj", title="t")).object_id
+            ref = {"tracker": "bz", "id": "7", "url": "https://bz/7"}
+            await inv_tools.link_external_ref(pool, _ctx(), inv_id, ref)
+            after_link = await _refs_of(pool, inv_id)()
+            await inv_tools.unlink_external_ref(pool, _ctx(), inv_id, ref)
+            after_unlink = await _refs_of(pool, inv_id)()
+        assert after_link == {("bz", "7"): "https://bz/7"}
+        assert after_unlink == {}
+
+    asyncio.run(_run())
+
+
+def test_link_upserts_changed_url(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = (await _open(pool, _ctx(), project="proj", title="t")).object_id
+            await inv_tools.link_external_ref(
+                pool, _ctx(), inv_id, {"tracker": "bz", "id": "7", "url": "https://bz/7"}
+            )
+            await inv_tools.link_external_ref(
+                pool, _ctx(), inv_id, {"tracker": "bz", "id": "7", "url": "https://bz/7-fixed"}
+            )
+            refs = await _refs_of(pool, inv_id)()
+        assert refs == {("bz", "7"): "https://bz/7-fixed"}  # one entry, url corrected
+
+    asyncio.run(_run())
+
+
+def test_unlink_by_natural_key_without_url(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = (await _open(pool, _ctx(), project="proj", title="t")).object_id
+            await inv_tools.link_external_ref(
+                pool, _ctx(), inv_id, {"tracker": "bz", "id": "7", "url": "https://bz/7"}
+            )
+            # No url unlinks the (bz,7) entry (matching ignores url).
+            await inv_tools.unlink_external_ref(pool, _ctx(), inv_id, {"tracker": "bz", "id": "7"})
+            refs = await _refs_of(pool, inv_id)()
+        assert refs == {}
+
+    asyncio.run(_run())
+
+
+def test_unlink_absent_is_idempotent_no_audit(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = (await _open(pool, _ctx(), project="proj", title="t")).object_id
+            resp = await inv_tools.unlink_external_ref(
+                pool, _ctx(), inv_id, {"tracker": "bz", "id": "nope"}
+            )
+            assert resp.status == "open"
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT count(*) AS n FROM audit_log WHERE transition = 'unlink' "
+                    "AND object_id = %s",
+                    (inv_id,),
+                )
+                audit = await cur.fetchone()
+        assert audit is not None and audit["n"] == 0
+
+    asyncio.run(_run())
+
+
+def test_link_on_closed_investigation_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, InvestigationState.CLOSED)
+            resp = await inv_tools.link_external_ref(
+                pool, _ctx(), inv_id, {"tracker": "bz", "id": "7", "url": "https://bz/7"}
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == "closed"
+
+    asyncio.run(_run())
+
+
+def test_link_malformed_ref_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = (await _open(pool, _ctx(), project="proj", title="t")).object_id
+            resp = await inv_tools.link_external_ref(pool, _ctx(), inv_id, {"tracker": "bz"})
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_link_acquires_investigation_lock(migrated_url: str) -> None:
+    # Deterministic lock proof: hold the INVESTIGATION advisory lock on a separate
+    # connection; the link must block until it is released.
+    import psycopg
+
+    from kdive.db.locks import LockScope, advisory_xact_lock
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = (await _open(pool, _ctx(), project="proj", title="t")).object_id
+            uid = UUID(inv_id)
+            async with await psycopg.AsyncConnection.connect(migrated_url) as holder:
+                async with (
+                    holder.transaction(),
+                    advisory_xact_lock(holder, LockScope.INVESTIGATION, uid),
+                ):
+                    task = asyncio.create_task(
+                        inv_tools.link_external_ref(
+                            pool,
+                            _ctx(),
+                            inv_id,
+                            {"tracker": "bz", "id": "7", "url": "https://bz/7"},
+                        )
+                    )
+                    await asyncio.sleep(0.3)
+                    assert not task.done()  # blocked on the held INVESTIGATION lock
+                # holder transaction committed here -> lock released
+                resp = await task
+            assert resp.status == "open"
 
     asyncio.run(_run())

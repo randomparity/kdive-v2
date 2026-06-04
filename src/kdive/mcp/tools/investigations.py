@@ -12,13 +12,14 @@ ErrorCategory).
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import ValidationError
 
@@ -32,8 +33,6 @@ from kdive.mcp.auth import RequestContext, current_context, require_project
 from kdive.mcp.responses import ToolResponse
 from kdive.security import audit
 from kdive.security.rbac import Role, require_role
-
-_log = logging.getLogger(__name__)
 
 _TERMINAL_INVESTIGATION = frozenset({InvestigationState.CLOSED, InvestigationState.ABANDONED})
 
@@ -200,6 +199,130 @@ async def close_investigation(
                 return _config_error(investigation_id, data=data)
 
 
+async def _get_for_update(conn: AsyncConnection, uid: UUID) -> Investigation | None:
+    """Read an Investigation row ``FOR UPDATE`` (held under the per-Investigation lock)."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT * FROM investigations WHERE id = %s FOR UPDATE", (uid,))
+        row = await cur.fetchone()
+    return Investigation.model_validate(row) if row else None
+
+
+def _natural_key(ref: dict[str, Any]) -> tuple[str, str] | None:
+    """The ``(tracker, id)`` identity of a ref input; ``None`` if either is missing/blank."""
+    tracker = ref.get("tracker")
+    rid = ref.get("id")
+    if not isinstance(tracker, str) or not tracker:
+        return None
+    if not isinstance(rid, str) or not rid:
+        return None
+    return (tracker, rid)
+
+
+def _refs_jsonb(refs: list[ExternalRef]) -> Jsonb:
+    return Jsonb([r.model_dump() for r in refs])
+
+
+async def _link_locked(
+    conn: AsyncConnection, ctx: RequestContext, uid: UUID, ref: ExternalRef, *, project: str
+) -> ToolResponse:
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.INVESTIGATION, uid):
+        current = await _get_for_update(conn, uid)
+        if current is None:
+            return _config_error(str(uid))
+        if current.state in _TERMINAL_INVESTIGATION:
+            return _config_error(str(uid), data={"current_status": current.state.value})
+        kept = [r for r in current.external_refs if (r.tracker, r.id) != (ref.tracker, ref.id)]
+        kept.append(ref)
+        await conn.execute(
+            "UPDATE investigations SET external_refs = %s WHERE id = %s", (_refs_jsonb(kept), uid)
+        )
+        await audit.record(
+            conn,
+            ctx,
+            tool="investigations.link",
+            object_kind="investigations",
+            object_id=uid,
+            transition="link",
+            args={"tracker": ref.tracker, "id": ref.id},
+            project=project,
+        )
+        updated = current.model_copy(update={"external_refs": kept})
+    return _envelope_for_investigation(updated)
+
+
+async def _unlink_locked(
+    conn: AsyncConnection,
+    ctx: RequestContext,
+    uid: UUID,
+    key: tuple[str, str],
+    *,
+    project: str,
+) -> ToolResponse:
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.INVESTIGATION, uid):
+        current = await _get_for_update(conn, uid)
+        if current is None:
+            return _config_error(str(uid))
+        if current.state in _TERMINAL_INVESTIGATION:
+            return _config_error(str(uid), data={"current_status": current.state.value})
+        kept = [r for r in current.external_refs if (r.tracker, r.id) != key]
+        if len(kept) != len(current.external_refs):
+            await conn.execute(
+                "UPDATE investigations SET external_refs = %s WHERE id = %s",
+                (_refs_jsonb(kept), uid),
+            )
+            await audit.record(
+                conn,
+                ctx,
+                tool="investigations.unlink",
+                object_kind="investigations",
+                object_id=uid,
+                transition="unlink",
+                args={"tracker": key[0], "id": key[1]},
+                project=project,
+            )
+        updated = current.model_copy(update={"external_refs": kept})
+    return _envelope_for_investigation(updated)
+
+
+async def link_external_ref(
+    pool: AsyncConnectionPool, ctx: RequestContext, investigation_id: str, ref: dict[str, Any]
+) -> ToolResponse:
+    """Upsert an external ref onto an Investigation (keyed on `(tracker, id)`)."""
+    uid = _as_uuid(investigation_id)
+    if uid is None:
+        return _config_error(investigation_id)
+    try:
+        parsed = ExternalRef.model_validate(ref)
+    except ValidationError:
+        return _config_error(investigation_id)
+    with bind_context(principal=ctx.principal):
+        async with pool.connection() as conn:
+            inv = await INVESTIGATIONS.get(conn, uid)
+            if inv is None or inv.project not in ctx.projects:
+                return _config_error(investigation_id)
+            require_role(ctx, inv.project, Role.OPERATOR)
+            return await _link_locked(conn, ctx, uid, parsed, project=inv.project)
+
+
+async def unlink_external_ref(
+    pool: AsyncConnectionPool, ctx: RequestContext, investigation_id: str, ref: dict[str, Any]
+) -> ToolResponse:
+    """Remove an external ref by its `(tracker, id)` key (idempotent; `url` ignored)."""
+    uid = _as_uuid(investigation_id)
+    if uid is None:
+        return _config_error(investigation_id)
+    key = _natural_key(ref)
+    if key is None:
+        return _config_error(investigation_id)
+    with bind_context(principal=ctx.principal):
+        async with pool.connection() as conn:
+            inv = await INVESTIGATIONS.get(conn, uid)
+            if inv is None or inv.project not in ctx.projects:
+                return _config_error(investigation_id)
+            require_role(ctx, inv.project, Role.OPERATOR)
+            return await _unlink_locked(conn, ctx, uid, key, project=inv.project)
+
+
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `investigations.*` tools on ``app``, bound to ``pool``."""
 
@@ -218,3 +341,11 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     @app.tool(name="investigations.close")
     async def investigations_close(investigation_id: str) -> ToolResponse:
         return await close_investigation(pool, current_context(), investigation_id)
+
+    @app.tool(name="investigations.link")
+    async def investigations_link(investigation_id: str, ref: dict[str, Any]) -> ToolResponse:
+        return await link_external_ref(pool, current_context(), investigation_id, ref)
+
+    @app.tool(name="investigations.unlink")
+    async def investigations_unlink(investigation_id: str, ref: dict[str, Any]) -> ToolResponse:
+        return await unlink_external_ref(pool, current_context(), investigation_id, ref)
