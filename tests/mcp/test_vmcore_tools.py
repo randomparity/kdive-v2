@@ -345,6 +345,33 @@ def test_postmortem_crash_provenance_mismatch_is_config_error(migrated_url: str)
     asyncio.run(_run())
 
 
+def test_postmortem_triage_runs_and_relabels_actions(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _crashed_with_built_run(pool)
+            crash = _FakeCrash()
+            resp = await vmcore_tools.postmortem_triage(pool, _ctx(), run_id=run_id, crash=crash)
+        assert resp.status != "error"
+        assert "hunter2" not in resp.data["transcript"]
+        assert resp.suggested_next_actions == ["postmortem.triage", "artifacts.list"]
+        assert crash.kwargs["commands"] == ["log", "bt"]  # the fixed triage batch
+
+    asyncio.run(_run())
+
+
+def test_postmortem_triage_propagates_failure(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id = await seed_crashed_system(pool)
+            run_id = await seed_run_on_system(pool, sys_id, debuginfo_ref=None, build_id=None)
+            resp = await vmcore_tools.postmortem_triage(
+                pool, _ctx(), run_id=run_id, crash=_FakeCrash()
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
 def test_postmortem_crash_no_core_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
