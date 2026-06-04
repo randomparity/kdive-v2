@@ -22,6 +22,7 @@ from kdive.mcp.tools import (
     allocations,
     artifacts,
     control,
+    debug,
     investigations,
     jobs,
     resources,
@@ -41,6 +42,7 @@ _PLANE_REGISTRARS: tuple[Callable[[FastMCP, AsyncConnectionPool], None], ...] = 
     control.register,
     artifacts.register,
     vmcore.register,
+    debug.register,
 )
 
 # Handler seam: each plane exposes register_handlers(registry); the worker calls them all.
@@ -48,7 +50,8 @@ _PLANE_REGISTRARS: tuple[Callable[[FastMCP, AsyncConnectionPool], None], ...] = 
 # handlers, the build plane (#18) registers the build handler, the control plane (#23)
 # registers the power/force_crash handlers, and the retrieve plane (#24) registers the
 # capture_vmcore handler (each builds its provider/builder lazily from env — no libvirt/
-# toolchain connection at registration).
+# toolchain connection at registration). The Connect plane (#20) registers tools only — its
+# debug.start_session/end_session are synchronous, so they have no JobKind and no handler.
 _HANDLER_REGISTRARS: tuple[Callable[[HandlerRegistry], None], ...] = (
     systems.register_handlers,
     runs.register_handlers,

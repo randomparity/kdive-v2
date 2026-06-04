@@ -46,6 +46,7 @@ def test_build_app_registers_jobs_tools() -> None:
             "postmortem.crash",
             "postmortem.triage",
         } <= names
+        assert {"debug.start_session", "debug.end_session"} <= names
 
     asyncio.run(_run())
 
