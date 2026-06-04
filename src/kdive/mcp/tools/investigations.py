@@ -18,13 +18,15 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
+from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import ValidationError
 
+from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import INVESTIGATIONS
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import ExternalRef, Investigation
-from kdive.domain.state import InvestigationState
+from kdive.domain.state import IllegalTransition, InvestigationState
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context, require_project
 from kdive.mcp.responses import ToolResponse
@@ -141,6 +143,63 @@ async def get_investigation(
         return _envelope_for_investigation(inv)
 
 
+async def _close_locked(
+    conn: AsyncConnection, ctx: RequestContext, uid: UUID, *, project: str
+) -> ToolResponse:
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.INVESTIGATION, uid):
+        current = await INVESTIGATIONS.get(conn, uid)
+        if current is None:
+            return _config_error(str(uid))
+        if current.state is InvestigationState.CLOSED:
+            return ToolResponse.success(
+                str(uid),
+                "closed",
+                suggested_next_actions=["investigations.get"],
+                data={"project": project},
+            )
+        if current.state is InvestigationState.ABANDONED:
+            return _config_error(str(uid), data={"current_status": "abandoned"})
+        old = current.state
+        await INVESTIGATIONS.update_state(conn, uid, InvestigationState.CLOSED)
+        await audit.record(
+            conn,
+            ctx,
+            tool="investigations.close",
+            object_kind="investigations",
+            object_id=uid,
+            transition=f"{old.value}->closed",
+            args={"investigation_id": str(uid)},
+            project=project,
+        )
+    return ToolResponse.success(
+        str(uid), "closed", suggested_next_actions=["investigations.get"], data={"project": project}
+    )
+
+
+async def close_investigation(
+    pool: AsyncConnectionPool, ctx: RequestContext, investigation_id: str
+) -> ToolResponse:
+    """Drive an Investigation to `closed` (idempotent on an already-`closed` row)."""
+    uid = _as_uuid(investigation_id)
+    if uid is None:
+        return _config_error(investigation_id)
+    with bind_context(principal=ctx.principal):
+        async with pool.connection() as conn:
+            inv = await INVESTIGATIONS.get(conn, uid)
+            if inv is None or inv.project not in ctx.projects:
+                return _config_error(investigation_id)
+            require_role(ctx, inv.project, Role.OPERATOR)
+            try:
+                return await _close_locked(conn, ctx, uid, project=inv.project)
+            except IllegalTransition:
+                # Backstop for an interleaving the lock did not cover (e.g. a future
+                # non-advisory writer). Caught OUTSIDE the rolled-back transaction; re-read.
+                async with pool.connection() as conn2:
+                    latest = await INVESTIGATIONS.get(conn2, uid)
+                data = {"current_status": latest.state.value} if latest else {}
+                return _config_error(investigation_id, data=data)
+
+
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `investigations.*` tools on ``app``, bound to ``pool``."""
 
@@ -155,3 +214,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     @app.tool(name="investigations.get")
     async def investigations_get(investigation_id: str) -> ToolResponse:
         return await get_investigation(pool, current_context(), investigation_id)
+
+    @app.tool(name="investigations.close")
+    async def investigations_close(investigation_id: str) -> ToolResponse:
+        return await close_investigation(pool, current_context(), investigation_id)

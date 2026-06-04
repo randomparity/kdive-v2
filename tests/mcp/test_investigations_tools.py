@@ -11,6 +11,7 @@ import pytest
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.domain.state import InvestigationState
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import investigations as inv_tools
 from kdive.security.rbac import AuthorizationError, Role
@@ -131,6 +132,130 @@ def test_get_malformed_uuid_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             resp = await inv_tools.get_investigation(pool, _ctx(), "not-a-uuid")
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+async def _seed_investigation(pool: AsyncConnectionPool, state: InvestigationState) -> str:
+    """Insert an Investigation directly in ``state`` (bypassing the open->… tools)."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from kdive.db.repositories import INVESTIGATIONS
+    from kdive.domain.models import Investigation
+
+    dt = datetime(2026, 1, 1, tzinfo=UTC)
+    async with pool.connection() as conn:
+        inv = await INVESTIGATIONS.insert(
+            conn,
+            Investigation(
+                id=uuid4(),
+                created_at=dt,
+                updated_at=dt,
+                principal="user-1",
+                project="proj",
+                title="seeded",
+                state=state,
+            ),
+        )
+    return str(inv.id)
+
+
+def test_close_open_investigation(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, InvestigationState.OPEN)
+            resp = await inv_tools.close_investigation(pool, _ctx(), inv_id)
+            assert resp.status == "closed"
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM investigations WHERE id = %s", (inv_id,))
+                row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM audit_log WHERE transition = 'open->closed' "
+                    "AND object_id = %s",
+                    (inv_id,),
+                )
+                audit = await cur.fetchone()
+        assert row is not None and row["state"] == "closed"
+        assert audit is not None and audit["n"] == 1
+
+    asyncio.run(_run())
+
+
+def test_close_active_investigation(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, InvestigationState.ACTIVE)
+            resp = await inv_tools.close_investigation(pool, _ctx(), inv_id)
+        assert resp.status == "closed"
+
+    asyncio.run(_run())
+
+
+def test_close_already_closed_is_idempotent_no_audit(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, InvestigationState.CLOSED)
+            resp = await inv_tools.close_investigation(pool, _ctx(), inv_id)
+            assert resp.status == "closed"
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT count(*) AS n FROM audit_log WHERE object_id = %s", (inv_id,)
+                )
+                audit = await cur.fetchone()
+        assert audit is not None and audit["n"] == 0  # no transition audited
+
+    asyncio.run(_run())
+
+
+def test_close_abandoned_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, InvestigationState.ABANDONED)
+            resp = await inv_tools.close_investigation(pool, _ctx(), inv_id)
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == "abandoned"
+
+    asyncio.run(_run())
+
+
+def test_close_without_operator_raises(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, InvestigationState.OPEN)
+            with pytest.raises(AuthorizationError):
+                await inv_tools.close_investigation(pool, _ctx(Role.VIEWER), inv_id)
+
+    asyncio.run(_run())
+
+
+def test_close_cross_project_is_not_found(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, InvestigationState.OPEN)
+            resp = await inv_tools.close_investigation(pool, _ctx(projects=("other",)), inv_id)
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_close_backstop_maps_illegal_transition(
+    monkeypatch: pytest.MonkeyPatch, migrated_url: str
+) -> None:
+    # Force the IllegalTransition backstop: make update_state raise so the handler's
+    # except-branch maps it to configuration_error rather than letting it escape.
+    from kdive.db.repositories import INVESTIGATIONS
+    from kdive.domain.state import IllegalTransition
+
+    async def _boom(*_a: object, **_k: object) -> object:
+        raise IllegalTransition("forced")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, InvestigationState.OPEN)
+            monkeypatch.setattr(INVESTIGATIONS, "update_state", _boom)
+            resp = await inv_tools.close_investigation(pool, _ctx(), inv_id)
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
