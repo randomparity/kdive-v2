@@ -28,6 +28,7 @@ def test_build_app_registers_jobs_tools() -> None:
         tools = await app.list_tools()
         names = {t.name for t in tools}
         assert {"jobs.get", "jobs.wait", "jobs.cancel", "jobs.list"} <= names
+        assert {"systems.provision", "systems.get", "systems.teardown"} <= names
 
     asyncio.run(_run())
 
@@ -42,8 +43,12 @@ def test_build_app_produces_a_streamable_http_asgi_app() -> None:
     assert callable(asgi)
 
 
-def test_build_handler_registry_is_empty_in_m0() -> None:
+def test_build_handler_registry_binds_provisioning_handlers() -> None:
+    # The provisioning plane (#16) registers the provision/teardown handlers via the seam,
+    # building its provider lazily from env (no libvirt connection at registration).
     registry = build_handler_registry()
     assert isinstance(registry, HandlerRegistry)
-    # No real handlers in M0; an unknown kind has no handler.
+    assert registry.get(JobKind.PROVISION) is not None
+    assert registry.get(JobKind.TEARDOWN) is not None
+    # A kind with no handler yet (a later plane) still resolves to None.
     assert registry.get(JobKind.BUILD) is None
