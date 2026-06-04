@@ -53,15 +53,20 @@ only `system_id` (no `allocation_id` column), so the binding is *structural* —
 never disagree with its System about which Allocation it occupies.
 
 On top of that structural guarantee, `runs.create` reads the System's Allocation and
-rejects the Run with `stale_handle` when that Allocation is terminal
-(`released` / `failed`). This closes the transient orphaned-System window
-([ADR-0023](0023-discovery-allocation-admission.md): `allocations.release` releases the
-Allocation but leaves System teardown to the reconciler), in which a System is still
-`ready` while its Allocation is already gone. The Allocation read is **lock-free** (no
-`LockScope.ALLOCATION`): it catches the already-released case without a third lock; the
-residual race (a release that commits between the read and the Run insert) leaves a Run
-on a System the reconciler is about to tear down — the same transient, reconciler-covered
-state, recoverable by a new Run, not a corruption.
+admits the Run **only when that Allocation is `active`** — an **allowlist**
+(`{ACTIVE}`), symmetric with the System check (`{READY}`), not a denylist of terminal
+states. A `ready` System should only ever sit under an `active` Allocation (provisioning
+flips `granted → active`), so requiring `active` both closes the transient
+orphaned-System window ([ADR-0023](0023-discovery-allocation-admission.md):
+`allocations.release` releases the Allocation but leaves System teardown to the
+reconciler — a System can be `ready` while its Allocation is already `released`) **and**
+rejects `releasing` and any future non-`active`-but-non-terminal Allocation state (M1
+leasing) without a denylist that silently rots as states are added. A non-`active`
+Allocation → `stale_handle`. The Allocation read is **lock-free** (no
+`LockScope.ALLOCATION`): it catches the reachable already-released case without a third
+lock; the residual race (a release that commits between the read and the Run insert)
+leaves a Run on a System the reconciler is about to tear down — the same transient,
+reconciler-covered state, recoverable by a new Run, not a corruption.
 
 ### 3. The `open → active` flip is atomic with the first Run insert, under a per-Investigation advisory lock; `last_run_at` is maintained on every `runs.create`
 
@@ -129,6 +134,19 @@ forward-compatibility.
 `provisioning_profile` was opaque before [ADR-0024](0024-provisioning-profile-model-shape.md).
 `runs.create` requires only that it is a JSON object.
 
+### 7. `runs.create` is non-idempotent in M0 (deliberate)
+
+Like `allocations.request` ([ADR-0023](0023-discovery-allocation-admission.md)),
+`runs.create` is synchronous and carries no `dedup_key` or client idempotency token, so a
+client retry inserts a **second** Run on the same `(investigation_id, system_id)`. This is
+intentional: an Investigation legitimately groups many Runs on one System (the
+retry-as-a-new-Run recovery model), so no natural uniqueness rule applies, and a duplicate
+Run is **inert** — it sits in `created`, consuming no compute, until the agent issues a
+`runs.build` step (a later plane), at which point the agent's own sequencing surfaces the
+stray. The proper fix (a client idempotency token) is deferred to the build-plane work that
+owns long-running step admission, where the `(run_id, step, kind)` `dedup_key` already
+lives. Recorded so non-idempotent retries are a decision, not an oversight.
+
 ## Consequences
 
 - A Run can only be created on a `ready` System whose Allocation is live, so the binding
@@ -165,6 +183,12 @@ forward-compatibility.
 - **Store `allocation_id` on the `runs` row.** Rejected: it would let a Run name an
   Allocation that disagrees with its System's, violating the binding invariant the schema
   is designed to make structural; the Allocation is derived through the System.
+- **Check the binding with an Allocation *denylist* (`reject if released/failed`).**
+  Rejected: a denylist admits every other state — including `releasing` and any future
+  non-`active`-but-non-terminal state — so it rots silently as the Allocation lifecycle
+  grows, and it is asymmetric with the System check, which is an allowlist (`{READY}`). The
+  allowlist (`{ACTIVE}`) is correct today (a `ready` System has an `active` Allocation) and
+  forward-safe.
 - **`link`/`unlink` keyed on the full `{tracker, id, url}` triple.** Rejected: a `url`
   change would then create a duplicate `(tracker, id)` link and `unlink` would miss a ref
   whose `url` drifted; the `(tracker, id)` natural key models "one link per tracked item".

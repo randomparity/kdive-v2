@@ -54,6 +54,20 @@ Investigation*. It does **not** own the build/install/boot steps that drive a Ru
 - **No Run cancellation / failure tooling.** Driving a Run to `canceled` (`jobs.cancel`)
   or `failed` (step failure / lease expiry) is the build-plane / reconciler's job; #17
   adds neither `runs.cancel` nor a failure path.
+- **`runs.create` is not idempotent in M0 (deliberate).** Like `allocations.request`
+  (ADR-0023; that spec's non-goal), `runs.create` is synchronous and carries no
+  `dedup_key` or client idempotency token, so a client retry after a timeout inserts a
+  **second** Run on the same `(investigation_id, system_id)`. This is intentional: an
+  Investigation legitimately groups *many* Runs on one System (each `runs.build`/`install`/
+  `boot` cycle is a fresh Run — the spec's retry-as-a-new-Run recovery model), so there is
+  no natural uniqueness rule to enforce, and a duplicate Run is **inert until a step is
+  invoked** — it sits in `created`, consuming no compute, until the agent issues
+  `runs.build` (a later plane), at which point the agent's own sequencing makes a stray
+  duplicate visible. The blast radius is therefore a recoverable extra `created` Run, not a
+  double build. A client-supplied idempotency token is the proper fix and is deferred to
+  the build-plane work that owns the long-running step admission (where `dedup_key`
+  `(run_id, step, kind)` already lives). Stated here so non-idempotent `runs.create`
+  retries are a recorded decision, not an oversight.
 - **No reconciler.** The `last_run_at` column #17 maintains is the *input* the M1
   idle-Investigation sweep will consume; #17 writes it but runs no sweep, and the
   `abandoned` state is unreachable by any #17 tool.
@@ -146,7 +160,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None: ...
 
 _RUN_HOSTABLE = frozenset({SystemState.READY})
 _SYSTEM_GONE = frozenset({SystemState.TORN_DOWN, SystemState.FAILED, SystemState.CRASHED})
-_ALLOC_TERMINAL = frozenset({AllocationState.RELEASED, AllocationState.FAILED})
+_ALLOC_HOSTABLE = frozenset({AllocationState.ACTIVE})
 _INVESTIGATION_OPEN_FOR_RUN = frozenset({InvestigationState.OPEN, InvestigationState.ACTIVE})
 ```
 
@@ -160,8 +174,13 @@ _INVESTIGATION_OPEN_FOR_RUN = frozenset({InvestigationState.OPEN, InvestigationS
      `project != inv.project` → `failure(CONFIGURATION_ERROR)` (cross-project join is not a
      valid Run). The Run's `project` is `inv.project`.
   4. **Binding invariant (lock-free read).** Read the System's Allocation; if its state is
-     in `_ALLOC_TERMINAL` → `failure(STALE_HANDLE, data={"current_status": <alloc state>})`
-     (the System's Allocation is gone; the binding is broken — see ADR-0026 §2).
+     **not** in `_ALLOC_HOSTABLE` (i.e. not `active`) → `failure(STALE_HANDLE,
+     data={"current_status": <alloc state>})`. This is an **allowlist**, symmetric with the
+     System check (`_RUN_HOSTABLE`): a `ready` System should only ever sit under an `active`
+     Allocation (provisioning flips `granted → active`), so the binding requires `active`
+     rather than merely "not terminal". The allowlist also rejects `releasing` and any
+     future non-`active`-but-non-terminal state (M1 leasing) without a denylist that rots
+     silently — the System's Allocation is gone or going; the binding is broken (ADR-0026 §2).
   5. Open one transaction; acquire `advisory_xact_lock(SYSTEM, system_id)` **then**
      `advisory_xact_lock(INVESTIGATION, investigation_id)` (the global order). Re-read the
      System state under the lock:
@@ -180,7 +199,13 @@ _INVESTIGATION_OPEN_FOR_RUN = frozenset({InvestigationState.OPEN, InvestigationS
      `"open->active"` (`object_kind="investigations"`). Always
      `UPDATE investigations SET last_run_at = now() WHERE id = …`. The flip and the Run
      insert share the transaction, so they commit together; the per-Investigation lock makes
-     the flip exactly-once under concurrent first-Runs.
+     the flip exactly-once under concurrent first-Runs. **Transaction-nesting hazard
+     (`systems.py` precedent):** `audit.record` opens **no** transaction of its own, and
+     `INVESTIGATIONS.update_state` opens a nested savepoint; the `open->active` audit
+     `INSERT` must run inside the **outer** `runs.create` transaction (the one holding the
+     locks and the Run insert), or — on a non-autocommit pool connection — a bare audit
+     `INSERT` would be rolled back when the connection is returned. The plan/code keep the
+     `update_state` and its audit row in that one outer transaction.
   9. Return `success(str(run.id), "created", suggested_next_actions=["runs.get",
      "runs.build"], data={"project": inv.project, "investigation_id": …, "system_id": …})`.
      (`runs.build` is named as the literal next action even though it ships later — the
@@ -292,8 +317,12 @@ explicit `roles` — mirroring `test_systems_tools.py` / `test_allocations_tools
 - `torn_down` System → `failure(STALE_HANDLE, data.current_status="torn_down")` (the issue's
   third acceptance criterion); `failed`/`crashed` System → likewise `stale_handle`.
 - `defined`/`provisioning` System → `failure(CONFIGURATION_ERROR, data.current_status=…)`.
-- System whose Allocation is `released`/`failed` (System still `ready`) →
-  `failure(STALE_HANDLE, data.current_status=<alloc state>)` (binding invariant; ADR-0026 §2).
+- System whose Allocation is **not `active`** (System still `ready`) →
+  `failure(STALE_HANDLE, data.current_status=<alloc state>)` (binding invariant, allowlist;
+  ADR-0026 §2). Cover at least a `released` Allocation (the live, reachable case); a
+  `requested`/`granted` Allocation under a `ready` System is non-reachable in M0 but the
+  allowlist rejects it too — assert the `active` Allocation admits and a non-`active` one
+  does not.
 - `closed`/`abandoned` Investigation → `failure(CONFIGURATION_ERROR, data.current_status=…)`,
   no Run, no flip.
 - System and Investigation in **different** projects → `failure(CONFIGURATION_ERROR)`.
