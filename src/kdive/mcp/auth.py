@@ -86,8 +86,14 @@ def context_from_claims(claims: Mapping[str, object]) -> RequestContext:
     agent_session = claims.get("agent_session")
     if agent_session is not None and not isinstance(agent_session, str):
         raise AuthError("agent_session claim is not a string")
-    raw_projects = claims.get("projects") or ()
+    raw_projects = claims.get("projects")
+    if raw_projects is None:
+        raw_projects = ()
     if not isinstance(raw_projects, (list, tuple)):
+        # A non-list `projects` (e.g. `0`, `""`, a string, an object) is malformed.
+        # Reject it rather than letting a falsy value silently coerce to "no projects"
+        # — matches the `agent_session` check above and this function's documented
+        # contract (fail closed on a malformed claim, never silently grant-nothing).
         raise AuthError("projects claim is not a list")
     projects = tuple(str(p) for p in raw_projects)
     return RequestContext(

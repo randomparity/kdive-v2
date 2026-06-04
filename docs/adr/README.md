@@ -61,4 +61,5 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0029](0029-build-plane-local-make.md) | Build plane (local make): runs.build, BuildProfile, build handler (M0) | Proposed |
 | [0030](0030-install-boot-plane.md) | Install + boot plane (local libvirt): runs.install, runs.boot, install/boot handlers (M0) | Proposed |
 | [0031](0031-retrieve-plane-vmcore-postmortem.md) | Retrieve plane: vmcore capture/fetch + crash postmortem (M0) | Proposed |
+| [0032](0032-connect-plane-gdbstub-debugsession.md) | Connect plane (gdbstub) + DebugSession lifecycle (M0) | Proposed |
 | [0033](0033-drgn-introspection-from-vmcore.md) | Debug plane: drgn introspection from vmcore (offline) (M0) | Proposed |
