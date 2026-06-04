@@ -19,6 +19,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import build_verifier
 from kdive.mcp.tools import (
+    accounting,
     allocations,
     artifacts,
     control,
@@ -36,6 +37,7 @@ from kdive.mcp.tools import (
 _PLANE_REGISTRARS: tuple[Callable[[FastMCP, AsyncConnectionPool], None], ...] = (
     jobs.register,
     resources.register,
+    accounting.register,
     allocations.register,
     systems.register,
     investigations.register,
