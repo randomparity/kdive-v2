@@ -23,14 +23,21 @@ def mint(
     audience: str = AUDIENCE,
     agent_session: str | None = "sess-1",
     projects: list[str] | None = None,
+    roles: dict[str, str] | None = None,
     expires_in_seconds: int = 3600,
 ) -> str:
-    """Mint a signed JWT carrying the kdive custom claims."""
+    """Mint a signed JWT carrying the kdive custom claims.
+
+    ``roles`` is the per-project role map (``{"proj-a": "admin"}``) the
+    ``roles_from_claims`` parser reads; omit it for a membership-only token.
+    """
     extra: dict[str, object] = {}
     if agent_session is not None:
         extra["agent_session"] = agent_session
     if projects is not None:
         extra["projects"] = projects
+    if roles is not None:
+        extra["roles"] = roles
     return keypair.create_token(
         subject=subject,
         issuer=issuer,
