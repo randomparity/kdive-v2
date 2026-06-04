@@ -202,9 +202,9 @@ class ProvisioningProfile(_ProfileBase):
 
     schema_version: Literal[1]
     arch: NonEmptyStr
-    vcpu: int = Field(gt=0)
-    memory_mb: int = Field(gt=0)
-    disk_gb: int = Field(gt=0)
+    vcpu: int = Field(gt=0, strict=True)
+    memory_mb: int = Field(gt=0, strict=True)
+    disk_gb: int = Field(gt=0, strict=True)
     boot_method: BootMethod
     kernel_source_ref: NonEmptyStr
     provider: ProviderSection
@@ -292,8 +292,7 @@ def test_missing_core_field_raises_configuration_error(field: str) -> None:
 @pytest.mark.parametrize("field", ["rootfs_image_ref", "crashkernel"])
 def test_missing_libvirt_field_raises_configuration_error(field: str) -> None:
     data = _valid()
-    del data["provider"]["local-libvirt"][field]  # type: ignore[index]
-    _expect_configuration_error(data)
+    del data["provider"]["local-libvirt"][field]    _expect_configuration_error(data)
 
 
 def test_unknown_top_level_field_rejected() -> None:
@@ -304,14 +303,12 @@ def test_unknown_top_level_field_rejected() -> None:
 
 def test_unknown_provider_key_rejected() -> None:
     data = _valid()
-    data["provider"]["cloud"] = {}  # type: ignore[index]
-    _expect_configuration_error(data)
+    data["provider"]["cloud"] = {}    _expect_configuration_error(data)
 
 
 def test_unknown_libvirt_field_rejected() -> None:
     data = _valid()
-    data["provider"]["local-libvirt"]["extra"] = "x"  # type: ignore[index]
-    _expect_configuration_error(data)
+    data["provider"]["local-libvirt"]["extra"] = "x"    _expect_configuration_error(data)
 ```
 
 - [ ] **Step 2: Run the tests to verify they pass against the Task-1 boundary**
@@ -351,8 +348,7 @@ def test_blank_core_string_rejected(field: str, value: str) -> None:
 @pytest.mark.parametrize("field", ["rootfs_image_ref", "crashkernel"])
 def test_blank_libvirt_string_rejected(field: str, value: str) -> None:
     data = _valid()
-    data["provider"]["local-libvirt"][field] = value  # type: ignore[index]
-    _expect_configuration_error(data)
+    data["provider"]["local-libvirt"][field] = value    _expect_configuration_error(data)
 
 
 @pytest.mark.parametrize(("field", "value"), [("vcpu", 0), ("memory_mb", -1), ("disk_gb", 0)])
@@ -362,16 +358,23 @@ def test_non_positive_int_rejected(field: str, value: int) -> None:
     _expect_configuration_error(data)
 
 
+@pytest.mark.parametrize("value", ["4", True, 2.0])
+@pytest.mark.parametrize("field", ["vcpu", "memory_mb", "disk_gb"])
+def test_non_int_value_rejected(field: str, value: object) -> None:
+    # strict=True: a malformed externally-authored value must not silently coerce.
+    data = _valid()
+    data[field] = value
+    _expect_configuration_error(data)
+
+
 def test_empty_domain_xml_param_value_rejected() -> None:
     data = _valid()
-    data["provider"]["local-libvirt"]["domain_xml_params"] = {"machine": ""}  # type: ignore[index]
-    _expect_configuration_error(data)
+    data["provider"]["local-libvirt"]["domain_xml_params"] = {"machine": ""}    _expect_configuration_error(data)
 
 
 def test_domain_xml_params_defaults_to_empty_map() -> None:
     data = _valid()
-    del data["provider"]["local-libvirt"]["domain_xml_params"]  # type: ignore[index]
-
+    del data["provider"]["local-libvirt"]["domain_xml_params"]
     profile = ProvisioningProfile.parse(data)
 
     assert profile.provider.local_libvirt.domain_xml_params == {}
