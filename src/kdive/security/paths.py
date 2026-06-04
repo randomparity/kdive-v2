@@ -32,7 +32,7 @@ def _is_relative_to(child: Path, parent: Path) -> bool:
 
 
 def confine_to_root(path: Path, *, allowed_root: Path) -> Path:
-    """Resolve *path* and require it to live under *allowed_root*.
+    r"""Resolve *path* and require it to live under *allowed_root*.
 
     Rejects shell metacharacters / control characters first, then resolves *path*
     with ``resolve(strict=False)`` so symlinks in existing components are followed
