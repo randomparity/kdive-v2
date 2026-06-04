@@ -96,6 +96,10 @@ This is the single source of truth tying a libvirt domain back to its `systems` 
 reconciler's `list_owned`/leaked-domain repair depends on it. Both the domain XML and the
 metadata element are assembled with `xml.etree.ElementTree` (structured construction), not
 string interpolation, so a profile value can never break out of its element or inject XML.
+This is XML *construction*, not parsing — there is no untrusted-input parse here and thus no
+XXE/billion-laughs surface (the stdlib `ElementTree` writer is safe; `defusedxml` guards the
+*read* side, where `discovery.py` parses libvirtd-emitted XML across a trust boundary). The
+provisioning provider never parses guest- or profile-supplied XML.
 The namespace constant is shared with discovery (imported, not re-declared) so the
 write side and the read side cannot drift. The provision XML renders the domain shell,
 the rootfs disk, and the metadata tag — but **no `<kernel>`/`<cmdline>`**: libvirt ignores
