@@ -130,7 +130,9 @@ _TRANSITIONS: dict[type[StrEnum], dict[StrEnum, frozenset[StrEnum]]] = {
     },
     SystemState: {
         SystemState.DEFINED: frozenset({SystemState.PROVISIONING, SystemState.FAILED}),
-        SystemState.PROVISIONING: frozenset({SystemState.READY, SystemState.FAILED}),
+        SystemState.PROVISIONING: frozenset(
+            {SystemState.READY, SystemState.FAILED, SystemState.TORN_DOWN}
+        ),
         SystemState.READY: frozenset(
             {SystemState.CRASHED, SystemState.TORN_DOWN, SystemState.FAILED}
         ),
