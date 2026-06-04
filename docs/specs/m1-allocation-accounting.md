@@ -240,8 +240,8 @@ makes the separation **real and tested**:
 | Role | Surface |
 |------|---------|
 | `viewer` | read-only + `accounting.estimate`/`accounting.usage` |
-| `operator` | lifecycle: `allocations.request`/`.renew`/`.release`, `systems.provision`/`.reprovision`/`.teardown`, `runs.*`, `debug.*`, `introspect.*` |
-| `admin` | operator + project administration (`accounting.set_budget`/`.set_quota`) + the destructive-gate role factor |
+| `operator` | lifecycle: `allocations.request`/`.renew`/`.release`, `systems.provision`/`.reprovision`, `control.power on`, `runs.*`, `debug.*`, `introspect.*` |
+| `admin` | operator + project administration (`accounting.set_budget`/`.set_quota`) + the destructive-administration ops (`control.force_crash`, `control.power off`/`cycle`/`reset`, `systems.teardown`) |
 
 - **Destructive gate role factor is `admin`** (force_crash, power off/cycle/reset,
   teardown). The ADR-0006 operator-with-opt-in path is **not** exercised in M1.
@@ -372,9 +372,11 @@ falsifiable signal, as M0's six were):
    explicit `release`. (The expiry-**mid-job** race is an M1.5 target, not an M1 gate.)
 5. **Renewal** — `allocations.renew` extends the window and writes an incremental
    `reserved` delta; a renewal over budget is denied and leaves the window unchanged.
-6. **Role separation** — an `operator` is refused `accounting.set_budget`/`.set_quota`
-   and `force_crash` (`authorization_error`); an `admin` succeeds; `systems.reprovision`
-   succeeds for `operator`.
+6. **Role separation** — an `operator` is refused the `admin` ops
+   (`accounting.set_budget`/`.set_quota`, `control.force_crash`,
+   `control.power off`/`cycle`/`reset`, `systems.teardown`) with `authorization_error`;
+   an `admin` succeeds; `systems.reprovision` and `control.power on` succeed for
+   `operator`; a `viewer` is refused a cross-project `accounting.usage(investigation_id)`.
 7. **Reprovision-in-place** — `systems.reprovision` cycles `ready → reprovisioning →
    ready` on the **same** `system_id` under the **same** Allocation, with no new
    allocation and no new System row.
