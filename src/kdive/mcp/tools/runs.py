@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -463,7 +464,13 @@ async def install_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: st
 
 
 async def boot_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> ToolResponse:
-    """Admit an idempotent boot for a built, installed Run (requires a succeeded install step)."""
+    """Admit an idempotent boot for a built, installed Run (requires a succeeded install step).
+
+    The install gate checks the **recorded** (finalized) install step, so a caller must
+    ``jobs.wait`` on the install job before `runs.boot`; firing boot while the install job is
+    still queued returns `configuration_error` "install first" (the install row is not yet
+    committed). After the install job succeeds the gate passes.
+    """
     uid = _as_uuid(run_id)
     if uid is None:
         return _config_error(run_id)
@@ -516,12 +523,33 @@ async def _enqueue_step(
     return _run_job_envelope(job, run.id)
 
 
+async def _run_step_locked(
+    conn: AsyncConnection,
+    run_id: UUID,
+    step: str,
+    fn: Callable[[], Awaitable[dict[str, Any]]],
+) -> None:
+    """Run an idempotent step under the per-Run lock so the side effect runs at most once.
+
+    `run_step` alone de-dupes only the **ledger row**: two concurrent dispatches of the same
+    job (the queue's at-least-once delivery, lease lapse → double-run) would both read no row
+    and both invoke ``fn`` (the libvirt redefine / power-cycle) before racing on the insert.
+    Holding ``LockScope.RUN`` for the whole `run_step` serializes them, so the second dispatch
+    blocks, then sees the committed row and skips ``fn`` — the build handler's finalize fence
+    applied to the install/boot side effect. The lock is released at transaction commit.
+    """
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run_id):
+        await run_step(conn, run_id, step, fn)
+
+
 async def install_handler(conn: AsyncConnection, job: Job, installer: Installer) -> str | None:
     """Stage the built kernel for direct-kernel boot, recording the `install` step (ADR-0030).
 
     The Run's `state` is never changed (it is already `succeeded` on build): a succeeded
-    install records a `(run_id, "install")` ledger row; a failure records no row and re-raises
-    so the worker dead-letters the job with the step's category (ADR-0030 §2).
+    install records a `(run_id, "install")` ledger row under the per-Run lock; a failure
+    records no row and re-raises so the worker dead-letters the job with the step's category
+    (ADR-0030 §2). The libvirt redefine is idempotent (`defineXML` overwrites), so a crash
+    between the redefine and the ledger commit is recovered by a re-dispatch with no orphan.
     """
     run_id = UUID(job.payload["run_id"])
     run = await RUNS.get(conn, run_id)
@@ -551,7 +579,7 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
         )
         return {"system_id": str(run.system_id)}
 
-    await run_step(conn, run_id, "install", _do)
+    await _run_step_locked(conn, run_id, "install", _do)
     return str(run_id)
 
 
@@ -559,8 +587,12 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
     """Boot the installed kernel and confirm run-readiness, recording the `boot` step (ADR-0030).
 
     Like install, the Run's `state` is untouched: a succeeded boot records a
-    `(run_id, "boot")` ledger row; a `boot_timeout`/`readiness_failure` records no row and
-    re-raises for the worker to dead-letter.
+    `(run_id, "boot")` ledger row under the per-Run lock; a `boot_timeout`/`readiness_failure`
+    records no row and re-raises for the worker to dead-letter. The per-Run lock makes a
+    concurrent re-dispatch serialize and skip a *recorded* boot. A crash between the
+    power-cycle and the ledger commit re-boots the (freshly provisioned, not-yet-in-use M0)
+    System on the next dispatch — acceptable because the System carries no in-use state until
+    a Run's debug session attaches (a later plane); recorded so the re-boot is a decision.
     """
     run_id = UUID(job.payload["run_id"])
     run = await RUNS.get(conn, run_id)
@@ -586,7 +618,7 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
         )
         return {"system_id": str(run.system_id)}
 
-    await run_step(conn, run_id, "boot", _do)
+    await _run_step_locked(conn, run_id, "boot", _do)
     return str(run_id)
 
 

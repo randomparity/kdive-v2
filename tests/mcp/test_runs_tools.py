@@ -1147,6 +1147,45 @@ def test_install_handler_replay_does_not_restage(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+class _SlowInstaller:
+    """An installer that sleeps inside install() to widen the concurrent-dispatch window."""
+
+    def __init__(self) -> None:
+        self.calls: list[UUID] = []
+
+    def install(self, system_id: UUID, run_id: UUID, kernel_ref: str, *, cmdline: str) -> None:
+        import time
+
+        self.calls.append(run_id)
+        time.sleep(0.2)
+
+
+def test_install_handler_concurrent_dispatch_invokes_once(migrated_url: str) -> None:
+    # Two concurrent dispatches of the SAME install job (the queue's at-least-once delivery)
+    # on distinct connections: the per-Run lock serializes them, so the installer runs once
+    # and exactly one ledger row is written.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _SlowInstaller()
+
+            async def _dispatch() -> None:
+                async with pool.connection() as conn:
+                    await runs_tools.install_handler(conn, job, installer)
+
+            await asyncio.gather(_dispatch(), _dispatch())
+            nsteps = await _count(
+                pool,
+                "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='install'",
+                (run_id,),
+            )
+        assert len(installer.calls) == 1  # the per-Run lock prevents a double redefine
+        assert nsteps == 1
+
+    asyncio.run(_run())
+
+
 def test_install_handler_failure_records_no_step(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
