@@ -269,8 +269,10 @@ def test_recent_jobs_newest_first_and_capped(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
             for i in range(3):
-                await queue.enqueue(conn, JobKind.BUILD, {"i": i}, {"principal": "p"}, f"d{i}")
-            recent = await queue.recent_jobs(conn, limit=2)
+                await queue.enqueue(
+                    conn, JobKind.BUILD, {"i": i}, {"principal": "p", "project": "proj"}, f"d{i}"
+                )
+            recent = await queue.recent_jobs(conn, limit=2, projects=["proj"])
         assert len(recent) == 2
         # newest-first: the last-enqueued dedup_key appears first
         assert recent[0].dedup_key == "d2"
@@ -282,6 +284,27 @@ def test_recent_jobs_newest_first_and_capped(migrated_url: str) -> None:
 def test_recent_jobs_empty(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            assert await queue.recent_jobs(conn, limit=10) == []
+            assert await queue.recent_jobs(conn, limit=10, projects=["proj"]) == []
+
+    asyncio.run(_run())
+
+
+def test_recent_jobs_filters_by_project(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await queue.enqueue(conn, JobKind.BUILD, {}, {"principal": "p", "project": "a"}, "ja")
+            await queue.enqueue(conn, JobKind.BUILD, {}, {"principal": "p", "project": "b"}, "jb")
+            await queue.enqueue(conn, JobKind.BUILD, {}, {"principal": "p"}, "jnone")  # no project
+            recent = await queue.recent_jobs(conn, limit=10, projects=["a"])
+        assert [j.dedup_key for j in recent] == ["ja"]  # only project a; b and no-project excluded
+
+    asyncio.run(_run())
+
+
+def test_recent_jobs_empty_projects_returns_nothing(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await queue.enqueue(conn, JobKind.BUILD, {}, {"principal": "p", "project": "a"}, "ja")
+            assert await queue.recent_jobs(conn, limit=10, projects=[]) == []
 
     asyncio.run(_run())

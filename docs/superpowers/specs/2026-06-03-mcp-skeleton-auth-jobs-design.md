@@ -55,6 +55,15 @@ handler) or *role/destructive-op authorization* (#11, RBAC/gate).
     M0's trusted-operator deployment (a small known set of principals). #11 **must**
     close it before any broader/untrusted multi-principal use. Recorded here so #11
     treats it as a gating prerequisite, not a nice-to-have.
+
+  > **RESOLVED (2026-06-03).** This exposure is now closed. The plane handlers pin the
+  > `authorizing` tuple to `{principal, agent_session, project}`, so `jobs.get`/`wait`/
+  > `cancel`/`list` are project-scoped: a by-id read or cancel of a job in an ungranted
+  > project returns the same not-found-shaped error as a missing job (no existence leak),
+  > and `list` returns only the caller's jobs. A job whose tuple carries no `project`
+  > belongs to no one (fail closed). See `mcp/tools/jobs.py::_in_scope`,
+  > `jobs/queue.py::recent_jobs(projects=…)`, and
+  > `tests/mcp/test_jobs_tools.py` cross-project isolation tests.
 - **No audit log.** The append-only `audit_log` write on every transition is #11.
   This issue emits structured **logs** (ADR-0014) per request/job, which are not the
   audit record.
