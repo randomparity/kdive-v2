@@ -54,6 +54,12 @@ stable surface.
    no-transition ops in M0 (they do not move the System lifecycle — a libvirt domain
    restart does not re-provision); they act on the domain and audit the action.
 
+   > **Superseded by [ADR-0037](0037-rbac-hardening-role-separation.md) §2 (M1):** the
+   > destructive power actions (`off`/`reset`/`cycle`) and `systems.teardown` move from
+   > `operator` to `admin`. `power on` stays `operator`. The gating *mechanism* is
+   > unchanged — these ops are still pinned by `require_role`, not routed through the
+   > three-check gate; only the required role is raised.
+
 4. **A denial maps to a new `authorization_denied` `ErrorCategory`.** ADR-0020 §
    Consequences flagged that the first handler returning a denial as a `ToolResponse`
    forces this taxonomy decision. `force_crash` is that handler: a `DestructiveOpDenied`
