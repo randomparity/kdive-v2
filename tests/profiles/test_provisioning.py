@@ -6,6 +6,7 @@ import copy
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import BootMethod, ProvisioningProfile
@@ -103,3 +104,85 @@ def test_unknown_libvirt_field_rejected() -> None:
     data = _valid()
     data["provider"]["local-libvirt"]["extra"] = "x"
     _expect_configuration_error(data)
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+@pytest.mark.parametrize("field", ["arch", "kernel_source_ref"])
+def test_blank_core_string_rejected(field: str, value: str) -> None:
+    data = _valid()
+    data[field] = value
+    _expect_configuration_error(data)
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+@pytest.mark.parametrize("field", ["rootfs_image_ref", "crashkernel"])
+def test_blank_libvirt_string_rejected(field: str, value: str) -> None:
+    data = _valid()
+    data["provider"]["local-libvirt"][field] = value
+    _expect_configuration_error(data)
+
+
+@pytest.mark.parametrize(("field", "value"), [("vcpu", 0), ("memory_mb", -1), ("disk_gb", 0)])
+def test_non_positive_int_rejected(field: str, value: int) -> None:
+    data = _valid()
+    data[field] = value
+    _expect_configuration_error(data)
+
+
+@pytest.mark.parametrize("value", ["4", True, 2.0])
+@pytest.mark.parametrize("field", ["vcpu", "memory_mb", "disk_gb"])
+def test_non_int_value_rejected(field: str, value: object) -> None:
+    # strict=True: a malformed externally-authored value must not silently coerce.
+    data = _valid()
+    data[field] = value
+    _expect_configuration_error(data)
+
+
+def test_empty_domain_xml_param_value_rejected() -> None:
+    data = _valid()
+    data["provider"]["local-libvirt"]["domain_xml_params"] = {"machine": ""}
+    _expect_configuration_error(data)
+
+
+def test_domain_xml_params_defaults_to_empty_map() -> None:
+    data = _valid()
+    del data["provider"]["local-libvirt"]["domain_xml_params"]
+
+    profile = ProvisioningProfile.parse(data)
+
+    assert profile.provider.local_libvirt.domain_xml_params == {}
+
+
+def test_unknown_boot_method_rejected() -> None:
+    data = _valid()
+    data["boot_method"] = "iso"
+    _expect_configuration_error(data)
+
+
+def test_unreadable_schema_version_rejected() -> None:
+    data = _valid()
+    data["schema_version"] = 2
+    _expect_configuration_error(data)
+
+
+def test_error_details_do_not_leak_submitted_values() -> None:
+    data = _valid()
+    data["memory_mb"] = "S3CRET-LOOKING-VALUE"  # wrong type carrying a sentinel
+
+    with pytest.raises(CategorizedError) as caught:
+        ProvisioningProfile.parse(data)
+
+    assert "S3CRET-LOOKING-VALUE" not in str(caught.value.details)
+
+
+def test_profile_is_frozen() -> None:
+    profile = ProvisioningProfile.parse(_valid())
+
+    with pytest.raises(ValidationError):
+        profile.arch = "aarch64"
+
+
+def test_direct_construction_bypasses_configuration_error_mapping() -> None:
+    # model_validate is not the sanctioned door; it surfaces the raw ValidationError.
+    with pytest.raises(ValidationError):
+        ProvisioningProfile.model_validate({"schema_version": 1})
