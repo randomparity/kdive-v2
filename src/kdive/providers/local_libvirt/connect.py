@@ -32,7 +32,6 @@ from kdive.providers.interfaces import SystemHandle, TransportHandle
 _GDBSTUB = "gdbstub"
 _SSH = "ssh"
 _TRANSPORT_KINDS = frozenset({_GDBSTUB, _SSH})
-_DEFAULT_SSH_PORT = 22
 
 # Cap on bytes buffered while waiting for a complete RSP frame from an unauthenticated peer.
 # A valid `$...#xx` halt-reason reply is a few dozen bytes; the bound stops a hostile peer
