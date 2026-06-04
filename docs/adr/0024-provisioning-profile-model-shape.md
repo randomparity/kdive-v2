@@ -108,6 +108,18 @@ opaque text params, not inline secrets; secret *resolution* is
 [ADR-0012](0012-secret-backend.md)'s job, so the schema does not scan
 `domain_xml_params` for secret material — it constrains the shape, not the meaning.
 
+### 2d. Integer core fields are `strict=True`; malformed types fail closed
+
+A profile is an externally-authored document, so the numeric core fields use
+`Field(gt=0, strict=True)`. Without `strict`, Pydantic's lax mode accepts
+`vcpu: "4"` (coerced to `4`) and `vcpu: true` (coerced to `1`, since `bool` is an
+`int` subclass) — a malformed profile silently becoming a wrong provisioning
+request, which violates the "fail fast on malformed input" rule. Strict integers
+reject a non-`int` value as `configuration_error` at the parse boundary. The string
+fields need no strictness flag (`NonEmptyStr` already rejects blanks and non-strings
+fail the `str` type), and `boot_method`/`schema_version` are already closed
+(enum / `Literal[1]`), which reject foreign values without coercion.
+
 ### 3. The `configuration_error` contract is produced at a parse boundary, not inside the model
 
 Every model in this file sets `extra="forbid"`, which makes Pydantic raise its
@@ -229,6 +241,10 @@ next milestone step, and the parse boundary is the seam it will call.
   empty-map default while leaving individual values unconstrained. The value
   non-emptiness rides on the value type (`Annotated[str, Field(min_length=1)]`); the
   map stays optionally empty.
+- **Lax (default) integer coercion.** Rejected: lax mode accepts `vcpu: "4"` and
+  `vcpu: true` (coerced to `1`), turning a malformed externally-authored profile into
+  a silent wrong provisioning request. `strict=True` on the integer fields fails the
+  malformed value closed as `configuration_error`, matching the fail-fast posture.
 - **Raise `CategorizedError` from inside a model validator.** Rejected: it scatters
   the taxonomy mapping across field validators and fights Pydantic, which wraps
   exceptions raised in validators back into `ValidationError` anyway. One parse
