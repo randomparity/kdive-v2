@@ -20,11 +20,18 @@ from psycopg.pq import TransactionStatus
 
 
 class LockScope(StrEnum):
-    """The advisory-lock scopes M0 serializes on (ADR-0016, ADR-0023)."""
+    """The advisory-lock scopes M0 serializes on (ADR-0016, ADR-0023, ADR-0026).
+
+    Operations that hold more than one scope at once acquire them in the fixed global
+    order ``ALLOCATION → SYSTEM → INVESTIGATION → RUN`` to avoid deadlock; e.g.
+    ``runs.create`` takes ``SYSTEM`` then ``INVESTIGATION``. (``RUN`` is reserved in the
+    ordering; no M0 tool needs a per-Run lock yet.)
+    """
 
     ALLOCATION = "allocation"
     SYSTEM = "system"
     RESOURCE = "resource"
+    INVESTIGATION = "investigation"
 
 
 def _lock_key(scope: LockScope, key: UUID) -> int:
