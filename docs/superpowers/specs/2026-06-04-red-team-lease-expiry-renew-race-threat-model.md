@@ -61,7 +61,13 @@ that renews near a sweep tick — the default sweep interval is 30 s).
 | release vs `→expired` sweep single-reconciliation | ADR-0040 §4 | ✅ held — `PROJECT → ALLOCATION` + terminal-state fence |
 | `_apply_to_spent` keeps `spent_kcu` == ledger Σ under the lock | ADR-0007 §3 | ✅ held |
 
-## Observation (latent, not fixed) — cross-`kind` idempotency replay in `admit`
+## Observation (RESOLVED in PR #87) — cross-`kind` idempotency replay in `admit`
+
+> **Resolved 2026-06-04** by the Pass 7 follow-up
+> (`…admit-idempotency-kind-fence…` threat model, PR #87): `admit._resolve_replay` is now
+> scoped to `_REQUEST_KIND` and `admit._record_key` fails closed on the shared-PK
+> collision, symmetric with the renew path. Left below as the original observation.
+
 
 `allocation_renew._resolve_replay` filters the idempotency store by `kind = 'allocations.renew'`,
 but `allocation_admission._resolve_replay` does **not** filter by `kind`. The
