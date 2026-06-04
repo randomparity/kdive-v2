@@ -230,13 +230,17 @@ reaches the transport.
    re-raise (the worker dead-letters the job with `PROVISIONING_FAILURE`; the System reads
    `failed`).
 5. One transaction under `advisory_xact_lock(SYSTEM, system_id)`: **re-read** the System
-   state under the lock. If still `provisioning` → set `domain_name` (raw `UPDATE systems SET
-   domain_name=%s`), `SYSTEMS.update_state(PROVISIONING → READY)`, audit
-   `"provisioning->ready"`, return `str(system_id)`. If it is **no longer `provisioning`** (a
-   concurrent `teardown` drove it terminal between step 4 and here — see the race below):
-   release the lock and **tear down the domain just created** (`provisioning.teardown(domain_name)`,
-   idempotent), then return `str(system_id)` without a transition — the concurrent teardown is
-   authoritative, the domain does not leak, and this is not an error (no dead-letter).
+   state under the lock (`FOR UPDATE`). If still `provisioning` → set state+domain_name
+   (`UPDATE systems SET state='ready', domain_name=…`), audit `"provisioning->ready"`, return
+   `str(system_id)`. If it is **no longer `provisioning`**, branch on *why* (outside the lock):
+   - **terminal (`torn_down`/`failed`)** → a concurrent `teardown` (or a failed sibling)
+     superseded this provision; **tear down the domain just created**
+     (`provisioning.teardown(domain_name)`, idempotent) and return without a transition — not an
+     error (no dead-letter).
+   - **`ready`/`crashed`** → a concurrent **same-job** provision (a lease-lapse double-run)
+     already finalized this System; that domain is the live System's, so **leave it** and return.
+     Tearing it down here would destroy a running System. This is the one case the naive "any
+     non-`provisioning` re-read ⇒ teardown" gets wrong.
 
 The handler holds **no** transaction across either libvirt call (ADR-0018): `provision` and
 the cleanup `teardown` run outside any txn; the lock-held section is only the fast re-read +

@@ -267,18 +267,18 @@ async def provision_handler(
                 tool="systems.provision",
             )
         raise
-    superseded = True
+    current: SystemState | None = None
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute("SELECT state FROM systems WHERE id = %s FOR UPDATE", (system_id,))
             row = await cur.fetchone()
-            if row is not None and SystemState(row["state"]) is SystemState.PROVISIONING:
-                superseded = False
+            current = SystemState(row["state"]) if row is not None else None
+            if current is SystemState.PROVISIONING:
                 await cur.execute(
                     "UPDATE systems SET state = %s, domain_name = %s WHERE id = %s",
                     (SystemState.READY.value, domain_name, system_id),
                 )
-        if not superseded:
+        if current is SystemState.PROVISIONING:
             await _audit_transition(
                 conn,
                 job,
@@ -287,8 +287,11 @@ async def provision_handler(
                 transition="provisioning->ready",
                 tool="systems.provision",
             )
-    if superseded:
-        # A concurrent teardown drove the System terminal; clean up the domain we created.
+    # Outside the lock. If a concurrent *teardown* drove the System terminal while we were
+    # mid-provision, clean up the domain we just created. A non-terminal, non-provisioning
+    # state (``ready``/``crashed``) means a concurrent *same-job* provision (lease lapse →
+    # double-run) already finalized — that domain is the live System's, so leave it.
+    if current in _TERMINAL_SYSTEM:
         provisioning.teardown(domain_name)
         _log.info("provision of system %s superseded by teardown; domain reaped", system_id)
     return str(system_id)

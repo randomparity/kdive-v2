@@ -444,6 +444,41 @@ def test_provision_handler_superseded_midflight_tears_down_created_domain(
     asyncio.run(_run())
 
 
+def test_provision_handler_concurrent_same_job_ready_does_not_tear_down(migrated_url: str) -> None:
+    # A lease lapse double-run: another worker already finalized this provision to `ready`.
+    # The finalize must NOT tear down the (live) domain — `ready` is not a teardown.
+    class _RacingToReady(_FakeProvisioning):
+        def __init__(self, url: str) -> None:
+            super().__init__()
+            self._url = url
+
+        def provision(self, system_id: UUID, profile: Any) -> str:
+            name = super().provision(system_id, profile)
+            with psycopg.connect(self._url, autocommit=True) as c:
+                c.execute(
+                    "UPDATE systems SET state = 'ready', domain_name = %s WHERE id = %s",
+                    (name, system_id),
+                )
+            return name
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.PROVISIONING)
+            job = await _enqueue_provision(pool, sys_id, alloc_id)
+            prov = _RacingToReady(migrated_url)
+            async with pool.connection() as conn:
+                result = await systems_tools.provision_handler(conn, job, prov)
+            assert result == sys_id
+            assert prov.torn_down == []  # the live domain was left alone
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                row = await cur.fetchone()
+        assert row is not None and row["state"] == "ready"
+
+    asyncio.run(_run())
+
+
 # --- systems.teardown tool + handler -------------------------------------------------------
 
 
