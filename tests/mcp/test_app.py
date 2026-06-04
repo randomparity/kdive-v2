@@ -47,6 +47,15 @@ def test_build_app_registers_jobs_tools() -> None:
             "postmortem.triage",
         } <= names
         assert {"debug.start_session", "debug.end_session"} <= names
+        assert {
+            "debug.set_breakpoint",
+            "debug.clear_breakpoint",
+            "debug.list_breakpoints",
+            "debug.read_memory",
+            "debug.read_registers",
+            "debug.continue",
+            "debug.interrupt",
+        } <= names
 
     asyncio.run(_run())
 
