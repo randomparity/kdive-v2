@@ -120,8 +120,18 @@ async def _sweep_expired_allocations(conn: AsyncConnection) -> int:
         candidates = await cur.fetchall()
     reclaimed = 0
     for candidate in candidates:
-        if await _expire_one(conn, candidate["id"], candidate["project"]):
-            reclaimed += 1
+        try:
+            if await _expire_one(conn, candidate["id"], candidate["project"]):
+                reclaimed += 1
+        except Exception:  # noqa: BLE001 - one allocation's failure must not starve the rest
+            # E.g. an active allocation with no persisted size cannot be priced
+            # (CategorizedError from reconcile); its transaction rolled back, so it stays
+            # non-terminal and is retried next pass while siblings still get swept.
+            _log.warning(
+                "reconciler: expiring allocation %s failed; retry next pass",
+                candidate["id"],
+                exc_info=True,
+            )
     return reclaimed
 
 
