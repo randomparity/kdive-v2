@@ -7,7 +7,10 @@ exercised in the DB-marked tests below and through `accounting.estimate`.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -19,10 +22,29 @@ from kdive.domain.cost import (
     cost,
     quantize_kcu,
     rate,
+    validate_against_resource,
     validate_size,
     validate_window,
 )
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.models import Resource, ResourceKind
+from kdive.domain.state import ResourceStatus
+
+_DT = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _resource(capabilities: dict[str, Any]) -> Resource:
+    return Resource(
+        id=uuid4(),
+        created_at=_DT,
+        updated_at=_DT,
+        kind=ResourceKind.LOCAL_LIBVIRT,
+        capabilities=capabilities,
+        pool="local-libvirt",
+        cost_class="local",
+        status=ResourceStatus.AVAILABLE,
+        host_uri="qemu:///system",
+    )
 
 
 def test_weights_match_adr() -> None:
@@ -128,4 +150,46 @@ def test_validate_window_rejects_nan() -> None:
 def test_validate_window_rejects_infinity() -> None:
     with pytest.raises(CategorizedError) as exc:
         validate_window(Decimal("Infinity"))
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_validate_against_resource_accepts_within_caps() -> None:
+    res = _resource({"vcpus": 4, "memory_mb": 8192})
+    validate_against_resource(Selector(vcpus=4, memory_gb=8), res)  # exactly at the ceiling
+
+
+def test_validate_against_resource_rejects_excess_vcpus() -> None:
+    res = _resource({"vcpus": 2, "memory_mb": 8192})
+    with pytest.raises(CategorizedError) as exc:
+        validate_against_resource(Selector(vcpus=3, memory_gb=1), res)
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_validate_against_resource_rejects_excess_memory() -> None:
+    res = _resource({"vcpus": 8, "memory_mb": 4096})  # 4 GB ceiling
+    with pytest.raises(CategorizedError) as exc:
+        validate_against_resource(Selector(vcpus=1, memory_gb=5), res)
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_validate_against_resource_memory_uses_1024_mb_per_gb() -> None:
+    # 4096 MB ceiling = exactly 4 GB; a 4 GB selector fits, a fractional overflow is
+    # impossible since memory_gb is integer — the boundary is exact, not 1000-based.
+    res = _resource({"vcpus": 8, "memory_mb": 4096})
+    validate_against_resource(Selector(vcpus=1, memory_gb=4), res)
+
+
+@pytest.mark.parametrize("caps", [{}, {"vcpus": 4}, {"memory_mb": 4096}])
+def test_validate_against_resource_missing_cap_fails_closed(caps: dict[str, Any]) -> None:
+    res = _resource(caps)
+    with pytest.raises(CategorizedError) as exc:
+        validate_against_resource(Selector(vcpus=1, memory_gb=1), res)
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+@pytest.mark.parametrize("bad", [None, "4", -1, True])
+def test_validate_against_resource_invalid_cap_value_fails_closed(bad: object) -> None:
+    res = _resource({"vcpus": bad, "memory_mb": 4096})
+    with pytest.raises(CategorizedError) as exc:
+        validate_against_resource(Selector(vcpus=1, memory_gb=1), res)
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
