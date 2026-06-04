@@ -56,13 +56,15 @@ _PROFILE: dict[str, Any] = {
 class _TrackingProvisioner:
     """A fake provider that models the host's live-domain set.
 
-    ``provision`` adds the domain; ``teardown`` removes it (idempotent discard). A
-    non-empty ``live`` after the race means a domain leaked.
+    ``provision`` adds the domain; ``teardown`` removes it (idempotent discard);
+    ``reprovision`` re-applies in place. A non-empty ``live`` after the race means a
+    domain leaked.
     """
 
     def __init__(self) -> None:
         self.live: set[str] = set()
         self.provisioned: list[UUID] = []
+        self.reprovisioned: list[UUID] = []
         self.torn_down: list[str] = []
 
     def provision(self, system_id: UUID, profile: Any) -> str:
@@ -74,6 +76,12 @@ class _TrackingProvisioner:
     def teardown(self, domain_name: str) -> None:
         self.torn_down.append(domain_name)
         self.live.discard(domain_name)
+
+    def reprovision(self, system_id: UUID, profile: Any) -> str:
+        name = f"kdive-{system_id}"
+        self.reprovisioned.append(system_id)
+        self.live.add(name)
+        return name
 
 
 class _RecordingController:

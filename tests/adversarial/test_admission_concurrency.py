@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import asyncio
 
+import psycopg
 import pytest
 
 from kdive.domain.allocation_admission import admit
+from kdive.domain.models import Resource
 from kdive.domain.state import AllocationState
 from kdive.mcp.auth import RequestContext
 from tests.adversarial.conftest import (
@@ -29,13 +31,13 @@ from tests.adversarial.conftest import (
 CTX = RequestContext(principal="alice", agent_session="s", projects=("proj",))
 
 
-def _admit(conn: object, resource: object):  # type: ignore[no-untyped-def]
+def _admit(conn: psycopg.AsyncConnection, resource: Resource):  # type: ignore[no-untyped-def]
     # The host cap is the binding constraint here; budget/quota are seeded generous so
     # admission's per-project checks never deny. Each racer is keyless (a distinct grant).
     return admit(
-        conn,  # type: ignore[arg-type]
+        conn,
         CTX,
-        resource=resource,  # type: ignore[arg-type]
+        resource=resource,
         project="proj",
         selector=SMALL_SELECTOR,
         window=1,

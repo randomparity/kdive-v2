@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import psycopg
 import pytest
+from psycopg import sql
 
 from kdive.db.repositories import BUDGETS, QUOTAS, RESOURCES
 from kdive.domain.allocation_admission import CONCURRENT_ALLOCATION_CAP_KEY, admit
@@ -92,7 +93,7 @@ async def _spent(conn: psycopg.AsyncConnection) -> Decimal:
 
 async def _count(conn: psycopg.AsyncConnection, table: str) -> int:
     async with conn.cursor() as cur:
-        await cur.execute(f"SELECT count(*) FROM {table}")  # noqa: S608 - literal table name
+        await cur.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table)))
         row = await cur.fetchone()
     assert row is not None
     return int(row[0])
@@ -102,11 +103,11 @@ def _admit(conn: psycopg.AsyncConnection, **kw: object):  # type: ignore[no-unty
     return admit(
         conn,
         CTX,
-        resource=kw.pop("resource"),  # type: ignore[arg-type]
+        resource=kw.pop("resource"),  # ty: ignore[invalid-argument-type]
         project="proj",
-        selector=kw.pop("selector", SEL),  # type: ignore[arg-type]
+        selector=kw.pop("selector", SEL),  # ty: ignore[invalid-argument-type]
         window=kw.pop("window", 2),
-        idempotency_key=kw.pop("idempotency_key", None),  # type: ignore[arg-type]
+        idempotency_key=kw.pop("idempotency_key", None),  # ty: ignore[invalid-argument-type]
     )
 
 
