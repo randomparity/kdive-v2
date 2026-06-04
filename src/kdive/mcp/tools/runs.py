@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -23,6 +24,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.idempotency import run_step
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -41,6 +43,11 @@ from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.profiles.build import BuildProfile
 from kdive.providers.local_libvirt.build import Builder, BuildOutput, LocalLibvirtBuild
+from kdive.providers.local_libvirt.install import (
+    Booter,
+    Installer,
+    LocalLibvirtInstall,
+)
 from kdive.security import audit
 from kdive.security.rbac import Role, require_role
 
@@ -417,6 +424,204 @@ async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> st
     return str(run_id)
 
 
+# --- install + boot plane (#19, ADR-0030) --------------------------------------------
+
+# Default kernel command line for direct-kernel boot. It MUST carry a `crashkernel=`
+# reservation (the kdump prerequisite); an operator override that drops it is rejected
+# at `runs.install`. The reservation reserves boot-time memory for the capture kernel;
+# the build plane separately compiles kdump in via `CONFIG_CRASH_DUMP` (ADR-0029 §3).
+_DEFAULT_CMDLINE = "console=ttyS0 crashkernel=256M"
+_CRASHKERNEL_TOKEN = "crashkernel="
+
+
+def _cmdline_for(run: Run) -> str:
+    """Resolve the kernel command line from the Run's opaque `build_profile`.
+
+    The cmdline is read from the raw `build_profile` dict (not via `BuildProfile.parse`,
+    whose `extra="forbid"` would reject the `cmdline` key); an absent/blank value falls
+    back to the kdump-reserving default.
+    """
+    value = run.build_profile.get("cmdline")
+    return value if isinstance(value, str) and value.strip() else _DEFAULT_CMDLINE
+
+
+async def install_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> ToolResponse:
+    """Admit an idempotent install for a built Run; reject a cmdline lacking `crashkernel=`."""
+    uid = _as_uuid(run_id)
+    if uid is None:
+        return _config_error(run_id)
+    with bind_context(principal=ctx.principal):
+        async with pool.connection() as conn:
+            run = await RUNS.get(conn, uid)
+            if run is None or run.project not in ctx.projects:
+                return _config_error(run_id)
+            require_role(ctx, run.project, Role.OPERATOR)
+            if run.state is not RunState.SUCCEEDED:
+                return _config_error(run_id, data={"current_status": run.state.value})
+            if _CRASHKERNEL_TOKEN not in _cmdline_for(run):
+                return _config_error(run_id, data={"reason": "cmdline_missing_crashkernel"})
+            return await _enqueue_step(conn, ctx, run, JobKind.INSTALL, "install", "runs.install")
+
+
+async def boot_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> ToolResponse:
+    """Admit an idempotent boot for a built, installed Run (requires a succeeded install step).
+
+    The install gate checks the **recorded** (finalized) install step, so a caller must
+    ``jobs.wait`` on the install job before `runs.boot`; firing boot while the install job is
+    still queued returns `configuration_error` "install first" (the install row is not yet
+    committed). After the install job succeeds the gate passes.
+    """
+    uid = _as_uuid(run_id)
+    if uid is None:
+        return _config_error(run_id)
+    with bind_context(principal=ctx.principal):
+        async with pool.connection() as conn:
+            run = await RUNS.get(conn, uid)
+            if run is None or run.project not in ctx.projects:
+                return _config_error(run_id)
+            require_role(ctx, run.project, Role.OPERATOR)
+            if run.state is not RunState.SUCCEEDED:
+                return _config_error(run_id, data={"current_status": run.state.value})
+            if not await _has_succeeded_step(conn, uid, "install"):
+                return _config_error(run_id, data={"reason": "install_first"})
+            return await _enqueue_step(conn, ctx, run, JobKind.BOOT, "boot", "runs.boot")
+
+
+async def _has_succeeded_step(conn: AsyncConnection, run_id: UUID, step: str) -> bool:
+    """Report whether a succeeded `(run_id, step)` ledger row exists (a short read)."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT 1 FROM run_steps WHERE run_id = %s AND step = %s AND state = 'succeeded'",
+            (run_id, step),
+        )
+        return await cur.fetchone() is not None
+
+
+async def _enqueue_step(
+    conn: AsyncConnection,
+    ctx: RequestContext,
+    run: Run,
+    kind: JobKind,
+    step: str,
+    tool: str,
+) -> ToolResponse:
+    """Enqueue an install/boot step job under the per-Run lock; the Run state is untouched."""
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run.id):
+        job = await queue.enqueue(
+            conn, kind, {"run_id": str(run.id)}, _authorizing(ctx, run.project), f"{run.id}:{step}"
+        )
+        await audit.record(
+            conn,
+            ctx,
+            tool=tool,
+            object_kind="runs",
+            object_id=run.id,
+            transition=step,
+            args={"run_id": str(run.id)},
+            project=run.project,
+        )
+    return _run_job_envelope(job, run.id)
+
+
+async def _run_step_locked(
+    conn: AsyncConnection,
+    run_id: UUID,
+    step: str,
+    fn: Callable[[], Awaitable[dict[str, Any]]],
+) -> None:
+    """Run an idempotent step under the per-Run lock so the side effect runs at most once.
+
+    `run_step` alone de-dupes only the **ledger row**: two concurrent dispatches of the same
+    job (the queue's at-least-once delivery, lease lapse → double-run) would both read no row
+    and both invoke ``fn`` (the libvirt redefine / power-cycle) before racing on the insert.
+    Holding ``LockScope.RUN`` for the whole `run_step` serializes them, so the second dispatch
+    blocks, then sees the committed row and skips ``fn`` — the build handler's finalize fence
+    applied to the install/boot side effect. The lock is released at transaction commit.
+    """
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run_id):
+        await run_step(conn, run_id, step, fn)
+
+
+async def install_handler(conn: AsyncConnection, job: Job, installer: Installer) -> str | None:
+    """Stage the built kernel for direct-kernel boot, recording the `install` step (ADR-0030).
+
+    The Run's `state` is never changed (it is already `succeeded` on build): a succeeded
+    install records a `(run_id, "install")` ledger row under the per-Run lock; a failure
+    records no row and re-raises so the worker dead-letters the job with the step's category
+    (ADR-0030 §2). The libvirt redefine is idempotent (`defineXML` overwrites), so a crash
+    between the redefine and the ledger commit is recovered by a re-dispatch with no orphan.
+    """
+    run_id = UUID(job.payload["run_id"])
+    run = await RUNS.get(conn, run_id)
+    if run is None or run.kernel_ref is None:
+        raise CategorizedError(
+            "install target run is gone or unbuilt (no kernel_ref)",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"run_id": str(run_id)},
+        )
+    kernel_ref = run.kernel_ref
+    cmdline = _cmdline_for(run)
+    job_ctx = _ctx_from_job(job, run.project)
+
+    async def _do() -> dict[str, Any]:
+        await asyncio.to_thread(
+            installer.install, run.system_id, run_id, kernel_ref, cmdline=cmdline
+        )
+        await audit.record(
+            conn,
+            job_ctx,
+            tool="runs.install",
+            object_kind="runs",
+            object_id=run_id,
+            transition="install",
+            args={"run_id": str(run_id)},
+            project=run.project,
+        )
+        return {"system_id": str(run.system_id)}
+
+    await _run_step_locked(conn, run_id, "install", _do)
+    return str(run_id)
+
+
+async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str | None:
+    """Boot the installed kernel and confirm run-readiness, recording the `boot` step (ADR-0030).
+
+    Like install, the Run's `state` is untouched: a succeeded boot records a
+    `(run_id, "boot")` ledger row under the per-Run lock; a `boot_timeout`/`readiness_failure`
+    records no row and re-raises for the worker to dead-letter. The per-Run lock makes a
+    concurrent re-dispatch serialize and skip a *recorded* boot. A crash between the
+    power-cycle and the ledger commit re-boots the (freshly provisioned, not-yet-in-use M0)
+    System on the next dispatch — acceptable because the System carries no in-use state until
+    a Run's debug session attaches (a later plane); recorded so the re-boot is a decision.
+    """
+    run_id = UUID(job.payload["run_id"])
+    run = await RUNS.get(conn, run_id)
+    if run is None:
+        raise CategorizedError(
+            "boot target run is gone",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details={"run_id": str(run_id)},
+        )
+    job_ctx = _ctx_from_job(job, run.project)
+
+    async def _do() -> dict[str, Any]:
+        await asyncio.to_thread(booter.boot, run.system_id)
+        await audit.record(
+            conn,
+            job_ctx,
+            tool="runs.boot",
+            object_kind="runs",
+            object_id=run_id,
+            transition="boot",
+            args={"run_id": str(run_id)},
+            project=run.project,
+        )
+        return {"system_id": str(run.system_id)}
+
+    await _run_step_locked(conn, run_id, "boot", _do)
+    return str(run_id)
+
+
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `runs.*` tools on ``app``, bound to ``pool``."""
 
@@ -440,16 +645,45 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     async def runs_build(run_id: str) -> ToolResponse:
         return await build_run(pool, current_context(), run_id)
 
+    @app.tool(name="runs.install")
+    async def runs_install(run_id: str) -> ToolResponse:
+        return await install_run(pool, current_context(), run_id)
 
-def register_handlers(registry: HandlerRegistry, *, builder: Builder | None = None) -> None:
-    """Bind the `build` job handler; build the builder lazily from env.
+    @app.tool(name="runs.boot")
+    async def runs_boot(run_id: str) -> ToolResponse:
+        return await boot_run(pool, current_context(), run_id)
 
-    Building the builder does not spawn ``make`` or open an object-store connection (the
-    real ops run only when ``build()`` is called), so the worker boots without a toolchain.
+
+def register_handlers(
+    registry: HandlerRegistry,
+    *,
+    builder: Builder | None = None,
+    installer: Installer | None = None,
+    booter: Booter | None = None,
+) -> None:
+    """Bind the `build`/`install`/`boot` job handlers; build the providers lazily from env.
+
+    Building the providers does not spawn ``make``, open an object-store connection, or
+    connect to libvirt (the real ops run only when the handler is dispatched), so the worker
+    boots without a toolchain or a host.
     """
     build = builder or LocalLibvirtBuild.from_env()
+    if installer is None or booter is None:
+        install_boot = LocalLibvirtInstall.from_env()
+        install: Installer = installer or install_boot
+        boot: Booter = booter or install_boot
+    else:
+        install, boot = installer, booter
 
     async def _build(conn: AsyncConnection, job: Job) -> str | None:
         return await build_handler(conn, job, build)
 
+    async def _install(conn: AsyncConnection, job: Job) -> str | None:
+        return await install_handler(conn, job, install)
+
+    async def _boot(conn: AsyncConnection, job: Job) -> str | None:
+        return await boot_handler(conn, job, boot)
+
     registry.register(JobKind.BUILD, _build)
+    registry.register(JobKind.INSTALL, _install)
+    registry.register(JobKind.BOOT, _boot)

@@ -848,5 +848,457 @@ def test_build_handler_crash_window_re_dispatch_overwrites_no_orphan(migrated_ur
 
 def test_register_handlers_binds_build() -> None:
     registry = HandlerRegistry()
-    runs_tools.register_handlers(registry, builder=_FakeBuilder())
+    runs_tools.register_handlers(
+        registry, builder=_FakeBuilder(), installer=_FakeInstaller(), booter=_FakeBooter()
+    )
     assert registry.get(JobKind.BUILD) is not None
+
+
+# --- runs.install / runs.boot (install + boot plane, #19) ----------------------------
+
+from kdive.providers.local_libvirt.install import (  # noqa: E402
+    Booter,
+    Installer,
+)
+
+_SUCCEEDED_BUILD: dict[str, Any] = {
+    **_VALID_BUILD,
+    "cmdline": "console=ttyS0 crashkernel=256M",
+}
+
+
+class _FakeInstaller:
+    """Records install() calls; returns or raises a canned category."""
+
+    def __init__(self, *, error: ErrorCategory | None = None) -> None:
+        self.calls: list[tuple[UUID, UUID, str, str]] = []
+        self._error = error
+
+    def install(self, system_id: UUID, run_id: UUID, kernel_ref: str, *, cmdline: str) -> None:
+        self.calls.append((system_id, run_id, kernel_ref, cmdline))
+        if self._error is not None:
+            raise CategorizedError("boom", category=self._error)
+
+
+class _FakeBooter:
+    """Records boot() calls; returns or raises a canned category."""
+
+    def __init__(self, *, error: ErrorCategory | None = None) -> None:
+        self.calls: list[UUID] = []
+        self._error = error
+
+    def boot(self, system_id: UUID) -> None:
+        self.calls.append(system_id)
+        if self._error is not None:
+            raise CategorizedError("boom", category=self._error)
+
+
+async def _seed_succeeded_run(
+    pool: AsyncConnectionPool, *, build_profile: dict[str, Any] | None = None
+) -> str:
+    """A built Run: state succeeded, kernel_ref set (the install plane's precondition)."""
+    run_id = await _seed_run(
+        pool,
+        state=RunState.SUCCEEDED,
+        build_profile=build_profile
+        if build_profile is not None
+        else copy.deepcopy(_SUCCEEDED_BUILD),
+    )
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE runs SET kernel_ref=%s WHERE id=%s", (f"local/runs/{run_id}/kernel", run_id)
+        )
+    return run_id
+
+
+async def _record_install_step(pool: AsyncConnectionPool, run_id: str) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO run_steps (run_id, step, state, result) "
+            "VALUES (%s, 'install', 'succeeded', '{}'::jsonb)",
+            (run_id,),
+        )
+
+
+async def _install(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> Any:
+    return await runs_tools.install_run(pool, ctx, run_id)
+
+
+async def _boot(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> Any:
+    return await runs_tools.boot_run(pool, ctx, run_id)
+
+
+def test_install_succeeded_run_enqueues_no_state_flip(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            resp = await _install(pool, _ctx(), run_id)
+            assert resp.status == "queued"
+            assert resp.data["run_id"] == run_id
+            njobs = await _count(
+                pool,
+                "SELECT count(*) AS n FROM jobs WHERE kind='install' AND dedup_key=%s",
+                (f"{run_id}:install",),
+            )
+            nstate = await _count(
+                pool, "SELECT count(*) AS n FROM runs WHERE id=%s AND state='succeeded'", (run_id,)
+            )
+            naudit = await _count(
+                pool,
+                "SELECT count(*) AS n FROM audit_log WHERE tool='runs.install' AND object_id=%s",
+                (run_id,),
+            )
+        assert njobs == 1
+        assert nstate == 1  # Run stays succeeded (no flip)
+        assert naudit == 1
+
+    asyncio.run(_run())
+
+
+def test_install_is_idempotent_returns_same_job(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            r1 = await _install(pool, _ctx(), run_id)
+            r2 = await _install(pool, _ctx(), run_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs", ())
+        assert r1.object_id == r2.object_id
+        assert njobs == 1
+
+    asyncio.run(_run())
+
+
+def test_install_cmdline_without_crashkernel_is_config_error_no_job(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(
+                pool, build_profile={**_VALID_BUILD, "cmdline": "console=ttyS0"}
+            )
+            resp = await _install(pool, _ctx(), run_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs", ())
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert njobs == 0
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("state", [RunState.CREATED, RunState.RUNNING])
+def test_install_on_unbuilt_run_is_config_error(migrated_url: str, state: RunState) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=state, build_profile=copy.deepcopy(_SUCCEEDED_BUILD)
+            )
+            resp = await _install(pool, _ctx(), run_id)
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == state.value
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("state", [RunState.FAILED, RunState.CANCELED])
+def test_install_on_terminal_run_is_config_error(migrated_url: str, state: RunState) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=state, build_profile=copy.deepcopy(_SUCCEEDED_BUILD)
+            )
+            resp = await _install(pool, _ctx(), run_id)
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == state.value
+
+    asyncio.run(_run())
+
+
+def test_install_cross_project_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            resp = await _install(pool, _ctx(projects=("other",)), run_id)
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_install_malformed_uuid_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await _install(pool, _ctx(), "not-a-uuid")
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_install_without_operator_raises(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            with pytest.raises(AuthorizationError):
+                await _install(pool, _ctx(Role.VIEWER), run_id)
+
+    asyncio.run(_run())
+
+
+def test_boot_without_install_step_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            resp = await _boot(pool, _ctx(), run_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs WHERE kind='boot'", ())
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert njobs == 0  # no boot job without a succeeded install step
+
+    asyncio.run(_run())
+
+
+def test_boot_after_install_step_enqueues(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_install_step(pool, run_id)
+            resp = await _boot(pool, _ctx(), run_id)
+            assert resp.status == "queued"
+            again = await _boot(pool, _ctx(), run_id)
+            njobs = await _count(
+                pool,
+                "SELECT count(*) AS n FROM jobs WHERE kind='boot' AND dedup_key=%s",
+                (f"{run_id}:boot",),
+            )
+        assert resp.object_id == again.object_id  # idempotent
+        assert njobs == 1
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("state", [RunState.CREATED, RunState.FAILED])
+def test_boot_on_non_succeeded_run_is_config_error(migrated_url: str, state: RunState) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=state, build_profile=copy.deepcopy(_SUCCEEDED_BUILD)
+            )
+            resp = await _boot(pool, _ctx(), run_id)
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_boot_without_operator_raises(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_install_step(pool, run_id)
+            with pytest.raises(AuthorizationError):
+                await _boot(pool, _ctx(Role.VIEWER), run_id)
+
+    asyncio.run(_run())
+
+
+# --- install_handler / boot_handler (the worker) -------------------------------------
+
+
+async def _enqueue_job(pool: AsyncConnectionPool, kind: JobKind, run_id: str, step: str) -> Job:
+    async with pool.connection() as conn:
+        return await queue.enqueue(
+            conn,
+            kind,
+            {"run_id": run_id},
+            {"principal": "user-1", "agent_session": "s", "project": "proj"},
+            f"{run_id}:{step}",
+        )
+
+
+def test_install_handler_records_step_run_stays_succeeded(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _FakeInstaller()
+            async with pool.connection() as conn:
+                result = await runs_tools.install_handler(conn, job, installer)
+            assert result == run_id
+            assert len(installer.calls) == 1
+            nsteps = await _count(
+                pool,
+                "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='install'",
+                (run_id,),
+            )
+            nstate = await _count(
+                pool, "SELECT count(*) AS n FROM runs WHERE id=%s AND state='succeeded'", (run_id,)
+            )
+        assert nsteps == 1
+        assert nstate == 1  # Run unchanged
+
+    asyncio.run(_run())
+
+
+def test_install_handler_replay_does_not_restage(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _FakeInstaller()
+            async with pool.connection() as conn:
+                await runs_tools.install_handler(conn, job, installer)
+            async with pool.connection() as conn:
+                await runs_tools.install_handler(conn, job, installer)
+        assert len(installer.calls) == 1  # built once
+
+    asyncio.run(_run())
+
+
+class _SlowInstaller:
+    """An installer that sleeps inside install() to widen the concurrent-dispatch window."""
+
+    def __init__(self) -> None:
+        self.calls: list[UUID] = []
+
+    def install(self, system_id: UUID, run_id: UUID, kernel_ref: str, *, cmdline: str) -> None:
+        import time
+
+        self.calls.append(run_id)
+        time.sleep(0.2)
+
+
+def test_install_handler_concurrent_dispatch_invokes_once(migrated_url: str) -> None:
+    # Two concurrent dispatches of the SAME install job (the queue's at-least-once delivery)
+    # on distinct connections: the per-Run lock serializes them, so the installer runs once
+    # and exactly one ledger row is written.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _SlowInstaller()
+
+            async def _dispatch() -> None:
+                async with pool.connection() as conn:
+                    await runs_tools.install_handler(conn, job, installer)
+
+            await asyncio.gather(_dispatch(), _dispatch())
+            nsteps = await _count(
+                pool,
+                "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='install'",
+                (run_id,),
+            )
+        assert len(installer.calls) == 1  # the per-Run lock prevents a double redefine
+        assert nsteps == 1
+
+    asyncio.run(_run())
+
+
+def test_install_handler_failure_records_no_step(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _FakeInstaller(error=ErrorCategory.INSTALL_FAILURE)
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError) as caught:
+                    await runs_tools.install_handler(conn, job, installer)
+            assert caught.value.category is ErrorCategory.INSTALL_FAILURE
+            nsteps = await _count(
+                pool, "SELECT count(*) AS n FROM run_steps WHERE run_id=%s", (run_id,)
+            )
+            nstate = await _count(
+                pool, "SELECT count(*) AS n FROM runs WHERE id=%s AND state='succeeded'", (run_id,)
+            )
+        assert nsteps == 0  # no ledger row on failure
+        assert nstate == 1  # Run still succeeded
+
+    asyncio.run(_run())
+
+
+def test_install_handler_missing_kernel_ref_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=RunState.SUCCEEDED, build_profile=copy.deepcopy(_SUCCEEDED_BUILD)
+            )  # no kernel_ref set
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _FakeInstaller()
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError):
+                    await runs_tools.install_handler(conn, job, installer)
+            assert installer.calls == []  # never reached the installer
+            nsteps = await _count(
+                pool, "SELECT count(*) AS n FROM run_steps WHERE run_id=%s", (run_id,)
+            )
+        assert nsteps == 0
+
+    asyncio.run(_run())
+
+
+def test_boot_handler_records_step_run_stays_succeeded(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_install_step(pool, run_id)
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter()
+            async with pool.connection() as conn:
+                result = await runs_tools.boot_handler(conn, job, booter)
+            assert result == run_id
+            assert len(booter.calls) == 1
+            nsteps = await _count(
+                pool,
+                "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='boot'",
+                (run_id,),
+            )
+        assert nsteps == 1
+
+    asyncio.run(_run())
+
+
+def test_boot_handler_replay_does_not_reboot(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_install_step(pool, run_id)
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter()
+            async with pool.connection() as conn:
+                await runs_tools.boot_handler(conn, job, booter)
+            async with pool.connection() as conn:
+                await runs_tools.boot_handler(conn, job, booter)
+        assert len(booter.calls) == 1
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("category", [ErrorCategory.BOOT_TIMEOUT, ErrorCategory.READINESS_FAILURE])
+def test_boot_handler_failure_records_no_step(migrated_url: str, category: ErrorCategory) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_install_step(pool, run_id)
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter(error=category)
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError) as caught:
+                    await runs_tools.boot_handler(conn, job, booter)
+            assert caught.value.category is category
+            nsteps = await _count(
+                pool,
+                "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='boot'",
+                (run_id,),
+            )
+        assert nsteps == 0  # no ledger row on failure
+
+    asyncio.run(_run())
+
+
+def test_register_handlers_binds_install_and_boot() -> None:
+    registry = HandlerRegistry()
+    runs_tools.register_handlers(
+        registry, builder=_FakeBuilder(), installer=_FakeInstaller(), booter=_FakeBooter()
+    )
+    assert registry.get(JobKind.INSTALL) is not None
+    assert registry.get(JobKind.BOOT) is not None
+
+
+def _assert_ports() -> None:
+    # Structural conformance: the fakes satisfy the realized Protocols (ty enforces; this
+    # keeps the import used and documents the contract).
+    _i: Installer = _FakeInstaller()
+    _b: Booter = _FakeBooter()
+    assert _i is not None and _b is not None
