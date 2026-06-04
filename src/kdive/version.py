@@ -54,7 +54,9 @@ def _git(*args: str) -> str | None:
 def _from_baked() -> VersionInfo | None:
     """Read `(COMMIT, RELEASE)` from the baked `_buildinfo` module, if present and valid."""
     try:
-        from kdive import _buildinfo  # ty: ignore[unresolved-import]  # only present in built artifacts
+        from kdive import (
+            _buildinfo,  # ty: ignore[unresolved-import]  # only present in built artifacts
+        )
     except ImportError:
         return None
     commit = getattr(_buildinfo, "COMMIT", None)
