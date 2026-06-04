@@ -121,7 +121,7 @@ def _builder(store: _FakeStore, seams: _Seams, tmp_path: Path) -> LocalLibvirtBu
     return LocalLibvirtBuild(
         tenant=_TENANT,
         workspace_root=tmp_path,
-        store=store,  # type: ignore[arg-type]
+        store_factory=lambda: store,
         checkout=seams.checkout,
         read_config=seams.read_config,
         run_make=seams.run_make,

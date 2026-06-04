@@ -51,12 +51,14 @@ def test_build_app_produces_a_streamable_http_asgi_app() -> None:
     assert callable(asgi)
 
 
-def test_build_handler_registry_binds_provisioning_handlers() -> None:
-    # The provisioning plane (#16) registers the provision/teardown handlers via the seam,
-    # building its provider lazily from env (no libvirt connection at registration).
+def test_build_handler_registry_binds_provisioning_and_build_handlers() -> None:
+    # The provisioning plane (#16) registers provision/teardown and the build plane (#18)
+    # registers build, each building its provider/builder lazily from env (no libvirt/S3/
+    # toolchain connection at registration).
     registry = build_handler_registry()
     assert isinstance(registry, HandlerRegistry)
     assert registry.get(JobKind.PROVISION) is not None
     assert registry.get(JobKind.TEARDOWN) is not None
+    assert registry.get(JobKind.BUILD) is not None
     # A kind with no handler yet (a later plane) still resolves to None.
-    assert registry.get(JobKind.BUILD) is None
+    assert registry.get(JobKind.INSTALL) is None

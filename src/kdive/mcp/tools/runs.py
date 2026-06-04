@@ -11,6 +11,8 @@ envelope carrying the Run's own `failure_category`. RBAC: `create` requires `ope
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -18,6 +20,7 @@ from uuid import UUID, uuid4
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.locks import LockScope, advisory_xact_lock
@@ -26,17 +29,22 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Investigation, Job, JobKind, Run
 from kdive.domain.state import (
     AllocationState,
+    IllegalTransition,
     InvestigationState,
     RunState,
     SystemState,
 )
 from kdive.jobs import queue
+from kdive.jobs.models import HandlerRegistry
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.profiles.build import BuildProfile
+from kdive.providers.local_libvirt.build import Builder, BuildOutput, LocalLibvirtBuild
 from kdive.security import audit
 from kdive.security.rbac import Role, require_role
+
+_log = logging.getLogger(__name__)
 
 _RUN_HOSTABLE = frozenset({SystemState.READY})
 _SYSTEM_GONE = frozenset({SystemState.TORN_DOWN, SystemState.FAILED, SystemState.CRASHED})
@@ -297,6 +305,113 @@ async def build_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str)
             return await _build_locked(conn, ctx, run)
 
 
+async def _existing_build_result(conn: AsyncConnection, run_id: UUID) -> dict[str, Any] | None:
+    """Return the recorded `(run_id, "build")` ledger result, or ``None`` (short read)."""
+    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT result FROM run_steps WHERE run_id = %s AND step = 'build'", (run_id,)
+        )
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    result = row["result"]
+    return result if isinstance(result, dict) else None
+
+
+async def _finalize_build(
+    conn: AsyncConnection, job: Job, run: Run, result: dict[str, Any]
+) -> None:
+    """Record the build ledger row and drive `running → succeeded` under the per-Run lock."""
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run.id):
+        await conn.execute(
+            "INSERT INTO run_steps (run_id, step, state, result) "
+            "VALUES (%s, 'build', 'succeeded', %s) ON CONFLICT (run_id, step) DO NOTHING",
+            (run.id, Jsonb(result)),
+        )
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT state FROM runs WHERE id = %s FOR UPDATE", (run.id,))
+            row = await cur.fetchone()
+        if row is None or RunState(row["state"]) is not RunState.RUNNING:
+            return  # already finalized (succeeded) or superseded (canceled) — no-op
+        await conn.execute(
+            "UPDATE runs SET kernel_ref = %s, debuginfo_ref = %s, state = 'succeeded' "
+            "WHERE id = %s AND state = 'running'",
+            (result["kernel_ref"], result["debuginfo_ref"], run.id),
+        )
+        await audit.record(
+            conn,
+            _ctx_from_job(job, run.project),
+            tool="runs.build",
+            object_kind="runs",
+            object_id=run.id,
+            transition="running->succeeded",
+            args={"run_id": str(run.id)},
+            project=run.project,
+        )
+
+
+async def _fail_build(conn: AsyncConnection, job: Job, run: Run, category: ErrorCategory) -> None:
+    """Drive `running → failed` with ``category``; tolerate a concurrent cancel."""
+    try:
+        async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run.id):
+            await conn.execute(
+                "UPDATE runs SET state = 'failed', failure_category = %s "
+                "WHERE id = %s AND state = 'running'",
+                (category.value, run.id),
+            )
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM runs WHERE id = %s", (run.id,))
+                row = await cur.fetchone()
+            if row is None or RunState(row["state"]) is not RunState.FAILED:
+                raise IllegalTransition(f"run {run.id} was not running at build failure")
+            await audit.record(
+                conn,
+                _ctx_from_job(job, run.project),
+                tool="runs.build",
+                object_kind="runs",
+                object_id=run.id,
+                transition="running->failed",
+                args={"run_id": str(run.id)},
+                project=run.project,
+            )
+    except IllegalTransition:
+        _log.info("build of run %s failed but it is already terminal", run.id)
+
+
+async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> str | None:
+    """Build the Run's kernel and drive it `running → succeeded` (or `-> failed`).
+
+    The build (`make` + the two artifact puts) runs with **no DB transaction held** (the
+    worker contract). The ledger record and the Run finalize commit together in one short
+    transaction under the per-Run lock; a re-dispatch with a recorded ledger row skips the
+    rebuild (ADR-0027). On a build failure the Run is driven `failed` with the build's
+    category and the error re-raised so the worker dead-letters the job.
+    """
+    run_id = UUID(job.payload["run_id"])
+    run = await RUNS.get(conn, run_id)
+    if run is None:
+        raise CategorizedError(
+            "build target run is gone",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details={"run_id": str(run_id)},
+        )
+    profile = BuildProfile.parse(run.build_profile)
+    result = await _existing_build_result(conn, run_id)
+    if result is None:
+        try:
+            output: BuildOutput = await asyncio.to_thread(builder.build, run_id, profile)
+        except CategorizedError as exc:
+            await _fail_build(conn, job, run, exc.category)
+            raise
+        result = {
+            "kernel_ref": output.kernel_ref,
+            "debuginfo_ref": output.debuginfo_ref,
+            "build_id": output.build_id,
+        }
+    await _finalize_build(conn, job, run, result)
+    return str(run_id)
+
+
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `runs.*` tools on ``app``, bound to ``pool``."""
 
@@ -319,3 +434,17 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     @app.tool(name="runs.build")
     async def runs_build(run_id: str) -> ToolResponse:
         return await build_run(pool, current_context(), run_id)
+
+
+def register_handlers(registry: HandlerRegistry, *, builder: Builder | None = None) -> None:
+    """Bind the `build` job handler; build the builder lazily from env.
+
+    Building the builder does not spawn ``make`` or open an object-store connection (the
+    real ops run only when ``build()`` is called), so the worker boots without a toolchain.
+    """
+    build = builder or LocalLibvirtBuild.from_env()
+
+    async def _build(conn: AsyncConnection, job: Job) -> str | None:
+        return await build_handler(conn, job, build)
+
+    registry.register(JobKind.BUILD, _build)

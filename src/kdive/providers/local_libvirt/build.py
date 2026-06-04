@@ -133,7 +133,7 @@ class LocalLibvirtBuild:
         *,
         tenant: str,
         workspace_root: Path,
-        store: _StorePort,
+        store_factory: Callable[[], _StorePort],
         checkout: _Checkout,
         read_config: _ReadConfig,
         run_make: _RunMake,
@@ -143,7 +143,8 @@ class LocalLibvirtBuild:
     ) -> None:
         self._tenant = tenant
         self._workspace_root = workspace_root
-        self._store = store
+        self._store_factory = store_factory
+        self._store: _StorePort | None = None
         self._checkout = checkout
         self._read_config = read_config
         self._run_make = run_make
@@ -156,17 +157,17 @@ class LocalLibvirtBuild:
         """Build from the ``KDIVE_*`` environment; does not spawn ``make`` or connect S3.
 
         Reads the workspace root (``KDIVE_BUILD_WORKSPACE``) and the warm source tree
-        (``KDIVE_KERNEL_SRC``); the object store is built from the ``KDIVE_S3_*`` env via
-        :func:`object_store_from_env`. The seams default to the real subprocess/ELF
-        implementations, which run only when ``build()`` is called.
+        (``KDIVE_KERNEL_SRC``). The object store is built lazily from the ``KDIVE_S3_*``
+        env on the first ``build()``, so the worker registers its handler without S3 env
+        present. The seams default to the real subprocess/ELF implementations, which run
+        only when ``build()`` is called.
         """
         workspace_root = Path(os.environ.get(_WORKSPACE_ENV, _DEFAULT_WORKSPACE))
         kernel_src = os.environ.get(_KERNEL_SRC_ENV, "")
-        store = object_store_from_env()
         return cls(
             tenant="local",
             workspace_root=workspace_root,
-            store=store,
+            store_factory=object_store_from_env,
             checkout=_make_checkout(kernel_src),
             read_config=_real_read_config,
             run_make=_real_run_make,
@@ -205,6 +206,8 @@ class LocalLibvirtBuild:
         return BuildOutput(kernel_ref=kernel.key, debuginfo_ref=vmlinux.key, build_id=build_id)
 
     def _put(self, run_id: UUID, name: str, data: bytes) -> StoredArtifact:
+        if self._store is None:
+            self._store = self._store_factory()
         return self._store.put_artifact(
             self._tenant,
             "runs",
