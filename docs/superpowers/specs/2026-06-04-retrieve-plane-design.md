@@ -36,7 +36,7 @@ admission. There is no separate `capture_vmcore` *tool* — `capture_vmcore` is 
 | Tool | Args | Returns | Sync/Job |
 |------|------|---------|----------|
 | `vmcore.fetch` | `system_id` | `{job_id}` handle (carries `system_id`) | Job (`JobKind.CAPTURE_VMCORE`, dedup `{system_id}:capture_vmcore`) |
-| `vmcore.list` | `system_id` | list of the System's vmcore artifact envelopes (redacted-eligible) | Sync read |
+| `vmcore.list` | `system_id` | list of the System's **redacted-only** vmcore artifact envelopes | Sync read |
 | `artifacts.list` | `system_id` | list of the System's **redacted-only** artifact envelopes | Sync read |
 | `artifacts.get` | `artifact_id` | one **redacted** artifact envelope (ref) | Sync read |
 | `postmortem.crash` | `run_id`, `commands` | crash batch output (redacted) | Sync, ungated |
@@ -80,7 +80,8 @@ class Retriever(Protocol):
 
 class CrashOutput(NamedTuple): results: dict[str, object]; transcript: str; truncated: bool
 class CrashPostmortem(Protocol):
-    def run(self, *, vmcore_ref: str, debuginfo_ref: str, commands: list[str]) -> CrashOutput: ...
+    def run(self, *, vmcore_ref: str, debuginfo_ref: str,
+            expected_build_id: str, commands: list[str]) -> CrashOutput: ...
 ```
 
 `LocalLibvirtRetrieve` realizes both, seam-injected exactly like `LocalLibvirtBuild`:
@@ -134,14 +135,19 @@ are written before either `artifacts` row (ADR-0013); the handler inserts the ro
   (`{tenant}/systems/{system_id}/vmcore`), so a re-dispatch re-puts the same S3 key
   (idempotent overwrite) and the existing-row check prevents a duplicate row — **no
   `artifacts` unique constraint and no migration are needed**.
-- `list_vmcores(pool, ctx, system_id)` — read the System's `vmcore`/`vmcore-redacted`
-  artifacts; envelope each, isolating bad rows.
+- `list_vmcores(pool, ctx, system_id)` — read the System's **`redacted`** vmcore artifacts
+  only (`sensitivity='redacted'`, same filter as `artifacts.list`); envelope each, isolating
+  bad rows. The raw `sensitive` core's key is never surfaced, so listing leaks no fetchable
+  handle to it. (`vmcore.list` is `artifacts.list` narrowed to the `vmcore-redacted` rows.)
 - `postmortem_crash(pool, ctx, run_id, commands)` — resolve Run + its `debuginfo_ref` and
-  System; load the System's raw `vmcore` ref; validate `commands` against the ported
-  allowlist/denylist (synchronous `configuration_error` on a bad command); run the
-  `CrashPostmortem` port; **redact** the output; return it. Ungated. A Run with no
-  `debuginfo_ref` (not yet built) or a System with no captured core is a
-  `configuration_error`.
+  System; load the System's raw `vmcore` ref; read the build plane's recorded build-id from
+  the Run's `build` `run_steps` result (`result["build_id"]`, written by ADR-0029 §5) as the
+  expected provenance; validate `commands` against the ported allowlist/denylist
+  (synchronous `configuration_error` on a bad command); run the `CrashPostmortem` port,
+  which verifies the captured core's build-id matches `expected_build_id` before symbolizing
+  (a mismatch is a `configuration_error`); **redact** the output; return it. Ungated. A Run
+  with no `debuginfo_ref` (not yet built), no recorded `build` step result, or a System with
+  no captured core is a `configuration_error`.
 - `postmortem_triage(pool, ctx, run_id)` — run a fixed crash command batch, compose a
   report, redact, return.
 - `register(app, pool)` / `register_handlers(registry, *, retriever=None)`.
