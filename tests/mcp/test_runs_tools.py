@@ -255,6 +255,27 @@ def test_create_first_run_flips_investigation_active(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_create_accepts_empty_build_profile(migrated_url: str) -> None:
+    # ADR-0026 §6: an empty {} build_profile is allowed in M0 (the build plane owns
+    # content validation). Pin it so a future "reject empty profile" change is caught.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, state=InvestigationState.OPEN)
+            sys_id = await _seed_system(pool)
+            # Call create_run directly: the _create helper's `profile or _profile()` would
+            # coalesce a falsy {} away, so it cannot exercise the empty-profile path.
+            resp = await runs_tools.create_run(
+                pool, _ctx(), investigation_id=inv_id, system_id=sys_id, build_profile={}
+            )
+            assert resp.status == "created"
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT build_profile FROM runs WHERE id = %s", (resp.object_id,))
+                row = await cur.fetchone()
+        assert row is not None and row["build_profile"] == {}
+
+    asyncio.run(_run())
+
+
 def test_create_second_run_no_second_flip(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
