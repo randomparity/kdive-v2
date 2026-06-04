@@ -25,6 +25,7 @@ model-level cross-field check would fire on every field assignment under
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -75,6 +76,19 @@ class Sensitivity(StrEnum):
     REDACTED = "redacted"
 
 
+class LedgerEventType(StrEnum):
+    """The two signed metering events on the M1 ledger (ADR-0007 §3).
+
+    ``reserved`` is the at-grant debit (`+estimate`); ``reconciled`` is the
+    at-release/expiry adjustment (`actual − Σ reserved`, which may be negative — a
+    credit for an unused reservation window). The signed ``event_type`` column leaves
+    room for later per-operation surcharges without a migration.
+    """
+
+    RESERVED = "reserved"
+    RECONCILED = "reconciled"
+
+
 class _DomainBase(BaseModel):
     """Shared Pydantic config: reject unknown fields, validate on assignment."""
 
@@ -117,12 +131,24 @@ class Resource(DomainModel):
 
 
 class Allocation(DomainModel, _Attribution):
-    """An always-yes, capacity-checked booking of a Resource."""
+    """A capacity- and budget-checked booking of a Resource.
+
+    M1 adds the selector size persisted at grant (``requested_vcpus`` /
+    ``requested_memory_gb``, the rate inputs reconciliation recomputes from) and the
+    billing interval (``active_started_at`` stamped on ``granted → active``,
+    ``active_ended_at`` on release/expiry); ``active_hours`` is their difference, never
+    derived from ``updated_at`` (ADR-0007 §3). All four are null on an M0/just-granted
+    allocation.
+    """
 
     resource_id: UUID
     state: AllocationState
     lease_expiry: datetime | None = None
     capability_scope: dict[str, Any] = Field(default_factory=dict)
+    requested_vcpus: int | None = None
+    requested_memory_gb: int | None = None
+    active_started_at: datetime | None = None
+    active_ended_at: datetime | None = None
 
 
 class System(DomainModel, _Attribution):
@@ -192,3 +218,68 @@ class Artifact(DomainModel):
     etag: str
     sensitivity: Sensitivity
     retention_class: str
+
+
+class CostClassCoefficient(_DomainBase):
+    """One row of the per-``cost_class`` cost multiplier table (ADR-0007 §1).
+
+    Keyed by ``cost_class`` (PK), seeded with ``('local', 1.0)`` by migration 0002.
+    Adding a future provider adds a row, not a cost-model branch. ``coeff`` is
+    ``numeric`` in Postgres, carried as :class:`~decimal.Decimal` so cost arithmetic
+    stays exact.
+    """
+
+    cost_class: str
+    coeff: Decimal
+    updated_at: datetime
+
+
+class Budget(_DomainBase):
+    """A project's spend budget with the O(1) running spent total (ADR-0007 §3).
+
+    Keyed by ``project`` (PK). ``budget_remaining = limit_kcu − spent_kcu``; ``spent_kcu``
+    is the running total every ledger write adjusts under the project lock, so admission
+    reads it without summing the append-only ledger. No budget row → the project is
+    denied (read as ``limit_kcu = 0``); a deployment seeds it explicitly.
+    """
+
+    project: str
+    limit_kcu: Decimal
+    spent_kcu: Decimal = Decimal(0)
+    updated_at: datetime
+
+
+class Quota(_DomainBase):
+    """A project's two concurrency caps (ADR-0007 §4).
+
+    Keyed by ``project`` (PK). ``max_concurrent_allocations`` is checked at
+    ``allocations.request``; ``max_concurrent_systems`` at ``systems.provision``. No
+    quota row → the project is denied (``quota_exceeded``); a deployment seeds it
+    explicitly.
+    """
+
+    project: str
+    max_concurrent_allocations: int
+    max_concurrent_systems: int
+    updated_at: datetime
+
+
+class LedgerEntry(_DomainBase):
+    """One append-only, signed metering row (ADR-0007 §3).
+
+    The ledger is the audit trail and the ``by_cost_class`` source for
+    ``accounting.usage``. ``kcu_delta`` is signed (a ``reconciled`` credit is negative);
+    rows are immutable and ordered by ``ts`` (no ``updated_at``). ``resource_id`` is
+    nullable for a credit that reconciles an allocation released before any System was
+    provisioned.
+    """
+
+    id: UUID
+    ts: datetime
+    project: str
+    allocation_id: UUID
+    resource_id: UUID | None = None
+    cost_class: str
+    event_type: LedgerEventType
+    kcu_delta: Decimal
+    note: str | None = None
