@@ -36,7 +36,7 @@
 | `tests/mcp/test_resources_tools.py` (create) | `resources.list` / `.describe` handlers |
 | `tests/mcp/test_allocations_tools.py` (create) | `allocations.*` handlers |
 
-Guardrails after every task: `uv run ruff check && uv run ruff format && uv run ty check src && uv run python -m pytest -q`.
+Guardrails after every task: `uv run ruff check && uv run ruff format && uv run ty check && uv run python -m pytest -q`. **`ty check`** (no path) type-checks `src` **and** `tests`, matching this repo's pre-commit hook — `ty check src` under-checks and would let a test-file type error slip through to a red commit hook.
 
 **Commit boundaries are self-contained and green.** Each task below is one commit, bisectable, with its tests passing. Tasks 1–3 are independent primitives; Task 4 (admission) needs Task 2; Task 5 (discovery) needs Task 4's cap-key constant; Task 6 (resources tools) needs Tasks 3 + 5; Task 7 (allocations tools) needs Tasks 1 + 3 + 4 + 5.
 
@@ -94,7 +94,7 @@ Expected: PASS.
 - [ ] **Step 5: Guardrails + commit**
 
 ```bash
-uv run ruff check && uv run ruff format && uv run ty check src && uv run python -m pytest tests/domain/test_state.py -q
+uv run ruff check && uv run ruff format && uv run ty check && uv run python -m pytest tests/domain/test_state.py -q
 git add src/kdive/domain/state.py tests/domain/test_state.py
 git commit -m "feat(domain): allow granted->releasing allocation transition (#14)"
 ```
@@ -150,7 +150,7 @@ Expected: PASS.
 - [ ] **Step 5: Guardrails + commit**
 
 ```bash
-uv run ruff check && uv run ruff format && uv run ty check src && uv run python -m pytest tests/db/test_locks.py -q
+uv run ruff check && uv run ruff format && uv run ty check && uv run python -m pytest tests/db/test_locks.py -q
 git add src/kdive/db/locks.py tests/db/test_locks.py
 git commit -m "feat(db): add RESOURCE advisory-lock scope for admission (#14)"
 ```
@@ -261,7 +261,7 @@ Expected: PASS.
 - [ ] **Step 5: Guardrails + commit**
 
 ```bash
-uv run ruff check && uv run ruff format && uv run ty check src && uv run python -m pytest tests/mcp/test_responses.py -q
+uv run ruff check && uv run ruff format && uv run ty check && uv run python -m pytest tests/mcp/test_responses.py -q
 git add src/kdive/mcp/responses.py tests/mcp/test_responses.py
 git commit -m "feat(mcp): ToolResponse.success/.failure envelope factories (#14)"
 ```
@@ -516,6 +516,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from psycopg import AsyncConnection
@@ -525,8 +526,11 @@ from kdive.db.repositories import ALLOCATIONS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Resource
 from kdive.domain.state import AllocationState
-from kdive.mcp.auth import RequestContext
 from kdive.security import audit
+
+if TYPE_CHECKING:
+    # Annotation-only (PEP 563): keep this domain module free of a runtime mcp import.
+    from kdive.mcp.auth import RequestContext
 
 # The resource-capabilities key carrying the per-host concurrent-Allocation cap. Owned
 # here (the consumer); the discovery provider imports it to advertise the cap.
@@ -640,7 +644,7 @@ Expected: PASS (all cases; DB-backed tests skip only if Docker is unavailable lo
 - [ ] **Step 6: Guardrails + commit**
 
 ```bash
-uv run ruff check && uv run ruff format && uv run ty check src && uv run python -m pytest tests/domain -q
+uv run ruff check && uv run ruff format && uv run ty check && uv run python -m pytest tests/domain -q
 git add src/kdive/domain/allocation_admission.py tests/domain/conftest.py tests/domain/test_allocation_admission.py
 git commit -m "feat(domain): per-host capacity admission with resource lock (#14)"
 ```
@@ -1060,51 +1064,43 @@ async def register_local_libvirt_resource(
             (ResourceKind.LOCAL_LIBVIRT.value, discovery.host_uri),
         )
         existing = await cur.fetchone()
-        if existing is None:
-            now = datetime.now(UTC)  # placeholder; the DB sets created_at/updated_at
-            return await Resource.__class__.__call__  # replaced below
-        await cur.execute(
-            "UPDATE resources SET capabilities = %s, status = %s, pool = %s, "
-            "cost_class = %s WHERE id = %s RETURNING *",
-            (
-                Jsonb(capabilities),
-                ResourceStatus.AVAILABLE.value,
-                pool,
-                cost_class,
-                existing["id"],
-            ),
-        )
-        updated = await cur.fetchone()
-    if updated is None:  # Invariant: the row was held FOR UPDATE.
-        raise RuntimeError("UPDATE of resources returned no row")
-    return Resource.model_validate(updated)
+        if existing is not None:
+            await cur.execute(
+                "UPDATE resources SET capabilities = %s, status = %s, pool = %s, "
+                "cost_class = %s WHERE id = %s RETURNING *",
+                (
+                    Jsonb(capabilities),
+                    ResourceStatus.AVAILABLE.value,
+                    pool,
+                    cost_class,
+                    existing["id"],
+                ),
+            )
+            updated = await cur.fetchone()
+            if updated is None:  # Invariant: the row was held FOR UPDATE.
+                raise RuntimeError("UPDATE of resources returned no row")
+            return Resource.model_validate(updated)
+    # No existing row: insert via the repository (it wraps capabilities in Jsonb and
+    # returns the row with DB-generated timestamps). Runs after the SELECT's transaction
+    # commits — acceptable under the M0 single-registrar assumption documented above.
+    now = datetime.now(UTC)  # placeholder; the DB sets created_at/updated_at
+    return await RESOURCES.insert(
+        conn,
+        Resource(
+            id=uuid4(),
+            created_at=now,
+            updated_at=now,
+            kind=ResourceKind.LOCAL_LIBVIRT,
+            capabilities=capabilities,
+            pool=pool,
+            cost_class=cost_class,
+            status=ResourceStatus.AVAILABLE,
+            host_uri=discovery.host_uri,
+        ),
+    )
 ```
 
-> **NOTE — finish the insert branch:** the `if existing is None:` branch above is a
-> placeholder line that must be replaced with the real insert. Replace the whole
-> `if existing is None:` block with:
->
-> ```python
->         if existing is None:
->             now = datetime.now(UTC)  # placeholder; the DB sets created_at/updated_at
->             return await RESOURCES.insert(
->                 conn,
->                 Resource(
->                     id=uuid4(),
->                     created_at=now,
->                     updated_at=now,
->                     kind=ResourceKind.LOCAL_LIBVIRT,
->                     capabilities=capabilities,
->                     pool=pool,
->                     cost_class=cost_class,
->                     status=ResourceStatus.AVAILABLE,
->                     host_uri=discovery.host_uri,
->                 ),
->             )
-> ```
->
-> and add `from kdive.db.repositories import RESOURCES` to the imports. (`RESOURCES.insert`
-> wraps `capabilities` in `Jsonb` itself; the `UPDATE` branch wraps it explicitly.)
+The `RESOURCES` import is in the import block above (`from kdive.db.repositories import RESOURCES`). `RESOURCES.insert` wraps `capabilities` in `Jsonb` itself; the in-place `UPDATE` branch wraps it explicitly.
 
 - [ ] **Step 5: Run to verify it passes**
 
@@ -1114,8 +1110,8 @@ Expected: PASS.
 - [ ] **Step 6: Guardrails + commit**
 
 ```bash
-uv run ruff check && uv run ruff format && uv run ty check src && uv run python -m pytest tests/providers -q
-git add src/kdive/providers/local_libvirt/discovery.py tests/providers/local_libvirt/
+uv run ruff check && uv run ruff format && uv run ty check && uv run python -m pytest tests/providers -q
+git add pyproject.toml uv.lock src/kdive/providers/local_libvirt/discovery.py tests/providers/local_libvirt/
 git commit -m "feat(providers): local-libvirt discovery + resource registration (#14)"
 ```
 
@@ -1146,9 +1142,11 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import resources as resources_tools
-from kdive.providers.local_libvirt.discovery import register_local_libvirt_resource
+from kdive.providers.local_libvirt.discovery import (
+    LocalLibvirtDiscovery,
+    register_local_libvirt_resource,
+)
 from tests.providers.local_libvirt.conftest import FakeLibvirtConn
-from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 
 CTX = RequestContext(principal="user-1", agent_session="s", projects=("proj",))
 
@@ -1397,7 +1395,7 @@ Expected: PASS (`test_app.py` confirms the app still builds with the new registr
 - [ ] **Step 6: Guardrails + commit**
 
 ```bash
-uv run ruff check && uv run ruff format && uv run ty check src && uv run python -m pytest tests/mcp -q
+uv run ruff check && uv run ruff format && uv run ty check && uv run python -m pytest tests/mcp -q
 git add src/kdive/mcp/tools/resources.py src/kdive/mcp/app.py tests/mcp/test_resources_tools.py
 git commit -m "feat(mcp): resources.list/.describe tools (#14)"
 ```
@@ -1424,7 +1422,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -1479,7 +1477,7 @@ async def _seed_alloc(pool: AsyncConnectionPool, resource_id: str, state: Alloca
                 updated_at=_DT,
                 principal="user-1",
                 project="proj",
-                resource_id=__import__("uuid").UUID(resource_id),
+                resource_id=UUID(resource_id),
                 state=state,
             ),
         )
@@ -1938,7 +1936,7 @@ Expected: PASS.
 - [ ] **Step 6: Full guardrails + commit**
 
 ```bash
-uv run ruff check && uv run ruff format && uv run ty check src && uv run python -m pytest -q
+uv run ruff check && uv run ruff format && uv run ty check && uv run python -m pytest -q
 git add src/kdive/mcp/tools/allocations.py src/kdive/mcp/app.py tests/mcp/test_allocations_tools.py
 git commit -m "feat(mcp): allocations.request/.get/.release/.list tools (#14)"
 ```
