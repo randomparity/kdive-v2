@@ -409,6 +409,9 @@ class _FakeProvisioner:
     def provision(self, system_id: UUID, profile: object) -> str:
         return domain_name_for(system_id)
 
+    def reprovision(self, system_id: UUID, profile: object) -> str:
+        return domain_name_for(system_id)
+
     def teardown(self, domain_name: str) -> None:
         return None
 
