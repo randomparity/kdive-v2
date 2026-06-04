@@ -36,13 +36,21 @@ The role-to-operation map is made explicit and tested:
 | Role | May do |
 |------|--------|
 | `viewer` | read-only: `resources.*`, `*.get`/`*.list`, `accounting.usage`/`accounting.estimate` |
-| `operator` | lifecycle: `allocations.request`/`.renew`/`.release`, `systems.provision`/`.reprovision`/`.teardown`, `runs.*`, `debug.*`, `introspect.*` |
-| `admin` | everything operator does, **plus** project administration — `accounting.set_budget`, `accounting.set_quota` — **plus** the destructive-op gate's role factor |
+| `operator` | lifecycle: `allocations.request`/`.renew`/`.release`, `systems.provision`/`.reprovision`, `control.power on`, `runs.*`, `debug.*`, `introspect.*` |
+| `admin` | everything operator does, **plus** project administration — `accounting.set_budget`, `accounting.set_quota` — **plus** the destructive-administration ops: `control.force_crash`, `control.power off`/`cycle`/`reset`, `systems.teardown` |
 
 `accounting.set_budget` and `accounting.set_quota` call `require_role(ctx, project,
 Role.ADMIN)`. Because the rank is total, `admin` still satisfies every `operator`
 requirement; the change is that operations are pinned to the **lowest** sufficient
 role, and the budget/quota ops are pinned to `admin`.
+
+`systems.reprovision` is the one destructive op that stays `operator`: reprovisioning
+your own granted System in place is iterating, not administering the project
+([ADR-0038](0038-system-reprovision-in-place.md) §3). The destructive-op gate takes its
+role factor as a per-op parameter precisely so this one op can require `operator` while
+`force_crash` requires `admin`. `control.power on` brings a started System up — a
+reversible lifecycle move, `operator`; the destructive power actions
+(`off`/`cycle`/`reset`) tear into a running guest and require `admin`.
 
 **Role checks bind to the *target* project, not just any project the caller is in.**
 Every read and write resolves the project of the object it touches and checks
@@ -57,11 +65,24 @@ test (decision 3).
 
 The three-check gate (capability scope ∧ role ∧ profile opt-in,
 [ADR-0020](0020-rbac-audit-gate-implementation.md)) keeps all three checks; M1 makes
-the **role** factor a true `admin` requirement that an `operator` fails. ADR-0006's
-allowance for "`operator` only where the op's profile opt-in permits" is **not**
-exercised in M1 — the simpler, stricter rule (destructive ⇒ `admin`) holds for
-single-provider M1; the operator-with-opt-in path is deferred until a provider needs
-it, rather than shipped untested.
+the **role** factor a true `admin` requirement for the destructive-**administration**
+ops (`force_crash`, and — newly pinned here — `power off`/`cycle`/`reset` and
+`teardown`) that an `operator` fails. The one exception is `systems.reprovision`, whose
+role factor is `operator` ([ADR-0038](0038-system-reprovision-in-place.md) §3): the gate
+takes the required role as a per-op parameter (defaulting to `admin`) so a single gate
+expresses both. ADR-0006's broader "`operator` only where the op's profile opt-in
+permits" generalization is **not** exercised in M1 — `reprovision` is the lone, named
+`operator` destructive op; every other destructive op is `admin`, and the
+operator-with-opt-in path for any new op is deferred until a provider needs it, rather
+than shipped untested.
+
+`power off`/`cycle`/`reset` and `teardown` are pinned by raising their existing
+`require_role` factor from `operator` to `admin` — they are not routed through the
+three-check capability-scope gate (no `capability_scope`/`profile_opt_in` is modeled for
+them; only `force_crash` and `reprovision` are). This supersedes
+[ADR-0028](0028-control-plane-power-force-crash.md) §3 ("`power` … authorized at
+`operator` … not at `admin`") for the destructive power actions; `power on` stays
+`operator`.
 
 ### 3. M1 test environments grant **separated** roles
 
@@ -76,13 +97,20 @@ at what it should not. Every new privileged M1 tool ships with its negative test
 
 - The role boundary becomes a *verified* invariant, not just built code: an
   `operator` provably cannot set a budget, raise a quota, force-crash, power-cycle, or
-  tear down — closing the M0 gap where every test ran as a de-facto admin.
+  tear down — closing the M0 gap where every test ran as a de-facto admin. The
+  `operator` retains the lifecycle ops it owns (`request`/`release`, `provision`,
+  `reprovision`, `power on`, `runs`/`debug`/`introspect`).
 - The new accounting administration surface (ADR-0007) has a single, consistent
   authorization rule from day one.
-- No new RBAC machinery: `Role`, `require_role`, and the gate are unchanged; M1 adds
-  call sites and tests. The change is small and bisectable.
+- No new RBAC machinery: `Role`, `require_role`, and the per-op-parameterized gate
+  are unchanged; M1 adds call sites and tests. The change is small and bisectable.
 - Deferring the operator-with-profile-opt-in destructive path keeps M1 strict and
-  testable; it returns when a real provider's profile needs it.
+  testable; it returns when a real provider's profile needs it. `reprovision` is the
+  one named `operator` destructive op (ADR-0038 §3), expressed through the gate's
+  per-op role parameter rather than a profile-conditional rule.
+- This ADR supersedes [ADR-0028](0028-control-plane-power-force-crash.md) §3 for the
+  destructive power actions: `power off`/`cycle`/`reset` move from `operator` to
+  `admin` (`power on` and the gating mechanism are unchanged).
 
 ## Alternatives considered
 
