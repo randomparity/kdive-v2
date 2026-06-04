@@ -292,7 +292,8 @@ def test_missing_core_field_raises_configuration_error(field: str) -> None:
 @pytest.mark.parametrize("field", ["rootfs_image_ref", "crashkernel"])
 def test_missing_libvirt_field_raises_configuration_error(field: str) -> None:
     data = _valid()
-    del data["provider"]["local-libvirt"][field]    _expect_configuration_error(data)
+    del data["provider"]["local-libvirt"][field]
+    _expect_configuration_error(data)
 
 
 def test_unknown_top_level_field_rejected() -> None:
@@ -303,12 +304,14 @@ def test_unknown_top_level_field_rejected() -> None:
 
 def test_unknown_provider_key_rejected() -> None:
     data = _valid()
-    data["provider"]["cloud"] = {}    _expect_configuration_error(data)
+    data["provider"]["cloud"] = {}
+    _expect_configuration_error(data)
 
 
 def test_unknown_libvirt_field_rejected() -> None:
     data = _valid()
-    data["provider"]["local-libvirt"]["extra"] = "x"    _expect_configuration_error(data)
+    data["provider"]["local-libvirt"]["extra"] = "x"
+    _expect_configuration_error(data)
 ```
 
 - [ ] **Step 2: Run the tests to verify they pass against the Task-1 boundary**
@@ -369,7 +372,8 @@ def test_non_int_value_rejected(field: str, value: object) -> None:
 
 def test_empty_domain_xml_param_value_rejected() -> None:
     data = _valid()
-    data["provider"]["local-libvirt"]["domain_xml_params"] = {"machine": ""}    _expect_configuration_error(data)
+    data["provider"]["local-libvirt"]["domain_xml_params"] = {"machine": ""}
+    _expect_configuration_error(data)
 
 
 def test_domain_xml_params_defaults_to_empty_map() -> None:
@@ -406,7 +410,7 @@ def test_profile_is_frozen() -> None:
     profile = ProvisioningProfile.parse(_valid())
 
     with pytest.raises(ValidationError):
-        profile.arch = "aarch64"  # type: ignore[misc]
+        profile.arch = "aarch64"
 
 
 def test_direct_construction_bypasses_configuration_error_mapping() -> None:
