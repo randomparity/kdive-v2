@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.profiles.provisioning import BootMethod, ProvisioningProfile
+from kdive.profiles.provisioning import BootMethod, ProvisioningProfile, profile_digest
 
 _VALID: dict[str, Any] = {
     "schema_version": 1,
@@ -74,6 +74,32 @@ def test_ssh_credential_ref_rejects_blank() -> None:
     data = _valid()
     data["provider"]["local-libvirt"]["ssh_credential_ref"] = "   "
     _expect_configuration_error(data)
+
+
+def test_profile_digest_is_stable_hex() -> None:
+    digest = profile_digest(ProvisioningProfile.parse(_valid()))
+    assert len(digest) == 64  # sha256 hex
+    assert int(digest, 16) >= 0  # all hex
+
+
+def test_profile_digest_ignores_input_key_order() -> None:
+    # Digest equality must be semantic equality (ADR-0038 dedup correctness): the same
+    # profile submitted with a different key order yields the same digest.
+    a = _valid()
+    reordered = {k: a[k] for k in reversed(list(a))}
+    reordered["provider"]["local-libvirt"]["domain_xml_params"] = {
+        "machine": a["provider"]["local-libvirt"]["domain_xml_params"]["machine"]
+    }
+    assert profile_digest(ProvisioningProfile.parse(a)) == profile_digest(
+        ProvisioningProfile.parse(reordered)
+    )
+
+
+def test_profile_digest_differs_on_meaningful_change() -> None:
+    a = ProvisioningProfile.parse(_valid())
+    changed = _valid()
+    changed["vcpu"] = 8
+    assert profile_digest(a) != profile_digest(ProvisioningProfile.parse(changed))
 
 
 def _expect_configuration_error(data: dict[str, Any]) -> None:

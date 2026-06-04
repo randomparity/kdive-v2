@@ -19,19 +19,20 @@ from uuid import UUID, uuid4
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, System
-from kdive.domain.state import AllocationState, IllegalTransition, SystemState
+from kdive.domain.state import AllocationState, IllegalTransition, RunState, SystemState
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
-from kdive.profiles.provisioning import ProvisioningProfile
+from kdive.profiles.provisioning import ProvisioningProfile, profile_digest
 from kdive.providers.local_libvirt.provisioning import (
     LocalLibvirtProvisioning,
     Provisioner,
@@ -39,15 +40,26 @@ from kdive.providers.local_libvirt.provisioning import (
     validate_profile,
 )
 from kdive.security import audit
+from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
 from kdive.security.rbac import Role, require_role
 
 _log = logging.getLogger(__name__)
 
 _TERMINAL_SYSTEM = frozenset({SystemState.TORN_DOWN, SystemState.FAILED})
+# Non-terminal Run states that block a reprovision (ADR-0038 §4): a Run bound to the
+# System's prior boot is invalid against the new install.
+_NON_TERMINAL_RUN = frozenset({RunState.CREATED, RunState.RUNNING})
+_REPROVISION = "reprovision"
 
 
 def _config_error(object_id: str, *, data: dict[str, str] | None = None) -> ToolResponse:
     return ToolResponse.failure(object_id, ErrorCategory.CONFIGURATION_ERROR, data=data or {})
+
+
+def _stale_handle(object_id: str, *, current_status: str) -> ToolResponse:
+    return ToolResponse.failure(
+        object_id, ErrorCategory.STALE_HANDLE, data={"current_status": current_status}
+    )
 
 
 def _as_uuid(value: str) -> UUID | None:
@@ -313,6 +325,202 @@ async def provision_handler(
     return str(system_id)
 
 
+def _reprovision_opt_in(profile: ProvisioningProfile) -> bool:
+    """Resolve the gate's profile opt-in factor from the target profile (ADR-0038 §3)."""
+    return _REPROVISION in profile.provider.local_libvirt.destructive_ops
+
+
+async def _has_live_run(conn: AsyncConnection, system_id: UUID) -> bool:
+    """Report whether the System has a non-terminal Run (created/running)."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT 1 FROM runs WHERE system_id = %s AND state = ANY(%s) LIMIT 1",
+            (system_id, [s.value for s in _NON_TERMINAL_RUN]),
+        )
+        return await cur.fetchone() is not None
+
+
+async def reprovision_system(
+    pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str, profile: dict[str, Any]
+) -> ToolResponse:
+    """Reprovision a `ready` System in place under the same Allocation (ADR-0038).
+
+    Validates and digests the target profile, then under the per-System lock gates the op
+    (capability scope ∧ profile opt-in ∧ ``operator`` role), refuses a System that is not
+    ``ready`` (``configuration_error``) or that has a live Run (``stale_handle``), and on
+    success drives ``ready -> reprovisioning`` while writing the new profile to the same
+    row and enqueuing a ``reprovision`` job keyed by the profile digest (a same-profile
+    re-issue dedups; a different profile is a new job).
+    """
+    uid = _as_uuid(system_id)
+    if uid is None:
+        return _config_error(system_id)
+    try:
+        parsed = ProvisioningProfile.parse(profile)
+        validate_profile(parsed)
+    except CategorizedError as exc:
+        return ToolResponse.failure(system_id, exc.category)
+    with bind_context(principal=ctx.principal):
+        try:
+            return await _reprovision_locked(pool, ctx, uid, parsed)
+        except IllegalTransition:
+            async with pool.connection() as conn:
+                latest = await SYSTEMS.get(conn, uid)
+            data = {"current_status": latest.state.value} if latest else {}
+            return _config_error(system_id, data=data)
+
+
+async def _reprovision_locked(
+    pool: AsyncConnectionPool, ctx: RequestContext, system_id: UUID, profile: ProvisioningProfile
+) -> ToolResponse:
+    """The gate-then-admit body, serialized on the per-System lock (closes the run race)."""
+    async with (
+        pool.connection() as conn,
+        conn.transaction(),
+        advisory_xact_lock(conn, LockScope.SYSTEM, system_id),
+    ):
+        system = await SYSTEMS.get(conn, system_id)
+        if system is None or system.project not in ctx.projects:
+            return _config_error(str(system_id))
+        allocation = await ALLOCATIONS.get(conn, system.allocation_id)
+        if allocation is None or allocation.project not in ctx.projects:
+            return _config_error(str(system_id))
+        op = DestructiveOp(kind=_REPROVISION, profile_opt_in=_reprovision_opt_in(profile))
+        try:
+            assert_destructive_allowed(ctx, allocation, op, required_role=Role.OPERATOR)
+        except DestructiveOpDenied as denied:
+            await audit.record(
+                conn,
+                ctx,
+                tool="systems.reprovision",
+                object_kind="systems",
+                object_id=system_id,
+                transition="reprovision:denied",
+                args={"system_id": str(system_id), "missing": denied.missing},
+                project=system.project,
+            )
+            return ToolResponse.failure(str(system_id), ErrorCategory.AUTHORIZATION_DENIED)
+        digest = profile_digest(profile)
+        dedup_key = f"{system_id}:reprovision:{digest}"
+        if system.state is SystemState.REPROVISIONING:
+            # A re-issue of the in-flight reprovision dedups to its job; a *different*
+            # reprovision while one is in flight is rejected (the System is busy).
+            existing = await _job_for_dedup_key(conn, dedup_key)
+            if existing is not None:
+                return _system_job_envelope(existing, system_id)
+            return _config_error(str(system_id), data={"current_status": system.state.value})
+        if system.state is not SystemState.READY:
+            return _config_error(str(system_id), data={"current_status": system.state.value})
+        if await _has_live_run(conn, system_id):
+            return _stale_handle(str(system_id), current_status=system.state.value)
+        return await _admit_reprovision(conn, ctx, system, profile, digest, dedup_key)
+
+
+async def _job_for_dedup_key(conn: AsyncConnection, dedup_key: str) -> Job | None:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT * FROM jobs WHERE dedup_key = %s", (dedup_key,))
+        row = await cur.fetchone()
+    return Job.model_validate(row) if row else None
+
+
+async def _admit_reprovision(
+    conn: AsyncConnection,
+    ctx: RequestContext,
+    system: System,
+    profile: ProvisioningProfile,
+    digest: str,
+    dedup_key: str,
+) -> ToolResponse:
+    """Transition ready->reprovisioning, write the new profile, enqueue the keyed job."""
+    await SYSTEMS.update_state(conn, system.id, SystemState.REPROVISIONING)
+    await conn.execute(
+        "UPDATE systems SET provisioning_profile = %s WHERE id = %s",
+        (Jsonb(profile.model_dump(by_alias=True)), system.id),
+    )
+    await audit.record(
+        conn,
+        ctx,
+        tool="systems.reprovision",
+        object_kind="systems",
+        object_id=system.id,
+        transition="ready->reprovisioning",
+        args={"system_id": str(system.id), "profile_digest": digest},
+        project=system.project,
+    )
+    job = await queue.enqueue(
+        conn,
+        JobKind.REPROVISION,
+        {"system_id": str(system.id), "profile_digest": digest},
+        _authorizing(ctx, system.project),
+        dedup_key,
+    )
+    return _system_job_envelope(job, system.id)
+
+
+async def reprovision_handler(
+    conn: AsyncConnection, job: Job, provisioning: Provisioner
+) -> str | None:
+    """Apply the new profile in place and drive ``reprovisioning -> ready`` (or ``-> failed``).
+
+    Idempotent on re-run: a System already finalized to ``ready`` (or terminal) is left
+    alone — the destructive apply runs once per ``reprovisioning`` entry. A provider
+    ``CategorizedError`` drives ``reprovisioning -> failed`` (interrupted apply leaves the
+    System terminal-failed, not a half-defined ``ready``) and re-raises so the job
+    dead-letters with the provisioning category.
+    """
+    system_id = UUID(job.payload["system_id"])
+    system = await SYSTEMS.get(conn, system_id)
+    if system is None:
+        raise CategorizedError(
+            "reprovision target system is gone",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details={"system_id": str(system_id)},
+        )
+    if system.state is not SystemState.REPROVISIONING:
+        return str(system_id)  # a concurrent same-job run finalized, or it went terminal
+    profile = ProvisioningProfile.parse(system.provisioning_profile)
+    try:
+        domain_name = provisioning.reprovision(system_id, profile)
+    except CategorizedError:
+        try:
+            async with conn.transaction():
+                await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
+                await _audit_transition(
+                    conn,
+                    job,
+                    project=system.project,
+                    object_id=system_id,
+                    transition="reprovisioning->failed",
+                    tool="systems.reprovision",
+                )
+        except IllegalTransition:
+            _log.info("reprovision of system %s failed but it is already terminal", system_id)
+        raise
+    fingerprint = profile_digest(profile)
+    current: SystemState | None = None
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT state FROM systems WHERE id = %s FOR UPDATE", (system_id,))
+            row = await cur.fetchone()
+            current = SystemState(row["state"]) if row is not None else None
+            if current is SystemState.REPROVISIONING:
+                await cur.execute(
+                    "UPDATE systems SET state = %s, domain_name = %s, "
+                    "target_fingerprint = %s WHERE id = %s",
+                    (SystemState.READY.value, domain_name, fingerprint, system_id),
+                )
+        if current is SystemState.REPROVISIONING:
+            await _audit_transition(
+                conn,
+                job,
+                project=system.project,
+                object_id=system_id,
+                transition="reprovisioning->ready",
+                tool="systems.reprovision",
+            )
+    return str(system_id)
+
+
 async def teardown_system(
     pool: AsyncConnectionPool, ctx: RequestContext, system_id: str
 ) -> ToolResponse:
@@ -391,6 +599,12 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     async def systems_teardown(system_id: str) -> ToolResponse:
         return await teardown_system(pool, current_context(), system_id)
 
+    @app.tool(name="systems.reprovision")
+    async def systems_reprovision(system_id: str, profile: dict[str, Any]) -> ToolResponse:
+        return await reprovision_system(
+            pool, current_context(), system_id=system_id, profile=profile
+        )
+
 
 def register_handlers(
     registry: HandlerRegistry, *, provisioning: Provisioner | None = None
@@ -408,5 +622,9 @@ def register_handlers(
     async def _teardown(conn: AsyncConnection, job: Job) -> str | None:
         return await teardown_handler(conn, job, prov)
 
+    async def _reprovision(conn: AsyncConnection, job: Job) -> str | None:
+        return await reprovision_handler(conn, job, prov)
+
     registry.register(JobKind.PROVISION, _provision)
     registry.register(JobKind.TEARDOWN, _teardown)
+    registry.register(JobKind.REPROVISION, _reprovision)

@@ -16,6 +16,8 @@ error.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -133,3 +135,20 @@ class ProvisioningProfile(_ProfileBase):
                 category=ErrorCategory.CONFIGURATION_ERROR,
                 details=details,
             ) from exc
+
+
+def profile_digest(profile: ProvisioningProfile) -> str:
+    """Return the SHA-256 hex of a canonical encoding of a parsed profile (ADR-0038 §3).
+
+    Computed over the parsed, alias-keyed model dump with sorted keys, so digest equality
+    is *semantic* equality: two byte-different but equivalent submissions (key order,
+    whitespace) produce the same digest, and any meaningful change produces a distinct one.
+    This is the dedup factor in the reprovision ``dedup_key`` (mirrors
+    :func:`kdive.security.audit.args_digest`).
+
+    Args:
+        profile: A validated profile (parse before hashing — never hash raw input, whose
+            ordering and coercions are not normalized).
+    """
+    canonical = json.dumps(profile.model_dump(by_alias=True), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

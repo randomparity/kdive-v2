@@ -187,6 +187,7 @@ def test_job_uses_authorizing_not_attribution_and_defaults_attempt() -> None:
 def test_job_kind_covers_the_async_tool_surface() -> None:
     assert {kind.value for kind in JobKind} == {
         "provision",
+        "reprovision",
         "teardown",
         "build",
         "install",

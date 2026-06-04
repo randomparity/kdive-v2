@@ -13,12 +13,13 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.db.repositories import ALLOCATIONS, SYSTEMS
+from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Allocation, Job, JobKind, System
-from kdive.domain.state import AllocationState, SystemState
+from kdive.domain.models import Allocation, Investigation, Job, JobKind, Run, System
+from kdive.domain.state import AllocationState, InvestigationState, RunState, SystemState
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
@@ -165,12 +166,14 @@ def test_get_malformed_uuid_is_config_error(migrated_url: str) -> None:
 
 
 class _FakeProvisioning:
-    """Records provision/teardown calls; provision returns a domain name or raises."""
+    """Records provision/teardown/reprovision calls; provision returns a name or raises."""
 
-    def __init__(self, *, provision_error: bool = False) -> None:
+    def __init__(self, *, provision_error: bool = False, reprovision_error: bool = False) -> None:
         self.provisioned: list[UUID] = []
         self.torn_down: list[str] = []
+        self.reprovisioned: list[UUID] = []
         self._provision_error = provision_error
+        self._reprovision_error = reprovision_error
 
     def provision(self, system_id: UUID, profile: Any) -> str:
         self.provisioned.append(system_id)
@@ -180,6 +183,12 @@ class _FakeProvisioning:
 
     def teardown(self, domain_name: str) -> None:
         self.torn_down.append(domain_name)
+
+    def reprovision(self, system_id: UUID, profile: Any) -> str:
+        self.reprovisioned.append(system_id)
+        if self._reprovision_error:
+            raise CategorizedError("boom", category=ErrorCategory.PROVISIONING_FAILURE)
+        return f"kdive-{system_id}"
 
 
 async def _enqueue_provision(pool: AsyncConnectionPool, system_id: str, alloc_id: str) -> Job:
@@ -677,11 +686,378 @@ def test_teardown_handler_already_torn_down_reattempts_destroy_no_transition(
     asyncio.run(_run())
 
 
+# --- systems.reprovision tool + handler ----------------------------------------------------
+
+
+def _active_allocation_profile() -> dict[str, Any]:
+    """A profile that opts reprovision in (the gate's opt-in factor)."""
+    p = _profile()
+    p["provider"]["local-libvirt"]["destructive_ops"] = ["reprovision"]
+    return p
+
+
+async def _scoped_active_allocation(pool: AsyncConnectionPool) -> str:
+    """A granted->active allocation whose capability scope grants reprovision."""
+    alloc_id = await _granted_allocation(pool)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE allocations SET state = 'active', "
+            'capability_scope = \'{"destructive_ops": ["reprovision"]}\' WHERE id = %s',
+            (alloc_id,),
+        )
+    return alloc_id
+
+
+async def _seed_ready_system(pool: AsyncConnectionPool, alloc_id: str) -> str:
+    sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE systems SET provisioning_profile = %s, domain_name = %s WHERE id = %s",
+            (Jsonb(_active_allocation_profile()), f"kdive-{sys_id}", sys_id),
+        )
+    return sys_id
+
+
+async def _seed_run(pool: AsyncConnectionPool, sys_id: str, state: RunState) -> str:
+    async with pool.connection() as conn:
+        inv = await INVESTIGATIONS.insert(
+            conn,
+            Investigation(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="user-1",
+                project="proj",
+                title="t",
+                state=InvestigationState.ACTIVE,
+            ),
+        )
+        run = await RUNS.insert(
+            conn,
+            Run(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="user-1",
+                project="proj",
+                investigation_id=inv.id,
+                system_id=UUID(sys_id),
+                state=state,
+                build_profile={},
+            ),
+        )
+    return str(run.id)
+
+
+async def _reprovision(
+    pool: AsyncConnectionPool, ctx: RequestContext, system_id: str, profile: dict[str, Any]
+):
+    return await systems_tools.reprovision_system(pool, ctx, system_id=system_id, profile=profile)
+
+
+def test_reprovision_transitions_ready_to_reprovisioning_and_enqueues_job(
+    migrated_url: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            new_profile = _active_allocation_profile()
+            new_profile["vcpu"] = 8
+            resp = await _reprovision(pool, _ctx(), sys_id, new_profile)
+            assert resp.status == "queued"
+            assert resp.data["system_id"] == sys_id
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT state, provisioning_profile FROM systems WHERE id = %s", (sys_id,)
+                )
+                sys_row = await cur.fetchone()
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+                await cur.execute("SELECT count(*) AS n FROM allocations")
+                alloc_n = await cur.fetchone()
+                await cur.execute(
+                    "SELECT kind FROM jobs WHERE payload->>'system_id' = %s", (sys_id,)
+                )
+                job_row = await cur.fetchone()
+        assert sys_row is not None and sys_row["state"] == "reprovisioning"
+        assert sys_row["provisioning_profile"]["vcpu"] == 8  # new profile applied to the row
+        assert sys_n is not None and sys_n["n"] == 1  # no new System row
+        assert alloc_n is not None and alloc_n["n"] == 1  # no new Allocation row
+        assert job_row is not None and job_row["kind"] == "reprovision"
+
+    asyncio.run(_run())
+
+
+def test_reprovision_same_profile_dedups(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            p = _active_allocation_profile()
+            first = await _reprovision(pool, _ctx(), sys_id, p)
+            second = await _reprovision(pool, _ctx(), sys_id, p)
+            assert first.object_id == second.object_id  # same job (dedup on digest)
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM jobs WHERE kind = 'reprovision'")
+                n = await cur.fetchone()
+        assert n is not None and n["n"] == 1  # one reprovision job
+
+    asyncio.run(_run())
+
+
+def test_reprovision_different_profile_is_new_job(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            first = await _reprovision(pool, _ctx(), sys_id, _active_allocation_profile())
+            # Drive back to ready so a second reprovision is admissible.
+            async with pool.connection() as conn:
+                await conn.execute("UPDATE systems SET state = 'ready' WHERE id = %s", (sys_id,))
+            other = _active_allocation_profile()
+            other["memory_mb"] = 8192
+            second = await _reprovision(pool, _ctx(), sys_id, other)
+            assert first.object_id != second.object_id  # distinct job (distinct digest)
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM jobs WHERE kind = 'reprovision'")
+                n = await cur.fetchone()
+        assert n is not None and n["n"] == 2
+
+    asyncio.run(_run())
+
+
+def test_reprovision_under_live_run_is_stale_handle(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            await _seed_run(pool, sys_id, RunState.RUNNING)
+            resp = await _reprovision(pool, _ctx(), sys_id, _active_allocation_profile())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+                await cur.execute("SELECT count(*) AS n FROM jobs")
+                job_n = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "stale_handle"
+        assert sys_row is not None and sys_row["state"] == "ready"  # no transition
+        assert job_n is not None and job_n["n"] == 0  # no job enqueued
+
+    asyncio.run(_run())
+
+
+def test_reprovision_with_terminal_run_is_admissible(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            await _seed_run(pool, sys_id, RunState.SUCCEEDED)  # terminal -> does not block
+            resp = await _reprovision(pool, _ctx(), sys_id, _active_allocation_profile())
+        assert resp.status == "queued"
+
+    asyncio.run(_run())
+
+
+def test_reprovision_non_ready_system_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.PROVISIONING)
+            resp = await _reprovision(pool, _ctx(), sys_id, _active_allocation_profile())
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == "provisioning"
+
+    asyncio.run(_run())
+
+
+def test_reprovision_operator_may_invoke(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            resp = await _reprovision(
+                pool, _ctx(Role.OPERATOR), sys_id, _active_allocation_profile()
+            )
+        assert resp.status == "queued"
+
+    asyncio.run(_run())
+
+
+def test_reprovision_viewer_denied(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            resp = await _reprovision(pool, _ctx(Role.VIEWER), sys_id, _active_allocation_profile())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM audit_log WHERE transition = 'reprovision:denied'"
+                )
+                audit_n = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "authorization_denied"
+        assert sys_row is not None and sys_row["state"] == "ready"  # untouched
+        assert audit_n is not None and audit_n["n"] == 1  # the denial is audited
+
+    asyncio.run(_run())
+
+
+def test_reprovision_without_scope_denied(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)  # no destructive_ops in scope
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE allocations SET state = 'active' WHERE id = %s", (alloc_id,)
+                )
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            resp = await _reprovision(
+                pool, _ctx(Role.OPERATOR), sys_id, _active_allocation_profile()
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "authorization_denied"
+
+    asyncio.run(_run())
+
+
+def test_reprovision_without_profile_opt_in_denied(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            no_opt_in = _profile()  # no destructive_ops -> opt-in factor fails
+            resp = await _reprovision(pool, _ctx(Role.OPERATOR), sys_id, no_opt_in)
+        assert resp.status == "error"
+        assert resp.error_category == "authorization_denied"
+
+    asyncio.run(_run())
+
+
+def test_reprovision_cross_project_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            resp = await _reprovision(
+                pool, _ctx(projects=("other",)), sys_id, _active_allocation_profile()
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_reprovision_malformed_uuid_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await _reprovision(pool, _ctx(), "not-a-uuid", _active_allocation_profile())
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_reprovision_bad_profile_is_config_error_no_job(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            bad = _active_allocation_profile()
+            bad["provider"]["local-libvirt"]["domain_xml_params"]["bogus"] = "x"
+            resp = await _reprovision(pool, _ctx(), sys_id, bad)
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM jobs")
+                job_n = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert job_n is not None and job_n["n"] == 0
+
+    asyncio.run(_run())
+
+
+async def _enqueue_reprovision(pool: AsyncConnectionPool, system_id: str) -> Job:
+    async with pool.connection() as conn:
+        return await queue.enqueue(
+            conn,
+            JobKind.REPROVISION,
+            {"system_id": system_id},
+            {"principal": "user-1", "agent_session": "s", "project": "proj"},
+            f"{system_id}:reprovision:deadbeef",
+        )
+
+
+def test_reprovision_handler_drives_reprovisioning_to_ready(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE systems SET state = 'reprovisioning' WHERE id = %s", (sys_id,)
+                )
+            job = await _enqueue_reprovision(pool, sys_id)
+            prov = _FakeProvisioning()
+            async with pool.connection() as conn:
+                result = await systems_tools.reprovision_handler(conn, job, prov)
+            assert result == sys_id
+            assert prov.reprovisioned == [UUID(sys_id)]
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT state, target_fingerprint FROM systems WHERE id = %s", (sys_id,)
+                )
+                row = await cur.fetchone()
+        assert row is not None and row["state"] == "ready"
+        assert row["target_fingerprint"]  # the profile digest is recorded
+
+    asyncio.run(_run())
+
+
+def test_reprovision_handler_provider_failure_sets_failed(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE systems SET state = 'reprovisioning' WHERE id = %s", (sys_id,)
+                )
+            job = await _enqueue_reprovision(pool, sys_id)
+            prov = _FakeProvisioning(reprovision_error=True)
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError):
+                    await systems_tools.reprovision_handler(conn, job, prov)
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                row = await cur.fetchone()
+        assert row is not None and row["state"] == "failed"  # interrupted -> failed
+
+    asyncio.run(_run())
+
+
+def test_reprovision_handler_retry_on_ready_is_noop(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)  # already ready (finalized)
+            job = await _enqueue_reprovision(pool, sys_id)
+            prov = _FakeProvisioning()
+            async with pool.connection() as conn:
+                await systems_tools.reprovision_handler(conn, job, prov)
+            assert prov.reprovisioned == []  # not re-applied to a finalized System
+
+    asyncio.run(_run())
+
+
 # --- registration --------------------------------------------------------------------------
 
 
-def test_register_handlers_binds_provision_and_teardown() -> None:
+def test_register_handlers_binds_provision_teardown_and_reprovision() -> None:
     registry = HandlerRegistry()
     systems_tools.register_handlers(registry, provisioning=_FakeProvisioning())
     assert registry.get(JobKind.PROVISION) is not None
     assert registry.get(JobKind.TEARDOWN) is not None
+    assert registry.get(JobKind.REPROVISION) is not None

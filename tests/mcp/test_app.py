@@ -28,7 +28,12 @@ def test_build_app_registers_jobs_tools() -> None:
         tools = await app.list_tools()
         names = {t.name for t in tools}
         assert {"jobs.get", "jobs.wait", "jobs.cancel", "jobs.list"} <= names
-        assert {"systems.provision", "systems.get", "systems.teardown"} <= names
+        assert {
+            "systems.provision",
+            "systems.get",
+            "systems.teardown",
+            "systems.reprovision",
+        } <= names
         assert {
             "investigations.open",
             "investigations.get",
