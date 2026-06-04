@@ -156,6 +156,15 @@ rather than driving `provisioning → ready`. This closes the release-mid-provis
 (two workers, one releasing) without leaking a tagged domain onto a `torn_down` row and
 without depending on the deferred leaked-domain reaper.
 
+That compensating destroy is **durable, not fire-once**: if it fails (a transient libvirt
+error), the provision job dead-letters and requeues, and on re-run the handler sees the
+terminal state *on entry* and idempotently re-attempts the reap (`teardown` swallows
+`VIR_ERR_NO_DOMAIN`) — necessary because the racing `teardown` job may have already
+succeeded as a no-op before the domain existed, leaving the provision job the sole owner of
+the cleanup while the leaked-domain reaper is deferred (decision 8). Symmetrically,
+`provision` undefines a domain whose `create` fails for a real reason (not "already
+running"), so a failed start leaves no defined-but-unstarted domain behind.
+
 ### 9. Handlers reconstruct a `RequestContext` from the job's authorizing tuple to audit
 
 A job handler holds a `Job`, not a `RequestContext`, but `audit.record` requires one and
