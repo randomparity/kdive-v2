@@ -61,7 +61,8 @@ phantom features). Specifically:
 - `continue_`/`interrupt` and the `_ExecutionControl` resume/wait/interrupt machinery
   (mi-async, timeout → `-exec-interrupt` fallback, `transport_stall`).
 - The redacted transcript append and per-record redaction.
-- `GdbMiSessionRegistry` (in-process `transport_handle` → `GdbMiAttachment`).
+- `GdbMiSessionRegistry` (in-process `session_id` → `GdbMiAttachment`) plus the
+  per-session `asyncio.Lock` table (§4a).
 
 **Not ported (out of #21 scope — drop, do not carry as dead code):**
 - `attach`/`probe_read`/`resolve_symbol`/`load_module_symbols`/`read_symbol`/
@@ -83,22 +84,57 @@ The gdb/MI engine is **lazily attached on first Debug-plane op** and cached in a
 process-scoped `GdbMiSessionRegistry` keyed on `session_id`. The first `debug.*` op for a
 session:
 1. loads the `DebugSession` row, authorizes (operator, project), checks `state == live`;
-2. looks up the live `GdbMiAttachment` in the registry by `session_id`;
-3. on a miss, **opens** a gdb/MI subprocess and attaches over the session's RSP endpoint
-   (decoded from `transport_handle`), registering the attachment; on a hit, reuses it.
+2. takes the **per-session `asyncio.Lock`** for that `session_id` (§4a);
+3. looks up the live `GdbMiAttachment` in the registry by `session_id`;
+4. on a miss, **opens** a gdb/MI subprocess and attaches over the session's RSP endpoint
+   (decoded from `transport_handle`), registering the attachment; on a hit, reuses it;
+5. dispatches the blocking engine op (§4b) and releases the lock.
 
 This keeps #20 unchanged (no schema, no new column) and makes the engine
 server-process-scoped and non-durable: a server restart strands the in-process attachment,
-and the next op gets `no_live_session` (`CONFIGURATION_ERROR`) — the agent must
-`debug.end_session` + `debug.start_session` to re-establish. This is the v1 `ADR 0021`
-in-process-registry contract, ported.
+and the next op gets `no_live_session` (`CONFIGURATION_ERROR`, `data["code"]="no_live_session"`,
+§5a) — the agent must `debug.end_session` + `debug.start_session` to re-establish. This is
+the v1 `ADR 0021` in-process-registry contract, ported.
 
-The vmlinux symbol path the attach needs is resolved from the Run/System the same
-`live_vm`-gated way as the v1 attach probe; in M0 (no live host) the resolver raises
-`MISSING_DEPENDENCY`, surfaced as `DEBUG_ATTACH_FAILURE`, so the lazy-attach error contract
-is unit-tested with a fake attach seam. **The lazy-attach symbol/endpoint resolution is the
-single `live_vm`-gated seam**; everything above it (handler authz, registry lookup, the
-engine ops against an injected fake `MiController`) is unit-tested off the gate.
+### 4a. The attach-or-create and every op are serialized per session (`asyncio.Lock`)
+
+The gdbstub is **single-attach** (the whole #20 premise), and one `GdbMiAttachment` is a
+single stateful gdb subprocess with one mutable record list + transcript. So two concurrent
+`debug.*` ops on one `live` session must not (a) both miss the registry and both spawn a gdb
+subprocess against the one stub, nor (b) both drive the one engine and interleave its
+records/transcript. The plane keeps a process-scoped `dict[session_id, asyncio.Lock]` (guarded
+by a short non-async lock for the get-or-create of the `Lock` itself); each handler holds the
+per-session lock across the **attach-or-create + the single engine op**. Only one op ever
+attaches; ops on the same session are serialized; ops on *different* sessions proceed in
+parallel. A lost double-attach race therefore cannot happen — the second arrival finds the
+attachment already registered under the lock and reuses it.
+
+### 4b. Blocking engine ops are dispatched via `asyncio.to_thread`
+
+Every engine op drives a blocking gdb subprocess write/read, and `debug.continue` waits up to
+`MAX_INTERACTIVE_WAIT_SEC` (60s) for a stop. The handlers are `async def` (matching #20), and
+the FastMCP server runs them on one event loop. As every other v2 plane does for synchronous
+provider IO (`runs.build`, `vmcore.capture`, `control.power` all use `await
+asyncio.to_thread(...)`), each blocking engine call is dispatched with `await
+asyncio.to_thread(...)` so a 60s `continue` never stalls the event loop or other sessions.
+The per-session `asyncio.Lock` (§4a) guarantees only one thread ever touches a given
+attachment, so the `MiController` needs no internal locking.
+
+### 4c. The attach seam takes the RSP endpoint **and** a debuginfo source; both are `live_vm`-gated
+
+The v1 attach loaded kernel symbols via `-file-exec-and-symbols <vmlinux>`. v2 has **no**
+vmlinux path on the `DebugSession` row (it carries only `transport_handle`) and stores
+debuginfo as an **object-store key** produced by the Build plane (#29 `runs.build` stores a
+`vmlinux`/debuginfo object). The attach seam signature is therefore
+`attach(rsp_endpoint, debuginfo_ref) -> GdbMiAttachment`, where `debuginfo_ref` is resolved
+from the session's Run the same way the postmortem/retrieve plane (#31) resolves the
+debuginfo object for `crash`: from the Run's succeeded `build` step output. **In M0 (no live
+host) the resolver raises `MISSING_DEPENDENCY`** (surfaced as `DEBUG_ATTACH_FAILURE`), so the
+resolution + attach is the single `live_vm`-gated seam and the error contract is unit-tested
+with a fake attach seam that returns a `GdbMiAttachment` over a fake `MiController`. Resolving
+and materializing the debuginfo object to a local file is the seam's `live_vm` work;
+everything above it (handler authz, the per-session lock, registry lookup, every engine op
+against the fake `MiController`) is unit-tested off the gate.
 
 ## 5. Tool surface and contracts
 
@@ -140,6 +176,24 @@ the existing `CategorizedError` — no new exception type, per the global "repla
 deprecate" rule). Handlers catch it and emit `ToolResponse.failure(session_id, exc.category)`.
 The engine's categories already align with the M0 taxonomy: `CONFIGURATION_ERROR`,
 `DEBUG_ATTACH_FAILURE`, `INFRASTRUCTURE_FAILURE`, `MISSING_DEPENDENCY`.
+
+### 5a. `CONFIGURATION_ERROR` variants carry a machine-readable `data["code"]`
+
+Several distinct failures share `CONFIGURATION_ERROR`, but the agent's recovery differs, so
+each carries a discriminating `data["code"]` (the same pattern #20 used with
+`reason="boot_first"`). The agent branches on `code`, never on the free-text message:
+
+| `data["code"]` | trigger | agent recovery |
+|----------------|---------|----------------|
+| `bad_session_id` | `session_id` is not a UUID | fix the argument |
+| `unknown_session` | row absent or cross-project | the id is wrong |
+| `not_live` | session state ≠ `live` (`data["current_status"]`) | `debug.start_session` a new session |
+| `no_live_session` | registry miss after a server restart stranded the engine | `debug.end_session` then `debug.start_session` |
+| `bad_location` / `bad_breakpoint_id` / `bad_register` / `bad_read_range` | input validation | fix the argument |
+
+`AUTHORIZATION_DENIED` (non-operator) and the attach categories
+(`DEBUG_ATTACH_FAILURE`/`MISSING_DEPENDENCY`) are already distinct categories and need no
+sub-code.
 
 ## 6. read_memory: bytes verbatim under the cap (the critical invariant)
 
@@ -187,11 +241,20 @@ list of pygdbmi record dicts, so every engine op is driven deterministically. Te
   field is `[REDACTED]` in the returned envelope and in the transcript file;
 - input-validation rejections (bad symbol, bad bp id, empty/bad register name, out-of-range
   address) → `CONFIGURATION_ERROR`, no MI command;
-- state/authz rejections (missing session, cross-project, non-operator, non-`live` state);
+- state/authz rejections (missing session, cross-project, non-operator, non-`live` state),
+  asserting the §5a `data["code"]` discriminator on each `CONFIGURATION_ERROR` variant;
 - `no_live_session` after a registry miss when the (faked) attach seam reports the engine is
-  gone;
+  gone (`data["code"]="no_live_session"`);
 - engine error mapping (`^error` MI result → `DEBUG_ATTACH_FAILURE`; MI write timeout →
-  `INFRASTRUCTURE_FAILURE` `transport_stall`; continue-timeout→interrupt fallback path).
+  `INFRASTRUCTURE_FAILURE` `transport_stall`; continue-timeout→interrupt fallback path);
+- **attach-or-create runs once under the per-session lock**: a fake attach seam that counts
+  invocations is called exactly once across two ops on the same session, and the second op
+  reuses the registered attachment (no second spawn);
+- the `MISSING_DEPENDENCY` debuginfo-resolver default (M0, no live host) surfaces as
+  `DEBUG_ATTACH_FAILURE` through a real-resolver-but-faked path.
+
+`asyncio.to_thread` dispatch (§4b) is exercised implicitly — the fake `MiController` is
+plain blocking code, so the handler under test runs it through the real `to_thread` path.
 
 The `PygdbmiController` real subprocess and the real attach (gdb spawn + RSP connect) are
 `live_vm`-gated and `# pragma: no cover - live_vm`.
@@ -202,7 +265,8 @@ The `PygdbmiController` real subprocess and the real attach (gdb spawn + RSP con
   records, `MiController`/`PygdbmiController`, `GdbMiSessionRegistry`, attach seam.
 - **edit** `src/kdive/mcp/tools/debug.py` — add the seven handlers + their `@app.tool`
   registrations to the existing `register(app, pool)`; build one process-scoped
-  `GdbMiSessionRegistry` + attach seam there and inject into handlers.
+  `GdbMiSessionRegistry` + per-session lock table + attach seam there and inject into
+  handlers; dispatch each blocking engine op via `await asyncio.to_thread(...)`.
 - **edit** `pyproject.toml` — add `pygdbmi==0.11.0.0`.
 - **new** `tests/providers/local_libvirt/test_debug_gdbmi.py` — engine + record tests.
 - **edit** `tests/mcp/test_debug_tools.py` — Debug-plane handler tests (added to the existing
