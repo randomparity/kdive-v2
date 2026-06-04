@@ -16,6 +16,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import psycopg
+import pytest
 
 from kdive.db.repositories import BUDGETS, QUOTAS, RESOURCES
 from kdive.domain.allocation_admission import CONCURRENT_ALLOCATION_CAP_KEY, admit
@@ -258,6 +259,56 @@ def test_replayed_idempotency_key_returns_original_no_double_charge(migrated_url
     asyncio.run(_run())
 
 
+def test_same_key_reused_across_projects_is_config_error(migrated_url: str) -> None:
+    # A key that already names a grant in another project cannot resolve here — returning
+    # the foreign allocation would be a cross-project replay. Fail closed.
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            res = await _seed_resource(conn)
+            await _seed_budget(conn, limit="100")
+            await _seed_quota(conn)
+            await BUDGETS.upsert(
+                conn,
+                Budget(
+                    project="proj2", limit_kcu=Decimal("100"), spent_kcu=Decimal(0), updated_at=_DT
+                ),
+            )
+            await QUOTAS.upsert(
+                conn,
+                Quota(
+                    project="proj2",
+                    max_concurrent_allocations=10,
+                    max_concurrent_systems=10,
+                    updated_at=_DT,
+                ),
+            )
+            ctx = RequestContext(principal="alice", agent_session="s", projects=("proj", "proj2"))
+            first = await admit(
+                conn,
+                ctx,
+                resource=res,
+                project="proj",
+                selector=SEL,
+                window=2,
+                idempotency_key="dup",
+            )
+            assert first.granted is True
+            clash = await admit(
+                conn,
+                ctx,
+                resource=res,
+                project="proj2",
+                selector=SEL,
+                window=2,
+                idempotency_key="dup",
+            )
+            assert clash.granted is False
+            assert clash.category is ErrorCategory.CONFIGURATION_ERROR
+            assert await _count(conn, "allocations") == 1  # no grant for proj2
+
+    asyncio.run(_run())
+
+
 def test_same_key_two_principals_are_isolated(migrated_url: str) -> None:
     async def _run() -> None:
         async with _conn(migrated_url) as conn:
@@ -339,5 +390,31 @@ def test_bad_host_cap_fails_closed_no_row(migrated_url: str) -> None:
             assert await _count(conn, "allocations") == 0
             assert await _count(conn, "ledger") == 0
             assert await _spent(conn) == Decimal(0)
+
+    asyncio.run(_run())
+
+
+def test_estimate_too_large_fails_closed_no_row(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An extreme clamp-max × a max-size selector overflows the kcu quantizer; admit must
+    # return a typed configuration_error denial, never let the exception escape.
+    monkeypatch.setenv("KDIVE_LEASE_MAX", "1e30")
+
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            res = await _seed_resource(conn, vcpus=2_000_000_000, memory_mb=64_000_000_000)
+            await _seed_budget(conn, limit="1e40")
+            await _seed_quota(conn)
+            outcome = await _admit(
+                conn,
+                resource=res,
+                selector=Selector(vcpus=2_000_000_000, memory_gb=0),
+                window="1e30",
+            )
+            assert outcome.granted is False
+            assert outcome.category is ErrorCategory.CONFIGURATION_ERROR
+            assert await _count(conn, "allocations") == 0
+            assert await _count(conn, "ledger") == 0
 
     asyncio.run(_run())
