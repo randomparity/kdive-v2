@@ -43,9 +43,9 @@ test:
 test-live:
     uv run python -m pytest -m live_vm -q
 
-# Lint and format-check the shell scripts.
+# Lint and format-check the shell scripts (recursively, including scripts/live-vm).
 lint-shell:
-    shellcheck scripts/*.sh
+    shfmt -f scripts | xargs shellcheck
     shfmt -i 2 -d scripts
 
 # Lint and security-scan the GitHub Actions workflows.
