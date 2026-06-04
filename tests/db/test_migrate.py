@@ -38,6 +38,15 @@ OBJECT_TABLES = {
     "audit_log",
 }
 
+# Tables migration 0002 adds (M1 accounting/admission data layer).
+M1_TABLES = {
+    "cost_class_coefficients",
+    "budgets",
+    "quotas",
+    "ledger",
+    "idempotency_keys",
+}
+
 
 def _tables(conn: psycopg.Connection) -> set[str]:
     rows = conn.execute(
@@ -75,7 +84,7 @@ def test_creates_all_tables(pg_conn: psycopg.Connection) -> None:
 def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
     first = migrate.apply_migrations(pg_conn)
     second = migrate.apply_migrations(pg_conn)
-    assert first == ["0001"]
+    assert first == ["0001", "0002"]
     assert second == []
 
 
@@ -190,6 +199,147 @@ def test_check_constraint_covers_every_enum_value(
     assert not missing, f"{constraint} is missing enum values {missing}"
 
 
+def _columns(conn: psycopg.Connection, table: str) -> dict[str, str]:
+    rows = conn.execute(
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = %s",
+        (table,),
+    ).fetchall()
+    return {name: dtype for name, dtype in rows}
+
+
+def _indexed_columns(conn: psycopg.Connection, table: str) -> set[str]:
+    rows = conn.execute(
+        """
+        SELECT a.attname
+        FROM pg_index i
+        JOIN pg_class t ON t.oid = i.indrelid
+        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY (i.indkey)
+        WHERE t.relname = %s
+        """,
+        (table,),
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def test_migration_0002_creates_accounting_tables(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    assert _tables(pg_conn) >= M1_TABLES
+
+
+def test_seed_coefficient_row_present(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    row = pg_conn.execute(
+        "SELECT coeff FROM cost_class_coefficients WHERE cost_class = 'local'"
+    ).fetchone()
+    assert row is not None and float(row[0]) == 1.0
+
+
+def test_budgets_spent_kcu_defaults_to_zero(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    pg_conn.execute("INSERT INTO budgets (project, limit_kcu) VALUES ('p', 100)")
+    row = pg_conn.execute("SELECT spent_kcu FROM budgets WHERE project = 'p'").fetchone()
+    assert row is not None and float(row[0]) == 0.0
+
+
+def test_idempotency_keys_primary_key_is_principal_key(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    rows = pg_conn.execute(
+        """
+        SELECT kcu.column_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+        WHERE tc.constraint_type = 'PRIMARY KEY'
+          AND tc.table_schema = 'public' AND tc.table_name = 'idempotency_keys'
+        ORDER BY kcu.ordinal_position
+        """
+    ).fetchall()
+    assert [r[0] for r in rows] == ["principal", "key"]
+
+
+def test_idempotency_keys_dedup_same_principal_key(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    pg_conn.execute(
+        "INSERT INTO idempotency_keys (key, principal, project, kind, result) "
+        "VALUES ('k1', 'alice', 'p', 'request', '{}'::jsonb)"
+    )
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        pg_conn.execute(
+            "INSERT INTO idempotency_keys (key, principal, project, kind, result) "
+            "VALUES ('k1', 'alice', 'p', 'request', '{}'::jsonb)"
+        )
+
+
+def test_idempotency_key_is_principal_scoped_not_global(pg_conn: psycopg.Connection) -> None:
+    # The same client-chosen key under two principals must coexist (no cross-tenant
+    # collision) — the reason the PK is (principal, key), not (key).
+    migrate.apply_migrations(pg_conn)
+    pg_conn.execute(
+        "INSERT INTO idempotency_keys (key, principal, project, kind, result) "
+        "VALUES ('shared', 'alice', 'p', 'request', '{}'::jsonb)"
+    )
+    pg_conn.execute(
+        "INSERT INTO idempotency_keys (key, principal, project, kind, result) "
+        "VALUES ('shared', 'bob', 'p', 'request', '{}'::jsonb)"
+    )
+    row = pg_conn.execute("SELECT count(*) FROM idempotency_keys WHERE key = 'shared'").fetchone()
+    assert row is not None and row[0] == 2
+
+
+def test_ledger_event_type_check_and_indexes(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    indexed = _indexed_columns(pg_conn, "ledger")
+    assert {"project", "allocation_id"} <= indexed
+    res = pg_conn.execute(
+        "INSERT INTO resources (kind, pool, cost_class, status, host_uri) "
+        "VALUES ('local-libvirt', 'p', 'local', 'available', 'qemu:///system') RETURNING id"
+    ).fetchone()
+    assert res is not None
+    alloc = pg_conn.execute(
+        "INSERT INTO allocations (resource_id, state, principal, project) "
+        "VALUES (%s, 'granted', 'alice', 'p') RETURNING id",
+        (res[0],),
+    ).fetchone()
+    assert alloc is not None
+    with pytest.raises(psycopg.errors.CheckViolation):
+        pg_conn.execute(
+            "INSERT INTO ledger (project, allocation_id, resource_id, cost_class, "
+            "event_type, kcu_delta) VALUES ('p', %s, %s, 'local', 'bogus', 1)",
+            (alloc[0], res[0]),
+        )
+
+
+def test_allocations_gain_m1_size_and_billing_columns(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    cols = _columns(pg_conn, "allocations")
+    assert cols.get("requested_vcpus") == "integer"
+    assert cols.get("requested_memory_gb") == "integer"
+    assert cols.get("active_started_at") == "timestamp with time zone"
+    assert cols.get("active_ended_at") == "timestamp with time zone"
+
+
+def test_widened_state_checks_accept_new_values(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    res = pg_conn.execute(
+        "INSERT INTO resources (kind, pool, cost_class, status, host_uri) "
+        "VALUES ('local-libvirt', 'p', 'local', 'available', 'qemu:///system') RETURNING id"
+    ).fetchone()
+    assert res is not None
+    alloc = pg_conn.execute(
+        "INSERT INTO allocations (resource_id, state, principal, project) "
+        "VALUES (%s, 'expired', 'alice', 'p') RETURNING id",
+        (res[0],),
+    ).fetchone()
+    assert alloc is not None  # 'expired' accepted by the widened CHECK
+    sysm = pg_conn.execute(
+        "INSERT INTO systems (allocation_id, state, provisioning_profile, principal, project) "
+        "VALUES (%s, 'reprovisioning', '{}'::jsonb, 'alice', 'p') RETURNING id",
+        (alloc[0],),
+    ).fetchone()
+    assert sysm is not None  # 'reprovisioning' accepted by the widened CHECK
+
+
 def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgres_url: str) -> None:
     """A second migrator blocks on the migration advisory lock until the first frees it."""
     with psycopg.connect(postgres_url) as holder:  # autocommit=False: holds the xact lock
@@ -202,4 +352,4 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
             migrate.apply_migrations(pg_conn)
         holder.rollback()  # release the lock
     pg_conn.execute("SET lock_timeout = '0'")
-    assert migrate.apply_migrations(pg_conn) == ["0001"]
+    assert migrate.apply_migrations(pg_conn) == ["0001", "0002"]
