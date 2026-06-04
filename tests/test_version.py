@@ -26,7 +26,6 @@ def _no_baked(monkeypatch):
 
 
 def test_baked_release(monkeypatch):
-    monkeypatch.setattr(version, "package_version", lambda: "0.2.0")
     monkeypatch.setattr(version, "_from_baked", lambda: VersionInfo("0.2.0", "1a2b3c4", True))
     assert full_version() == "0.2.0+g1a2b3c4"
 

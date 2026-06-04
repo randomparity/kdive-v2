@@ -61,7 +61,7 @@ def _from_baked() -> VersionInfo | None:
         return None
     commit = getattr(_buildinfo, "COMMIT", None)
     release = getattr(_buildinfo, "RELEASE", None)
-    if not isinstance(commit, str) or not isinstance(release, bool):
+    if not (isinstance(commit, str) and commit) or not isinstance(release, bool):
         return None
     return VersionInfo(package_version(), commit, release)
 
