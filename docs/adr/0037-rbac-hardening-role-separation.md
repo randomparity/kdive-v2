@@ -44,6 +44,15 @@ Role.ADMIN)`. Because the rank is total, `admin` still satisfies every `operator
 requirement; the change is that operations are pinned to the **lowest** sufficient
 role, and the budget/quota ops are pinned to `admin`.
 
+**Role checks bind to the *target* project, not just any project the caller is in.**
+Every read and write resolves the project of the object it touches and checks
+`require_project` + `require_role` against **that** project. This matters most for
+`accounting.usage(investigation_id)`: it resolves the investigation's owning project and
+checks `viewer` there — a `viewer` in project A cannot read project B's spend by passing
+a B-owned `investigation_id` (ADR-0007 decision 6). Without per-object project resolution
+the `viewer` grant would be a cross-project read bypass, so it carries its own negative
+test (decision 3).
+
 ### 2. The destructive-op gate's role factor is **`admin`**, no longer collapsed
 
 The three-check gate (capability scope ∧ role ∧ profile opt-in,

@@ -69,6 +69,16 @@ same rate. A provisioned System whose profile exceeds the allocation's selector 
 is a `configuration_error` at `systems.provision` (you cannot silently provision
 more than you were charged for).
 
+**The selector and window are validated before they reach the ledger.** Because both
+feed **signed** `kcu_delta` arithmetic, admission (and `accounting.estimate`) reject —
+as `configuration_error` — any selector with `vcpus < 1` or `memory_gb < 0`, any
+selector exceeding the target Resource's advertised capabilities (the size is billed, so
+it may not exceed what the host can give), and any `window ≤ 0`. This guarantees `rate ≥
+0` and `estimate ≥ 0`: a negative-size or negative-window request cannot pass the budget
+check (`budget_remaining ≥ estimate` is trivially true for a negative estimate) and write
+a **negative `reserved`** row that would *increase* `budget_remaining` — i.e. mint budget.
+Validating here, not only at `systems.provision`, closes that admission-time exploit.
+
 ### 3. Cost hits the ledger **reserve-at-grant, reconcile-at-release** (fail-closed)
 
 The ledger is `ledger(id, ts, project, allocation_id, resource_id, cost_class,
@@ -132,19 +142,22 @@ rule), only a structured-log capacity event.
 M1 adds `LockScope.PROJECT` (keyed by `project`). `allocations.request` admission
 runs:
 
-1. Acquire `LockScope.PROJECT(project)` — **then** `LockScope.RESOURCE(resource_id)`.
+1. **Validate inputs** (before any lock): reject `vcpus < 1`, `memory_gb < 0`, a
+   selector over the host's caps, or `window ≤ 0` (`configuration_error`), so `rate` and
+   `estimate` are `≥ 0` and cannot mint budget (decision 2).
+2. Acquire `LockScope.PROJECT(project)` — **then** `LockScope.RESOURCE(resource_id)`.
    This is one instance of a **global total lock order** `PROJECT < RESOURCE <
    ALLOCATION < SYSTEM` that **every** multi-lock path obeys, so the design is
    deadlock-free across all paths that now take `PROJECT` — not just this pair:
-   `allocations.renew` takes PROJECT only; `systems.provision` takes PROJECT→SYSTEM
-   (system-quota check then the M0 per-System section); the reconciler `→expired` sweep
-   takes PROJECT→SYSTEM. A single pairwise rule would not suffice once three paths
-   share the `PROJECT` scope.
-2. Under the project lock: check `max_concurrent_allocations`; compute `estimate`;
+   `allocations.renew` takes PROJECT only; `allocations.release` takes PROJECT→ALLOCATION;
+   `systems.provision` takes PROJECT→SYSTEM (system-quota check then the M0 per-System
+   section); the reconciler `→expired` sweep takes PROJECT→ALLOCATION→SYSTEM. A single
+   pairwise rule would not suffice once these paths share the `PROJECT` scope.
+3. Under the project lock: check `max_concurrent_allocations`; compute `estimate`;
    check `budget_remaining ≥ estimate`.
-3. Under the resource lock (the M0 critical section, unchanged): check the per-host
+4. Under the resource lock (the M0 critical section, unchanged): check the per-host
    `concurrent_allocation_cap`.
-4. If all pass, in one transaction: insert the `granted` Allocation (with
+5. If all pass, in one transaction: insert the `granted` Allocation (with
    `lease_expiry` per ADR-0036, `requested_vcpus`/`requested_memory_gb`), write the
    `reserved` ledger row, write the audit row.
 
@@ -161,6 +174,14 @@ project's budget or quota is `admin`** (`accounting.set_budget`,
 `accounting.set_quota`). This is the concrete project-administration surface that
 [ADR-0037](0037-rbac-hardening-role-separation.md) makes `admin`-only, separating it
 from the `operator` lifecycle role M0 collapsed.
+
+**`accounting.usage` is `viewer` of the *target* project, both call forms.** The
+`project` form checks `require_project` + `require_role(viewer, project)`. The
+`investigation_id` form first **resolves the investigation's owning project**, then
+applies the identical check on that project — a `viewer` cannot read another project's
+spend by passing a foreign `investigation_id`. Without this resolution the
+`investigation_id` form would be a cross-project read bypass; it is a tenant-isolation
+boundary, enforced and negatively tested ([ADR-0037](0037-rbac-hardening-role-separation.md)).
 
 ## Consequences
 

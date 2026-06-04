@@ -32,8 +32,11 @@ per-host slot (ADR-0023), a per-project concurrency slot, and a budget reservati
 ### 1. A lease **window** is set at grant, bounded by config
 
 `allocations.request({selector, project, window})` carries a requested `window`
-(duration). Admission clamps it: `window = min(requested, KDIVE_LEASE_MAX)` with a
-default of `KDIVE_LEASE_DEFAULT` when omitted (proposed: default 4h, max 24h —
+(duration). A requested window must be `> 0` (else `configuration_error` — a zero or
+negative window would otherwise reserve zero/negative cost, holding a slot for free or
+minting budget via a negative `reserved` delta; see ADR-0007 decision 2). Admission then
+clamps it: `window = min(requested, KDIVE_LEASE_MAX)` with a default of
+`KDIVE_LEASE_DEFAULT` when omitted (proposed: default 4h, max 24h —
 operator-configurable). The grant sets `lease_expiry = now() + window`. The reserved
 ledger estimate (ADR-0007) is `rate × window_hours`, so the window is what the
 project is charged to hold the claim.
@@ -58,9 +61,10 @@ tests (additive, bisectable — the M0 pattern).
 
 ### 3. `allocations.renew` extends the window, re-charged and re-checked
 
-`allocations.renew(allocation_id, extend)` extends `lease_expiry` by `extend`,
-clamped so total remaining never exceeds `KDIVE_LEASE_MAX` from now. It runs under the
-per-project lock (ADR-0007) and **re-checks budget for the added window only**,
+`allocations.renew(allocation_id, extend)` extends `lease_expiry` by `extend`
+(which must be `> 0`, else `configuration_error` — the same guard as the initial
+window), clamped so total remaining never exceeds `KDIVE_LEASE_MAX` from now. It runs
+under the per-project lock (ADR-0007) and **re-checks budget for the added window only**,
 writing an incremental `reserved` ledger delta (`rate × extend_hours`). Renewal over
 budget is denied (`allocation_denied`) and does **not** extend — fail-closed, the
 window stands. Renewal is `operator` (it is lifecycle, not administration). Only a
@@ -72,17 +76,23 @@ non-terminal (`granted`/`active`) allocation can renew; renewing a terminal one 
 A new reconciler pass selects non-terminal allocations with `lease_expiry < now()`
 and, per allocation:
 
-1. transitions the allocation `→ expired` (audited), stamping `active_ended_at`
-   (ADR-0007) so the ledger reconciliation has its billing interval;
+1. **under the per-Allocation lock** (ADR-0007's `PROJECT < … < ALLOCATION` order),
+   transitions the allocation `→ expired` and writes the `reconciled` credit in one
+   transaction (audited), stamping `active_ended_at` (ADR-0007) so the reconciliation has
+   its billing interval. This serializes against `allocations.release`, which takes the
+   same per-Allocation lock for its terminal transition + `reconciled` write: whichever
+   reaches the lock first makes the allocation terminal, and the other skips
+   (`release` → `stale_handle`; the sweep selects only non-terminal allocations) — so an
+   allocation is **never reconciled twice**, even when its lease expires at the instant
+   the agent releases it;
 2. hands its System (if any) to the **existing** M0 orphaned-System teardown — a
    System never outlives its Allocation (ADR-0021), and an `expired` Allocation is now
    one of the "not active" states that orphans a System;
 3. the existing lease-expiry compensation drains the System's in-flight job **within
    the same M0 grace window** and force-kills only after — so transitioning the
    allocation to `expired` first does **not** bypass the drain; the owning Run becomes
-   `failed(lease_expired)`;
-4. the release reconciliation writes the `reconciled` ledger delta (ADR-0007) for the
-   allocation's actual active time, crediting back the unused reservation.
+   `failed(lease_expired)`. (The `reconciled` credit is already written atomically with
+   the `→expired` transition in step 1, crediting back the unused reservation.)
 
 The sweep is idempotent (a second pass sees an `expired` allocation and skips it) and
 emits a structured-log line per reclaimed allocation. The grace window and force-kill

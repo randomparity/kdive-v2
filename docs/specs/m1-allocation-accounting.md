@@ -65,6 +65,13 @@ W_CPU = 1.0 kcu/(vcpu·hr)   W_MEM = 0.25 kcu/(GB·hr)   (global reference weigh
 - **Size** comes from the request **selector** (`vcpus`, `memory_gb`), persisted on
   the allocation (`requested_vcpus`, `requested_memory_gb`), so estimate is computable
   before a System exists and the reconciliation recomputes the same rate.
+- **Inputs are validated before they reach the ledger.** Because selector size and
+  window flow into **signed** `kcu_delta` arithmetic, admission (and `accounting.estimate`)
+  reject a selector with `vcpus < 1` or `memory_gb < 0`, a selector exceeding the target
+  Resource's advertised capabilities (the size is *billed*, so it may not exceed what the
+  host can give), or a `window ≤ 0` — all `configuration_error`. `rate` and `estimate`
+  are therefore always `≥ 0`: no negative-size or negative-window request can mint budget
+  by writing a negative `reserved` row.
 - **`accounting.estimate(selector, window)`** returns `rate × window_hours` with a
   breakdown; **`accounting.usage(project|investigation_id)`** rolls up `Σ kcu_delta`
   and `budget_remaining`.
@@ -101,9 +108,10 @@ The M1 gate **composes** M0's per-host capacity check, it does not replace it
 admission, under a fixed **project-before-resource** lock order to stay deadlock-free:
 
 ```
+validate selector (vcpus≥1, memory_gb≥0, ≤ resource caps) + window>0  → configuration_error
 acquire LockScope.PROJECT(project)              # M1, new
   check max_concurrent_allocations (non-terminal count)   → quota_exceeded
-  estimate = rate(selector) × window_hours
+  estimate = rate(selector) × window_hours       # always ≥ 0 (validated above)
   check budget_remaining ≥ estimate                       → allocation_denied
   acquire LockScope.RESOURCE(resource_id)        # M0, unchanged (ADR-0023)
     check per-host concurrent_allocation_cap             → allocation_denied (at_capacity)
@@ -119,11 +127,21 @@ over-budget or over-host-cap.
 
 **Lock hierarchy.** Every path that takes more than one advisory lock acquires them in
 the fixed total order `PROJECT < RESOURCE < ALLOCATION < SYSTEM`, so no two paths can
-deadlock — a single pairwise rule is not enough once `renew`, `provision`, and the
-reconciler also take `PROJECT`. `allocations.request` takes PROJECT→RESOURCE;
-`allocations.renew` takes PROJECT only; `systems.provision` takes PROJECT (system-quota
-check) →SYSTEM; the `→expired` sweep takes PROJECT→SYSTEM. The M0 per-Allocation /
-per-System critical sections keep their place at the tail of this order.
+deadlock — a single pairwise rule is not enough once `renew`, `provision`, `release`,
+and the reconciler also take `PROJECT`. `allocations.request` takes PROJECT→RESOURCE;
+`allocations.renew` takes PROJECT only; `allocations.release` takes PROJECT→ALLOCATION;
+`systems.provision` takes PROJECT (system-quota check) →SYSTEM; the `→expired` sweep
+takes PROJECT→ALLOCATION→SYSTEM. The M0 per-Allocation / per-System critical sections
+keep their place at the tail of this order.
+
+**Release vs. expiry — exactly one reconciliation.** `allocations.release` and the
+`→expired` sweep both end an allocation and write its `reconciled` credit, so they must
+not both fire on one allocation. Each takes the per-**Allocation** lock and performs its
+terminal transition **and** the `reconciled` write in one transaction under it: whichever
+reaches the ALLOCATION lock first makes the allocation terminal (`released` or `expired`);
+the other then reads a terminal state and skips (`release` on a terminal allocation →
+`stale_handle`; the sweep selects only non-terminal allocations). A double credit is
+therefore impossible even when a lease expires at the instant the agent releases.
 
 **`systems.provision`** gains the second quota check under the same per-project lock:
 `max_concurrent_systems` (non-terminal System count) → `quota_exceeded`. Systems are
@@ -147,9 +165,11 @@ once `0002` lands — folded into issue ⑨.)
 
 Per [0036](../adr/0036-reservation-lease-semantics.md):
 
-- **Window at grant** — `allocations.request({…, window})`; clamped
-  `window = min(requested, KDIVE_LEASE_MAX)`, default `KDIVE_LEASE_DEFAULT`
-  (proposed 4h default / 24h max); `lease_expiry = now() + window`.
+- **Window at grant** — `allocations.request({…, window})`; a requested window must be
+  `> 0` (else `configuration_error`) and is clamped `window = min(requested,
+  KDIVE_LEASE_MAX)`, defaulting to `KDIVE_LEASE_DEFAULT` when omitted (proposed 4h
+  default / 24h max); `lease_expiry = now() + window`. `renew`'s `extend` is validated
+  the same way (`> 0`).
 - **`allocations.renew(allocation_id, extend)`** — extends `lease_expiry` under the
   per-project lock, re-checks budget for the **added** window only, writes an
   incremental `reserved` delta; over budget → `allocation_denied`, window unchanged.
@@ -159,8 +179,10 @@ Per [0036](../adr/0036-reservation-lease-semantics.md):
   (operation failure). The owning Run still becomes `failed(lease_expired)` via the
   existing compensation — allocation `expired` ≠ Run `failed`.
 - **Reconciler `→expired` sweep** — selects expired non-terminal allocations and, per
-  allocation, transitions it `→expired` (audited, stamping `active_ended_at`), then
-  hands its System to the **existing** M0 orphaned-System teardown. The teardown
+  allocation, **under the per-Allocation lock**, transitions it `→expired` and writes the
+  `reconciled` credit in one transaction (audited, stamping `active_ended_at`) — so it
+  cannot double-reconcile against a concurrent `allocations.release` (see "Release vs.
+  expiry"). It then hands the System to the **existing** M0 orphaned-System teardown. The teardown
   **honors the same in-flight-job grace window M0 already uses**: an in-flight
   provision/job is drained within the grace window and force-killed only after, so
   flipping the allocation to `expired` never bypasses the drain. The Run becomes
@@ -191,9 +213,14 @@ makes the separation **real and tested**:
   it is destructive (wipes the OS) so it still passes the capability-scope and
   profile-opt-in factors, but reprovisioning your own granted System is iterating, not
   administering.
+- **Reads are project-scoped — including the `investigation_id` form.**
+  `accounting.usage(investigation_id)` resolves the investigation's owning `project` and
+  enforces `require_project` + `require_role(viewer)` **on that project**, exactly like
+  the `project` form. A `viewer` cannot read another project's spend by passing a foreign
+  `investigation_id`; this is a tenant-isolation boundary, not a convenience read.
 - **Test envs grant separated roles** — distinct `viewer`/`operator`/`admin`
   principals per project; every privileged M1 tool ships its **negative** test (the
-  lower role is refused).
+  lower role is refused), including the cross-project `usage(investigation_id)` refusal.
 
 ## Postgres schema (M1 delta — migration `0002`)
 
@@ -232,7 +259,7 @@ Allocation  allocations.request({selector:{vcpus,memory_gb,…}, project, window
               → {allocation_id, status:"granted"|"denied", reason?, estimate_kcu}
             allocations.renew(allocation_id, extend) → {allocation_id, lease_expiry}      # new, operator
 Accounting  accounting.estimate({selector, window}) → {estimate_kcu, rate_kcu_per_hr, breakdown}   # new, viewer
-            accounting.usage(project | investigation_id) → {spent_kcu, budget_remaining, by_cost_class}   # new, viewer
+            accounting.usage(project | investigation_id) → {spent_kcu, budget_remaining, by_cost_class}   # new, viewer (scoped to target project; investigation_id resolves to its project)
             accounting.set_budget(project, limit_kcu) → {project, limit_kcu}              # new, admin
             accounting.set_quota(project, max_allocations, max_systems) → {…}             # new, admin
 Provision   systems.provision(...)        # + max_concurrent_systems quota check (quota_exceeded)
@@ -277,9 +304,12 @@ are unchanged.
 M1 is done when, on the local-libvirt stack, each is demonstrably true (the
 falsifiable signal, as M0's six were):
 
-1. **Budget denial** — a request whose `estimate` exceeds `budget_remaining` returns
-   `allocation_denied` with **no** allocation, ledger, or audit row; a request within
-   budget grants and writes exactly one `reserved` ledger row.
+1. **Budget denial + input validation** — a request whose `estimate` exceeds
+   `budget_remaining` returns `allocation_denied` with **no** allocation, ledger, or
+   audit row; a request within budget grants and writes exactly one `reserved` row; and a
+   **malformed** request (`vcpus < 1`, `memory_gb < 0`, selector over the host's caps, or
+   `window ≤ 0`) is rejected `configuration_error` with no row — proving negative inputs
+   cannot mint budget.
 2. **Quota denial** — at `max_concurrent_allocations`, `allocations.request` returns
    `quota_exceeded`; at `max_concurrent_systems`, `systems.provision` returns
    `quota_exceeded`; both write no durable object.
