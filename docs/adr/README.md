@@ -56,3 +56,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0024](0024-provisioning-profile-model-shape.md) | Provisioning-profile model shape (M0, refines 0011) | Proposed |
 | [0025](0025-provisioning-plane-libvirt.md) | Provisioning plane: System creation & teardown on local libvirt (M0) | Proposed |
 | [0026](0026-investigation-run-lifecycle.md) | Investigation + Run lifecycle & tools (M0) | Proposed |
+| [0027](0027-safety-modules-secret-backend-impl.md) | Safety modules & file-ref secret backend (impl, refines 0012) | Proposed |
