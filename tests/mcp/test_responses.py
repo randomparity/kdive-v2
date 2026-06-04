@@ -79,3 +79,30 @@ def test_failure_without_category_is_rejected() -> None:
     # therefore requires a category.
     with pytest.raises(ValueError, match="error_category"):
         ToolResponse(object_id="x", status="error", error_category=None)
+
+
+def test_success_factory_builds_non_failure_envelope() -> None:
+    resp = ToolResponse.success(
+        "alloc-1", "granted", suggested_next_actions=["allocations.release"], data={"k": "v"}
+    )
+    assert resp.object_id == "alloc-1"
+    assert resp.status == "granted"
+    assert resp.error_category is None
+    assert resp.suggested_next_actions == ["allocations.release"]
+    assert resp.data == {"k": "v"}
+
+
+def test_success_factory_on_failure_status_raises() -> None:
+    # "failed" is a failure status; building it via success() (no category) is misuse.
+    with pytest.raises(ValueError, match="error_category"):
+        ToolResponse.success("alloc-1", "failed")
+
+
+def test_failure_factory_sets_error_status_and_category() -> None:
+    resp = ToolResponse.failure(
+        "res-1", ErrorCategory.ALLOCATION_DENIED, data={"reason": "at_capacity"}
+    )
+    assert resp.status == "error"
+    assert resp.error_category == "allocation_denied"
+    assert resp.data == {"reason": "at_capacity"}
+    assert resp.suggested_next_actions == []

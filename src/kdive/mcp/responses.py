@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, model_validator
 
+from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job
 from kdive.domain.state import JobState
 
@@ -54,6 +55,47 @@ class ToolResponse(BaseModel):
         if not is_failure and self.error_category is not None:
             raise ValueError(f"error_category set on non-failure status {self.status!r}")
         return self
+
+    @classmethod
+    def success(
+        cls,
+        object_id: str,
+        status: str,
+        *,
+        suggested_next_actions: list[str] | None = None,
+        refs: dict[str, str] | None = None,
+        data: dict[str, str] | None = None,
+    ) -> ToolResponse:
+        """Build a non-failure envelope.
+
+        ``status`` must not be a failure status (``failed``/``error``); passing one is a
+        producer bug and the model validator raises, surfacing the misuse at construction.
+        """
+        return cls(
+            object_id=object_id,
+            status=status,
+            suggested_next_actions=suggested_next_actions or [],
+            refs=refs or {},
+            data=data or {},
+        )
+
+    @classmethod
+    def failure(
+        cls,
+        object_id: str,
+        category: ErrorCategory,
+        *,
+        suggested_next_actions: list[str] | None = None,
+        data: dict[str, str] | None = None,
+    ) -> ToolResponse:
+        """Build a tool-level failure envelope (``status="error"`` + ``category``)."""
+        return cls(
+            object_id=object_id,
+            status="error",
+            error_category=category.value,
+            suggested_next_actions=suggested_next_actions or [],
+            data=data or {},
+        )
 
     @classmethod
     def from_job(cls, job: Job) -> ToolResponse:
