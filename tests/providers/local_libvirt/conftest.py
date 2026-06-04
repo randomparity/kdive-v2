@@ -31,9 +31,25 @@ class FakeDomain:
     raise_code: int | None = None  # override: raise a libvirtError with this code
     calls: list[str] = field(default_factory=list)  # records control ops in call order
     raise_on: dict[str, int] = field(default_factory=dict)  # op -> libvirt error code to raise
+    active: bool = False  # isActive() result; boot's "destroy if running" reads it
+    xml_desc: str | None = None  # XMLDesc() result; install reads it to add a direct-kernel <os>
 
     def name(self) -> str:
         return self.domain_name
+
+    def XMLDesc(self, flags: int = 0) -> str:  # noqa: N802 - mirrors the libvirt binding name
+        return (
+            self.xml_desc
+            if self.xml_desc is not None
+            else (
+                f'<domain type="kvm"><name>{self.domain_name}</name>'
+                f'<memory unit="MiB">2048</memory><vcpu>2</vcpu>'
+                f'<os><type arch="x86_64" machine="q35">hvm</type></os>'
+                f'<devices><disk type="file" device="disk">'
+                f'<source file="/var/lib/kdive/rootfs.qcow2"/>'
+                f'<target dev="vda" bus="virtio"/></disk></devices></domain>'
+            )
+        )
 
     def metadata(self, kind: int, uri: str | None, flags: int) -> str:
         if self.raise_code is not None:
@@ -72,6 +88,9 @@ class FakeDomain:
         self._maybe_raise("injectNMI")
         return 0
 
+    def isActive(self) -> int:  # noqa: N802 - mirrors the libvirt binding name
+        return 1 if self.active else 0
+
 
 @dataclass
 class FakeLibvirtConn:
@@ -79,6 +98,8 @@ class FakeLibvirtConn:
     info: list[object] = field(default_factory=lambda: ["x86_64", 16384, 8, 2400, 1, 1, 4, 2])
     domains: list[FakeDomain] = field(default_factory=list)
     lookup: dict[str, FakeDomain] = field(default_factory=dict)  # name -> domain for control ops
+    defined_xml: list[str] = field(default_factory=list)  # captures defineXML payloads in order
+    define_error: int | None = None  # libvirt error code defineXML raises, if set
 
     def getInfo(self) -> list[object]:
         return self.info
@@ -95,5 +116,23 @@ class FakeLibvirtConn:
             raise libvirt_error(libvirt.VIR_ERR_NO_DOMAIN)
         return domain
 
+    def defineXML(self, xml: str) -> FakeDomain:  # noqa: N802 - mirrors the libvirt binding name
+        self.defined_xml.append(xml)
+        if self.define_error is not None:
+            raise libvirt_error(self.define_error)
+        # Return (and register) a domain keyed on the rendered <name>, so a later
+        # lookupByName(domain_name) in boot() finds the just-defined domain.
+        return self.lookup.setdefault(
+            _name_from_domain_xml(xml), FakeDomain(domain_name="defined", system_id=None)
+        )
+
     def close(self) -> int:
         return 0
+
+
+def _name_from_domain_xml(xml: str) -> str:
+    """Extract the <name> text from a rendered domain XML (test helper)."""
+    import xml.etree.ElementTree as ET
+
+    name_el = ET.fromstring(xml).find("name")  # noqa: S314 - trusted, self-rendered test XML
+    return name_el.text or "" if name_el is not None else ""
