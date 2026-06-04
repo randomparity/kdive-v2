@@ -305,7 +305,7 @@ Accounting  accounting.estimate({selector, window}) → {estimate_kcu, rate_kcu_
             accounting.set_budget(project, limit_kcu) → {project, limit_kcu}              # new, admin
             accounting.set_quota(project, max_allocations, max_systems) → {…}             # new, admin
 Provision   systems.provision(...)        # + max_concurrent_systems quota check (quota_exceeded)
-            systems.reprovision(system_id, provisioning_profile) → {job_id}              # new, operator, destructive
+            systems.reprovision(system_id, provisioning_profile) → {job_id}              # new, operator, destructive; refused under a non-terminal Run (stale_handle)
 Debug       debug.start_session(run_id, transport:"gdbstub"|"ssh") → {debug_session_id}   # + "ssh"
             introspect.run(session_id, helper) → {result}   # new, live drgn over ssh, redacted
 ```

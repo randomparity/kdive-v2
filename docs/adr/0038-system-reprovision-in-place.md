@@ -64,8 +64,9 @@ granted System is iterating, not administering.
 
 A reprovision changes the OS/kernel target, so any Run bound to the System's prior
 boot is invalid against the new install. Reprovision requires the System to have **no
-non-terminal Run** (else `transport_conflict`/`stale_handle` — you cannot reprovision
-under a live Run); Runs created after the reprovision target the new install. The
+non-terminal Run** (else **`stale_handle`** — the System reference is not reprovisionable
+while a Run is live; `transport_conflict` is reserved for debug-transport contention, a
+different condition); Runs created after the reprovision target the new install. The
 binding invariant `run.system → allocation` is unchanged (the Allocation is the same);
 what changes is the boot/fingerprint the next Run builds against.
 
@@ -74,8 +75,14 @@ what changes is the boot/fingerprint the next Run builds against.
 - One Allocation can now host a sequence of OS installs without re-acquiring the host
   slot or re-charging the allocation — the iteration-is-cheap property the design
   wants, extended from "many Runs per System" to "many Systems per Allocation".
-- The `systems.id` is stable across reprovisions, so the Investigation narrative and
-  cost rollup (which key on the objects the Runs touched) stay coherent.
+- The `systems.id` is stable across reprovisions, so the Investigation **narrative and
+  audit** stay coherent. **Cost**, however, is metered per *Allocation*
+  ([ADR-0007](0007-metering-budgets-admission.md) §6), not per System: a reprovision that
+  carries Runs across different Investigations makes its Allocation a *shared* one, whose
+  cost is reported in the project's `shared_kcu` and attributed to no single
+  Investigation (never double-counted). Reprovision does not, and is not meant to, keep a
+  per-Investigation cost rollup "coherent" — that is the shared-allocation case ADR-0007
+  §6 handles deliberately.
 - The state-machine change is two states-worth of edges and one widened CHECK —
   additive, bisectable.
 - Reprovision being `operator`-gated (not `admin`) keeps iteration in the lifecycle
