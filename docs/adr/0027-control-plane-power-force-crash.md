@@ -93,7 +93,10 @@ stable surface.
   profile model; the JSON-schema snapshot (if any) is regenerated. The field is
   additive and defaults to `[]`, so existing profiles validate unchanged.
 - `ErrorCategory.AUTHORIZATION_DENIED` is added — its first real producer is the
-  `force_crash` denial path, so it is not a phantom value.
+  `force_crash` denial path, so it is not a phantom value. The `runs_failure_category_check`
+  and `jobs_error_category_check` SQL CHECK constraints in `0001_init.sql` gain the new
+  value so the schema stays a superset of the enum (the constraint-coverage test enforces
+  this); no runs/jobs row stores it today, but the constraint must list every enum member.
 - The DebugSession detach is driven by the control plane now and by the reconciler's
   dead-session sweep already; when #20 ships attach + a worker heartbeat, the two
   remain consistent (both only move `attach`/`live → detached`, never backward).
