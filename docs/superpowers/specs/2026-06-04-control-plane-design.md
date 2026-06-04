@@ -117,8 +117,22 @@ helpers are re-derived locally; no cross-tool import).
 4. Refuse on a System with no live domain: a `defined`/`provisioning`/terminal System has
    nothing to power (`configuration_error` carrying `current_status`). Only `ready`/
    `crashed` Systems (have a started domain) admit a power op.
-5. Enqueue a `POWER` job, `dedup_key=f"{system_id}:power:{action}"`, payload
+5. Enqueue a `POWER` job, `dedup_key=f"{system_id}:power:{action}:{uuid4()}"`, payload
    `{system_id, action}`. Return the job-handle envelope (System id in `data`).
+
+   **Why a unique suffix.** `queue.enqueue` is `ON CONFLICT (dedup_key) DO NOTHING` and
+   returns the *existing* job in whatever state it has reached (queue.py); a bare
+   `{system_id}:power:{action}` key would make the **second** `power off` on a System (after
+   an intervening `power on`) collide with the first, already-`succeeded` row and return it
+   **without re-running** — the domain would never actually power off again. `power` is a
+   *repeatable* operational control, so each invocation must be a fresh job; the per-call
+   `uuid4()` suffix makes the key unique. The cost is that `power` is **not** deduplicated:
+   two identical concurrent `power off` calls enqueue two jobs. That is acceptable — power
+   ops are idempotent at the libvirt layer (`destroy` on a stopped domain is the swallowed
+   achieved-post-state), and the per-System lock serializes the two handlers. `force_crash`,
+   by contrast, keeps a stable `{system_id}:force_crash` key (next section): it is
+   naturally once-per-System (one System per Allocation, no reprovision in M0, `ready →
+   crashed` is one-way), so collapsing duplicate crash requests onto one job is correct.
 
 **`control.power` handler** (`power` job): under the per-System lock, load the System
 (missing → `infrastructure_failure`), read `domain_name` (or the deterministic name),

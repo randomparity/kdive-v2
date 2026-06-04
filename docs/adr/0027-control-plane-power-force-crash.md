@@ -70,11 +70,18 @@ stable surface.
    (the common M0 case — no debug plane yet), the detach step is a no-op. The detach is
    committed in the same transaction as the System transition and its audit row.
 
-6. **`dedup_key` and idempotency.** `force_crash` uses `dedup_key=f"{system_id}:force_crash"`;
-   `power` uses `dedup_key=f"{system_id}:power:{action}"` (the `op[:action]` the issue
-   names). The handlers are idempotent: a re-run whose System is already `crashed`
-   (force_crash) or whose domain is already in the target power state re-attempts the
-   provider call where it is idempotent and makes no illegal transition.
+6. **`dedup_key` and idempotency.** `force_crash` uses a **stable**
+   `dedup_key=f"{system_id}:force_crash"`: it is naturally once-per-System (one System per
+   Allocation, no reprovision in M0, `ready → crashed` is one-way), so collapsing duplicate
+   crash requests onto one job is correct, and a handler re-run on an already-`crashed`
+   System makes no illegal transition. `power` uses a **per-call-unique**
+   `dedup_key=f"{system_id}:power:{action}:{uuid4()}"`. A stable `{system_id}:power:{action}`
+   key (the `op[:action]` the issue names) would be wrong for a *repeatable* op: `enqueue`
+   is `ON CONFLICT DO NOTHING` and returns the existing job in whatever state it reached, so
+   the second `power off` (after an intervening `power on`) would collide with the first,
+   already-`succeeded` job and never re-run. The unique suffix makes every `power`
+   invocation a fresh job; power is therefore not deduplicated, which is safe because power
+   ops are libvirt-idempotent and the per-System lock serializes concurrent handlers.
 
 ## Consequences
 
