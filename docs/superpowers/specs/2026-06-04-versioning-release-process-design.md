@@ -25,12 +25,14 @@ Deliverables:
 - `cliff.toml` — git-cliff config mapping commit types → changelog sections.
 - `src/kdive/version.py` — `version_info()` / `full_version()`: package version +
   resolved commit SHA + release/dev flag.
-- `src/kdive/__init__.py` — re-export `__version__` and `__commit__`.
+- `src/kdive/__init__.py` — set `__version__` from `package_version()` (no import-time
+  git subprocess; commit is resolved lazily via `version_info()`).
 - `src/kdive/__main__.py` — a `--version` action and a startup log line in each of
   `server`/`worker`/`reconciler`.
 - `justfile` — `set-version`, `changelog`, `release` recipes.
 - `.github/workflows/release.yml` — tag-triggered build + internal GitHub Release.
-- `pyproject.toml` — `[project].version` bumped `0.1.0` → `0.2.0`.
+- `pyproject.toml` + `uv.lock` — `[project].version` bumped `0.1.0` → `0.2.0` via
+  `uv version` (which rewrites **both** atomically; see Surface → `set-version`).
 - `README.md` — a one-line "Releasing" pointer to `docs/RELEASING.md`.
 
 ## Non-goals
@@ -58,14 +60,31 @@ Deliverables:
 - **Milestone → minor.** Each completed Milestone bumps the minor:
   `M1 → 0.2.0`, `M1.5 → 0.3.0`, `M2 → 0.4.0`, … first GA `→ 1.0.0`. Patch (`z`) is for
   fixes/hardening cut between Milestones (e.g. a red-team hardening release).
+- **What forces which bump (the `0.y` contract rule).** A change that is
+  backward-**incompatible** to the public contract above — a renamed/removed MCP tool
+  or changed `ToolResponse` shape, a removed/renamed `ErrorCategory`, or a **forward-only
+  migration that is not backward compatible** with the prior running server (a dropped
+  column, a non-nullable add without default, a state-machine edge removal) — is
+  released as a **minor** and called out in the changelog under a `Breaking` heading.
+  A **patch** (`z`) may contain only **additive/backward-compatible** changes
+  (additive migrations, new optional tool fields, fixes). A schema migration therefore
+  does **not** automatically force a minor — an additive one is patch-eligible; a
+  breaking one forces a minor. Pre-1.0, none of this is a major bump; `1.0.0` is the
+  first release where a breaking contract change would require a major.
 - **In-tree version leads the tag.** `[project].version` is bumped to a Milestone's
   target minor **when that Milestone's work begins**; the matching annotated
   `vX.Y.Z` tag is cut **when the Milestone completes**. Consequence: throughout a
   Milestone every build reports `X.Y.Z-dev+g<sha>`; only the tagged release commit
   reports `X.Y.Z`.
 - **Tags are annotated**, named `vX.Y.Z` (matches the existing `v0.1.0`).
-- **Single source of version truth:** `[project].version` in `pyproject.toml`. Nothing
-  else carries the version literal; runtime code reads it via `importlib.metadata`.
+- **Single source of version truth:** `[project].version` in `pyproject.toml`. `uv.lock`
+  carries a *synchronized copy* of the project version (`uv.lock` pins
+  `name = "kdive" / version = …`), so the version is never hand-edited in isolation —
+  it is changed only through `uv version`, which rewrites both files together, and a
+  guard test asserts they agree (see Testing). Runtime code reads the version via
+  `importlib.metadata`, which reflects the **installed** distribution; the consistency
+  guard plus the fact that every task runs under `uv run`/`uv sync` (which reinstalls
+  on a pyproject change) keep installed-metadata == `pyproject` == `uv.lock`.
 
 ## Surface
 
@@ -73,11 +92,16 @@ Deliverables:
 
 The version-info resolver. Pure, lazy, cached — no subprocess at import time.
 
-- `package_version() -> str` — `importlib.metadata.version("kdive")`; the
-  `[project].version` value. Raises nothing in normal operation (kdive is always
-  installed via `uv sync`); a `PackageNotFoundError` falls back to `"0.0.0"`.
+- `package_version() -> str` — `importlib.metadata.version("kdive")`; reflects the
+  **installed** distribution (kept == `pyproject` by the consistency guard + `uv sync`).
+  A `PackageNotFoundError` falls back to `"0.0.0"`.
 - `version_info() -> VersionInfo` — a frozen dataclass `(version: str, commit: str |
-  None, is_release: bool)`, computed once and cached (module-level memo).
+  None, is_release: bool)`. Memoized with `functools.lru_cache` so it is computed once
+  per process, **and exposes `version_info.cache_clear()`** — the test suite calls it
+  in an autouse fixture between cases so per-case env/git mocks are not masked by a
+  stale memo (without this, the cache returns the first case's result for every later
+  case). The long-running processes never need to invalidate it (the version of a
+  running process does not change).
 - `full_version() -> str` — the display string:
   - release, commit known → `f"{version}+g{commit}"`
   - dev, commit known → `f"{version}-dev+g{commit}"`
@@ -99,13 +123,16 @@ A dirty tree on the exact tag resolves to **dev** (it is not a clean release bui
 ### `src/kdive/__init__.py`
 
 ```python
-from kdive.version import full_version, version_info
-__version__ = version_info().version
-__commit__ = version_info().commit
+from kdive.version import package_version
+__version__ = package_version()
 ```
 
-(`__version__` stays the plain package version for tooling that parses it;
-`full_version()` is the human/display form.)
+`__version__` is set from `package_version()` — `importlib.metadata` only, **no git
+subprocess** — so `import kdive` stays cheap and cannot fail on a missing/odd git. The
+commit and the `-dev`/release decision (which *do* shell out to git on the live-git
+path) are resolved lazily, only when `full_version()` / `version_info()` is actually
+called — at `--version` and at process startup, never at import. There is no eager
+`__commit__` attribute for this reason; read `version_info().commit` on demand.
 
 ### `src/kdive/__main__.py`
 
@@ -136,9 +163,12 @@ generated artifact, not hand-maintained line-by-line.
 
 ### `justfile` recipes
 
-- `set-version VERSION` — rewrite the single `[project].version` line in
-  `pyproject.toml` to `VERSION` (used at Milestone start). Validates `VERSION`
-  matches `MAJOR.MINOR.PATCH`.
+- `set-version VERSION` — validate `VERSION` matches `MAJOR.MINOR.PATCH`, then run
+  `uv version "$VERSION"` (used at Milestone start). This rewrites **both**
+  `pyproject.toml` and `uv.lock` atomically — editing `pyproject.toml` alone would
+  desynchronize the project pin in `uv.lock` and make `uv sync --locked` (CI's first
+  step and `just sync`) fail with a lockfile-out-of-date error. The recipe leaves both
+  files changed for the human to commit on a branch (never on `main`).
 - `changelog` — regenerate `CHANGELOG.md` from git history via `uvx git-cliff`.
 - `release VERSION` — the Milestone-completion recipe. Guards, in order:
   on `main`, clean tree, up to date with `origin/main`, and `[project].version ==
@@ -150,11 +180,26 @@ generated artifact, not hand-maintained line-by-line.
 - **Trigger:** `push: tags: ['v*']`. `permissions: contents: write` (create the
   Release). Actions pinned to SHA with version comments; `persist-credentials: false`
   — so `zizmor` stays green.
-- **Steps:** checkout → set up uv (pinned, as in `ci.yml`) → **verify** the tag name
-  equals `v{[project].version}` (fail the release on mismatch) → `uv build`
-  (wheel + sdist; kdive is pure-Python under `uv_build`, so no `libvirt-dev` needed)
-  → generate release notes for the tag via `uvx git-cliff --latest` → `gh release
-  create "$TAG" --notes-file … dist/*` (artifacts attached). No publish step.
+- **Concurrency:** a `concurrency` group keyed on the tag ref (`release-${{ github.ref }}`,
+  `cancel-in-progress: false`) so two pushes of the same tag never race to create the
+  Release.
+- **Steps:**
+  1. checkout **with `fetch-depth: 0`** — git-cliff needs the full commit history and
+     all prior tags; the default shallow (`fetch-depth: 1`, no tags) makes
+     `git-cliff --latest` emit empty/incorrect notes since it cannot find the previous
+     tag to diff against.
+  2. set up uv (pinned, as in `ci.yml`).
+  3. **verify** the tag name equals `v{[project].version}` (fail the release on
+     mismatch).
+  4. `uv build` (wheel + sdist; kdive is pure-Python under `uv_build`, so no
+     `libvirt-dev` needed).
+  5. generate release notes via `uvx git-cliff --latest --strip header` and **assert
+     the notes file is non-empty** (fail otherwise — an empty changelog means the
+     history/tags were not fetched).
+  6. create-or-update the Release idempotently: `gh release create "$TAG"
+     --notes-file … dist/*`, falling back to `gh release edit "$TAG" --notes-file …`
+     plus `gh release upload "$TAG" dist/* --clobber` if the Release already exists
+     (so a re-run does not hard-fail). No publish step.
 
 ## Data flow
 
@@ -191,10 +236,16 @@ notes never depend on a committed changelog being current.
   at the boundary: (a) `KDIVE_BUILD_RELEASE=1` → release; (b) live git on the exact
   tag, clean → release; (c) on the tag but dirty → dev; (d) untagged commit → dev;
   (e) git absent / not a repo → unknown → `-dev` with no `+g`. Assert the exact
-  `full_version()` string for each.
-- `tests/test_version_pyproject_consistency.py` — parse `[project].version` from
-  `pyproject.toml` and assert it equals `version.package_version()` (the drift
-  guard).
+  `full_version()` string for each. An **autouse fixture calls
+  `version_info.cache_clear()`** before each case so the memo from one case never
+  masks the next.
+- `tests/test_version_pyproject_consistency.py` — the drift guard. Parse
+  `[project].version` from `pyproject.toml` and assert it equals (1)
+  `version.package_version()` (installed metadata == working tree) **and** (2) the
+  `kdive` project version pinned in `uv.lock`. (2) catches a `pyproject` bump that
+  forgot to re-lock — the failure mode that would otherwise surface as a broken
+  `uv sync --locked` in CI. The test reads the installed metadata under `uv run`, so
+  the editable install is already resynced to the current `pyproject`.
 - `cliff.toml` smoke: a test (or the `changelog` recipe in CI dry-run) that
   `uvx git-cliff` parses the config and emits non-empty output for the current
   history.
