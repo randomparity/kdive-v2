@@ -130,11 +130,13 @@ async def admit(
         validate_size(selector)
         validate_against_resource(selector, resource)
         coeff = await resolve_coeff(conn, resource.cost_class)
+        # quantize_kcu can fail closed (value-too-large) on an extreme window×size; keep
+        # it inside the guard so it returns a typed denial, never an uncaught exception.
+        estimate = quantize_kcu(
+            cost(rate(coeff, vcpus=selector.vcpus, memory_gb=selector.memory_gb), window_hours)
+        )
     except CategorizedError as exc:
         return AdmissionOutcome(granted=False, allocation=None, category=exc.category)
-    estimate = quantize_kcu(
-        cost(rate(coeff, vcpus=selector.vcpus, memory_gb=selector.memory_gb), window_hours)
-    )
     try:
         async with conn.transaction(), advisory_xact_lock(conn, LockScope.PROJECT, project):
             return await _admit_under_project_lock(
@@ -168,6 +170,13 @@ async def _admit_under_project_lock(
     if idempotency_key is not None:
         replay = await _resolve_replay(conn, ctx.principal, idempotency_key)
         if replay is not None:
+            if replay.project != project:
+                # The key already names a grant in another project. Returning that foreign
+                # allocation would be a cross-project replay; the same key cannot mean two
+                # requests. Fail closed (the client must use a fresh key per request).
+                return AdmissionOutcome(
+                    granted=False, allocation=None, category=ErrorCategory.CONFIGURATION_ERROR
+                )
             return AdmissionOutcome(granted=True, allocation=replay)
     quota_ok = await _within_alloc_quota(conn, project)
     if not quota_ok:
