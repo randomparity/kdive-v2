@@ -38,6 +38,14 @@ def test_build_app_registers_jobs_tools() -> None:
         } <= names
         assert {"runs.create", "runs.get"} <= names
         assert {"control.power", "control.force_crash"} <= names
+        assert {
+            "vmcore.fetch",
+            "vmcore.list",
+            "artifacts.list",
+            "artifacts.get",
+            "postmortem.crash",
+            "postmortem.triage",
+        } <= names
 
     asyncio.run(_run())
 
@@ -61,5 +69,7 @@ def test_build_handler_registry_binds_provisioning_and_build_handlers() -> None:
     assert registry.get(JobKind.PROVISION) is not None
     assert registry.get(JobKind.TEARDOWN) is not None
     assert registry.get(JobKind.BUILD) is not None
+    # The retrieve plane (#24) registers the capture_vmcore handler.
+    assert registry.get(JobKind.CAPTURE_VMCORE) is not None
     # A kind with no handler yet (a later plane) still resolves to None.
     assert registry.get(JobKind.INSTALL) is None
