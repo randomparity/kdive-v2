@@ -48,7 +48,8 @@ run-dir confinement (they return with the planes that own them — ADR-0027 §4)
 
 - `register(value: str | None, *, scope: object | None) -> None` — refcount `value`
   under `scope`; `scope=None` registers under the global key (never evicted).
-  Empty/`None` is a no-op. Bumps `version`.
+  Empty/`None` is a no-op that does **not** bump `version` (it changes nothing the
+  redactor would see). A non-empty register bumps `version`.
 - `release(scope: object | None) -> None` — drop one refcount for each value the
   scope holds; `scope=None` is a no-op. Bumps `version` only if the scope held
   values.
@@ -74,20 +75,34 @@ run-dir confinement (they return with the planes that own them — ADR-0027 §4)
 - `confine_to_root(path: Path, *, allowed_root: Path) -> Path` — reject shell
   metacharacters/control chars, resolve `path` (following symlinks in existing
   components, normalizing a not-yet-created tail lexically), and require the result
-  under `allowed_root.resolve()`; raise `PathSafetyError` otherwise.
+  under `allowed_root.resolve()`; raise `PathSafetyError` otherwise. Returns the
+  resolved path; existence is **not** asserted here — the secret backend layers the
+  existing-file check on top (see `secrets.py`), so a final-component symlink whose
+  *target exists outside the root* is caught by the containment check while a
+  not-yet-existing tail under the root is admitted lexically. The check is
+  point-in-time: a TOCTOU window exists between confine and any later use of the
+  path. For M0 this is bounded by worker-host filesystem trust (ADR-0012); a caller
+  that acts much later must re-confine.
 
 ### `secrets.py`
 
 - `SecretBackend(Protocol)` — `resolve(self, ref: str) -> str`.
-- `FileRefBackend(root: Path, registry: SecretRegistry = PROCESS_SECRET_REGISTRY,
-  *, scope: object | None = None)`:
-  - `resolve(ref)` → `confine_to_root(Path(ref), allowed_root=root)`; on success read
-    text (UTF-8), strip a single trailing `\n`; `registry.register(value,
-    scope=scope)`; return `value`.
+- `FileRefBackend(root: Path, registry: SecretRegistry | None = None, *,
+  scope: object | None = None)`:
+  - `registry=None` resolves to `PROCESS_SECRET_REGISTRY` inside `__init__` (a
+    sentinel, not a mutable default argument bound at definition time). A
+    default-constructed backend therefore shares the process-global redaction state
+    — that is the production intent (resolved secrets must be masked process-wide);
+    tests opt out of the shared global by passing a local `SecretRegistry()`.
+  - `resolve(ref)` → `confine_to_root(Path(ref), allowed_root=root)`; require the
+    confined path to be an existing file (else `PathSafetyError`,
+    `secret file does not exist`); read text (UTF-8), strip a single trailing `\n`;
+    `registry.register(value, scope=scope)`; return `value`. Registration is the
+    last statement before `return`, and there is **no** return path that yields the
+    value without first registering it — neither the empty-file path (which returns
+    `""`, a no-op register) nor any error path (which raises instead of returning).
   - A ref escaping `root` raises `PathSafetyError` from `confine_to_root` **before**
     any read.
-  - A nonexistent file under `root` raises `PathSafetyError`
-    (`secret file does not exist`) — the resolved path must be an existing file.
 
 ## Behavioral contracts (falsifiable)
 
@@ -95,13 +110,19 @@ run-dir confinement (they return with the planes that own them — ADR-0027 §4)
    fresh `Redactor().redact_text(text containing V)` replaces every occurrence of `V`
    with `REDACTION`. *Falsified if* `V` survives in the output.
 2. **Allowlist confinement.** `resolve("../escape")` (and an absolute path outside
-   `root`, and a symlink under `root` whose target is outside `root`) raises
-   `PathSafetyError` and reads no file. *Falsified if* it returns a value or reads the
-   target.
-3. **Register-before-return ordering.** At the instant `resolve` returns `V`,
-   `registry.snapshot()` already contains `V`. Enforced by a registry stub whose
-   `register` records call order, asserting `register(V)` precedes the return.
-   *Falsified if* the value is returned before `register` is called.
+   `root`, and a symlink under `root` whose target is an existing file outside
+   `root`) raises `PathSafetyError` and reads no file. *Falsified if* it returns a
+   value or reads the target.
+3. **Register-before-return ordering (no-skip).** The security property is that
+   `resolve` has **no** return path that yields `V` without first registering it, so
+   any consumer building a `Redactor` after `resolve` returns will mask `V`. Tested
+   two ways: (a) a registry double whose `register` *is what makes the value
+   visible* — its `register` appends to a list and the test asserts that immediately
+   after `resolve` returns, that list contains `V` (i.e. registration happened on the
+   path taken, not just textually present); (b) a positive end-to-end check that a
+   fresh `Redactor(registry.snapshot())` built right after `resolve` masks `V` in
+   sample text. *Falsified if* `resolve` can return `V` with the double's list empty,
+   or if the post-resolve `Redactor` fails to mask `V`.
 4. **Empty-value drop.** Resolving a ref to an empty (or single-`\n`) file returns
    `""` and the registry snapshot does not gain an empty string. *Falsified if* an
    empty string enters the registry (which would force-mask every string).
