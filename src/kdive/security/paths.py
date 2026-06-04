@@ -43,6 +43,12 @@ def confine_to_root(path: Path, *, allowed_root: Path) -> Path:
     The check is point-in-time: a TOCTOU window exists between confining a path and
     any later use. For M0 this is bounded by worker-host filesystem trust (ADR-0012);
     a caller that acts much later must re-confine.
+
+    Operator contract: a confined path must not contain shell-control characters
+    (``;|&`` `` ` `` ``$<>\``) or control characters. These are legal on a POSIX
+    filesystem but are rejected as defense-in-depth, so a secrets root and the files
+    under it must avoid them. The control-character rejection is the load-bearing
+    guard; the shell-metachar set is the same defense-in-depth the PoC carried.
     """
     text = str(path)
     if any(char in _SHELL_METACHARS for char in text) or any(ord(char) < 32 for char in text):

@@ -95,9 +95,25 @@ def test_terminator_strip(tmp_path: Path) -> None:
     assert backend.resolve(str(tmp_path / "trailing-space")) == "secret "
 
 
-def test_default_registry_is_process_global(tmp_path: Path) -> None:
-    backend = FileRefBackend(tmp_path)
-    assert backend._registry is PROCESS_SECRET_REGISTRY
+def test_oversized_file_rejected(tmp_path: Path) -> None:
+    registry = SecretRegistry()
+    _write(tmp_path, "huge", "x" * (64 * 1024 + 1))
+    backend = FileRefBackend(tmp_path, registry)
+    with pytest.raises(PathSafetyError):
+        backend.resolve(str(tmp_path / "huge"))
+    assert registry.snapshot() == frozenset()
+
+
+def test_default_backend_registers_into_process_global(tmp_path: Path) -> None:
+    scope = object()
+    _write(tmp_path, "key", "default-global-value\n")
+    backend = FileRefBackend(tmp_path, scope=scope)
+    try:
+        value = backend.resolve(str(tmp_path / "key"))
+        assert value in PROCESS_SECRET_REGISTRY.snapshot()
+    finally:
+        PROCESS_SECRET_REGISTRY.release(scope)
+    assert value not in PROCESS_SECRET_REGISTRY.snapshot()
 
 
 def test_scope_is_plumbed_through(tmp_path: Path) -> None:

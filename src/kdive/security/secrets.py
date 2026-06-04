@@ -16,6 +16,12 @@ from typing import Protocol
 from kdive.security.paths import PathSafetyError, confine_to_root
 from kdive.security.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
 
+_MAX_SECRET_FILE_BYTES = 64 * 1024
+"""A secret (token, password, SSH key) is small. A larger file under the secrets
+root is a mis-pointed reference, not a credential — read-capping it keeps an
+operator error from turning a multi-megabyte value into a redaction needle that is
+``str.replace``-scanned across every response."""
+
 
 class SecretBackend(Protocol):
     """Resolve an opaque reference to a secret value, by reference only."""
@@ -47,6 +53,8 @@ class FileRefBackend:
         resolved = confine_to_root(Path(ref), allowed_root=self._root)
         if not resolved.is_file():
             raise PathSafetyError("secret file does not exist")
+        if resolved.stat().st_size > _MAX_SECRET_FILE_BYTES:
+            raise PathSafetyError("secret file exceeds the maximum secret size")
         value = resolved.read_text(encoding="utf-8")
         if value.endswith("\r\n"):
             value = value[:-2]
