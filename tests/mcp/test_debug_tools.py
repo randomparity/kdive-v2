@@ -45,6 +45,7 @@ from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     register_local_libvirt_resource,
 )
+from kdive.security.paths import PathSafetyError
 from kdive.security.rbac import AuthorizationError, Role
 from kdive.security.secret_registry import SecretRegistry
 from tests.providers.local_libvirt.conftest import FakeLibvirtConn
@@ -642,6 +643,91 @@ def test_start_session_ssh_missing_credential_ref_is_config_error(migrated_url: 
         assert resp.status == "error" and resp.error_category == "configuration_error"
         assert count == 0
         assert connector.opened == []  # no transport opened without a credential
+
+    asyncio.run(_run())
+
+
+class _RaisingBackend:
+    """A SecretBackend whose resolve raises a planted error (degraded secret store)."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def resolve(self, ref: str) -> str:
+        del ref
+        raise self._exc
+
+
+def test_start_session_ssh_path_escape_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_ssh_system(pool, alloc_id)
+            run_id = await _seed_run(pool, sys_id)
+            connector = _FakeConnector()
+            resp = await debug_tools.start_session(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="ssh",
+                connector=connector,
+                secret_backend=_RaisingBackend(PathSafetyError("escapes root")),
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert connector.opened == []  # credential never resolved → no transport opened
+
+    asyncio.run(_run())
+
+
+def test_start_session_ssh_backend_dependency_failure_preserves_category(
+    migrated_url: str,
+) -> None:
+    # A degraded secret store (e.g. a manager backend) must not be mislabeled as bad input.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_ssh_system(pool, alloc_id)
+            run_id = await _seed_run(pool, sys_id)
+            err = CategorizedError("vault down", category=ErrorCategory.MISSING_DEPENDENCY)
+            resp = await debug_tools.start_session(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="ssh",
+                connector=_FakeConnector(),
+                secret_backend=_RaisingBackend(err),
+            )
+        assert resp.status == "error" and resp.error_category == "missing_dependency"
+
+    asyncio.run(_run())
+
+
+def test_ssh_credential_masks_after_session_ends(migrated_url: str) -> None:
+    # ADR-0039 §2: the guest credential is registered process-global, retained for the process
+    # lifetime — so it keeps masking output even after the session detaches (intentional, the
+    # first M1 op to exercise the contract under a live transport). Uses a test-local registry
+    # through an injected backend so the assertion does not depend on process-global state.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_ssh_system(pool, alloc_id)
+            run_id = await _seed_run(pool, sys_id)
+            registry = SecretRegistry()
+            backend = _OrderRecordingBackend([], registry=registry)
+            start = await debug_tools.start_session(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="ssh",
+                connector=_FakeConnector(),
+                secret_backend=backend,
+            )
+            assert start.status == "live"
+            await debug_tools.end_session(pool, _ctx(), start.object_id, connector=_FakeConnector())
+            # The credential is still a redaction needle after detach (process-lifetime scope).
+            assert "guest-ssh-secret" in registry.snapshot()
+            registry.release(None)  # the global scope is never evicted
+            assert "guest-ssh-secret" in registry.snapshot()
 
     asyncio.run(_run())
 

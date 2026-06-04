@@ -178,8 +178,14 @@ def _resolve_credential(
         return ToolResponse.failure(str(system.id), ErrorCategory.MISSING_DEPENDENCY)
     try:
         secret_backend.resolve(ref)
-    except (CategorizedError, PathSafetyError):
+    except PathSafetyError:
+        # A reference that escapes the secrets root / points at a non-file is a caller-config
+        # error (the M0 FileRefBackend's failure mode).
         return ToolResponse.failure(str(system.id), ErrorCategory.CONFIGURATION_ERROR)
+    except CategorizedError as exc:
+        # Preserve the backend's own category (e.g. a manager backend's MISSING_DEPENDENCY /
+        # INFRASTRUCTURE_FAILURE) so a degraded secret store is not mislabeled as bad input.
+        return ToolResponse.failure(str(system.id), exc.category)
     return None
 
 
