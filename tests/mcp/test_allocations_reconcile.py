@@ -231,3 +231,49 @@ def test_concurrent_release_vs_expired_sweep_reconciles_once(migrated_url: str) 
             assert await _spent(pool) == Decimal("0.0000")
 
     asyncio.run(_run())
+
+
+def test_release_active_without_size_fails_clean_and_rolls_back(migrated_url: str) -> None:
+    # An active allocation that cannot be priced (null persisted size) must return a typed
+    # failure, not crash the handler, and must leave no terminal transition or ledger row
+    # (the locked transaction rolled back).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _seed_resource(pool)
+            async with pool.connection() as conn:
+                await BUDGETS.upsert(
+                    conn,
+                    Budget(
+                        project="proj",
+                        limit_kcu=Decimal("1000"),
+                        spent_kcu=Decimal(0),
+                        updated_at=_DT,
+                    ),
+                )
+                alloc = await ALLOCATIONS.insert(
+                    conn,
+                    Allocation(
+                        id=uuid4(),
+                        created_at=_DT,
+                        updated_at=_DT,
+                        principal="user-1",
+                        project="proj",
+                        resource_id=res_id,
+                        state=AllocationState.ACTIVE,
+                        requested_vcpus=None,  # cannot price actual
+                        requested_memory_gb=None,
+                        active_started_at=_DT,
+                    ),
+                )
+                await accounting.reserve(conn, alloc, Decimal("9.0000"))
+            resp = await alloc_tools.release_allocation(pool, _ctx(), str(alloc.id))
+            assert resp.status == "error"
+            assert resp.error_category == "configuration_error"
+            async with pool.connection() as conn:
+                latest = await ALLOCATIONS.get(conn, alloc.id)
+            assert latest is not None and latest.state is AllocationState.ACTIVE  # rolled back
+            reconciled = [r for r in await _ledger_rows(pool, alloc.id) if r[0] == "reconciled"]
+            assert reconciled == []  # no credit written
+            assert await _spent(pool) == Decimal("9.0000")  # spent unchanged
+
+    asyncio.run(_run())

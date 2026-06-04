@@ -187,6 +187,11 @@ async def release_allocation(
                 return ToolResponse.failure(
                     allocation_id, ErrorCategory.CONFIGURATION_ERROR, data=data
                 )
+            except CategorizedError as exc:
+                # Reconciliation cannot price the allocation (e.g. an active allocation
+                # with no persisted size). The transaction rolled back, so no terminal
+                # transition or ledger row was committed; surface the typed failure.
+                return ToolResponse.failure(allocation_id, exc.category)
 
 
 async def _release_locked(
