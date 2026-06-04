@@ -108,8 +108,9 @@ async def _sweep_expired_allocations(conn: AsyncConnection) -> int:
     the ``→expired`` flip never bypasses the drain (ADR-0036 §4).
 
     Idempotent: a second pass selects no row already ``expired``, and the per-allocation
-    re-read fences against a release that won the race between select and lock. Counts only
-    allocations this pass actually moved to ``expired``; one structured-log line per reclaim.
+    re-read fences against work that won the race between select and lock — a release (now
+    terminal) or a renew (``lease_expiry`` pushed live again). Counts only allocations this
+    pass actually moved to ``expired``; one structured-log line per reclaim.
     """
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -138,9 +139,21 @@ async def _sweep_expired_allocations(conn: AsyncConnection) -> int:
 async def _expire_one(conn: AsyncConnection, allocation_id: UUID, project: str) -> bool:
     """Move one allocation to ``expired`` + reconcile under PROJECT → ALLOCATION.
 
-    Returns ``True`` if this call performed the transition, ``False`` if it found the
-    allocation already terminal (a release won the race) — the single-reconciliation
-    fence (ADR-0040 §4).
+    Returns ``True`` if this call performed the transition, ``False`` if the locked
+    re-read shows the allocation no longer qualifies — it is already terminal (a release
+    won the race), or its lease is live again. Both are fences against work that committed
+    between the candidate select and this lock:
+
+    * a **release** moves the allocation terminal (the single-reconciliation fence,
+      ADR-0040 §4);
+    * a **renew** pushes ``lease_expiry`` into the future *without* changing state
+      (ADR-0036 §3), so the terminal-state check alone would miss it — the lease window is
+      re-validated against ``now()`` so a renewal the project just paid for is never
+      clobbered (ADR-0036 §4: the sweep reclaims only an *elapsed* lease).
+
+    ``renew`` takes the ``PROJECT`` lock this call also holds, so once it is acquired the
+    re-read observes a committed renewal; the ``now()`` predicate is evaluated in Postgres,
+    never against a Python clock.
     """
     async with (
         conn.transaction(),
@@ -149,6 +162,8 @@ async def _expire_one(conn: AsyncConnection, allocation_id: UUID, project: str) 
     ):
         alloc = await ALLOCATIONS.get(conn, allocation_id)
         if alloc is None or alloc.state.value in _TERMINAL_ALLOCATION_STATES:
+            return False
+        if not await _lease_elapsed(conn, allocation_id):
             return False
         alloc = await accounting.stamp_active_ended(conn, alloc, datetime.now(UTC))
         await ALLOCATIONS.update_state(conn, allocation_id, AllocationState.EXPIRED)
@@ -165,6 +180,23 @@ async def _expire_one(conn: AsyncConnection, allocation_id: UUID, project: str) 
         await accounting.reconcile(conn, alloc)
     _log.info("reconciler: allocation %s lease expired -> expired + reconciled", allocation_id)
     return True
+
+
+async def _lease_elapsed(conn: AsyncConnection, allocation_id: UUID) -> bool:
+    """Report whether the allocation's lease is still elapsed (``lease_expiry < now()``).
+
+    Re-evaluates the candidate predicate under the per-allocation lock so a renewal that
+    extended ``lease_expiry`` after candidate selection is honored. A null ``lease_expiry``
+    is not elapsed (an unbounded allocation is never lease-reclaimed).
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT lease_expiry IS NOT NULL AND lease_expiry < now() "
+            "FROM allocations WHERE id = %s",
+            (allocation_id,),
+        )
+        row = await cur.fetchone()
+    return bool(row[0]) if row is not None else False
 
 
 async def _gc_idempotency_keys(conn: AsyncConnection, retention: timedelta) -> int:
