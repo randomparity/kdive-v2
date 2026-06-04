@@ -186,3 +186,12 @@ def test_direct_construction_bypasses_configuration_error_mapping() -> None:
     # model_validate is not the sanctioned door; it surfaces the raw ValidationError.
     with pytest.raises(ValidationError):
         ProvisioningProfile.model_validate({"schema_version": 1})
+
+
+def test_public_names_exported_from_package() -> None:
+    import kdive.profiles as profiles
+
+    assert profiles.ProvisioningProfile is ProvisioningProfile
+    assert profiles.BootMethod is BootMethod
+    assert hasattr(profiles, "LibvirtProfile")
+    assert hasattr(profiles, "ProviderSection")
