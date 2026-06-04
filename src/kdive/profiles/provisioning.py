@@ -53,12 +53,16 @@ class LibvirtProfile(_ProfileBase):
 
     ``domain_xml_params`` is an optionally-empty map whose values are non-empty;
     ``crashkernel`` is an opaque non-empty token (the kdump prerequisite — the booted
-    kernel is the arbiter of its grammar).
+    kernel is the arbiter of its grammar). ``destructive_ops`` is the optionally-empty
+    list of destructive op kinds this profile opts in (e.g. ``["force_crash"]``); the
+    control plane's gate resolves the opt-in factor from it (deny-by-default — an absent
+    or empty list refuses every destructive op, ADR-0028 §2).
     """
 
     domain_xml_params: dict[NonEmptyStr, NonEmptyStr] = Field(default_factory=dict)
     rootfs_image_ref: NonEmptyStr
     crashkernel: NonEmptyStr
+    destructive_ops: list[NonEmptyStr] = Field(default_factory=list)
 
 
 class ProviderSection(_ProfileBase):

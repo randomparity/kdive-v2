@@ -37,6 +37,7 @@ def test_build_app_registers_jobs_tools() -> None:
             "investigations.unlink",
         } <= names
         assert {"runs.create", "runs.get"} <= names
+        assert {"control.power", "control.force_crash"} <= names
 
     asyncio.run(_run())
 

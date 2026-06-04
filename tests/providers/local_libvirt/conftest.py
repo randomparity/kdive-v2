@@ -29,6 +29,8 @@ class FakeDomain:
     domain_name: str
     system_id: str | None  # None → no kdive metadata (raises VIR_ERR_NO_DOMAIN_METADATA)
     raise_code: int | None = None  # override: raise a libvirtError with this code
+    calls: list[str] = field(default_factory=list)  # records control ops in call order
+    raise_on: dict[str, int] = field(default_factory=dict)  # op -> libvirt error code to raise
 
     def name(self) -> str:
         return self.domain_name
@@ -40,12 +42,43 @@ class FakeDomain:
             raise libvirt_error(libvirt.VIR_ERR_NO_DOMAIN_METADATA)
         return f'<kdive:system xmlns:kdive="{uri}">{self.system_id}</kdive:system>'
 
+    def _maybe_raise(self, op: str) -> None:
+        code = self.raise_on.get(op)
+        if code is not None:
+            raise libvirt_error(code)
+
+    def create(self) -> int:
+        self.calls.append("create")
+        self._maybe_raise("create")
+        return 0
+
+    def destroy(self) -> int:
+        self.calls.append("destroy")
+        self._maybe_raise("destroy")
+        return 0
+
+    def reset(self, flags: int = 0) -> int:
+        self.calls.append("reset")
+        self._maybe_raise("reset")
+        return 0
+
+    def reboot(self, flags: int = 0) -> int:
+        self.calls.append("reboot")
+        self._maybe_raise("reboot")
+        return 0
+
+    def injectNMI(self, flags: int = 0) -> int:  # noqa: N802 - mirrors the libvirt binding name
+        self.calls.append("injectNMI")
+        self._maybe_raise("injectNMI")
+        return 0
+
 
 @dataclass
 class FakeLibvirtConn:
     caps_xml: str = _CAPS_XML
     info: list[object] = field(default_factory=lambda: ["x86_64", 16384, 8, 2400, 1, 1, 4, 2])
     domains: list[FakeDomain] = field(default_factory=list)
+    lookup: dict[str, FakeDomain] = field(default_factory=dict)  # name -> domain for control ops
 
     def getInfo(self) -> list[object]:
         return self.info
@@ -55,3 +88,12 @@ class FakeLibvirtConn:
 
     def listAllDomains(self, flags: int = 0) -> list[FakeDomain]:
         return self.domains
+
+    def lookupByName(self, name: str) -> FakeDomain:
+        domain = self.lookup.get(name)
+        if domain is None:
+            raise libvirt_error(libvirt.VIR_ERR_NO_DOMAIN)
+        return domain
+
+    def close(self) -> int:
+        return 0

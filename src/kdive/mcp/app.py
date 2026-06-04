@@ -18,7 +18,15 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import build_verifier
-from kdive.mcp.tools import allocations, investigations, jobs, resources, runs, systems
+from kdive.mcp.tools import (
+    allocations,
+    control,
+    investigations,
+    jobs,
+    resources,
+    runs,
+    systems,
+)
 
 # Tool seam: each plane exposes register(app, pool); build_app calls them all.
 _PLANE_REGISTRARS: tuple[Callable[[FastMCP, AsyncConnectionPool], None], ...] = (
@@ -28,12 +36,17 @@ _PLANE_REGISTRARS: tuple[Callable[[FastMCP, AsyncConnectionPool], None], ...] = 
     systems.register,
     investigations.register,
     runs.register,
+    control.register,
 )
 
 # Handler seam: each plane exposes register_handlers(registry); the worker calls them all.
 # jobs.* register no JobHandler; the provisioning plane (#16) registers the provision/teardown
-# handlers (building its provider lazily from env — no libvirt connection at registration).
-_HANDLER_REGISTRARS: tuple[Callable[[HandlerRegistry], None], ...] = (systems.register_handlers,)
+# handlers and the control plane (#23) registers the power/force_crash handlers (both build
+# their provider lazily from env — no libvirt connection at registration).
+_HANDLER_REGISTRARS: tuple[Callable[[HandlerRegistry], None], ...] = (
+    systems.register_handlers,
+    control.register_handlers,
+)
 
 
 def build_app(pool: AsyncConnectionPool, *, verifier: JWTVerifier | None = None) -> FastMCP:
