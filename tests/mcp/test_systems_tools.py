@@ -7,6 +7,7 @@ import copy
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -16,9 +17,18 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RUNS, SYSTEMS
+from kdive.db.repositories import ALLOCATIONS, BUDGETS, INVESTIGATIONS, QUOTAS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Allocation, Investigation, Job, JobKind, Run, System
+from kdive.domain.models import (
+    Allocation,
+    Budget,
+    Investigation,
+    Job,
+    JobKind,
+    Quota,
+    Run,
+    System,
+)
 from kdive.domain.state import AllocationState, InvestigationState, RunState, SystemState
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
@@ -72,7 +82,9 @@ async def _pool(url: str) -> AsyncIterator[AsyncConnectionPool]:
         await pool.close()
 
 
-async def _granted_allocation(pool: AsyncConnectionPool, *, cap: int = 2) -> str:
+async def _granted_allocation(
+    pool: AsyncConnectionPool, *, cap: int = 2, systems_quota: int = 1_000_000
+) -> str:
     disc = LocalLibvirtDiscovery(
         host_uri="qemu:///system",
         connect=lambda: FakeLibvirtConn(),
@@ -81,6 +93,23 @@ async def _granted_allocation(pool: AsyncConnectionPool, *, cap: int = 2) -> str
     async with pool.connection() as conn:
         res = await register_local_libvirt_resource(
             conn, disc, pool="local-libvirt", cost_class="local"
+        )
+        # systems.provision enforces a per-project max_concurrent_systems (ADR-0007 §4);
+        # seed a generous quota + budget so the existing provision paths are not denied.
+        await QUOTAS.upsert(
+            conn,
+            Quota(
+                project="proj",
+                max_concurrent_allocations=1_000_000,
+                max_concurrent_systems=systems_quota,
+                updated_at=_DT,
+            ),
+        )
+        await BUDGETS.upsert(
+            conn,
+            Budget(
+                project="proj", limit_kcu=Decimal("1000000"), spent_kcu=Decimal(0), updated_at=_DT
+            ),
         )
         alloc = await ALLOCATIONS.insert(
             conn,
@@ -291,6 +320,86 @@ def test_provision_non_granted_allocation_is_config_error(migrated_url: str) -> 
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
         assert resp.data["current_status"] == "releasing"
+
+    asyncio.run(_run())
+
+
+async def _second_granted_allocation(pool: AsyncConnectionPool) -> str:
+    # A second granted allocation on the same registered resource (same project), so two
+    # provisions can race the per-project system quota without a host-cap denial.
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT id FROM resources LIMIT 1")
+        res_row = await cur.fetchone()
+        assert res_row is not None
+        alloc = await ALLOCATIONS.insert(
+            conn,
+            Allocation(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="user-1",
+                project="proj",
+                resource_id=res_row["id"],
+                state=AllocationState.GRANTED,
+            ),
+        )
+    return str(alloc.id)
+
+
+def test_provision_at_system_quota_is_quota_exceeded_no_writes(migrated_url: str) -> None:
+    # max_concurrent_systems=1: the first provision fills the quota; the second (a
+    # distinct granted allocation, same project) is denied quota_exceeded and writes
+    # neither a System nor a job, leaving the allocation granted.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            first_alloc = await _granted_allocation(pool, systems_quota=1)
+            await _provision(pool, _ctx(), first_alloc, _profile())
+            second_alloc = await _second_granted_allocation(pool)
+            resp = await _provision(pool, _ctx(), second_alloc, _profile())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+                await cur.execute("SELECT count(*) AS n FROM jobs")
+                job_n = await cur.fetchone()
+                await cur.execute("SELECT state FROM allocations WHERE id = %s", (second_alloc,))
+                alloc_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "quota_exceeded"
+        assert sys_n is not None and sys_n["n"] == 1  # only the first
+        assert job_n is not None and job_n["n"] == 1  # only the first
+        assert alloc_row is not None and alloc_row["state"] == "granted"  # untouched
+
+    asyncio.run(_run())
+
+
+def test_provision_no_quota_row_is_quota_exceeded(migrated_url: str) -> None:
+    # Fail-closed: a project with no quota row cannot provision (ADR-0007 §4).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            async with pool.connection() as conn:
+                await conn.execute("DELETE FROM quotas WHERE project = %s", ("proj",))
+            resp = await _provision(pool, _ctx(), alloc_id, _profile())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "quota_exceeded"
+        assert sys_n is not None and sys_n["n"] == 0
+
+    asyncio.run(_run())
+
+
+def test_provision_quota_counts_only_non_terminal_systems(migrated_url: str) -> None:
+    # A torn_down System does not occupy a quota slot; with quota=1 and one terminal
+    # System already present, a fresh provision still succeeds.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            spent_alloc = await _granted_allocation(pool, systems_quota=1)
+            await _seed_system(pool, spent_alloc, SystemState.TORN_DOWN)
+            fresh_alloc = await _second_granted_allocation(pool)
+            resp = await _provision(pool, _ctx(), fresh_alloc, _profile())
+        assert resp.status == "queued"
 
     asyncio.run(_run())
 
