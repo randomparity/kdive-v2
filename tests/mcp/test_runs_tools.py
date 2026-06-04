@@ -7,7 +7,7 @@ import copy
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, LiteralString
 from uuid import UUID, uuid4
 
 import pytest
@@ -133,10 +133,15 @@ async def _seed_investigation(
 
 
 async def _seed_run(
-    pool: AsyncConnectionPool, *, state: RunState, failure: ErrorCategory | None = None
+    pool: AsyncConnectionPool,
+    *,
+    state: RunState,
+    failure: ErrorCategory | None = None,
+    build_profile: dict[str, Any] | None = None,
+    project: str = "proj",
 ) -> str:
-    inv_id = await _seed_investigation(pool)
-    sys_id = await _seed_system(pool)
+    inv_id = await _seed_investigation(pool, project=project)
+    sys_id = await _seed_system(pool, project=project)
     async with pool.connection() as conn:
         run = await RUNS.insert(
             conn,
@@ -145,11 +150,11 @@ async def _seed_run(
                 created_at=_DT,
                 updated_at=_DT,
                 principal="user-1",
-                project="proj",
+                project=project,
                 investigation_id=UUID(inv_id),
                 system_id=UUID(sys_id),
                 state=state,
-                build_profile=_profile(),
+                build_profile=_profile() if build_profile is None else build_profile,
                 failure_category=failure,
             ),
         )
@@ -465,5 +470,179 @@ def test_create_blocks_on_held_investigation_lock(migrated_url: str) -> None:
                     assert not task.done()  # blocked on the held INVESTIGATION lock
                 resp = await task
             assert resp.status == "created"
+
+    asyncio.run(_run())
+
+
+# --- runs.build (synchronous admission) ----------------------------------------------
+
+_VALID_BUILD: dict[str, Any] = {
+    "schema_version": 1,
+    "kernel_source_ref": "git+https://git.kernel.org#v6.9",
+    "config_ref": "file:///configs/kdump.config",
+}
+
+
+async def _build(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> Any:
+    return await runs_tools.build_run(pool, ctx, run_id)
+
+
+async def _count(pool: AsyncConnectionPool, query: LiteralString, params: tuple[Any, ...]) -> int:
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(query, params)
+        row = await cur.fetchone()
+    return 0 if row is None else int(row["n"])
+
+
+def test_build_created_run_flips_running_and_enqueues(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=RunState.CREATED, build_profile=copy.deepcopy(_VALID_BUILD)
+            )
+            resp = await _build(pool, _ctx(), run_id)
+            assert resp.status == "queued"
+            assert resp.data["run_id"] == run_id
+            assert "jobs.wait" in resp.suggested_next_actions
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM runs WHERE id = %s", (run_id,))
+                run_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE kind='build' AND dedup_key=%s",
+                    (f"{run_id}:build",),
+                )
+                jobs = await cur.fetchone()
+        assert run_row is not None and run_row["state"] == "running"
+        assert jobs is not None and jobs["n"] == 1
+
+    asyncio.run(_run())
+
+
+def test_build_is_idempotent_returns_same_job(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=RunState.CREATED, build_profile=copy.deepcopy(_VALID_BUILD)
+            )
+            r1 = await _build(pool, _ctx(), run_id)
+            r2 = await _build(pool, _ctx(), run_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs", ())
+        assert r1.object_id == r2.object_id  # same job (dedup)
+        assert njobs == 1
+
+    asyncio.run(_run())
+
+
+def test_build_on_succeeded_run_returns_same_job_no_transition(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=RunState.CREATED, build_profile=copy.deepcopy(_VALID_BUILD)
+            )
+            first = await _build(pool, _ctx(), run_id)
+            # Drive the Run to succeeded directly (the handler would do this).
+            async with pool.connection() as conn:
+                await conn.execute("UPDATE runs SET state='running' WHERE id=%s", (run_id,))
+                await conn.execute("UPDATE runs SET state='succeeded' WHERE id=%s", (run_id,))
+            again = await _build(pool, _ctx(), run_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs", ())
+        assert again.object_id == first.object_id
+        assert njobs == 1
+
+    asyncio.run(_run())
+
+
+def test_build_malformed_profile_is_config_error_no_job(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=RunState.CREATED, build_profile={"schema_version": 2}
+            )
+            resp = await _build(pool, _ctx(), run_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs", ())
+            ncreated = await _count(
+                pool, "SELECT count(*) AS n FROM runs WHERE id=%s AND state='created'", (run_id,)
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert njobs == 0
+        assert ncreated == 1  # the Run is untouched (still created), not flipped
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("state", [RunState.FAILED, RunState.CANCELED])
+def test_build_on_terminal_run_is_config_error(migrated_url: str, state: RunState) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(pool, state=state, build_profile=copy.deepcopy(_VALID_BUILD))
+            resp = await _build(pool, _ctx(), run_id)
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == state.value
+
+    asyncio.run(_run())
+
+
+def test_build_missing_run_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await _build(pool, _ctx(), str(uuid4()))
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_build_cross_project_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=RunState.CREATED, build_profile=copy.deepcopy(_VALID_BUILD)
+            )
+            resp = await _build(pool, _ctx(projects=("other",)), run_id)
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_build_malformed_uuid_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await _build(pool, _ctx(), "not-a-uuid")
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_build_without_operator_raises(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=RunState.CREATED, build_profile=copy.deepcopy(_VALID_BUILD)
+            )
+            with pytest.raises(AuthorizationError):
+                await _build(pool, _ctx(Role.VIEWER), run_id)
+
+    asyncio.run(_run())
+
+
+def test_build_concurrent_flips_once(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=RunState.CREATED, build_profile=copy.deepcopy(_VALID_BUILD)
+            )
+            r1, r2 = await asyncio.gather(
+                _build(pool, _ctx(), run_id), _build(pool, _ctx(), run_id)
+            )
+            assert {r1.status, r2.status} == {"queued"}
+            assert r1.object_id == r2.object_id  # one job
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs", ())
+            nflips = await _count(
+                pool,
+                "SELECT count(*) AS n FROM audit_log WHERE transition='created->running' "
+                "AND object_id=%s",
+                (run_id,),
+            )
+        assert njobs == 1
+        assert nflips == 1
 
     asyncio.run(_run())
