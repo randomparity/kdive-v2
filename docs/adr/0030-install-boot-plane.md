@@ -57,19 +57,28 @@ By Run state at `runs.install`/`runs.boot`:
 | `created` / `running` | `configuration_error` (`data.current_status`) — build the Run first |
 | `failed` / `canceled` | `configuration_error` (`data.current_status`) — terminal/dead Run |
 
-`runs.boot` additionally requires a recorded `install` step (`configuration_error`
+`runs.boot` additionally requires a **succeeded** `install` step (`configuration_error`
 "install first" otherwise), so the step order `install → boot` is enforced at the tool.
 
-### 2. An install/boot **failure** records a failed step; it does not drive the Run `failed`
+### 2. An install/boot **failure** records no step row; the dead-lettered job carries the category, and the Run is not driven `failed`
 
 `RunState` has no `succeeded → failed` edge, and the Run's build genuinely succeeded —
-so an install or boot failure is recorded as a **`failed`-state `run_steps` row**
-carrying the step's `failure_category`, and the worker dead-letters the job with that
-category, but the Run **stays `succeeded`**. The failed step is the authoritative
-per-step signal; recovery is a **new Run** on the same System (the ADR-0026 §7 retry
-model), not an in-place Run retry. A re-issued `runs.install`/`runs.boot` on a Run with
-a *recorded* (succeeded) step is the idempotent replay of that step, not a retry of a
-failed one.
+so an install or boot failure does **not** touch the Run's `state`. It also records **no
+`run_steps` row**: `run_step` (`src/kdive/db/idempotency.py`) writes a `state='succeeded'`
+row only after the step body returns, so a body that raises leaves the ledger empty and
+the handler re-raises. The worker then dead-letters the job with the step's
+`failure_category`, and **that dead-lettered job's `error_category` (read via `jobs.get`)
+is the authoritative failure signal** — identical to the build handler, whose
+`test_build_handler_build_failure_sets_run_failed` asserts zero `run_steps` rows on a
+failed build. Recovery is a **new Run** on the same System (the ADR-0026 §7 retry model),
+not an in-place Run retry. A re-issued `runs.install`/`runs.boot` on a Run whose step
+**succeeded** is the idempotent ledger replay; on a Run whose step failed (no row) it is
+a fresh attempt of that step, not a resume of a failed one.
+
+Boot's ordering gate is therefore "a **succeeded** `install` step exists": a failed
+install records no row, so `runs.boot` after a failed install returns the same
+`configuration_error` "install first" as after no install, and the agent reads the failed
+`install` job for the reason.
 
 This diverges from build, which *does* drive the Run `running → failed`: build owns the
 Run-state transition because it is the step the Run state machine tracks; install/boot
@@ -121,13 +130,16 @@ capability registry in M0, matching build/provisioning/control).
 ### 6. Boot distinguishes `boot_timeout` (never came up) from `readiness_failure` (up but a check failed)
 
 `boot()` power-cycles the domain into the staged `<kernel>` (destroy-then-create), then
-runs the run-readiness preflight (the **port of v1 `prereqs/`**) before declaring boot
-ready. The two boot failure modes map to distinct categories: the System not reaching a
-running/up state within the boot window is `boot_timeout`; the System coming up but a
-readiness check failing (wrong kernel running, kdump path not armed) is
-`readiness_failure`. A hard libvirt error on the power-cycle itself is `install_failure`.
-The preflight is an injected seam returning a structured pass/fail, so the handler is
-unit-testable without a host and the salvaged v1 checks land behind one seam.
+polls the run-readiness preflight (the **port of v1 `prereqs/`**) until it passes or an
+**injected boot-window timeout** elapses. Critically, libvirt `create()` returning means
+QEMU launched, **not** that the guest kernel is up — so "the System came up" is observable
+only through the readiness seam, and the two boot failures are pinned by *which* signal
+the seam gives: the System **never answering** within the boot window is `boot_timeout`
+("it never came up"); the System **answering** but a check failing (wrong kernel running,
+kdump path not armed) is `readiness_failure` ("up but wrong"). A hard libvirt error on the
+`destroy`/`create` itself (the domain cannot start) is `install_failure`. The boot window
+is a constructor parameter, so the handler is unit-testable without a host or a real wait
+and the salvaged v1 checks land behind one seam.
 
 ### 7. Idempotency reuses the build mechanisms; install/boot use the `run_step` helper directly
 
@@ -164,8 +176,8 @@ the existing helper unchanged.
 - **Drive the Run `succeeded → failed` on an install/boot failure.** Rejected:
   `RunState` makes `succeeded` terminal (no such edge), and the build *did* succeed —
   marking the whole Run failed would lose that the kernel exists and is reusable. The
-  failed step (with its category) plus the dead-lettered job is the authoritative
-  signal; recovery is a new Run (ADR-0026 §7).
+  dead-lettered job's `error_category` is the authoritative failure signal (no
+  `run_steps` row is written on failure, §2); recovery is a new Run (ADR-0026 §7).
 - **Check `crashkernel=` in the build plane / against the `.config`.** Rejected:
   `crashkernel=` is a boot-time *cmdline* reservation, not a compile-time config option
   (`CONFIG_CRASH_DUMP`, already checked by the builder). The reservation lives on the
