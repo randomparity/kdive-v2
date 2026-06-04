@@ -115,9 +115,16 @@ them; only `force_crash` and `reprovision` are). This supersedes
 The M0 convenience of one principal holding both roles ends. M1's mock OIDC issuer
 mints distinct principals — a `viewer`, an `operator`, and an `admin` per test
 project — so the suite can assert the boundary in **both** directions: the
-`admin`/`operator` succeeds at what it should, and the lower role is **refused**
-(`AuthorizationError` → the tool's `authorization_error`/`allocation_denied` mapping)
-at what it should not. Every privileged op the decision-1 table marks `admin` ships with
+`admin`/`operator` succeeds at what it should, and the lower role is **refused** at what
+it should not. How a refusal surfaces depends on the call site, matching the existing
+codebase convention (ADR-0020: there is no authz `ErrorCategory`): a bare `require_role`
+check (`set_budget`/`set_quota`, `power`, `teardown`) **raises** `AuthorizationError`,
+which the negative test asserts directly; only the three-check destructive gate
+(`force_crash`) catches its `DestructiveOpDenied`, writes a `*:denied` audit row, and
+returns the `authorization_denied` envelope. Bare `require_role` denials are intentionally
+not audited (no connection is held at the check point) and are not folded into the gate's
+audited path by this issue. Every privileged op the decision-1 table marks `admin` ships
+with
 a negative test that the next-lower role (`operator`) is refused: the `admin` ops M1 must
 cover are `accounting.set_budget`, `accounting.set_quota`, `control.force_crash`,
 `control.power off`/`cycle`/`reset`, and `systems.teardown`, plus the cross-project

@@ -285,8 +285,8 @@ def test_viewer_in_a_refused_usage_for_b_investigation(migrated_url: str) -> Non
     # on it raises AuthError (ADR-0007 §6 / ADR-0037).
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            inv_b = await _seed_investigation(pool, "proj-b")
-            viewer_a = _ctx(projects=("proj-a",))
+            inv_b = await _seed_investigation(pool, PROJECT_B)
+            viewer_a = _ctx(projects=(PROJECT_A,))
             try:
                 await acct_tools.usage(pool, viewer_a, investigation_id=str(inv_b))
                 raise AssertionError("expected AuthError")

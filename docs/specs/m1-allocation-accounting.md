@@ -374,9 +374,11 @@ falsifiable signal, as M0's six were):
    `reserved` delta; a renewal over budget is denied and leaves the window unchanged.
 6. **Role separation** — an `operator` is refused the `admin` ops
    (`accounting.set_budget`/`.set_quota`, `control.force_crash`,
-   `control.power off`/`cycle`/`reset`, `systems.teardown`) with `authorization_error`;
-   an `admin` succeeds; `systems.reprovision` and `control.power on` succeed for
-   `operator`; a `viewer` is refused a cross-project `accounting.usage(investigation_id)`.
+   `control.power off`/`cycle`/`reset`, `systems.teardown`): the bare `require_role` ops
+   raise `AuthorizationError`, while `force_crash`'s gate returns the `authorization_denied`
+   envelope (ADR-0020 convention). An `admin` succeeds; `systems.reprovision` and
+   `control.power on` succeed for `operator`; a `viewer` is refused a cross-project
+   `accounting.usage(investigation_id)`.
 7. **Reprovision-in-place** — `systems.reprovision` cycles `ready → reprovisioning →
    ready` on the **same** `system_id` under the **same** Allocation, with no new
    allocation and no new System row.
