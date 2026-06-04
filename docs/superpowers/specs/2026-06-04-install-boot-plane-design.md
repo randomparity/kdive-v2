@@ -101,7 +101,8 @@ so unit tests inject fakes and the real libvirt path is `live_vm`-gated:
 
 ```python
 class Installer(Protocol):
-    def install(self, system_id: UUID, kernel_ref: str, *, cmdline: str) -> None: ...
+    # run_id keys the per-Run staging path (§5.2); cmdline is the gated command line (§5.1).
+    def install(self, system_id: UUID, run_id: UUID, kernel_ref: str, *, cmdline: str) -> None: ...
 
 class Booter(Protocol):
     def boot(self, system_id: UUID) -> None: ...          # boot + readiness preflight
