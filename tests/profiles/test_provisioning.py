@@ -106,6 +106,28 @@ def test_unknown_libvirt_field_rejected() -> None:
     _expect_configuration_error(data)
 
 
+def test_empty_provider_section_rejected() -> None:
+    # The local-libvirt section is required (ADR-0024 decision 1): a profile that
+    # names no provider cannot be provisioned.
+    data = _valid()
+    data["provider"] = {}
+    _expect_configuration_error(data)
+
+
+def test_non_mapping_provider_section_rejected() -> None:
+    data = _valid()
+    data["provider"]["local-libvirt"] = "not-a-mapping"
+    _expect_configuration_error(data)
+
+
+@pytest.mark.parametrize("payload", [None, [], "not-a-mapping", 42])
+def test_non_mapping_input_rejected(payload: Any) -> None:
+    # parse() guards the boundary against a caller handing it a non-document.
+    with pytest.raises(CategorizedError) as caught:
+        ProvisioningProfile.parse(payload)
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
 @pytest.mark.parametrize("value", ["", "   "])
 @pytest.mark.parametrize("field", ["arch", "kernel_source_ref"])
 def test_blank_core_string_rejected(field: str, value: str) -> None:
@@ -162,6 +184,14 @@ def test_unknown_boot_method_rejected() -> None:
 def test_unreadable_schema_version_rejected() -> None:
     data = _valid()
     data["schema_version"] = 2
+    _expect_configuration_error(data)
+
+
+@pytest.mark.parametrize("value", [True, "1", 1.0])
+def test_non_int_schema_version_rejected(value: object) -> None:
+    # A bool/str/float must not coerce to version 1 (consistent with strict ints).
+    data = _valid()
+    data["schema_version"] = value
     _expect_configuration_error(data)
 
 

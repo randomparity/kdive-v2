@@ -171,6 +171,14 @@ every profile records its version explicitly, and a value M0 cannot read (a futu
 rather than being silently coerced. M0 ships exactly version `1`; the loader gains a
 version dispatch when a second version exists, not speculatively now.
 
+`Literal[1]` alone is not enough: Pydantic matches `True` and `1.0` against it
+(`True == 1.0 == 1`), and `Field(strict=True)` cannot be applied to a `Literal`
+schema (it raises at schema-build time). A `mode="before"` field validator therefore
+rejects any non-`int` (including `bool`, an `int` subclass) before the `Literal`
+coercion can accept it — the same fail-fast posture as the strict integer fields
+(decision 2d). The validator's message names the constraint, not the submitted value,
+so the redaction guarantee (decision 3) holds.
+
 ### 6. Scope: the typed model is added; `System.provisioning_profile` is not rewired
 
 `domain/models.py` types `System.provisioning_profile` as `dict[str, Any]` and
@@ -260,6 +268,10 @@ next milestone step, and the parse boundary is the seam it will call.
   document validate, eroding the "profiles retain their version" guarantee the first
   time one is stored without it. Required is the stronger contract for an immutable,
   long-lived input.
+- **Bare `Literal[1]` for the version (no bool/float guard).** Rejected: `Literal[1]`
+  coerces `True`/`1.0` to version `1`, tolerating a malformed version the way lax
+  integers tolerate `vcpu: "4"`. `Field(strict=True)` is unavailable on a `Literal`,
+  so a `mode="before"` validator rejecting non-`int` closes the gap consistently.
 - **Type the libvirt model now and rewire `System.provisioning_profile` in #15.**
   Rejected: it pulls the repository jsonb seam and every `System` site into a
   schema-only issue. The provision handler that parses and persists a profile is the

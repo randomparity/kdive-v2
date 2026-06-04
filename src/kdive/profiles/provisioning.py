@@ -20,7 +20,14 @@ from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+)
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
@@ -75,6 +82,20 @@ class ProvisioningProfile(_ProfileBase):
     boot_method: BootMethod
     kernel_source_ref: NonEmptyStr
     provider: ProviderSection
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def _reject_coerced_version(cls, value: object) -> object:
+        """Reject a non-``int`` version before ``Literal`` coercion accepts it.
+
+        ``Literal[1]`` otherwise matches ``True`` and ``1.0`` (``True == 1.0 == 1``),
+        which would tolerate a malformed version the way lax integers tolerate
+        ``vcpu: "4"`` (ADR-0024 decision 2d). The message names the constraint, not
+        the value, to preserve the redaction guarantee (decision 3).
+        """
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError("schema_version must be an integer")
+        return value
 
     @classmethod
     def parse(cls, data: Mapping[str, object]) -> ProvisioningProfile:
