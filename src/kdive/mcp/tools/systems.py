@@ -256,16 +256,23 @@ async def provision_handler(
         # update_state + audit MUST share one transaction: audit.record does not open its own,
         # so on a non-autocommit pool connection a bare audit INSERT would be rolled back when
         # the connection is returned. (update_state's own transaction nests as a savepoint.)
-        async with conn.transaction():
-            await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
-            await _audit_transition(
-                conn,
-                job,
-                project=system.project,
-                object_id=system_id,
-                transition="provisioning->failed",
-                tool="systems.provision",
-            )
+        # Tolerate IllegalTransition: a concurrent teardown may have already driven the System
+        # terminal, in which case there is nothing to mark failed — re-raise the original
+        # PROVISIONING_FAILURE (not the masking IllegalTransition) so the job dead-letters
+        # with the correct category.
+        try:
+            async with conn.transaction():
+                await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
+                await _audit_transition(
+                    conn,
+                    job,
+                    project=system.project,
+                    object_id=system_id,
+                    transition="provisioning->failed",
+                    tool="systems.provision",
+                )
+        except IllegalTransition:
+            _log.info("provision of system %s failed but it is already terminal", system_id)
         raise
     current: SystemState | None = None
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):

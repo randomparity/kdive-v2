@@ -381,6 +381,40 @@ def test_provision_handler_provider_failure_sets_system_failed(migrated_url: str
     asyncio.run(_run())
 
 
+def test_provision_handler_failure_when_already_terminal_preserves_category(
+    migrated_url: str,
+) -> None:
+    # The provider fails AND a concurrent teardown already drove the System torn_down. The
+    # failed-branch transition is illegal (torn_down->failed), but the handler tolerates that
+    # and re-raises the original PROVISIONING_FAILURE (not the masking IllegalTransition).
+    class _FailAfterTerminal(_FakeProvisioning):
+        def __init__(self, url: str) -> None:
+            super().__init__(provision_error=True)
+            self._url = url
+
+        def provision(self, system_id: UUID, profile: Any) -> str:
+            with psycopg.connect(self._url, autocommit=True) as c:
+                c.execute("UPDATE systems SET state = 'torn_down' WHERE id = %s", (system_id,))
+            return super().provision(system_id, profile)  # raises PROVISIONING_FAILURE
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.PROVISIONING)
+            job = await _enqueue_provision(pool, sys_id, alloc_id)
+            prov = _FailAfterTerminal(migrated_url)
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError) as caught:
+                    await systems_tools.provision_handler(conn, job, prov)
+            assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                row = await cur.fetchone()
+        assert row is not None and row["state"] == "torn_down"  # left terminal, not failed
+
+    asyncio.run(_run())
+
+
 def test_provision_handler_terminal_system_short_circuits(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
