@@ -165,7 +165,17 @@ class LocalLibvirtProvisioning:
                     domain.create()
                 except libvirt.libvirtError as exc:
                     if exc.get_error_code() != libvirt.VIR_ERR_OPERATION_INVALID:
-                        raise  # not "already running" — a real start failure
+                        # Not "already running" — a real start failure. Undefine the domain we
+                        # just defined so provision stays transactional (a started domain or
+                        # none); swallow an undefine error so it cannot mask the start failure.
+                        try:
+                            domain.undefine()
+                        except libvirt.libvirtError:
+                            _log.warning(
+                                "failed to undefine domain after a failed start; continuing",
+                                exc_info=True,
+                            )
+                        raise
             finally:
                 _close(conn)
         except libvirt.libvirtError as exc:

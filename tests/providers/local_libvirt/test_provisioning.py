@@ -181,6 +181,29 @@ def test_provision_create_error_is_provisioning_failure() -> None:
     assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE
 
 
+def test_provision_real_create_failure_undefines_domain() -> None:
+    # A real start failure (not "already running") must undefine the domain `defineXML` just
+    # registered, so provision is transactional — no defined-but-unstarted domain is leaked.
+    name = domain_name_for(_SYS)
+    dom = _ProvDomain(name, create_error=libvirt.VIR_ERR_INTERNAL_ERROR)
+    conn = _ProvConn(defined={name: dom})
+    with pytest.raises(CategorizedError) as caught:
+        _prov(conn).provision(_SYS, _profile())
+    assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE
+    assert dom.undefined is True  # the defined-but-unstarted domain was cleaned up
+    assert conn.closed == 1
+
+
+def test_provision_already_running_domain_does_not_undefine() -> None:
+    # "already running" (OPERATION_INVALID) is the desired post-state — the live domain must
+    # NOT be undefined.
+    name = domain_name_for(_SYS)
+    dom = _ProvDomain(name, create_error=libvirt.VIR_ERR_OPERATION_INVALID)
+    conn = _ProvConn(defined={name: dom})
+    _prov(conn).provision(_SYS, _profile())
+    assert dom.undefined is False  # kept the running domain
+
+
 def test_provision_already_running_domain_is_idempotent() -> None:
     # A retry after a partial provision: defineXML redefines, create() reports "already
     # running" (OPERATION_INVALID) — the desired post-state, not a failure.
