@@ -140,10 +140,14 @@ class LocalLibvirtProvisioning:
     so a hand-built jsonb that bypassed the tool still cannot inject an unknown key. The
     supported-set widening is an M1 concern; both check sites share the one constant.
 - **`provision(system_id, profile)`** renders the XML, `conn.defineXML(xml)` → domain,
-  `domain.create()` (start it), returns `domain_name_for(system_id)`. A `libvirtError` from
-  either call is raised as `CategorizedError(PROVISIONING_FAILURE, details={"system_id": …})`
-  (no domain leaks a row-less, untagged artifact — the row already exists, decision 1, and
-  the domain, if defined, carries the tag so the reconciler can reap it).
+  `domain.create()` (start it), returns `domain_name_for(system_id)`. It is **idempotent**:
+  `defineXML` redefines an existing domain, and a `create()` reporting the domain is *already
+  running* (`VIR_ERR_OPERATION_INVALID`) is the desired post-state, swallowed — so a handler
+  retry after a finalize that failed *post-create* does not mark a running System failed (the
+  same idempotency teardown has). Any other `libvirtError` is raised as
+  `CategorizedError(PROVISIONING_FAILURE, details={"system_id": …})` (no domain leaks a row-less,
+  untagged artifact — the row already exists, decision 1, and the domain, if defined, carries the
+  tag so the reconciler can reap it). The connection is closed in a `finally` (no per-job leak).
 - **`teardown(domain_name)`** is idempotent (ADR-0025 §5): `lookupByName` →
   `VIR_ERR_NO_DOMAIN` means already gone → return; else `destroy()` (ignore
   `VIR_ERR_OPERATION_INVALID` = not running) then `undefine()` (ignore `VIR_ERR_NO_DOMAIN`).

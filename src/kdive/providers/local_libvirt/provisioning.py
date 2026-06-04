@@ -148,15 +148,24 @@ class LocalLibvirtProvisioning:
     def provision(self, system_id: UUID, profile: ProvisioningProfile) -> str:
         """Define and start the tagged domain; return its name.
 
+        Idempotent: ``defineXML`` redefines an existing domain, and a ``create`` that reports
+        the domain is **already running** (``VIR_ERR_OPERATION_INVALID``) is the desired
+        post-state, not a failure — so a handler retry after a partial provision does not mark a
+        running System failed.
+
         Raises:
-            CategorizedError: ``PROVISIONING_FAILURE`` on any libvirt error.
+            CategorizedError: ``PROVISIONING_FAILURE`` on any other libvirt error.
         """
         xml = render_domain_xml(system_id, profile)
         try:
             conn = self._connect()
             try:
                 domain = conn.defineXML(xml)
-                domain.create()
+                try:
+                    domain.create()
+                except libvirt.libvirtError as exc:
+                    if exc.get_error_code() != libvirt.VIR_ERR_OPERATION_INVALID:
+                        raise  # not "already running" — a real start failure
             finally:
                 _close(conn)
         except libvirt.libvirtError as exc:

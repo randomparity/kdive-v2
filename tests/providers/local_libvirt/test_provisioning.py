@@ -181,6 +181,17 @@ def test_provision_create_error_is_provisioning_failure() -> None:
     assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE
 
 
+def test_provision_already_running_domain_is_idempotent() -> None:
+    # A retry after a partial provision: defineXML redefines, create() reports "already
+    # running" (OPERATION_INVALID) — the desired post-state, not a failure.
+    name = domain_name_for(_SYS)
+    conn = _ProvConn(
+        defined={name: _ProvDomain(name, create_error=libvirt.VIR_ERR_OPERATION_INVALID)}
+    )
+    assert _prov(conn).provision(_SYS, _profile()) == name  # no raise
+    assert conn.closed == 1
+
+
 def test_teardown_destroys_and_undefines() -> None:
     name = domain_name_for(_SYS)
     dom = _ProvDomain(name)
