@@ -87,7 +87,10 @@ _KDIVE_METADATA_NS = discovery._KDIVE_METADATA_NS   # the read-side contract, im
 
 type Connect = Callable[[], LibvirtConn]            # zero-arg; returns a live connection
 
+SUPPORTED_DOMAIN_XML_PARAMS = frozenset({"machine"})
+
 def domain_name_for(system_id: UUID) -> str: ...    # "kdive-{system_id}"
+def validate_profile(profile: ProvisioningProfile) -> None: ...   # raises CONFIGURATION_ERROR on unknown domain_xml_params
 def render_domain_xml(system_id: UUID, profile: ProvisioningProfile) -> str: ...
 
 class LocalLibvirtProvisioning:
@@ -125,10 +128,17 @@ class LocalLibvirtProvisioning:
     — the tag discovery reads. **This is the contract**; a rendering test asserts that
     `discovery._parse_system_id` round-trips the value out of the rendered element.
   - **`domain_xml_params`** (ADR-0024 `dict[str,str]`): M0 honors a documented, closed set —
-    `machine` (→ `<os><type machine=…>`). An **unknown** key raises
-    `CategorizedError(CONFIGURATION_ERROR)` at render time (fail loud: a param the renderer
-    silently drops is a misconfiguration the operator must see, not absorb). The supported
-    set widening is an M1 concern; the closed-set check is pinned by a test.
+    `SUPPORTED_DOMAIN_XML_PARAMS = {"machine"}` (→ `<os><type machine=…>`; `machine` defaults
+    to `_DEFAULT_MACHINE` when absent). An **unknown** key raises
+    `CategorizedError(CONFIGURATION_ERROR)` — *fail loud*: a param the renderer would silently
+    drop is a misconfiguration the operator must see. **The check runs at the tool boundary,
+    not only at render time.** A module-level `validate_profile(profile)` checks the param keys
+    against `SUPPORTED_DOMAIN_XML_PARAMS`; `systems.provision` calls it synchronously right
+    after `ProvisioningProfile.parse`, so a bad param is an immediate `configuration_error`
+    response, not a dead-lettered provision job (the codebase rule: validate at the boundary,
+    fail fast). `render_domain_xml` re-applies the same check defensively (the worker boundary),
+    so a hand-built jsonb that bypassed the tool still cannot inject an unknown key. The
+    supported-set widening is an M1 concern; both check sites share the one constant.
 - **`provision(system_id, profile)`** renders the XML, `conn.defineXML(xml)` → domain,
   `domain.create()` (start it), returns `domain_name_for(system_id)`. A `libvirtError` from
   either call is raised as `CategorizedError(PROVISIONING_FAILURE, details={"system_id": …})`
@@ -160,16 +170,25 @@ def register_handlers(registry: HandlerRegistry, *, provisioning: LocalLibvirtPr
 1. `require_project` is implicit via the allocation's project (resolved below);
    `require_role(ctx, project, Role.OPERATOR)` after the project is known.
 2. Parse the uuid (malformed → `failure(CONFIGURATION_ERROR)`); `profile = ProvisioningProfile.parse(profile)`
-   (a bad profile raises `CategorizedError(CONFIGURATION_ERROR)` → mapped to `failure`,
-   details already value-scrubbed by `parse`).
+   then `provisioning.validate_profile(profile)` (a bad profile or an unknown
+   `domain_xml_params` key raises `CategorizedError(CONFIGURATION_ERROR)` → mapped to `failure`,
+   details already value-scrubbed by `parse`). Both run **before** any DB write, so a
+   misconfigured profile never mints a System or enqueues a job.
 3. One transaction under `advisory_xact_lock(ALLOCATION, allocation_id)`:
    - `ALLOCATIONS.get`; absent or `alloc.project not in ctx.projects` →
      `failure(CONFIGURATION_ERROR)` (not-found-shaped, no cross-project leak — as
      `allocations.get`). `require_role(ctx, alloc.project, OPERATOR)`.
    - **Find existing System for this allocation** (`SELECT … FROM systems WHERE
-     allocation_id = %s`). If one exists (a retry): re-enqueue the `provision` job (dedup →
-     the same job) and return its handle — **no** second System, **no** re-transition. This
-     is the tool's idempotency (ADR-0025 §2).
+     allocation_id = %s`). If one exists:
+     - **terminal (`torn_down`/`failed`)** → `failure(CONFIGURATION_ERROR,
+       data={"current_status": …})`: the allocation's System is spent and M0 has **no
+       reprovision** ([parent spec](../../specs/m0-walking-skeleton.md) "No System
+       reprovision-in-place") — the agent must release this allocation and request a new one.
+       Re-enqueuing the (terminal) provision job here would hand back a stale succeeded/failed
+       handle that misrepresents a fresh provision.
+     - **non-terminal (`provisioning`/`ready`/`crashed`)** → a genuine retry: re-enqueue the
+       `provision` job (dedup → the same job) and return its handle — **no** second System,
+       **no** re-transition. This is the tool's idempotency (ADR-0025 §2).
    - Else require `alloc.state is GRANTED` (any other state →
      `failure(CONFIGURATION_ERROR, data={"current_status": …})`: a released/active/failed
      allocation cannot start a *new* System). Then:
@@ -331,8 +350,10 @@ calls; no DB, no `live_vm`)
 - `render_domain_xml`: name `kdive-{id}`; memory/vcpu/arch from the profile; the
   `<kdive:system>` tag round-trips through `discovery._parse_system_id`; the rootfs ref in the
   disk source; `machine` from `domain_xml_params` (default when absent); **no `<kernel>`/
-  `<cmdline>`** (the kdump reservation is #17's, not provision's); an **unknown**
-  `domain_xml_params` key → `CategorizedError(CONFIGURATION_ERROR)`.
+  `<cmdline>`** (the kdump reservation is #17's, not provision's).
+- `validate_profile`: a profile whose `domain_xml_params` has only supported keys passes; an
+  **unknown** key → `CategorizedError(CONFIGURATION_ERROR)`. `render_domain_xml` re-checks
+  (the worker-boundary defense) so an unknown key in a hand-built jsonb still raises.
 - `provision`: calls `defineXML` then `create`; returns `kdive-{id}`; a `libvirtError` on
   either → `CategorizedError(PROVISIONING_FAILURE)`.
 - `teardown`: destroy+undefine a present domain; `VIR_ERR_NO_DOMAIN` on lookup → no-op
@@ -364,13 +385,17 @@ calls; no DB, no `live_vm`)
   `data["system_id"]` set; exactly one `systems` row `provisioning`; allocation `active`;
   one `provision` job (`dedup_key="{alloc}:provision"`); two audit rows (`->provisioning`,
   `granted->active`).
-- retry (call twice) → same job id, one System, allocation still `active` (no second
-  `granted->active`), no extra audit beyond the first call's.
+- retry (call twice, System still non-terminal) → same job id, one System, allocation still
+  `active` (no second `granted->active`), no extra audit beyond the first call's.
+- retry on a **terminal** existing System (seed `torn_down`/`failed` System on the allocation)
+  → `failure(CONFIGURATION_ERROR, data.current_status=…)`; **no** new job, no stale handle (M0
+  no-reprovision).
 - non-`granted` allocation (released/active-without-system seeded) → `failure(CONFIGURATION_ERROR,
   data.current_status=…)`; no System, no job. *(active-with-existing-System is the retry case
   above.)*
-- malformed uuid / bad profile (missing field) → `failure(CONFIGURATION_ERROR)`; profile
-  error details carry no submitted values.
+- malformed uuid / bad profile (missing field) / unknown `domain_xml_params` key →
+  `failure(CONFIGURATION_ERROR)` **synchronously** (no System, no job enqueued); profile error
+  details carry no submitted values.
 - viewer/no role → `AuthorizationError` raised (the `allocations` posture: authz denials are
   not envelopes, ADR-0020).
 - cross-project / absent allocation → `failure(CONFIGURATION_ERROR)` (not-found-shaped).
