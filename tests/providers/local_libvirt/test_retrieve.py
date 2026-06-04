@@ -11,6 +11,8 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.providers.local_libvirt.retrieve import (
     CaptureOutput,
+    CrashOutput,
+    CrashResult,
     LocalLibvirtRetrieve,
     crash_command_rejection_reason,
 )
@@ -105,3 +107,39 @@ def test_capture_store_failure_is_infrastructure_failure() -> None:
     with pytest.raises(CategorizedError) as exc:
         _retriever(_FakeStore(fail_on="vmcore"), core=b"X").capture(_SYS)
     assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+def _crash_retriever(*, observed_build_id: str, crash: CrashResult) -> LocalLibvirtRetrieve:
+    return LocalLibvirtRetrieve(
+        tenant=_TENANT,
+        store_factory=_FakeStore,
+        wait_for_vmcore=lambda s: None,
+        read_vmcore_build_id=lambda data: observed_build_id,
+        extract_redacted=lambda data: b"",
+        fetch_object=lambda ref: b"BYTES",
+        run_crash=lambda vmlinux, vmcore, script: crash,
+    )
+
+
+def test_run_returns_redacted_crash_output() -> None:
+    crash = CrashResult(exit_status=0, stdout=b"$ log\npassword=hunter2\nok", stderr=b"")
+    out = _crash_retriever(observed_build_id="deadbeef", crash=crash).run(
+        vmcore_ref="k/systems/s/vmcore",
+        debuginfo_ref="k/runs/r/vmlinux",
+        expected_build_id="deadbeef",
+        commands=["log"],
+    )
+    assert isinstance(out, CrashOutput)
+    assert "hunter2" not in out.transcript and "[REDACTED]" in out.transcript
+
+
+def test_run_build_id_mismatch_is_configuration_error() -> None:
+    crash = CrashResult(exit_status=0, stdout=b"", stderr=b"")
+    with pytest.raises(CategorizedError) as exc:
+        _crash_retriever(observed_build_id="aaaa", crash=crash).run(
+            vmcore_ref="v",
+            debuginfo_ref="d",
+            expected_build_id="bbbb",
+            commands=["log"],
+        )
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
