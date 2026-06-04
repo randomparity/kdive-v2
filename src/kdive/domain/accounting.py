@@ -131,19 +131,43 @@ async def stamp_active_ended(
     """Stamp ``active_ended_at`` on an allocation that reached ``active``, return it updated.
 
     The billing interval closes when work stops (``active → releasing`` / ``→ expired``).
-    A no-op (returns the allocation unchanged) when the allocation never went ``active``
-    (``active_started_at`` null), so a release-from-``granted`` keeps a null interval →
-    ``active_hours = 0`` → a full credit (ADR-0007 §3). The caller holds the per-Allocation
-    lock and stamps before :func:`reconcile`, which reads the stamped value.
+    A no-op (returns the allocation unchanged) when the allocation never went ``active``,
+    so a release-from-``granted`` keeps a null interval → ``active_hours = 0`` → a full
+    credit (ADR-0007 §3). The caller stamps before :func:`reconcile`, which reads the
+    stamped value off the returned model.
+
+    The stamp decision reads **committed** DB state, not the caller's ``allocation``
+    snapshot (#84): the snapshot can predate a provision-ready ``active_started_at`` stamp
+    that the first-System ``provisioning → ready`` edge commits in a separate, ``SYSTEM``-
+    locked transaction. ``SELECT ... FOR UPDATE`` takes the allocation row's write lock by
+    primary key — it always matches the row, so when that writer's stamp is **in flight**
+    this blocks until it commits, then re-reads the committed ``active_started_at`` (a bare
+    ``WHERE active_started_at IS NOT NULL`` would not: under READ COMMITTED a row whose
+    snapshot value is null is never selected, so a concurrent ``null → value`` commit is
+    missed). Being self-locking it closes the window for the release path *and* the
+    ``→expired`` sweep, which does not take the allocation row lock before stamping. The
+    re-read ``active_started_at`` is carried into the returned model so :func:`reconcile`
+    prices the interval the DB actually holds; a null committed start → no stamp, unchanged.
+
+    The caller MUST hold an open transaction (both production callers wrap this in one) so
+    the ``FOR UPDATE`` lock survives to the follow-up ``UPDATE``.
     """
-    if allocation.active_started_at is None:
-        return allocation
     async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT active_started_at FROM allocations WHERE id = %s FOR UPDATE",
+            (allocation.id,),
+        )
+        row = await cur.fetchone()
+        if row is None or row[0] is None:
+            return allocation
+        started_at = row[0]
         await cur.execute(
             "UPDATE allocations SET active_ended_at = %s WHERE id = %s",
             (ended_at, allocation.id),
         )
-    return allocation.model_copy(update={"active_ended_at": ended_at})
+    return allocation.model_copy(
+        update={"active_started_at": started_at, "active_ended_at": ended_at}
+    )
 
 
 async def usage(conn: AsyncConnection, project: str) -> ProjectUsage:

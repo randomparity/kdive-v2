@@ -330,6 +330,134 @@ def test_reconcile_missing_size_fails_closed(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+# --- stamp_active_ended ----------------------------------------------------
+
+
+async def _db_active_interval(
+    conn: psycopg.AsyncConnection, alloc_id: UUID
+) -> tuple[datetime | None, datetime | None]:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT active_started_at, active_ended_at FROM allocations WHERE id = %s",
+            (alloc_id,),
+        )
+        row = await cur.fetchone()
+    assert row is not None
+    return row[0], row[1]
+
+
+def test_stamp_active_ended_rereads_committed_started_at(migrated_url: str) -> None:
+    # The release/expire path reads an allocation snapshot, then provision-ready commits
+    # active_started_at before the stamp decision (#84). stamp_active_ended must decide
+    # from committed DB state, not the stale snapshot, so it stamps active_ended_at and
+    # returns the committed started_at — otherwise the interval stays open (active_hours=0).
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            res = await _seed_resource(conn)
+            # Snapshot read while still granted-but-not-yet-active: active_started_at NULL.
+            stale = await _seed_alloc(conn, res.id, active_started_at=None)
+            # provision-ready commits the start stamp out of band (the racing writer).
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE allocations SET active_started_at = %s WHERE id = %s",
+                    (_DT, stale.id),
+                )
+            ended = _DT + timedelta(hours=2)
+            result = await accounting.stamp_active_ended(conn, stale, ended)
+            db_started, db_ended = await _db_active_interval(conn, stale.id)
+            assert db_ended == ended  # interval closed in the DB
+            assert result.active_started_at == _DT  # committed start carried into the model
+            assert result.active_ended_at == ended
+            assert db_started == _DT
+
+    asyncio.run(_run())
+
+
+def test_stamp_active_ended_then_reconcile_bills_nonzero(migrated_url: str) -> None:
+    # End to end of #84: with the start committed out of band, stamp + reconcile must
+    # price active_hours > 0 (a partial credit), not the full-credit under-bill.
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            await _seed_budget(conn)
+            res = await _seed_resource(conn)
+            stale = await _seed_alloc(conn, res.id, active_started_at=None)
+            await accounting.reserve(conn, stale, Decimal("9.0000"))
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE allocations SET active_started_at = %s WHERE id = %s",
+                    (_DT, stale.id),
+                )
+            result = await accounting.stamp_active_ended(conn, stale, _DT + timedelta(hours=2))
+            delta = await accounting.reconcile(conn, result)
+            # rate = 3.0/hr, 2h → actual 6.0; delta = 6.0 - 9.0 = -3.0 (NOT a -9.0 full credit).
+            assert delta == Decimal("-3.0000")
+            assert await _spent(conn) == Decimal("6.0000")
+
+    asyncio.run(_run())
+
+
+def test_stamp_active_ended_blocks_on_inflight_start(migrated_url: str) -> None:
+    # The ->expired sweep stamps before it takes the allocation row lock, so it can run
+    # while the provision-ready writer's active_started_at stamp is in flight (row-locked,
+    # uncommitted) in another transaction. stamp_active_ended must block on that row lock
+    # and, once the writer commits, observe the committed start and close the interval —
+    # not skip it (#84). A snapshot-predicated UPDATE would not block and would under-bill.
+    async def _run() -> None:
+        async with _conn(migrated_url) as setup:
+            res = await _seed_resource(setup)
+            alloc = await _seed_alloc(setup, res.id, active_started_at=None)
+        ended = _DT + timedelta(hours=2)
+        writer = await psycopg.AsyncConnection.connect(migrated_url)
+        stamper = await psycopg.AsyncConnection.connect(migrated_url)
+        try:
+
+            async def _do_stamp() -> Allocation:
+                async with stamper.transaction():
+                    return await accounting.stamp_active_ended(stamper, alloc, ended)
+
+            async with writer.transaction():
+                # provision-ready holds the row lock with an uncommitted start stamp
+                await writer.execute(
+                    "UPDATE allocations SET active_started_at = %s "
+                    "WHERE id = %s AND active_started_at IS NULL",
+                    (_DT, alloc.id),
+                )
+                task = asyncio.create_task(_do_stamp())
+                await asyncio.sleep(0.3)
+                assert not task.done()  # blocked on the writer's row lock, did not skip
+            result = await asyncio.wait_for(task, timeout=5.0)
+            assert result.active_started_at == _DT  # committed start observed after unblock
+            assert result.active_ended_at == ended
+            async with _conn(migrated_url) as check:
+                db_started, db_ended = await _db_active_interval(check, alloc.id)
+            assert db_started == _DT
+            assert db_ended == ended
+        finally:
+            await writer.close()
+            await stamper.close()
+
+    asyncio.run(_run())
+
+
+def test_stamp_active_ended_never_active_is_noop(migrated_url: str) -> None:
+    # Release from granted with the start genuinely null (DB and snapshot agree): no stamp,
+    # the interval stays open so reconcile takes the full credit (ADR-0007 §3).
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            res = await _seed_resource(conn)
+            alloc = await _seed_alloc(
+                conn, res.id, state=AllocationState.GRANTED, active_started_at=None
+            )
+            result = await accounting.stamp_active_ended(conn, alloc, _DT + timedelta(hours=2))
+            db_started, db_ended = await _db_active_interval(conn, alloc.id)
+            assert db_ended is None
+            assert db_started is None
+            assert result.active_ended_at is None
+            assert result.active_started_at is None
+
+    asyncio.run(_run())
+
+
 # --- usage(project) --------------------------------------------------------
 
 
