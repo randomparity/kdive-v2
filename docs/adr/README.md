@@ -62,3 +62,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0030](0030-install-boot-plane.md) | Install + boot plane (local libvirt): runs.install, runs.boot, install/boot handlers (M0) | Proposed |
 | [0031](0031-retrieve-plane-vmcore-postmortem.md) | Retrieve plane: vmcore capture/fetch + crash postmortem (M0) | Proposed |
 | [0032](0032-connect-plane-gdbstub-debugsession.md) | Connect plane (gdbstub) + DebugSession lifecycle (M0) | Proposed |
+| [0034](0034-debug-plane-gdbmi-tier.md) | Debug plane: gdb-MI tier (breakpoints, read_memory cap, read_registers, continue/interrupt) (M0) | Proposed |
