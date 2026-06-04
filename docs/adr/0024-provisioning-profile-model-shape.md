@@ -94,9 +94,10 @@ things and must not be conflated.
 ### 2c. `domain_xml_params` is `dict[str, str]`, not `dict[str, Any]`
 
 The libvirt section's `domain_xml_params` is
-`dict[str, Annotated[str, Field(min_length=1)]]` with default `{}`. The **map is
-optionally empty** (a profile may inject no params); the `min_length=1` rides on the
-**value type**, so any param that *is* present has a non-empty value. This is
+`dict[NonEmptyStr, NonEmptyStr]` with default `{}`. The **map is optionally empty**
+(a profile may inject no params); the `min_length=1` rides on **both the key and the
+value type**, so any param that *is* present has a non-empty name and a non-empty
+value (an unnamed param is as malformed as an empty one). This is
 deliberately not `Field(min_length=1)` on the dict itself — that constrains the
 entry *count* (it would forbid the `{}` default while doing nothing about value
 emptiness), which is the conflation decision 2b warns against. Domain-XML parameters

@@ -166,6 +166,14 @@ def test_empty_domain_xml_param_value_rejected() -> None:
     _expect_configuration_error(data)
 
 
+@pytest.mark.parametrize("key", ["", "   "])
+def test_empty_domain_xml_param_key_rejected(key: str) -> None:
+    # An empty param name is as malformed as an empty value (ADR-0024 decision 2c).
+    data = _valid()
+    data["provider"]["local-libvirt"]["domain_xml_params"] = {key: "q35"}
+    _expect_configuration_error(data)
+
+
 def test_domain_xml_params_defaults_to_empty_map() -> None:
     data = _valid()
     del data["provider"]["local-libvirt"]["domain_xml_params"]

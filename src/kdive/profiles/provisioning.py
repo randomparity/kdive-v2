@@ -56,7 +56,7 @@ class LibvirtProfile(_ProfileBase):
     kernel is the arbiter of its grammar).
     """
 
-    domain_xml_params: dict[str, NonEmptyStr] = Field(default_factory=dict)
+    domain_xml_params: dict[NonEmptyStr, NonEmptyStr] = Field(default_factory=dict)
     rootfs_image_ref: NonEmptyStr
     crashkernel: NonEmptyStr
 
