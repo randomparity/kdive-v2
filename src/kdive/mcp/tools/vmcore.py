@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, LiteralString
+from typing import Any, LiteralString, NamedTuple
 from uuid import UUID
 
 from fastmcp import FastMCP
@@ -24,7 +24,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Job, JobKind, Run, System
+from kdive.domain.models import Job, JobKind, System
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
@@ -237,10 +237,18 @@ async def _build_id_for_run(conn: AsyncConnection, run_id: UUID) -> str | None:
     return build_id if isinstance(build_id, str) and build_id else None
 
 
+class _PostmortemTargets(NamedTuple):
+    """The resolved (non-null) inputs the crash port needs to symbolize a Run's core."""
+
+    debuginfo_ref: str
+    build_id: str
+    vmcore_ref: str
+
+
 async def _resolve_postmortem(
     conn: AsyncConnection, ctx: RequestContext, run_id: str, commands: list[str]
-) -> tuple[Run, str, str] | ToolResponse:
-    """Resolve the Run, its build-id, and the System's raw core key, or a failure envelope."""
+) -> _PostmortemTargets | ToolResponse:
+    """Resolve the debuginfo ref, build-id, and raw core key (all non-null), or a failure."""
     uid = _as_uuid(run_id)
     if uid is None:
         return _config_error(run_id)
@@ -260,7 +268,7 @@ async def _resolve_postmortem(
         row = await cur.fetchone()
     if row is None:
         return _config_error(run_id)
-    return run, build_id, str(row["object_key"])
+    return _PostmortemTargets(run.debuginfo_ref, build_id, str(row["object_key"]))
 
 
 async def postmortem_crash(
@@ -277,16 +285,18 @@ async def postmortem_crash(
             resolved = await _resolve_postmortem(conn, ctx, run_id, commands)
         if isinstance(resolved, ToolResponse):
             return resolved
-        run, build_id, vmcore_ref = resolved
-        debuginfo_ref = run.debuginfo_ref
-        assert debuginfo_ref is not None  # _resolve_postmortem rejects a null debuginfo_ref
-        output = await asyncio.to_thread(
-            crash.run,
-            vmcore_ref=vmcore_ref,
-            debuginfo_ref=debuginfo_ref,
-            expected_build_id=build_id,
-            commands=commands,
-        )
+        try:
+            output = await asyncio.to_thread(
+                crash.run,
+                vmcore_ref=resolved.vmcore_ref,
+                debuginfo_ref=resolved.debuginfo_ref,
+                expected_build_id=resolved.build_id,
+                commands=commands,
+            )
+        except CategorizedError as exc:
+            # A provenance mismatch (configuration_error) or an unavailable crash
+            # dependency (missing_dependency) becomes a typed failure, never a 500.
+            return ToolResponse.failure(run_id, exc.category)
         redactor = Redactor()
         return ToolResponse.success(
             run_id,

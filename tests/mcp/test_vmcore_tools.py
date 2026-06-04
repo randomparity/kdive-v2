@@ -94,6 +94,18 @@ class _FakeCrash:
         )
 
 
+class _RaisingCrash:
+    """A CrashPostmortem whose run() raises a planted CategorizedError (e.g. provenance)."""
+
+    def __init__(self, category: ErrorCategory) -> None:
+        self._category = category
+
+    def run(
+        self, *, vmcore_ref: str, debuginfo_ref: str, expected_build_id: str, commands: list[str]
+    ) -> CrashOutput:
+        raise CategorizedError("planted", category=self._category)
+
+
 # --- vmcore.fetch tool ---------------------------------------------------------------------
 
 
@@ -314,6 +326,20 @@ def test_postmortem_crash_unbuilt_run_is_config_error(migrated_url: str) -> None
             resp = await vmcore_tools.postmortem_crash(
                 pool, _ctx(), run_id=run_id, commands=["log"], crash=_FakeCrash()
             )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_postmortem_crash_provenance_mismatch_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _crashed_with_built_run(pool)
+            crash = _RaisingCrash(ErrorCategory.CONFIGURATION_ERROR)
+            resp = await vmcore_tools.postmortem_crash(
+                pool, _ctx(), run_id=run_id, commands=["log"], crash=crash
+            )
+        # The provider raises CategorizedError; the tool returns a typed failure, never a 500.
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
