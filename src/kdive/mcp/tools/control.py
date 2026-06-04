@@ -1,10 +1,11 @@
 """The `control.*` MCP tools and the power/force_crash job handlers (ADR-0028).
 
-`control.power` (ungated, operator) and `control.force_crash` (three-check gated, admin)
-admit synchronously and enqueue a durable job; the handlers drive the domain via the
-injected `Controller` under the per-System advisory lock. `power` moves no System state
-(a domain restart is not a reprovision); `force_crash` drives System ``ready -> crashed``
-and every non-terminal DebugSession of the System ``-> detached`` (joined through ``runs``).
+`control.power` (role-gated by action: ``on`` → operator, ``off``/``cycle``/``reset`` →
+admin, ADR-0037 §1/§2) and `control.force_crash` (three-check gated, admin) admit
+synchronously and enqueue a durable job; the handlers drive the domain via the injected
+`Controller` under the per-System advisory lock. `power` moves no System state (a domain
+restart is not a reprovision); `force_crash` drives System ``ready -> crashed`` and every
+non-terminal DebugSession of the System ``-> detached`` (joined through ``runs``).
 
 `power` uses a per-call-unique ``dedup_key`` (``{system_id}:power:{action}:{uuid4}``) so a
 repeated power op is always a fresh job; `force_crash` uses a stable
@@ -47,6 +48,14 @@ _STARTED_SYSTEM = frozenset({SystemState.READY, SystemState.CRASHED})
 # Terminal Systems: a force_crash that finds one returns without crashing (teardown won).
 _TERMINAL_SYSTEM = frozenset({SystemState.TORN_DOWN, SystemState.FAILED})
 _FORCE_CRASH = "force_crash"
+# Power on is a reversible lifecycle move (operator); off/cycle/reset tear into a running
+# guest and are destructive-administration ops (admin) — ADR-0037 §1/§2.
+_POWER_ON_ACTIONS = frozenset({PowerAction.ON})
+
+
+def _power_required_role(action: PowerAction) -> Role:
+    """The lowest role that may issue ``action``: ``operator`` for ``on``, else ``admin``."""
+    return Role.OPERATOR if action in _POWER_ON_ACTIONS else Role.ADMIN
 
 
 def _config_error(object_id: str, *, data: dict[str, str] | None = None) -> ToolResponse:
@@ -89,7 +98,13 @@ def _domain_name(system: System) -> str:
 async def power_system(
     pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str, action: str
 ) -> ToolResponse:
-    """Admit a power op on a started System and enqueue a `power` job (operator, ungated)."""
+    """Admit a power op on a started System and enqueue a `power` job.
+
+    ``power on`` requires ``operator`` (a reversible lifecycle move); the destructive
+    actions ``off``/``cycle``/``reset`` require ``admin`` (ADR-0037 §1/§2). The role check
+    binds to the target System's project and runs after the in-project check, so it cannot
+    be evaluated against a foreign project.
+    """
     uid = _as_uuid(system_id)
     if uid is None:
         return _config_error(system_id)
@@ -102,7 +117,7 @@ async def power_system(
             system = await SYSTEMS.get(conn, uid)
             if system is None or system.project not in ctx.projects:
                 return _config_error(system_id)
-            require_role(ctx, system.project, Role.OPERATOR)
+            require_role(ctx, system.project, _power_required_role(power_action))
             if system.state not in _STARTED_SYSTEM:
                 return _config_error(system_id, data={"current_status": system.state.value})
             job = await queue.enqueue(

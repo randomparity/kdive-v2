@@ -45,6 +45,7 @@ from kdive.domain.state import (
 from kdive.mcp.auth import AuthError, RequestContext
 from kdive.mcp.tools import accounting as acct_tools
 from kdive.security.rbac import AuthorizationError, Role
+from tests.mcp.roles import PROJECT_A, PROJECT_B, make_role_fixture
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -289,6 +290,30 @@ def test_viewer_in_a_refused_usage_for_b_investigation(migrated_url: str) -> Non
             try:
                 await acct_tools.usage(pool, viewer_a, investigation_id=str(inv_b))
                 raise AssertionError("expected AuthError")
+            except AuthError:
+                pass
+
+    asyncio.run(_run())
+
+
+def test_separated_fixture_viewer_reads_own_but_not_foreign(migrated_url: str) -> None:
+    # Exercises the importable separated-role fixture (tests/mcp/roles.py) as the
+    # cross-module artifact #68 ships: project-A's viewer reads A's own usage, and is
+    # refused B's spend via a B-owned investigation_id (the acceptance pairing).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _seed_spend(pool, PROJECT_A)
+            inv_b = await _seed_investigation(pool, PROJECT_B)
+            fx = make_role_fixture()
+            viewer_a = fx.project(PROJECT_A).viewer.ctx
+
+            own = await acct_tools.usage(pool, viewer_a, project=PROJECT_A)
+            assert own.status == "ok"
+            assert own.data["project"] == PROJECT_A
+
+            try:
+                await acct_tools.usage(pool, viewer_a, investigation_id=str(inv_b))
+                raise AssertionError("expected AuthError for a foreign investigation_id")
             except AuthError:
                 pass
 

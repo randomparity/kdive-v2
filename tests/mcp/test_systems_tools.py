@@ -684,11 +684,12 @@ async def _teardown(pool: AsyncConnectionPool, ctx: RequestContext, system_id: s
 
 
 def test_teardown_tool_enqueues_job(migrated_url: str) -> None:
+    # teardown is a destructive-administration op: admin-only (ADR-0037 §1/§2).
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
-            resp = await _teardown(pool, _ctx(), sys_id)
+            resp = await _teardown(pool, _ctx(Role.ADMIN), sys_id)
             assert resp.data["system_id"] == sys_id
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -705,7 +706,7 @@ def test_teardown_tool_already_torn_down_no_job(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.TORN_DOWN)
-            resp = await _teardown(pool, _ctx(), sys_id)
+            resp = await _teardown(pool, _ctx(Role.ADMIN), sys_id)
             assert resp.status == "torn_down"
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT count(*) AS n FROM jobs")
@@ -715,7 +716,9 @@ def test_teardown_tool_already_torn_down_no_job(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_teardown_tool_without_operator_raises(migrated_url: str) -> None:
+@pytest.mark.parametrize("role", [Role.VIEWER, Role.OPERATOR])
+def test_teardown_tool_below_admin_raises(migrated_url: str, role: Role) -> None:
+    # teardown is admin-only: both viewer AND operator are refused (ADR-0037 §2).
     from kdive.security.rbac import AuthorizationError
 
     async def _run() -> None:
@@ -723,7 +726,12 @@ def test_teardown_tool_without_operator_raises(migrated_url: str) -> None:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             with pytest.raises(AuthorizationError):
-                await _teardown(pool, _ctx(Role.VIEWER), sys_id)
+                await _teardown(pool, _ctx(role), sys_id)
+            # The denied op enqueued no teardown job.
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM jobs WHERE kind = 'teardown'")
+                row = await cur.fetchone()
+        assert row is not None and row["n"] == 0
 
     asyncio.run(_run())
 

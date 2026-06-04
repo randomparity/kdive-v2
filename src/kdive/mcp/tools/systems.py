@@ -580,7 +580,14 @@ async def reprovision_handler(
 async def teardown_system(
     pool: AsyncConnectionPool, ctx: RequestContext, system_id: str
 ) -> ToolResponse:
-    """Enqueue an idempotent teardown for a System the caller's project owns."""
+    """Enqueue an idempotent teardown for a System the caller's project owns (admin).
+
+    Direct teardown of a still-allocated System is a destructive-administration op and
+    requires ``admin`` (ADR-0037 §1/§2). An ``operator`` frees the quota it holds by
+    ``allocations.release`` instead, which orphans the System for the reconciler's
+    principal-less GC teardown (ADR-0021); idle-lease expiry feeds the same path. The role
+    check binds to the target System's project, after the in-project check.
+    """
     uid = _as_uuid(system_id)
     if uid is None:
         return _config_error(system_id)
@@ -589,7 +596,7 @@ async def teardown_system(
             system = await SYSTEMS.get(conn, uid)
             if system is None or system.project not in ctx.projects:
                 return _config_error(system_id)
-            require_role(ctx, system.project, Role.OPERATOR)
+            require_role(ctx, system.project, Role.ADMIN)
             if system.state is SystemState.TORN_DOWN:
                 return ToolResponse.success(
                     system_id,

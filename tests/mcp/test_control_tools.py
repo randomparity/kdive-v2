@@ -213,12 +213,15 @@ class _FakeControl:
 # --- control.power tool --------------------------------------------------------------------
 
 
-def test_power_ready_system_enqueues_job(migrated_url: str) -> None:
+def test_power_off_requires_admin_and_enqueues_job(migrated_url: str) -> None:
+    # power off/cycle/reset are destructive-administration ops: admin-only (ADR-0037 §2).
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
-            resp = await control_tools.power_system(pool, _ctx(), system_id=sys_id, action="off")
+            resp = await control_tools.power_system(
+                pool, _admin_ctx(), system_id=sys_id, action="off"
+            )
             assert resp.status == "queued"
             assert resp.data["system_id"] == sys_id
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -228,6 +231,35 @@ def test_power_ready_system_enqueues_job(migrated_url: str) -> None:
                 )
                 row = await cur.fetchone()
         assert row is not None and row["n"] == 1
+
+    asyncio.run(_run())
+
+
+def test_power_on_is_operator_and_enqueues_job(migrated_url: str) -> None:
+    # power on brings a System up — a reversible lifecycle move at operator (ADR-0037 §1).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
+            resp = await control_tools.power_system(pool, _ctx(), system_id=sys_id, action="on")
+        assert resp.status == "queued"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("action", ["off", "cycle", "reset"])
+def test_power_destructive_action_refused_for_operator(migrated_url: str, action: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
+            with pytest.raises(AuthorizationError):
+                await control_tools.power_system(pool, _ctx(), system_id=sys_id, action=action)
+            # The denied op enqueued no job.
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM jobs WHERE kind = 'power'")
+                row = await cur.fetchone()
+        assert row is not None and row["n"] == 0
 
     asyncio.run(_run())
 
@@ -248,7 +280,9 @@ def test_power_non_started_system_is_config_error(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.DEFINED)
-            resp = await control_tools.power_system(pool, _ctx(), system_id=sys_id, action="off")
+            resp = await control_tools.power_system(
+                pool, _admin_ctx(), system_id=sys_id, action="off"
+            )
         assert resp.status == "error" and resp.error_category == "configuration_error"
         assert resp.data["current_status"] == "defined"
 
@@ -279,14 +313,15 @@ def test_power_malformed_uuid_is_config_error(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_power_without_operator_raises(migrated_url: str) -> None:
+def test_power_on_without_operator_raises(migrated_url: str) -> None:
+    # power on is operator; a viewer is refused even the non-destructive action.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             with pytest.raises(AuthorizationError):
                 await control_tools.power_system(
-                    pool, _ctx(Role.VIEWER), system_id=sys_id, action="off"
+                    pool, _ctx(Role.VIEWER), system_id=sys_id, action="on"
                 )
 
     asyncio.run(_run())
