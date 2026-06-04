@@ -46,13 +46,17 @@ def test_null_reaper_lists_nothing_and_destroy_is_noop() -> None:
 
 def test_reconcile_report_holds_counts_and_failures() -> None:
     report = ReconcileReport(
+        expired_allocations=5,
         orphaned_systems=1,
         abandoned_jobs=2,
         dead_sessions=3,
         leaked_domains=4,
+        idempotency_keys_gcd=6,
         failures=("abandoned_jobs",),
     )
+    assert report.expired_allocations == 5
     assert report.orphaned_systems == 1
+    assert report.idempotency_keys_gcd == 6
     assert report.failures == ("abandoned_jobs",)
 
 
@@ -411,7 +415,13 @@ def test_reconcile_once_counts_a_mixed_pass(migrated_url: str) -> None:
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             report = await reconcile_once(pool, reaper)
         assert report == ReconcileReport(
-            orphaned_systems=1, abandoned_jobs=1, dead_sessions=1, leaked_domains=1, failures=()
+            expired_allocations=0,
+            orphaned_systems=1,
+            abandoned_jobs=1,
+            dead_sessions=1,
+            leaked_domains=1,
+            idempotency_keys_gcd=0,
+            failures=(),
         )
         assert reaper.destroyed == ["vm-leak"]
 
@@ -452,7 +462,7 @@ def test_reconciler_run_survives_a_failing_pass(monkeypatch: pytest.MonkeyPatch)
             if calls == 1:
                 raise RuntimeError("transient pass failure")
             stop.set()
-            return ReconcileReport(0, 0, 0, 0, ())
+            return ReconcileReport(0, 0, 0, 0, 0, 0, ())
 
         monkeypatch.setattr(Reconciler, "run_once", _run_once)
         # run_once is monkeypatched, so the pool is never used; a cast keeps ty happy.

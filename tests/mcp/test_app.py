@@ -67,6 +67,7 @@ def test_build_app_registers_jobs_tools() -> None:
             "allocations.request",
             "allocations.get",
             "allocations.release",
+            "allocations.renew",
             "allocations.list",
         } <= names
 
