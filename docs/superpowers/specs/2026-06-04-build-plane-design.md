@@ -167,15 +167,19 @@ toolchain — exactly as the provisioning handler is tested with a fake `Provisi
 3. **Parse `run.build_profile`** → `configuration_error` synchronously on failure.
 4. Gate on Run state (under a per-Run advisory lock — `LockScope` gains a `RUN`
    member, last in the global `ALLOCATION → SYSTEM → INVESTIGATION → RUN` order):
-   - `created`: drive `created → running` and enqueue the build job, atomically.
-   - `running`: a build is already admitted — return the **same** job (re-enqueue is
-     a dedup no-op returning the existing row). Idempotent.
-   - `succeeded`: the build already finished — return the existing (succeeded) job.
-     Idempotent; does not rebuild.
+   - `created`: drive `created → running` and `enqueue` the build job, in one
+     transaction under the lock.
+   - `running` / `succeeded`: a build is already admitted (or done) — call `enqueue`
+     with the same `dedup_key`, which is a **DO-NOTHING no-op that returns the existing
+     job row** (`queue.enqueue` is upsert-then-fetch-by-dedup_key, so it returns the
+     same job in whatever state it has reached, including `succeeded`). Idempotent; does
+     not rebuild. No new Run transition.
    - `failed` / `canceled`: terminal — `configuration_error` (`data.current_status`).
      A failed build is not retried in place (the retry-as-a-new-Run model, ADR-0026).
 5. Return the job-handle envelope (carrying `run_id` in `data`, like
-   `_system_job_envelope`).
+   `_system_job_envelope`). Every non-terminal branch returns the **same** job via the
+   one `enqueue` call, so the tool has a single uniform exit and the dedup guarantee is
+   structural, not branch-by-branch.
 
 The `created → running` flip and the `enqueue` share **one transaction** under the
 `RUN` lock, so the Run is never left `running` with no job (or vice versa), and two
