@@ -73,24 +73,44 @@ read tools (#22); reattach (M1); the dead-session reconciler sweep (M1.5).
    `canceled` Run, is a `configuration_error` carrying `current_status` (and, for the
    built-not-booted case, `reason="boot_first"`). This guard runs **before** the System
    lock — it is a plain read, like `runs.boot`'s gate.
-4. Under the **per-System advisory lock** of the Run's System (`LockScope.SYSTEM`,
-   serializing against `force_crash` and teardown; the System id is the Run's `system_id`),
-   enforce **single-attach**: if any `debug_sessions` row joined to **the same System**
-   (through `runs.system_id`) is in `attach` or `live`, return `transport_conflict`.
-   (Single-attach is per **gdbstub endpoint = per System**, not per Run — two Runs on one
-   System share the one stub.)
-5. The System must be `ready` (the only state with a live, attachable guest). A System
-   not `ready` is a `configuration_error` carrying `current_status`. (Read under the lock,
-   so a concurrent `force_crash` that drove it `crashed` is observed here.)
-6. Open the transport: `connect.open_transport(system_handle, "gdbstub")`. A stub that
-   does not answer RSP framing is `debug_attach_failure`; a transport/socket fault is
+4. **Pre-lock read** (a short, lockless read of the Run's System): the System must be
+   `ready` and no `attach`/`live` session may exist for it. These are cheap fast-fails so
+   the slow probe is skipped when the attach is obviously doomed (`configuration_error`
+   with `current_status`, or `transport_conflict`). They are **advisory** at this point and
+   re-checked under the lock in step 7 — the authoritative checks are the locked ones.
+5. **Open the transport OUTSIDE the lock:** `connect.open_transport(system_handle,
+   "gdbstub")` runs the network RSP probe with **no DB lock or transaction held**, so the
+   bounded-but-multi-second probe never stalls `force_crash`/teardown on the System (the
+   codebase convention: a per-System xact advisory lock guards only short DB-bound critical
+   sections — provider IO runs in job handlers or, here, outside the lock). A stub that does
+   not answer RSP framing is `debug_attach_failure`; a transport/socket fault is
    `transport_failure`; a resolver `MISSING_DEPENDENCY` (no `live_vm` host / unresolvable
-   endpoint) maps to `debug_attach_failure` as well (the agent cannot attach). On failure
-   **no row is inserted** (the attach is aborted, not stranded in `attach`).
-7. On success, insert one `debug_sessions` row, then drive it `attach → live` in the
-   same transaction, recording the `transport_handle` and an initial
-   `worker_heartbeat_at` (see "heartbeat semantics" below). Audit `->attach` then
-   `attach->live`. Return the `debug_session_id` with `status="live"`.
+   endpoint) maps to `debug_attach_failure` (the agent cannot attach). On failure **no row
+   is inserted**.
+6. (probe succeeded — a `TransportHandle` is in hand)
+7. **Re-check + insert under the per-System advisory lock** (`LockScope.SYSTEM`,
+   serializing against `force_crash`/teardown; the System id is the Run's `system_id`), in
+   one `conn.transaction()`:
+   - **Single-attach (authoritative):** if any `debug_sessions` row joined to the same
+     System (through `runs.system_id`) is in `attach` or `live`, **close the
+     just-opened transport** (best-effort) and return `transport_conflict`. (Single-attach
+     is per **gdbstub endpoint = per System**, not per Run — two Runs on one System share
+     the one stub.)
+   - **System-ready (authoritative):** the System must still be `ready`; a concurrent
+     `force_crash` that drove it `crashed` is observed here — close the transport, return
+     `configuration_error` with `current_status`.
+   - Otherwise insert one `debug_sessions` row, then drive it `attach → live` in the same
+     transaction, recording the `transport_handle` and an initial `worker_heartbeat_at`
+     (see "heartbeat semantics" below). Audit `->attach` then `attach->live`. Return the
+     `debug_session_id` with `status="live"`.
+
+The probe-outside-then-recheck-inside ordering means a stub can be probed and then lose the
+race (System crashed, or another attach committed first) between the probe and the lock; the
+authoritative locked re-checks catch it and **close the orphaned transport** before
+returning, so no `live` row escapes the lock and no transport is leaked. Because
+`close_transport` is a no-op for the connectionless M0 gdbstub, the "leaked transport on a
+lost race" cost is nil in M0; the close call is the structurally correct cleanup the handle
+contract requires.
 
 **`worker_heartbeat_at` semantics (M0).** Set once, at attach, as a **creation marker** —
 nothing in #20 updates it afterward, and the dead-session reconciler sweep that would
@@ -98,10 +118,11 @@ consume it is explicitly deferred to M1.5. No liveness contract is implied yet: 
 must not treat a stale `worker_heartbeat_at` as "session dead" in M0. It exists so the
 M1.5 sweep has a non-null baseline to age from.
 
-The insert+transition+audit run inside `conn.transaction()` under the System lock, so a
-concurrent `force_crash` either runs entirely before (and this attach then sees the
-System `crashed` → `configuration_error`) or entirely after (and detaches the just-
-created `live` row). There is no window where a `live` row escapes the lock.
+A concurrent `force_crash` is serialized by the step-7 lock: it runs entirely before this
+attach's locked section (and the locked re-check then sees the System `crashed` →
+`configuration_error`, transport closed) or entirely after (and `_detach_sessions` then
+detaches the just-committed `live` row). There is no window where a `live` row escapes the
+lock.
 
 ### `debug.end_session(session_id)`
 

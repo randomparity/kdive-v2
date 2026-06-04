@@ -108,6 +108,23 @@ garbage — is rejected as `debug_attach_failure`, **not** accepted as a healthy
 socket/connect fault (refused, timed out, reset) is `transport_failure`. The `?` query is
 side-effect-free, so the probe never perturbs guest state.
 
+### 6a. The RSP probe runs **outside** the per-System lock; conflict + ready are re-checked **inside** it
+
+A `pg_advisory_xact_lock` is held until the transaction commits, and the RSP probe is a
+bounded-but-multi-second network call. Holding the per-System lock across the probe would
+serialize every other System op (`force_crash`'s `_detach_sessions`, teardown) behind a
+possibly-dead stub and pin a pool connection across network IO — violating the codebase
+convention that the per-System xact lock guards only short DB-bound critical sections
+(provider IO lives in job handlers). So `start_session`: (1) does a lockless pre-read to
+fast-fail an obviously-doomed attach (System not `ready`, or an existing session), (2) opens
+the transport with **no lock or transaction held**, then (3) takes the per-System lock and
+**re-checks single-attach and System-ready authoritatively** before inserting. If the locked
+re-check fails (the System crashed, or another attach committed first, between the probe and
+the lock), it **closes the just-opened transport** and returns the categorized error — no
+`live` row escapes the lock, no transport leaks. In M0 `close_transport` is a no-op (the
+gdbstub is connectionless RSP), so the lost-race cleanup cost is nil; the close call is the
+structurally correct handle-contract cleanup.
+
 ### 7. On any attach failure, **no row is inserted**; the `attach` state is never persisted standalone
 
 The DebugSession lifecycle permits `attach → detached` precisely so a failed attach need
@@ -177,6 +194,13 @@ before returning; #20 returns no guest bytes.)
   force-crashed System → `detached`, joined through `runs`). Duplicating it would create
   two writers of the same edge and risk a double transition; #20 adds only the
   agent-initiated `end_session` detach, which shares the per-System lock with #23's path.
+- **Open the transport inside the per-System lock (single locked critical section).**
+  Rejected: the RSP probe is a multi-second network call; holding the per-System xact lock
+  across it serializes `force_crash`/teardown behind a possibly-dead stub and pins a pool
+  connection across network IO — against the codebase convention that the lock guards only
+  short DB-bound sections. The probe runs lock-free; conflict + ready are re-checked
+  authoritatively under the lock, which closes the transport and bails on a lost race
+  (decision 6a).
 - **Skip RSP framing — accept any successful TCP connect as attached.** Rejected: a stale
   or non-gdbstub listener on the port would be mistaken for a healthy stub, and the first
   real Debug-plane op would then fail confusingly. The ported `rsp_probe` exchange proves
