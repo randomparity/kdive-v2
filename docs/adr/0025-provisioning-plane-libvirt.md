@@ -97,7 +97,13 @@ reconciler's `list_owned`/leaked-domain repair depends on it. Both the domain XM
 metadata element are assembled with `xml.etree.ElementTree` (structured construction), not
 string interpolation, so a profile value can never break out of its element or inject XML.
 The namespace constant is shared with discovery (imported, not re-declared) so the
-write side and the read side cannot drift.
+write side and the read side cannot drift. The provision XML renders the domain shell,
+the rootfs disk, and the metadata tag — but **no `<kernel>`/`<cmdline>`**: libvirt ignores
+`<os><cmdline>` without a `<kernel>` direct-boot element, and the test kernel is not built
+until Install (#17). So the kdump `crashkernel=` reservation is #17's to apply (to the
+direct-kernel cmdline it adds), carried until then on the stored profile; rendering it at
+provision would be an inert phantom reservation. Provision establishes the domain and the
+rootfs, not the kernel under test.
 
 ### 4. The provider is a pure-libvirt seam with an injected connection factory; the handler orchestrates the DB
 
@@ -124,6 +130,33 @@ makes both the operator path (`systems.teardown`) and the reconciler's GC path (
 `teardown` job it enqueues for an orphaned System) safe to retry — the reconciler's
 leaked-domain repair relies on `destroy` being idempotent
 (`tests/reconciler/test_loop.py::test_torn_down_row_with_inflight_teardown_not_reaped`).
+
+`teardown` must also reach `torn_down` from a System still in `provisioning` (an
+orphaned-System GC, or an operator tearing down a stuck provision). The committed state
+table has `PROVISIONING → {READY, FAILED}` only, so this issue **adds the
+`provisioning → torn_down` edge** rather than routing through `provisioning → failed →
+torn_down`. The two-step would stamp a deliberately-torn-down (or healthy-but-abandoned)
+System with the `failed` signal it never earned, polluting failure analytics; the single
+additive edge avoids that. This mirrors [ADR-0023](0023-discovery-allocation-admission.md)
+§5, which added `granted → releasing` for the identical shape of problem — a
+synchronously-created object must be terminable before it advances. The edge is additive
+(removes nothing, needs no migration: `systems_state_check` already lists `torn_down`), and
+`tests/domain/test_state.py`'s `LEGAL` table is updated in the same commit.
+
+### 9. Handlers reconstruct a `RequestContext` from the job's authorizing tuple to audit
+
+A job handler holds a `Job`, not a `RequestContext`, but `audit.record` requires one and
+guards `project in ctx.projects` (a misattribution backstop). The handler therefore builds
+`RequestContext(principal=job.authorizing["principal"],
+agent_session=job.authorizing.get("agent_session"), projects=(system.project,), roles={})`
+before auditing a transition it commits — the project is the System's own, so the guard
+passes, including for a reconciler-enqueued teardown whose principal is `system:reconciler`.
+Because a `teardown` dedup-coalesces an operator request onto a reconciler GC job (or vice
+versa), the audit row is attributed to whichever caller enqueued first; both are legitimate
+authorizers and the structured log carries the live actor. The handler audits each
+transition it commits (`provisioning->ready`, `provisioning->failed`, `<old>->torn_down`),
+honoring the #9 "every transition audits" invariant for handler-driven transitions (the
+reconciler's own GC transitions are raw-SQL and un-audited by design, ADR-0021).
 
 ### 6. `systems.teardown` requires `operator`; it is not behind the destructive-op gate
 

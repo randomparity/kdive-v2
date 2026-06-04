@@ -33,6 +33,9 @@ kdive-tagged libvirt System, and tear it down.
 
 Plus the minimal plumbing the above require:
 
+- `src/kdive/domain/state.py` — add the `SystemState.PROVISIONING → TORN_DOWN` edge (so a
+  stuck/abandoned mid-provision System tears down in one legal transition);
+  `tests/domain/test_state.py`'s `LEGAL` table updated to match.
 - `src/kdive/mcp/app.py` — append `systems.register` to `_PLANE_REGISTRARS` and
   `systems.register_handlers` to `_HANDLER_REGISTRARS`.
 
@@ -44,9 +47,11 @@ control/retrieve planes (#21/#22), or the reconciler loop (#12, already merged).
 
 ## Non-goals
 
-- **No kernel build/install/boot.** `provision` defines and starts a domain from the
-  profile's `rootfs_image_ref` with a `crashkernel=` reservation; staging the *built test
-  kernel* and rebooting into it is the Install/Boot plane (#17/#18). A `ready` System is a
+- **No kernel build/install/boot, and no kdump reservation yet.** `provision` defines and
+  starts a domain from the profile's `rootfs_image_ref`; staging the *built test kernel*,
+  adding the direct-kernel `<kernel>`/`<cmdline>`, and applying the `crashkernel=` kdump
+  reservation are the Install/Boot plane's (#17/#18 — the reservation is inert without
+  `<kernel>`, so provision does not render it; see Components). A `ready` System is a
   defined+running libvirt domain, not yet running a kernel under test.
 - **No reprovision-in-place.** M0 is one System per Allocation; the `defined` state and a
   `reprovisioning` path are M1 ([parent spec](../../specs/m0-walking-skeleton.md) "No
@@ -103,10 +108,16 @@ class LocalLibvirtProvisioning:
   minimal `<domain type='kvm'>`:
   - `<name>kdive-{system_id}</name>`, `<uuid>` omitted (libvirt assigns one).
   - `<memory unit='MiB'>{profile.memory_mb}</memory>`, `<vcpu>{profile.vcpu}</vcpu>`.
-  - `<os><type arch='{profile.arch}' machine='{domain_xml_params.get("machine", _DEFAULT_MACHINE)}'>hvm</type></os>`
-    with a `<cmdline>` carrying `crashkernel={provider.crashkernel}` (the kdump reservation).
-    `boot_method` is `direct-kernel` (the only M0 value); the kernel/initrd path is filled
-    by Install (#17) — provision sets the reservation and the rootfs, not the test kernel.
+  - `<os><type arch='{profile.arch}' machine='{domain_xml_params.get("machine", _DEFAULT_MACHINE)}'>hvm</type></os>`.
+    **No `<kernel>`/`<cmdline>` at provision.** `boot_method` is `direct-kernel` (the only M0
+    value), but libvirt only passes `<os><cmdline>` when a `<kernel>` direct-boot element is
+    present, and the *test kernel* is not built/installed until #17. Rendering a `crashkernel=`
+    cmdline here would be **inert** (libvirt ignores `<cmdline>` without `<kernel>`), a phantom
+    reservation. So the kdump `crashkernel=` reservation is the Install/Boot plane's job (#17),
+    applied to the direct-kernel `<cmdline>` it adds with the built kernel; provision renders the
+    domain shell + rootfs + metadata tag only. `provider.crashkernel` is carried on the stored
+    profile (the System row) for #17 to consume; provision does **not** materialize it into XML.
+    Stated so the absent reservation is a recorded boundary (#17 owns it), not a silent gap.
   - `<devices><disk type='file' device='disk'><source file='{provider.rootfs_image_ref}'/>
     <target dev='vda' bus='virtio'/></disk></devices>` — the rootfs ref verbatim (non-goal:
     no OCI resolution).
@@ -168,9 +179,12 @@ def register_handlers(registry: HandlerRegistry, *, provisioning: LocalLibvirtPr
      - `ALLOCATIONS.update_state(GRANTED → ACTIVE)`; audit `"granted->active"`.
      - `queue.enqueue(PROVISION, {"system_id": str(system.id)}, authorizing=<ctx tuple>,
        dedup_key=f"{allocation_id}:provision")`.
-4. Return `ToolResponse.from_job(job)` with `system_id` added to `data` (so a single
-   `jobs.wait` + the carried id lets the agent `systems.get`). `from_job` already sets
-   `suggested_next_actions` by job state; the System read is reachable via `data["system_id"]`.
+4. Return the job-handle envelope. `ToolResponse.from_job` hardcodes `data={"kind": …}`
+   (responses.py), so the tool **builds the envelope directly** — same `object_id`/`status`/
+   `suggested_next_actions`/`refs` as `from_job`, but `data={"kind": job.kind.value,
+   "system_id": str(system.id)}` — so a single `jobs.wait` plus the carried id lets the agent
+   `systems.get`. A small `_job_envelope(job, system_id)` helper in `systems.py` keeps the
+   "category iff failure" discipline (it goes through `ToolResponse(...)` like `from_job`).
 
 `IllegalTransition` from the `granted → active` step is caught as a backstop (a race the
 lock did not cover) → `failure(CONFIGURATION_ERROR, data={"current_status": …})` re-read on
@@ -193,11 +207,29 @@ reaches the transport.
    re-raise (the worker dead-letters the job with `PROVISIONING_FAILURE`; the System reads
    `failed`).
 5. One transaction: set `domain_name` (raw `UPDATE systems SET domain_name=%s`) and
-   `SYSTEMS.update_state(system_id, PROVISIONING → READY)`; audit `"provisioning->ready"`
-   under the `system:worker`/authorizing attribution carried in the job. Return `str(system_id)`.
+   `SYSTEMS.update_state(system_id, PROVISIONING → READY)`; audit `"provisioning->ready"`.
+   Return `str(system_id)`.
 
 The handler holds **no** transaction across the libvirt call (ADR-0018): the long
 `provision` runs outside any txn, the DB writes are their own short transactions.
+
+**Audit attribution in handlers (ADR-0025 §9).** A handler holds a `Job`, not a
+`RequestContext`, but `audit.record` requires one and *guards* `project in ctx.projects`
+(audit.py). The handler reconstructs the ctx from the job's authorizing tuple and the
+System's project: `RequestContext(principal=job.authorizing["principal"],
+agent_session=job.authorizing.get("agent_session"), projects=(system.project,), roles={})`.
+The project is the System's own, so it is in the singleton `projects` and the guard passes —
+including for a reconciler-enqueued teardown whose principal is `system:reconciler`. The
+transition row is attributed to whichever caller *enqueued first* (dedup coalescing keeps one
+`authorizing` tuple); an operator teardown that coalesces onto a reconciler GC job audits as
+`system:reconciler`, and vice versa. This is acceptable — the audit records the transition and
+a legitimate authorizer; the structured log carries the live actor. The handler audits **each
+transition it commits** — `provisioning->ready` on success, `provisioning->failed` on a provider
+error (committed in step 4 before the re-raise, so the audit reflects the real state change even
+as the job dead-letters), and `<old>->torn_down` on teardown — one row per committed transition,
+honoring the #9 "every transition audits" invariant for the transitions a handler actually
+drives. (The reconciler's own GC transitions are raw-SQL and un-audited by design, ADR-0021; the
+handler is the audited path.)
 
 #### `systems.teardown(system_id)` — enqueue idempotent teardown
 
@@ -219,10 +251,11 @@ The handler holds **no** transaction across the libvirt call (ADR-0018): the lon
    *before* `provision` set `domain_name` still has a deterministically-named domain to
    reap (or none, which `teardown` no-ops over).
 3. `provisioning.teardown(domain_name)` (idempotent; "already gone" is success).
-4. `SYSTEMS.update_state(system_id, → TORN_DOWN)` if the current state allows it
-   (`ready`/`crashed`/`provisioning`/`failed` → `torn_down`; **`provisioning → torn_down`
-   is not a legal edge** — see "Domain/state" below). Audit `"<old>->torn_down"`. Return
-   `str(system_id)`.
+4. `SYSTEMS.update_state(system_id, → TORN_DOWN)`. Every non-terminal System state reaches
+   `torn_down` directly — `ready`/`crashed`/`failed → torn_down` already exist, and **this
+   issue adds `provisioning → torn_down`** (see "Domain/state change" below) so a stuck or
+   abandoned mid-provision System tears down in one legal transition. Audit `"<old>->torn_down"`.
+   Return `str(system_id)`.
 
 #### Registration
 
@@ -236,23 +269,32 @@ provider in `register_handlers` does **not** open a libvirt connection (the `con
 is lazy), so the worker still boots without a reachable host; the first `provision`/`teardown`
 job is the first connection.
 
-### State-machine gap this surfaces: `provisioning → torn_down`
+### Domain/state change this requires: add `provisioning → torn_down`
 
-The committed `SystemState` table has `PROVISIONING → {READY, FAILED}` only — **no**
-`provisioning → torn_down`. But a `teardown` can legitimately target a System still in
-`provisioning` (an orphaned-System GC, or an operator tearing down a stuck provision). Two
-ways to honor the teardown contract without an illegal transition:
+The committed `SystemState` table has `PROVISIONING → {READY, FAILED}` only. But a `teardown`
+can legitimately target a System still in `provisioning` — an orphaned-System GC (the
+reconciler enqueues teardown for a `provisioning` System whose allocation released), or an
+operator tearing down a stuck provision. The table must let teardown reach `torn_down` from
+`provisioning`.
 
-- **(chosen)** the `provision` handler drives a failed provision to `failed` first
-  (decision: a provision that will be torn down has already failed or will), and the
-  `teardown` handler maps the *reachable* pre-teardown states (`ready`, `crashed`, `failed`)
-  → `torn_down`. For a System genuinely stuck in `provisioning` with no failure yet (e.g. the
-  provision job never ran), the `teardown` handler first transitions `provisioning → failed`
-  (a legal edge) **then** `failed → torn_down` (legal), so teardown is always reachable
-  without widening the table. This two-step is documented in the handler and tested.
+This issue **adds the `provisioning → torn_down` edge** (and updates
+`tests/domain/test_state.py`'s hand-transcribed `LEGAL` table in the same commit, so the
+parametrized legal/illegal suite stays the spec's executable mirror). This mirrors
+[ADR-0023](../../adr/0023-discovery-allocation-admission.md) §5 exactly: that decision *added*
+`granted → releasing` so an admitted-but-unprovisioned Allocation could be released from a
+synchronous pre-terminal state — the identical shape of problem (a synchronously-created object
+must be terminable before it advances). The new edge is additive and bisectable: it removes no
+existing transition and needs no migration (the `systems_state_check` constraint already lists
+`torn_down` as a legal value; only the in-code guard table gains an edge).
 
-This keeps the state table unchanged (no migration, no edge addition) and is the minimal
-honest reading of "teardown is idempotent and always reaches `torn_down`".
+The rejected alternative — drive `provisioning → failed → torn_down` in the teardown handler —
+was discarded because it writes a **false `failed`**: a System the operator deliberately tore
+down, or a healthy-but-abandoned System the reconciler GCs, would be stamped with the
+System-failure signal it never earned, polluting failure analytics. The single legal edge is
+both cleaner and consistent with how this codebase already solved the same problem (ADR-0025 §5).
+
+`SystemState.FAILED → TORN_DOWN` and `READY/CRASHED → TORN_DOWN` are unchanged and still apply
+(a genuinely-failed provision still tears down from `failed`).
 
 ## Threat model & guarantees
 
@@ -287,9 +329,10 @@ honest reading of "teardown is idempotent and always reaches `torn_down`".
 **provider** (`FakeLibvirtConn` + a `FakeDomain` that records `create`/`destroy`/`undefine`
 calls; no DB, no `live_vm`)
 - `render_domain_xml`: name `kdive-{id}`; memory/vcpu/arch from the profile; the
-  `<kdive:system>` tag round-trips through `discovery._parse_system_id`; `crashkernel=` on
-  the cmdline; the rootfs ref in the disk source; `machine` from `domain_xml_params`
-  (default when absent); an **unknown** `domain_xml_params` key → `CategorizedError(CONFIGURATION_ERROR)`.
+  `<kdive:system>` tag round-trips through `discovery._parse_system_id`; the rootfs ref in the
+  disk source; `machine` from `domain_xml_params` (default when absent); **no `<kernel>`/
+  `<cmdline>`** (the kdump reservation is #17's, not provision's); an **unknown**
+  `domain_xml_params` key → `CategorizedError(CONFIGURATION_ERROR)`.
 - `provision`: calls `defineXML` then `create`; returns `kdive-{id}`; a `libvirtError` on
   either → `CategorizedError(PROVISIONING_FAILURE)`.
 - `teardown`: destroy+undefine a present domain; `VIR_ERR_NO_DOMAIN` on lookup → no-op
@@ -308,8 +351,9 @@ calls; no DB, no `live_vm`)
 
 **teardown handler** (real Postgres; fake provider)
 - `ready` System → provider `teardown(kdive-{id})` called → System `torn_down`.
-- `provisioning` System (stuck) → `provisioning → failed → torn_down`; provider teardown
-  called with the deterministic name.
+- `provisioning` System (stuck) → `provisioning → torn_down` in one transition (the new
+  edge); provider teardown called with the deterministic name.
+- `failed` System → `failed → torn_down`; provider teardown called.
 - already `torn_down` → no-op (provider not called, no transition).
 - absent System → no-op.
 - a System whose `domain_name` is NULL (failed pre-rename) → teardown uses
@@ -368,8 +412,10 @@ calls; no DB, no `live_vm`)
    `provisioning` row, never a `defined` one.
 2. **Tool mints + flips allocation `active` + enqueues, atomically; handler does libvirt**
    (ADR-0025 §2). Tested: the idempotent-retry and provision/release-serialization edges.
-3. **`provisioning → torn_down` via `provisioning → failed → torn_down`** in the teardown
-   handler (no state-table widening) — see "State-machine gap" above. Tested explicitly.
+3. **Add the `provisioning → torn_down` state edge** (not a `provisioning → failed → torn_down`
+   two-step, which would write a false `failed`) — mirrors ADR-0023 §5's `granted → releasing`
+   addition. See "Domain/state change" above. Tested: the new edge is legal, the old illegal
+   ones stay illegal, and the teardown handler reaches `torn_down` from `provisioning` directly.
 4. **Unknown `domain_xml_params` key fails loud** (`CONFIGURATION_ERROR` at render). The
    alternative — silently dropping unsupported knobs — hides a misconfiguration; rejected.
 5. **No leaked-domain reaper wiring** (ADR-0025 §8) — precedent #14. The reconciler suite is
