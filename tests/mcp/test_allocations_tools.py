@@ -6,15 +6,17 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.db.repositories import ALLOCATIONS
-from kdive.domain.models import Allocation
+from kdive.db.repositories import ALLOCATIONS, BUDGETS, QUOTAS
+from kdive.domain.models import Allocation, Budget, Quota
 from kdive.domain.state import AllocationState, IllegalTransition
 from kdive.mcp.auth import RequestContext
+from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import allocations as alloc_tools
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
@@ -43,7 +45,9 @@ async def _pool(url: str) -> AsyncIterator[AsyncConnectionPool]:
         await pool.close()
 
 
-async def _register(pool: AsyncConnectionPool, *, cap: int = 1) -> str:
+async def _register(
+    pool: AsyncConnectionPool, *, cap: int = 1, limit: str = "1000000", quota: int = 1_000_000
+) -> str:
     disc = LocalLibvirtDiscovery(
         host_uri="qemu:///system",
         connect=lambda: FakeLibvirtConn(),
@@ -53,7 +57,43 @@ async def _register(pool: AsyncConnectionPool, *, cap: int = 1) -> str:
         res = await register_local_libvirt_resource(
             conn, disc, pool="local-libvirt", cost_class="local"
         )
+        # The M1 gate denies a project with no budget/quota row; seed generous rows so the
+        # host cap (or the explicit test budget) is the binding constraint.
+        await BUDGETS.upsert(
+            conn,
+            Budget(project="proj", limit_kcu=Decimal(limit), spent_kcu=Decimal(0), updated_at=_DT),
+        )
+        await QUOTAS.upsert(
+            conn,
+            Quota(
+                project="proj",
+                max_concurrent_allocations=quota,
+                max_concurrent_systems=quota,
+                updated_at=_DT,
+            ),
+        )
     return str(res.id)
+
+
+async def _request(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    project: str = "proj",
+    vcpus: int = 1,
+    memory_gb: int = 0,
+    window: object | None = None,
+    idempotency_key: str | None = None,
+) -> ToolResponse:
+    return await alloc_tools.request_allocation(
+        pool,
+        ctx,
+        project=project,
+        vcpus=vcpus,
+        memory_gb=memory_gb,
+        window=window,
+        idempotency_key=idempotency_key,
+    )
 
 
 async def _seed_alloc(pool: AsyncConnectionPool, resource_id: str, state: AllocationState) -> str:
@@ -77,7 +117,7 @@ def test_request_under_cap_grants(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             await _register(pool, cap=2)
-            resp = await alloc_tools.request_allocation(pool, _ctx(), project="proj")
+            resp = await _request(pool, _ctx())
         assert resp.status == "granted"
         assert resp.error_category is None
         assert resp.data["project"] == "proj"
@@ -89,8 +129,8 @@ def test_request_at_cap_denied(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             res_id = await _register(pool, cap=1)
-            await alloc_tools.request_allocation(pool, _ctx(), project="proj")
-            resp = await alloc_tools.request_allocation(pool, _ctx(), project="proj")
+            await _request(pool, _ctx())
+            resp = await _request(pool, _ctx())
         assert resp.status == "error"
         assert resp.error_category == "allocation_denied"
         assert resp.object_id == res_id
@@ -104,7 +144,7 @@ def test_request_without_operator_raises(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             await _register(pool, cap=2)
             try:
-                await alloc_tools.request_allocation(pool, _ctx(Role.VIEWER), project="proj")
+                await _request(pool, _ctx(Role.VIEWER))
                 raise AssertionError("expected AuthorizationError")
             except AuthorizationError:
                 pass
@@ -115,7 +155,7 @@ def test_request_without_operator_raises(migrated_url: str) -> None:
 def test_request_no_resource_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await alloc_tools.request_allocation(pool, _ctx(), project="proj")
+            resp = await _request(pool, _ctx())
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
 
@@ -126,7 +166,7 @@ def test_get_own_allocation_returns_state(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             await _register(pool, cap=2)
-            req = await alloc_tools.request_allocation(pool, _ctx(), project="proj")
+            req = await _request(pool, _ctx())
             resp = await alloc_tools.get_allocation(pool, _ctx(), req.object_id)
         assert resp.object_id == req.object_id
         assert resp.status == "granted"
@@ -138,7 +178,7 @@ def test_get_other_project_allocation_is_not_found(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             await _register(pool, cap=2)
-            req = await alloc_tools.request_allocation(pool, _ctx(), project="proj")
+            req = await _request(pool, _ctx())
             other = _ctx(projects=("elsewhere",), role=Role.OPERATOR)
             resp = await alloc_tools.get_allocation(pool, other, req.object_id)
         assert resp.status == "error"
@@ -164,7 +204,7 @@ def test_release_granted_allocation(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             await _register(pool, cap=2)
-            req = await alloc_tools.request_allocation(pool, _ctx(), project="proj")
+            req = await _request(pool, _ctx())
             resp = await alloc_tools.release_allocation(pool, _ctx(), req.object_id)
             assert resp.status == "released"
             async with pool.connection() as conn, conn.cursor() as cur:
@@ -243,8 +283,8 @@ def test_list_returns_project_allocations(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             await _register(pool, cap=3)
-            await alloc_tools.request_allocation(pool, _ctx(), project="proj")
-            await alloc_tools.request_allocation(pool, _ctx(), project="proj")
+            await _request(pool, _ctx())
+            await _request(pool, _ctx())
             responses = await alloc_tools.list_allocations(pool, _ctx(), project="proj", limit=50)
         assert len(responses) == 2
         assert all(r.status == "granted" for r in responses)

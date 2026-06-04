@@ -23,7 +23,8 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, RESOURCES
 from kdive.domain import accounting
-from kdive.domain.allocation_admission import admit
+from kdive.domain.allocation_admission import AdmissionOutcome, admit
+from kdive.domain.cost import Selector
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Resource
 from kdive.domain.state import AllocationState, IllegalTransition
@@ -87,24 +88,41 @@ async def request_allocation(
     ctx: RequestContext,
     *,
     project: str,
+    vcpus: int,
+    memory_gb: int,
+    window: object | None = None,
     resource_id: str | None = None,
     kind: str | None = None,
+    idempotency_key: str | None = None,
 ) -> ToolResponse:
-    """Admit an allocation against the selected host's per-host cap."""
+    """Admit an allocation against the project budget/quota and the selected host's cap.
+
+    Builds the request selector, resolves the target Resource, and runs the M1 admission
+    gate (ADR-0007 §5). A grant returns the allocation id; a denial maps to the gate's
+    most specific category — ``quota_exceeded`` (over the concurrency cap),
+    ``allocation_denied`` (over budget or host cap), or ``configuration_error`` (a
+    malformed selector/window or an over-caps size). Requires ``operator`` on ``project``.
+    """
     require_project(ctx, project)
     require_role(ctx, project, Role.OPERATOR)
     with bind_context(principal=ctx.principal):
         resolved_id = _as_uuid(resource_id) if resource_id is not None else None
         if resource_id is not None and resolved_id is None:
             return _config_error(resource_id)
+        selector = Selector(vcpus=vcpus, memory_gb=memory_gb)
         async with pool.connection() as conn:
             resource = await _resolve_resource(conn, resolved_id, kind or _DEFAULT_KIND)
             if resource is None:
                 return _config_error(resource_id or (kind or _DEFAULT_KIND))
-            try:
-                outcome = await admit(conn, ctx, resource=resource, project=project)
-            except CategorizedError as exc:
-                return ToolResponse.failure(str(resource.id), exc.category)
+            outcome = await admit(
+                conn,
+                ctx,
+                resource=resource,
+                project=project,
+                selector=selector,
+                window=window,
+                idempotency_key=idempotency_key,
+            )
         if outcome.granted and outcome.allocation is not None:
             return ToolResponse.success(
                 str(outcome.allocation.id),
@@ -112,17 +130,26 @@ async def request_allocation(
                 suggested_next_actions=["allocations.get", "allocations.release"],
                 data={"resource_id": str(resource.id), "project": project},
             )
-        _log.info("allocation denied for project %s on resource %s (at cap)", project, resource.id)
-        return ToolResponse.failure(
-            str(resource.id),
-            ErrorCategory.ALLOCATION_DENIED,
-            suggested_next_actions=["allocations.list"],
-            data={
-                "reason": outcome.reason or "at_capacity",
-                "cap": str(outcome.cap),
-                "in_use": str(outcome.in_use),
-            },
-        )
+        return _denial_response(resource.id, project, outcome)
+
+
+def _denial_response(resource_id: UUID, project: str, outcome: AdmissionOutcome) -> ToolResponse:
+    """Map a denial outcome to its typed failure envelope (category-specific)."""
+    category = outcome.category or ErrorCategory.ALLOCATION_DENIED
+    data: dict[str, str] = {}
+    if outcome.reason is not None:
+        data["reason"] = outcome.reason
+    if outcome.cap is not None:
+        data["cap"] = str(outcome.cap)
+    if outcome.in_use is not None:
+        data["in_use"] = str(outcome.in_use)
+    _log.info("allocation denied for project %s on resource %s: %s", project, resource_id, category)
+    return ToolResponse.failure(
+        str(resource_id),
+        category,
+        suggested_next_actions=["allocations.list"],
+        data=data,
+    )
 
 
 async def get_allocation(
@@ -272,10 +299,27 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
 
     @app.tool(name="allocations.request")
     async def allocations_request(
-        project: str, resource_id: str | None = None, kind: str | None = None
+        project: str,
+        vcpus: int,
+        memory_gb: int,
+        window: float | str | None = None,
+        resource_id: str | None = None,
+        kind: str | None = None,
+        idempotency_key: str | None = None,
     ) -> ToolResponse:
+        # `window` accepts a number or a decimal string (precise window), or is omitted
+        # for the configured lease default; `idempotency_key` makes the synchronous grant
+        # retry-safe, scoped to the caller's principal (ADR-0040 §3).
         return await request_allocation(
-            pool, current_context(), project=project, resource_id=resource_id, kind=kind
+            pool,
+            current_context(),
+            project=project,
+            vcpus=vcpus,
+            memory_gb=memory_gb,
+            window=window,
+            resource_id=resource_id,
+            kind=kind,
+            idempotency_key=idempotency_key,
         )
 
     @app.tool(name="allocations.get")
