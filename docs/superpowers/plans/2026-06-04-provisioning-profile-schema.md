@@ -70,10 +70,14 @@ free of unused-import (F401) warnings.
 from __future__ import annotations
 
 import copy
+from typing import Any
 
 from kdive.profiles.provisioning import BootMethod, ProvisioningProfile
 
-_VALID: dict[str, object] = {
+# The fixture is typed dict[str, Any] (not dict[str, object]) so the nested-subscript
+# mutations in later tasks (data["provider"]["local-libvirt"][...]) type-check: ty
+# treats an `object` value as non-subscriptable, but `Any` propagates through.
+_VALID: dict[str, Any] = {
     "schema_version": 1,
     "arch": "x86_64",
     "vcpu": 4,
@@ -91,7 +95,7 @@ _VALID: dict[str, object] = {
 }
 
 
-def _valid() -> dict[str, object]:
+def _valid() -> dict[str, Any]:
     """A fresh deep copy of the canonical valid profile, safe to mutate."""
     return copy.deepcopy(_VALID)
 
@@ -271,6 +275,7 @@ Replace the import block at the top of `tests/profiles/test_provisioning.py` wit
 from __future__ import annotations
 
 import copy
+from typing import Any
 
 import pytest
 
@@ -283,7 +288,7 @@ from kdive.profiles.provisioning import BootMethod, ProvisioningProfile
 Append to `tests/profiles/test_provisioning.py`:
 
 ```python
-def _expect_configuration_error(data: dict[str, object]) -> None:
+def _expect_configuration_error(data: dict[str, Any]) -> None:
     """Assert that parsing ``data`` fails as a CONFIGURATION_ERROR."""
     with pytest.raises(CategorizedError) as caught:
         ProvisioningProfile.parse(data)
@@ -356,6 +361,7 @@ Replace the import block at the top of `tests/profiles/test_provisioning.py` wit
 from __future__ import annotations
 
 import copy
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
