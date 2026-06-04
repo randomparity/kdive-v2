@@ -41,10 +41,12 @@ _PLANE_REGISTRARS: tuple[Callable[[FastMCP, AsyncConnectionPool], None], ...] = 
 
 # Handler seam: each plane exposes register_handlers(registry); the worker calls them all.
 # jobs.* register no JobHandler; the provisioning plane (#16) registers the provision/teardown
-# handlers and the control plane (#23) registers the power/force_crash handlers (both build
-# their provider lazily from env — no libvirt connection at registration).
+# handlers, the build plane (#18) registers the build handler, and the control plane (#23)
+# registers the power/force_crash handlers (each builds its provider/builder lazily from env —
+# no libvirt/toolchain connection at registration).
 _HANDLER_REGISTRARS: tuple[Callable[[HandlerRegistry], None], ...] = (
     systems.register_handlers,
+    runs.register_handlers,
     control.register_handlers,
 )
 

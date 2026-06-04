@@ -39,6 +39,15 @@ def test_investigation_scope_key_is_distinct_from_other_scopes() -> None:
     assert _lock_key(LockScope.INVESTIGATION, key) == inv_key  # deterministic
 
 
+def test_run_scope_key_is_distinct_from_other_scopes() -> None:
+    key = UUID("12345678-1234-5678-1234-567812345678")
+    run_key = _lock_key(LockScope.RUN, key)
+    assert run_key != _lock_key(LockScope.ALLOCATION, key)
+    assert run_key != _lock_key(LockScope.SYSTEM, key)
+    assert run_key != _lock_key(LockScope.INVESTIGATION, key)
+    assert _lock_key(LockScope.RUN, key) == run_key  # deterministic
+
+
 async def _wait_until_lock_waiting(observer: psycopg.AsyncConnection, waiter_pid: int) -> None:
     """Poll pg_locks until ``waiter_pid`` is blocked on an advisory lock (not merely slow)."""
     for _ in range(200):

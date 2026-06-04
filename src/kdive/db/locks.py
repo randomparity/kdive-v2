@@ -24,14 +24,15 @@ class LockScope(StrEnum):
 
     Operations that hold more than one scope at once acquire them in the fixed global
     order ``ALLOCATION → SYSTEM → INVESTIGATION → RUN`` to avoid deadlock; e.g.
-    ``runs.create`` takes ``SYSTEM`` then ``INVESTIGATION``. (``RUN`` is reserved in the
-    ordering; no M0 tool needs a per-Run lock yet.)
+    ``runs.create`` takes ``SYSTEM`` then ``INVESTIGATION``, and ``runs.build`` takes
+    ``RUN`` (ADR-0027).
     """
 
     ALLOCATION = "allocation"
     SYSTEM = "system"
     RESOURCE = "resource"
     INVESTIGATION = "investigation"
+    RUN = "run"
 
 
 def _lock_key(scope: LockScope, key: UUID) -> int:
