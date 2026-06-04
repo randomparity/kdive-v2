@@ -80,3 +80,47 @@ async def record(
     if row is None:  # Invariant: INSERT ... RETURNING always yields one row.
         raise RuntimeError("INSERT into audit_log returned no row")
     return row[0]
+
+
+async def record_system(
+    conn: AsyncConnection,
+    *,
+    principal: str,
+    tool: str,
+    object_kind: str,
+    object_id: UUID,
+    transition: str,
+    args: Mapping[str, object],
+    project: str,
+) -> UUID:
+    """Append one `audit_log` row for a system-initiated transition (no RequestContext).
+
+    The reconciler acts cross-project on the platform's behalf (ADR-0021), so it has no
+    principal-scoped :class:`RequestContext` and the membership guard :func:`record`
+    applies does not fit. This writes the row under an explicit system ``principal`` (e.g.
+    ``system:reconciler``) and ``project`` (the audited object's), with no
+    ``agent_session``. Runs on ``conn`` without opening a transaction, so the caller
+    composes it with the audited transition in one ``conn.transaction()``.
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO audit_log "
+            "(principal, agent_session, project, tool, object_kind, object_id, "
+            " transition, args_digest) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+            "RETURNING id",
+            (
+                principal,
+                None,
+                project,
+                tool,
+                object_kind,
+                object_id,
+                transition,
+                args_digest(args),
+            ),
+        )
+        row = await cur.fetchone()
+    if row is None:  # Invariant: INSERT ... RETURNING always yields one row.
+        raise RuntimeError("INSERT into audit_log returned no row")
+    return row[0]
