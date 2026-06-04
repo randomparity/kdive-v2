@@ -225,12 +225,19 @@ reaches the transport.
    `except CategorizedError`: `SYSTEMS.update_state(system_id, PROVISIONING → FAILED)` then
    re-raise (the worker dead-letters the job with `PROVISIONING_FAILURE`; the System reads
    `failed`).
-5. One transaction: set `domain_name` (raw `UPDATE systems SET domain_name=%s`) and
-   `SYSTEMS.update_state(system_id, PROVISIONING → READY)`; audit `"provisioning->ready"`.
-   Return `str(system_id)`.
+5. One transaction under `advisory_xact_lock(SYSTEM, system_id)`: **re-read** the System
+   state under the lock. If still `provisioning` → set `domain_name` (raw `UPDATE systems SET
+   domain_name=%s`), `SYSTEMS.update_state(PROVISIONING → READY)`, audit
+   `"provisioning->ready"`, return `str(system_id)`. If it is **no longer `provisioning`** (a
+   concurrent `teardown` drove it terminal between step 4 and here — see the race below):
+   release the lock and **tear down the domain just created** (`provisioning.teardown(domain_name)`,
+   idempotent), then return `str(system_id)` without a transition — the concurrent teardown is
+   authoritative, the domain does not leak, and this is not an error (no dead-letter).
 
-The handler holds **no** transaction across the libvirt call (ADR-0018): the long
-`provision` runs outside any txn, the DB writes are their own short transactions.
+The handler holds **no** transaction across either libvirt call (ADR-0018): `provision` and
+the cleanup `teardown` run outside any txn; the lock-held section is only the fast re-read +
+transition, and the slow libvirt calls are unlocked — the reconciler's own
+`_repair_leaked_domains` pattern (lock the guard, destroy unlocked).
 
 **Audit attribution in handlers (ADR-0025 §9).** A handler holds a `Job`, not a
 `RequestContext`, but `audit.record` requires one and *guards* `project in ctx.projects`
@@ -264,17 +271,23 @@ handler is the audited path.)
 
 `(conn, job, provisioning)`:
 
-1. `system = SYSTEMS.get(conn, system_id)`. Absent → return (nothing to tear down). If
-   `TORN_DOWN` → return (idempotent).
-2. `domain_name = system.domain_name or domain_name_for(system_id)` — a System that failed
-   *before* `provision` set `domain_name` still has a deterministically-named domain to
-   reap (or none, which `teardown` no-ops over).
-3. `provisioning.teardown(domain_name)` (idempotent; "already gone" is success).
-4. `SYSTEMS.update_state(system_id, → TORN_DOWN)`. Every non-terminal System state reaches
-   `torn_down` directly — `ready`/`crashed`/`failed → torn_down` already exist, and **this
-   issue adds `provisioning → torn_down`** (see "Domain/state change" below) so a stuck or
-   abandoned mid-provision System tears down in one legal transition. Audit `"<old>->torn_down"`.
-   Return `str(system_id)`.
+1. One transaction under `advisory_xact_lock(SYSTEM, system_id)`: `system = SYSTEMS.get`.
+   Absent → return (nothing to tear down). If `TORN_DOWN` → return (idempotent). Else
+   `SYSTEMS.update_state(system_id, → TORN_DOWN)` and audit `"<old>->torn_down"`, then commit
+   (release the lock). Every non-terminal System state reaches `torn_down` directly —
+   `ready`/`crashed`/`failed → torn_down` already exist, and **this issue adds
+   `provisioning → torn_down`** (see "Domain/state change" below) so a stuck or abandoned
+   mid-provision System tears down in one legal transition. Recording the state **before** the
+   libvirt destroy (under the lock) is what makes the provision/teardown race safe: a
+   concurrent `provision` re-reads `torn_down` under the same lock (provision step 5) and
+   cleans up the domain it created.
+2. `domain_name = system.domain_name or domain_name_for(system_id)` — a System torn down
+   *before* `provision` set `domain_name` still has a deterministically-named domain to reap
+   (or none, which `teardown` no-ops over).
+3. `provisioning.teardown(domain_name)` **outside the lock** (idempotent; "already gone" is
+   success). Return `str(system_id)`. The destroy running after the committed `→ torn_down`
+   (not before) means a crash between them leaves a `torn_down` row whose domain a teardown
+   *retry* (same dedup key) reaps — and, once wired, the leaked-domain reaper as a backstop.
 
 #### Registration
 
@@ -333,6 +346,16 @@ both cleaner and consistent with how this codebase already solved the same probl
   release that wins leaves the allocation non-`granted`, so a subsequent provision refuses;
   a provision that wins leaves an `active` allocation a later release can drive to `released`
   (orphaning the System → reconciler teardown).
+- **Provision/teardown do not leak a domain.** The two handlers serialize their state
+  decision on `advisory_xact_lock(SYSTEM, id)` (the slow libvirt call stays outside the lock,
+  as in the reconciler). The teardown handler commits `→ torn_down` under the lock *before*
+  destroying; a concurrent provision, after creating the domain, re-reads the System under the
+  same lock and — seeing `torn_down` — tears down the domain it just created instead of
+  setting `ready`. So a release-mid-provision cannot strand a tagged, running domain on a
+  `torn_down` row, even with two workers; the DB invariant (`System torn_down`) and the
+  host (no orphaned domain) stay consistent without depending on the deferred leaked-domain
+  reaper. Provision's `provisioning → ready` is never applied to a System another actor drove
+  terminal.
 - **No injection through profile values.** Domain XML and the metadata tag are built with
   `ElementTree`; a `domain_xml_params`/ref value cannot escape its element.
 - **Nothing secret flows here, so nothing is redacted.** The profile is by-reference and
@@ -369,6 +392,11 @@ calls; no DB, no `live_vm`)
 - provider failure: provider raises `PROVISIONING_FAILURE` → System `failed`, handler
   re-raises (worker dead-letters); the System reads `failed`, `domain_name` unset.
 - missing row: payload `system_id` with no row → `INFRASTRUCTURE_FAILURE` (dead-letter).
+- concurrent-teardown race (seed the System `torn_down` before step 5, e.g. drive it terminal
+  between the provider call and the transition via a patched provider or a pre-seeded state):
+  the handler does **not** set `ready` (no illegal transition escapes), tears down the
+  just-created domain (provider `teardown` called with the deterministic name), and returns
+  without error — no leaked domain, no dead-letter.
 
 **teardown handler** (real Postgres; fake provider)
 - `ready` System → provider `teardown(kdive-{id})` called → System `torn_down`.

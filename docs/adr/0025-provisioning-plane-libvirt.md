@@ -143,6 +143,15 @@ synchronously-created object must be terminable before it advances. The edge is 
 (removes nothing, needs no migration: `systems_state_check` already lists `torn_down`), and
 `tests/domain/test_state.py`'s `LEGAL` table is updated in the same commit.
 
+The `provision` and `teardown` handlers serialize their state decision on
+`advisory_xact_lock(SYSTEM, system_id)` — the slow libvirt call stays **outside** the lock,
+exactly as `_repair_leaked_domains` does. Teardown commits `→ torn_down` under the lock
+before it destroys; a concurrent provision, having created the domain, re-reads the System
+under the same lock and — seeing a terminal state — tears down the domain it just created
+rather than driving `provisioning → ready`. This closes the release-mid-provision race
+(two workers, one releasing) without leaking a tagged domain onto a `torn_down` row and
+without depending on the deferred leaked-domain reaper.
+
 ### 9. Handlers reconstruct a `RequestContext` from the job's authorizing tuple to audit
 
 A job handler holds a `Job`, not a `RequestContext`, but `audit.record` requires one and
