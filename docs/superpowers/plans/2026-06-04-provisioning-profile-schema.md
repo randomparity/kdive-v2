@@ -61,6 +61,9 @@ Create `tests/profiles/__init__.py` with no content (mirrors
 
 Create `tests/profiles/test_provisioning.py`:
 
+Imports are added per task as they are first used, so every intermediate commit is
+free of unused-import (F401) warnings.
+
 ```python
 """Tests for the provisioning-profile schema (`kdive.profiles.provisioning`)."""
 
@@ -68,14 +71,7 @@ from __future__ import annotations
 
 import copy
 
-import pytest
-from pydantic import ValidationError
-
-from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.profiles.provisioning import (
-    BootMethod,
-    ProvisioningProfile,
-)
+from kdive.profiles.provisioning import BootMethod, ProvisioningProfile
 
 _VALID: dict[str, object] = {
     "schema_version": 1,
@@ -114,8 +110,8 @@ def test_valid_libvirt_profile_parses() -> None:
     assert profile.provider.local_libvirt.rootfs_image_ref.startswith("oci://")
 
 
-def test_crashkernel_is_present(  # kdump prerequisite (acceptance criterion)
-) -> None:
+def test_crashkernel_is_present() -> None:
+    # The crashkernel reservation is the kdump prerequisite (acceptance criterion).
     profile = ProvisioningProfile.parse(_valid())
 
     assert profile.provider.local_libvirt.crashkernel == "256M"
@@ -266,7 +262,23 @@ git commit -m "feat(profiles): provisioning-profile schema with libvirt section 
 - Test: `tests/profiles/test_provisioning.py`
 - (Implementation already added in Task 1 — these tests characterize the boundary.)
 
-- [ ] **Step 1: Write the failing missing/unknown-field tests**
+- [ ] **Step 1: Add the imports this task needs**
+
+Replace the import block at the top of `tests/profiles/test_provisioning.py` with
+(adds `pytest` and the error taxonomy, both used by the helper below):
+
+```python
+from __future__ import annotations
+
+import copy
+
+import pytest
+
+from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.profiles.provisioning import BootMethod, ProvisioningProfile
+```
+
+- [ ] **Step 2: Write the failing missing/unknown-field tests**
 
 Append to `tests/profiles/test_provisioning.py`:
 
@@ -314,13 +326,14 @@ def test_unknown_libvirt_field_rejected() -> None:
     _expect_configuration_error(data)
 ```
 
-- [ ] **Step 2: Run the tests to verify they pass against the Task-1 boundary**
+- [ ] **Step 3: Run the tests and the guardrails to verify they pass**
 
-Run: `uv run python -m pytest tests/profiles/test_provisioning.py -q`
-Expected: PASS. (These characterize the `parse` boundary and `extra="forbid"` added
-in Task 1; if any FAIL, the boundary is wrong — fix `provisioning.py`, not the test.)
+Run: `uv run ruff check tests/profiles && uv run python -m pytest tests/profiles/test_provisioning.py -q`
+Expected: ruff clean (every imported name is now used); pytest PASS. (These tests
+characterize the `parse` boundary and `extra="forbid"` added in Task 1; if any FAIL,
+the boundary is wrong — fix `provisioning.py`, not the test.)
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add tests/profiles/test_provisioning.py
@@ -334,7 +347,24 @@ git commit -m "test(profiles): cover missing/unknown-field configuration_error m
 **Files:**
 - Test: `tests/profiles/test_provisioning.py`
 
-- [ ] **Step 1: Write the failing edge/constraint tests**
+- [ ] **Step 1: Add the import this task needs**
+
+Replace the import block at the top of `tests/profiles/test_provisioning.py` with
+(adds `ValidationError`, used by the frozen and direct-construction tests below):
+
+```python
+from __future__ import annotations
+
+import copy
+
+import pytest
+from pydantic import ValidationError
+
+from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.profiles.provisioning import BootMethod, ProvisioningProfile
+```
+
+- [ ] **Step 2: Write the failing edge/constraint tests**
 
 Append to `tests/profiles/test_provisioning.py`:
 
@@ -351,7 +381,8 @@ def test_blank_core_string_rejected(field: str, value: str) -> None:
 @pytest.mark.parametrize("field", ["rootfs_image_ref", "crashkernel"])
 def test_blank_libvirt_string_rejected(field: str, value: str) -> None:
     data = _valid()
-    data["provider"]["local-libvirt"][field] = value    _expect_configuration_error(data)
+    data["provider"]["local-libvirt"][field] = value
+    _expect_configuration_error(data)
 
 
 @pytest.mark.parametrize(("field", "value"), [("vcpu", 0), ("memory_mb", -1), ("disk_gb", 0)])
@@ -419,14 +450,14 @@ def test_direct_construction_bypasses_configuration_error_mapping() -> None:
         ProvisioningProfile.model_validate({"schema_version": 1})
 ```
 
-- [ ] **Step 2: Run the tests to verify they pass**
+- [ ] **Step 3: Run the tests and guardrails to verify they pass**
 
-Run: `uv run python -m pytest tests/profiles/test_provisioning.py -q`
-Expected: PASS. If `test_blank_*` FAIL, `NonEmptyStr` is not applied to that field; if
-`test_empty_domain_xml_param_value_rejected` FAILs, `domain_xml_params`'s value type
-is not `NonEmptyStr`. Fix `provisioning.py`.
+Run: `uv run ruff check tests/profiles && uv run python -m pytest tests/profiles/test_provisioning.py -q`
+Expected: ruff clean; pytest PASS. If `test_blank_*` FAIL, `NonEmptyStr` is not applied
+to that field; if `test_empty_domain_xml_param_value_rejected` FAILs,
+`domain_xml_params`'s value type is not `NonEmptyStr`. Fix `provisioning.py`.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add tests/profiles/test_provisioning.py
