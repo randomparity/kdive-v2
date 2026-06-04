@@ -64,3 +64,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0032](0032-connect-plane-gdbstub-debugsession.md) | Connect plane (gdbstub) + DebugSession lifecycle (M0) | Proposed |
 | [0033](0033-drgn-introspection-from-vmcore.md) | Debug plane: drgn introspection from vmcore (offline) (M0) | Proposed |
 | [0034](0034-debug-plane-gdbmi-tier.md) | Debug plane: gdb-MI tier (breakpoints, read_memory cap, read_registers, continue/interrupt) (M0) | Proposed |
+| [0035](0035-walking-skeleton-e2e-harness.md) | Walking-skeleton end-to-end integration-test harness (M0) | Proposed |

@@ -1,0 +1,71 @@
+# Operator tooling for the live walking-skeleton run (#26, ADR-0035 §3).
+#
+# Stands up the three backing services the kdive MCP server needs for a real end-to-end run
+# driven by hand or on a self-hosted KVM runner: Postgres (system of record), MinIO
+# (S3-compatible object store for vmcore artifacts), and a mock OIDC issuer (so the server's
+# JWTVerifier validates real signed bearer tokens). This compose is NOT on any automated CI
+# test path — the non-gated exit-criterion tests construct RequestContext in-process and use
+# the disposable-Postgres testcontainer (ADR-0015), so they need none of this.
+#
+# Point the kdive server at these services:
+#   KDIVE_DATABASE_URL=postgresql://kdive:kdive@localhost:5432/kdive
+#   KDIVE_OIDC_ISSUER=http://localhost:8090/default
+#   KDIVE_OIDC_JWKS_URI=http://localhost:8090/default/jwks
+#   KDIVE_OIDC_AUDIENCE=kdive
+#   KDIVE_S3_ENDPOINT_URL=http://localhost:9000
+#   KDIVE_S3_BUCKET=kdive-artifacts
+#   KDIVE_S3_REGION=us-east-1
+# Mint a token for an operator request from the mock issuer's token endpoint (see its README).
+#
+# Images are pinned to explicit tags for reproducibility (no :latest).
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: kdive
+      POSTGRES_PASSWORD: kdive # pragma: allowlist secret — local dev only
+      POSTGRES_DB: kdive
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kdive -d kdive"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin # pragma: allowlist secret — local dev only
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Creates the artifacts bucket once MinIO is healthy, then exits.
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing local/kdive-artifacts
+
+  oidc:
+    image: ghcr.io/navikt/mock-oauth2-server:3.1.4
+    environment:
+      # Bind the mock issuer to 0.0.0.0:8080 inside the container (published as 8090 on host).
+      SERVER_PORT: "8080"
+    ports:
+      - "8090:8080"
