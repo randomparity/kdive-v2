@@ -49,16 +49,27 @@ same-Allocation case.
 `systems.reprovision` enqueues a `reprovision` job (long-running, like `provision`)
 with `dedup_key = (system_id, "reprovision", profile_digest)` — re-issuing the same
 reprovision returns the existing job; a *different* target profile is a distinct key,
-a distinct reprovision. The provider op declares its contract: `idempotent` (keyed by
-the profile digest), `destructive` (it destroys the current OS install), cleanup
-`best-effort` (a reprovision interrupted mid-apply leaves the System `failed`, not a
-half-defined `ready`). Because it is destructive (it wipes the running System), it
-passes the destructive-op gate ([ADR-0037](0037-rbac-hardening-role-separation.md)) —
-**but** reprovision is *lifecycle*, owned by `operator`: the gate's role factor for
-reprovision is `operator`, while its capability-scope and profile-opt-in factors
-still apply. (Force-crash/power/teardown remain `admin`.) This is the one place M1
-uses a sub-`admin` destructive role, and it is justified: reprovisioning your own
-granted System is iterating, not administering.
+a distinct reprovision. The `profile_digest` is computed over the **parsed,
+canonical** profile (sorted-key JSON of `ProvisioningProfile.parse(...).model_dump(
+by_alias=True)`, sha256 — the existing `audit.args_digest` pattern), so digest
+equality is semantic equality: two byte-different but equivalent submissions dedup,
+and a meaningful change yields a distinct key. The provider op declares its contract:
+`idempotent` (keyed by the profile digest), `destructive` (it destroys the current OS
+install), cleanup `best-effort`. "Interrupted → `failed`" is the handler driving
+`reprovisioning → failed` on a provider `CategorizedError` (mirroring the provision
+handler), so a failed apply leaves the System terminal-`failed`, not a half-defined
+`ready`; a worker that *dies* mid-apply leaves the System stranded in `reprovisioning`
+for the reconciler's stuck-state sweep, not instantly `failed`. Because it is
+destructive (it wipes the running System), it passes the destructive-op gate
+([ADR-0037](0037-rbac-hardening-role-separation.md)) — **but** reprovision is
+*lifecycle*, owned by `operator`: the gate's role factor for reprovision is
+`operator`, while its capability-scope and profile-opt-in factors still apply.
+(Force-crash/power/teardown remain `admin`.) The gate
+(`security/gate.py`) therefore takes the required role as a per-op parameter
+(defaulting to `admin`; `operator` for reprovision) rather than hardcoding `admin`,
+preserving the three-check structure. This is the one place M1 uses a sub-`admin`
+destructive role, and it is justified: reprovisioning your own granted System is
+iterating, not administering.
 
 ### 4. Runs do not survive a reprovision
 
@@ -66,7 +77,11 @@ A reprovision changes the OS/kernel target, so any Run bound to the System's pri
 boot is invalid against the new install. Reprovision requires the System to have **no
 non-terminal Run** (else **`stale_handle`** — the System reference is not reprovisionable
 while a Run is live; `transport_conflict` is reserved for debug-transport contention, a
-different condition); Runs created after the reprovision target the new install. The
+different condition). "Non-terminal Run" is a Run in `created` or `running` (terminal =
+`succeeded`/`failed`/`canceled`). The live-Run check and the `ready → reprovisioning`
+transition are taken together under `LockScope.SYSTEM` — the same lock `runs.create`
+holds (ADR-0027) — so a Run cannot be created between the check and the transition;
+Runs created after the reprovision target the new install. The
 binding invariant `run.system → allocation` is unchanged (the Allocation is the same);
 what changes is the boot/fingerprint the next Run builds against.
 
