@@ -73,9 +73,11 @@ Build the realized `Connector` on the Task-1 primitives, with injected `live_vm`
 
 **Files:** Create `src/kdive/mcp/tools/debug.py`; Create `tests/mcp/test_debug_tools.py`
 
-Add the start-session handler. Reuse the `test_control_tools.py` seeding helpers (copy the `_pool`/`_granted_allocation`/`_seed_system`/`_ctx` shapes into the new test module — do **not** import across test modules unless a shared `_seed` helper already covers it).
+Add the start-session handler. The existing `tests/mcp/_seed.py` does **not** fit (it seeds a `crashed` System + a `build` step); this task needs a `ready` System + a `succeeded` Run + a succeeded **`boot`** `run_steps` row. Copy the `_pool`/`_granted_allocation`/`_seed_system`/`_ctx` shapes from `tests/mcp/test_control_tools.py` into the new test module and add a local `_seed_booted_run(pool, sys_id)` helper that inserts the Investigation + a `succeeded` Run + a `run_steps('boot','succeeded')` row. Do **not** import across test modules.
 
-- [ ] **Step 1: Write the failing tests** (`tests/mcp/test_debug_tools.py`), each over `migrated_url`, calling `debug.start_session(pool, ctx, run_id=..., transport=...)` directly with a `_FakeConnector` injected:
+**Handler signature pins the connector seam from the start.** `start_session` takes the `Connector` as an explicit keyword parameter with a module-default — `start_session(pool, ctx, *, run_id, transport="gdbstub", connector)` — so the tests inject a `_FakeConnector` directly (no monkeypatching). The `register` wrapper (Task 4 step 3) closes over the lazily-built `LocalLibvirtConnect.from_env()` and passes it as `connector`. This is decided **here**, not in Task 4, so Task 3's tests have a stable injection point.
+
+- [ ] **Step 1: Write the failing tests** (`tests/mcp/test_debug_tools.py`), each over `migrated_url`, calling `debug.start_session(pool, ctx, run_id=..., transport=..., connector=_FakeConnector(...))` directly. The `_FakeConnector` records `open_transport`/`close_transport` calls and is parameterized to return a handle, return-False (→ the provider raises `DEBUG_ATTACH_FAILURE`), or raise a given `CategorizedError`:
   - Happy path: a `succeeded` Run with a succeeded `boot` step on a `ready` System + a fake connector that opens a handle → exactly one `debug_sessions` row in `live` with non-null `transport_handle` + `worker_heartbeat_at`; envelope `status == "live"`; `->attach` and `attach->live` audit rows present.
   - Second attach (any Run on the same System with an existing `live` session) → `status == "error"`, `error_category == "transport_conflict"`, **no** new row (assert row count unchanged), and the fake connector's `close_transport` was called (lost-race cleanup).
   - Run not `succeeded` (e.g. `created`) → `configuration_error` with `current_status`; no row; prober/connector **not** invoked.
@@ -87,7 +89,7 @@ Add the start-session handler. Reuse the `test_control_tools.py` seeding helpers
   - Connector raises `MISSING_DEPENDENCY` → mapped to `debug_attach_failure`; no row.
   - Cross-project / malformed-UUID `run_id` → `configuration_error`; no row.
   - Missing `operator` (viewer ctx) → raises `AuthorizationError`.
-- [ ] **Step 2: Implement** `start_session(pool, ctx, *, run_id, transport="gdbstub")`:
+- [ ] **Step 2: Implement** `start_session(pool, ctx, *, run_id, transport="gdbstub", connector)`:
   - `_as_uuid` + `_config_error` helpers (mirror `control.py`). Resolve the Run; `None`/cross-project → `_config_error`. `require_role(ctx, run.project, Role.OPERATOR)`.
   - Reject non-`gdbstub` transport. Run-boot guard: `run.state is RunState.SUCCEEDED` else `_config_error(current_status)`; a succeeded `boot` `run_steps` row exists else `_config_error(reason="boot_first")` (reuse the `_has_succeeded_step` pattern from `runs.py` — a `LiteralString` query).
   - Pre-lock read of the Run's System (`SYSTEMS.get`): not `ready` → `_config_error(current_status)`; an existing `attach`/`live` session on the System → `transport_conflict` (the join query, `LiteralString`).
@@ -107,12 +109,12 @@ Add the start-session handler. Reuse the `test_control_tools.py` seeding helpers
   - Session whose Run/System vanished → `configuration_error`.
   - Missing `operator` → raises `AuthorizationError`.
   - `close_transport` raising does not break the detach (row still reaches `detached`).
-- [ ] **Step 2: Implement** `end_session(pool, ctx, session_id)`:
+- [ ] **Step 2: Implement** `end_session(pool, ctx, session_id, *, connector)` (same explicit-connector injection as `start_session`):
   - Resolve the session (`DEBUG_SESSIONS.get`); `None`/cross-project → `_config_error`. `require_role(OPERATOR)`.
   - Resolve the System id via a `debug_sessions → runs` join (`LiteralString`); a vanished Run/System → `_config_error`.
   - Under `conn.transaction()` + `advisory_xact_lock(SYSTEM, system_id)`: read the session `FOR UPDATE`; `detached` → idempotent success; else `connector.close_transport(handle)` (best-effort, swallow), `DEBUG_SESSIONS.update_state(... DETACHED)`, audit `{old}->detached`, success.
   - Decode the stored `transport_handle` to pass to `close_transport`; a missing/unparseable handle still detaches (close is best-effort).
-- [ ] **Step 3: Implement `register(app, pool)`** mirroring `control.register`: two `@app.tool` wrappers (`debug.start_session`, `debug.end_session`) calling the handlers with `current_context()`. Build the `Connector` lazily via `LocalLibvirtConnect.from_env()` (no libvirt connection at registration), injected into the handlers (a module-level default the tools close over, overridable in tests).
+- [ ] **Step 3: Implement `register(app, pool)`** mirroring `control.register`: build the `Connector` once via `LocalLibvirtConnect.from_env()` (no libvirt connection at registration) and capture it; two `@app.tool` wrappers (`debug.start_session`, `debug.end_session`) call the handlers with `current_context()` and pass `connector=<the from_env connector>`. The handlers' explicit `connector` keyword (pinned in Task 3) is the only injection seam — no module global, no monkeypatching in tests.
 - [ ] **Step 4: Guardrails green** — full `tests/mcp/test_debug_tools.py` passes; `ruff`, `ty check src`.
 
 ## Task 5: Register the plane in `app.py` + assert in `test_app.py`
