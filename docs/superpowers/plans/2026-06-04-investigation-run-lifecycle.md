@@ -110,7 +110,6 @@ import pytest
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.domain.state import InvestigationState
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import investigations as inv_tools
 from kdive.security.rbac import AuthorizationError, Role
@@ -451,7 +450,7 @@ from kdive.security.rbac import Role, require_role
 
 - [ ] **Step 4: Run tests + guardrails to verify pass**
 
-Run: `uv run python -m pytest tests/mcp/test_investigations_tools.py -q && uv run ruff check src/kdive/mcp/tools/investigations.py && uv run ty check`
+Run: `uv run python -m pytest tests/mcp/test_investigations_tools.py -q && uv run ruff check && uv run ty check`
 Expected: PASS; zero ruff/ty findings.
 
 - [ ] **Step 5: Commit**
@@ -471,7 +470,14 @@ git commit -m "feat(investigations): add open + get tools (#17)"
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/mcp/test_investigations_tools.py`:
+First add the now-used import to the top of `tests/mcp/test_investigations_tools.py` (it was
+deferred from Task 2 because nothing used it there — adding it now keeps `ruff` F401 clean):
+
+```python
+from kdive.domain.state import InvestigationState
+```
+
+Then append to `tests/mcp/test_investigations_tools.py`:
 
 ```python
 async def _seed_investigation(pool: AsyncConnectionPool, state: InvestigationState) -> str:
@@ -683,7 +689,7 @@ Add the tool binding inside `register`:
 
 - [ ] **Step 4: Run tests + guardrails**
 
-Run: `uv run python -m pytest tests/mcp/test_investigations_tools.py -q && uv run ruff check src/kdive/mcp/tools/investigations.py && uv run ty check`
+Run: `uv run python -m pytest tests/mcp/test_investigations_tools.py -q && uv run ruff check && uv run ty check`
 Expected: PASS; zero findings.
 
 - [ ] **Step 5: Commit**
@@ -965,7 +971,7 @@ Add the two tool bindings inside `register`:
 
 - [ ] **Step 4: Run tests + guardrails**
 
-Run: `uv run python -m pytest tests/mcp/test_investigations_tools.py -q && uv run ruff check src/kdive/mcp/tools/investigations.py && uv run ty check`
+Run: `uv run python -m pytest tests/mcp/test_investigations_tools.py -q && uv run ruff check && uv run ty check`
 Expected: PASS; zero findings.
 
 - [ ] **Step 5: Commit**
@@ -1000,7 +1006,6 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-import pytest
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
@@ -1023,7 +1028,14 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import runs as runs_tools
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.rbac import Role
+```
+
+> Note: `import pytest` and `AuthorizationError` are **deferred to Task 6** — Task 5's `get`
+> tests use neither (`ruff` F401 would fail this commit). Task 6 adds them with its
+> parametrized/raise tests.
+
+```python
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _PROFILE: dict[str, Any] = {"kernel_source_ref": "git+https://git.kernel.org#v6.9"}
@@ -1360,7 +1372,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
 
 - [ ] **Step 4: Run tests + guardrails**
 
-Run: `uv run python -m pytest tests/mcp/test_runs_tools.py -q && uv run ruff check src/kdive/mcp/tools/runs.py && uv run ty check`
+Run: `uv run python -m pytest tests/mcp/test_runs_tools.py -q && uv run ruff check && uv run ty check`
 Expected: PASS; zero findings.
 
 - [ ] **Step 5: Commit**
@@ -1380,7 +1392,12 @@ git commit -m "feat(runs): add runs.get tool and run envelope (#17)"
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/mcp/test_runs_tools.py`:
+First add the two imports deferred from Task 5 to the top of `tests/mcp/test_runs_tools.py`
+(now used by the parametrized + raise tests below; this keeps `ruff` F401 clean): add
+`import pytest` (in the third-party import group) and change
+`from kdive.security.rbac import Role` to `from kdive.security.rbac import AuthorizationError, Role`.
+
+Then append to `tests/mcp/test_runs_tools.py`:
 
 ```python
 async def _create(pool: AsyncConnectionPool, ctx: RequestContext, inv_id: str, sys_id: str, profile=None):
@@ -1763,7 +1780,7 @@ Add the `runs.create` binding inside `register`:
 
 - [ ] **Step 4: Run tests + guardrails**
 
-Run: `uv run python -m pytest tests/mcp/test_runs_tools.py -q && uv run ruff check src/kdive/mcp/tools/runs.py && uv run ty check`
+Run: `uv run python -m pytest tests/mcp/test_runs_tools.py -q && uv run ruff check && uv run ty check`
 Expected: PASS (all runs tests incl. the parametrized + concurrency cases); zero findings.
 
 - [ ] **Step 5: Commit**
@@ -1822,7 +1839,7 @@ _PLANE_REGISTRARS: tuple[Callable[[FastMCP, AsyncConnectionPool], None], ...] = 
 
 - [ ] **Step 4: Run test + guardrails**
 
-Run: `uv run python -m pytest tests/mcp/test_app.py -q && uv run ruff check src && uv run ty check`
+Run: `uv run python -m pytest tests/mcp/test_app.py -q && uv run ruff check && uv run ty check`
 Expected: PASS; zero findings.
 
 - [ ] **Step 5: Commit**
