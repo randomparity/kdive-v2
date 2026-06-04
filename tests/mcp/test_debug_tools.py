@@ -46,6 +46,7 @@ from kdive.providers.local_libvirt.discovery import (
     register_local_libvirt_resource,
 )
 from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.secret_registry import SecretRegistry
 from tests.providers.local_libvirt.conftest import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -80,9 +81,8 @@ class _FakeConnector:
         self.opened.append((str(system), kind))
         if self._raises is not None:
             raise self._raises
-        return TransportHandle(
-            TransportHandleData(kind="gdbstub", host="127.0.0.1", port=1234).encode()
-        )
+        port = 22 if kind == "ssh" else 1234
+        return TransportHandle(TransportHandleData(kind=kind, host="127.0.0.1", port=port).encode())
 
     def close_transport(self, handle: TransportHandle) -> None:
         self.closed.append(str(handle))
@@ -198,7 +198,14 @@ async def _seed_run(
     return str(run.id)
 
 
-async def _seed_session(pool: AsyncConnectionPool, run_id: str, state: DebugSessionState) -> str:
+async def _seed_session(
+    pool: AsyncConnectionPool,
+    run_id: str,
+    state: DebugSessionState,
+    *,
+    transport: str = "gdbstub",
+) -> str:
+    port = 22 if transport == "ssh" else 1234
     async with pool.connection() as conn:
         session = await DEBUG_SESSIONS.insert(
             conn,
@@ -210,9 +217,9 @@ async def _seed_session(pool: AsyncConnectionPool, run_id: str, state: DebugSess
                 project="proj",
                 run_id=UUID(run_id),
                 state=state,
-                transport="gdbstub",
+                transport=transport,
                 transport_handle=TransportHandleData(
-                    kind="gdbstub", host="127.0.0.1", port=1234
+                    kind=transport, host="127.0.0.1", port=port
                 ).encode(),
             ),
         )
@@ -306,7 +313,7 @@ def test_locked_recheck_closes_transport_when_system_crashed(migrated_url: str) 
                 conn_fake = _FakeConnector()
                 handle = conn_fake.open_transport(SystemHandle("kdive-x"), "gdbstub")
                 resp = await debug_tools._insert_session_locked(
-                    conn, _ctx(), run, system, handle, conn_fake
+                    conn, _ctx(), run, system, handle, conn_fake, "gdbstub"
                 )
             count = await _session_count(pool)
         assert resp.status == "error" and resp.error_category == "configuration_error"
@@ -334,7 +341,7 @@ def test_locked_recheck_closes_transport_when_conflict_appears(migrated_url: str
                 conn_fake = _FakeConnector()
                 handle = conn_fake.open_transport(SystemHandle("kdive-x"), "gdbstub")
                 resp = await debug_tools._insert_session_locked(
-                    conn, _ctx(), run, system, handle, conn_fake
+                    conn, _ctx(), run, system, handle, conn_fake, "gdbstub"
                 )
             count = await _session_count(pool)
         assert resp.status == "error" and resp.error_category == "transport_conflict"
@@ -485,6 +492,201 @@ def test_start_session_without_operator_raises(migrated_url: str) -> None:
                     transport="gdbstub",
                     connector=_FakeConnector(),
                 )
+
+    asyncio.run(_run())
+
+
+# --- debug.start_session(transport="ssh") (ADR-0039) ---------------------------------------
+
+
+class _OrderRecordingBackend:
+    """A fake SecretBackend that records resolution order against a shared log.
+
+    Registers into an injected ``SecretRegistry`` (a test-local one, never the process
+    global) before returning — mirroring ``FileRefBackend``'s structural post-condition —
+    so the ordering test can assert the registry was seeded before the connector ran.
+    """
+
+    def __init__(
+        self,
+        log: list[str],
+        *,
+        value: str = "guest-ssh-secret",
+        registry: SecretRegistry | None = None,
+    ) -> None:
+        self._log = log
+        self._value = value
+        self._registry = registry
+        self.refs: list[str] = []
+
+    def resolve(self, ref: str) -> str:
+        self.refs.append(ref)
+        self._log.append(f"resolve:{ref}")
+        if self._registry is not None:
+            self._registry.register(self._value, scope=None)
+        return self._value
+
+
+class _OrderRecordingConnector(_FakeConnector):
+    """A connector that appends to a shared log when open_transport is invoked."""
+
+    def __init__(self, log: list[str], **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._log = log
+
+    def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle:
+        self._log.append(f"open:{kind}")
+        return super().open_transport(system, kind)
+
+
+def _ssh_profile() -> dict[str, Any]:
+    profile = copy.deepcopy(_PROFILE)
+    profile["provider"]["local-libvirt"]["ssh_credential_ref"] = "ssh/guest-key"
+    return profile
+
+
+async def _seed_ssh_system(pool: AsyncConnectionPool, alloc_id: str) -> str:
+    async with pool.connection() as conn:
+        system = await SYSTEMS.insert(
+            conn,
+            System(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="user-1",
+                project="proj",
+                allocation_id=UUID(alloc_id),
+                state=SystemState.READY,
+                provisioning_profile=_ssh_profile(),
+                domain_name="kdive-x",
+            ),
+        )
+    return str(system.id)
+
+
+def test_start_session_ssh_attaches_and_row_records_ssh_transport(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_ssh_system(pool, alloc_id)
+            run_id = await _seed_run(pool, sys_id)
+            log: list[str] = []
+            connector = _OrderRecordingConnector(log)
+            backend = _OrderRecordingBackend(log)
+            resp = await debug_tools.start_session(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="ssh",
+                connector=connector,
+                secret_backend=backend,
+            )
+            assert resp.status == "live"
+            assert connector.opened == [("kdive-x", "ssh")]
+            async with pool.connection() as c, c.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT transport, transport_handle FROM debug_sessions WHERE id = %s",
+                    (resp.object_id,),
+                )
+                row = await cur.fetchone()
+        assert row is not None
+        assert row["transport"] == "ssh"
+        assert row["transport_handle"].startswith("ssh://")
+
+    asyncio.run(_run())
+
+
+def test_start_session_ssh_resolves_credential_before_opening_transport(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_ssh_system(pool, alloc_id)
+            run_id = await _seed_run(pool, sys_id)
+            log: list[str] = []
+            registry = SecretRegistry()
+            connector = _OrderRecordingConnector(log)
+            backend = _OrderRecordingBackend(log, registry=registry)
+            await debug_tools.start_session(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="ssh",
+                connector=connector,
+                secret_backend=backend,
+            )
+            # Ordering acceptance: resolve (which registers) precedes the open.
+            assert log == ["resolve:ssh/guest-key", "open:ssh"]
+            assert backend.refs == ["ssh/guest-key"]
+            # The credential is in the registry before the transport was used.
+            assert "guest-ssh-secret" in registry.snapshot()
+
+    asyncio.run(_run())
+
+
+def test_start_session_ssh_missing_credential_ref_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)  # no ssh_credential_ref
+            run_id = await _seed_run(pool, sys_id)
+            connector = _FakeConnector()
+            resp = await debug_tools.start_session(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="ssh",
+                connector=connector,
+                secret_backend=_OrderRecordingBackend([]),
+            )
+            count = await _session_count(pool)
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert count == 0
+        assert connector.opened == []  # no transport opened without a credential
+
+    asyncio.run(_run())
+
+
+def test_second_ssh_attach_is_transport_conflict(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_ssh_system(pool, alloc_id)
+            run_a = await _seed_run(pool, sys_id)
+            run_b = await _seed_run(pool, sys_id)
+            await _seed_session(pool, run_a, DebugSessionState.LIVE, transport="ssh")
+            connector = _FakeConnector()
+            resp = await debug_tools.start_session(
+                pool,
+                _ctx(),
+                run_id=run_b,
+                transport="ssh",
+                connector=connector,
+                secret_backend=_OrderRecordingBackend([]),
+            )
+        assert resp.status == "error" and resp.error_category == "transport_conflict"
+        assert connector.opened == []
+
+    asyncio.run(_run())
+
+
+def test_gdbstub_and_ssh_sessions_coexist_on_one_system(migrated_url: str) -> None:
+    # Per-transport scoping (ADR-0039 §4): an existing gdbstub session must not block ssh.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_ssh_system(pool, alloc_id)
+            run_a = await _seed_run(pool, sys_id)
+            run_b = await _seed_run(pool, sys_id)
+            await _seed_session(pool, run_a, DebugSessionState.LIVE, transport="gdbstub")
+            resp = await debug_tools.start_session(
+                pool,
+                _ctx(),
+                run_id=run_b,
+                transport="ssh",
+                connector=_FakeConnector(),
+                secret_backend=_OrderRecordingBackend([]),
+            )
+        assert resp.status == "live"  # the gdbstub session does not conflict with ssh
 
     asyncio.run(_run())
 

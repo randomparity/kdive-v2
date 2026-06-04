@@ -56,13 +56,17 @@ class LibvirtProfile(_ProfileBase):
     kernel is the arbiter of its grammar). ``destructive_ops`` is the optionally-empty
     list of destructive op kinds this profile opts in (e.g. ``["force_crash"]``); the
     control plane's gate resolves the opt-in factor from it (deny-by-default — an absent
-    or empty list refuses every destructive op, ADR-0028 §2).
+    or empty list refuses every destructive op, ADR-0028 §2). ``ssh_credential_ref`` is the
+    optional opaque **reference** (never the value) into the file-ref secret backend that
+    the live ssh transport resolves a guest credential through (ADR-0039 §2); a profile that
+    does not opt into live ssh introspection leaves it ``None``.
     """
 
     domain_xml_params: dict[NonEmptyStr, NonEmptyStr] = Field(default_factory=dict)
     rootfs_image_ref: NonEmptyStr
     crashkernel: NonEmptyStr
     destructive_ops: list[NonEmptyStr] = Field(default_factory=list)
+    ssh_credential_ref: NonEmptyStr | None = None
 
 
 class ProviderSection(_ProfileBase):

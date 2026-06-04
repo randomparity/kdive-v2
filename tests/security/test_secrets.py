@@ -9,7 +9,7 @@ import pytest
 from kdive.security.paths import PathSafetyError
 from kdive.security.redaction import REDACTION, Redactor
 from kdive.security.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
-from kdive.security.secrets import FileRefBackend
+from kdive.security.secrets import FileRefBackend, secret_backend_from_env
 
 
 def _write(root: Path, name: str, content: str) -> Path:
@@ -125,3 +125,19 @@ def test_scope_is_plumbed_through(tmp_path: Path) -> None:
     assert value in registry.snapshot()
     registry.release(scope)
     assert value not in registry.snapshot()
+
+
+def test_secret_backend_from_env_confines_to_configured_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The factory reads KDIVE_SECRETS_ROOT and confines resolution to it. A reference escaping
+    # the root is rejected before any read; in-root resolution returns the file contents.
+    root = tmp_path / "secrets"
+    root.mkdir()
+    _write(root, "guest-key", "env-rooted-secret\n")
+    _write(tmp_path, "escape", "leak\n")
+    monkeypatch.setenv("KDIVE_SECRETS_ROOT", str(root))
+    backend = secret_backend_from_env()
+    with pytest.raises(PathSafetyError):
+        backend.resolve(str(tmp_path / "escape"))
+    assert backend.resolve(str(root / "guest-key")) == "env-rooted-secret"

@@ -56,7 +56,7 @@ def test_build_app_registers_jobs_tools() -> None:
             "debug.continue",
             "debug.interrupt",
         } <= names
-        assert {"introspect.from_vmcore"} <= names
+        assert {"introspect.from_vmcore", "introspect.run"} <= names
 
     asyncio.run(_run())
 

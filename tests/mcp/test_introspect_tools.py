@@ -6,13 +6,20 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
+import pytest
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.repositories import DEBUG_SESSIONS
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.models import DebugSession
+from kdive.domain.state import DebugSessionState
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import introspect as introspect_tools
 from kdive.providers.local_libvirt.introspect_drgn import IntrospectOutput
+from kdive.security.rbac import AuthorizationError, Role
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
 
 
@@ -220,6 +227,224 @@ def test_register_adds_the_tool() -> None:
         pool = AsyncConnectionPool("postgresql://unused", open=False)
         introspect_tools.register(app, pool)
         tools = await app.list_tools()
-        assert any(t.name == "introspect.from_vmcore" for t in tools)
+        names = {t.name for t in tools}
+        assert "introspect.from_vmcore" in names
+        assert "introspect.run" in names
 
     asyncio.run(_check())
+
+
+# --- introspect.run (live drgn over ssh, ADR-0039) -----------------------------------------
+
+
+def _live_ctx(role: Role | None = Role.OPERATOR, *, projects: tuple[str, ...] = ("proj",)):
+    roles = {"proj": role} if role is not None else {}
+    return RequestContext(principal="u", agent_session="s", projects=projects, roles=roles)
+
+
+class _FakeLiveIntrospector:
+    """Records the run() transport_handle; returns a canned output or raises a planted error."""
+
+    def __init__(
+        self, *, output: IntrospectOutput | None = None, raises: CategorizedError | None = None
+    ) -> None:
+        self._output = output if output is not None else _output()
+        self._raises = raises
+        self.kwargs: dict[str, object] = {}
+
+    def run(self, *, transport_handle: str) -> IntrospectOutput:
+        self.kwargs = {"transport_handle": transport_handle}
+        if self._raises is not None:
+            raise self._raises
+        return self._output
+
+
+async def _seed_live_ssh_session(
+    pool: AsyncConnectionPool,
+    *,
+    state: DebugSessionState = DebugSessionState.LIVE,
+    transport: str = "ssh",
+    project: str = "proj",
+) -> str:
+    sys_id = await seed_crashed_system(pool, project=project)
+    run_id = await seed_run_on_system(
+        pool, sys_id, debuginfo_ref="k/runs/r/vmlinux", build_id="deadbeef", project=project
+    )
+    async with pool.connection() as conn:
+        session = await DEBUG_SESSIONS.insert(
+            conn,
+            DebugSession(
+                id=uuid4(),
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+                principal="u",
+                project=project,
+                run_id=UUID(run_id),
+                state=state,
+                transport=transport,
+                transport_handle=f"{transport}://127.0.0.1:22",
+            ),
+        )
+    return str(session.id)
+
+
+def test_run_live_happy_path_returns_redacted_report(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            session_id = await _seed_live_ssh_session(pool)
+            port = _FakeLiveIntrospector()
+            resp = await introspect_tools.introspect_run(
+                pool, _live_ctx(), session_id=session_id, helper="tasks", introspector=port
+            )
+        assert resp.status != "error"
+        report = json.loads(resp.data["report"])
+        assert report["sysinfo"]["release"] == "6.8.0"
+        assert port.kwargs["transport_handle"] == "ssh://127.0.0.1:22"
+
+    asyncio.run(_run())
+
+
+def test_run_live_masks_planted_secret_in_response(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            session_id = await _seed_live_ssh_session(pool)
+            # The port is the single redaction boundary; it returns the already-masked shape.
+            port = _FakeLiveIntrospector(output=_output(comm="[REDACTED]"))
+            resp = await introspect_tools.introspect_run(
+                pool, _live_ctx(), session_id=session_id, helper="tasks", introspector=port
+            )
+        assert "hunter2" not in resp.data["report"]
+        assert "[REDACTED]" in resp.data["report"]
+
+    asyncio.run(_run())
+
+
+def test_run_live_marks_transcript_sensitive(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            session_id = await _seed_live_ssh_session(pool)
+            resp = await introspect_tools.introspect_run(
+                pool,
+                _live_ctx(),
+                session_id=session_id,
+                helper="tasks",
+                introspector=_FakeLiveIntrospector(),
+            )
+        # The raw drgn-over-ssh transcript is sensitive; the response advertises that so a
+        # consumer never treats the report as a substitute for the redacted-only contract.
+        assert resp.data["transcript_sensitivity"] == "sensitive"
+
+    asyncio.run(_run())
+
+
+def test_run_live_unknown_helper_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            session_id = await _seed_live_ssh_session(pool)
+            resp = await introspect_tools.introspect_run(
+                pool,
+                _live_ctx(),
+                session_id=session_id,
+                helper="exec_arbitrary",
+                introspector=_FakeLiveIntrospector(),
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_run_live_non_live_session_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            session_id = await _seed_live_ssh_session(pool, state=DebugSessionState.DETACHED)
+            resp = await introspect_tools.introspect_run(
+                pool,
+                _live_ctx(),
+                session_id=session_id,
+                helper="tasks",
+                introspector=_FakeLiveIntrospector(),
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_run_live_non_ssh_session_is_config_error(migrated_url: str) -> None:
+    # A live introspect.run requires an ssh transport, not gdbstub (ADR-0039 §4).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            session_id = await _seed_live_ssh_session(pool, transport="gdbstub")
+            resp = await introspect_tools.introspect_run(
+                pool,
+                _live_ctx(),
+                session_id=session_id,
+                helper="tasks",
+                introspector=_FakeLiveIntrospector(),
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_run_live_cross_project_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            session_id = await _seed_live_ssh_session(pool)
+            resp = await introspect_tools.introspect_run(
+                pool,
+                _live_ctx(projects=("other",)),
+                session_id=session_id,
+                helper="tasks",
+                introspector=_FakeLiveIntrospector(),
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_run_live_without_operator_raises(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            session_id = await _seed_live_ssh_session(pool)
+            with pytest.raises(AuthorizationError):
+                await introspect_tools.introspect_run(
+                    pool,
+                    _live_ctx(Role.VIEWER),
+                    session_id=session_id,
+                    helper="tasks",
+                    introspector=_FakeLiveIntrospector(),
+                )
+
+    asyncio.run(_run())
+
+
+def test_run_live_port_attach_failure_is_typed(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            session_id = await _seed_live_ssh_session(pool)
+            err = CategorizedError("ssh dropped", category=ErrorCategory.TRANSPORT_FAILURE)
+            resp = await introspect_tools.introspect_run(
+                pool,
+                _live_ctx(),
+                session_id=session_id,
+                helper="tasks",
+                introspector=_FakeLiveIntrospector(raises=err),
+            )
+        assert resp.status == "error" and resp.error_category == "transport_failure"
+
+    asyncio.run(_run())
+
+
+def test_run_live_malformed_session_id_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await introspect_tools.introspect_run(
+                pool,
+                _live_ctx(),
+                session_id="nope",
+                helper="tasks",
+                introspector=_FakeLiveIntrospector(),
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())

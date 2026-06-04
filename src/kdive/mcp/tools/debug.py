@@ -40,19 +40,25 @@ from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.local_libvirt.connect import Connector, LocalLibvirtConnect
 from kdive.providers.local_libvirt.debug_gdbmi import GdbMiEngine, default_attach_seam
 from kdive.security import audit
+from kdive.security.paths import PathSafetyError
 from kdive.security.rbac import Role, require_role
+from kdive.security.secrets import SecretBackend, secret_backend_from_env
 
 _GDBSTUB = "gdbstub"
+_SSH = "ssh"
+_TRANSPORTS = frozenset({_GDBSTUB, _SSH})
 # An attach failure maps these provider categories onto the response envelope. A
 # MISSING_DEPENDENCY (no live_vm host / unresolvable endpoint) surfaces as an attach failure:
 # the agent cannot attach either way.
 _ATTACH_FAILURE = frozenset({ErrorCategory.DEBUG_ATTACH_FAILURE, ErrorCategory.TRANSPORT_FAILURE})
 
-# A live/attach session occupies the System's single gdbstub endpoint (single-attach).
+# A live/attach session occupies the System's single endpoint **for that transport kind**
+# (single-attach per transport, ADR-0039 §4): a gdbstub and an ssh session may coexist on one
+# System, but a second attach over the same transport is `transport_conflict`.
 _OCCUPIED_SQL: LiteralString = (
     "SELECT 1 FROM debug_sessions s "
     "JOIN runs r ON r.id = s.run_id "
-    "WHERE r.system_id = %s AND s.state IN ('attach', 'live') LIMIT 1"
+    "WHERE r.system_id = %s AND s.transport = %s AND s.state IN ('attach', 'live') LIMIT 1"
 )
 
 
@@ -81,18 +87,20 @@ async def _has_succeeded_boot(conn: AsyncConnection, run_id: UUID) -> bool:
         return await cur.fetchone() is not None
 
 
-async def _system_occupied(conn: AsyncConnection, system_id: UUID) -> bool:
-    """Report whether the System already has an ``attach``/``live`` session (single-attach)."""
+async def _system_occupied(conn: AsyncConnection, system_id: UUID, transport: str) -> bool:
+    """Report whether the System already has an ``attach``/``live`` session on ``transport``."""
     async with conn.cursor() as cur:
-        await cur.execute(_OCCUPIED_SQL, (system_id,))
+        await cur.execute(_OCCUPIED_SQL, (system_id, transport))
         return await cur.fetchone() is not None
 
 
-def _open_transport(connector: Connector, system: System) -> TransportHandle | ToolResponse:
-    """Open the gdbstub transport outside any lock; map a provider failure to an envelope."""
+def _open_transport(
+    connector: Connector, system: System, transport: str
+) -> TransportHandle | ToolResponse:
+    """Open the transport outside any lock; map a provider failure to an envelope."""
     handle_name = system.domain_name or str(system.id)
     try:
-        return connector.open_transport(SystemHandle(handle_name), _GDBSTUB)
+        return connector.open_transport(SystemHandle(handle_name), transport)
     except CategorizedError as exc:
         category = exc.category if exc.category in _ATTACH_FAILURE else _mapped(exc.category)
         return ToolResponse.failure(str(system.id), category)
@@ -112,12 +120,19 @@ async def start_session(
     run_id: str,
     transport: str = _GDBSTUB,
     connector: Connector,
+    secret_backend: SecretBackend | None = None,
 ) -> ToolResponse:
-    """Open a single-attach gdbstub transport and insert a `live` DebugSession (operator)."""
+    """Open a single-attach transport and insert a `live` DebugSession (operator).
+
+    For ``transport="ssh"`` the guest credential is resolved from the System's profile
+    ``ssh_credential_ref`` through ``secret_backend`` **before** the transport is opened, so
+    the redaction registry is seeded before any transport output can carry the value
+    (ADR-0039 §2). gdbstub needs no credential.
+    """
     uid = _as_uuid(run_id)
     if uid is None:
         return _config_error(run_id)
-    if transport != _GDBSTUB:
+    if transport not in _TRANSPORTS:
         return _config_error(run_id)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
@@ -125,21 +140,57 @@ async def start_session(
             if run is None or run.project not in ctx.projects:
                 return _config_error(run_id)
             require_role(ctx, run.project, Role.OPERATOR)
-            guard = await _attach_preconditions(conn, run)
+            guard = await _attach_preconditions(conn, run, transport)
             if isinstance(guard, ToolResponse):
                 return guard
             system = guard
-            opened = _open_transport(connector, system)
+            resolved = _resolve_credential(system, transport, secret_backend)
+            if isinstance(resolved, ToolResponse):
+                return resolved
+            opened = _open_transport(connector, system, transport)
             if isinstance(opened, ToolResponse):
                 return opened
-            return await _insert_session_locked(conn, ctx, run, system, opened, connector)
+            return await _insert_session_locked(
+                conn, ctx, run, system, opened, connector, transport
+            )
 
 
-async def _attach_preconditions(conn: AsyncConnection, run: Run) -> System | ToolResponse:
+def _resolve_credential(
+    system: System, transport: str, secret_backend: SecretBackend | None
+) -> None | ToolResponse:
+    """Resolve + register the ssh credential before transport use (ADR-0039 §2 ordering).
+
+    Returns ``None`` when no credential is required (gdbstub) or resolution succeeded, or a
+    failure envelope. The resolved value is registered into the redaction registry by the
+    backend (a structural post-condition of ``FileRefBackend.resolve``) before this returns —
+    so the connector that opens the SSH connection runs with the registry already seeded.
+    """
+    if transport != _SSH:
+        return None
+    ref = (
+        system.provisioning_profile.get("provider", {})
+        .get("local-libvirt", {})
+        .get("ssh_credential_ref")
+    )
+    if not isinstance(ref, str) or not ref:
+        return _config_error(str(system.id), data={"reason": "ssh_credential_ref_missing"})
+    if secret_backend is None:
+        return ToolResponse.failure(str(system.id), ErrorCategory.MISSING_DEPENDENCY)
+    try:
+        secret_backend.resolve(ref)
+    except (CategorizedError, PathSafetyError):
+        return ToolResponse.failure(str(system.id), ErrorCategory.CONFIGURATION_ERROR)
+    return None
+
+
+async def _attach_preconditions(
+    conn: AsyncConnection, run: Run, transport: str
+) -> System | ToolResponse:
     """Lockless pre-checks: Run booted, System present + `ready`, endpoint free.
 
     Returns the System on success, or a failure envelope. These are advisory fast-fails;
-    `_insert_session_locked` re-checks conflict + ready authoritatively under the lock.
+    `_insert_session_locked` re-checks conflict + ready authoritatively under the lock. The
+    conflict check is scoped to ``transport`` (per-transport single-attach, ADR-0039 §4).
     """
     if run.state is not RunState.SUCCEEDED:
         return _config_error(str(run.id), data={"current_status": run.state.value})
@@ -150,7 +201,7 @@ async def _attach_preconditions(conn: AsyncConnection, run: Run) -> System | Too
         return _config_error(str(run.id))
     if system.state is not SystemState.READY:
         return _config_error(str(run.id), data={"current_status": system.state.value})
-    if await _system_occupied(conn, system.id):
+    if await _system_occupied(conn, system.id, transport):
         return ToolResponse.failure(str(run.id), ErrorCategory.TRANSPORT_CONFLICT)
     return system
 
@@ -162,11 +213,13 @@ async def _insert_session_locked(
     system: System,
     handle: TransportHandle,
     connector: Connector,
+    transport: str,
 ) -> ToolResponse:
     """Re-check conflict + ready under the per-System lock, then insert + drive `-> live`.
 
     A lost race (System crashed, or another attach committed first) closes the just-opened
-    transport and returns the categorized error — no `live` row escapes the lock.
+    transport and returns the categorized error — no `live` row escapes the lock. The
+    conflict re-check is scoped to ``transport`` (per-transport single-attach, ADR-0039 §4).
     """
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system.id):
         current = await SYSTEMS.get(conn, system.id)
@@ -174,7 +227,7 @@ async def _insert_session_locked(
             connector.close_transport(handle)
             status = current.state.value if current else "torn_down"
             return _config_error(str(run.id), data={"current_status": status})
-        if await _system_occupied(conn, system.id):
+        if await _system_occupied(conn, system.id, transport):
             connector.close_transport(handle)
             return ToolResponse.failure(str(run.id), ErrorCategory.TRANSPORT_CONFLICT)
         now = datetime.now(UTC)  # placeholder; the DB owns created_at/updated_at
@@ -189,7 +242,7 @@ async def _insert_session_locked(
                 project=run.project,
                 run_id=run.id,
                 state=DebugSessionState.ATTACH,
-                transport=_GDBSTUB,
+                transport=transport,
                 transport_handle=str(handle),
                 worker_heartbeat_at=now,
             ),
@@ -328,12 +381,18 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     `app.py` is untouched. `end_session` reaps the lazy engine via the shared runtime.
     """
     connector: Connector = LocalLibvirtConnect.from_env()
+    secret_backend: SecretBackend = secret_backend_from_env()
     runtime = DebugEngineRuntime(engine=GdbMiEngine(), attach=default_attach_seam)
 
     @app.tool(name="debug.start_session")
     async def debug_start_session(run_id: str, transport: str = _GDBSTUB) -> ToolResponse:
         return await start_session(
-            pool, current_context(), run_id=run_id, transport=transport, connector=connector
+            pool,
+            current_context(),
+            run_id=run_id,
+            transport=transport,
+            connector=connector,
+            secret_backend=secret_backend,
         )
 
     @app.tool(name="debug.end_session")

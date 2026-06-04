@@ -55,6 +55,27 @@ def test_crashkernel_is_present() -> None:
     assert profile.provider.local_libvirt.crashkernel == "256M"
 
 
+def test_ssh_credential_ref_defaults_to_none() -> None:
+    # A profile that opts out of live ssh introspection carries no credential reference.
+    profile = ProvisioningProfile.parse(_valid())
+    assert profile.provider.local_libvirt.ssh_credential_ref is None
+
+
+def test_ssh_credential_ref_parses_when_present() -> None:
+    # The reference is an opaque, non-empty token into the file-ref secret backend (ADR-0039);
+    # it is a reference, never the credential value itself.
+    data = _valid()
+    data["provider"]["local-libvirt"]["ssh_credential_ref"] = "ssh/guest-key"
+    profile = ProvisioningProfile.parse(data)
+    assert profile.provider.local_libvirt.ssh_credential_ref == "ssh/guest-key"
+
+
+def test_ssh_credential_ref_rejects_blank() -> None:
+    data = _valid()
+    data["provider"]["local-libvirt"]["ssh_credential_ref"] = "   "
+    _expect_configuration_error(data)
+
+
 def _expect_configuration_error(data: dict[str, Any]) -> None:
     """Assert that parsing ``data`` fails as a CONFIGURATION_ERROR."""
     with pytest.raises(CategorizedError) as caught:

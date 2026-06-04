@@ -10,11 +10,15 @@ path that yields the value without first registering it.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Protocol
 
 from kdive.security.paths import PathSafetyError, confine_to_root
 from kdive.security.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+
+_SECRETS_ROOT_ENV = "KDIVE_SECRETS_ROOT"
+_DEFAULT_SECRETS_ROOT = "/var/lib/kdive/secrets"
 
 _MAX_SECRET_FILE_BYTES = 64 * 1024
 """A secret (token, password, SSH key) is small. A larger file under the secrets
@@ -62,3 +66,15 @@ class FileRefBackend:
             value = value[:-1]
         self._registry.register(value, scope=self._scope)
         return value
+
+
+def secret_backend_from_env() -> FileRefBackend:
+    """Build the file-ref secret backend from ``KDIVE_SECRETS_ROOT`` (process-global scope).
+
+    Resolves credentials only within the allowlisted secrets root and registers each resolved
+    value into the process-global redaction registry (``scope=None``, retained for the process
+    lifetime per ADR-0012). Opens no file at construction — the root is read on the first
+    ``resolve``.
+    """
+    root = Path(os.environ.get(_SECRETS_ROOT_ENV, _DEFAULT_SECRETS_ROOT))
+    return FileRefBackend(root)
