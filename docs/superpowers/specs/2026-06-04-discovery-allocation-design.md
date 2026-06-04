@@ -124,7 +124,9 @@ async def register_local_libvirt_resource(
   - `capabilities = {"arch": <str>, "vcpus": <int>, "memory_mb": <int>, "transports":
     ["gdbstub"], "concurrent_allocation_cap": <int>}`. `vcpus`/`memory_mb` come from
     `getInfo()` (index 2 = cpus, index 1 = memory in MB); `arch` is parsed from the
-    `<host><cpu><arch>` element of `getCapabilities()` XML via `xml.etree`. A
+    `<host><cpu><arch>` element of `getCapabilities()` XML via **`defusedxml`** (the XML
+    crosses a trust boundary — it is emitted by libvirtd — so entity-expansion DoS is
+    neutralized). A
     capabilities XML missing that element → `arch = "unknown"` (advertise the host
     anyway; arch is informational in M0, the cap and transport are what admission and
     debug need).
