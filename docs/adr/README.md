@@ -65,3 +65,7 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0033](0033-drgn-introspection-from-vmcore.md) | Debug plane: drgn introspection from vmcore (offline) (M0) | Proposed |
 | [0034](0034-debug-plane-gdbmi-tier.md) | Debug plane: gdb-MI tier (breakpoints, read_memory cap, read_registers, continue/interrupt) (M0) | Proposed |
 | [0035](0035-walking-skeleton-e2e-harness.md) | Walking-skeleton end-to-end integration-test harness (M0) | Proposed |
+| [0036](0036-reservation-lease-semantics.md) | Reservation / lease semantics (M1) | Proposed |
+| [0037](0037-rbac-hardening-role-separation.md) | RBAC hardening: operator/admin separation (M1) | Proposed |
+| [0038](0038-system-reprovision-in-place.md) | System reprovision-in-place (M1) | Proposed |
+| [0039](0039-ssh-transport-live-introspection.md) | SSH transport + live drgn introspection (M1) | Proposed |
