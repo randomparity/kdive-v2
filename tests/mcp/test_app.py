@@ -38,6 +38,14 @@ def test_build_app_registers_jobs_tools() -> None:
         } <= names
         assert {"runs.create", "runs.get", "runs.build", "runs.install", "runs.boot"} <= names
         assert {"control.power", "control.force_crash"} <= names
+        assert {
+            "vmcore.fetch",
+            "vmcore.list",
+            "artifacts.list",
+            "artifacts.get",
+            "postmortem.crash",
+            "postmortem.triage",
+        } <= names
 
     asyncio.run(_run())
 
@@ -54,9 +62,9 @@ def test_build_app_produces_a_streamable_http_asgi_app() -> None:
 
 def test_build_handler_registry_binds_provisioning_and_build_handlers() -> None:
     # The provisioning plane (#16) registers provision/teardown, the build plane (#18)
-    # registers build, and the install + boot plane (#19) registers install/boot — each
-    # building its provider/builder lazily from env (no libvirt/S3/toolchain connection at
-    # registration).
+    # registers build, the install + boot plane (#19) registers install/boot, and the
+    # retrieve plane (#24) registers capture_vmcore — each building its provider/builder
+    # lazily from env (no libvirt/S3/toolchain connection at registration).
     registry = build_handler_registry()
     assert isinstance(registry, HandlerRegistry)
     assert registry.get(JobKind.PROVISION) is not None
@@ -64,5 +72,4 @@ def test_build_handler_registry_binds_provisioning_and_build_handlers() -> None:
     assert registry.get(JobKind.BUILD) is not None
     assert registry.get(JobKind.INSTALL) is not None
     assert registry.get(JobKind.BOOT) is not None
-    # A kind with no handler yet (a later plane) still resolves to None.
-    assert registry.get(JobKind.CAPTURE_VMCORE) is None
+    assert registry.get(JobKind.CAPTURE_VMCORE) is not None

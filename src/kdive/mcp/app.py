@@ -20,12 +20,14 @@ from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import build_verifier
 from kdive.mcp.tools import (
     allocations,
+    artifacts,
     control,
     investigations,
     jobs,
     resources,
     runs,
     systems,
+    vmcore,
 )
 
 # Tool seam: each plane exposes register(app, pool); build_app calls them all.
@@ -37,17 +39,21 @@ _PLANE_REGISTRARS: tuple[Callable[[FastMCP, AsyncConnectionPool], None], ...] = 
     investigations.register,
     runs.register,
     control.register,
+    artifacts.register,
+    vmcore.register,
 )
 
 # Handler seam: each plane exposes register_handlers(registry); the worker calls them all.
 # jobs.* register no JobHandler; the provisioning plane (#16) registers the provision/teardown
-# handlers, the build plane (#18) registers the build handler, and the control plane (#23)
-# registers the power/force_crash handlers (each builds its provider/builder lazily from env —
-# no libvirt/toolchain connection at registration).
+# handlers, the build plane (#18) registers the build handler, the control plane (#23)
+# registers the power/force_crash handlers, and the retrieve plane (#24) registers the
+# capture_vmcore handler (each builds its provider/builder lazily from env — no libvirt/
+# toolchain connection at registration).
 _HANDLER_REGISTRARS: tuple[Callable[[HandlerRegistry], None], ...] = (
     systems.register_handlers,
     runs.register_handlers,
     control.register_handlers,
+    vmcore.register_handlers,
 )
 
 
