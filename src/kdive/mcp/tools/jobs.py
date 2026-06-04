@@ -4,9 +4,13 @@ Each tool is a thin FastMCP wrapper over a plain async handler that takes its
 dependencies (the pool, the request context) as arguments, so handlers are tested
 directly without MCP transport. A handler that raises a domain error becomes an
 error :class:`~kdive.mcp.responses.ToolResponse` (with the most specific
-``ErrorCategory``), never an unhandled 500. M0 does not scope these by
-principal/project — see the issue #10 design's isolation posture; #11 (RBAC) adds
-scoping.
+``ErrorCategory``), never an unhandled 500.
+
+Every read/cancel is **project-scoped** (#11): a job is visible only to a member of
+the project that owns it (``authorizing->>'project'``). A by-id read or cancel of a job
+in an ungranted project returns the same not-found-shaped error as a missing job, so
+existence is not leaked (matching ``systems``/``runs``/``allocations`` getters); ``list``
+returns only the caller's jobs.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import JOBS, ObjectNotFound
 from kdive.domain.errors import ErrorCategory
+from kdive.domain.models import Job
 from kdive.domain.state import IllegalTransition, JobState
 from kdive.jobs import queue
 from kdive.log import bind_context
@@ -47,6 +52,16 @@ def _as_uuid(job_id: str) -> UUID | None:
         return None
 
 
+def _in_scope(job: Job, ctx: RequestContext) -> bool:
+    """True iff ``job``'s owning project is granted to ``ctx`` (#11).
+
+    A job whose ``authorizing`` tuple carries no string ``project`` belongs to no one and
+    is therefore out of scope for every caller (fail closed).
+    """
+    project = job.authorizing.get("project")
+    return isinstance(project, str) and project in ctx.projects
+
+
 async def get_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str) -> ToolResponse:
     """Return the job's handle envelope, or an error envelope if absent/malformed.
 
@@ -60,7 +75,7 @@ async def get_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str) -
     with bind_context(principal=ctx.principal, job_id=job_id):
         async with pool.connection() as conn:
             job = await JOBS.get(conn, uid)
-        if job is None:
+        if job is None or not _in_scope(job, ctx):
             return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
         return ToolResponse.from_job(job)
 
@@ -82,7 +97,7 @@ async def wait_job(
         while True:
             async with pool.connection() as conn:
                 job = await JOBS.get(conn, uid)
-            if job is None:
+            if job is None or not _in_scope(job, ctx):
                 return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
             if job.state in _TERMINAL or loop.time() >= deadline:
                 return ToolResponse.from_job(job)
@@ -103,6 +118,14 @@ async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str
     if uid is None:
         return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
     with bind_context(principal=ctx.principal, job_id=job_id):
+        # Authorize before mutating: a job in an ungranted project must look absent and
+        # never be canceled. The owning project never changes, so the read→update gap is
+        # not an authz TOCTOU (the cancel still races a concurrent transition, which
+        # update_state's IllegalTransition handles below).
+        async with pool.connection() as conn:
+            existing = await JOBS.get(conn, uid)
+        if existing is None or not _in_scope(existing, ctx):
+            return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
         try:
             async with pool.connection() as conn:
                 job = await JOBS.update_state(conn, uid, JobState.CANCELED)
@@ -128,7 +151,7 @@ async def list_jobs(
     capped = max(1, min(limit, MAX_LIST_LIMIT))
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
-            jobs = await queue.recent_jobs(conn, capped)
+            jobs = await queue.recent_jobs(conn, capped, ctx.projects)
         responses: list[ToolResponse] = []
         for job in jobs:
             try:

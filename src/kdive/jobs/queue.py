@@ -11,6 +11,7 @@ connection, and all assume READ COMMITTED (psycopg's default).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 from uuid import UUID
@@ -170,18 +171,21 @@ async def fail(
     return job if row is None else Job.model_validate(row)
 
 
-async def recent_jobs(conn: AsyncConnection, limit: int) -> list[Job]:
-    """Return the most recently created jobs, newest first, capped at ``limit``.
+async def recent_jobs(conn: AsyncConnection, limit: int, projects: Sequence[str]) -> list[Job]:
+    """Return the caller's most recent jobs, newest first, capped at ``limit``.
 
-    The ``id`` tiebreaker makes the order total when two jobs share a ``created_at``
-    microsecond, so the cap never drops an arbitrary one of a tied pair. M0 is
-    single-project with no per-principal scoping on this read (see issue #10 design);
-    a ``state``/``kind``/``project`` filter arrives with RBAC (#11).
+    Scoped to ``projects``: only jobs whose ``authorizing->>'project'`` is one of the
+    caller's granted projects are returned (#11). An empty ``projects`` yields no rows,
+    and a job whose ``authorizing`` carries no ``project`` belongs to no one (fail
+    closed). The cap applies after the project filter, so the caller gets up to ``limit``
+    of *their* jobs. The ``id`` tiebreaker makes the order total when two jobs share a
+    ``created_at`` microsecond, so the cap never drops an arbitrary one of a tied pair.
     """
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT %s",
-            (limit,),
+            "SELECT * FROM jobs WHERE authorizing->>'project' = ANY(%s::text[]) "
+            "ORDER BY created_at DESC, id DESC LIMIT %s",
+            (list(projects), limit),
         )
         rows = await cur.fetchall()
     return [Job.model_validate(row) for row in rows]

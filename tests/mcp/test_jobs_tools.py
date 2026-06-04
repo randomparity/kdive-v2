@@ -27,10 +27,18 @@ async def _pool(url: str) -> AsyncIterator[AsyncConnectionPool]:
         await pool.close()
 
 
-async def _enqueue(pool: AsyncConnectionPool, dedup: str) -> str:
+async def _enqueue_in(pool: AsyncConnectionPool, dedup: str, project: str) -> str:
+    """Enqueue a job whose authorizing tuple is owned by ``project``."""
     async with pool.connection() as conn:
-        job = await queue.enqueue(conn, JobKind.BUILD, {}, {"principal": "p"}, dedup)
+        job = await queue.enqueue(
+            conn, JobKind.BUILD, {}, {"principal": "p", "project": project}, dedup
+        )
     return str(job.id)
+
+
+async def _enqueue(pool: AsyncConnectionPool, dedup: str) -> str:
+    """Enqueue a job in ``CTX``'s project (the common case for these tests)."""
+    return await _enqueue_in(pool, dedup, "proj")
 
 
 def test_get_known_job_returns_status(migrated_url: str) -> None:
@@ -173,5 +181,72 @@ def test_list_jobs_isolates_invariant_violating_row(migrated_url: str) -> None:
         assert by_id[good_id].status == "queued"
         assert by_id[bad_id].status == "error"
         assert by_id[bad_id].error_category == "infrastructure_failure"
+
+    asyncio.run(_run())
+
+
+# --- cross-project isolation (#11): a job is visible only to its project's members ---
+
+_OTHER = RequestContext(principal="user-2", agent_session="s", projects=("other",))
+
+
+def test_get_job_in_unowned_project_is_indistinguishable_from_not_found(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            job_id = await _enqueue_in(pool, "d1", "proj")
+            # _OTHER is a member of "other", not "proj": the job must look absent (no leak).
+            resp = await jobs_tools.get_job(pool, _OTHER, job_id)
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.object_id == job_id
+
+    asyncio.run(_run())
+
+
+def test_wait_job_in_unowned_project_is_not_found(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            job_id = await _enqueue_in(pool, "d1", "proj")
+            resp = await jobs_tools.wait_job(pool, _OTHER, job_id, timeout_s=0.0)
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_cancel_job_in_unowned_project_is_denied_and_does_not_mutate(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            job_id = await _enqueue_in(pool, "d1", "proj")
+            denied = await jobs_tools.cancel_job(pool, _OTHER, job_id)
+            # The owning project's member still sees it queued — the cancel did not land.
+            owned = await jobs_tools.get_job(pool, CTX, job_id)
+        assert denied.status == "error"
+        assert denied.error_category == "configuration_error"
+        assert owned.status == "queued"
+
+    asyncio.run(_run())
+
+
+def test_list_jobs_only_returns_callers_project(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            mine = await _enqueue_in(pool, "mine", "proj")
+            await _enqueue_in(pool, "theirs", "other")
+            resp = await jobs_tools.list_jobs(pool, CTX, limit=50)
+        ids = {r.object_id for r in resp}
+        assert ids == {mine}  # the "other"-project job is not listed
+
+    asyncio.run(_run())
+
+
+def test_list_jobs_excludes_jobs_with_no_project(migrated_url: str) -> None:
+    # A job whose authorizing tuple carries no project belongs to no one: fail closed.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            async with pool.connection() as conn:
+                await queue.enqueue(conn, JobKind.BUILD, {}, {"principal": "p"}, "noproj")
+            resp = await jobs_tools.list_jobs(pool, CTX, limit=50)
+        assert resp == []
 
     asyncio.run(_run())
