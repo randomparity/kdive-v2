@@ -27,6 +27,7 @@ M0_DISTRIBUTED = {
     "install_failure",
     "transport_failure",
     "control_failure",
+    "authorization_denied",
 }
 M0_ALL = M0_PORTED | M0_DISTRIBUTED
 
@@ -48,6 +49,10 @@ def test_poc_only_test_failure_category_is_not_carried_into_m0() -> None:
     # emit-list deliberately omits it, so it must not leak in.
     with pytest.raises(ValueError, match="test_failure"):
         ErrorCategory("test_failure")
+
+
+def test_authorization_denied_category_value() -> None:
+    assert ErrorCategory.AUTHORIZATION_DENIED.value == "authorization_denied"
 
 
 def test_categorized_error_is_an_exception_carrying_its_category() -> None:

@@ -40,6 +40,7 @@ class ErrorCategory(StrEnum):
     INSTALL_FAILURE = "install_failure"
     TRANSPORT_FAILURE = "transport_failure"
     CONTROL_FAILURE = "control_failure"
+    AUTHORIZATION_DENIED = "authorization_denied"
 
 
 class CategorizedError(Exception):
