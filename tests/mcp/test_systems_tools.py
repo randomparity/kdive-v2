@@ -466,6 +466,58 @@ def test_provision_handler_drives_system_ready(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_provision_handler_stamps_active_started_at_on_ready(migrated_url: str) -> None:
+    """The provisioning->ready edge stamps the allocation's active_started_at (ADR-0007 §3).
+
+    The billing interval opens when the first System reaches ready; a null
+    active_started_at would reconcile every active allocation at active_hours = 0.
+    """
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            # The genuine path flips the allocation granted->active at provision time.
+            async with pool.connection() as conn:
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.ACTIVE)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.PROVISIONING)
+            job = await _enqueue_provision(pool, sys_id, alloc_id)
+            async with pool.connection() as conn:
+                await systems_tools.provision_handler(conn, job, _FakeProvisioning())
+                alloc = await ALLOCATIONS.get(conn, UUID(alloc_id))
+            assert alloc is not None
+            assert alloc.active_started_at is not None  # billing interval opened
+
+    asyncio.run(_run())
+
+
+def test_provision_handler_does_not_restamp_active_started_at(migrated_url: str) -> None:
+    """A second System reaching ready (or a re-run) leaves the original interval start.
+
+    active_started_at is first-write-wins so the interval anchors on the first ready,
+    never sliding forward when another System on the same allocation provisions later.
+    """
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            anchor = datetime(2026, 1, 1, 12, tzinfo=UTC)
+            async with pool.connection() as conn:
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.ACTIVE)
+                await conn.execute(
+                    "UPDATE allocations SET active_started_at = %s WHERE id = %s",
+                    (anchor, UUID(alloc_id)),
+                )
+            sys_id = await _seed_system(pool, alloc_id, SystemState.PROVISIONING)
+            job = await _enqueue_provision(pool, sys_id, alloc_id)
+            async with pool.connection() as conn:
+                await systems_tools.provision_handler(conn, job, _FakeProvisioning())
+                alloc = await ALLOCATIONS.get(conn, UUID(alloc_id))
+            assert alloc is not None
+            assert alloc.active_started_at == anchor  # unchanged by the second ready
+
+    asyncio.run(_run())
+
+
 def test_provision_handler_retry_on_ready_is_noop(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:

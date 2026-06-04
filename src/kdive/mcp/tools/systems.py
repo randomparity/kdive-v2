@@ -137,6 +137,24 @@ async def _audit_transition(
     )
 
 
+async def _open_billing_interval(conn: AsyncConnection, allocation_id: UUID) -> None:
+    """Stamp the allocation's ``active_started_at`` when its first System reaches ``ready``.
+
+    The active billing interval opens on the ``granted -> active`` edge, defined by the
+    first System reaching ``ready`` (ADR-0007 §3); ``active_hours = active_ended_at −
+    active_started_at`` prices the reconcile credit, so a never-stamped start would
+    reconcile every active allocation at ``active_hours = 0`` and credit back the full
+    reservation. First-write-wins (``WHERE active_started_at IS NULL``): a second System on
+    the same allocation, a reprovision-in-place cycle, or a handler re-run never slides the
+    interval forward. The conditional ``UPDATE`` runs in the caller's per-System transaction.
+    """
+    await conn.execute(
+        "UPDATE allocations SET active_started_at = now() "
+        "WHERE id = %s AND active_started_at IS NULL",
+        (allocation_id,),
+    )
+
+
 # System states that occupy a per-project quota slot (terminal torn_down/failed do not).
 _NON_TERMINAL_SYSTEM = (
     SystemState.DEFINED,
@@ -363,6 +381,7 @@ async def provision_handler(
                     (SystemState.READY.value, domain_name, system_id),
                 )
         if current is SystemState.PROVISIONING:
+            await _open_billing_interval(conn, system.allocation_id)
             await _audit_transition(
                 conn,
                 job,

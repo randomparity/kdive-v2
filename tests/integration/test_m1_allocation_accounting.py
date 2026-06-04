@@ -41,7 +41,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RUNS, SYSTEMS
 from kdive.domain import accounting
 from kdive.domain.cost import cost, quantize_kcu, rate
-from kdive.domain.models import Allocation, Investigation, Run, System
+from kdive.domain.models import Allocation, Investigation, Job, Run, System
 from kdive.domain.state import (
     AllocationState,
     InvestigationState,
@@ -352,14 +352,14 @@ async def _seed_active_metered_alloc(
     vcpus: int = 2,
     memory_gb: int = 4,
     window_hours: int = 3,
-    active_started_at: datetime | None,
     estimate: Decimal,
 ) -> UUID:
     """Seed a resource + budget + an active, sized allocation with one reserved row.
 
-    The billing interval (``active_started_at``) is stamped explicitly here because no
-    #63-#70 handler stamps it on the ``granted -> active`` edge (the reported gap); the
-    existing ``tests/mcp/test_allocations_reconcile.py`` seeds the same way.
+    The rollup/cross-project tests that use this only need a metered allocation (a reserved
+    ledger row), not an open billing interval, so ``active_started_at`` is left null. The
+    honest provision -> ready -> release billing path (which stamps the interval) is asserted
+    by ``test_c3_reconciliation_nets_to_actual_and_usage_matches``.
     """
     res_id = await register_resource(pool, concurrent_allocation_cap=4)
     await seed_project_limits(pool, project=project, limit_kcu=1000)
@@ -377,7 +377,6 @@ async def _seed_active_metered_alloc(
                 lease_expiry=datetime.now(UTC) + timedelta(hours=window_hours),
                 requested_vcpus=vcpus,
                 requested_memory_gb=memory_gb,
-                active_started_at=active_started_at,
             ),
         )
         await accounting.reserve(conn, alloc, estimate)
@@ -404,25 +403,72 @@ def test_c3_estimate_equals_reserved_row(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+class _FakeProvisioner:
+    """A Provisioner stand-in: provision/teardown return a domain name and record nothing."""
+
+    def provision(self, system_id: UUID, profile: object) -> str:
+        return domain_name_for(system_id)
+
+    def teardown(self, domain_name: str) -> None:
+        return None
+
+
+async def _provision_job_for_system(pool: AsyncConnectionPool, system_id: str) -> Job:
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT * FROM jobs WHERE kind = 'provision' AND payload->>'system_id' = %s",
+            (system_id,),
+        )
+        row = await cur.fetchone()
+    assert row is not None
+    return Job.model_validate(row)
+
+
 def test_c3_reconciliation_nets_to_actual_and_usage_matches(migrated_url: str) -> None:
-    """#3: after release, reserved+reconciled = rate*active_hours; usage.spent_kcu = that sum."""
+    """#3: the honest provision -> ready -> release path bills rate*active_hours, usage matches.
+
+    Drives the real handlers end to end (no explicitly-seeded billing interval): provision
+    flips the allocation granted->active, the provision handler stamps active_started_at on
+    ready, the clock is advanced by back-dating that stamp, and release reconciles to a
+    partial charge — reserved+reconciled = rate*active_hours, not the full credit-back a
+    never-stamped interval (active_hours = 0) would produce; usage.spent_kcu = that sum.
+    """
 
     async def _run() -> None:
         async with open_pool(migrated_url) as pool:
-            # 2h active interval at rate 3.0 -> actual 6.0; reserved 9.0 (3h window).
-            started = datetime.now(UTC) - timedelta(hours=2)
-            estimate = _estimate(2, 4, 3)
-            alloc_id = await _seed_active_metered_alloc(
-                pool, active_started_at=started, estimate=estimate
+            await register_resource(pool, concurrent_allocation_cap=4)
+            await seed_project_limits(pool, limit_kcu=1000, max_systems=4)
+            op = _operator_ctx()
+            grant = await alloc_tools.request_allocation(
+                pool, op, project="proj", vcpus=2, memory_gb=4, window=3
             )
-            resp = await alloc_tools.release_allocation(pool, _operator_ctx(), str(alloc_id))
+            assert grant.status == "granted"
+            alloc_id = UUID(grant.object_id)
+            estimate = _estimate(2, 4, 3)  # rate 3.0 * 3h window = 9.0 reserved
+            prov = await systems_tools.provision_system(
+                pool, op, allocation_id=grant.object_id, profile=provisioning_profile()
+            )
+            assert prov.status == "queued"
+            job = await _provision_job_for_system(pool, prov.data["system_id"])
+            async with pool.connection() as conn:
+                await systems_tools.provision_handler(conn, job, _FakeProvisioner())
+            # The handler stamped active_started_at on ready; back-date it 2h to simulate
+            # the lease running before release (no explicit seed of the interval).
+            assert (await _alloc(pool, alloc_id)).active_started_at is not None
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE allocations SET active_started_at = %s WHERE id = %s",
+                    (datetime.now(UTC) - timedelta(hours=2), alloc_id),
+                )
+            resp = await alloc_tools.release_allocation(pool, op, grant.object_id)
             assert resp.status == "released"
             events = await _ledger_events(pool, alloc_id)
             assert [e[0] for e in events] == ["reserved", "reconciled"]
             net = sum((e[1] for e in events), Decimal(0))
-            actual = _estimate(2, 4, 2)  # rate 3.0 * 2h = 6.0
-            assert net == actual  # reserved + reconciled = the actual, not the estimate
-            assert actual != estimate  # asserted SEPARATELY (lease did not run full window)
+            actual = _estimate(2, 4, 2)  # rate 3.0 * 2h active = 6.0
+            assert net == actual  # billed the active interval, not credited back in full
+            assert actual != estimate  # the lease did not run the full 3h window
+            assert net != Decimal(0)  # the bug would have netted 0 (active_hours = 0)
             usage = await acct_tools.usage(pool, _viewer_ctx(), project="proj")
             assert Decimal(usage.data["spent_kcu"]) == net
 
@@ -507,15 +553,11 @@ def test_c3_investigation_rollup_no_double_count(migrated_url: str) -> None:
     async def _run() -> None:
         async with open_pool(migrated_url) as pool:
             # Exclusive allocation: its single Run is solely in investigation X.
-            exclusive = await _seed_active_metered_alloc(
-                pool, active_started_at=None, estimate=_estimate(2, 4, 3)
-            )
+            exclusive = await _seed_active_metered_alloc(pool, estimate=_estimate(2, 4, 3))
             inv_x = await _seed_run_for_investigation(pool, allocation_id=exclusive, project="proj")
             # Shared allocation: backs two Systems whose Runs span two investigations
             # (the reprovision-in-place reuse shape).
-            shared = await _seed_active_metered_alloc(
-                pool, active_started_at=None, estimate=_estimate(2, 4, 3)
-            )
+            shared = await _seed_active_metered_alloc(pool, estimate=_estimate(2, 4, 3))
             inv_y = await _seed_run_for_investigation(pool, allocation_id=shared, project="proj")
             await _seed_run_for_investigation(pool, allocation_id=shared, project="proj")
             async with pool.connection() as conn:
@@ -853,7 +895,7 @@ def test_c6_viewer_refused_cross_project_usage_by_investigation(migrated_url: st
             await register_resource(pool, concurrent_allocation_cap=4)
             await seed_project_limits(pool, project=PROJECT_B, limit_kcu=1000)
             alloc_b = await _seed_active_metered_alloc(
-                pool, project=PROJECT_B, active_started_at=None, estimate=_estimate(2, 4, 3)
+                pool, project=PROJECT_B, estimate=_estimate(2, 4, 3)
             )
             inv_b = await _seed_run_for_investigation(
                 pool, allocation_id=alloc_b, project=PROJECT_B
@@ -930,8 +972,6 @@ def test_c7_reprovision_in_place_cycle(migrated_url: str) -> None:
                 )
                 job_row = await cur.fetchone()
             assert job_row is not None
-            from kdive.domain.models import Job
-
             job = Job.model_validate(job_row)
             async with pool.connection() as conn:
                 await systems_tools.reprovision_handler(conn, job, _RecordingProvisioner())
