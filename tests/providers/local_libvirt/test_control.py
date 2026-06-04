@@ -69,3 +69,29 @@ def test_power_other_libvirt_error_is_control_failure() -> None:
     with pytest.raises(CategorizedError) as exc:
         control.power("kdive-x", PowerAction.RESET)
     assert exc.value.category is ErrorCategory.CONTROL_FAILURE
+
+
+def test_force_crash_injects_nmi() -> None:
+    domain = FakeDomain(domain_name="kdive-x", system_id="x")
+    control, domain = _control(domain)
+    control.force_crash("kdive-x")
+    assert domain is not None and domain.calls == ["injectNMI"]
+
+
+def test_force_crash_absent_domain_is_control_failure() -> None:
+    control, _ = _control(None)
+    with pytest.raises(CategorizedError) as exc:
+        control.force_crash("kdive-gone")
+    assert exc.value.category is ErrorCategory.CONTROL_FAILURE
+
+
+def test_force_crash_libvirt_error_is_control_failure() -> None:
+    domain = FakeDomain(
+        domain_name="kdive-x",
+        system_id="x",
+        raise_on={"injectNMI": libvirt.VIR_ERR_INTERNAL_ERROR},
+    )
+    control, _ = _control(domain)
+    with pytest.raises(CategorizedError) as exc:
+        control.force_crash("kdive-x")
+    assert exc.value.category is ErrorCategory.CONTROL_FAILURE
