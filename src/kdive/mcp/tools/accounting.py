@@ -11,13 +11,15 @@ injected; tested directly). RBAC: ``estimate`` requires ``viewer`` on the target
 from __future__ import annotations
 
 import json
-from decimal import Decimal
+from datetime import UTC, datetime
+from decimal import Decimal, DecimalException, InvalidOperation
 from uuid import UUID
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.repositories import BUDGETS, QUOTAS
 from kdive.domain import accounting as accounting_domain
 from kdive.domain.cost import (
     W_CPU,
@@ -32,14 +34,22 @@ from kdive.domain.cost import (
     validate_window,
 )
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.models import Budget, Quota
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context, require_project
 from kdive.mcp.responses import ToolResponse
+from kdive.security import audit
 from kdive.security.rbac import Role, require_role
 
 _ESTIMATE_OBJECT_ID = "estimate"
 _USAGE_OBJECT_ID = "usage"
+_BUDGET_OBJECT_ID = "budget"
+_QUOTA_OBJECT_ID = "quota"
 _DEFAULT_COST_CLASS = "local"
+# A deterministic placeholder for the natural-keyed accounting rows (which have no UUID);
+# audit.record's object_id is a UUID, so admin set-ops audit under the nil UUID and carry
+# the project in args. The audit args_digest is over project + the set values.
+_ACCOUNTING_AUDIT_ID = UUID(int=0)
 
 
 async def estimate(
@@ -220,6 +230,137 @@ def _usage_response(project: str, rollup: accounting_domain.ProjectUsage) -> Too
     )
 
 
+async def set_budget(
+    pool: AsyncConnectionPool, ctx: RequestContext, *, project: str, limit_kcu: object
+) -> ToolResponse:
+    """Set a project's spend budget ``limit_kcu`` (admin; re-set preserves ``spent_kcu``).
+
+    Project administration is ``admin``-only (ADR-0007 §6). The ``limit_kcu`` is parsed
+    and validated as a finite ``≥ 0`` number (malformed → ``configuration_error``, no
+    write); the upsert updates only ``limit_kcu`` so the DB-maintained ``spent_kcu``
+    running total survives a re-set. The write is audited in the same transaction.
+    """
+    require_project(ctx, project)
+    require_role(ctx, project, Role.ADMIN)
+    with bind_context(principal=ctx.principal):
+        try:
+            limit = _parse_non_negative_kcu(limit_kcu)
+        except CategorizedError as exc:
+            return ToolResponse.failure(
+                _BUDGET_OBJECT_ID, exc.category, suggested_next_actions=["accounting.set_budget"]
+            )
+        now = datetime.now(UTC)  # placeholder; the DB sets updated_at
+        async with pool.connection() as conn, conn.transaction():
+            await BUDGETS.upsert(
+                conn,
+                Budget(project=project, limit_kcu=limit, spent_kcu=Decimal(0), updated_at=now),
+            )
+            await _audit_set(conn, ctx, project, "set_budget", {"limit_kcu": str(limit)})
+        return ToolResponse.success(
+            _BUDGET_OBJECT_ID,
+            "ok",
+            suggested_next_actions=["accounting.usage", "allocations.request"],
+            data={"project": project, "limit_kcu": str(limit)},
+        )
+
+
+async def set_quota(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    project: str,
+    max_concurrent_allocations: int,
+    max_concurrent_systems: int,
+) -> ToolResponse:
+    """Set a project's two concurrency caps (admin; ADR-0007 §4,6).
+
+    Both caps must be ``≥ 0`` (a negative cap is a ``configuration_error``, no write).
+    The upsert overwrites both caps; the write is audited in the same transaction.
+    Requires ``admin`` on ``project``.
+    """
+    require_project(ctx, project)
+    require_role(ctx, project, Role.ADMIN)
+    with bind_context(principal=ctx.principal):
+        if max_concurrent_allocations < 0 or max_concurrent_systems < 0:
+            return ToolResponse.failure(
+                _QUOTA_OBJECT_ID,
+                ErrorCategory.CONFIGURATION_ERROR,
+                suggested_next_actions=["accounting.set_quota"],
+            )
+        now = datetime.now(UTC)  # placeholder; the DB sets updated_at
+        async with pool.connection() as conn, conn.transaction():
+            await QUOTAS.upsert(
+                conn,
+                Quota(
+                    project=project,
+                    max_concurrent_allocations=max_concurrent_allocations,
+                    max_concurrent_systems=max_concurrent_systems,
+                    updated_at=now,
+                ),
+            )
+            await _audit_set(
+                conn,
+                ctx,
+                project,
+                "set_quota",
+                {
+                    "max_concurrent_allocations": str(max_concurrent_allocations),
+                    "max_concurrent_systems": str(max_concurrent_systems),
+                },
+            )
+        return ToolResponse.success(
+            _QUOTA_OBJECT_ID,
+            "ok",
+            suggested_next_actions=["accounting.usage", "allocations.request"],
+            data={
+                "project": project,
+                "max_concurrent_allocations": str(max_concurrent_allocations),
+                "max_concurrent_systems": str(max_concurrent_systems),
+            },
+        )
+
+
+def _parse_non_negative_kcu(value: object) -> Decimal:
+    """Parse ``value`` into a finite, non-negative kcu Decimal (fail closed otherwise).
+
+    Mirrors the ledger's fail-closed discipline (ADR-0007 §2): a budget limit must be a
+    real number ``≥ 0`` — a negative, ``NaN``, ``Infinity``, or unparseable value is a
+    ``configuration_error`` so admission's ``(limit − spent) ≥ estimate`` never compares
+    against a non-number or a negative ceiling.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` for any non-finite or negative value.
+    """
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, DecimalException, ValueError, TypeError):
+        raise CategorizedError(
+            f"limit_kcu {value!r} is not a number", category=ErrorCategory.CONFIGURATION_ERROR
+        ) from None
+    if not parsed.is_finite() or parsed < 0:
+        raise CategorizedError(
+            f"limit_kcu {value!r} must be a finite number >= 0",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    return parsed
+
+
+async def _audit_set(
+    conn: AsyncConnection, ctx: RequestContext, project: str, tool: str, values: dict[str, str]
+) -> None:
+    """Audit an admin set-op under the nil UUID, carrying the project + values in args."""
+    await audit.record(
+        conn,
+        ctx,
+        tool=f"accounting.{tool}",
+        object_kind="budgets" if tool == "set_budget" else "quotas",
+        object_id=_ACCOUNTING_AUDIT_ID,
+        transition=f"{tool}:applied",
+        args={"project": project, **values},
+        project=project,
+    )
+
+
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `accounting.*` tools on ``app``, bound to ``pool``."""
 
@@ -255,4 +396,22 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             current_context(),
             project=project,
             investigation_id=investigation_id,
+        )
+
+    @app.tool(name="accounting.set_budget")
+    async def accounting_set_budget(project: str, limit_kcu: float | str) -> ToolResponse:
+        # admin-only; `limit_kcu` accepts a number or a decimal string (precise limit).
+        return await set_budget(pool, current_context(), project=project, limit_kcu=limit_kcu)
+
+    @app.tool(name="accounting.set_quota")
+    async def accounting_set_quota(
+        project: str, max_concurrent_allocations: int, max_concurrent_systems: int
+    ) -> ToolResponse:
+        # admin-only; both caps must be >= 0 (a negative cap is a configuration_error).
+        return await set_quota(
+            pool,
+            current_context(),
+            project=project,
+            max_concurrent_allocations=max_concurrent_allocations,
+            max_concurrent_systems=max_concurrent_systems,
         )
