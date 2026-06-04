@@ -62,21 +62,41 @@ read tools (#22); reattach (M1); the dead-session reconciler sweep (M1.5).
 1. Resolve the Run by id (project-scoped; a missing/cross-project Run is a not-found-
    shaped `configuration_error`). RBAC: `operator` on the Run's project.
 2. Reject any `transport` other than `"gdbstub"` (`configuration_error`) — M0 ships one.
-3. Under the **per-System advisory lock** of the Run's System (`LockScope.SYSTEM`,
-   serializing against `force_crash` and teardown), enforce **single-attach**: if any
-   `debug_sessions` row joined to **the same System** (through `runs.system_id`) is in
-   `attach` or `live`, return `transport_conflict`. (Single-attach is per **gdbstub
-   endpoint = per System**, not per Run — two Runs on one System share the one stub.)
-4. The System must be `ready` (the only state with a live, attachable guest). A System
-   not `ready` is a `configuration_error` carrying `current_status`.
-5. Open the transport: `connect.open_transport(system_handle, "gdbstub")`. A stub that
+3. **Run-boot precondition.** A DebugSession is the "one boot = one session" attach, so the
+   Run must have **actually booted**: its state must be `RunState.SUCCEEDED` **and** a
+   succeeded `boot` `run_steps` row must exist for it. This mirrors `runs.boot`'s own
+   install gate (`runs.py` checks `run.state is SUCCEEDED` plus a succeeded install step):
+   after `runs.build` the Run is already `SUCCEEDED` (terminal — the build handler drives
+   `running → succeeded`), and install/boot are step-ledger ops that leave the Run state
+   untouched. So the boot **step** — not the Run state — is the signal a guest is running.
+   A Run that built but never booted (no succeeded `boot` step), or a `created`/`failed`/
+   `canceled` Run, is a `configuration_error` carrying `current_status` (and, for the
+   built-not-booted case, `reason="boot_first"`). This guard runs **before** the System
+   lock — it is a plain read, like `runs.boot`'s gate.
+4. Under the **per-System advisory lock** of the Run's System (`LockScope.SYSTEM`,
+   serializing against `force_crash` and teardown; the System id is the Run's `system_id`),
+   enforce **single-attach**: if any `debug_sessions` row joined to **the same System**
+   (through `runs.system_id`) is in `attach` or `live`, return `transport_conflict`.
+   (Single-attach is per **gdbstub endpoint = per System**, not per Run — two Runs on one
+   System share the one stub.)
+5. The System must be `ready` (the only state with a live, attachable guest). A System
+   not `ready` is a `configuration_error` carrying `current_status`. (Read under the lock,
+   so a concurrent `force_crash` that drove it `crashed` is observed here.)
+6. Open the transport: `connect.open_transport(system_handle, "gdbstub")`. A stub that
    does not answer RSP framing is `debug_attach_failure`; a transport/socket fault is
-   `transport_failure`. On failure **no row is inserted** (the attach is aborted, not
-   stranded in `attach`).
-6. On success, insert one `debug_sessions` row, then drive it `attach → live` in the
+   `transport_failure`; a resolver `MISSING_DEPENDENCY` (no `live_vm` host / unresolvable
+   endpoint) maps to `debug_attach_failure` as well (the agent cannot attach). On failure
+   **no row is inserted** (the attach is aborted, not stranded in `attach`).
+7. On success, insert one `debug_sessions` row, then drive it `attach → live` in the
    same transaction, recording the `transport_handle` and an initial
-   `worker_heartbeat_at`. Audit `->attach` then `attach->live`. Return the
-   `debug_session_id` with `status="live"`.
+   `worker_heartbeat_at` (see "heartbeat semantics" below). Audit `->attach` then
+   `attach->live`. Return the `debug_session_id` with `status="live"`.
+
+**`worker_heartbeat_at` semantics (M0).** Set once, at attach, as a **creation marker** —
+nothing in #20 updates it afterward, and the dead-session reconciler sweep that would
+consume it is explicitly deferred to M1.5. No liveness contract is implied yet: a reader
+must not treat a stale `worker_heartbeat_at` as "session dead" in M0. It exists so the
+M1.5 sweep has a non-null baseline to age from.
 
 The insert+transition+audit run inside `conn.transaction()` under the System lock, so a
 concurrent `force_crash` either runs entirely before (and this attach then sees the
@@ -86,8 +106,12 @@ created `live` row). There is no window where a `live` row escapes the lock.
 ### `debug.end_session(session_id)`
 
 1. Resolve the session (project-scoped; missing/cross-project → `configuration_error`).
-   RBAC: `operator`.
-2. Under the per-System advisory lock of the session's System, read the row `FOR UPDATE`:
+   RBAC: `operator`. The `debug_sessions` row carries only `run_id`, so resolve the
+   System id by a `debug_sessions → runs` join (`runs.system_id`) **before** taking the
+   lock — the lock key is a System UUID. A session whose Run/System vanished is a
+   `configuration_error` (the same not-found shape).
+2. Under the per-System advisory lock of the session's System, read the session row
+   `FOR UPDATE`:
    - Already `detached`: idempotent success (`status="detached"`).
    - `attach` or `live`: close the transport (best-effort), drive `→ detached`, audit
      `{old}->detached`, return `status="detached"`.
@@ -149,6 +173,10 @@ provider-resolved values only, never echoed guest output.
    `current_status`; on an unreachable stub returns `debug_attach_failure`; on a
    transport fault returns `transport_failure`; on `transport != "gdbstub"` returns
    `configuration_error` — and **no row** in every failure case.
+4a. `start_session` on a Run that is not `succeeded` returns `configuration_error`
+   (`current_status`); on a `succeeded` Run with **no** succeeded `boot` step returns
+   `configuration_error` (`reason="boot_first"`) — **no row** in both. (Test: seed a Run
+   without a boot step, attach, assert the error + zero rows.)
 5. `start_session`/`end_session` without `operator` raise `AuthorizationError`.
 6. A cross-project or malformed-UUID `run_id`/`session_id` is `configuration_error`
    (not-found-shaped — indistinguishable from missing).
@@ -167,12 +195,16 @@ provider-resolved values only, never echoed guest output.
 | Run/session missing or cross-project | `configuration_error` | none |
 | Malformed UUID | `configuration_error` | none |
 | `transport != "gdbstub"` | `configuration_error` | none |
+| Run not `succeeded` (never built) | `configuration_error` (`current_status`) | none |
+| Run `succeeded` but no succeeded `boot` step | `configuration_error` (`reason=boot_first`) | none |
 | System not `ready` | `configuration_error` (`current_status`) | none |
 | Existing `attach`/`live` session on the System | `transport_conflict` | none |
 | Stub does not answer RSP | `debug_attach_failure` | none |
+| Resolver `MISSING_DEPENDENCY` (no live_vm host / unresolvable endpoint) | `debug_attach_failure` | none |
 | Resolved host non-loopback | `configuration_error` | none (no IO) |
 | Socket/transport fault | `transport_failure` | none |
 | `end_session` on already-`detached` | success (`detached`) | none |
+| `end_session` session's Run/System vanished | `configuration_error` | none |
 | Missing `operator` | raises `AuthorizationError` | none |
 
 ## Coordination with #23 (control plane) and #22 (Debug plane)

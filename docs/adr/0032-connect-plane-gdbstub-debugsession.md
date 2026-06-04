@@ -51,7 +51,20 @@ stub. So the conflict check is: does **any** `debug_sessions` row joined through
 both attach to the same stub — exactly the double-attach the rule forbids. This reuses
 ADR-0028's `debug_sessions ⋈ runs(system_id)` join.
 
-### 2. The session tools are **synchronous** — no JobKind, no handler
+### 2. `start_session` requires a Run that **booted** — `SUCCEEDED` + a succeeded `boot` step
+
+A DebugSession is the "one boot = one session" attach (skeleton), so it must bind to a Run
+whose guest actually booted. But the Run *state* is not that signal: after `runs.build` the
+build handler drives the Run `running → SUCCEEDED` (terminal), and `runs.install` / `runs.boot`
+are step-ledger ops that leave the Run state at `SUCCEEDED` untouched (`runs.py`). So the
+boot signal is a **succeeded `boot` `run_steps` row**, exactly as `runs.boot` itself gates on
+a succeeded `install` step. `start_session` therefore requires `run.state is SUCCEEDED`
+**and** a succeeded `boot` step; a Run that built but never booted is a `configuration_error`
+(`reason="boot_first"`), a non-`succeeded` Run is a `configuration_error` (`current_status`).
+This guard is a plain read run before the System lock. Without it, a session could be minted
+against a Run that has no live boot behind the stub.
+
+### 3. The session tools are **synchronous** — no JobKind, no handler
 
 The skeleton's M0 job kinds are the five long-running provider ops (`provision`, `build`,
 `install`, `boot`, `capture_vmcore`); "everything else (breakpoints, reads, power state)
@@ -61,7 +74,7 @@ do their work inline under the per-System advisory lock and return a terminal en
 **no `JobKind`, no `_HANDLER_REGISTRARS` entry, no `jobs_kind_check` change**. `app.py`
 gains exactly one `_PLANE_REGISTRARS` append.
 
-### 3. A realized `Connector` port, seam-injected and `live_vm`-gated, mirroring the other planes
+### 4. A realized `Connector` port, seam-injected and `live_vm`-gated, mirroring the other planes
 
 The slow/host-bound steps — resolving the System's gdbstub host:port from its libvirt
 domain and the real socket connect — are **injected seams** defaulting to real
@@ -78,7 +91,7 @@ class Connector(Protocol):
     def close_transport(self, handle: TransportHandle) -> None: ...
 ```
 
-### 4. Loopback-only, enforced **before any network IO** (ported v1 F2 / SSRF defense)
+### 5. Loopback-only, enforced **before any network IO** (ported v1 F2 / SSRF defense)
 
 The resolved gdbstub host must be a **loopback IP literal**. A non-loopback IP or a
 hostname is a `configuration_error` raised *before* the prober runs — a loopback-local
@@ -86,7 +99,7 @@ provider must never initiate an outbound RSP connect to a target-supplied remote
 (an SSRF-like escalation from guest/domain metadata). This is the v1 `qemu_gdbstub.py`
 "F2" control, ported verbatim in intent: reject without DNS or IO.
 
-### 5. RSP-framing reachability, not a bare TCP connect, decides attach success
+### 6. RSP-framing reachability, not a bare TCP connect, decides attach success
 
 Attach success requires a complete, checksum-valid `$...#xx` RSP frame in reply to one
 read-only `?` halt-reason query (the ported `rsp_probe` exchange, byte-bounded against a
@@ -95,7 +108,7 @@ garbage — is rejected as `debug_attach_failure`, **not** accepted as a healthy
 socket/connect fault (refused, timed out, reset) is `transport_failure`. The `?` query is
 side-effect-free, so the probe never perturbs guest state.
 
-### 6. On any attach failure, **no row is inserted**; the `attach` state is never persisted standalone
+### 7. On any attach failure, **no row is inserted**; the `attach` state is never persisted standalone
 
 The DebugSession lifecycle permits `attach → detached` precisely so a failed attach need
 not strand a row in `attach`. M0 goes further: `start_session` opens the transport
@@ -107,7 +120,7 @@ insert transaction. The insert + `attach → live` + audits run under `conn.tran
 inside the per-System advisory lock, so no `live` row escapes the lock and a concurrent
 `force_crash` is fully serialized either side of it.
 
-### 7. `end_session` is the agent-initiated detach; `force_crash`/reboot detach stays **#23's**
+### 8. `end_session` is the agent-initiated detach; `force_crash`/reboot detach stays **#23's**
 
 `end_session` reads the session row `FOR UPDATE` under the per-System lock: an
 already-`detached` row is an idempotent `detached` success (no second transition, no second
@@ -118,7 +131,7 @@ and converge on `detached`; the transition guard rejects `detached → detached`
 idempotent re-read absorbs whichever path loses the race — so a double transition cannot
 occur.
 
-### 8. The transport handle carries only `kind/host/port` — a loopback endpoint, provider-resolved, non-sensitive
+### 9. The transport handle carries only `kind/host/port` — a loopback endpoint, provider-resolved, non-sensitive
 
 `transport_handle` is a serialized `TransportHandleData` (`kind`, loopback host, port).
 It is built **only** from provider-resolved values — never from echoed guest output or
