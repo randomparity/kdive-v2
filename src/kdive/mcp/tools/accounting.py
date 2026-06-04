@@ -10,11 +10,15 @@ injected; tested directly). RBAC: ``estimate`` requires ``viewer`` on the target
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
+from uuid import UUID
 
 from fastmcp import FastMCP
+from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.domain import accounting as accounting_domain
 from kdive.domain.cost import (
     W_CPU,
     W_MEM,
@@ -27,13 +31,14 @@ from kdive.domain.cost import (
     validate_size,
     validate_window,
 )
-from kdive.domain.errors import CategorizedError
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context, require_project
 from kdive.mcp.responses import ToolResponse
 from kdive.security.rbac import Role, require_role
 
 _ESTIMATE_OBJECT_ID = "estimate"
+_USAGE_OBJECT_ID = "usage"
 _DEFAULT_COST_CLASS = "local"
 
 
@@ -114,6 +119,107 @@ def _estimate_response(
     )
 
 
+async def usage(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    project: str | None = None,
+    investigation_id: str | None = None,
+) -> ToolResponse:
+    """Report a project's spend rollup; ``viewer`` of the **target** project (ADR-0007 §6).
+
+    Exactly one of ``project`` / ``investigation_id`` must be set. The ``project`` form
+    checks ``require_project`` + ``require_role(viewer)`` on it. The ``investigation_id``
+    form first resolves the investigation's owning project, then applies the identical
+    check on that project — so a viewer cannot read another project's spend through a
+    foreign ``investigation_id`` (the tenant-isolation boundary). The investigation form
+    additionally returns that investigation's exclusively-owned rollup.
+    """
+    with bind_context(principal=ctx.principal):
+        try:
+            return await _usage_inner(pool, ctx, project=project, investigation_id=investigation_id)
+        except CategorizedError as exc:
+            return ToolResponse.failure(
+                _USAGE_OBJECT_ID,
+                exc.category,
+                suggested_next_actions=["accounting.usage"],
+            )
+
+
+async def _usage_inner(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    project: str | None,
+    investigation_id: str | None,
+) -> ToolResponse:
+    if (project is None) == (investigation_id is None):
+        raise CategorizedError(
+            "exactly one of project / investigation_id is required",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    if investigation_id is not None:
+        return await _usage_for_investigation(pool, ctx, investigation_id)
+    assert project is not None  # narrowed by the xor check above
+    require_project(ctx, project)
+    require_role(ctx, project, Role.VIEWER)
+    async with pool.connection() as conn:
+        rollup = await accounting_domain.usage(conn, project)
+    return _usage_response(project, rollup)
+
+
+async def _usage_for_investigation(
+    pool: AsyncConnectionPool, ctx: RequestContext, investigation_id: str
+) -> ToolResponse:
+    try:
+        inv_uuid = UUID(investigation_id)
+    except ValueError:
+        raise CategorizedError(
+            f"investigation_id {investigation_id!r} is not a uuid",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        ) from None
+    async with pool.connection() as conn:
+        owning_project = await _resolve_investigation_project(conn, inv_uuid)
+        if owning_project is None:
+            raise CategorizedError(
+                f"investigation {investigation_id} does not exist",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+            )
+        # Authorize on the OWNING project — resolved before any spend is read, so a
+        # foreign investigation_id cannot leak another tenant's usage.
+        require_project(ctx, owning_project)
+        require_role(ctx, owning_project, Role.VIEWER)
+        rollup = await accounting_domain.usage(conn, owning_project)
+        investigation_kcu = await accounting_domain.usage_for_investigation(conn, inv_uuid)
+    response = _usage_response(owning_project, rollup)
+    response.data["investigation_id"] = investigation_id
+    response.data["investigation_kcu"] = str(investigation_kcu)
+    return response
+
+
+async def _resolve_investigation_project(conn: AsyncConnection, inv_id: UUID) -> str | None:
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT project FROM investigations WHERE id = %s", (inv_id,))
+        row = await cur.fetchone()
+    return None if row is None else str(row[0])
+
+
+def _usage_response(project: str, rollup: accounting_domain.ProjectUsage) -> ToolResponse:
+    by_cost_class = {cls: str(val) for cls, val in rollup.by_cost_class.items()}
+    return ToolResponse.success(
+        _USAGE_OBJECT_ID,
+        "ok",
+        suggested_next_actions=["accounting.estimate", "allocations.list"],
+        data={
+            "project": project,
+            "spent_kcu": str(rollup.spent_kcu),
+            "budget_remaining": str(rollup.budget_remaining),
+            "shared_kcu": str(rollup.shared_kcu),
+            "by_cost_class": json.dumps(by_cost_class, sort_keys=True),
+        },
+    )
+
+
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `accounting.*` tools on ``app``, bound to ``pool``."""
 
@@ -136,4 +242,17 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             memory_gb=memory_gb,
             window=window,
             cost_class=cost_class,
+        )
+
+    @app.tool(name="accounting.usage")
+    async def accounting_usage(
+        project: str | None = None, investigation_id: str | None = None
+    ) -> ToolResponse:
+        # Exactly one of project / investigation_id; the investigation form resolves the
+        # owning project and authorizes on it (no cross-project read bypass, ADR-0007 §6).
+        return await usage(
+            pool,
+            current_context(),
+            project=project,
+            investigation_id=investigation_id,
         )
