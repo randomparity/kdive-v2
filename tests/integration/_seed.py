@@ -10,14 +10,29 @@ from __future__ import annotations
 
 import copy
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RUNS, SYSTEMS
-from kdive.domain.models import Allocation, Investigation, Run, System
+from kdive.db.repositories import (
+    ALLOCATIONS,
+    BUDGETS,
+    INVESTIGATIONS,
+    QUOTAS,
+    RUNS,
+    SYSTEMS,
+)
+from kdive.domain.models import (
+    Allocation,
+    Budget,
+    Investigation,
+    Quota,
+    Run,
+    System,
+)
 from kdive.domain.state import (
     AllocationState,
     InvestigationState,
@@ -62,6 +77,67 @@ def provisioning_profile(*, destructive_ops: list[str] | None = None) -> dict[st
     if destructive_ops is not None:
         data["provider"]["local-libvirt"]["destructive_ops"] = destructive_ops
     return data
+
+
+async def register_resource(
+    pool: AsyncConnectionPool,
+    *,
+    host_uri: str = "qemu:///system",
+    cost_class: str = "local",
+    concurrent_allocation_cap: int = 2,
+) -> str:
+    """Register one local-libvirt Resource (the M1 admission target); return its id.
+
+    The fake host advertises ``vcpus=8`` / ``memory_mb=16384`` (the billable size ceiling)
+    and the given ``concurrent_allocation_cap`` (the per-host capacity cap). Registration is
+    idempotent by ``host_uri``, so a test wanting two distinct hosts (e.g. to set different
+    caps) passes distinct ``host_uri`` values.
+    """
+    disc = LocalLibvirtDiscovery(
+        host_uri=host_uri,
+        connect=lambda: FakeLibvirtConn(),
+        concurrent_allocation_cap=concurrent_allocation_cap,
+    )
+    async with pool.connection() as conn:
+        res = await register_local_libvirt_resource(
+            conn, disc, pool="local-libvirt", cost_class=cost_class
+        )
+    return str(res.id)
+
+
+async def seed_project_limits(
+    pool: AsyncConnectionPool,
+    *,
+    project: str = "proj",
+    limit_kcu: Decimal | str | int = 1000,
+    max_allocations: int = 10,
+    max_systems: int = 10,
+) -> None:
+    """Seed the ``budgets`` + ``quotas`` rows the M1 admission gate now requires (ADR-0007 §4).
+
+    Fail-closed is literal: a project with no budget row is denied (`allocation_denied`) and
+    one with no quota row is denied (`quota_exceeded`). Every M1 e2e test that expects a grant
+    seeds both rows up front, mirroring a deployment's explicit admin set-up.
+    """
+    async with pool.connection() as conn:
+        await BUDGETS.upsert(
+            conn,
+            Budget(
+                project=project,
+                limit_kcu=Decimal(str(limit_kcu)),
+                spent_kcu=Decimal(0),
+                updated_at=_DT,
+            ),
+        )
+        await QUOTAS.upsert(
+            conn,
+            Quota(
+                project=project,
+                max_concurrent_allocations=max_allocations,
+                max_concurrent_systems=max_systems,
+                updated_at=_DT,
+            ),
+        )
 
 
 async def seed_granted_allocation(

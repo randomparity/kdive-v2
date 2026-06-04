@@ -298,12 +298,17 @@ def test_raw_vmcore_is_sensitive_and_unreachable(migrated_url: str) -> None:
 
 _GUEST_IMAGE_ENV = "KDIVE_GUEST_IMAGE"
 _KERNEL_TREE_ENV = "KDIVE_KERNEL_SRC"
+_LIVE_SSH_ENV = "KDIVE_LIVE_SSH_TARGET"
 
 
-def _live_vm_preflight() -> tuple[Path, Path]:
+def _live_vm_preflight(*, require_ssh: bool = False) -> tuple[Path, Path]:
     """Resolve the operator-provided fixtures or skip with the exact script to run (ADR-0035 §4).
 
-    A missing fixture is an actionable skip, never a confusing mid-path failure.
+    A missing fixture is an actionable skip, never a confusing mid-path failure. When
+    ``require_ssh`` is set (the M1 live introspection criterion, #71), also require an
+    SSH-reachable guest named by ``KDIVE_LIVE_SSH_TARGET`` and verified by
+    ``scripts/live-vm/check-ssh-reachable.sh`` — drgn-over-SSH needs the live transport, not
+    just a built image (ADR-0039 §2,4).
     """
     image = os.environ.get(_GUEST_IMAGE_ENV)
     if not image or not Path(image).exists():
@@ -315,6 +320,8 @@ def _live_vm_preflight() -> tuple[Path, Path]:
         pytest.skip(
             f"{_KERNEL_TREE_ENV} unset or missing; run scripts/live-vm/fetch-kernel-tree.sh"
         )
+    if require_ssh and not os.environ.get(_LIVE_SSH_ENV):
+        pytest.skip(f"{_LIVE_SSH_ENV} unset; run scripts/live-vm/check-ssh-reachable.sh <host>")
     return Path(image), Path(tree)
 
 
