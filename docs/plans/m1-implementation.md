@@ -119,7 +119,7 @@ Each wave's issues are independent and dispatch in parallel; the next wave waits
 ### Issue ④ — Budget/quota admission gate + set_budget/set_quota
 - **Labels:** `area:allocation` · `area:security`
 - **Depends on:** ③
-- **Goal:** Fail-closed admission: per-project quota + budget check-then-debit, composed with M0's host cap, plus the admin set tools and the lease window at grant.
+- **Goal:** Fail-closed admission: per-project quota + budget check-then-debit, composed with M0's host cap, plus the admin set tools and the lease window at grant. Concurrency/idempotency contract per [ADR-0040](../adr/0040-admission-lifecycle-concurrency.md) (lock order, idempotency key, atomic check-then-debit).
 - **Files:** Extend `src/kdive/domain/allocation_admission.py`, `mcp/tools/allocations.py` (request selector/window), `mcp/tools/systems.py` (system-quota check), `mcp/tools/accounting.py` (set_budget/set_quota); tests.
 - **Scope:**
   - Extend `admit()`: **validate first** (②'s `validate_size`/`validate_window` + admission-only `validate_against_resource` → `configuration_error`, so `estimate ≥ 0`); **resolve `(principal, idempotency_key)`** (replay → return stored `allocation_id`, no re-grant/re-debit; principal-scoped so a key cannot resolve another tenant's allocation); then acquire `LockScope.PROJECT(project)` **then** `LockScope.RESOURCE` (the global order `PROJECT < RESOURCE < ALLOCATION < SYSTEM`); under the project lock check `max_concurrent_allocations` (→ `quota_exceeded`) and `(limit_kcu − spent_kcu) ≥ estimate` (→ `allocation_denied`); under the resource lock the unchanged M0 host-cap check; in one transaction insert `granted` Allocation (`lease_expiry = now()+window`, `requested_vcpus/memory_gb`; `active_started_at` null until provisioned), the `reserved` ledger row + `spent_kcu += estimate` (call ③'s `reserve`), the `(principal, idempotency_key) → allocation_id` record, and the audit row.
@@ -131,7 +131,7 @@ Each wave's issues are independent and dispatch in parallel; the next wave waits
 ### Issue ⑤ — Lease window, renew, reconciler →expired sweep
 - **Labels:** `area:allocation` · `area:core-platform`
 - **Depends on:** ④
-- **Goal:** Renewal and automatic reclamation of expired allocations.
+- **Goal:** Renewal and automatic reclamation of expired allocations. Single-reconciliation + renew-idempotency contract per [ADR-0040](../adr/0040-admission-lifecycle-concurrency.md).
 - **Files:** Extend `mcp/tools/allocations.py` (renew), `reconciler/loop.py` (expiry sweep); `__main__.py` unchanged; tests.
 - **Scope:**
   - `allocations.renew(allocation_id, extend, idempotency_key)`: validate `extend > 0` (`configuration_error`); resolve `idempotency_key` (replay → no re-extend/re-charge); under `LockScope.PROJECT`, clamp to `KDIVE_LEASE_MAX` from now, re-check budget for the **added** window, write an incremental `reserved` delta + `spent_kcu += `, extend `lease_expiry`; over budget → `allocation_denied` (window unchanged); terminal allocation → `stale_handle`; `operator` role.

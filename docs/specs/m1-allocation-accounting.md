@@ -17,9 +17,11 @@ sub-project plan implements against. It does not re-argue the decisions: those l
 in the [ADRs](../adr/), principally [0007](../adr/0007-metering-budgets-admission.md)
 (cost model + gate), [0036](../adr/0036-reservation-lease-semantics.md) (lease),
 [0037](../adr/0037-rbac-hardening-role-separation.md) (RBAC),
-[0038](../adr/0038-system-reprovision-in-place.md) (reprovision), and
-[0039](../adr/0039-ssh-transport-live-introspection.md) (SSH/live introspect). The
-provider stays local-libvirt; **no new resource kind** — M1 is depth, not breadth.
+[0038](../adr/0038-system-reprovision-in-place.md) (reprovision),
+[0039](../adr/0039-ssh-transport-live-introspection.md) (SSH/live introspect), and
+[0040](../adr/0040-admission-lifecycle-concurrency.md) (admission/lifecycle concurrency:
+lock hierarchy, idempotency, atomic reconciliation). The provider stays local-libvirt;
+**no new resource kind** — M1 is depth, not breadth.
 
 ### What M1 adds to M0
 
@@ -141,7 +143,8 @@ Any failing check returns a typed failure with **no** allocation/ledger/audit ro
 (ADR-0023's denial rule). `quota_exceeded` = over-count; `allocation_denied` =
 over-budget or over-host-cap.
 
-**Request idempotency.** `allocations.request` and `allocations.renew` carry a client
+**Request idempotency** (owned by [0040](../adr/0040-admission-lifecycle-concurrency.md)).
+`allocations.request` and `allocations.renew` carry a client
 `idempotency_key`, **scoped to the caller's `principal`** — the store's primary key is
 `(principal, key)` and the resolve matches the caller, so one client's key can never
 resolve another's allocation and a colliding key string across principals/projects is
@@ -156,16 +159,16 @@ recorded only in the success transaction), so a request denied over budget is
 re-evaluated on retry (correct — the budget may have changed); and the append-only store
 is **GC'd by the reconciler** past a retention window.
 
-**Lock hierarchy.** Every path that takes more than one advisory lock acquires them in
-the fixed total order `PROJECT < RESOURCE < ALLOCATION < SYSTEM`, so no two paths can
-deadlock — a single pairwise rule is not enough once `renew`, `provision`, `release`,
+**Lock hierarchy** (owned by [0040](../adr/0040-admission-lifecycle-concurrency.md)).
+Every path that takes more than one advisory lock acquires them in the fixed total order
+`PROJECT < RESOURCE < ALLOCATION < SYSTEM`, so no two paths can deadlock — a single pairwise rule is not enough once `renew`, `provision`, `release`,
 and the reconciler also take `PROJECT`. `allocations.request` takes PROJECT→RESOURCE;
 `allocations.renew` takes PROJECT only; `allocations.release` takes PROJECT→ALLOCATION;
 `systems.provision` takes PROJECT (system-quota check) →SYSTEM; the `→expired` sweep
 takes PROJECT→ALLOCATION→SYSTEM. The M0 per-Allocation / per-System critical sections
 keep their place at the tail of this order.
 
-**Release vs. expiry — exactly one reconciliation.** `allocations.release` and the
+**Release vs. expiry — exactly one reconciliation** (owned by [0040](../adr/0040-admission-lifecycle-concurrency.md)). `allocations.release` and the
 `→expired` sweep both end an allocation and write its `reconciled` credit, so they must
 not both fire on one allocation. Each takes the per-**Allocation** lock and performs its
 terminal transition **and** the `reconciled` write in one transaction under it: whichever

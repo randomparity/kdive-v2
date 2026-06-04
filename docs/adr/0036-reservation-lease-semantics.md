@@ -7,6 +7,9 @@
   estimate is `rate × lease_window`), [ADR-0021](0021-reconciler-loop-drift-repair.md)
   (the M0 lease-expiry compensation this triggers), [ADR-0023](0023-discovery-allocation-admission.md)
   (the admission path the lease window attaches to)
+- **Concurrency owned by:** [ADR-0040](0040-admission-lifecycle-concurrency.md) (the
+  per-Allocation lock and single-reconciliation guarantee for the `→expired` sweep;
+  renew idempotency)
 - **Refines:** the Allocation lifecycle in
   [`../specs/top-level-design.md`](../specs/top-level-design.md) and
   [`../specs/m1-allocation-accounting.md`](../specs/m1-allocation-accounting.md)
@@ -79,23 +82,19 @@ non-terminal (`granted`/`active`) allocation can renew; renewing a terminal one 
 A new reconciler pass selects non-terminal allocations with `lease_expiry < now()`
 and, per allocation:
 
-1. **under the per-Allocation lock** (ADR-0007's `PROJECT < … < ALLOCATION` order),
-   transitions the allocation `→ expired` and writes the `reconciled` credit in one
-   transaction (audited), stamping `active_ended_at` (ADR-0007) so the reconciliation has
-   its billing interval. This serializes against `allocations.release`, which takes the
-   same per-Allocation lock for its terminal transition + `reconciled` write: whichever
-   reaches the lock first makes the allocation terminal, and the other skips
-   (`release` → `stale_handle`; the sweep selects only non-terminal allocations) — so an
-   allocation is **never reconciled twice**, even when its lease expires at the instant
-   the agent releases it;
+1. transitions the allocation `→ expired` and writes the `reconciled` credit (stamping
+   `active_ended_at`, ADR-0007 §3). The **single-reconciliation guarantee** — that this
+   and a concurrent `allocations.release` never both credit one allocation, achieved by
+   each doing its terminal transition + `reconciled` write atomically under the
+   per-Allocation lock — is owned by [ADR-0040](0040-admission-lifecycle-concurrency.md)
+   §4 and only referenced here;
 2. hands its System (if any) to the **existing** M0 orphaned-System teardown — a
    System never outlives its Allocation (ADR-0021), and an `expired` Allocation is now
    one of the "not active" states that orphans a System;
 3. the existing lease-expiry compensation drains the System's in-flight job **within
    the same M0 grace window** and force-kills only after — so transitioning the
    allocation to `expired` first does **not** bypass the drain; the owning Run becomes
-   `failed(lease_expired)`. (The `reconciled` credit is already written atomically with
-   the `→expired` transition in step 1, crediting back the unused reservation.)
+   `failed(lease_expired)`.
 
 The sweep is idempotent (a second pass sees an `expired` allocation and skips it) and
 emits a structured-log line per reclaimed allocation. The grace window and force-kill

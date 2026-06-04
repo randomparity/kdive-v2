@@ -8,6 +8,8 @@
   capacity check, which M1 wraps, not replaces),
   [ADR-0036](0036-reservation-lease-semantics.md) (the lease window that bounds the
   reserved estimate)
+- **Concurrency/idempotency owned by:** [ADR-0040](0040-admission-lifecycle-concurrency.md)
+  (lock hierarchy, request idempotency, atomic check-then-debit, single reconciliation)
 
 ## Context
 
@@ -156,47 +158,30 @@ Both hard-deny: over the alloc cap → `quota_exceeded` at request; over the sys
 cap → `quota_exceeded` at provision. A denial writes no durable object (ADR-0023's
 rule), only a structured-log capacity event.
 
-### 5. The admission gate composes M0's per-host check under a **per-project lock**, with fixed lock ordering
+### 5. The admission gate composes M0's per-host check with the per-project budget/quota check
 
-M1 adds `LockScope.PROJECT` (keyed by `project`). `allocations.request` admission
-runs:
+This decision owns *what* admission checks (the budget/quota **policy**); *how* it stays
+correct under concurrency and retries — the lock order, the idempotency key, the atomic
+check-then-debit — is owned by **[ADR-0040](0040-admission-lifecycle-concurrency.md)** and
+only referenced here.
 
-1. **Validate inputs** (before any lock): reject `vcpus < 1`, `memory_gb < 0`, a
-   selector over the host's caps, or `window ≤ 0` (`configuration_error`), so `rate` and
-   `estimate` are `≥ 0` and cannot mint budget (decision 2).
-2. **Resolve the client `idempotency_key`**, **scoped to the caller's `principal`**,
-   against `idempotency_keys` (migration `0002`, PK `(principal, key)`): a replay returns
-   the stored `allocation_id` with no second grant or `reserved` debit. Scoping by
-   principal is required for correctness — a **global** key namespace would let one
-   tenant's client-chosen key collide with another's and resolve to a foreign allocation
-   (a cross-tenant leak). `allocations.request` is synchronous, so — unlike the M0 async
-   tools guarded by the job `dedup_key` — it would otherwise double-allocate and
-   double-charge on a retry after a lost response. Concurrent same-key requests are
-   serialized by the PK (the loser re-reads and returns the winner's result); denials are
-   not cached (the key is written only in the success transaction), so a denied request
-   is re-evaluated on retry. `renew` is idempotent the same way.
-3. Acquire `LockScope.PROJECT(project)` — **then** `LockScope.RESOURCE(resource_id)`.
-   This is one instance of a **global total lock order** `PROJECT < RESOURCE <
-   ALLOCATION < SYSTEM` that **every** multi-lock path obeys, so the design is
-   deadlock-free across all paths that now take `PROJECT` — not just this pair:
-   `allocations.renew` takes PROJECT only; `allocations.release` takes PROJECT→ALLOCATION;
-   `systems.provision` takes PROJECT→SYSTEM (system-quota check then the M0 per-System
-   section); the reconciler `→expired` sweep takes PROJECT→ALLOCATION→SYSTEM. A single
-   pairwise rule would not suffice once these paths share the `PROJECT` scope.
-4. Under the project lock: check `max_concurrent_allocations`; compute `estimate`;
-   check `(limit_kcu − spent_kcu) ≥ estimate`.
-5. Under the resource lock (the M0 critical section, unchanged): check the per-host
-   `concurrent_allocation_cap`.
-6. If all pass, in one transaction: insert the `granted` Allocation (with
-   `lease_expiry` per ADR-0036, `requested_vcpus`/`requested_memory_gb`), write the
-   `reserved` ledger row, increment `budgets.spent_kcu` by `estimate`, record the
-   `idempotency_key → allocation_id`, write the audit row.
+M1 adds the per-project invariant on top of M0's per-host cap. `allocations.request`
+admission, after input validation (decision 2) and idempotency resolution (ADR-0040 §3):
 
-Any failing check returns a typed failure (`quota_exceeded` /
-`allocation_denied`) with **no** allocation, ledger, or audit row — admission is the
-all-or-nothing point. `allocation_denied` is the over-budget category;
-`quota_exceeded` is the over-count category, so audit/SLO can tell spend from
-concurrency.
+- checks the per-project **`max_concurrent_allocations`** quota (decision 4) → `quota_exceeded`;
+- computes `estimate` and checks **`(limit_kcu − spent_kcu) ≥ estimate`** → `allocation_denied`;
+- checks the M0 per-host **`concurrent_allocation_cap`** (ADR-0023, unchanged) → `allocation_denied`;
+- on success, **in one transaction** (the atomic check-then-debit, ADR-0040 §2): insert the
+  `granted` Allocation (`lease_expiry` per ADR-0036, `requested_vcpus`/`requested_memory_gb`),
+  write the `reserved` ledger row, increment `budgets.spent_kcu`, record the idempotency
+  key, write the audit row.
+
+Any failing check returns a typed failure (`quota_exceeded` / `allocation_denied`) with
+**no** allocation, ledger, or audit row — admission is the all-or-nothing point.
+`allocation_denied` is the over-budget category; `quota_exceeded` is the over-count
+category, so audit/SLO can tell spend from concurrency. The lock acquisition order
+(`PROJECT < RESOURCE < ALLOCATION < SYSTEM`) and the deadlock/idempotency/atomicity
+guarantees are [ADR-0040](0040-admission-lifecycle-concurrency.md).
 
 ### 6. Budgets and quotas are **admin-only**, set per project
 

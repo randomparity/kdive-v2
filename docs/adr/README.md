@@ -69,3 +69,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0037](0037-rbac-hardening-role-separation.md) | RBAC hardening: operator/admin separation (M1) | Proposed |
 | [0038](0038-system-reprovision-in-place.md) | System reprovision-in-place (M1) | Proposed |
 | [0039](0039-ssh-transport-live-introspection.md) | SSH transport + live drgn introspection (M1) | Proposed |
+| [0040](0040-admission-lifecycle-concurrency.md) | M1 admission & lifecycle concurrency: lock hierarchy, request idempotency, atomic reconciliation | Proposed |
