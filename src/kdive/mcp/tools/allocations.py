@@ -24,6 +24,7 @@ from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, RESOURCES
 from kdive.domain import accounting
 from kdive.domain.allocation_admission import AdmissionOutcome, admit
+from kdive.domain.allocation_renew import RenewOutcome, renew
 from kdive.domain.cost import Selector
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Resource
@@ -266,6 +267,58 @@ async def _release_locked(
     return ToolResponse.success(str(uid), "released")
 
 
+async def renew_allocation(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    allocation_id: str,
+    *,
+    extend: object,
+    idempotency_key: str | None = None,
+) -> ToolResponse:
+    """Extend an allocation's lease window, re-charged and re-checked (ADR-0036 §3).
+
+    Resolves the allocation, requires ``operator`` on its project, and runs the M1 renew
+    (under the ``PROJECT`` lock). A success returns the extended allocation id; a denial
+    maps to the most specific category — ``configuration_error`` (``extend ≤ 0``, a bad
+    id, or the lease already at ``KDIVE_LEASE_MAX``), ``stale_handle`` (a terminal
+    allocation), or ``allocation_denied`` (over budget for the added window, window
+    unchanged). A replayed ``idempotency_key`` returns the prior result with no second
+    extend or charge.
+    """
+    uid = _as_uuid(allocation_id)
+    if uid is None:
+        return _config_error(allocation_id)
+    with bind_context(principal=ctx.principal):
+        async with pool.connection() as conn:
+            alloc = await ALLOCATIONS.get(conn, uid)
+            if alloc is None or alloc.project not in ctx.projects:
+                return _config_error(allocation_id)
+            require_role(ctx, alloc.project, Role.OPERATOR)
+            outcome = await renew(
+                conn, ctx, allocation_id=uid, extend=extend, idempotency_key=idempotency_key
+            )
+        return _renew_response(uid, outcome)
+
+
+def _renew_response(uid: UUID, outcome: RenewOutcome) -> ToolResponse:
+    """Map a :class:`RenewOutcome` to its typed envelope (success or category-specific)."""
+    if outcome.renewed and outcome.allocation is not None:
+        return ToolResponse.success(
+            str(uid),
+            outcome.allocation.state.value,
+            suggested_next_actions=["allocations.get", "allocations.release"],
+            data={"project": outcome.allocation.project},
+        )
+    category = outcome.category or ErrorCategory.ALLOCATION_DENIED
+    data = {"current_status": outcome.current_status} if outcome.current_status else {}
+    return ToolResponse.failure(
+        str(uid),
+        category,
+        suggested_next_actions=["allocations.get"],
+        data=data,
+    )
+
+
 async def list_allocations(
     pool: AsyncConnectionPool, ctx: RequestContext, *, project: str, limit: int
 ) -> list[ToolResponse]:
@@ -329,6 +382,23 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     @app.tool(name="allocations.release")
     async def allocations_release(allocation_id: str) -> ToolResponse:
         return await release_allocation(pool, current_context(), allocation_id)
+
+    @app.tool(name="allocations.renew")
+    async def allocations_renew(
+        allocation_id: str,
+        extend: float | str,
+        idempotency_key: str | None = None,
+    ) -> ToolResponse:
+        # `extend` is the added window in hours (a number or decimal string), validated
+        # > 0 and clamped against the remaining KDIVE_LEASE_MAX window; `idempotency_key`
+        # makes the synchronous re-charge retry-safe, scoped to the principal (ADR-0040 §3).
+        return await renew_allocation(
+            pool,
+            current_context(),
+            allocation_id,
+            extend=extend,
+            idempotency_key=idempotency_key,
+        )
 
     @app.tool(name="allocations.list")
     async def allocations_list(project: str, limit: int = DEFAULT_LIST_LIMIT) -> list[ToolResponse]:
