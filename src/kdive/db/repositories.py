@@ -171,19 +171,21 @@ class KeyedRepository[M: BaseModel](Repository[M]):
         self,
         model: type[M],
         table: str,
+        key_column: str,
         *,
         update_columns: frozenset[str] | None = None,
         json_columns: frozenset[str] = frozenset(),
     ) -> None:
-        key = next(iter(model.model_fields))  # the natural key is the first declared field
+        if key_column not in model.model_fields:
+            raise ValueError(f"{model.__name__} has no field {key_column!r} to key on")
         super().__init__(
             model,
             table,
             json_columns=json_columns,
             server_generated=("updated_at",),
-            key_column=key,
+            key_column=key_column,
         )
-        candidates = update_columns or (frozenset(self._insert_columns) - {key})
+        candidates = update_columns or (frozenset(self._insert_columns) - {key_column})
         self._update_columns = tuple(c for c in self._insert_columns if c in candidates)
 
     async def upsert(self, conn: AsyncConnection, obj: M) -> M:
@@ -234,7 +236,9 @@ ARTIFACTS = Repository(Artifact, "artifacts")
 # M1 accounting tables. COST_CLASS_COEFFICIENTS/QUOTAS upsert every non-key column;
 # BUDGETS upserts only `limit_kcu` so a re-set_budget never clobbers `spent_kcu` (the
 # DB-maintained running total). LEDGER is append-only with a DB-authoritative `ts`.
-COST_CLASS_COEFFICIENTS = KeyedRepository(CostClassCoefficient, "cost_class_coefficients")
-BUDGETS = KeyedRepository(Budget, "budgets", update_columns=frozenset({"limit_kcu"}))
-QUOTAS = KeyedRepository(Quota, "quotas")
+COST_CLASS_COEFFICIENTS = KeyedRepository(
+    CostClassCoefficient, "cost_class_coefficients", "cost_class"
+)
+BUDGETS = KeyedRepository(Budget, "budgets", "project", update_columns=frozenset({"limit_kcu"}))
+QUOTAS = KeyedRepository(Quota, "quotas", "project")
 LEDGER = Repository(LedgerEntry, "ledger", server_generated=("ts",))

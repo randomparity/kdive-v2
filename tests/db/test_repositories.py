@@ -301,6 +301,13 @@ def test_seed_coefficient_is_readable(migrated_url: str) -> None:
     asyncio.run(_run_test())
 
 
+def test_keyed_repository_rejects_unknown_key_column() -> None:
+    from kdive.db.repositories import KeyedRepository
+
+    with pytest.raises(ValueError, match="no field 'nope'"):
+        KeyedRepository(Budget, "budgets", "nope")
+
+
 def test_budget_upsert_inserts_then_updates(migrated_url: str) -> None:
     async def _run_test() -> None:
         async with await _connect(migrated_url) as conn:
