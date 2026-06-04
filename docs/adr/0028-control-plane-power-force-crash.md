@@ -1,4 +1,4 @@
-# ADR 0027 — Control plane: power + force_crash on local libvirt (M0)
+# ADR 0028 — Control plane: power + force_crash on local libvirt (M0)
 
 - **Status:** Proposed <!-- Proposed | Accepted | Rejected | Superseded by NNNN -->
 - **Date:** 2026-06-04

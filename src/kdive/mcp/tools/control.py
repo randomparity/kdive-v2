@@ -1,4 +1,4 @@
-"""The `control.*` MCP tools and the power/force_crash job handlers (ADR-0027).
+"""The `control.*` MCP tools and the power/force_crash job handlers (ADR-0028).
 
 `control.power` (ungated, operator) and `control.force_crash` (three-check gated, admin)
 admit synchronously and enqueue a durable job; the handlers drive the domain via the
@@ -116,7 +116,7 @@ async def power_system(
 
 
 async def power_handler(conn: AsyncConnection, job: Job, control: Controller) -> str | None:
-    """Drive the domain's power; audit `power:{action}`; move no System state (ADR-0027 §3)."""
+    """Drive the domain's power; audit `power:{action}`; move no System state (ADR-0028 §3)."""
     system_id = UUID(job.payload["system_id"])
     action = PowerAction(job.payload["action"])
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
@@ -153,7 +153,7 @@ async def force_crash_system(
     """Gate, admit, and enqueue a `force_crash` job for a `ready` System (admin + gate).
 
     The in-project check precedes the gate, so the denial audit's ``project`` is always in
-    ``ctx.projects`` and ``audit.record`` cannot itself raise (ADR-0027 ordering invariant).
+    ``ctx.projects`` and ``audit.record`` cannot itself raise (ADR-0028 ordering invariant).
     """
     uid = _as_uuid(system_id)
     if uid is None:

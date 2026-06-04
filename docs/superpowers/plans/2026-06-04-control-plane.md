@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, FastMCP, psycopg (async), Pydantic, libvirt-python; pytest; `uv`/`ruff`/`ty`.
 
-**Design source:** [`docs/superpowers/specs/2026-06-04-control-plane-design.md`](../specs/2026-06-04-control-plane-design.md) · **Decisions:** [ADR-0027](../../adr/0027-control-plane-power-force-crash.md)
+**Design source:** [`docs/superpowers/specs/2026-06-04-control-plane-design.md`](../specs/2026-06-04-control-plane-design.md) · **Decisions:** [ADR-0028](../../adr/0028-control-plane-power-force-crash.md)
 
 ---
 
@@ -116,7 +116,7 @@ In `src/kdive/profiles/provisioning.py`, in `LibvirtProfile`, add after `domain_
     destructive_ops: list[NonEmptyStr] = Field(default_factory=list)
 ```
 
-Update the `LibvirtProfile` docstring to name `destructive_ops` as the opted-in destructive op kinds (default empty; deny-by-default for the gate, ADR-0027 §2).
+Update the `LibvirtProfile` docstring to name `destructive_ops` as the opted-in destructive op kinds (default empty; deny-by-default for the gate, ADR-0028 §2).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -302,13 +302,13 @@ Expected: FAIL — `kdive.providers.local_libvirt.control` does not exist.
 Create `src/kdive/providers/local_libvirt/control.py`:
 
 ```python
-"""Local-libvirt Control plane: power and force_crash a tagged domain (ADR-0027).
+"""Local-libvirt Control plane: power and force_crash a tagged domain (ADR-0028).
 
 `LocalLibvirtControl` looks a domain up by name over an injected connection factory and
 drives libvirt — `power(domain_name, action)` (`on→create`, `off→destroy`, `reset→reset`,
 `cycle→reboot`) and `force_crash(domain_name)` (`injectNMI`). DB-free: it owns no Postgres;
 the `control.*` handlers drive the state machine. The realized port keys on the libvirt
-domain name (row-first ordering, ADR-0027 §1), distinct from the capability-dispatch
+domain name (row-first ordering, ADR-0028 §1), distinct from the capability-dispatch
 `ControlPlane` placeholder in `providers.interfaces`. Unit tests inject a fake connection;
 the real `libvirt.open` adapter is `live_vm`-only.
 """
@@ -749,7 +749,7 @@ Expected: FAIL — `kdive.mcp.tools.control` does not exist.
 Create `src/kdive/mcp/tools/control.py`. Mirror `systems.py`'s helpers (`_config_error`, `_as_uuid`, `_authorizing`, `_ctx_from_job`, `_system_job_envelope`, `_audit_transition` adapted to `tool="control.power"`). Implement:
 
 ```python
-"""The `control.*` MCP tools and the power/force_crash job handlers (ADR-0027).
+"""The `control.*` MCP tools and the power/force_crash job handlers (ADR-0028).
 
 `control.power` (ungated, operator) and `control.force_crash` (three-check gated, admin)
 admit synchronously and enqueue a job; the handlers drive the domain via the injected
@@ -849,7 +849,7 @@ async def power_system(
 
 
 async def power_handler(conn: AsyncConnection, job: Job, control: Controller) -> str | None:
-    """Drive the domain's power; audit `power:{action}`; move no System state (ADR-0027 §3)."""
+    """Drive the domain's power; audit `power:{action}`; move no System state (ADR-0028 §3)."""
     system_id = UUID(job.payload["system_id"])
     action = PowerAction(job.payload["action"])
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):

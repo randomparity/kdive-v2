@@ -1,10 +1,10 @@
-"""Local-libvirt Control plane: power and force_crash a tagged domain (ADR-0027).
+"""Local-libvirt Control plane: power and force_crash a tagged domain (ADR-0028).
 
 `LocalLibvirtControl` looks a domain up by name over an injected connection factory and
 drives libvirt — `power(domain_name, action)` (`on->create`, `off->destroy`, `reset->reset`,
 `cycle->reboot`) and `force_crash(domain_name)` (`injectNMI`). DB-free: it owns no Postgres;
 the `control.*` handlers drive the state machine. The realized port keys on the libvirt
-domain name (row-first ordering, ADR-0027 §1), distinct from the capability-dispatch
+domain name (row-first ordering, ADR-0028 §1), distinct from the capability-dispatch
 `ControlPlane` placeholder in `kdive.providers.interfaces`. Unit tests inject a fake
 connection; the real `libvirt.open` adapter is `live_vm`-only.
 

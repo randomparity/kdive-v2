@@ -2,7 +2,7 @@
 
 **Issue:** #23 (M0) · **Depends on:** #11 (RBAC/audit/gate — merged), #13 (capability
 registry / plane interfaces — merged), #16 (provisioning plane — merged) ·
-**Decisions:** [ADR-0027](../../adr/0027-control-plane-power-force-crash.md) (the
+**Decisions:** [ADR-0028](../../adr/0028-control-plane-power-force-crash.md) (the
 decisions this spec realizes), [ADR-0020](../../adr/0020-rbac-audit-gate-implementation.md)
 (gate/RBAC/audit), [ADR-0024](../../adr/0024-provisioning-profile-model-shape.md) (profile
 shape), [ADR-0025](../../adr/0025-provisioning-plane-libvirt.md) (provisioning plane / the
@@ -56,7 +56,7 @@ retrieval (#22), or the reconciler loop (#12).
 - **No vmcore capture.** A crashed guest's vmcore retrieval is the retrieve plane (#22);
   `force_crash` stops at `crashed` and leaves the `capture_vmcore` job to that plane.
 - **No System-lifecycle move on `power`.** A domain restart is not a reprovision; `power`
-  acts on the domain and audits the action but moves no System state (ADR-0027 §3). A
+  acts on the domain and audits the action but moves no System state (ADR-0028 §3). A
   `crashed → ready` recovery edge, if ever modeled, lands with its own ADR.
 - **No live libvirt in unit tests.** Every handler/provider test injects a fake controller
   or `Connect`; the real `libvirt.open` adapter and the end-to-end crash are `live_vm`-only.
@@ -77,7 +77,7 @@ class Controller(Protocol):
 **Relation to the existing `ControlPlane` placeholder.** `providers/interfaces.py`
 already declares a capability-dispatch `ControlPlane` Protocol keyed on a `SystemHandle`
 (`power(system, action)` / `force_crash(system)`) and `type PowerAction = str`. As with
-`Provisioner` vs `ProvisioningPlane` (ADR-0025 / ADR-0027 §1), the realized M0 port keys on
+`Provisioner` vs `ProvisioningPlane` (ADR-0025 / ADR-0028 §1), the realized M0 port keys on
 the already-minted libvirt **domain name** (row-first ordering: the System and its
 `domain_name` exist before any control op), not the `SystemHandle` the registry dispatch
 placeholder uses; control is not dispatched through the capability registry in M0.
@@ -137,7 +137,7 @@ helpers are re-derived locally; no cross-tool import).
 **`control.power` handler** (`power` job): under the per-System lock, load the System
 (missing → `infrastructure_failure`), read `domain_name` (or the deterministic name),
 call `controller.power`, and audit `transition=f"power:{action}"`. No System state change
-(ADR-0027 §3).
+(ADR-0028 §3).
 
 **`power off` leaves a `ready` System with a stopped domain.** `power off → destroy` stops
 the domain but does **not** undefine it (unlike teardown's destroy+undefine), so the System
@@ -199,7 +199,7 @@ System untouched and the job retryable; the state move and the detach commit ato
 only once the guest has actually been panicked.
 
 The gate is **only** on `force_crash`; `power` is `operator`-authorized and ungated
-(ADR-0027 §3).
+(ADR-0028 §3).
 
 ### Plumbing
 
