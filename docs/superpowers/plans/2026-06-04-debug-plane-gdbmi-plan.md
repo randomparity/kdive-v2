@@ -6,10 +6,14 @@ and [ADR-0034](../../adr/0034-debug-plane-gdbmi-tier.md). Issue #21.
 **Working directory:** `/home/dave/src/kdive-v2-worktrees/gdbmi-tier-21`, branch
 `feat/gdbmi-tier-21`. Spec + ADR already committed.
 
-**Guardrails after every step** (must be green before committing):
-`uv run ruff check` · `uv run ruff format --check` · `uv run ty check src` ·
+**Guardrails after every step** (must be green before committing): run
+`uv run ruff format` (the **rewriting** form) and stage the result *before* committing — the
+prek hook also runs `ruff format`, and per the project memory it can silently roll back a
+commit when it rewrites a file with unstaged changes; staging the formatted file first avoids
+the stash-rollback trap. Then `uv run ruff check` · `uv run ty check src` ·
 `uv run python -m pytest -q`. `ty` checks tests too (via pre-commit); SQL params typed
-`LiteralString`. Verify `git log -1` after each commit (external worktree → no `--no-verify`).
+`LiteralString`. After each commit verify `git log -1` shows the commit landed (external
+worktree → ty hook clean, no `--no-verify`).
 
 TDD throughout: write the failing test first, then the implementation, per phase.
 
@@ -105,6 +109,13 @@ In `debug_gdbmi.py`, add the attach seam used lazily by the handlers:
 - An `AttachSeam` Protocol (or a `Callable`) so handlers inject a fake in tests; the real
   default is `from_env()`-style, wired in `register`.
 
+**Where the `MISSING_DEPENDENCY → DEBUG_ATTACH_FAILURE` re-tag lives (not inside the gated
+body):** the handler's lazy-attach catch maps a `MISSING_DEPENDENCY` `CategorizedError` raised
+by the seam onto `DEBUG_ATTACH_FAILURE` (same shape #20's `_mapped` uses for the connect
+path). The real `attach()` body is `live_vm`-pragma'd, but the *mapping* is in the handler, so
+Phase 3 unit-tests it with a fake seam that **raises** `MISSING_DEPENDENCY` — covered off the
+gate. Phase 2 only asserts the resolver default raises; the mapping is asserted in Phase 3.
+
 **Tests first** (extend `test_debug_gdbmi.py`):
 - the default resolver raises `MISSING_DEPENDENCY` (asserts the gate default; the real attach
   body is `live_vm`-pragma'd, not unit-tested).
@@ -147,7 +158,9 @@ fake `AttachSeam` returning a `GdbMiAttachment` over a `_FakeMiController`:
   non-operator (`AUTHORIZATION_DENIED`), non-`live` (`not_live`, `data["current_status"]`).
 - `no_live_session`: a fake seam whose engine is "gone" → `CONFIGURATION_ERROR`
   (`no_live_session`).
-- attach-once: a counting fake seam is invoked exactly once across two ops on one session.
+- attach-once: two ops on one session launched via `asyncio.gather` exercise the
+  per-session lock; a counting fake seam is invoked exactly once and the second op reuses the
+  registered attachment (the lock serializes them, so the second sees it registered).
 - `MISSING_DEPENDENCY` resolver default surfaces as `DEBUG_ATTACH_FAILURE`.
 - `end_session` reap: after an op registers a fake engine, `end_session` calls the fake's
   `exit()` and drops the registry entry; a later op on the now-`detached` session is rejected
