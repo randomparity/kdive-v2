@@ -137,6 +137,42 @@ async def _audit_transition(
     )
 
 
+# System states that occupy a per-project quota slot (terminal torn_down/failed do not).
+_NON_TERMINAL_SYSTEM = (
+    SystemState.DEFINED,
+    SystemState.PROVISIONING,
+    SystemState.READY,
+    SystemState.REPROVISIONING,
+    SystemState.CRASHED,
+)
+
+
+async def _within_system_quota(conn: AsyncConnection, project: str) -> bool:
+    """Report whether the project is under ``max_concurrent_systems`` (ADR-0007 §4).
+
+    Fail-closed: a project with **no quota row** is over quota (no silent default).
+    Counts the project's non-terminal Systems under the held PROJECT lock, so the
+    count-then-create cannot overshoot under concurrent provisions.
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT max_concurrent_systems FROM quotas WHERE project = %s", (project,)
+        )
+        row = await cur.fetchone()
+    if row is None:
+        return False
+    cap = int(row[0])
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT count(*) FROM systems WHERE project = %s AND state = ANY(%s)",
+            (project, [s.value for s in _NON_TERMINAL_SYSTEM]),
+        )
+        count_row = await cur.fetchone()
+    if count_row is None:  # Invariant: count(*) always yields a row.
+        raise RuntimeError("count(*) returned no row")
+    return int(count_row[0]) < cap
+
+
 async def _find_system_for_allocation(conn: AsyncConnection, alloc_id: UUID) -> System | None:
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -176,9 +212,20 @@ async def provision_system(
 async def _provision_locked(
     pool: AsyncConnectionPool, ctx: RequestContext, alloc_id: UUID, profile: ProvisioningProfile
 ) -> ToolResponse:
+    # Resolve the allocation's project (immutable) before locking so the PROJECT lock key
+    # is known up front; a missing/foreign allocation is a not-found-shaped config error.
+    async with pool.connection() as probe:
+        probe_alloc = await ALLOCATIONS.get(probe, alloc_id)
+    if probe_alloc is None or probe_alloc.project not in ctx.projects:
+        return _config_error(str(alloc_id))
+    project = probe_alloc.project
+    # PROJECT → ALLOCATION (the global lock order, ADR-0040 §1): the project lock so the
+    # max_concurrent_systems count-then-create is race-free against a concurrent provision,
+    # the allocation lock so a release-mid-provision cannot leak a domain (the M0 invariant).
     async with (
         pool.connection() as conn,
         conn.transaction(),
+        advisory_xact_lock(conn, LockScope.PROJECT, project),
         advisory_xact_lock(conn, LockScope.ALLOCATION, alloc_id),
     ):
         alloc = await ALLOCATIONS.get(conn, alloc_id)
@@ -201,6 +248,15 @@ async def _provision_locked(
             return _system_job_envelope(job, existing.id)
         if alloc.state is not AllocationState.GRANTED:
             return _config_error(str(alloc_id), data={"current_status": alloc.state.value})
+        # New System: enforce the per-project max_concurrent_systems quota under the held
+        # project lock. Fail-closed — no quota row → denied (ADR-0007 §4); a denial writes
+        # no System, no job, and leaves the allocation granted (the all-or-nothing rule).
+        if not await _within_system_quota(conn, alloc.project):
+            return ToolResponse.failure(
+                str(alloc_id),
+                ErrorCategory.QUOTA_EXCEEDED,
+                suggested_next_actions=["systems.get", "allocations.list"],
+            )
         now = datetime.now(UTC)  # placeholder; the DB sets created_at/updated_at
         system = await SYSTEMS.insert(
             conn,
