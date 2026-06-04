@@ -70,14 +70,16 @@ is a `configuration_error` at `systems.provision` (you cannot silently provision
 more than you were charged for).
 
 **The selector and window are validated before they reach the ledger.** Because both
-feed **signed** `kcu_delta` arithmetic, admission (and `accounting.estimate`) reject —
-as `configuration_error` — any selector with `vcpus < 1` or `memory_gb < 0`, any
-selector exceeding the target Resource's advertised capabilities (the size is billed, so
-it may not exceed what the host can give), and any `window ≤ 0`. This guarantees `rate ≥
-0` and `estimate ≥ 0`: a negative-size or negative-window request cannot pass the budget
-check (`budget_remaining ≥ estimate` is trivially true for a negative estimate) and write
-a **negative `reserved`** row that would *increase* `budget_remaining` — i.e. mint budget.
-Validating here, not only at `systems.provision`, closes that admission-time exploit.
+feed **signed** `kcu_delta` arithmetic, **both** `accounting.estimate` and admission
+reject — as `configuration_error` — any selector with `vcpus < 1` or `memory_gb < 0` and
+any `window ≤ 0`. This guarantees `rate ≥ 0` and `estimate ≥ 0`: a negative-size or
+negative-window request cannot pass the budget check (`budget_remaining ≥ estimate` is
+trivially true for a negative estimate) and write a **negative `reserved`** row that would
+*increase* `budget_remaining` — i.e. mint budget. The **≤ resource-caps** check (a
+selector may not exceed the target Resource's advertised capabilities, the size being
+billed) is **admission-only**: only `allocations.request` has a chosen Resource, while
+`accounting.estimate` prices a hypothetical size with no target host. Validating at
+admission, not only at `systems.provision`, closes the admission-time mint-budget exploit.
 
 ### 3. Cost hits the ledger **reserve-at-grant, reconcile-at-release** (fail-closed)
 
@@ -162,12 +164,17 @@ runs:
 1. **Validate inputs** (before any lock): reject `vcpus < 1`, `memory_gb < 0`, a
    selector over the host's caps, or `window ≤ 0` (`configuration_error`), so `rate` and
    `estimate` are `≥ 0` and cannot mint budget (decision 2).
-2. **Resolve the client `idempotency_key`** against `idempotency_keys` (migration
-   `0002`): a replay returns the stored `allocation_id` with no second grant or
-   `reserved` debit. `allocations.request` is synchronous, so — unlike the M0 async tools
-   guarded by the job `dedup_key` — it would otherwise double-allocate and double-charge
-   on an ordinary client retry after a lost response; the key closes that. `renew` is
-   idempotent the same way.
+2. **Resolve the client `idempotency_key`**, **scoped to the caller's `principal`**,
+   against `idempotency_keys` (migration `0002`, PK `(principal, key)`): a replay returns
+   the stored `allocation_id` with no second grant or `reserved` debit. Scoping by
+   principal is required for correctness — a **global** key namespace would let one
+   tenant's client-chosen key collide with another's and resolve to a foreign allocation
+   (a cross-tenant leak). `allocations.request` is synchronous, so — unlike the M0 async
+   tools guarded by the job `dedup_key` — it would otherwise double-allocate and
+   double-charge on a retry after a lost response. Concurrent same-key requests are
+   serialized by the PK (the loser re-reads and returns the winner's result); denials are
+   not cached (the key is written only in the success transaction), so a denied request
+   is re-evaluated on retry. `renew` is idempotent the same way.
 3. Acquire `LockScope.PROJECT(project)` — **then** `LockScope.RESOURCE(resource_id)`.
    This is one instance of a **global total lock order** `PROJECT < RESOURCE <
    ALLOCATION < SYSTEM` that **every** multi-lock path obeys, so the design is
@@ -221,7 +228,7 @@ boundary, enforced and negatively tested ([ADR-0037](0037-rbac-hardening-role-se
   keeps the two-lock section deadlock-free.
 - Migration `0002` adds `ledger`, `budgets` (with the `spent_kcu` running total),
   `quotas`, `cost_class_coefficients`, an `idempotency_keys` store (request/renew
-  retry-dedup), and the `allocations` columns `requested_vcpus`/`requested_memory_gb`
+  retry-dedup, PK `(principal, key)`), and the `allocations` columns `requested_vcpus`/`requested_memory_gb`
   (rate inputs) and `active_started_at`/`active_ended_at` (the `active_hours` billing
   interval); all additive.
 - Admission reads `budget_remaining` in `O(1)` from `budgets.spent_kcu` rather than

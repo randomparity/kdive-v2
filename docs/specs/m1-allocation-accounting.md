@@ -66,12 +66,13 @@ W_CPU = 1.0 kcu/(vcpu·hr)   W_MEM = 0.25 kcu/(GB·hr)   (global reference weigh
   the allocation (`requested_vcpus`, `requested_memory_gb`), so estimate is computable
   before a System exists and the reconciliation recomputes the same rate.
 - **Inputs are validated before they reach the ledger.** Because selector size and
-  window flow into **signed** `kcu_delta` arithmetic, admission (and `accounting.estimate`)
-  reject a selector with `vcpus < 1` or `memory_gb < 0`, a selector exceeding the target
-  Resource's advertised capabilities (the size is *billed*, so it may not exceed what the
-  host can give), or a `window ≤ 0` — all `configuration_error`. `rate` and `estimate`
-  are therefore always `≥ 0`: no negative-size or negative-window request can mint budget
-  by writing a negative `reserved` row.
+  window flow into **signed** `kcu_delta` arithmetic, **both** `accounting.estimate` and
+  admission reject `vcpus < 1`, `memory_gb < 0`, or `window ≤ 0` (`configuration_error`),
+  so `rate` and `estimate` are always `≥ 0` and no negative-size/window request can mint
+  budget by writing a negative `reserved` row. The **≤ resource-caps** check (a selector
+  may not exceed the target Resource's advertised capabilities, since the size is
+  *billed*) is **admission-only** — only `allocations.request` has a chosen Resource;
+  `accounting.estimate` prices a hypothetical size with no target host.
 - **`accounting.estimate(selector, window)`** returns `rate × window_hours` with a
   breakdown; **`accounting.usage(project|investigation_id)`** rolls up `Σ kcu_delta`
   and `budget_remaining`.
@@ -122,7 +123,7 @@ admission, under a fixed **project-before-resource** lock order to stay deadlock
 
 ```
 validate selector (vcpus≥1, memory_gb≥0, ≤ resource caps) + window>0  → configuration_error
-resolve idempotency_key → if already seen, return the stored result (no re-grant, no re-debit)
+resolve (principal, idempotency_key) → if already seen, return the stored result (no re-grant)
 acquire LockScope.PROJECT(project)              # M1, new
   check max_concurrent_allocations (non-terminal count)   → quota_exceeded
   estimate = rate(selector) × window_hours       # always ≥ 0 (validated above)
@@ -132,7 +133,7 @@ acquire LockScope.PROJECT(project)              # M1, new
   one transaction:
     insert Allocation (granted, lease_expiry, requested size)
     insert ledger row (reserved, +estimate); budgets.spent_kcu += estimate
-    record idempotency_key → allocation_id
+    record (principal, idempotency_key) → allocation_id
     insert audit row (->granted)
 ```
 
@@ -141,12 +142,19 @@ Any failing check returns a typed failure with **no** allocation/ledger/audit ro
 over-budget or over-host-cap.
 
 **Request idempotency.** `allocations.request` and `allocations.renew` carry a client
-`idempotency_key`. Admission resolves it against an idempotency-key store (migration
-`0002`) **before** granting: a replayed key returns the original result — the same
-allocation, no second grant, no second `reserved` debit. Without this, a client retry
-after a lost response would create a duplicate allocation and double-charge the budget
-(reserve-at-grant makes that immediate). It is the synchronous analogue of the M0 job
-`dedup_key`, which only covers async tools.
+`idempotency_key`, **scoped to the caller's `principal`** — the store's primary key is
+`(principal, key)` and the resolve matches the caller, so one client's key can never
+resolve another's allocation and a colliding key string across principals/projects is
+harmless. Admission resolves the key **before** granting: a replay returns the original
+result (same allocation, no second grant, no second `reserved` debit) — the synchronous
+analogue of the M0 job `dedup_key`, which only covers async tools, and without which a
+retry after a lost response would double-allocate and (reserve-at-grant) double-charge.
+Three lifecycle rules: two **concurrent** same-key requests are made safe by the
+`(principal, key)` PK — the loser's insert conflicts, then re-reads and returns the
+winner's stored result rather than erroring; **denials are not cached** (the key is
+recorded only in the success transaction), so a request denied over budget is
+re-evaluated on retry (correct — the budget may have changed); and the append-only store
+is **GC'd by the reconciler** past a retention window.
 
 **Lock hierarchy.** Every path that takes more than one advisory lock acquires them in
 the fixed total order `PROJECT < RESOURCE < ALLOCATION < SYSTEM`, so no two paths can
@@ -264,7 +272,8 @@ ledger(id, ts, project, allocation_id→allocations, resource_id→resources,
        cost_class, event_type CHECK IN ('reserved','reconciled'),
        kcu_delta numeric NOT NULL, note)          -- append-only, signed (audit + by_cost_class source)
        INDEX (project), INDEX (allocation_id)
-idempotency_keys(key PK, project, kind, result jsonb, created_at)  -- request/renew retry-dedup
+idempotency_keys(key, principal, project, kind, result jsonb, created_at,
+                 PRIMARY KEY (principal, key))     -- request/renew retry-dedup, scoped per principal
 
 -- altered columns
 allocations  ADD requested_vcpus int, ADD requested_memory_gb int
@@ -325,9 +334,10 @@ as their M0 siblings do. Pick the most specific; do not invent strings.
 
 Adds the **`→expired` sweep** (ADR-0036): expired non-terminal allocations → `expired`
 → existing orphaned-System teardown → existing lease-expiry compensation → ledger
-reconciliation credit. Idempotent; observable via structured log. All other M0
-reconciler passes (orphaned System, abandoned job, dead DebugSession, leaked domain)
-are unchanged.
+reconciliation credit. Idempotent; observable via structured log. A second, minor new
+pass **GCs `idempotency_keys` past a retention window** (the append-only retry-dedup
+store has no other reaper). All other M0 reconciler passes (orphaned System, abandoned
+job, dead DebugSession, leaked domain) are unchanged.
 
 ## Exit criteria
 
