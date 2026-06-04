@@ -31,6 +31,8 @@ from typing import NamedTuple, Protocol
 from uuid import UUID
 
 import libvirt
+from defusedxml.common import DefusedXmlException
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.local_libvirt.provisioning import domain_name_for
@@ -200,7 +202,14 @@ class LocalLibvirtInstall:
             current = domain.XMLDesc(0)
         except libvirt.libvirtError as exc:
             raise self._install_failure("looking up", domain_name) from exc
-        root = ET.fromstring(current)  # noqa: S314 - libvirt's own domain XML, not untrusted input
+        # `XMLDesc` crosses the same libvirtd trust boundary the discovery plane parses
+        # with defusedxml: parse it the same way so a DOCTYPE/entity-expansion document
+        # cannot become a billion-laughs DoS here. A malformed/forbidden document is a
+        # clean install_failure, not a raw parser exception out of the handler.
+        try:
+            root = _safe_fromstring(current)
+        except (ET.ParseError, DefusedXmlException) as exc:
+            raise self._install_failure("parsing the domain XML of", domain_name) from exc
         os_el = root.find("os")
         if os_el is None:
             os_el = ET.SubElement(root, "os")
