@@ -37,6 +37,7 @@ async def _seed_expired_alloc(
     active_started_at: datetime | None = None,
     estimate: str = "9.0000",
     with_budget: bool = True,
+    sized: bool = True,
 ) -> UUID:
     """Seed a resource + budget + allocation whose lease_expiry = now() + lease_offset."""
     resource = await RESOURCES.insert(
@@ -68,8 +69,8 @@ async def _seed_expired_alloc(
             project="proj",
             resource_id=resource.id,
             state=state,
-            requested_vcpus=2,
-            requested_memory_gb=4,
+            requested_vcpus=2 if sized else None,
+            requested_memory_gb=4 if sized else None,
             active_started_at=active_started_at,
         ),
     )
@@ -275,6 +276,27 @@ def test_reconcile_once_reports_gc_count(migrated_url: str) -> None:
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             report = await loop.reconcile_once(pool, loop.NullReaper())
         assert report.idempotency_keys_gcd == 1
+
+    asyncio.run(_run())
+
+
+def test_unpriceable_allocation_does_not_starve_siblings(migrated_url: str) -> None:
+    # An active expired allocation with no persisted size cannot be reconciled; its
+    # per-allocation transaction rolls back, but a valid sibling in the same pass is still
+    # swept (per-allocation isolation), and the bad one stays non-terminal for retry.
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            started = datetime.now(UTC) - timedelta(hours=1)
+            bad = await _seed_expired_alloc(
+                seed, state=AllocationState.ACTIVE, active_started_at=started, sized=False
+            )
+            good = await _seed_expired_alloc(seed, state=AllocationState.GRANTED)
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, loop._sweep_expired_allocations)
+        assert count == 1  # only the good one
+        async with await connect(migrated_url) as check:
+            assert await _alloc_state(check, good) == "expired"
+            assert await _alloc_state(check, bad) == "active"  # rolled back, retried next pass
 
     asyncio.run(_run())
 
