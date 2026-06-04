@@ -19,7 +19,8 @@
 - **Create** `src/kdive/mcp/tools/artifacts.py` — `artifacts_list`, `artifacts_get`, `register`. Redacted-only.
 - **Modify** `src/kdive/mcp/app.py:21-29,32-51` — import `artifacts`, `vmcore`; append `artifacts.register`, `vmcore.register` to `_PLANE_REGISTRARS` and `vmcore.register_handlers` to `_HANDLER_REGISTRARS`.
 - **Create** `tests/providers/local_libvirt/test_retrieve.py` — provider unit tests (fake store / fake seams); `live_vm`-gated real path test.
-- **Create** `tests/mcp/test_vmcore_tools.py` — `vmcore.fetch`/`capture_handler`/`list`/`postmortem.*` tests (real Postgres, fake `Retriever`/`CrashPostmortem`/store).
+- **Create** `tests/mcp/_seed.py` — shared `seed_crashed_system`/`seed_run_on_system` helpers imported by both MCP test modules (keeps each test module self-contained).
+- **Create** `tests/mcp/test_vmcore_tools.py` — `vmcore.fetch`/`capture_handler`/`list`/`postmortem.*` tests + the surface-wide redaction guard (real Postgres, fake `Retriever`/`CrashPostmortem`/store).
 - **Create** `tests/mcp/test_artifacts_tools.py` — `artifacts.list`/`.get` redacted-only tests (real Postgres).
 - **Modify** `tests/mcp/test_app.py` — assert the two new tool registrars and the capture handler are registered.
 
@@ -176,8 +177,6 @@ def _retriever(store: _FakeStore, *, core: bytes | None) -> LocalLibvirtRetrieve
         wait_for_vmcore=lambda system_id: core,
         read_vmcore_build_id=lambda data: "deadbeef",
         extract_redacted=lambda data: b"dmesg: password=[REDACTED]",
-        fetch_object=lambda ref: b"",
-        run_crash=lambda vmlinux, vmcore, script: None,  # unused in capture tests
     )
 
 
@@ -209,18 +208,16 @@ def test_capture_store_failure_is_infrastructure_failure() -> None:
 
 - [ ] **Step 2:** Run `uv run python -m pytest tests/providers/local_libvirt/test_retrieve.py -q`. Expected: FAIL (`CaptureOutput`/`LocalLibvirtRetrieve` absent).
 
-- [ ] **Step 3:** Add to `src/kdive/providers/local_libvirt/retrieve.py` (after the validator), the imports, types, and the `capture` half of the class:
+- [ ] **Step 3:** Add to `src/kdive/providers/local_libvirt/retrieve.py` (after the validator) only the **capture** imports, types, and class. This task is self-contained: it imports nothing it does not use and forward-references no symbol from a later task (the crash seams `fetch_object`/`run_crash` and the `from_env`/`_real_*` helpers all land in Task 3, which widens `__init__`). All Task-2 guardrails (`ruff`, `ty`, `pytest`) must be green at this commit.
 
 ```python
-import os
 from collections.abc import Callable
-from pathlib import Path
 from typing import NamedTuple, Protocol
 from uuid import UUID
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
-from kdive.store.objectstore import StoredArtifact, object_store_from_env
+from kdive.store.objectstore import StoredArtifact
 
 _RETENTION_CLASS = "vmcore"
 
@@ -249,11 +246,9 @@ class _StorePort(Protocol):
 type _WaitForVmcore = Callable[[UUID], bytes | None]
 type _ReadBuildId = Callable[[bytes], str]
 type _ExtractRedacted = Callable[[bytes], bytes]
-type _FetchObject = Callable[[str], bytes]
-type _RunCrash = Callable[[Path, Path, str], "CrashResult"]
 ```
 
-Then the class with `from_env` and `capture` (the `run` half and crash types arrive in Task 3 — declare the seam fields now, leave `run` raising `NotImplementedError` only if a partial commit is needed; this task adds the full `capture`):
+Then the class with a **capture-only** `__init__` (Task 3 widens it to add the crash seams and `from_env`):
 
 ```python
 class LocalLibvirtRetrieve:
@@ -265,8 +260,6 @@ class LocalLibvirtRetrieve:
         wait_for_vmcore: _WaitForVmcore,
         read_vmcore_build_id: _ReadBuildId,
         extract_redacted: _ExtractRedacted,
-        fetch_object: _FetchObject,
-        run_crash: _RunCrash,
     ) -> None:
         self._tenant = tenant
         self._store_factory = store_factory
@@ -274,8 +267,6 @@ class LocalLibvirtRetrieve:
         self._wait_for_vmcore = wait_for_vmcore
         self._read_vmcore_build_id = read_vmcore_build_id
         self._extract_redacted = extract_redacted
-        self._fetch_object = fetch_object
-        self._run_crash = run_crash
 
     def capture(self, system_id: UUID) -> CaptureOutput:
         """Wait for kdump, store the raw + redacted core, return both refs and the build-id.
@@ -307,7 +298,7 @@ class LocalLibvirtRetrieve:
         )
 ```
 
-- [ ] **Step 4:** Run `uv run python -m pytest tests/providers/local_libvirt/test_retrieve.py -q`. Expected: PASS. (`_RunCrash`/`CrashResult` forward-ref is unresolved until Task 3 — if ty flags it, define a minimal `class CrashResult(NamedTuple): exit_status: int; stdout: bytes; stderr: bytes` stub now and flesh it in Task 3.)
+- [ ] **Step 4:** Run `uv run python -m pytest tests/providers/local_libvirt/test_retrieve.py -q`. Expected: PASS. No crash types or seams are referenced yet, so `ty check src` and `ruff check` are clean at this commit (no forward-refs, no unused imports).
 
 - [ ] **Step 5:** Guardrails green; commit:
 
@@ -362,7 +353,38 @@ def test_run_build_id_mismatch_is_configuration_error() -> None:
 
 - [ ] **Step 2:** Run the file. Expected: FAIL (`CrashOutput`/`CrashResult`/`run` absent).
 
-- [ ] **Step 3:** Add to `retrieve.py`: the `Redactor` import (`from kdive.security.redaction import Redactor`), `tempfile`, and:
+- [ ] **Step 3a (widen `__init__`, additively):** Add the crash-seam imports and type aliases, and widen `LocalLibvirtRetrieve.__init__` to accept the two crash seams **as optional keyword params defaulting to `None`** — so Task-2's five-seam `_retriever(...)` call still type-checks and passes unchanged (no edit to the Task-2 test helper). Add to the import block: `import tempfile`, `from pathlib import Path`, `from kdive.security.redaction import Redactor`, and extend the objectstore import to `from kdive.store.objectstore import StoredArtifact, object_store_from_env`. Add the aliases:
+
+```python
+type _FetchObject = Callable[[str], bytes]
+type _RunCrash = Callable[[Path, Path, str], "CrashResult"]
+```
+
+and extend `__init__` (the crash seams default to `None`; `run` raises a clear error if invoked without them, which never happens in the wired path because `from_env`/tests supply them):
+
+```python
+    def __init__(
+        self, *, tenant: str,
+        store_factory: Callable[[], _StorePort],
+        wait_for_vmcore: _WaitForVmcore,
+        read_vmcore_build_id: _ReadBuildId,
+        extract_redacted: _ExtractRedacted,
+        fetch_object: _FetchObject | None = None,
+        run_crash: _RunCrash | None = None,
+    ) -> None:
+        self._tenant = tenant
+        self._store_factory = store_factory
+        self._store: _StorePort | None = None
+        self._wait_for_vmcore = wait_for_vmcore
+        self._read_vmcore_build_id = read_vmcore_build_id
+        self._extract_redacted = extract_redacted
+        self._fetch_object = fetch_object
+        self._run_crash = run_crash
+```
+
+In `run` (Step 3b), narrow the optionals at entry: `if self._fetch_object is None or self._run_crash is None: raise CategorizedError("crash seams not configured", category=ErrorCategory.MISSING_DEPENDENCY)` — keeps `ty` happy (no `None`-call) and documents the contract. The Task-2 helper is untouched; both task suites pass.
+
+- [ ] **Step 3b (add the crash types + `run`):** Add to `retrieve.py`:
 
 ```python
 class CrashResult(NamedTuple):
@@ -404,8 +426,14 @@ And the `run` method on `LocalLibvirtRetrieve`:
         returns the parsed, **redacted** transcript.
 
         Raises:
-            CategorizedError: ``CONFIGURATION_ERROR`` on a build-id provenance mismatch.
+            CategorizedError: ``CONFIGURATION_ERROR`` on a build-id provenance mismatch;
+                ``MISSING_DEPENDENCY`` if the crash seams were not configured.
         """
+        if self._fetch_object is None or self._run_crash is None:
+            raise CategorizedError(
+                "crash seams not configured on this Retriever",
+                category=ErrorCategory.MISSING_DEPENDENCY,
+            )
         vmcore_bytes = self._fetch_object(vmcore_ref)
         observed = self._read_vmcore_build_id(vmcore_bytes)
         if observed != expected_build_id:
@@ -507,13 +535,15 @@ git commit -m "feat(retrieve): add CrashPostmortem port + live_vm seams (#24)"
 git log -1 --oneline
 ```
 
-## Task 4: `artifacts.*` tools (redacted-only reads)
+## Task 4: shared seed helper + `artifacts.*` tools (redacted-only reads)
 
-**Files:** Create `src/kdive/mcp/tools/artifacts.py`, `tests/mcp/test_artifacts_tools.py` (spec §Components → `artifacts.py`)
+**Files:** Create `tests/mcp/_seed.py`, `src/kdive/mcp/tools/artifacts.py`, `tests/mcp/test_artifacts_tools.py` (spec §Components → `artifacts.py`)
 
-`artifacts.list(system_id)` and `artifacts.get(artifact_id)` are synchronous reads that surface **only** `redacted` rows; a `sensitive` id is not-found-shaped.
+`artifacts.list(system_id)` and `artifacts.get(artifact_id)` are synchronous reads that surface **only** `redacted` rows; a `sensitive` id is not-found-shaped. This task also lands the shared System/Run seeding helpers in a neutral `tests/mcp/_seed.py` so Task 4 and Task 5 are each self-contained and green at their own commit (no cross-test-module import).
 
-- [ ] **Step 1 (tests first):** Create `tests/mcp/test_artifacts_tools.py`. Seed a System (reuse the `test_control_tools.py` helpers' shape: a granted allocation + a System) and insert one `sensitive` + one `redacted` `artifacts` row owned by the System, then assert the read filter:
+- [ ] **Step 0 (shared seed helpers):** Create `tests/mcp/_seed.py` with `seed_crashed_system(pool) -> str` and `seed_run_on_system(pool, sys_id, *, debuginfo_ref, build_id) -> str`, ported from the `_granted_allocation`/`_seed_system` shape in `tests/mcp/test_control_tools.py` (granted allocation via `LocalLibvirtDiscovery`/`register_local_libvirt_resource` → System inserted `state=SystemState.CRASHED`; `seed_run_on_system` inserts an Investigation + a `succeeded` Run with the given `debuginfo_ref`, then a `run_steps` `build` row whose `result` jsonb carries `{"build_id": build_id, ...}`). Both `test_artifacts_tools.py` and `test_vmcore_tools.py` import from `tests.mcp._seed`. No test asserts on `_seed.py` itself; it is exercised transitively. Add a trivial import-smoke test in `test_artifacts_tools.py` Step 1 so this file is covered at the Task-4 commit.
+
+- [ ] **Step 1 (tests first):** Create `tests/mcp/test_artifacts_tools.py`, importing the shared helpers from `tests.mcp._seed`, and insert one `sensitive` + one `redacted` `artifacts` row owned by the seeded System, then assert the read filter:
 
 ```python
 """artifacts.* tool tests — handlers called directly with an injected pool."""
@@ -556,9 +586,9 @@ async def _seed_system_with_artifacts(pool: AsyncConnectionPool) -> tuple[str, s
     """Insert a System row and a sensitive + redacted artifact owned by it.
 
     Returns (system_id, sensitive_artifact_id, redacted_artifact_id).
-    Uses the seeding helpers from test_vmcore_tools for the System; here insert artifacts directly.
+    Uses the shared seeding helper from tests.mcp._seed for the System; insert artifacts directly.
     """
-    from tests.mcp.test_vmcore_tools import seed_crashed_system  # shared helper (Task 5)
+    from tests.mcp._seed import seed_crashed_system
 
     sys_id = await seed_crashed_system(pool)
     async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -614,7 +644,7 @@ def test_artifacts_get_malformed_uuid_is_config_error(migrated_url: str) -> None
     asyncio.run(_run())
 ```
 
-- [ ] **Step 2:** Run `uv run python -m pytest tests/mcp/test_artifacts_tools.py -q`. Expected: FAIL (module + the Task-5 helper absent — this task and Task 5 share `seed_crashed_system`; implement Task 5's helper as part of Task 5, run these two test files together at the end of Task 5).
+- [ ] **Step 2:** Run `uv run python -m pytest tests/mcp/test_artifacts_tools.py -q`. Expected: FAIL (`artifacts` tool module absent; `tests.mcp._seed` exists from Step 0). This file is fully self-contained at this task — it depends only on `_seed.py`, not on `test_vmcore_tools.py`.
 
 - [ ] **Step 3:** Create `src/kdive/mcp/tools/artifacts.py`:
 
@@ -737,24 +767,23 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         return await artifacts_get(pool, current_context(), artifact_id=artifact_id)
 ```
 
-- [ ] **Step 4:** (Tests run at the end of Task 5, once the shared `seed_crashed_system` helper exists.) Guardrails for the new module: `uv run ruff check && uv run ty check src`.
+- [ ] **Step 4:** Run `uv run python -m pytest tests/mcp/test_artifacts_tools.py -q`. Expected: PASS (the module now exists and `_seed.py` supplies the System). This task is self-contained and green at its own commit.
 
-- [ ] **Step 5:** Commit (module only; tests committed with Task 5 to keep them green):
+- [ ] **Step 5:** Full guardrails (`uv run ruff check && uv run ruff format && uv run ty check src && uv run python -m pytest -q`), then commit the helper + module + tests together:
 
 ```bash
-git add src/kdive/mcp/tools/artifacts.py
-git commit -m "feat(artifacts): add redacted-only artifacts.list/.get (#24)"
+git add tests/mcp/_seed.py src/kdive/mcp/tools/artifacts.py tests/mcp/test_artifacts_tools.py
+git commit -m "feat(artifacts): add redacted-only artifacts.list/.get + test seeds (#24)"
 git log -1 --oneline
 ```
 
 ## Task 5: `vmcore.*` + `postmortem.*` tools and the capture handler
 
-**Files:** Create `src/kdive/mcp/tools/vmcore.py`, `tests/mcp/test_vmcore_tools.py`; finish `tests/mcp/test_artifacts_tools.py` (spec §Components → `vmcore.py`, §Error contract, §Idempotency)
+**Files:** Create `src/kdive/mcp/tools/vmcore.py`, `tests/mcp/test_vmcore_tools.py` (spec §Components → `vmcore.py`, §Error contract, §Idempotency)
 
 `fetch_vmcore` admits on a `crashed` System; `capture_handler` captures under the per-System lock with the existing-row idempotency check; `list_vmcores` is redacted-only; `postmortem_crash`/`_triage` validate commands, run the port, redact, return.
 
-- [ ] **Step 1 (tests first):** Create `tests/mcp/test_vmcore_tools.py` with the shared seeding helpers and the handler tests. (Seed via the `test_control_tools.py` pattern: granted allocation → System.) Include:
-  - `seed_crashed_system(pool) -> str` and `seed_run_on_system(pool, sys_id, *, debuginfo_ref, build_id)` helpers (importable by `test_artifacts_tools.py`);
+- [ ] **Step 1 (tests first):** Create `tests/mcp/test_vmcore_tools.py`, importing `seed_crashed_system`/`seed_run_on_system` from `tests.mcp._seed` (created in Task 4 Step 0 — no import from another test module). Include:
   - `test_fetch_vmcore_crashed_enqueues_job` — `vmcore.fetch` on a `crashed` System returns `status=="queued"` and a job with `dedup_key == f"{sys_id}:capture_vmcore"` exists;
   - `test_fetch_vmcore_non_crashed_is_config_error` — a `ready` System → `configuration_error` with `current_status=="ready"`;
   - `test_fetch_vmcore_without_operator_raises` — `Role.VIEWER` → `AuthorizationError`;
@@ -770,7 +799,7 @@ git log -1 --oneline
 
   Use a `_FakeRetriever` (records `.capture` calls, returns a canned `CaptureOutput` built from a `_FakeStore`-style `StoredArtifact`) and a `_FakeCrashPostmortem` (returns a canned `CrashOutput`). Mirror the `_FakeControl` injection style from `test_control_tools.py`.
 
-- [ ] **Step 2:** Run `uv run python -m pytest tests/mcp/test_vmcore_tools.py tests/mcp/test_artifacts_tools.py -q`. Expected: FAIL (module absent).
+- [ ] **Step 2:** Run `uv run python -m pytest tests/mcp/test_vmcore_tools.py -q`. Expected: FAIL (`vmcore` tool module absent; `_seed.py` already exists from Task 4).
 
 - [ ] **Step 3:** Create `src/kdive/mcp/tools/vmcore.py`. Structure (mirror `control.py` + `runs.py`):
   - imports: `asyncio`, `UUID`, `AsyncConnection`/`AsyncConnectionPool`, `LockScope`/`advisory_xact_lock`, `SYSTEMS`/`RUNS`/`ARTIFACTS`, `queue`, `HandlerRegistry`, `RequestContext`/`current_context`, `ToolResponse`, `audit`, `require_role`/`Role`, the provider `Retriever`/`CrashPostmortem`/`LocalLibvirtRetrieve`/`crash_command_rejection_reason`, `register_artifact_row`, `Redactor`.
@@ -786,12 +815,12 @@ git log -1 --oneline
 
   Keep each function ≤100 lines / complexity ≤8 (split the handler's capture-and-finalize into a `_finalize_capture` helper like `runs._finalize_build`). Type SQL strings as `LiteralString`.
 
-- [ ] **Step 4:** Run `uv run python -m pytest tests/mcp/test_vmcore_tools.py tests/mcp/test_artifacts_tools.py -q`. Expected: PASS. Fix until green.
+- [ ] **Step 4:** Run `uv run python -m pytest tests/mcp/test_vmcore_tools.py -q`. Expected: PASS. Fix until green.
 
 - [ ] **Step 5:** Guardrails green; commit:
 
 ```bash
-git add src/kdive/mcp/tools/vmcore.py tests/mcp/test_vmcore_tools.py tests/mcp/test_artifacts_tools.py
+git add src/kdive/mcp/tools/vmcore.py tests/mcp/test_vmcore_tools.py
 git commit -m "feat(vmcore): add vmcore.*/postmortem.* tools + capture handler (#24)"
 git log -1 --oneline
 ```
@@ -801,6 +830,8 @@ git log -1 --oneline
 **Files:** Modify `src/kdive/mcp/app.py:21-29,32-51`, `tests/mcp/test_app.py` (spec §Canonical surface; ADR-0031 §Consequences)
 
 - [ ] **Step 1 (test first):** In `tests/mcp/test_app.py`, add (or extend the existing tool-listing test) assertions that `await app.list_tools()` includes `vmcore.fetch`, `vmcore.list`, `artifacts.list`, `artifacts.get`, `postmortem.crash`, `postmortem.triage`, and that `build_handler_registry().get(JobKind.CAPTURE_VMCORE) is not None`. Run; expect FAIL (tools/handler absent).
+
+- [ ] **Step 1b (surface-wide redaction guard):** In `tests/mcp/test_vmcore_tools.py`, add `test_no_raw_vmcore_key_in_any_read_response`: seed a crashed System, run `capture_handler` to land both rows, then collect every ref from `list_vmcores`, `artifacts_list`, and `artifacts_get` over each listed id, and assert **no** returned `refs` value ends in `/vmcore` (the raw `sensitive` key) — only `/vmcore-redacted` keys appear. This is the load-bearing redaction property of the plane, asserted at the surface (not just per-tool). Run with the file; expect PASS after Task 5's code. (Placed here because it exercises the registered read surface end-to-end.)
 
 - [ ] **Step 2:** Edit `src/kdive/mcp/app.py`:
   - add `artifacts,` and `vmcore,` to the `from kdive.mcp.tools import (...)` block (alphabetical: `artifacts` first, `vmcore` last);
@@ -830,6 +861,7 @@ git log -1 --oneline
 
 ## Self-review notes
 
-- **Spec coverage:** `vmcore.fetch`/capture (Tasks 2,3,5), `vmcore.list` redacted-only (Task 5), `artifacts.list`/`.get` redacted-only (Task 4), `postmortem.crash`/`.triage` (Tasks 1,3,5), `readiness_failure` no-core (Tasks 2,5), object-before-row + lock-guarded idempotency (Tasks 2,5), build-id provenance (Tasks 3,5), redaction before return + persist (Tasks 2,3,5), registration (Task 6). All spec sections map to a task.
+- **Spec coverage:** `vmcore.fetch`/capture (Tasks 2,3,5), `vmcore.list` redacted-only (Task 5), `artifacts.list`/`.get` redacted-only (Task 4), `postmortem.crash`/`.triage` (Tasks 1,3,5), `readiness_failure` no-core (Tasks 2,5), object-before-row + lock-guarded idempotency (Tasks 2,5), build-id provenance (Tasks 3,5), redaction before return + persist (Tasks 2,3,5) plus a surface-wide "no raw vmcore key in any read response" guard (Task 6 Step 1b), registration (Task 6). All spec sections map to a task.
+- **Per-task green commits:** every task is self-contained — no committed file forward-references a later task's symbol (Task 2's `__init__` is capture-only; Task 3 widens it additively with `None`-defaulted crash seams), and the shared test seeds live in `tests/mcp/_seed.py` (Task 4 Step 0) so Tasks 4 and 5 are each green at their own commit with no cross-test-module import.
 - **Idempotency note:** the capture handler runs the slow `capture` seam with no transaction held, then finalizes under the lock with an existing-row re-check — the `build_handler` shape. Both the admission dedup_key and the existing-row check are exercised in Task 5.
 - **Shared-file edit:** only `app.py` (two registrar appends + one handler append). Flag in NOTES; a sibling (#19) may touch the same tuples — keep the appends minimal and rebase-friendly.
