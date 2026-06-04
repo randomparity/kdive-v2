@@ -17,7 +17,7 @@
 - **Create** `src/kdive/providers/local_libvirt/introspect_drgn.py` — `IntrospectOutput`/`VmcoreIntrospector`, the `_Program` typed `Protocol`, the three helper functions (`_helper_tasks`/`_helper_modules`/`_helper_sysinfo`), the byte-cap + redaction assembly, `LocalLibvirtVmcoreIntrospect.{from_env,from_vmcore}`, the `live_vm` real seams (with the single `# ty: ignore[unresolved-import]` `import drgn` line). DB-free.
 - **Create** `src/kdive/mcp/tools/introspect.py` — `introspect_from_vmcore` (the tool body + Run/System/build-id resolution), `register`. No `register_handlers` (synchronous, no job kind).
 - **Modify** `src/kdive/mcp/app.py` — import `introspect`; append `introspect.register` to `_PLANE_REGISTRARS`. No `_HANDLER_REGISTRARS` change.
-- **Create** `tests/providers/local_libvirt/test_introspect_drgn.py` — provider unit tests (fake `_Program` + fake seams): provenance, open failure, per-helper degrade, modules all-failed, byte-cap/`truncated`, redaction at the port boundary; a `@pytest.mark.n` real-drgn placeholder (deselected in CI, Task 4).
+- **Create** `tests/providers/local_libvirt/test_introspect_drgn.py` — provider unit tests (fake `_Program` + fake seams): provenance, open failure, per-helper degrade, modules all-failed, byte-cap/`truncated`, redaction at the port boundary; a `@pytest.mark.live_vm` real-drgn placeholder (deselected in CI, Task 4).
 - **Create** `tests/mcp/test_introspect_tools.py` — `introspect.from_vmcore` handler tests (real Postgres, fake `VmcoreIntrospector`): resolution failures, provenance, typed-failure mapping, redaction in `data["report"]`, `truncated` surfaced, `register` adds the tool.
 - **Modify** `tests/mcp/test_app.py` — only if it asserts the registered tool set; add `introspect.from_vmcore` if so.
 
@@ -59,14 +59,14 @@ The `from_vmcore()` contract (spec §Components steps 1–5): fetch core, **prov
 - [ ] **Step 2:** Implement `LocalLibvirtVmcoreIntrospect.__init__`/`from_env`/`from_vmcore`, the `_assemble_report` (byte-cap + `truncated`), the `_redact` step, and the real seams (`_real_open_program` with the single `# ty: ignore[unresolved-import]` `import drgn` and `# pragma: no cover - live_vm`; `_real_run_helper`; `_real_read_vmcore_build_id`). **Define a local `_real_read_vmcore_build_id`** (`# pragma: no cover - live_vm`) that raises `CategorizedError(MISSING_DEPENDENCY)` — the same shape `retrieve._real_read_vmcore_build_id` uses; do **not** import the `_`-private from `retrieve.py` (two trivial gated stubs that both raise are not worth a cross-module private import). Keep `from_vmcore` ≤100 lines / complexity ≤8 (extract `_provenance`, `_assemble_report`).
 - [ ] **Step 3 (guardrails + commit):** `feat(debug): LocalLibvirtVmcoreIntrospect with provenance, byte-cap, redaction (#22)`. Verify HEAD.
 
-## Task 4: gated real-seam smoke test (repo `@pytest.mark.n` idiom)
+## Task 4: gated real-seam smoke test (repo `@pytest.mark.live_vm` idiom)
 
 **Files:** `tests/providers/local_libvirt/test_introspect_drgn.py`
 
-The repo's gated-integration-test idiom is **not** a `live_vm`/`skipif` marker (`test_retrieve.py` has no gated test — its real path is covered by `# pragma: no cover - live_vm` on the seams). It is `@pytest.mark.n` on a `def ...():  # pragma: no cover - n` body that `raise NotImplementedError(...)`, as in `tests/providers/local_libvirt/test_build.py` / `test_install.py` (the `n` marker is already registered, so no unknown-marker warning fires). Mirror that exactly.
+The repo's gated-integration-test idiom is `@pytest.mark.live_vm` (registered in `pyproject.toml [tool.pytest.ini_options] markers`, deselected in CI via `-m "not live_vm"` — see `.github/workflows/ci.yml`). The body is `# pragma: no cover - live_vm`, guards on the env (`pytest.skip(...)` when the operator-provided inputs are absent), then `raise NotImplementedError(...)`, exactly as `tests/providers/local_libvirt/test_build.py::test_live_vm_real_make_build_id_matches_readelf` / `test_install.py`. Mirror that exactly.
 
-- [ ] **Step 1:** Add a `@pytest.mark.n`-marked test `test_n_real_drgn_from_vmcore` with a `# pragma: no cover - n` body that `raise NotImplementedError("n real drgn introspection harness wired by the n runner")`, copying the shape from `test_build.py::test_n_real_make_build_id_matches_readelf`. Confirm `pytest -q` deselects it (the `n` marker is filtered in the default run) with no unknown-marker warning.
-- [ ] **Step 2 (guardrails + commit):** `test(debug): mark.n real drgn smoke placeholder (#22)`. Verify HEAD.
+- [ ] **Step 1:** Add a `@pytest.mark.live_vm`-marked test `test_live_vm_real_drgn_from_vmcore` with a `# pragma: no cover - live_vm` body that `pytest.skip(...)` when the gated inputs (e.g. `KDIVE_VMCORE`/`KDIVE_VMLINUX`) are absent, else `raise NotImplementedError("live_vm real drgn introspection harness wired by the live_vm runner")`, copying the shape from `test_build.py`. Confirm `uv run python -m pytest -m "not live_vm" -q` deselects it (the registered marker filters it out of PR CI) with no unknown-marker warning.
+- [ ] **Step 2 (guardrails + commit):** `test(debug): live_vm-gated real drgn smoke placeholder (#22)`. Verify HEAD.
 
 ## Task 5: `introspect.from_vmcore` tool handler + Run/System/build-id resolution (real Postgres)
 
@@ -92,7 +92,7 @@ The repo's gated-integration-test idiom is **not** a `live_vm`/`skipif` marker (
 
 **Files:** all of the above
 
-- [ ] **Step 1:** Full `uv run ruff check` · `uv run ruff format --check` · `uv run ty check src` · `uv run python -m pytest -q` (whole suite, not just new files) — confirm zero warnings and that the `@pytest.mark.n` real-drgn test is **deselected** (filtered out of the default run, never collected/errored), no unknown-marker warning.
+- [ ] **Step 1:** Full `uv run ruff check` · `uv run ruff format --check` · `uv run ty check src` · `uv run python -m pytest -q` (whole suite, not just new files) — confirm zero warnings and that the `@pytest.mark.live_vm` real-drgn test is **deselected** under `-m "not live_vm"` (never collected/errored in PR CI), no unknown-marker warning.
 - [ ] **Step 2:** Run the enforced `/challenge main..HEAD` loop (spec §6 of work-issue); address every defensible finding via `superpowers:receiving-code-review`; commit after each pass until `approve` or 5 iterations.
 - [ ] **Step 3:** Push `git push -u origin HEAD`; open the PR (`Closes #22`); watch `gh pr checks --watch` AND poll `gh pr view --json mergeable,mergeStateStatus` until green AND CLEAN/MERGEABLE.
 
@@ -112,7 +112,7 @@ The repo's gated-integration-test idiom is **not** a `live_vm`/`skipif` marker (
 | null `debuginfo_ref` / no build step / no core / bad uuid | tool | `configuration_error` |
 | cross-project `run_id` | tool | `configuration_error` (not-found-shaped) |
 | `register` adds the tool | tool/app | `introspect.from_vmcore` in `list_tools()` |
-| real drgn path | `@pytest.mark.n` test | deselected in CI (not collected) |
+| real drgn path | `@pytest.mark.live_vm` test | deselected in CI (`-m "not live_vm"`) |
 
 ## Rollback / cleanup
 
