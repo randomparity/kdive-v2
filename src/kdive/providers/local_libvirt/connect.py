@@ -25,10 +25,14 @@ from collections.abc import Callable
 from typing import NamedTuple, Protocol
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.models import ResourceKind
+from kdive.providers.capability import Capability, CleanupGuarantee, OpContract, Plane
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 
 _GDBSTUB = "gdbstub"
-_HANDLE_SCHEME = "gdbstub://"
+_SSH = "ssh"
+_TRANSPORT_KINDS = frozenset({_GDBSTUB, _SSH})
+_DEFAULT_SSH_PORT = 22
 
 # Cap on bytes buffered while waiting for a complete RSP frame from an unauthenticated peer.
 # A valid `$...#xx` halt-reason reply is a few dozen bytes; the bound stops a hostile peer
@@ -38,6 +42,7 @@ _PROBE_TIMEOUT_S = 2.0
 
 type _ResolveEndpoint = Callable[[SystemHandle], tuple[str, int]]
 type _Probe = Callable[[str, int], bool]
+type _SshConnect = Callable[[str, int], bool]
 
 
 def rsp_frame(payload: str) -> bytes:
@@ -72,8 +77,9 @@ def valid_rsp_frame(buffer: bytes) -> bool:
 class TransportHandleData(NamedTuple):
     """A decoded transport handle: the transport kind and its loopback endpoint.
 
-    Encoded as ``gdbstub://<host>:<port>`` for the ``transport_handle`` column. It carries
-    only provider-resolved, non-sensitive values (a loopback endpoint), never guest output.
+    Encoded as ``<kind>://<host>:<port>`` (``gdbstub`` or ``ssh``) for the
+    ``transport_handle`` column. It carries only provider-resolved, non-sensitive values (a
+    loopback endpoint), never guest output or a credential.
     """
 
     kind: str
@@ -81,7 +87,7 @@ class TransportHandleData(NamedTuple):
     port: int
 
     def encode(self) -> str:
-        """Serialize to the ``gdbstub://host:port`` wire form."""
+        """Serialize to the ``<kind>://host:port`` wire form."""
         return f"{self.kind}://{self.host}:{self.port}"
 
     @classmethod
@@ -90,11 +96,12 @@ class TransportHandleData(NamedTuple):
 
         Raises:
             CategorizedError: ``CONFIGURATION_ERROR`` if ``raw`` is not a well-formed
-                ``gdbstub://host:port`` handle (the message names the shape, not the value).
+                ``<kind>://host:port`` handle for a known transport kind (the message names
+                the shape, not the value).
         """
-        if not raw.startswith(_HANDLE_SCHEME):
-            raise _config_error("transport handle is not a gdbstub handle")
-        remainder = raw[len(_HANDLE_SCHEME) :]
+        scheme, sep, remainder = raw.partition("://")
+        if not sep or scheme not in _TRANSPORT_KINDS:
+            raise _config_error("transport handle has no known transport scheme")
         host, sep, port_text = remainder.rpartition(":")
         if not sep or not host:
             raise _config_error("transport handle is missing host:port")
@@ -102,7 +109,7 @@ class TransportHandleData(NamedTuple):
             port = int(port_text)
         except ValueError as exc:
             raise _config_error("transport handle port is not an integer") from exc
-        return cls(kind=_GDBSTUB, host=host, port=port)
+        return cls(kind=scheme, host=host, port=port)
 
 
 class Connector(Protocol):
@@ -110,6 +117,33 @@ class Connector(Protocol):
 
     def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle: ...
     def close_transport(self, handle: TransportHandle) -> None: ...
+
+
+# The Connect-plane op is synchronous (a bounded reachability probe, ADR-0032 §3): not a job,
+# not destructive, idempotent (re-opening yields an equivalent handle), best-effort cleanup
+# (close is a no-op for these connectionless/short-lived probes).
+_OPEN_TRANSPORT_CONTRACT = OpContract(
+    idempotent=True,
+    destructive=False,
+    cancelable=False,
+    long_running=False,
+    cleanup=CleanupGuarantee.BEST_EFFORT,
+)
+
+
+def connect_capability() -> Capability:
+    """The ``(connect, open_transport, local-libvirt)`` capability the provider advertises.
+
+    One capability covers every transport kind the backend supports (``gdbstub`` + ``ssh``);
+    the kind is the runtime argument to ``open_transport``, not a separate registry key
+    (ADR-0039 §1: "a second transport = a provider change only", behind the same capability).
+    """
+    return Capability(
+        plane=Plane.CONNECT,
+        operation="open_transport",
+        resource_kind=ResourceKind.LOCAL_LIBVIRT,
+        contract=_OPEN_TRANSPORT_CONTRACT,
+    )
 
 
 def _config_error(message: str) -> CategorizedError:
@@ -125,32 +159,58 @@ def _is_loopback_literal(host: str) -> bool:
 
 
 class LocalLibvirtConnect:
-    """The realized `Connector` for the local libvirt gdbstub (open/close transport)."""
+    """The realized `Connector` for local-libvirt transports: gdbstub (M0) and ssh (M1).
 
-    def __init__(self, *, resolve_endpoint: _ResolveEndpoint, probe: _Probe) -> None:
+    Both transports enforce loopback-only **before any network IO** (the ported v1 "F2"
+    SSRF control, ADR-0032 §5 / ADR-0039 §1) and probe reachability over an injected,
+    ``live_vm``-gated seam: an RSP framing probe for gdbstub, an SSH connect for ssh.
+    """
+
+    def __init__(
+        self,
+        *,
+        resolve_endpoint: _ResolveEndpoint,
+        probe: _Probe,
+        resolve_ssh_endpoint: _ResolveEndpoint | None = None,
+        ssh_connect: _SshConnect | None = None,
+    ) -> None:
         self._resolve_endpoint = resolve_endpoint
         self._probe = probe
+        self._resolve_ssh_endpoint = (
+            resolve_ssh_endpoint if resolve_ssh_endpoint is not None else _real_resolve_ssh_endpoint
+        )
+        self._ssh_connect = ssh_connect if ssh_connect is not None else _real_ssh_connect
 
     @classmethod
     def from_env(cls) -> LocalLibvirtConnect:
-        """Build with the real, ``live_vm``-gated resolver + prober; opens no connection."""
-        return cls(resolve_endpoint=_real_resolve_endpoint, probe=_real_probe)
+        """Build with the real, ``live_vm``-gated resolvers + probers; opens no connection."""
+        return cls(
+            resolve_endpoint=_real_resolve_endpoint,
+            probe=_real_probe,
+            resolve_ssh_endpoint=_real_resolve_ssh_endpoint,
+            ssh_connect=_real_ssh_connect,
+        )
 
     def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle:
-        """Open a single-attach gdbstub transport and return its handle.
+        """Open a single-attach transport (gdbstub or ssh) and return its handle.
 
-        Resolves the System's gdbstub endpoint, enforces loopback-only before any IO, and
-        probes RSP reachability. Runs no DB work — the caller owns the session row and the
-        per-System lock (the probe deliberately runs lock-free, ADR-0032 §6a).
+        Resolves the System's endpoint, enforces loopback-only before any IO, and probes
+        reachability. Runs no DB work — the caller owns the session row and the per-System
+        lock (the probe deliberately runs lock-free, ADR-0032 §6a).
 
         Raises:
-            CategorizedError: ``CONFIGURATION_ERROR`` for a non-``gdbstub`` kind or a
-                non-loopback resolved host (no IO); ``DEBUG_ATTACH_FAILURE`` if the stub does
-                not answer RSP framing; ``TRANSPORT_FAILURE`` on a socket fault;
-                ``MISSING_DEPENDENCY`` propagated from the real resolver outside ``live_vm``.
+            CategorizedError: ``CONFIGURATION_ERROR`` for an unknown kind or a non-loopback
+                resolved host (no IO); ``DEBUG_ATTACH_FAILURE`` if the peer does not answer;
+                ``TRANSPORT_FAILURE`` on a socket fault; ``MISSING_DEPENDENCY`` propagated
+                from a real resolver outside ``live_vm``.
         """
-        if kind != _GDBSTUB:
-            raise _config_error(f"unsupported transport kind (M0 ships gdbstub only): {kind!r}")
+        if kind == _GDBSTUB:
+            return self._open_gdbstub(system)
+        if kind == _SSH:
+            return self._open_ssh(system)
+        raise _config_error(f"unsupported transport kind: {kind!r}")
+
+    def _open_gdbstub(self, system: SystemHandle) -> TransportHandle:
         host, port = self._resolve_endpoint(system)
         if not _is_loopback_literal(host):
             raise _config_error("gdbstub host must be a loopback IP literal")
@@ -170,8 +230,28 @@ class LocalLibvirtConnect:
             )
         return TransportHandle(TransportHandleData(kind=_GDBSTUB, host=host, port=port).encode())
 
+    def _open_ssh(self, system: SystemHandle) -> TransportHandle:
+        host, port = self._resolve_ssh_endpoint(system)
+        if not _is_loopback_literal(host):
+            raise _config_error("ssh host must be a loopback IP literal")
+        try:
+            reachable = self._ssh_connect(host, port)
+        except OSError as exc:
+            raise CategorizedError(
+                "ssh transport socket fault",
+                category=ErrorCategory.TRANSPORT_FAILURE,
+                details={"port": port},
+            ) from exc
+        if not reachable:
+            raise CategorizedError(
+                "ssh endpoint did not accept a connection",
+                category=ErrorCategory.DEBUG_ATTACH_FAILURE,
+                details={"port": port},
+            )
+        return TransportHandle(TransportHandleData(kind=_SSH, host=host, port=port).encode())
+
     def close_transport(self, handle: TransportHandle) -> None:
-        """Best-effort teardown — a no-op for the connectionless M0 gdbstub (never raises)."""
+        """Best-effort teardown — a no-op for these transports (never raises)."""
         del handle
 
 
@@ -216,11 +296,36 @@ def _real_probe(host: str, port: int) -> bool:  # pragma: no cover - live_vm
     return rsp_reachable(host, port)
 
 
+def _real_resolve_ssh_endpoint(
+    system: SystemHandle,
+) -> tuple[str, int]:  # pragma: no cover - live_vm
+    raise CategorizedError(
+        "resolving a libvirt guest's loopback-forwarded ssh endpoint runs only under "
+        "the live_vm gate",
+        category=ErrorCategory.MISSING_DEPENDENCY,
+        details={"system": str(system)},
+    )
+
+
+def _real_ssh_connect(host: str, port: int) -> bool:  # pragma: no cover - live_vm
+    """Open one SSH connection to prove reachability; True iff the handshake completes.
+
+    Runs only under the ``live_vm`` gate — it needs a booted guest, a resolvable credential
+    (already registered into the redaction registry by the caller), and the v1 SSH client.
+    """
+    raise CategorizedError(
+        "the real ssh transport connect runs only under the live_vm gate",
+        category=ErrorCategory.MISSING_DEPENDENCY,
+        details={"port": port, "host": host},
+    )
+
+
 __all__ = [
     "Connector",
     "LocalLibvirtConnect",
     "TransportHandle",
     "TransportHandleData",
+    "connect_capability",
     "rsp_frame",
     "rsp_reachable",
     "valid_rsp_frame",
