@@ -58,9 +58,13 @@ repo's unit of testing ([ADR-0019](0019-tool-response-envelope.md); handlers, ne
 - **Idempotent replay (#4).** A second dispatch of a completed `build`/`install`/`boot`
   job reads the `(run_id, step)` ledger and does **not** re-invoke the injected provider
   (asserted on the fake's call count). The ledger is plain SQL; no domain involved.
-- **Redaction (#3).** A planted secret in a provider's transcript output is `[REDACTED]`
-  in the returned envelope, and the raw artifact stays `sensitive` (unreachable through
-  `artifacts.get`). The `Redactor` runs in-process; no domain involved.
+- **Redaction (#3).** Two independent in-process mechanisms, asserted separately. (a)
+  *Transcript-text redaction:* a planted secret in a provider's transcript output is
+  `[REDACTED]` in the `postmortem.crash`/`.triage` envelope's `data["transcript"]` (the
+  `Redactor` runs before the value is returned). (b) *Artifact sensitivity:* the raw
+  vmcore stays `sensitive` and is unreachable through `artifacts.get`/`vmcore.list`, which
+  filter to `redacted` rows and return only object-key refs (never artifact content). No
+  domain involved.
 
 The remaining three (#1 path completes, #2 every transition audited, #5 teardown leaves
 no orphan) are asserted inside the gated full-path test, where a real domain exists to
@@ -78,20 +82,29 @@ focused non-gated tests instead, so CI exercises real signal without masqueradin
 fully-faked run as the end-to-end proof. The per-plane handler suites already cover the
 fake-driven wiring of each step.
 
-### 2. Teardown (#5) is verified through the injected `Provisioner`'s recorded domain set, standing in for `list_owned`
+### 2. Teardown (#5) is verified through the **Discovery** provider's `list_owned`, not the `Provisioner`
 
 The spec phrases #5 as "the reconciler leaves no orphaned libvirt domain (`list_owned` is
-empty of unowned domains)." In the gated test against a real host this is literal: after
-`allocations.release` drives the System `torn_down` and the teardown job destroys the
-domain, the test asserts the System row is `torn_down` **and** the domain is gone from the
-host (the provider's `list_owned`/`virsh list` view shows no domain tagged with the
-`system_id`). The assertion is on the provider surface, not only the DB row, because a
-`torn_down` row with a surviving domain is exactly the orphan the criterion forbids.
+empty of unowned domains)." Two distinct provider seams are in play and must not be
+conflated: the `Provisioner` port the `systems.teardown` handler injects exposes only
+`provision(system_id, profile)` and `teardown(domain_name)` — it *destroys* a domain but
+cannot enumerate the host. Enumeration is the **Discovery** seam: `LocalLibvirtDiscovery.list_owned()
+→ list[OwnedInfra]` (each `{system_id, domain_name}` parsed from the kdive libvirt
+metadata tag), which is also what the reconciler's leaked-domain repair consumes through
+its own `OwnedDomainSource.list_owned()` protocol.
+
+So in the gated test against a real host: after `allocations.release` drives the System
+`torn_down` and the teardown job (via `Provisioner.teardown`) destroys the domain, the
+test asserts the System row is `torn_down` **and** that the released System's `system_id`
+appears in **no** `OwnedInfra` returned by `Discovery.list_owned()` (equivalently, no
+kdive-tagged domain survives on the host). The assertion is on the Discovery surface, not
+only the DB row, because a `torn_down` row with a surviving tagged domain is exactly the
+orphan the criterion forbids.
 
 **Considered & rejected — asserting only the `systems.state = 'torn_down'` DB row.** That
 checks the bookkeeping, not the physical cleanup, so it would pass even if `teardown`
-silently failed to destroy the domain — the precise leak #5 exists to catch. The provider
-view is the authoritative check.
+silently failed to destroy the domain — the precise leak #5 exists to catch. The
+`list_owned` enumeration is the authoritative check.
 
 ### 3. The mock OIDC issuer lives only in `docker-compose` for a manual live run; handler-level tests construct `RequestContext` directly
 
