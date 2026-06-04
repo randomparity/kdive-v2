@@ -96,7 +96,9 @@ run-dir confinement (they return with the planes that own them — ADR-0027 §4)
     tests opt out of the shared global by passing a local `SecretRegistry()`.
   - `resolve(ref)` → `confine_to_root(Path(ref), allowed_root=root)`; require the
     confined path to be an existing file (else `PathSafetyError`,
-    `secret file does not exist`); read text (UTF-8), strip a single trailing `\n`;
+    `secret file does not exist`); read text (UTF-8), strip a single trailing line
+    terminator (`\r\n` if present, else one `\n`) and nothing else — a trailing
+    space/tab inside the value is significant and preserved;
     `registry.register(value, scope=scope)`; return `value`. Registration is the
     last statement before `return`, and there is **no** return path that yields the
     value without first registering it — neither the empty-file path (which returns
