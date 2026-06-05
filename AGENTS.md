@@ -126,6 +126,9 @@ transport.
   supersedes it. Most source modules cite the ADR(s) they implement in their docstring;
   follow the citation when changing behavior. Spec → plan → implementation cycles live
   under `docs/specs/`, `docs/plans/`, and `docs/superpowers/`.
+- **Releasing** — see [`docs/RELEASING.md`](docs/RELEASING.md) and
+  [ADR-0041](docs/adr/0041-versioning-release-process.md) (SemVer, milestone→minor,
+  tag-driven release).
 - **Doc-style guard** (enforced in CI / `check-mermaid` is mermaid-only, but the prose
   rule is project-wide): use **Milestone**, never "Sprint"; keep prose plain and factual —
   avoid "critical", "robust", "comprehensive", "elegant". This applies to ADRs, specs,
