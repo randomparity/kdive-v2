@@ -360,6 +360,25 @@ async def _count_audit(db_url: str, *, object_id: str, transition: str, principa
     return int(row[0]) if row else 0
 
 
+async def _count_audit_suffix(
+    db_url: str, *, object_id: str, suffix: str, principal: str
+) -> int:
+    """Count audit_log rows whose transition ends with ``suffix`` (robust to the prior state).
+
+    The teardown handler writes ``f"{old.value}->torn_down"``; the prior state depends on the
+    spine (``crashed`` here), so match the ``->torn_down`` suffix rather than a fixed literal.
+    """
+    async with await psycopg.AsyncConnection.connect(db_url) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT count(*) FROM audit_log "
+                "WHERE object_id = %s AND transition LIKE %s AND principal = %s",
+                (object_id, f"%{suffix}", principal),
+            )
+            row = await cur.fetchone()
+    return int(row[0]) if row else 0
+
+
 async def _system_torn_down_unowned(db_url: str, system_id: str) -> bool:
     """True iff the System row is ``torn_down`` (the DB half of the #5 teardown check)."""
     async with await psycopg.AsyncConnection.connect(db_url) as conn:
@@ -504,18 +523,30 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 7: The RBAC-negative assertions (no KVM needed beyond the stack)
+## Task 7: The viewer raised-path RBAC negative (no KVM needed beyond the stack)
 
 **Files:**
 - Modify: `tests/integration/test_live_stack.py`
 
-- [ ] **Step 1: Add the RBAC-negative test (its own `live_stack` test)**
+This standalone negative is the **raised** path only — `require_role` raises → fastmcp tool
+error → `LiveStackToolError`. It needs no real system. The **operator→force_crash envelope**
+negative cannot run standalone: `force_crash_system` reads the System and returns
+`configuration_error` for an **unknown** id *before* the gate ever runs (verified against
+`control.py`), so an all-zeros id would yield `configuration_error`, not `authorization_denied`.
+That negative therefore lives in the spine test (Task 8) on the **real** ready `system_id`,
+where only the admin-role check fails and the gate returns `authorization_denied`.
+
+- [ ] **Step 1: Add the viewer raised-path negative**
 
 ```python
 @pytest.mark.live_stack
-def test_rbac_negatives_over_the_wire() -> None:
-    """viewer is denied operator ops (raised tool error); operator is denied force_crash
-    (authorization_denied envelope). Both over HTTP; needs the stack, not a KVM host."""
+def test_viewer_denied_operator_op_over_the_wire() -> None:
+    """A viewer token is denied an operator op; require_role raises → a tool error over HTTP.
+
+    The viewer token carries the spine project (role `viewer`), so the denial exercises the
+    `require_role` (role) boundary, not the `require_project` (membership) boundary that
+    `allocations.request` checks first.
+    """
     issuer, base_url, _db = _spine_preflight()
 
     async def _run() -> None:
@@ -526,21 +557,8 @@ def test_rbac_negatives_over_the_wire() -> None:
                     "allocations.request", project=_PROJECT, vcpus=1, memory_gb=1
                 )
 
-        # operator denied force_crash: the gate RETURNS an authorization_denied envelope.
-        # Use a syntactically-valid but unknown system id; the gate (role check) fires before
-        # the not-found path for a non-admin, returning authorization_denied.
-        operator = LiveStackClient.over_http(base_url, _token(issuer, role="operator"))
-        async with operator:
-            env = await operator.call_tool(
-                "control.force_crash", system_id="00000000-0000-0000-0000-000000000000"
-            )
-        assert env.status == "error"
-        assert env.error_category == "authorization_denied"
-
     asyncio.run(_run())
 ```
-
-> If `control.force_crash` returns `configuration_error` (not-found) before the gate for an unknown system under an operator token, this assertion is wrong and the negative must run against the **real** `system_id` from the spine (move it into the spine test after `provision`). Verify the handler order at implementation time against `src/kdive/mcp/tools/control.py` (`force_crash_system`: it reads the System first, returns `configuration_error` if absent, then runs the gate). **Therefore: assert the operator force_crash denial inside the spine test on the real `system_id`, and keep only the viewer raised-path assertion standalone here.** Adjust Step 1 accordingly: drop the force_crash block from this standalone test and assert it in Task 8 on the real system.
 
 - [ ] **Step 2: Verify it SKIPS cleanly with no stack**
 
@@ -664,10 +682,14 @@ def test_spine_over_the_wire() -> None:
         assert await _count_audit(
             db_url, object_id=allocation_id, transition="releasing->released", principal=principal
         ) >= 1, "release not audited under operator (#2)"
-        # teardown is attributed to the reconciler, NOT the driver (ADR-0021)
-        assert await _count_audit(
-            db_url, object_id=system_id, transition="ready->torn_down", principal="system:reconciler"
-        ) >= 1 or await _system_torn_down_unowned(db_url, system_id), "teardown audit missing (#2)"
+        # teardown is attributed to the reconciler, NOT the driver (ADR-0021). The handler
+        # writes f"{old.value}->torn_down"; the spine crashed the guest first, so the prior
+        # state is `crashed` → the row is `crashed->torn_down` (NOT `ready->torn_down`). Match
+        # the suffix to stay robust to the prior state, and do NOT let the #5 DB check satisfy
+        # the audit half of #2.
+        assert await _count_audit_suffix(
+            db_url, object_id=system_id, suffix="->torn_down", principal="system:reconciler"
+        ) >= 1, "teardown not audited under system:reconciler (#2)"
         # --- #5 teardown: DB torn_down + no OwnedInfra ---
         assert await _system_torn_down_unowned(db_url, system_id), "system not torn_down (#5)"
         from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
@@ -683,7 +705,12 @@ def test_spine_over_the_wire() -> None:
     asyncio.run(_run())
 ```
 
-> The `ready->torn_down` transition string and the `releasing->released` string must match what the handlers actually write. Verify at implementation time: `audit.record(... transition="ready->crashed" ...)` in `control.py`; the release transitions in `allocations._transition_and_audit` (`f"{frm.value}->{to.value}"`); the teardown transition in the teardown handler (`systems.py`). Adjust the literals to the real ones if they differ.
+> Transition literals are verified against the handlers: `control.py` writes `ready->crashed`
+> for force_crash; `allocations._transition_and_audit` writes `releasing->released`; the teardown
+> handler (`systems.py`) writes `f"{old.value}->torn_down"` — since the spine crashed the guest,
+> `old` is `crashed`, so the teardown row is `crashed->torn_down`. The teardown assertion matches
+> the `->torn_down` **suffix** to stay robust to the prior state. If any literal differs at
+> implementation time, adjust to the real one.
 
 - [ ] **Step 2: Verify it SKIPS cleanly with no stack**
 
