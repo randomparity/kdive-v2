@@ -114,18 +114,15 @@ PR — the host-first/real-JWKS shape of ADR-0042 §3 would not change, only A's
   the streamable-HTTP + bearer client for the live tier; the constructor also accepts an
   already-built in-memory client so the lower tiers reuse the same envelope-parsing seam D
   imports. **Envelope parsing (fastmcp 3.4.0, verified by probe):** `Client.call_tool` returns
-  a `CallToolResult`. Its **`.data`** field is **already deserialized** by FastMCP into a
-  pydantic model built from the tool's output schema — a generated class (`Root`), **not** the
-  project's `ToolResponse` and **not** a raw dict. For a scalar tool `.data` is one such model;
-  for a `list[ToolResponse]` tool (only `resources.list` here) `.data` is a **`list`** of them.
-  `call_tool` therefore converts each item back to the project envelope with
-  `ToolResponse.model_validate(item.model_dump())`, returning a single `ToolResponse` when
-  `.data` is a model and `list[ToolResponse]` when it is a list. Single-vs-list discrimination
-  is **by `isinstance(result.data, list)`** — not by a per-tool table. (The raw-dict
-  alternative, `CallToolResult.structured_content`, wraps list results as `{"result": [...]}`
-  while `.data` gives the bare list; `.data` is used to avoid that asymmetry.) A pinning test
-  asserts the concrete shape — `.data` is a list for `resources.list` and a model for a scalar
-  tool — so a future fastmcp change to this surface fails loudly.
+  a `CallToolResult`; `call_tool` reads its **`.structured_content`** — a clean `dict`. A scalar
+  tool's payload is the object dict directly; a `list[ToolResponse]` tool (only `resources.list`
+  here) is wrapped by FastMCP as **`{"result": [<dict>, ...]}`**. So `call_tool` returns a list
+  of `ToolResponse` when the payload is exactly a single `result` key holding a list, and one
+  `ToolResponse` otherwise — each parsed with `ToolResponse.model_validate(...)`. (`.data` is
+  **not** used: it is a FastMCP-generated plain class — `fastmcp.utilities.json_schema_type.Root`,
+  not a pydantic model — so it has no `model_dump`; `.structured_content` is the dict source.) A
+  pinning test asserts the concrete shape — a scalar payload is the object dict, a list payload is
+  the `{"result": [...]}` wrapper — so a future fastmcp change to this surface fails loudly.
 - `mint_token(...)` and an `OidcIssuer` config (issuer base URL, audience, client id) read
   from the same `KDIVE_OIDC_*`/`KDIVE_STACK_*` env the server uses.
 

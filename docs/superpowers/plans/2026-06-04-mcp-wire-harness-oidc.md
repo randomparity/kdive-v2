@@ -4,7 +4,7 @@
 
 **Goal:** Build a reusable test-side `fastmcp.Client` wrapper (`LiveStackClient`) and an OIDC token-issuance helper (`mint_token`) that mints `viewer`/`operator`/`admin` + `platform_auditor` tokens from the mock-oauth2-server, plus a three-tier wire smoke test, so issue #100's spine driver can import the harness and drive tools over HTTP under real tokens.
 
-**Architecture:** Test-only code under `tests/integration/live_stack/`. `mint_token` drives the issuer's interactive-login authorization-code flow (login-form `claims` → access token, proven to carry the nested `roles` object + `platform_roles` array — see ADR-0044). `LiveStackClient` wraps `fastmcp.Client`, parsing `CallToolResult.data` (a deserialized model or list of models) into the project `ToolResponse`. The smoke test runs in three tiers: an always-run in-memory tier (rides the repo's disposable-Postgres gating), an `oidc_issuer`-gated tier (the standing claim-shape gate), and a `live_stack`-gated tier (full HTTP). No `src/` changes.
+**Architecture:** Test-only code under `tests/integration/live_stack/`. `mint_token` drives the issuer's interactive-login authorization-code flow (login-form `claims` → access token, proven to carry the nested `roles` object + `platform_roles` array — see ADR-0044). `LiveStackClient` wraps `fastmcp.Client`, parsing `CallToolResult.structured_content` (a clean dict; list tools wrapped as `{"result": [...]}`) into the project `ToolResponse`. The smoke test runs in three tiers: an always-run in-memory tier (rides the repo's disposable-Postgres gating), an `oidc_issuer`-gated tier (the standing claim-shape gate), and a `live_stack`-gated tier (full HTTP). No `src/` changes.
 
 **Tech Stack:** Python 3.13, `fastmcp` 3.4.0 (`Client`, `StreamableHttpTransport`, `JWTVerifier`, `RSAKeyPair`), `httpx` 0.28, `psycopg_pool.AsyncConnectionPool`, `pytest`, the repo's `migrated_url` disposable-Postgres fixture.
 
@@ -570,15 +570,19 @@ class LiveStackClient:
     ) -> ToolResponse | list[ToolResponse]:
         """Call ``name`` and parse the structured output into ``ToolResponse``.
 
-        Discriminates by ``isinstance(result.data, list)``: a list tool yields a list of
-        envelopes, a scalar tool one. ``.data`` items are FastMCP-generated models, so
-        each is re-validated from its ``model_dump()`` into the project envelope.
+        Reads ``CallToolResult.structured_content`` — a clean dict. A ``list[ToolResponse]``
+        tool is wrapped as ``{"result": [<dict>, ...]}``; any other object is one envelope.
+        ``.data`` is not used (it is a FastMCP-generated plain ``Root`` class, no
+        ``model_dump``).
         """
         result = await self._client.call_tool(name, args)
-        data = result.data
-        if isinstance(data, list):
-            return [ToolResponse.model_validate(item.model_dump()) for item in data]
-        return ToolResponse.model_validate(data.model_dump())
+        payload = result.structured_content
+        if payload is None:
+            raise RuntimeError(f"tool {name!r} returned no structured content")
+        inner = payload.get("result")
+        if list(payload) == ["result"] and isinstance(inner, list):
+            return [ToolResponse.model_validate(item) for item in inner]
+        return ToolResponse.model_validate(payload)
 ```
 
 - [ ] **Step 4: Run to verify it passes**
