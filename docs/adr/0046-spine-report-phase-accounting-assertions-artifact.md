@@ -24,8 +24,11 @@ It is deliberately a **separate sub-issue and commit from D**: an accounting reg
 should bisect to E (the report phase + assertions), not to D (the libvirt driver). So E
 **appends** the `report` phase and its assertion helpers; it does not modify D's phases.
 
-Three decisions are open and settled here:
+Four decisions are open and settled here:
 
+0. **What must be seeded so the spine can spend at all** — admission is fail-closed on a
+   missing budget/quota, so the project must be metered before `allocate` or the run never
+   reaches `report`.
 1. **Where the phase runs** relative to the ledger's reserve/reconcile writes.
 2. **How "the run's real spend" is asserted** when the spine runs a single project (the
    tool's multi-project rollup correctness is M1.1 P2's in-process job).
@@ -33,6 +36,33 @@ Three decisions are open and settled here:
    the exact shape of the project-only **denial** the wire RBAC negative asserts.
 
 ## Decision
+
+### 0. The spine seeds the project's budget + quota out of band, so `allocate` can spend
+
+Admission is **fail-closed on metering** (ADR-0007 §4): `_within_budget` reads `False` for a
+project with no `budgets` row, and `_within_alloc_quota` reads `False` for a project with no
+`quotas` row — either denies `allocations.request` with `allocation_denied` / `quota_exceeded`
+and writes **no** ledger row. So a `report` phase that asserts `reserved > 0` for `_PROJECT`
+has an unstated prerequisite: `_PROJECT` must be **metered before `allocate`**. The spine
+does not set one (D drives only the public tools, and no admin sets a budget over the wire),
+so without a seed the spine is denied at `allocate` and never reaches `report` — and even if
+it did, with no budget there is no `reserve` and `reconcile` is a no-op (domain `reconcile`
+returns `0` with no write when the project has no budget row), so the ledger has no `_PROJECT`
+rows and the rollup omits the project entirely (the domain `report()` emits no row for a
+project with no ledger rows).
+
+E therefore seeds, **out of band** before `allocate` (mirroring D's `_grant_force_crash_scope`
+direct DB write), one `budgets` row for `_PROJECT` with a `limit_kcu` large enough to admit
+the spine's estimate, plus one `quotas` row with caps ≥ the spine's concurrency (1 allocation,
+1 system). This is the minimal real metering admission requires; it is a test prerequisite,
+not product behaviour. It is established up front (like the capability-scope grant), not
+discovered mid-spine.
+
+**Latent D gap:** because D's merged spine also seeds no budget/quota, D's own `allocate`
+phase would be denied on real hardware. D was verified on the skip path, so this never
+surfaced. E's seed makes the spine reachable for this issue; the orchestrator should track
+hardening D's `allocate` prerequisite separately (E does not modify D's phases beyond
+appending `report` + the shared up-front seed).
 
 ### 1. The `report` phase runs after `release` and `teardown`, so both ledger rows are committed
 
@@ -46,39 +76,53 @@ at `report`" with the reconciler-driven teardown D already appends in between. `
 completes the reconcile synchronously (it is not a queued job), so by the time `report` runs
 both the `reserved` and `reconciled` ledger rows for the run's allocation are committed.
 
-### 2. Real spend is asserted on the single-project all-projects rollup row, cross-checked against the ledger
+### 2. Real spend is asserted on a **windowed** single-project rollup row, cross-checked against the ledger
 
-The spine runs one project (`_PROJECT`). The `report` phase drives `accounting.report`'s
-**all-projects** form under a `platform_auditor` token and asserts on the `_PROJECT` row of
-the returned rollup:
+The spine runs one project (`_PROJECT`), and `_PROJECT` is a fixed constant whose ledger rows
+**persist across repeated spine runs** (nothing deletes them). An all-time rollup would
+therefore sum every prior run's spend, so "reflects *this run's* real spend" would be
+unfalsifiable — the number only grows. To isolate the run, the phase captures a window
+**`start`** at the `allocate` phase (a `now(UTC)` taken before the run reserves anything) and
+passes `window=[start, None]` to `accounting.report`. `ledger.ts` is `timestamptz`; the
+window half-open-bounds it to rows written **at or after** the run began, so the rollup
+reflects only this run's spend.
 
-- `reserved > 0` — the allocation reserved a positive estimate at grant.
+The phase drives `accounting.report`'s **all-projects** form under a `platform_auditor` token
+with that window and asserts on the `_PROJECT` row of the returned rollup:
+
+- `reserved > 0` — the allocation reserved a positive estimate at grant (within the window).
 - a `reconciled` value is present (the release wrote the reconcile credit row; for a spine
   that crashed and released, the credit is a non-zero `actual − Σreserved`).
 - `variance == reconciled − reserved` — the tool's own per-row invariant, re-asserted over
   the wire.
 
-To prove the rollup reflects **this run's real spend** (not just that it is internally
+To prove the rollup reflects this run's real spend (not just that it is internally
 consistent), the phase independently sums the project's `reserved`/`reconciled` ledger
-`kcu_delta` straight from Postgres (the same `KDIVE_DATABASE_URL` the audit assertions use)
-and asserts the wire rollup's `reserved`/`reconciled`/`variance` for `_PROJECT` **equal** the
-DB sums (quantized). The DB cross-check is what makes "reflects the run's real spend"
-falsifiable: a tool that returned plausible-but-wrong numbers would fail. Multi-project
+`kcu_delta` straight from Postgres **for the same window** (`ts >= start`, the same
+`KDIVE_DATABASE_URL` the audit assertions use) and asserts the wire rollup's
+`reserved`/`reconciled`/`variance` for `_PROJECT` **equal** the DB sums (quantized). Same
+window on both sides, so the cross-check is apples-to-apples and falsifiable: a tool that
+returned plausible-but-wrong numbers, or that ignored the window, would fail. Multi-project
 rollup correctness and the granted-set form stay M1.1 P2's in-process tests — E asserts wire
-reachability, the spend cross-check, and the authorization boundary, not rollup breadth.
+reachability, the windowed spend cross-check, and the authorization boundary, not rollup
+breadth.
 
 ### 3. The artifact is a JSON file written to a test artifact dir; the denial is an envelope, not a raise
 
 **Artifact.** "Written as an artifact" is a **test-side** deliverable (a file on the host
 running the spine), distinct from the MCP/MinIO artifact system (#1's vmcore). The phase
-writes the `accounting.report` response payload — the `scope`, the `_PROJECT` rollup row, and
-the cross-project `total` — as a JSON file named `accounting-report.json` under an artifact
-directory resolved from `KDIVE_ARTIFACT_DIR`, defaulting to `<repo>/.live-stack-artifacts/`
-when that env is unset (the dir is created if absent). The phase asserts the file **exists**
-and that its parsed content round-trips the asserted `reserved`/`reconciled`/`variance` —
-so the artifact is proven non-empty and faithful, not merely touched. The default lives under
-the repo so a developer finds it without configuration; CI never runs this phase (it is
-`live_stack`-gated and skips), so no CI artifact wiring is implied.
+writes the `accounting.report` response payload — the `scope`, the `window`, the `_PROJECT`
+rollup row, and the cross-project `total` — as a JSON file named `accounting-report.json`
+under an artifact directory resolved from `KDIVE_ARTIFACT_DIR`. When that env is **unset** the
+default is an **out-of-tree** location — a `kdive-live-stack-artifacts/` subdir of the system
+temp dir (`tempfile.gettempdir()`), created if absent — **not** a path inside the repo. A
+repo-local default would be walked by whole-tree tooling (prek/ruff/ty, test discovery) and
+risks an accidental `git add -A` of a spend report; an out-of-tree default avoids both, and
+`KDIVE_ARTIFACT_DIR` lets an operator or a future CI job redirect it explicitly. The phase
+asserts the file **exists** and that its parsed content round-trips the asserted
+`reserved`/`reconciled`/`variance` — so the artifact is proven non-empty and faithful, not
+merely touched. CI never runs this phase (it is `live_stack`-gated and skips), so no CI
+artifact wiring is implied.
 
 **Denial shape (verified against `accounting.report`'s code).** The tool's all-projects form
 calls `require_platform_role(...)`, catches the raised `AuthorizationError`, and **returns**
@@ -100,8 +144,13 @@ form and the phase asserts `status == "error"` and `error_category == "authoriza
   an operator debugging a spend discrepancy beyond the test's own assertions.
 - The phase reuses the existing `_spine_preflight()` skip and the `phase`/`SpinePhaseError`
   contract; it adds no new gate and no product code. CI is unchanged (`live_stack` deselected).
-- A new Postgres read (the ledger `kcu_delta` sums) is added to the assertion helpers,
-  alongside the audit-log reads D already performs against the same DB.
+- Two new out-of-band Postgres writes (the `budgets` + `quotas` seed) and one new read (the
+  windowed ledger `kcu_delta` sums) are added to the helpers, alongside the audit-log reads and
+  capability-scope grant D already performs against the same DB.
+- The artifact lands out of tree by default, so a live run never dirties the working tree.
+- A latent gap is surfaced (not fixed here): D's merged spine seeds no budget/quota, so its
+  own `allocate` phase would be denied on real hardware. E's up-front seed unblocks the spine;
+  hardening D's prerequisite is tracked separately by the orchestrator.
 
 ## Alternatives considered
 
@@ -121,5 +170,15 @@ form and the phase asserts `status == "error"` and `error_category == "authoriza
   negative does. Rejected: it would not match the tool — the all-projects form *returns* an
   `authorization_denied` envelope (it catches the `AuthorizationError`); asserting a raise
   would fail against the real tool. Verified against the tool's code, not assumed.
-- **Hard-code the artifact path.** Rejected: an env-overridable dir with a repo-local default
-  lets an operator or a future CI job redirect artifacts without editing the test, at no cost.
+- **Hard-code the artifact path / default it inside the repo.** Rejected: a repo-local default
+  is walked by whole-tree tooling and risks an accidental commit of a spend report. An
+  env-overridable dir with an **out-of-tree** default avoids both and still lets an operator or
+  a future CI job redirect artifacts without editing the test.
+- **Report all-time spend (no window) and assert wire == DB.** Cheaper, no captured timestamp.
+  Rejected: `_PROJECT` is a fixed constant whose ledger persists across runs, so an all-time
+  rollup sums every prior run — "this run's real spend" would be unfalsifiable. The window
+  captured at `allocate` isolates the run.
+- **Seed the budget over the wire via `accounting.set_budget` (admin token).** Possible, but it
+  conflates metering setup with the report phase and needs an admin token the spine does not
+  otherwise mint. Rejected for the same reason D grants the capability scope by a direct DB
+  write: an out-of-band seed is the established pattern for a privileged test prerequisite.
