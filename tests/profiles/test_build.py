@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.profiles.build import BuildProfile
+from kdive.profiles.build import BuildProfile, ServerBuildProfile
 
 _VALID: dict[str, Any] = {
     "schema_version": 1,
@@ -33,6 +33,7 @@ def _expect_configuration_error(data: Any) -> None:
 
 def test_valid_profile_parses() -> None:
     profile = BuildProfile.parse(_valid())
+    assert isinstance(profile, ServerBuildProfile)
 
     assert profile.schema_version == 1
     assert profile.kernel_source_ref.startswith("git+https://")
@@ -45,6 +46,7 @@ def test_patch_ref_defaults_to_none() -> None:
     del data["patch_ref"]
 
     profile = BuildProfile.parse(data)
+    assert isinstance(profile, ServerBuildProfile)
 
     assert profile.patch_ref is None
 
@@ -109,15 +111,18 @@ def test_error_details_do_not_leak_submitted_values() -> None:
 
 def test_profile_is_frozen() -> None:
     profile = BuildProfile.parse(_valid())
+    assert isinstance(profile, ServerBuildProfile)
 
     with pytest.raises(ValidationError):
-        profile.kernel_source_ref = "other"
+        profile.kernel_source_ref = "other"  # type: ignore[misc]
 
 
 def test_direct_construction_bypasses_configuration_error_mapping() -> None:
-    # model_validate is not the sanctioned door; it surfaces the raw ValidationError.
+    # The sanctioned door is BuildProfile.parse; constructing a concrete model directly
+    # (here ServerBuildProfile, since BuildProfile is no longer a Pydantic model) surfaces
+    # the raw ValidationError without the CONFIGURATION_ERROR mapping.
     with pytest.raises(ValidationError):
-        BuildProfile.model_validate({"schema_version": 1})
+        ServerBuildProfile.model_validate({"schema_version": 1})
 
 
 def test_public_names_exported_from_package() -> None:

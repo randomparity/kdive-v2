@@ -43,7 +43,7 @@ from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.profiles.build import BuildProfile
+from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.providers.local_libvirt.build import Builder, BuildOutput, LocalLibvirtBuild
 from kdive.providers.local_libvirt.install import (
     Booter,
@@ -409,7 +409,16 @@ async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> st
             category=ErrorCategory.INFRASTRUCTURE_FAILURE,
             details={"run_id": str(run_id)},
         )
-    profile = BuildProfile.parse(run.build_profile)
+    parsed = BuildProfile.parse(run.build_profile)
+    if not isinstance(parsed, ServerBuildProfile):
+        # The runs.build gate (Task 8) prevents an external Run from enqueueing a build
+        # job; this is the defensive backstop if one ever reaches the handler.
+        raise CategorizedError(
+            "external-source run reached the server build handler",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"run_id": str(run_id)},
+        )
+    profile = parsed
     result = await _existing_build_result(conn, run_id)
     if result is None:
         try:

@@ -26,7 +26,7 @@ from uuid import UUID
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
-from kdive.profiles.build import BuildProfile
+from kdive.profiles.build import ServerBuildProfile
 from kdive.store.objectstore import StoredArtifact, object_store_from_env
 
 _WORKSPACE_ENV = "KDIVE_BUILD_WORKSPACE"
@@ -59,7 +59,7 @@ class Builder(Protocol):
     and returns both refs plus the build-id the symbolization planes key on.
     """
 
-    def build(self, run_id: UUID, profile: BuildProfile) -> BuildOutput: ...
+    def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput: ...
 
 
 class _StorePort(Protocol):
@@ -122,7 +122,7 @@ def _missing_config_groups(config_text: str) -> list[tuple[str, ...]]:
     return [group for group in _REQUIRED_CONFIG if not any(opt in enabled for opt in group)]
 
 
-type _Checkout = Callable[[UUID, BuildProfile, Path], None]
+type _Checkout = Callable[[UUID, ServerBuildProfile, Path], None]
 type _ReadConfig = Callable[[Path], str]
 type _RunMake = Callable[[Path], int]
 type _ReadBytes = Callable[[Path], bytes]
@@ -180,7 +180,7 @@ class LocalLibvirtBuild:
             read_build_id=_real_read_build_id,
         )
 
-    def build(self, run_id: UUID, profile: BuildProfile) -> BuildOutput:
+    def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput:
         """Build a kernel and store two artifacts; return their refs and the build-id.
 
         Raises:
@@ -224,14 +224,14 @@ class LocalLibvirtBuild:
 
 
 def _make_checkout(kernel_src: str) -> _Checkout:
-    def _checkout(run_id: UUID, profile: BuildProfile, workspace: Path) -> None:
+    def _checkout(run_id: UUID, profile: ServerBuildProfile, workspace: Path) -> None:
         _real_checkout(kernel_src, profile, workspace)
 
     return _checkout
 
 
 def _real_checkout(  # pragma: no cover - live_vm
-    kernel_src: str, profile: BuildProfile, workspace: Path
+    kernel_src: str, profile: ServerBuildProfile, workspace: Path
 ) -> None:
     raise CategorizedError(
         "real warm-tree checkout runs only under the live_vm gate",

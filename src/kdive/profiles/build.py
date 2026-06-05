@@ -1,17 +1,19 @@
 """The build-profile schema and its parse boundary (ADR-0029).
 
-A build profile is a versioned, declarative document naming the kernel source tree,
-the kernel ``.config`` to build with, and an optional patch applied on top of the base
-tree. It is the opaque ``build_profile`` jsonb a Run already carries (ADR-0026 §6
-deferred its validation here); the build plane parses it at the ``runs.build`` tool
-boundary and in the build handler.
+A build profile is a versioned, declarative document naming either a server-build lane
+(``source="server"``: kernel source tree, ``.config``, optional patch) or an external-build
+lane (``source="external"``: no source-tree fields — the artifact is ingested, not built).
+It is the opaque ``build_profile`` jsonb a Run already carries (ADR-0026 §6 deferred its
+validation here); the build plane parses it at the ``runs.build`` tool boundary and in the
+build handler.
 
-The model is ``frozen`` (immutable request inputs, ADR-0003/0011) and rejects unknown
-fields. :meth:`BuildProfile.parse` is the sanctioned entry point: it maps Pydantic's
-structural ``ValidationError`` onto the wire taxonomy's ``configuration_error`` and
-scrubs submitted values out of the error details so a profile that references secret or
-guest-derived material cannot leak it. Constructing a model directly bypasses this
-mapping and is a caller error.
+Both variants are ``frozen`` (immutable request inputs, ADR-0003/0011) and reject unknown
+fields. :meth:`BuildProfile.parse` is the sanctioned entry point: it dispatches on
+``source`` (defaulting to ``"server"`` so existing server-build documents without the field
+continue to parse), maps Pydantic's structural ``ValidationError`` onto the wire taxonomy's
+``configuration_error``, and scrubs submitted values out of the error details so a profile
+that references secret or guest-derived material cannot leak it. Constructing a model
+directly bypasses this mapping and is a caller error.
 
 The kdump/debuginfo *config-correctness* requirements (``CONFIG_CRASH_DUMP``/
 ``crashkernel`` and ``CONFIG_DEBUG_INFO(_DWARF)``/BTF) are **not** checked here: the
@@ -38,15 +40,12 @@ type NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_l
 """A string that is non-empty after whitespace stripping; blank values fail validation."""
 
 
-class BuildProfile(BaseModel):
-    """A versioned build profile: kernel source ref, config ref, optional patch ref."""
+class _BuildProfileBase(BaseModel):
+    """Shared config + version guard for both build-lane profiles."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal[1]
-    kernel_source_ref: NonEmptyStr
-    config_ref: NonEmptyStr
-    patch_ref: NonEmptyStr | None = None
 
     @field_validator("schema_version", mode="before")
     @classmethod
@@ -61,31 +60,72 @@ class BuildProfile(BaseModel):
             raise ValueError("schema_version must be an integer")
         return value
 
+
+class ServerBuildProfile(_BuildProfileBase):
+    """Server-build lane: names a source tree, a config, and an optional patch."""
+
+    source: Literal["server"] = "server"
+    kernel_source_ref: NonEmptyStr
+    config_ref: NonEmptyStr
+    patch_ref: NonEmptyStr | None = None
+
+
+class ExternalBuildProfile(_BuildProfileBase):
+    """External-build lane: the discriminator alone — no source-tree fields."""
+
+    source: Literal["external"]
+
+
+type ParsedBuildProfile = ServerBuildProfile | ExternalBuildProfile
+
+
+class BuildProfile:
+    """Parse boundary that dispatches a build-profile document on ``source``."""
+
     @classmethod
-    def parse(cls, data: Mapping[str, object]) -> BuildProfile:
+    def parse(cls, data: Mapping[str, object]) -> ParsedBuildProfile:
         """Validate a build-profile document, mapping any failure to ``configuration_error``.
+
+        Dispatches on ``source`` (default ``"server"``, so existing server documents
+        without the field still parse). The error details carry field locations but never
+        the submitted values (redaction guarantee, ADR-0029).
 
         Args:
             data: The deserialized profile document (a mapping; YAML/JSON parsing is the
-                caller's responsibility).
+                caller's responsibility). Non-mapping inputs are rejected as
+                ``CONFIGURATION_ERROR``.
 
         Returns:
-            The validated, frozen profile.
+            The validated, frozen profile — a :class:`ServerBuildProfile` or
+            :class:`ExternalBuildProfile` depending on ``source``.
 
         Raises:
             CategorizedError: ``CONFIGURATION_ERROR`` for any structural failure —
                 missing/unknown field, wrong type, empty required string, unreadable
-                schema version. The error details carry field locations, types, and
-                messages, but never the submitted values.
+                schema version, or unknown ``source``. The error details carry field
+                locations, types, and messages, but never the submitted values.
         """
-        try:
-            return cls.model_validate(data)
-        except ValidationError as exc:
-            details: dict[str, object] = {
-                "errors": exc.errors(include_url=False, include_input=False, include_context=False),
-            }
+        source = data.get("source", "server") if isinstance(data, Mapping) else None
+        model: type[ParsedBuildProfile]
+        if source == "server":
+            model = ServerBuildProfile
+        elif source == "external":
+            model = ExternalBuildProfile
+        else:
             raise CategorizedError(
                 "invalid build profile",
                 category=ErrorCategory.CONFIGURATION_ERROR,
-                details=details,
+                details={"errors": [{"loc": ["source"], "msg": "unknown build source"}]},
+            )
+        try:
+            return model.model_validate(data)
+        except ValidationError as exc:
+            raise CategorizedError(
+                "invalid build profile",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={
+                    "errors": exc.errors(
+                        include_url=False, include_input=False, include_context=False
+                    )
+                },
             ) from exc
