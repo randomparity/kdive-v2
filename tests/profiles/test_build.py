@@ -114,7 +114,7 @@ def test_profile_is_frozen() -> None:
     assert isinstance(profile, ServerBuildProfile)
 
     with pytest.raises(ValidationError):
-        profile.kernel_source_ref = "other"  # type: ignore[misc]
+        profile.kernel_source_ref = "other"
 
 
 def test_direct_construction_bypasses_configuration_error_mapping() -> None:
