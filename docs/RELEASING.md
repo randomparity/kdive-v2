@@ -27,7 +27,11 @@ Never hand-edit the version: editing `pyproject.toml` alone desyncs `uv.lock` an
 3. `release.yml` triggers on the tag: it verifies tag == version, builds the wheel + sdist
    (commit SHA baked, `RELEASE=true`), generates notes from git-cliff, and creates an
    internal GitHub Release with the artifacts attached.
-4. Open the post-release "begin `<next>`-dev" bump PR (above).
+4. Open the post-release "begin `<next>`-dev" bump PR (above) and **merge it before any
+   other PR to `main`**. Until it lands, `main` still reads the just-released version, so a
+   commit merged ahead of it would report `X.Y.Z-dev` meaning "after" the release —
+   reopening the ambiguity the scheme exists to prevent ([ADR-0041](adr/0041-versioning-release-process.md)
+   decision 3). Treat `main` as frozen for normal merges until the bump is in.
 
 ## Commit conventions the changelog depends on
 

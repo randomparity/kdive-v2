@@ -67,8 +67,9 @@ tagged release commit reports a bare `X.Y.Z`. `0.2.0-dev` is unambiguous **provi
 post-release `begin <next>-dev` bump (below) is the first merge to `main` after the tag**:
 in the window between pushing `v0.2.0` and merging that bump, `main` still reads `0.2.0`, so
 a commit landing there would also report `0.2.0-dev` — now meaning "after," not "before,"
-the release. The bump closes that window, which is why it is release-blocking (decision 6,
-`RELEASING.md`), not a follow-up. Tags are **annotated**, named `vX.Y.Z`.
+the release. The bump closes that window — `RELEASING.md` makes merging it ahead of any
+other PR a release step (`main` is frozen for normal merges until it lands), so it is
+release-blocking, not a follow-up. Tags are **annotated**, named `vX.Y.Z`.
 
 ### 4. One version source of truth: `pyproject` `[project].version`
 
