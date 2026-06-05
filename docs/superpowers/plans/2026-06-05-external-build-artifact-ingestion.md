@@ -2687,7 +2687,41 @@ def resolve_rootfs_path(rootfs, *, tenant: str, system_id: UUID) -> str:
             details={"name": rootfs.name},
         )
     return f"{_ROOTFS_DIR}/{entry.name}.qcow2"
+
+
+def validate_rootfs_reference(rootfs) -> None:
+    """Validate a rootfs reference's resolvability (a synchronous tool-boundary check).
+
+    Mirrors :func:`resolve_rootfs_path`'s checks (url sha256 format, catalog-name
+    existence) but needs no ``system_id`` — so the ``systems.provision`` tool can reject a
+    bad reference synchronously as ``configuration_error`` instead of dead-lettering the
+    provision job. The ``upload``/``path`` kinds need no static check (an ``upload``
+    object's existence is verified at provision-consume time, §5).
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` for a malformed url checksum or unknown
+            catalog name.
+    """
+    if rootfs.kind == "url" and not _SHA256.match(rootfs.sha256):
+        raise CategorizedError(
+            "rootfs url sha256 must be 'sha256:<64-hex>'",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    if rootfs.kind == "catalog" and load_catalog().lookup(rootfs.name) is None:
+        raise CategorizedError(
+            f"unknown rootfs catalog name: {rootfs.name}",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"name": rootfs.name},
+        )
 ```
+
+Wire `validate_rootfs_reference` into the existing `validate_profile` (so it runs at **both** the tool boundary — `provision_system`/`reprovision` already call `validate_profile` — and at render time, matching the `domain_xml_params` pattern). In `validate_profile`, after the `domain_xml_params` check, add:
+
+```python
+    validate_rootfs_reference(profile.provider.local_libvirt.rootfs)
+```
+
+Add a `test_rootfs_resolve.py` case asserting `validate_rootfs_reference` raises `CONFIGURATION_ERROR` for an unknown catalog name and a malformed url sha256 (the same inputs the resolver rejects, but via the tool-boundary entry point).
 
 In `render_domain_xml`, replace `ET.SubElement(disk, "source", file=section.rootfs_image_ref)` with:
 
@@ -2696,7 +2730,7 @@ In `render_domain_xml`, replace `ET.SubElement(disk, "source", file=section.root
     ET.SubElement(disk, "source", file=rootfs_path)
 ```
 
-Update every existing provisioning test fixture that used `rootfs_image_ref="..."` to the new `rootfs={"kind":"path","path":"..."}` shape (search: `rg -n rootfs_image_ref tests/`). This is a mechanical fixture update across `tests/providers/local_libvirt/` and `tests/mcp/test_systems_tools.py`.
+Update **every** test fixture that used `rootfs_image_ref="..."` to the new `rootfs={"kind":"path","path":"..."}` shape. This is a wide, mechanical change — run `rg -l rootfs_image_ref tests/` and fix each file; at the time of writing that is 12 files, and the highest-leverage ones are the **shared seeding helpers** `tests/mcp/_seed.py` and `tests/integration/_seed.py` (used by many suites — fixing them resolves most call sites at once), plus `tests/profiles/test_provisioning.py`, `tests/providers/local_libvirt/test_provisioning.py`, `tests/mcp/test_systems_tools.py`, `tests/adversarial/test_provider_xml.py`, `tests/adversarial/test_provider_state_races.py`, `tests/adversarial/test_debug_session_races.py`, `tests/mcp/test_control_tools.py`, `tests/mcp/test_debug_ops.py`, `tests/mcp/test_debug_tools.py`, and `tests/integration/test_live_stack.py`. After the change, `rg -l rootfs_image_ref tests/ src/` must return nothing.
 
 Create `tests/providers/local_libvirt/test_rootfs_resolve.py`:
 
@@ -2711,7 +2745,10 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import _CatalogRootfs, _PathRootfs, _UploadRootfs, _UrlRootfs
-from kdive.providers.local_libvirt.provisioning import resolve_rootfs_path
+from kdive.providers.local_libvirt.provisioning import (
+    resolve_rootfs_path,
+    validate_rootfs_reference,
+)
 
 _SID = uuid4()
 
@@ -2737,6 +2774,18 @@ def test_unknown_catalog_rejected() -> None:
     r = _CatalogRootfs(kind="catalog", name="no-such")
     with pytest.raises(CategorizedError) as e:
         resolve_rootfs_path(r, tenant="local", system_id=_SID)
+    assert e.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_validate_rootfs_reference_rejects_bad_url_checksum_at_tool_boundary() -> None:
+    with pytest.raises(CategorizedError) as e:
+        validate_rootfs_reference(_UrlRootfs(kind="url", url="https://h/i.qcow2", sha256="nope"))
+    assert e.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_validate_rootfs_reference_rejects_unknown_catalog_at_tool_boundary() -> None:
+    with pytest.raises(CategorizedError) as e:
+        validate_rootfs_reference(_CatalogRootfs(kind="catalog", name="no-such"))
     assert e.value.category is ErrorCategory.CONFIGURATION_ERROR
 ```
 
