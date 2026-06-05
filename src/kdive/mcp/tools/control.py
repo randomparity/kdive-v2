@@ -17,12 +17,13 @@ authorizing tuple to audit (ADR-0025 §9).
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
+from pydantic import Field
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
@@ -34,6 +35,7 @@ from kdive.jobs.models import HandlerRegistry
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools import _docmeta
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.local_libvirt.control import Controller, LocalLibvirtControl, PowerAction
 from kdive.providers.local_libvirt.provisioning import domain_name_for
@@ -285,12 +287,31 @@ async def _detach_sessions(conn: AsyncConnection, job: Job, system: System) -> N
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `control.*` tools on ``app``, bound to ``pool``."""
 
-    @app.tool(name="control.power")
-    async def control_power(system_id: str, action: str) -> ToolResponse:
+    @app.tool(
+        name="control.power",
+        annotations=_docmeta.destructive(),
+        meta={"maturity": "partial"},
+    )
+    async def control_power(
+        system_id: Annotated[str, Field(description="The started System to act on.")],
+        action: Annotated[
+            str,
+            Field(description="Power action: `on` (operator) or `off`/`cycle`/`reset` (admin)."),
+        ],
+    ) -> ToolResponse:
+        """Power action on a started System: `on` is reversible (operator); off/cycle/reset
+        are destructive (admin). Enqueues a power job."""
         return await power_system(pool, current_context(), system_id=system_id, action=action)
 
-    @app.tool(name="control.force_crash")
-    async def control_force_crash(system_id: str) -> ToolResponse:
+    @app.tool(
+        name="control.force_crash",
+        annotations=_docmeta.destructive(),
+        meta={"maturity": "partial"},
+    )
+    async def control_force_crash(
+        system_id: Annotated[str, Field(description="The ready System to force-crash via NMI.")],
+    ) -> ToolResponse:
+        """Inject an NMI to crash a ready System; drives ready->crashed. Requires admin + gate."""
         return await force_crash_system(pool, current_context(), system_id=system_id)
 
 

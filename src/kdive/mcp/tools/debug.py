@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import contextlib
 from datetime import UTC, datetime
-from typing import LiteralString
+from typing import Annotated, LiteralString
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
+from pydantic import Field
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import DEBUG_SESSIONS, RUNS, SYSTEMS
@@ -35,6 +36,7 @@ from kdive.domain.state import DebugSessionState, RunState, SystemState
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.debug_ops import DebugEngineRuntime, register_debug_ops
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.local_libvirt.connect import Connector, LocalLibvirtConnect
@@ -390,8 +392,19 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     secret_backend: SecretBackend = secret_backend_from_env()
     runtime = DebugEngineRuntime(engine=GdbMiEngine(), attach=default_attach_seam)
 
-    @app.tool(name="debug.start_session")
-    async def debug_start_session(run_id: str, transport: str = _GDBSTUB) -> ToolResponse:
+    @app.tool(
+        name="debug.start_session",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "partial"},
+    )
+    async def debug_start_session(
+        run_id: Annotated[str, Field(description="The booted Run to attach a debug session to.")],
+        transport: Annotated[
+            str,
+            Field(description="Transport kind: `gdbstub` (default) or `ssh`."),
+        ] = _GDBSTUB,
+    ) -> ToolResponse:
+        """Open a single-attach transport and insert a live DebugSession. Requires operator."""
         return await start_session(
             pool,
             current_context(),
@@ -401,8 +414,15 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             secret_backend=secret_backend,
         )
 
-    @app.tool(name="debug.end_session")
-    async def debug_end_session(session_id: str) -> ToolResponse:
+    @app.tool(
+        name="debug.end_session",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "partial"},
+    )
+    async def debug_end_session(
+        session_id: Annotated[str, Field(description="The DebugSession to detach and close.")],
+    ) -> ToolResponse:
+        """Drive a live/attach DebugSession to detached; close its transport. Requires operator."""
         return await end_session(
             pool, current_context(), session_id, connector=connector, runtime=runtime
         )

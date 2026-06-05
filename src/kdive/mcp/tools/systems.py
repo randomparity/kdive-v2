@@ -669,8 +669,24 @@ async def teardown_handler(
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `systems.*` tools on ``app``, bound to ``pool``."""
 
-    @app.tool(name="systems.provision")
-    async def systems_provision(allocation_id: str, profile: dict[str, Any]) -> ToolResponse:
+    @app.tool(
+        name="systems.provision",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "partial"},
+    )
+    async def systems_provision(
+        allocation_id: Annotated[
+            str, Field(description="Granted Allocation to provision a System for.")
+        ],
+        profile: Annotated[
+            dict[str, Any],
+            Field(
+                description="Provisioning profile selecting the kernel/image and resources "
+                "for the new System."
+            ),
+        ],
+    ) -> ToolResponse:
+        """Mint a System for a granted Allocation and enqueue the provision job. Operator only."""
         return await provision_system(
             pool, current_context(), allocation_id=allocation_id, profile=profile
         )
@@ -686,12 +702,30 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         """Render a System; failed maps to a failure envelope. Requires project membership."""
         return await get_system(pool, current_context(), system_id)
 
-    @app.tool(name="systems.teardown")
-    async def systems_teardown(system_id: str) -> ToolResponse:
+    @app.tool(
+        name="systems.teardown",
+        annotations=_docmeta.destructive(),
+        meta={"maturity": "partial"},
+    )
+    async def systems_teardown(
+        system_id: Annotated[str, Field(description="The System to tear down.")],
+    ) -> ToolResponse:
+        """Enqueue an idempotent teardown for a System; destroys the domain. Requires admin."""
         return await teardown_system(pool, current_context(), system_id)
 
-    @app.tool(name="systems.reprovision")
-    async def systems_reprovision(system_id: str, profile: dict[str, Any]) -> ToolResponse:
+    @app.tool(
+        name="systems.reprovision",
+        annotations=_docmeta.destructive(),
+        meta={"maturity": "partial"},
+    )
+    async def systems_reprovision(
+        system_id: Annotated[str, Field(description="The ready System to reprovision in place.")],
+        profile: Annotated[
+            dict[str, Any],
+            Field(description="New provisioning profile; must opt in to reprovision."),
+        ],
+    ) -> ToolResponse:
+        """Reprovision a ready System in place under its Allocation. Requires operator + gate."""
         return await reprovision_system(
             pool, current_context(), system_id=system_id, profile=profile
         )

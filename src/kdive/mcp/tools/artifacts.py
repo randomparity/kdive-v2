@@ -9,17 +9,19 @@ owning System.
 from __future__ import annotations
 
 import logging
-from typing import LiteralString
+from typing import Annotated, LiteralString
 from uuid import UUID
 
 from fastmcp import FastMCP
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
+from pydantic import Field
 
 from kdive.domain.errors import ErrorCategory
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools import _docmeta
 
 _log = logging.getLogger(__name__)
 
@@ -109,10 +111,29 @@ async def artifacts_get(
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `artifacts.*` tools on ``app``, bound to ``pool``."""
 
-    @app.tool(name="artifacts.list")
-    async def artifacts_list_tool(system_id: str) -> list[ToolResponse]:
+    @app.tool(
+        name="artifacts.list",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "partial"},
+    )
+    async def artifacts_list_tool(
+        system_id: Annotated[
+            str, Field(description="The System whose redacted artifacts to list.")
+        ],
+    ) -> list[ToolResponse]:
+        """List the redacted artifacts for a System. Requires project membership."""
         return await artifacts_list(pool, current_context(), system_id=system_id)
 
-    @app.tool(name="artifacts.get")
-    async def artifacts_get_tool(artifact_id: str) -> ToolResponse:
+    @app.tool(
+        name="artifacts.get",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "partial"},
+    )
+    async def artifacts_get_tool(
+        artifact_id: Annotated[
+            str,
+            Field(description="The redacted artifact to fetch (sensitive ids are not-found)."),
+        ],
+    ) -> ToolResponse:
+        """Fetch one redacted artifact by id; sensitive ids are not-found (no raw vmcore leak)."""
         return await artifacts_get(pool, current_context(), artifact_id=artifact_id)

@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, LiteralString, NamedTuple
+from typing import Annotated, Any, LiteralString, NamedTuple
 from uuid import UUID
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
+from pydantic import Field
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, RUNS, SYSTEMS
@@ -31,6 +32,7 @@ from kdive.jobs.models import HandlerRegistry
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools import artifacts as artifacts_tools
 from kdive.providers.local_libvirt.retrieve import (
     CrashPostmortem,
@@ -327,22 +329,57 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `vmcore.*` / `postmortem.*` tools on ``app``, bound to ``pool``."""
     crash = LocalLibvirtRetrieve.from_env()
 
-    @app.tool(name="vmcore.fetch")
-    async def vmcore_fetch(system_id: str) -> ToolResponse:
+    @app.tool(
+        name="vmcore.fetch",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "partial"},
+    )
+    async def vmcore_fetch(
+        system_id: Annotated[str, Field(description="The crashed System whose vmcore to capture.")],
+    ) -> ToolResponse:
+        """Enqueue a capture_vmcore job on a crashed System. Requires operator."""
         return await fetch_vmcore(pool, current_context(), system_id=system_id)
 
-    @app.tool(name="vmcore.list")
-    async def vmcore_list(system_id: str) -> list[ToolResponse]:
+    @app.tool(
+        name="vmcore.list",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "partial"},
+    )
+    async def vmcore_list(
+        system_id: Annotated[
+            str,
+            Field(description="The System whose redacted vmcore artifacts to list."),
+        ],
+    ) -> list[ToolResponse]:
+        """List the redacted vmcore artifacts for a System. Requires project membership."""
         return await list_vmcores(pool, current_context(), system_id=system_id)
 
-    @app.tool(name="postmortem.crash")
-    async def postmortem_crash_tool(run_id: str, commands: list[str]) -> ToolResponse:
+    @app.tool(
+        name="postmortem.crash",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "partial"},
+    )
+    async def postmortem_crash_tool(
+        run_id: Annotated[str, Field(description="The Run whose captured core to analyze.")],
+        commands: Annotated[
+            list[str],
+            Field(description="Crash commands to run (allowlisted read-only verbs)."),
+        ],
+    ) -> ToolResponse:
+        """Run a crash command batch over a Run's captured core; returns redacted output."""
         return await postmortem_crash(
             pool, current_context(), run_id=run_id, commands=commands, crash=crash
         )
 
-    @app.tool(name="postmortem.triage")
-    async def postmortem_triage_tool(run_id: str) -> ToolResponse:
+    @app.tool(
+        name="postmortem.triage",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "partial"},
+    )
+    async def postmortem_triage_tool(
+        run_id: Annotated[str, Field(description="The Run whose captured core to triage.")],
+    ) -> ToolResponse:
+        """Run the fixed triage commands (log+bt) over a Run's captured core; redacted report."""
         return await postmortem_triage(pool, current_context(), run_id=run_id, crash=crash)
 
 

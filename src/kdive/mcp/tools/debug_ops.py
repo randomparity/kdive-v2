@@ -23,10 +23,12 @@ import os
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import Annotated
 from uuid import UUID
 
 from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
+from pydantic import Field
 
 from kdive.db.repositories import DEBUG_SESSIONS
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -35,6 +37,7 @@ from kdive.domain.state import DebugSessionState
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools import _docmeta
 from kdive.providers.local_libvirt.connect import TransportHandleData
 from kdive.providers.local_libvirt.debug_gdbmi import (
     AttachSeam,
@@ -298,8 +301,20 @@ def register_debug_ops(
 ) -> None:
     """Register the seven gdb-MI `debug.*` tools on ``app``, sharing ``runtime`` (ADR-0034 §5)."""
 
-    @app.tool(name="debug.set_breakpoint")
-    async def debug_set_breakpoint(session_id: str, location: str) -> ToolResponse:
+    @app.tool(
+        name="debug.set_breakpoint",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "partial"},
+    )
+    async def debug_set_breakpoint(
+        session_id: Annotated[
+            str, Field(description="The live DebugSession to set a breakpoint on.")
+        ],
+        location: Annotated[
+            str, Field(description="Symbol or address to break at (gdb location syntax).")
+        ],
+    ) -> ToolResponse:
+        """Set a breakpoint on a live DebugSession via gdb-MI. Requires operator."""
         return await run_engine_op(
             pool,
             current_context(),
@@ -308,8 +323,21 @@ def register_debug_ops(
             _set_breakpoint_op(runtime, session_id, location),
         )
 
-    @app.tool(name="debug.clear_breakpoint")
-    async def debug_clear_breakpoint(session_id: str, number: str) -> ToolResponse:
+    @app.tool(
+        name="debug.clear_breakpoint",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "partial"},
+    )
+    async def debug_clear_breakpoint(
+        session_id: Annotated[
+            str, Field(description="The live DebugSession whose breakpoint to clear.")
+        ],
+        number: Annotated[
+            str,
+            Field(description="Breakpoint number to clear (from debug.list_breakpoints)."),
+        ],
+    ) -> ToolResponse:
+        """Clear a breakpoint by number on a live DebugSession. Requires operator."""
         return await run_engine_op(
             pool,
             current_context(),
@@ -318,14 +346,32 @@ def register_debug_ops(
             _clear_breakpoint_op(runtime, session_id, number),
         )
 
-    @app.tool(name="debug.list_breakpoints")
-    async def debug_list_breakpoints(session_id: str) -> ToolResponse:
+    @app.tool(
+        name="debug.list_breakpoints",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "partial"},
+    )
+    async def debug_list_breakpoints(
+        session_id: Annotated[
+            str, Field(description="The live DebugSession whose breakpoints to list.")
+        ],
+    ) -> ToolResponse:
+        """List all breakpoints on a live DebugSession. Requires operator."""
         return await run_engine_op(
             pool, current_context(), session_id, runtime, _list_breakpoints_op(runtime, session_id)
         )
 
-    @app.tool(name="debug.read_memory")
-    async def debug_read_memory(session_id: str, address: int, byte_count: int) -> ToolResponse:
+    @app.tool(
+        name="debug.read_memory",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "partial"},
+    )
+    async def debug_read_memory(
+        session_id: Annotated[str, Field(description="The live DebugSession to read memory from.")],
+        address: Annotated[int, Field(description="Start address (integer) to read from.")],
+        byte_count: Annotated[int, Field(description="Number of bytes to read (capped at 4096).")],
+    ) -> ToolResponse:
+        """Read raw memory bytes from a live DebugSession (up to 4096 bytes). Requires operator."""
         return await run_engine_op(
             pool,
             current_context(),
@@ -334,8 +380,21 @@ def register_debug_ops(
             _read_memory_op(runtime, session_id, address, byte_count),
         )
 
-    @app.tool(name="debug.read_registers")
-    async def debug_read_registers(session_id: str, registers: list[str]) -> ToolResponse:
+    @app.tool(
+        name="debug.read_registers",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "partial"},
+    )
+    async def debug_read_registers(
+        session_id: Annotated[
+            str, Field(description="The live DebugSession to read registers from.")
+        ],
+        registers: Annotated[
+            list[str],
+            Field(description='Register names to read (e.g. ["rip", "rsp"]).'),
+        ],
+    ) -> ToolResponse:
+        """Read named registers from a live DebugSession. Requires operator."""
         return await run_engine_op(
             pool,
             current_context(),
@@ -344,8 +403,21 @@ def register_debug_ops(
             _read_registers_op(runtime, session_id, registers),
         )
 
-    @app.tool(name="debug.continue")
-    async def debug_continue(session_id: str, timeout_sec: float = 0.0) -> ToolResponse:
+    @app.tool(
+        name="debug.continue",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "partial"},
+    )
+    async def debug_continue(
+        session_id: Annotated[
+            str, Field(description="The live DebugSession to continue execution on.")
+        ],
+        timeout_sec: Annotated[
+            float,
+            Field(description="Seconds to wait for a stop event; 0.0 waits indefinitely."),
+        ] = 0.0,
+    ) -> ToolResponse:
+        """Resume execution on a live DebugSession and wait for a stop event. Operator only."""
         return await run_engine_op(
             pool,
             current_context(),
@@ -354,8 +426,15 @@ def register_debug_ops(
             _continue_op(runtime, session_id, timeout_sec),
         )
 
-    @app.tool(name="debug.interrupt")
-    async def debug_interrupt(session_id: str) -> ToolResponse:
+    @app.tool(
+        name="debug.interrupt",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "partial"},
+    )
+    async def debug_interrupt(
+        session_id: Annotated[str, Field(description="The live DebugSession to interrupt.")],
+    ) -> ToolResponse:
+        """Send an interrupt to halt a running live DebugSession. Requires operator."""
         return await run_engine_op(
             pool, current_context(), session_id, runtime, _interrupt_op(runtime, session_id)
         )

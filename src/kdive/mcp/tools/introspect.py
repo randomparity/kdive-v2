@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import LiteralString, NamedTuple
+from typing import Annotated, LiteralString, NamedTuple
 from uuid import UUID
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
+from pydantic import Field
 
 from kdive.db.repositories import DEBUG_SESSIONS, RUNS
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -27,6 +28,7 @@ from kdive.domain.state import DebugSessionState
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools import _docmeta
 from kdive.providers.local_libvirt.introspect_drgn import (
     LiveIntrospector,
     LocalLibvirtLiveIntrospect,
@@ -206,14 +208,34 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     introspector = LocalLibvirtVmcoreIntrospect.from_env()
     live_introspector = LocalLibvirtLiveIntrospect.from_env()
 
-    @app.tool(name="introspect.from_vmcore")
-    async def introspect_from_vmcore_tool(run_id: str) -> ToolResponse:
+    @app.tool(
+        name="introspect.from_vmcore",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "partial"},
+    )
+    async def introspect_from_vmcore_tool(
+        run_id: Annotated[
+            str, Field(description="The Run whose captured core to introspect with drgn.")
+        ],
+    ) -> ToolResponse:
+        """Run offline drgn introspection over a Run's captured core; returns redacted report."""
         return await introspect_from_vmcore(
             pool, current_context(), run_id=run_id, introspector=introspector
         )
 
-    @app.tool(name="introspect.run")
-    async def introspect_run_tool(session_id: str, helper: str) -> ToolResponse:
+    @app.tool(
+        name="introspect.run",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "partial"},
+    )
+    async def introspect_run_tool(
+        session_id: Annotated[str, Field(description="A live ssh DebugSession to introspect.")],
+        helper: Annotated[
+            str,
+            Field(description="In-tree drgn helper to run: tasks, modules, or sysinfo."),
+        ],
+    ) -> ToolResponse:
+        """Run live drgn introspection over a live ssh DebugSession. Requires operator."""
         return await introspect_run(
             pool,
             current_context(),
