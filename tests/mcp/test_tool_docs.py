@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import re
 import textwrap
 from collections import Counter
 from collections.abc import Callable
@@ -60,6 +61,47 @@ def _callees(fn: Callable[..., Any]) -> set[str]:
             elif isinstance(target, ast.Attribute):
                 names.add(target.attr)
     return names
+
+
+def _reaches_symbol(fn: Callable[..., Any], target: str, *, depth: int = 5) -> bool:
+    """Whether ``fn`` calls ``target`` directly or via a module-local delegate it calls.
+
+    The `@app.tool` wrappers are 1:1 delegators: the security-relevant call
+    (``assert_destructive_allowed``) lives one frame deeper, in the module-level handler the
+    wrapper invokes (`force_crash_system`, `reprovision_system`), never in the wrapper body.
+    Parsing only ``fn`` would miss it — so follow each called ``Name`` that resolves to a
+    function in ``fn``'s own module globals (a nested closure still carries its module's
+    globals), bounded by ``depth`` and a visited set against recursion.
+    """
+    seen: set[Any] = set()
+
+    def _walk(f: Callable[..., Any], budget: int) -> bool:
+        try:
+            tree = ast.parse(textwrap.dedent(inspect.getsource(f)))
+        except (OSError, TypeError):
+            return False
+        glb = getattr(f, "__globals__", {})
+        local_calls: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                callee = node.func
+                if isinstance(callee, ast.Name):
+                    if callee.id == target:
+                        return True
+                    local_calls.add(callee.id)
+                elif isinstance(callee, ast.Attribute) and callee.attr == target:
+                    return True
+        if budget <= 0:
+            return False
+        for name in local_calls:
+            delegate = glb.get(name)
+            if inspect.isfunction(delegate) and delegate not in seen:
+                seen.add(delegate)
+                if _walk(delegate, budget - 1):
+                    return True
+        return False
+
+    return _walk(fn, depth)
 
 
 def _unique_anchor(tool: FunctionTool, freq: Counter[str]) -> str:
@@ -114,13 +156,30 @@ def test_destructive_hint_matches_reviewed_set() -> None:
     )
 
 
+def _gate_reachers() -> set[str]:
+    """Tools whose wrapper reaches ``assert_destructive_allowed`` (through its delegate)."""
+    return {t.name for t in TOOLS if _reaches_symbol(t.fn, "assert_destructive_allowed")}
+
+
 def test_gate_callers_are_in_the_destructive_set() -> None:
-    # Backstop: any wrapper whose body reaches assert_destructive_allowed must be
-    # in the reviewed set (the converse — admin-gated ops — is not asserted).
-    gate_callers = {t.name for t in TOOLS if "assert_destructive_allowed" in _callees(t.fn)}
-    assert gate_callers <= _docmeta.DESTRUCTIVE_TOOLS, (
+    # Backstop: any tool that reaches assert_destructive_allowed must be in the reviewed
+    # set (the converse — admin-gated ops — is not asserted). The reach is transitive: the
+    # gate lives in the module-level handler the wrapper delegates to, not in the wrapper.
+    gate_reachers = _gate_reachers()
+    assert gate_reachers <= _docmeta.DESTRUCTIVE_TOOLS, (
         f"gate-calling tools not in the destructive set: "
-        f"{sorted(gate_callers - _docmeta.DESTRUCTIVE_TOOLS)}"
+        f"{sorted(gate_reachers - _docmeta.DESTRUCTIVE_TOOLS)}"
+    )
+
+
+def test_backstop_actually_detects_the_known_gate_callers() -> None:
+    # Canary against a vacuous backstop: the two tools that gate today must be detected as
+    # gate-reachers. This fails if the reach analysis stops at the wrapper body (the gate
+    # call is one delegate deeper), which would silently make the backstop above trivially
+    # true and let a newly-gated op ship without destructiveHint.
+    gate_reachers = _gate_reachers()
+    assert {"control.force_crash", "systems.reprovision"} <= gate_reachers, (
+        f"backstop failed to detect known gate-callers; saw {sorted(gate_reachers)}"
     )
 
 
@@ -131,7 +190,9 @@ def test_implemented_tools_have_a_covering_test() -> None:
         if (t.meta or {}).get("maturity") != "implemented":
             continue
         anchor = _unique_anchor(t, FREQ)
-        if anchor not in sources:
+        # Word-boundary, not substring: anchor `get_run` must not be satisfied by an
+        # unrelated `get_run_summary` token (the anchor is a whole symbol reference).
+        if not re.search(rf"\b{re.escape(anchor)}\b", sources):
             offenders.append(f"{t.name} (anchor {anchor})")
     assert not offenders, (
         f"implemented tools with no non-live test referencing their callee: {offenders} "
