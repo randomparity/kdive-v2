@@ -76,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Implementation plan for versioning & release process
 - RELEASING runbook + README/AGENTS pointers
 - Point version-bump heading at just set-version
+- Record -dev window, breaking marker, and release CI scope
 
 ### Fixed
 
@@ -93,10 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject unexpected release arg in stamp script
 - Add Breaking heading, repo URLs, correct config
 - Reject leading-zero versions, clarify release guard message
-
-### Security
-
-- Allowlist secrets-root env-var name for detect-secrets
+- Classify security-scoped commits; document conventions
 
 ### Style
 
@@ -206,6 +204,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Accurate long-poll timeout treatment, stable list ordering
 - TDD implementation plan for issue #10
 - Fix plan review findings — list_tools accessor, wait loop coverage, no placeholders
+- Spec + ADR-0020 for RBAC, audit, destructive gate
+- Address spec review — fix require_role algorithm, hashability, audit/gate threat model
+- Audit denied destructive ops; bound args_digest input domain
+- Implementation plan; document auth<->rbac cycle break
+- Restructure plan for green self-contained commits; pin digest test
 - Spec + ADR-0021 for the M0 reconciler loop
 - Address challenge pass 1 on the spec
 - Address challenge pass 2 on the spec
@@ -248,6 +251,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Address plan /challenge round 1 — fix import pruning, ty-check scope, ty ignore directive (#17)
 - Address plan /challenge round 2 — defer unused test imports, whole-tree ruff (#17)
 - Plan /challenge loop converged to approve (round 3) (#17)
+- Record red-team supply-chain & dangerous-API audit
 
 ### Fixed
 
@@ -287,22 +291,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Spec + ADR-0020 for RBAC, audit, destructive gate
-- Address spec review — fix require_role algorithm, hashability, audit/gate threat model
-- Audit denied destructive ops; bound args_digest input domain
-- Implementation plan; document auth<->rbac cycle break
-- Restructure plan for green self-contained commits; pin digest test
 - Project-scoped roles on RequestContext + require_role
 - Append-only audit record with hashed args_digest
 - Three-check destructive-op gate
-- Assert principal-only audit row persists NULL agent_session
 - Use raw docstring in confine_to_root to drop invalid escape (#48)
-- Adversarial concurrency/auth suite + fail-closed hardening
 - Parse libvirtd XMLDesc with defusedxml in the install plane
-- Genuinely-concurrent provider state-machine race tests
 - Project-scope jobs.get/wait/cancel/list (close #11 exposure)
-- Record red-team supply-chain & dangerous-API audit
-- Genuinely-concurrent debug single-attach race tests
 
 ### Build
 
