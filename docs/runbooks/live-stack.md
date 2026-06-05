@@ -14,8 +14,8 @@ the `docker-compose.yml` backends, so qemu disk-image and kernel-tree paths reso
 
 - A KVM / nested-virt host with `libvirt` and a running `libvirtd`.
 - Docker with a reachable daemon and **pullable** compose images. The compose file pins
-  `ghcr.io/navikt/mock-oauth2-server:3.1.4`; if that tag no longer resolves on ghcr.io,
-  re-pin it to a current tag before `just stack-up` (tracked as a follow-up).
+  `ghcr.io/navikt/mock-oauth2-server:3.0.3`; if that tag no longer resolves on ghcr.io,
+  re-pin it to a current tag before `just stack-up`.
 - The repo set up: `just setup` (or `uv sync --locked`).
 - The VM fixtures built (below).
 
@@ -25,14 +25,14 @@ the `docker-compose.yml` backends, so qemu disk-image and kernel-tree paths reso
 just stack-up
 ```
 
-This runs `docker compose up -d --wait` — Postgres, MinIO (with the `kdive-artifacts`
-bucket created by `minio-init`), and the mock OIDC issuer — and **waits for them to be
-healthy** before returning, then prints the host-process env block and next steps.
+This waits for the three long-running backends — Postgres, MinIO, and the mock OIDC issuer
+— to be **healthy**, then runs the one-shot `minio-init` to completion (creating the
+`kdive-artifacts` bucket) and prints the host-process env block and next steps.
 
-> `--wait` blocks on the compose healthchecks. The one-shot `minio-init` exits 0 after
-> creating the bucket; on some compose versions `--wait` may report a run-to-completion
-> service as not-running. If `just stack-up` exits non-zero solely because of
-> `minio-init`, confirm the bucket exists (`docker compose logs minio-init`) and proceed.
+> The recipe scopes `docker compose up --wait` to the long-running backends and runs
+> `minio-init` separately, because `--wait` treats a run-to-completion service's exit as a
+> wait failure. `minio-init`'s exit code still propagates, so a genuine bucket-creation
+> failure fails `just stack-up`.
 
 ## 2. Export the host-process env
 
