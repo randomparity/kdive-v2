@@ -89,5 +89,40 @@ check-mermaid:
 audit:
     reqs="$(mktemp)" && trap 'rm -f "$reqs"' EXIT && uv export --no-emit-project --no-dev --no-default-groups --format requirements-txt > "$reqs" && uv run --with 'pip-audit==2.10.0' pip-audit --no-deps --strict -r "$reqs"
 
+# Set the project version in pyproject.toml AND uv.lock together. `--no-sync` re-locks
+# (updates uv.lock) WITHOUT rebuilding the virtual environment — so a version bump does not
+# require libvirt-dev to compile libvirt-python; the editable install refreshes on the next
+# `uv run`. Used at a Milestone start and for the post-release "begin <next>-dev" bump.
+# Commit the result on a branch — never directly on main.
+set-version VERSION:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! "{{VERSION}}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "VERSION must be MAJOR.MINOR.PATCH, got '{{VERSION}}'" >&2
+      exit 1
+    fi
+    uv version --no-sync "{{VERSION}}"
+    echo "Set version to {{VERSION}} (pyproject.toml + uv.lock). Commit on a branch."
+
+# Fail if uv.lock is out of date relative to pyproject.toml (a forgotten re-lock).
+lock-check:
+    uv lock --check
+
+# Cut a release: verify state, then push the annotated tag only (never a commit to main).
+# The version must already equal VERSION (it was bumped at Milestone start / post-release).
+release VERSION:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "$(git branch --show-current)" == "main" ]] || { echo "not on main" >&2; exit 1; }
+    [[ -z "$(git status --porcelain)" ]] || { echo "working tree not clean" >&2; exit 1; }
+    git fetch --quiet origin main
+    [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || { echo "behind origin/main" >&2; exit 1; }
+    current="$(uv version --short)"
+    [[ "$current" == "{{VERSION}}" ]] || { echo "pyproject version $current != {{VERSION}}" >&2; exit 1; }
+    git tag -a "v{{VERSION}}" -m "Release v{{VERSION}}"
+    git push origin "v{{VERSION}}"
+    echo "Pushed tag v{{VERSION}}. NEXT: open a 'chore(release): begin <next>-dev' PR"
+    echo "(just set-version <next>; just changelog) — see docs/RELEASING.md."
+
 # Run the full gate that PR CI runs, reproducible locally.
-ci: lint type lint-shell lint-workflows check-mermaid test
+ci: lint type lock-check lint-shell lint-workflows check-mermaid test

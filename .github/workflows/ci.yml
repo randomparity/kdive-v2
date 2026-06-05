@@ -39,6 +39,9 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked
 
+      - name: Lockfile up to date
+        run: uv lock --check
+
       # The lint/type/test commands live only in the justfile; CI invokes the same
       # recipes a developer runs, so there is one source of truth (and `just type` is
       # whole-tree, the only place CI type-checks `tests/` — the pre-commit job skips ty).
