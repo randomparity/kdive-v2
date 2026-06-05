@@ -63,9 +63,12 @@ forward:
   Milestone-start bump overrides it (`0.2.1 → 0.3.0`).
 
 Consequence: a non-tag build reports `X.Y.Z-dev` for the *next* version, and only the
-tagged release commit reports a bare `X.Y.Z`. `0.2.0-dev` therefore only ever means
-"before the `v0.2.0` release," never after it — the marker is unambiguous and ordered.
-Tags are **annotated**, named `vX.Y.Z`.
+tagged release commit reports a bare `X.Y.Z`. `0.2.0-dev` is unambiguous **provided the
+post-release `begin <next>-dev` bump (below) is the first merge to `main` after the tag**:
+in the window between pushing `v0.2.0` and merging that bump, `main` still reads `0.2.0`, so
+a commit landing there would also report `0.2.0-dev` — now meaning "after," not "before,"
+the release. The bump closes that window, which is why it is release-blocking (decision 6,
+`RELEASING.md`), not a follow-up. Tags are **annotated**, named `vX.Y.Z`.
 
 ### 4. One version source of truth: `pyproject` `[project].version`
 
@@ -122,7 +125,15 @@ being current.
   by a CI inclusion test.
 - The contract definition (decision 1) gives future work a concrete test for "is this a
   breaking change," but also obliges changelog discipline (the `Breaking` heading) and a
-  judgment call per change.
+  judgment call per change. git-cliff fills that heading only from a literal `!` or a
+  `BREAKING CHANGE:` footer — it cannot infer a semantic contract break from prose. So a
+  break in the decision-1 surface (a renamed tool, a non-back-compatible migration) is
+  surfaced **only if** committed with that marker; `RELEASING.md` records the convention.
+- The release workflow (decision 6) re-verifies tag == version and bakes the SHA, but does
+  not itself re-run the lint/type/test gate — it trusts that the tag points at a CI-green,
+  reviewed `main` (which `just release` enforces by requiring `HEAD == origin/main`). A tag
+  pushed out-of-band, bypassing `just release`, would therefore produce an unverified
+  artifact; out-of-band tagging is unsupported.
 
 ## Alternatives considered
 
