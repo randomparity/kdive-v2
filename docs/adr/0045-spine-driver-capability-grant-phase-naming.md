@@ -52,8 +52,22 @@ wire at `crash`; the driver only supplies the one factor no wire tool exposes.
 `status in {"error","failed"}`, is converted to a `SpinePhaseError` chaining the original
 (`raise … from exc`) and carrying any `error_category`. The test body is a linear sequence of
 `async with phase("provision"): …` blocks, so both the failure message and the chained
-traceback name the failing phase. Async job-kind phases are bounded by a per-phase deadline, so
-a stalled worker fails the phase by name with a timeout rather than hanging.
+traceback name the failing phase.
+
+The async job-kind phases drive jobs to a terminal state with a bounded loop that distinguishes
+**three** outcomes of `jobs.wait` (whose server side, `wait_job`, returns the job envelope on
+any terminal state **or** when its clamped 300s cap elapses): `succeeded` proceeds;
+`failed`/`canceled` raises `SpinePhaseError(phase, error_category)` (a failed job is never read
+as not-yet-done); a non-terminal return re-issues `jobs.wait` until a per-phase
+`_DRAIN_DEADLINE_S` (set above the 300s cap) expires, then raises a timeout `SpinePhaseError`.
+So a stalled worker fails the phase by name with a timeout rather than hanging.
+
+The RBAC-negative assertions distinguish the two wire mechanisms a denial can take: a
+`require_role` denial **raises** (no authz `ErrorCategory`), which fastmcp surfaces as a tool
+error (`CallToolResult.is_error`) — the harness's `LiveStackClient.call_tool` is extended
+additively to raise a typed `LiveStackToolError` on that surface, leaving envelope parsing
+intact; a `force_crash` gate denial **returns** a `ToolResponse.failure(..., AUTHORIZATION_DENIED)`
+envelope (it audits first), asserted on `error_category`.
 
 ## Consequences
 

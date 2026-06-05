@@ -49,7 +49,7 @@ the read tool `runs.get`/`systems.get`) until the step commits before the next d
 |---|---|---|---|---|
 | 1 | allocate | operator | `allocations.request` | → `allocation_id`; envelope `status=granted` |
 | — | *(grant capability scope)* | *(platform setup)* | *out-of-band DB update* | `allocations.capability_scope.destructive_ops=["force_crash"]` (ADR-0045 §1) |
-| 2 | provision | operator | `systems.provision(allocation_id, profile)` — profile **opts `force_crash` in** via `provider.local-libvirt.destructive_ops` → worker; poll `systems.get` to `ready` | → `system_id` |
+| 2 | provision | operator | `systems.provision(allocation_id, profile)` — profile **opts `force_crash` in** via `provider.local-libvirt.destructive_ops` → worker; poll `systems.get` to `ready` | → `system_id` (from the provision envelope's `data["system_id"]`, **not** `object_id`, which is the job id) |
 | 3 | open-investigation | operator | `investigations.open(project, title)` | → `investigation_id` |
 | 4 | create-run | operator | `runs.create(investigation_id, system_id, build_profile)` | → `run_id` |
 | 5 | build | operator → worker | `runs.build(run_id)` (enqueue); poll `jobs.wait` to `succeeded` | `run` reaches `succeeded`; `build_id` recorded |
@@ -57,7 +57,7 @@ the read tool `runs.get`/`systems.get`) until the step commits before the next d
 | 7 | boot | operator → worker | `runs.boot(run_id)` (enqueue); poll `jobs.wait` | guest boots |
 | 8 | attach | operator | `debug.start_session(run_id, "gdbstub")` then `debug.read_registers` probe | → `session_id`; the gdb-MI probe returns a non-error envelope |
 | 9 | crash | admin | `control.force_crash(system_id)` (enqueue); poll `systems.get` to `crashed` | 3-check gate passes (admin role ∧ capability scope ∧ profile opt-in) |
-| 10 | capture | operator → worker | `vmcore.fetch(system_id)` (enqueue); poll `jobs.wait` | **redacted** vmcore artifact in MinIO (#1) |
+| 10 | capture | operator → worker | `vmcore.fetch(system_id)` (enqueue); poll `jobs.wait` to `succeeded` | **redacted** vmcore artifact in MinIO (#1) |
 | 11 | introspect | operator | `introspect.from_vmcore(run_id)` | redacted report returned in `data.report` |
 | 12 | release | operator | `allocations.release(allocation_id)` | ledger `reconciled`; teardown enqueued |
 | — | *(await teardown)* | operator → worker | poll `systems.get` to `torn_down` | System `torn_down`; `Discovery.list_owned()` empty for `system_id` (#5) |
@@ -66,6 +66,13 @@ the read tool `runs.get`/`systems.get`) until the step commits before the next d
 The `attach` probe uses `debug.read_registers` (a gdb-MI command) rather than the umbrella
 spec's placeholder `debug.gdb_mi_command`; the registered MI tools are
 `debug.read_registers`/`debug.read_memory`/`debug.continue`/`debug.interrupt`/breakpoints.
+
+**Id threading.** The async tools (`systems.provision`, `runs.build`/`install`/`boot`,
+`vmcore.fetch`, `control.force_crash`) return a **job-handle** envelope whose `object_id` is the
+**job id**; the System/Run id is carried in `data` (`data["system_id"]` / `data["run_id"]`). So
+the provision phase threads `system_id` from `data["system_id"]`, and the `jobs.wait`-polled
+phases use `object_id` as the job id. The synchronous tools (`allocations.request`,
+`investigations.open`, `runs.create`) carry the created object's id in `object_id` directly.
 
 ### Setup prerequisite for `crash` (the capability scope) — ADR-0045 §1
 
@@ -99,16 +106,45 @@ authorization/infrastructure denial is reported under its phase too, not silentl
 
 The real host `worker` drains `provision`/`build`/`install`/`boot`/`capture_vmcore`/
 `force_crash` jobs; the `reconciler` repairs drift and reaps released infra. The driver never
-runs a job inline — it polls:
+runs a job inline. Two poll mechanisms, used deliberately for different signals:
 
-- For job-handle phases (`build`/`install`/`boot`/`capture`/`crash`/`provision`): poll
-  `jobs.wait(job_id, timeout_s)` until the job envelope reports `succeeded`, then assert the
-  read tool reflects the new state (`runs.get` `succeeded`, `systems.get` `ready`/`crashed`/
-  `torn_down`). `jobs.wait` long-polls server-side; the driver wraps it in a bounded retry loop
-  with an overall per-phase deadline so a stalled worker fails the phase by *name* with a
-  timeout, not a hang.
-- A single module-level `_DRAIN_DEADLINE_S` bounds each async phase; exceeding it raises the
-  phase's `SpinePhaseError` with a timeout reason.
+- **`jobs.wait` poll (run-step signal): `build`/`install`/`boot`/`capture`.** These phases carry
+  a job id (the enqueue envelope's `object_id`) whose terminal state is the step's outcome. The
+  driver polls `jobs.wait(job_id, timeout_s)` and must distinguish its **three** outcomes
+  (`wait_job` returns `ToolResponse.from_job(job)` when the job is terminal — `succeeded`,
+  `failed`, or `canceled` — **or** when the clamped `MAX_WAIT_S=300` server deadline elapses, in
+  which case it returns a still-`queued`/`running` envelope):
+  1. `status == "succeeded"` → the step committed; proceed to assert the read tool
+     (`runs.get` `succeeded`).
+  2. `status in {"failed","canceled"}` → raise `SpinePhaseError(phase, error_category)` carrying
+     the job envelope's `error_category`. **A failed job is never treated as not-yet-done.**
+  3. a non-terminal return (`queued`/`running`) → the server's 300s cap elapsed with the worker
+     still draining (a stall). Re-issue `jobs.wait` until the module-level `_DRAIN_DEADLINE_S`
+     budget expires, then raise a timeout `SpinePhaseError(phase, reason="drain_timeout")`. The
+     loop **never** spins forever.
+- **`systems.get` poll (system-state signal): `provision`/`crash`/teardown.** These phases move
+  *System* state, not run-step state. `provision` drives `provisioning → ready`, `crash`
+  (`force_crash`) drives `ready → crashed`, and `release`'s teardown drives `→ torn_down`. The
+  driver polls `systems.get(system_id)` and reads `status` (the System state) until it reaches
+  the target state, bounded by the same `_DRAIN_DEADLINE_S`; a `failed`/`error` envelope or the
+  deadline raises the phase's `SpinePhaseError`. `crash` polls `systems.get` (not `jobs.wait`)
+  because the System-state transition is the observable signal and because the `force_crash` job
+  is authorized under the **admin** token while the polling driver may hold an operator context
+  — see the single-project invariant below.
+
+`_DRAIN_DEADLINE_S` is set comfortably above the 300s `MAX_WAIT_S` server cap (e.g. a small
+multiple) so a single `jobs.wait` returning a non-terminal envelope is one tick of the retry
+loop, not the whole budget; a real worker stall exhausts the budget and fails the phase by name.
+
+### Single-project invariant (cross-role job polling)
+
+All spine role tokens — `operator` and `admin` — carry the **same** project string. `jobs.wait`
+/`jobs.get` are project-scoped: `_in_scope` (`jobs.py`) gates a job read on the job's
+`authorizing.project` being in the **caller's** `ctx.projects`. So a job enqueued under one role
+is `jobs.wait`-readable under another **only** when both tokens share the project. The driver
+keeps this invariant: every spine phase runs in one project, and the `crash` phase is polled via
+`systems.get` (no cross-role `jobs.wait` on the admin-authorized `force_crash` job). A future
+multi-project variant must revisit this.
 
 ## Acceptance assertions
 
@@ -135,11 +171,38 @@ All assertions run over the wire / against the stack's Postgres + MinIO:
 - **#5 torn_down + no OwnedInfra.** After `release` and teardown drain, `systems.get(system_id)`
   reports `torn_down` **and** a `LocalLibvirtDiscovery(host_uri="qemu:///system", …).list_owned()`
   returns no `OwnedInfra` for the released `system_id` (the ADR-0035 §2 mechanism).
-- **RBAC negatives over the wire.** A `viewer` token is denied operator ops
-  (`allocations.request`, `systems.provision`) and admin ops; `control.force_crash` under a
-  non-admin (operator) token is denied (`authorization_denied`) — asserted as raised/`error`
-  envelopes over HTTP, *not* in-process. These negatives run against the standing stack and do
-  **not** require a KVM host beyond the spine itself.
+- **RBAC negatives over the wire — two distinct mechanisms, asserted differently.** The two
+  negatives the issue lists surface through **different** wire paths and must be asserted
+  separately (a single "raised/error envelope" assertion is wrong for one of them):
+  - **(a) Raised path — `viewer` denied operator/admin ops.** `require_role`
+    (`security/rbac.py`) **raises** `AuthorizationError` for a viewer calling
+    `allocations.request`/`systems.provision` (ADR-0020: authz denials raise, there is **no**
+    authz `ErrorCategory`). The server has no `ToolResponse` to return; fastmcp surfaces the
+    raised exception as a **tool error** (`CallToolResult.is_error == True`), not a structured
+    envelope. The merged `LiveStackClient.call_tool` reads `result.structured_content`, which is
+    `None` on a raised error, so the harness must be **extended** (see below) to surface tool
+    errors as an assertable typed outcome rather than the current opaque
+    `RuntimeError("...returned no structured content")`. The driver asserts this case via the
+    harness's tool-error surface (a raised `LiveStackToolError` / a returned `is_error`), **not**
+    by inspecting `error_category`.
+  - **(b) Envelope path — `operator` denied `control.force_crash`.** `force_crash`'s gate
+    **catches** `DestructiveOpDenied`, audits the denial, and **returns**
+    `ToolResponse.failure(system_id, AUTHORIZATION_DENIED)` (`control.py`). This is a structured
+    envelope, so the driver asserts `status == "error"` **and**
+    `error_category == "authorization_denied"`. (Force_crash returns an envelope rather than
+    raising because the gate must audit the denied attempt before responding.)
+
+  These negatives run against the standing stack and do **not** require a KVM host beyond the
+  spine itself (they can be asserted before/independent of the VM path).
+
+  **Harness extension (additive, must not break existing callers).** `LiveStackClient.call_tool`
+  is extended to detect a tool error (`CallToolResult.is_error`) and raise a typed
+  `LiveStackToolError` (carrying the tool name + the error text) **before** the
+  structured-content parse. The existing success path — `structured_content` → `ToolResponse`
+  (scalar) or `{"result":[...]}` → `list[ToolResponse]` — is unchanged, so the wire smoke test
+  (`test_wire_harness.py`) and every other caller that relies on envelope parsing keep working.
+  The `RuntimeError("returned no structured content")` branch remains only for the genuinely
+  malformed (non-error, no-structured-content) case it was written for.
 - **report RBAC boundary.** `accounting.report(scope="all-projects")` is reachable under a
   `platform_auditor` token and denied under a project-only `viewer`/`operator`/`admin` token
   (sub-issue E owns the ledger-variance + artifact assertions).
@@ -161,6 +224,9 @@ fails).
 - **Create** `tests/integration/test_live_stack.py` — the phase-structured driver + `phase`
   context manager + `SpinePhaseError` + `_spine_preflight` + the assertions above. Marked
   `live_stack`.
+- **Modify** `tests/integration/live_stack/harness.py` — extend `LiveStackClient.call_tool` to
+  raise a typed `LiveStackToolError` on `CallToolResult.is_error` (the raised-RBAC path),
+  additively, leaving the existing structured-content envelope parsing unchanged.
 - **Modify** `tests/integration/test_walking_skeleton.py` — **delete**
   `test_walking_skeleton_full_path` and its now-unused `live_vm` preflight branch
   (`_live_vm_preflight` is retained only if still used by a remaining test; the non-gated
