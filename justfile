@@ -54,7 +54,7 @@ test-live:
 stack-up:
     docker compose up -d --wait
     @echo "Backends healthy. Export this env, then start the host processes:"
-    @echo "  export KDIVE_DATABASE_URL=postgresql://kdive:kdive@localhost:5432/kdive"
+    @echo "  export KDIVE_DATABASE_URL=postgresql://kdive:kdive@localhost:5432/kdive" # pragma: allowlist secret — local dev only
     @echo "  export KDIVE_OIDC_ISSUER=http://localhost:8090/default"
     @echo "  export KDIVE_OIDC_JWKS_URI=http://localhost:8090/default/jwks"
     @echo "  export KDIVE_OIDC_AUDIENCE=kdive"

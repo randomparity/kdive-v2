@@ -40,7 +40,7 @@ The three host processes read `KDIVE_*` env pointed at the compose host ports. `
 prints this block; export it in the shell that will start the processes:
 
 ```bash
-export KDIVE_DATABASE_URL=postgresql://kdive:kdive@localhost:5432/kdive
+export KDIVE_DATABASE_URL=postgresql://kdive:kdive@localhost:5432/kdive # pragma: allowlist secret — local dev only
 export KDIVE_OIDC_ISSUER=http://localhost:8090/default
 export KDIVE_OIDC_JWKS_URI=http://localhost:8090/default/jwks
 export KDIVE_OIDC_AUDIENCE=kdive
@@ -59,7 +59,7 @@ code bug. The `KDIVE_S3_*` vars carry only the endpoint, bucket, and region.
 
 | var | value | consumed by |
 |-----|-------|-------------|
-| `KDIVE_DATABASE_URL` | `postgresql://kdive:kdive@localhost:5432/kdive` | `db/pool.py` |
+| `KDIVE_DATABASE_URL` | `postgresql://kdive:kdive@localhost:5432/kdive` | `db/pool.py` | <!-- pragma: allowlist secret — local dev only -->
 | `KDIVE_OIDC_ISSUER` | `http://localhost:8090/default` | `mcp/auth.py` |
 | `KDIVE_OIDC_JWKS_URI` | `http://localhost:8090/default/jwks` | `mcp/auth.py` |
 | `KDIVE_OIDC_AUDIENCE` | `kdive` | `mcp/auth.py` |

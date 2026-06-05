@@ -96,7 +96,7 @@ host ports. The contract (sourced from `docker-compose.yml` and the consuming mo
 
 | var | value (default compose) | consumed by |
 |-----|-------------------------|-------------|
-| `KDIVE_DATABASE_URL` | `postgresql://kdive:kdive@localhost:5432/kdive` | `db/pool.py` |
+| `KDIVE_DATABASE_URL` | `postgresql://kdive:kdive@localhost:5432/kdive` | `db/pool.py` | <!-- pragma: allowlist secret — local dev only -->
 | `KDIVE_OIDC_ISSUER` | `http://localhost:8090/default` | `mcp/auth.py` |
 | `KDIVE_OIDC_JWKS_URI` | `http://localhost:8090/default/jwks` | `mcp/auth.py` |
 | `KDIVE_OIDC_AUDIENCE` | `kdive` | `mcp/auth.py` |
