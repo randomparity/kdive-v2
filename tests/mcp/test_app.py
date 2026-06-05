@@ -62,7 +62,7 @@ def test_build_app_registers_jobs_tools() -> None:
             "debug.interrupt",
         } <= names
         assert {"introspect.from_vmcore", "introspect.run"} <= names
-        assert {"accounting.estimate", "accounting.usage"} <= names
+        assert {"accounting.estimate", "accounting.usage", "accounting.report"} <= names
         assert {
             "allocations.request",
             "allocations.get",
