@@ -205,11 +205,11 @@ def mint_token(
 class LiveStackClient:
     """A thin wrapper over :class:`fastmcp.Client` returning parsed envelopes (ADR-0044).
 
-    ``call_tool`` parses ``CallToolResult.data`` — already deserialized by FastMCP into a
-    pydantic model (scalar tool) or a list of them (a ``list[ToolResponse]`` tool) — back
-    into the project :class:`ToolResponse`. The constructor accepts an already-built client
-    (the in-memory tier injects one over a probe app); :meth:`over_http` builds the
-    streamable-HTTP + bearer client for the live tier.
+    ``call_tool`` parses ``CallToolResult.structured_content`` — a clean ``dict`` — back into
+    the project :class:`ToolResponse`: a scalar tool's payload is the object dict, a
+    ``list[ToolResponse]`` tool is wrapped as ``{"result": [...]}``. The constructor accepts an
+    already-built client (the in-memory tier injects one over a probe app); :meth:`over_http`
+    builds the streamable-HTTP + bearer client for the live tier.
     """
 
     def __init__(self, client: Client) -> None:
