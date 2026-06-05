@@ -64,6 +64,13 @@ jobs:
       - name: Type check
         run: just type
 
+      - name: Docs reference up to date
+        # The generated tool reference (docs/guide/reference/) must match a fresh
+        # generation from the registry (ADR-0047). `just docs-check` diffs the committed
+        # files against the generator. Local `just ci` runs this, but CI invokes recipes
+        # individually (see note above), so it must be listed here to gate PRs.
+        run: just docs-check
+
       - name: Test
         # KDIVE_REQUIRE_DOCKER turns the db suite's skip-when-no-Docker into a hard
         # failure, so a broken daemon on the runner can't mask the schema tests
