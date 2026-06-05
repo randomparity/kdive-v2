@@ -12,11 +12,16 @@ leave to the implementation: the `report` rollup query and its response shape.
 ## Settled upstream (do not re-decide)
 
 - **granted-set** form rides `require_role(ctx, p, viewer)` — no platform role. Default set
-  is `ctx.projects` filtered to where the held role ranks `≥ viewer` (role-less memberships
-  dropped, not raised on). A **named** `projects` arg authorizes each via
-  `require_role(viewer)`, which **raises** `AuthorizationError` for a non-member or role-less
-  project. Zero resolved projects → empty rollup (success). Audited to `platform_audit_log`
-  (`platform_role=None`) **iff** resolved set spans >1 project **or** `group_by="principal"`.
+  is the projects in `ctx.projects` with a **non-None** role (`ctx.roles.get(p) is not None`);
+  role-less memberships are dropped, not raised on. (Because `viewer` is rank 0, "ranks ≥
+  viewer" is exactly "has any role" — no rank comparison, no reach for the module-private
+  `_RANK`.) A **named** `projects` arg authorizes each via `require_role(viewer)`, which
+  **raises** `AuthorizationError` for a non-member or role-less project. Zero resolved
+  projects → empty rollup (success). Audited to `platform_audit_log` (`platform_role=None`)
+  **iff** the **authorized/resolved** set (the project list handed to `report()`, *before* the
+  rollup drops projects with no ledger rows) spans >1 project **or** `group_by="principal"`.
+  The trigger counts the *read intent*, not the rows returned — a viewer of A+B reads two
+  projects and is audited even if only A has spend.
 - **all-projects** form gated `require_platform_role(ctx, PLATFORM_AUDITOR)` (satisfied by
   `platform_admin`). Project universe = `SELECT DISTINCT project FROM budgets`. **Always**
   audited on success with the granting role. A denial by a principal holding ≥1 platform role
@@ -44,11 +49,15 @@ Per (project) — or per (project, principal) when grouped — sum the **signed 
 - `variance` = `reconciled − reserved` (per ADR-0043 §3 / P2: "variance = reconciled − reserved
   from the signed ledger")
 
-All three pass `quantize_kcu`. `principal` comes from `ledger ⋈ allocations` on `allocation_id`
-(`allocations.principal`; `ledger_allocation_id_idx` covers the join). The query is one
-`GROUP BY project[, principal]` over `ledger JOIN allocations`, filtered by
-`ledger.project = ANY(%s)` and the optional `ts` window — no per-project round trip, so an N-
-project rollup is one statement.
+All three pass `quantize_kcu`. The **ungrouped** rollup selects from `ledger` **alone** (no
+join), `GROUP BY project`. The `group_by="principal"` rollup adds an **INNER** join
+`ledger JOIN allocations ON ledger.allocation_id = allocations.id` and `GROUP BY project,
+allocations.principal`; the inner join is provably non-dropping because `ledger.allocation_id`
+is `NOT NULL` with an FK to `allocations.id` (schema 0002), so every ledger row — reserved and
+reconciled-credit alike — has exactly one matching allocation. Both forms sum the identical
+ledger rows; only the grouping key differs. The existing `ledger_allocation_id_idx` covers the
+join. Each form is one statement filtered by `ledger.project = ANY(%s)` and the optional `ts`
+window — no per-project round trip, so an N-project rollup is one query.
 
 `Report` (frozen dataclass):
 
@@ -68,10 +77,14 @@ class Report:
 ```
 
 `total.reserved/reconciled/variance` are the sums across all rows (and `variance` of the total
-equals `total.reconciled − total.reserved`, consistent with the per-row rule).
+equals `total.reconciled − total.reserved`, consistent with the per-row rule). `total.project`
+is `"*"` and `total.principal` is **always** `None` — the total is cross-principal by
+definition, even when `group_by="principal"`.
 
 A project in the authorized set with **no** ledger rows contributes no `RollupRow` (an empty
-rollup is the natural "nothing spent" answer); the total over an empty set is all-zero.
+rollup is the natural "nothing spent" answer); the total over an empty set is all-zero. The
+row JSON in the response **always includes the `principal` key** (null when ungrouped), so the
+response shape is uniform regardless of `group_by`.
 
 ### Tool — `accounting.report`
 
@@ -96,6 +109,14 @@ Audit `scope` column value: `"all-projects"` for that form; `"granted-set:<comma
 projects>"` for the member form. `args` digested = the public tool args (`scope`, `group_by`,
 `window`, `projects`).
 
+**Audit transaction semantics.** A report is a pure read — the audit row has nothing to
+compose with — so every `record_platform` call (success *and* denial) runs in its **own**
+short `conn.transaction()` that commits before the handler returns. The success audit and the
+rollup may share the read connection but the audit commits on its own. Tests assert
+`platform_audit_log` counts on a **fresh** connection *after* the handler returns, never mid-
+flight, so the count reflects committed rows only (mirrors `test_record_platform_composes_in_
+caller_transaction`, which proves the writer respects its caller's transaction boundary).
+
 ## TDD order (each acceptance bullet → ≥1 test)
 
 Domain (`tests/domain/test_accounting_report.py`):
@@ -115,6 +136,8 @@ Tool (`tests/mcp/test_accounting_report.py`):
    `platform_operator`).
 9. granted-set default: viewer on A+B, bare member of C → rollup over exactly A+B (C dropped);
    one audit row (>1 project, `platform_role` null); no `audit_log` row.
+9b. granted-set default: viewer on A+B where **only A** has ledger rows → still one audit row
+    (the trigger counts the 2-project *authorized* set, not the 1 returned RollupRow).
 10. granted-set default: all memberships role-less → empty rollup (success), no audit row.
 11. granted-set named non-member or role-less project → `AuthorizationError` raised.
 12. granted-set single project, ungrouped → no `platform_audit_log` row.
