@@ -51,6 +51,14 @@ class FetchedArtifact(NamedTuple):
     retention_class: str
 
 
+class HeadResult(NamedTuple):
+    """An object's stored size, base64 SHA-256 checksum (if any), and bare etag."""
+
+    size_bytes: int
+    checksum_sha256: str | None
+    etag: str
+
+
 def _normalize_etag(raw: str) -> str:
     """Strip S3's surrounding double quotes from an ETag, leaving the bare value."""
     return raw.strip('"')
@@ -192,6 +200,30 @@ class ObjectStore:
             # dropped connection raises a BotoCoreError that must stay typed too.
             raise _infrastructure_error("get_object", key, err) from err
         return FetchedArtifact(data, sensitivity, retention_class)
+
+    def head(self, key: str) -> HeadResult | None:
+        """Return the object's size/checksum/etag, or ``None`` if it does not exist.
+
+        Requests ``ChecksumMode="ENABLED"`` so a checksum written at PUT is returned.
+
+        Raises:
+            CategorizedError: any non-404 store error
+                (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
+        """
+        try:
+            resp = self._client.head_object(Bucket=self._bucket, Key=key, ChecksumMode="ENABLED")
+        except ClientError as err:
+            status = err.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if status == 404:
+                return None
+            raise _infrastructure_error("head_object", key, err) from err
+        except BotoCoreError as err:
+            raise _infrastructure_error("head_object", key, err) from err
+        return HeadResult(
+            size_bytes=int(resp["ContentLength"]),
+            checksum_sha256=resp.get("ChecksumSHA256"),
+            etag=_normalize_etag(resp["ETag"]),
+        )
 
 
 def register_artifact_row(stored: StoredArtifact, *, owner_kind: str, owner_id: UUID) -> Artifact:
