@@ -171,3 +171,71 @@ def test_presign_put_maps_error_to_infrastructure_failure() -> None:
 def test_owner_prefix_rejects_invalid_component() -> None:
     with pytest.raises(CategorizedError):
         owner_prefix("local", "runs", "bad/id")
+
+
+class _ListClient:
+    def __init__(self, pages: list[dict[str, object]]) -> None:
+        self._pages = pages
+        self.deleted: list[str] = []
+
+    def get_paginator(self, op: str) -> object:
+        assert op == "list_objects_v2"
+        pages = self._pages
+
+        class _Paginator:
+            def paginate(self, **_kwargs: object):
+                yield from pages
+
+        return _Paginator()
+
+    def delete_object(self, **kwargs: object) -> dict[str, object]:
+        self.deleted.append(str(kwargs["Key"]))
+        return {}
+
+
+def test_list_prefix_flattens_pages() -> None:
+    client = _ListClient(
+        [
+            {"Contents": [{"Key": "p/a"}, {"Key": "p/b"}]},
+            {"Contents": [{"Key": "p/c"}]},
+            {},  # empty page (no Contents) tolerated
+        ]
+    )
+    store = ObjectStore(client, "bucket")
+    assert store.list_prefix("p/") == ["p/a", "p/b", "p/c"]
+
+
+def test_delete_calls_delete_object() -> None:
+    client = _ListClient([])
+    store = ObjectStore(client, "bucket")
+    store.delete("p/a")
+    assert client.deleted == ["p/a"]
+
+
+class _FailingListClient:
+    def get_paginator(self, _op: str) -> object:
+        class _Paginator:
+            def paginate(self, **_kwargs: object):
+                raise EndpointConnectionError(endpoint_url="http://x")
+                yield  # make this a generator
+
+        return _Paginator()
+
+
+def test_list_prefix_maps_transport_error_to_infrastructure_failure() -> None:
+    store = ObjectStore(_FailingListClient(), "bucket")
+    with pytest.raises(CategorizedError) as excinfo:
+        store.list_prefix("p/")
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+class _FailingDeleteClient:
+    def delete_object(self, **_kwargs: object) -> dict[str, object]:
+        raise EndpointConnectionError(endpoint_url="http://x")
+
+
+def test_delete_maps_transport_error_to_infrastructure_failure() -> None:
+    store = ObjectStore(_FailingDeleteClient(), "bucket")
+    with pytest.raises(CategorizedError) as excinfo:
+        store.delete("p/a")
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE

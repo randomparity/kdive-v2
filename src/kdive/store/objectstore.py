@@ -310,6 +310,35 @@ class ObjectStore:
         }
         return PresignedUpload(url=url, required_headers=headers)
 
+    def list_prefix(self, prefix: str) -> list[str]:
+        """Return every object key under ``prefix`` (paginated), or ``[]``.
+
+        Raises:
+            CategorizedError: the listing fails
+                (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
+        """
+        keys: list[str] = []
+        try:
+            paginator = self._client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    keys.append(obj["Key"])
+        except (BotoCoreError, ClientError) as err:
+            raise _infrastructure_error("list_objects_v2", prefix, err) from err
+        return keys
+
+    def delete(self, key: str) -> None:
+        """Delete ``key`` (idempotent — deleting an absent key is not an error).
+
+        Raises:
+            CategorizedError: the delete fails
+                (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
+        """
+        try:
+            self._client.delete_object(Bucket=self._bucket, Key=key)
+        except (BotoCoreError, ClientError) as err:
+            raise _infrastructure_error("delete_object", key, err) from err
+
 
 def register_artifact_row(stored: StoredArtifact, *, owner_kind: str, owner_id: UUID) -> Artifact:
     """Build the ``artifacts`` row for a stored object (no database access).
