@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from kdive.mcp.auth import RequestContext
 
 _ROLES_CLAIM = "roles"
+_PLATFORM_ROLES_CLAIM = "platform_roles"
 
 
 class Role(StrEnum):
@@ -29,6 +30,29 @@ class Role(StrEnum):
 
 
 _RANK: dict[Role, int] = {Role.VIEWER: 0, Role.OPERATOR: 1, Role.ADMIN: 2}
+
+
+class PlatformRole(StrEnum):
+    """The three platform-scoped roles (ADR-0043 §2).
+
+    Granted **independently** — not a ``viewer < operator < admin`` rank — to preserve
+    separation of duties (an infra operator does not thereby read every project's data;
+    an auditor cannot mutate). The one deliberate partial-order exception is encoded in
+    :data:`_PLATFORM_IMPLIES`.
+    """
+
+    PLATFORM_ADMIN = "platform_admin"
+    PLATFORM_OPERATOR = "platform_operator"
+    PLATFORM_AUDITOR = "platform_auditor"
+
+
+# The single partial-order exception: `platform_admin` satisfies `platform_auditor`
+# (break-glass mutation requires visibility of what it mutates); `platform_operator`
+# satisfies neither (ADR-0043 §2). Every role satisfies itself (handled in
+# `require_platform_role` directly, so this maps only the cross-role implications).
+_PLATFORM_IMPLIES: dict[PlatformRole, frozenset[PlatformRole]] = {
+    PlatformRole.PLATFORM_ADMIN: frozenset({PlatformRole.PLATFORM_AUDITOR}),
+}
 
 
 class AuthorizationError(Exception):
@@ -89,3 +113,59 @@ def require_role(ctx: RequestContext, project: str, role: Role) -> None:
             f"{ctx.principal!r} needs role {role.value!r} on project {project!r}; "
             f"holds {held_name!r}"
         )
+
+
+def platform_roles_from_claims(claims: Mapping[str, object]) -> frozenset[PlatformRole]:
+    """Parse the platform-role set from a verified token's ``platform_roles`` claim.
+
+    The claim is a **flat array** of role strings (``["platform_auditor"]``), separate
+    from the per-project ``roles`` map. An absent claim yields the empty set (an ordinary
+    project token holds no platform role).
+
+    Raises:
+        AuthError: The claim is present but not an array (a string or object is rejected,
+            not iterated), or an entry is not a string or not a known platform role
+            (fail closed — mirrors :func:`roles_from_claims`, never silently drops a
+            value).
+    """
+    raw = claims.get(_PLATFORM_ROLES_CLAIM)
+    if raw is None:
+        return frozenset()
+    # Function-level import: the only runtime rbac->auth edge, kept here so rbac's
+    # module-level dependency on auth stays type-only and the import cycle is broken.
+    from kdive.mcp.auth import AuthError
+
+    # A str is a Sequence too; exclude it so a bare role string is not iterated as
+    # characters (fail closed on the wrong claim shape).
+    if not isinstance(raw, (list, tuple)) or isinstance(raw, str):
+        raise AuthError("platform_roles claim is not an array")
+    roles: set[PlatformRole] = set()
+    for value in raw:
+        if not isinstance(value, str):
+            raise AuthError(f"platform_roles claim entry {value!r} is not a string")
+        try:
+            roles.add(PlatformRole(value))
+        except ValueError:
+            raise AuthError(f"platform_roles claim has unknown role {value!r}") from None
+    return frozenset(roles)
+
+
+def require_platform_role(ctx: RequestContext, role: PlatformRole) -> None:
+    """Enforce that ``ctx`` holds a platform role satisfying ``role`` (ADR-0043 §2).
+
+    The sole enforcement seam **for platform roles**, orthogonal to :func:`require_role`.
+    A role satisfies the requirement if it is held directly or implies it via the single
+    ``platform_admin ⊇ platform_auditor`` partial order; ``platform_operator`` satisfies
+    only itself.
+
+    Raises:
+        AuthorizationError: The principal holds no platform role satisfying ``role``
+            (including the empty-set case — a project-only token).
+    """
+    for held in ctx.platform_roles:
+        if held is role or role in _PLATFORM_IMPLIES.get(held, frozenset()):
+            return
+    raise AuthorizationError(
+        f"{ctx.principal!r} needs platform role {role.value!r}; "
+        f"holds {sorted(r.value for r in ctx.platform_roles)!r}"
+    )

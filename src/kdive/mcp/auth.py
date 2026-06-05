@@ -18,7 +18,12 @@ from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_access_token
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.security.rbac import Role, roles_from_claims
+from kdive.security.rbac import (
+    PlatformRole,
+    Role,
+    platform_roles_from_claims,
+    roles_from_claims,
+)
 
 _JWKS_URI_ENV = "KDIVE_OIDC_JWKS_URI"
 _ISSUER_ENV = "KDIVE_OIDC_ISSUER"
@@ -38,16 +43,20 @@ class AuthError(Exception):
 class RequestContext:
     """The `(principal, agent_session, project)` attribution tuple (ADR-0006).
 
-    ``roles`` carries the principal's per-project role (ADR-0020). It is excluded from
-    ``__eq__``/``__hash__`` (``compare=False``) so a ``dict`` field cannot make the
-    frozen dataclass unhashable; the annotation is a string at runtime
-    (``from __future__ import annotations``), so ``Role`` is only a typing dependency.
+    ``roles`` carries the principal's per-project role (ADR-0020); ``platform_roles``
+    carries the orthogonal platform-scoped grants (ADR-0043 §1). Both are excluded from
+    ``__eq__``/``__hash__`` (``compare=False``): ``roles`` so its ``dict`` cannot make the
+    frozen dataclass unhashable, and ``platform_roles`` to keep equality keyed on the
+    attribution tuple (its default is a hashable ``frozenset``). The annotations are
+    strings at runtime (``from __future__ import annotations``), so ``Role`` /
+    ``PlatformRole`` are only typing dependencies.
     """
 
     principal: str
     agent_session: str | None
     projects: tuple[str, ...]
     roles: Mapping[str, Role] = field(default_factory=dict, compare=False)
+    platform_roles: frozenset[PlatformRole] = field(default_factory=frozenset, compare=False)
 
 
 def _require_env(name: str) -> str:
@@ -101,6 +110,7 @@ def context_from_claims(claims: Mapping[str, object]) -> RequestContext:
         agent_session=agent_session,
         projects=projects,
         roles=roles_from_claims(claims),
+        platform_roles=platform_roles_from_claims(claims),
     )
 
 
