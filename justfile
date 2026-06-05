@@ -40,9 +40,10 @@ format:
 type:
     uv run ty check
 
-# Run the test suite, excluding the gated live_vm suite.
+# Run the test suite, excluding the gated live_vm and live_stack suites.
+# (oidc_issuer-marked tests stay selected; they skip cleanly without the issuer container.)
 test:
-    uv run python -m pytest -m "not live_vm" -q
+    uv run python -m pytest -m "not live_vm and not live_stack" -q
 
 # Run the live_vm suite (needs a KVM/libvirt host with a kdump-enabled guest).
 test-live:
