@@ -22,6 +22,14 @@ if [[ -z "$release" ]]; then
   fi
 fi
 
+case "$release" in
+true | false) ;;
+*)
+  echo "stamp-buildinfo.sh: unexpected release arg '$release' (expected 'true' or 'false')" >&2
+  exit 1
+  ;;
+esac
+
 if [[ "$release" == "true" ]]; then py_release="True"; else py_release="False"; fi
 
 cat >"$target" <<EOF
