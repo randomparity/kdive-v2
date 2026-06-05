@@ -39,11 +39,22 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked
 
+      - name: Lockfile up to date
+        run: uv lock --check
+
       # The lint/type/test commands live only in the justfile; CI invokes the same
       # recipes a developer runs, so there is one source of truth (and `just type` is
       # whole-tree, the only place CI type-checks `tests/` — the pre-commit job skips ty).
       - name: Set up just
         uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+
+      - name: Build-info baking guard
+        run: |
+          just build
+          unzip -l dist/*.whl | grep -q 'kdive/_buildinfo.py' \
+            || { echo "::error::_buildinfo.py not packaged in the wheel"; exit 1; }
+          test ! -f src/kdive/_buildinfo.py \
+            || { echo "::error::_buildinfo.py left in the tree after build"; exit 1; }
 
       - name: Lint
         run: just lint

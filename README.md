@@ -76,3 +76,9 @@ To run the gated suite once the prerequisites are present:
 ```bash
 uv run python -m pytest -m live_vm
 ```
+
+Releasing
+---------
+
+See [`docs/RELEASING.md`](docs/RELEASING.md) for the versioning policy
+([ADR-0041](docs/adr/0041-versioning-release-process.md)) and the release process.

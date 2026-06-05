@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "kdive"
-version = "0.1.0"
+version = "0.2.0"
 description = "Kernel Debug, Inspect, Validate, Explore — MCP platform for kernel build-boot-debug workflows"
 readme = "README.md"
 requires-python = "==3.13.*"

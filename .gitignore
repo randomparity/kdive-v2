@@ -17,8 +17,11 @@ __pycache__/
 # Node (mermaid doc checker tooling)
 node_modules/
 
+# Generated build info (baked into artifacts only; never committed)
+/src/kdive/_buildinfo.py
+
 # Build artifacts
-dist/
+/dist/
 build/
 *.egg-info/
 

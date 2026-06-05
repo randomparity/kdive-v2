@@ -9,15 +9,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import signal
 import socket
 
 from kdive.db.pool import create_pool
 from kdive.log import configure_logging
+from kdive.version import full_version
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8000
+
+_log = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--log-level",
         default=os.environ.get("KDIVE_LOG_LEVEL", "INFO"),
         help="structured-logging level (default INFO)",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"kdive {full_version()}",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("server", help="run the MCP streamable-HTTP server")
@@ -85,6 +94,7 @@ def main(argv: list[str] | None = None) -> None:
     """Parse arguments, configure logging, and dispatch to the chosen subcommand."""
     args = build_parser().parse_args(argv)
     configure_logging(args.log_level)
+    _log.info("starting kdive %s (%s)", full_version(), args.command)
     if args.command == "server":
         host = os.environ.get("KDIVE_HTTP_HOST", _DEFAULT_HOST)
         port = int(os.environ.get("KDIVE_HTTP_PORT", str(_DEFAULT_PORT)))
