@@ -75,3 +75,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0043](0043-platform-scoped-rbac-tier.md) | Platform-scoped RBAC tier (`platform_roles`); cross-project auditor surface (extends 0006) | Proposed |
 | [0044](0044-mcp-wire-harness-oidc-token-issuance.md) | MCP-over-HTTP wire harness + OIDC token issuance; closes ADR-0042 §3's claim-shape gate (M1.2) | Proposed |
 | [0045](0045-spine-driver-capability-grant-phase-naming.md) | Spine driver: out-of-band destructive-capability grant + phase-failure naming contract (M1.2, refines 0042 §4) | Proposed |
+| [0046](0046-spine-report-phase-accounting-assertions-artifact.md) | Spine `report` phase: accounting assertions + report artifact (M1.2, refines 0042 §6) | Proposed |
