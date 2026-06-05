@@ -33,7 +33,12 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
 from kdive.security.rbac import Role, require_role
-from kdive.store.objectstore import artifact_key, object_store_from_env, owner_prefix
+from kdive.store.objectstore import (
+    PresignedUpload,
+    artifact_key,
+    object_store_from_env,
+    owner_prefix,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -69,11 +74,33 @@ class _PresignStore(Protocol):
         sensitivity: Sensitivity,
         retention_class: str,
         expires_in: int,
-    ) -> Any: ...
+    ) -> PresignedUpload: ...
 
 
 def _allowed_names(owner_kind: str) -> frozenset[str]:
     return _BUILD_ARTIFACT_NAMES if owner_kind == "run" else frozenset({_ROOTFS_NAME})
+
+
+def _validate_artifact_declarations(
+    object_id: str, artifacts: list[dict[str, Any]], allowed: frozenset[str], cap: int
+) -> list[ManifestEntry] | ToolResponse:
+    """Validate the declared artifacts, returning the entries or a config-error envelope.
+
+    Returns the parsed :class:`ManifestEntry` list on success, or a
+    ``CONFIGURATION_ERROR`` :class:`ToolResponse` if any declaration is malformed, a size
+    is out of range, or the set is empty.
+    """
+    entries: list[ManifestEntry] = []
+    for art in artifacts:
+        name, sha256, size = art.get("name"), art.get("sha256"), art.get("size_bytes")
+        if name not in allowed or not isinstance(sha256, str) or not isinstance(size, int):
+            return _config_error(object_id, data={"reason": "bad_artifact_declaration"})
+        if size <= 0 or size > cap:
+            return _config_error(object_id, data={"reason": "size_out_of_range"})
+        entries.append(ManifestEntry(name=name, sha256=sha256, size_bytes=size))
+    if not entries:
+        return _config_error(object_id, data={"reason": "no_artifacts_declared"})
+    return entries
 
 
 async def _owner_accepts_upload(conn: AsyncConnection, owner_kind: str, owner_id: UUID) -> bool:
@@ -208,17 +235,12 @@ async def create_upload(
             require_role(ctx, project, Role.OPERATOR)
 
             allowed = _allowed_names(owner_kind)
-            cap = _max_upload_bytes()
-            entries: list[ManifestEntry] = []
-            for art in artifacts:
-                name, sha256, size = art.get("name"), art.get("sha256"), art.get("size_bytes")
-                if name not in allowed or not isinstance(sha256, str) or not isinstance(size, int):
-                    return [_config_error(owner_id, data={"reason": "bad_artifact_declaration"})]
-                if size <= 0 or size > cap:
-                    return [_config_error(owner_id, data={"reason": "size_out_of_range"})]
-                entries.append(ManifestEntry(name=name, sha256=sha256, size_bytes=size))
-            if not entries:
-                return [_config_error(owner_id, data={"reason": "no_artifacts_declared"})]
+            validated = _validate_artifact_declarations(
+                owner_id, artifacts, allowed, _max_upload_bytes()
+            )
+            if isinstance(validated, ToolResponse):
+                return [validated]
+            entries = validated
 
             prefix = owner_prefix(_TENANT, kind, str(uid))
             lock_scope = LockScope.RUN if owner_kind == "run" else LockScope.SYSTEM
@@ -251,7 +273,10 @@ async def create_upload(
                         entries=entries,
                         ttl=_upload_ttl(),
                     )
-            except CategorizedError as exc:  # presign failure rolls back the manifest write
+            except CategorizedError as exc:
+                # A corrupt stored profile, presign, or manifest-write failure prevents (and
+                # rolls back) the manifest write; surface it so the cause is observable.
+                _log.warning("create_upload failed for %s %s: %s", owner_kind, owner_id, exc)
                 return [ToolResponse.failure(owner_id, exc.category)]
 
     return [

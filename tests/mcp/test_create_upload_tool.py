@@ -77,7 +77,12 @@ async def _pool(url: str) -> AsyncIterator[AsyncConnectionPool]:
         await pool.close()
 
 
-async def _seed_system(pool: AsyncConnectionPool, *, project: str = "proj") -> str:
+async def _seed_system(
+    pool: AsyncConnectionPool,
+    *,
+    project: str = "proj",
+    state: SystemState = SystemState.READY,
+) -> str:
     async with pool.connection() as conn:
         res = await RESOURCES.insert(
             conn,
@@ -113,7 +118,7 @@ async def _seed_system(pool: AsyncConnectionPool, *, project: str = "proj") -> s
                 principal="user-1",
                 project=project,
                 allocation_id=alloc.id,
-                state=SystemState.READY,
+                state=state,
                 provisioning_profile={"schema_version": 1},
             ),
         )
@@ -265,5 +270,67 @@ def test_create_upload_requires_operator(migrated_url: str) -> None:
                     artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": 100}],
                     store=_FakeStore(),
                 )
+
+    asyncio.run(_run())
+
+
+def test_create_upload_for_defined_system_mints_rootfs_and_persists(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id = await _seed_system(pool, state=SystemState.DEFINED)
+            store = _FakeStore()
+            responses = await artifacts_tools.create_upload(
+                pool,
+                _ctx(),
+                owner_kind="system",
+                owner_id=sys_id,
+                artifacts=[{"name": "rootfs", "sha256": "aaa", "size_bytes": 100}],
+                store=store,
+            )
+            assert [r.object_id for r in responses] == [f"local/systems/{sys_id}/rootfs"]
+            assert responses[0].suggested_next_actions == ["systems.provision"]
+            assert {c[0] for c in store.calls} == {f"local/systems/{sys_id}/rootfs"}
+            async with pool.connection() as conn:
+                manifest = await upload_manifest.get_manifest(conn, "systems", UUID(sys_id))
+            assert manifest is not None
+            assert {e.name for e in manifest.entries} == {"rootfs"}
+
+    asyncio.run(_run())
+
+
+def test_create_upload_rejects_non_rootfs_name_for_system(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id = await _seed_system(pool, state=SystemState.DEFINED)
+            store = _FakeStore()
+            out = await artifacts_tools.create_upload(
+                pool,
+                _ctx(),
+                owner_kind="system",
+                owner_id=sys_id,
+                artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": 100}],
+                store=store,
+            )
+        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert store.calls == []
+
+    asyncio.run(_run())
+
+
+def test_create_upload_rejects_empty_artifacts(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
+            store = _FakeStore()
+            out = await artifacts_tools.create_upload(
+                pool,
+                _ctx(),
+                owner_kind="run",
+                owner_id=run_id,
+                artifacts=[],
+                store=store,
+            )
+        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert store.calls == []
 
     asyncio.run(_run())
