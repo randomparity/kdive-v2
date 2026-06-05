@@ -59,8 +59,8 @@ the read tool `runs.get`/`systems.get`) until the step commits before the next d
 | 9 | crash | admin | `control.force_crash(system_id)` (enqueue); poll `systems.get` to `crashed` | 3-check gate passes (admin role ∧ capability scope ∧ profile opt-in) |
 | 10 | capture | operator → worker | `vmcore.fetch(system_id)` (enqueue); poll `jobs.wait` to `succeeded` | **redacted** vmcore artifact in MinIO (#1) |
 | 11 | introspect | operator | `introspect.from_vmcore(run_id)` | redacted report returned in `data.report` |
-| 12 | release | operator | `allocations.release(allocation_id)` | ledger `reconciled`; teardown enqueued |
-| — | *(await teardown)* | operator → worker | poll `systems.get` to `torn_down` | System `torn_down`; `Discovery.list_owned()` empty for `system_id` (#5) |
+| 12 | release | operator | `allocations.release(allocation_id)` | drives Allocation `releasing→released` + reconciles spend; **does not touch the System** |
+| — | *(await reconciler teardown)* | reconciler → worker | poll `systems.get` to `torn_down` (deadline > reconciler interval + worker drain) | System `torn_down`; `Discovery.list_owned()` empty for `system_id` (#5) |
 | 13 | report (RBAC boundary only) | platform_auditor + viewer | `accounting.report(scope="all-projects")` under a `platform_auditor` token (reachable) **and** under a project-only token (denied); `accounting.usage(investigation_id=…)` under viewer | the platform-vs-project authorization boundary holds over the wire (E owns the ledger assertions) |
 
 The `attach` probe uses `debug.read_registers` (a gdb-MI command) rather than the umbrella
@@ -124,17 +124,34 @@ runs a job inline. Two poll mechanisms, used deliberately for different signals:
      loop **never** spins forever.
 - **`systems.get` poll (system-state signal): `provision`/`crash`/teardown.** These phases move
   *System* state, not run-step state. `provision` drives `provisioning → ready`, `crash`
-  (`force_crash`) drives `ready → crashed`, and `release`'s teardown drives `→ torn_down`. The
-  driver polls `systems.get(system_id)` and reads `status` (the System state) until it reaches
-  the target state, bounded by the same `_DRAIN_DEADLINE_S`; a `failed`/`error` envelope or the
-  deadline raises the phase's `SpinePhaseError`. `crash` polls `systems.get` (not `jobs.wait`)
-  because the System-state transition is the observable signal and because the `force_crash` job
-  is authorized under the **admin** token while the polling driver may hold an operator context
-  — see the single-project invariant below.
+  (`force_crash`) drives `ready → crashed`, and teardown drives `→ torn_down`. The driver polls
+  `systems.get(system_id)` and reads `status` (the System state) until it reaches the target
+  state, bounded by `_DRAIN_DEADLINE_S`; a `failed`/`error` envelope or the deadline raises the
+  phase's `SpinePhaseError`. `crash` polls `systems.get` (not `jobs.wait`) because the
+  System-state transition is the observable signal and because the `force_crash` job is
+  authorized under the **admin** token while the polling driver may hold an operator context —
+  see the single-project invariant below.
 
-`_DRAIN_DEADLINE_S` is set comfortably above the 300s `MAX_WAIT_S` server cap (e.g. a small
-multiple) so a single `jobs.wait` returning a non-terminal envelope is one tick of the retry
-loop, not the whole budget; a real worker stall exhausts the budget and fails the phase by name.
+### Teardown is reconciler-driven, not release-enqueued
+
+`allocations.release` only drives the **Allocation** `releasing → released` and reconciles its
+spend — it **never reads or mutates the System** and enqueues no teardown job (verified:
+`allocations._release_locked` touches no `systems` row). Teardown happens **out of band**: the
+**reconciler** (`reconciler/loop.py`, `DEFAULT_INTERVAL = 30s`) finds every System whose
+Allocation is in `('released','failed','expired')` and not already terminal, and enqueues a
+`{system_id}:teardown` job; the **worker** then drains that job to `torn_down` (honoring the
+in-flight-job grace window). So after the `release` phase the System is torn down only after
+**≥1 reconciler interval (≥30s) + a worker drain**, not synchronously. The driver therefore:
+
+- **requires the reconciler to be running** (the runbook starts it as the third host process);
+- sets the teardown phase's deadline **explicitly above `reconciler_interval (30s floor) +
+  worker_drain`** — i.e. `_DRAIN_DEADLINE_S` is sized for this slowest phase, comfortably above
+  both the 30s reconciler floor and the 300s `MAX_WAIT_S` server cap.
+
+`_DRAIN_DEADLINE_S` is set comfortably above the 300s `MAX_WAIT_S` server cap (a small multiple)
+so a single `jobs.wait` returning a non-terminal envelope is one tick of the retry loop, not the
+whole budget; a real worker (or reconciler) stall exhausts the budget and fails the phase by
+name.
 
 ### Single-project invariant (cross-role job polling)
 
@@ -159,11 +176,17 @@ All assertions run over the wire / against the stack's Postgres + MinIO:
   `artifacts.list(system_id)` over the wire return a fetchable **redacted** artifact, and
   `artifacts.get` on it succeeds; the raw `sensitive` key is never returned (the artifact-
   sensitivity guard, mirrors the in-process `test_raw_vmcore_is_sensitive_and_unreachable`).
-- **#2 audit per transition + force_crash.** The stack Postgres `audit_log` carries a row for
-  every transition the spine drove — `->granted`, provision/run transitions, `ready->crashed`
-  (the `force_crash`), release — each under the request's `(principal, agent_session, project)`
-  tuple. Asserted by querying `audit_log` for the `force_crash` row and the release rows under
-  the driver's principal/session/project.
+- **#2 audit per transition + force_crash — split by attributing principal.** The stack Postgres
+  `audit_log` carries a row for every transition the spine drove. The **driver-attributed**
+  transitions — `->granted`, the provision/run transitions, `ready->crashed` (the `force_crash`,
+  enqueued by the tool under the caller's authorizing tuple), and the allocation
+  `releasing`/`released` rows — each carry the request's `(principal, agent_session, project)`
+  tuple and are asserted under the driver's principal/session/project. The **teardown**
+  transition (`*->torn_down`) is enqueued and audited by the **reconciler**, so it is written
+  under `SYSTEM_RECONCILER_PRINCIPAL = "system:reconciler"` (ADR-0021: a GC teardown bypasses the
+  interactive gate by design), **not** the driver's principal. The #2 assertion therefore queries
+  the teardown row under `system:reconciler` (or asserts its existence regardless of principal)
+  and **never** expects it under the driver's principal.
 - **#3 redaction.** The introspect report (`introspect.from_vmcore`) and any returned crash
   transcript do not leak a planted secret over the wire; `[REDACTED]` appears where the secret
   was. The fixture guest plants the secret (operator fixture concern); the driver asserts the
@@ -184,7 +207,10 @@ All assertions run over the wire / against the stack's Postgres + MinIO:
     errors as an assertable typed outcome rather than the current opaque
     `RuntimeError("...returned no structured content")`. The driver asserts this case via the
     harness's tool-error surface (a raised `LiveStackToolError` / a returned `is_error`), **not**
-    by inspecting `error_category`.
+    by inspecting `error_category`. The viewer token **must carry the spine project** in its
+    `projects`/`roles` claims (role `viewer`), so the denial exercises the **role** boundary
+    (`require_role`) — `request_allocation` checks `require_project` *before* `require_role`, so a
+    token lacking the project would be denied on membership, testing the wrong boundary.
   - **(b) Envelope path — `operator` denied `control.force_crash`.** `force_crash`'s gate
     **catches** `DestructiveOpDenied`, audits the denial, and **returns**
     `ToolResponse.failure(system_id, AUTHORIZATION_DENIED)` (`control.py`). This is a structured
