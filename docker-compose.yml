@@ -63,7 +63,7 @@ services:
         mc mb --ignore-existing local/kdive-artifacts
 
   oidc:
-    image: ghcr.io/navikt/mock-oauth2-server:3.1.4
+    image: ghcr.io/navikt/mock-oauth2-server:3.0.3
     environment:
       # Bind the mock issuer to 0.0.0.0:8080 inside the container (published as 8090 on host).
       SERVER_PORT: "8080"
