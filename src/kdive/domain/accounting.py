@@ -29,10 +29,11 @@ reconciled credit that price one selector agree to the last place.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, LiteralString
+from typing import TYPE_CHECKING, Literal, LiteralString
 from uuid import UUID, uuid4
 
 from psycopg import AsyncConnection
@@ -64,6 +65,171 @@ class ProjectUsage:
     budget_remaining: Decimal
     by_cost_class: dict[str, Decimal]
     shared_kcu: Decimal
+
+
+@dataclass(frozen=True)
+class RollupRow:
+    """One row of an :class:`accounting.report` rollup (ADR-0043 §3).
+
+    The signed-ledger sums for one ``project`` (and one ``principal`` when grouped):
+    ``reserved`` / ``reconciled`` are the per-event-type ``kcu_delta`` sums, and
+    ``variance = reconciled − reserved``. ``principal`` is ``None`` unless the report
+    is grouped by principal; the cross-project total row carries ``project="*"`` and
+    ``principal=None``.
+    """
+
+    project: str
+    principal: str | None
+    reserved: Decimal
+    reconciled: Decimal
+    variance: Decimal
+
+
+@dataclass(frozen=True)
+class Report:
+    """A multi-project usage/variance rollup over an already-authorized project set.
+
+    ``rows`` holds one :class:`RollupRow` per project (or per ``(project, principal)``
+    when grouped) that has at least one ledger row; a project with no ledger rows
+    contributes nothing. ``total`` sums every row (``project="*"``, ``principal=None``);
+    its ``variance`` equals ``total.reconciled − total.reserved``, consistent with the
+    per-row rule. An empty project set yields ``rows=()`` and an all-zero ``total``.
+    """
+
+    rows: tuple[RollupRow, ...]
+    total: RollupRow
+
+
+async def report(
+    conn: AsyncConnection,
+    *,
+    projects: Sequence[str],
+    group_by: Literal["principal"] | None,
+    window: tuple[datetime | None, datetime | None] | None,
+) -> Report:
+    """Roll up the signed ledger over ``projects`` into per-project (or per-principal) variance.
+
+    The caller (the ``accounting.report`` tool) has already authorized ``projects``; this
+    function does no authorization — it aggregates the set it is handed (ADR-0043 §3). For
+    each project (or ``(project, principal)`` when ``group_by="principal"``) it sums the
+    signed ledger: ``reserved`` / ``reconciled`` are the ``kcu_delta`` sums per event type
+    and ``variance = reconciled − reserved``. ``principal`` comes from
+    ``ledger ⋈ allocations`` on ``allocation_id`` (an INNER join, provably non-dropping
+    because ``ledger.allocation_id`` is ``NOT NULL`` with an FK). An optional ``window``
+    half-open-bounds ``ledger.ts`` (``ts >= start``, ``ts < end``; either side may be
+    ``None``). An empty ``projects`` short-circuits to an empty :class:`Report`.
+
+    Args:
+        conn: An async connection (read-only; no transaction opened here).
+        projects: The already-authorized target project set.
+        group_by: ``"principal"`` to break each project down per principal, else ``None``.
+        window: ``(start, end)`` half-open ``ts`` bound, or ``None`` for all time.
+
+    Returns:
+        A :class:`Report` with one :class:`RollupRow` per project (or ``(project,
+        principal)``) that has ledger rows, plus the cross-project ``total``.
+    """
+    if not projects:
+        return Report(rows=(), total=_zero_total())
+    rows = await _report_rows(conn, projects, group_by, window)
+    return Report(rows=rows, total=_total_of(rows))
+
+
+def _zero_total() -> RollupRow:
+    zero = quantize_kcu(Decimal(0))
+    return RollupRow(project="*", principal=None, reserved=zero, reconciled=zero, variance=zero)
+
+
+def _total_of(rows: tuple[RollupRow, ...]) -> RollupRow:
+    reserved = sum((r.reserved for r in rows), Decimal(0))
+    reconciled = sum((r.reconciled for r in rows), Decimal(0))
+    return RollupRow(
+        project="*",
+        principal=None,
+        reserved=quantize_kcu(reserved),
+        reconciled=quantize_kcu(reconciled),
+        variance=quantize_kcu(reconciled - reserved),
+    )
+
+
+async def _report_rows(
+    conn: AsyncConnection,
+    projects: Sequence[str],
+    group_by: Literal["principal"] | None,
+    window: tuple[datetime | None, datetime | None] | None,
+) -> tuple[RollupRow, ...]:
+    query, params = _report_query(projects, group_by, window)
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(query, params)
+        fetched = await cur.fetchall()
+    rows: list[RollupRow] = []
+    for row in fetched:
+        reserved = quantize_kcu(Decimal(row["reserved"]))
+        reconciled = quantize_kcu(Decimal(row["reconciled"]))
+        rows.append(
+            RollupRow(
+                project=str(row["project"]),
+                principal=str(row["principal"]) if group_by == "principal" else None,
+                reserved=reserved,
+                reconciled=reconciled,
+                variance=quantize_kcu(reconciled - reserved),
+            )
+        )
+    return tuple(rows)
+
+
+_RESERVED_SUM: LiteralString = (
+    "COALESCE(SUM(kcu_delta) FILTER (WHERE event_type = 'reserved'), 0) AS reserved"
+)
+_RECONCILED_SUM: LiteralString = (
+    "COALESCE(SUM(kcu_delta) FILTER (WHERE event_type = 'reconciled'), 0) AS reconciled"
+)
+
+
+def _report_query(
+    projects: Sequence[str],
+    group_by: Literal["principal"] | None,
+    window: tuple[datetime | None, datetime | None] | None,
+) -> tuple[LiteralString, list[object]]:
+    """Build the rollup SQL + params: one statement, grouped per project[, principal].
+
+    The WHERE clause is assembled from a fixed set of **literal** fragments (so the query
+    stays a ``LiteralString`` — no runtime-string interpolation reaches the SQL); the
+    project list and the window bounds are bound as ``%s`` parameters.
+    """
+    params: list[object] = [list(projects)]
+    window_sql = _window_clause(window, params)
+    if group_by == "principal":
+        # INNER join is non-dropping: ledger.allocation_id is NOT NULL with an FK.
+        select: LiteralString = (
+            f"SELECT l.project AS project, a.principal AS principal, "
+            f"{_RESERVED_SUM}, {_RECONCILED_SUM} "
+            "FROM ledger l JOIN allocations a ON a.id = l.allocation_id "
+            "WHERE l.project = ANY(%s)"
+        )
+        return select + window_sql + " GROUP BY l.project, a.principal", params
+    select = (
+        f"SELECT l.project AS project, {_RESERVED_SUM}, {_RECONCILED_SUM} "
+        "FROM ledger l WHERE l.project = ANY(%s)"
+    )
+    return select + window_sql + " GROUP BY l.project", params
+
+
+def _window_clause(
+    window: tuple[datetime | None, datetime | None] | None, params: list[object]
+) -> LiteralString:
+    """Return the literal ``ts`` WHERE fragment for ``window``, appending its bound params."""
+    if window is None:
+        return ""
+    start, end = window
+    clause: LiteralString = ""
+    if start is not None:
+        clause += " AND l.ts >= %s"
+        params.append(start)
+    if end is not None:
+        clause += " AND l.ts < %s"
+        params.append(end)
+    return clause
 
 
 async def reserve(conn: AsyncConnection, allocation: Allocation, estimate: Decimal) -> None:
