@@ -82,6 +82,50 @@ async def record(
     return row[0]
 
 
+async def record_platform(
+    conn: AsyncConnection,
+    *,
+    principal: str,
+    agent_session: str | None,
+    platform_role: str | None,
+    tool: str,
+    scope: str,
+    args: Mapping[str, object],
+) -> UUID:
+    """Append one `platform_audit_log` row for a platform read/denial; return its id.
+
+    Platform authority is project-independent (ADR-0043 §4), so — unlike :func:`record` —
+    there is **no** ``project in ctx.projects`` guard: a principal with empty
+    ``ctx.projects`` (a platform-only token) writes a row. Used for successful platform
+    reads, audited granted-set member reads (``platform_role=None``), and
+    ``require_platform_role`` denials.
+
+    ``scope`` describes the breadth of the read (e.g. ``"all-projects"`` or the project
+    set), not a single project/object. Runs the INSERT on ``conn`` without opening a
+    transaction, so the caller composes it (a denial-audit, for instance, runs in its own
+    connection in the tool's ``except`` path).
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO platform_audit_log "
+            "(principal, agent_session, platform_role, tool, scope, args_digest) "
+            "VALUES (%s, %s, %s, %s, %s, %s) "
+            "RETURNING id",
+            (
+                principal,
+                agent_session,
+                platform_role,
+                tool,
+                scope,
+                args_digest(args),
+            ),
+        )
+        row = await cur.fetchone()
+    if row is None:  # Invariant: INSERT ... RETURNING always yields one row.
+        raise RuntimeError("INSERT into platform_audit_log returned no row")
+    return row[0]
+
+
 async def record_system(
     conn: AsyncConnection,
     *,

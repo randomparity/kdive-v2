@@ -85,3 +85,20 @@ def test_context_from_claims_parses_roles() -> None:
 def test_context_from_claims_absent_roles_is_empty() -> None:
     ctx = context_from_claims({"sub": "alice", "projects": ["a"]})
     assert ctx.roles == {}
+
+
+def test_context_from_claims_parses_platform_roles() -> None:
+    from kdive.security.rbac import PlatformRole
+
+    ctx = context_from_claims({"sub": "alice", "platform_roles": ["platform_auditor"]})
+    assert ctx.platform_roles == frozenset({PlatformRole.PLATFORM_AUDITOR})
+
+
+def test_context_from_claims_absent_platform_roles_is_empty() -> None:
+    ctx = context_from_claims({"sub": "alice", "projects": ["a"]})
+    assert ctx.platform_roles == frozenset()
+
+
+def test_context_from_claims_rejects_non_array_platform_roles() -> None:
+    with pytest.raises(AuthError):
+        context_from_claims({"sub": "alice", "platform_roles": "platform_auditor"})

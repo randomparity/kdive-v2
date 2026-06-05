@@ -85,7 +85,7 @@ def test_creates_all_tables(pg_conn: psycopg.Connection) -> None:
 def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
     first = migrate.apply_migrations(pg_conn)
     second = migrate.apply_migrations(pg_conn)
-    assert first == ["0001", "0002", "0003", "0004"]
+    assert first == ["0001", "0002", "0003", "0004", "0005"]
     assert second == []
 
 
@@ -223,6 +223,43 @@ def _indexed_columns(conn: psycopg.Connection, table: str) -> set[str]:
     return {r[0] for r in rows}
 
 
+def _nullable(conn: psycopg.Connection, table: str) -> dict[str, str]:
+    rows = conn.execute(
+        "SELECT column_name, is_nullable FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = %s",
+        (table,),
+    ).fetchall()
+    return {name: is_nullable for name, is_nullable in rows}
+
+
+def test_migration_0005_creates_platform_audit_log(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    assert "platform_audit_log" in _tables(pg_conn)
+
+
+def test_platform_audit_log_platform_role_is_nullable(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    nullable = _nullable(pg_conn, "platform_audit_log")
+    # The audited granted-set member read carries no platform role (ADR-0043 §4).
+    assert nullable.get("platform_role") == "YES"
+    assert nullable.get("agent_session") == "YES"
+    # Identity/attribution columns are NOT NULL — a row without them is unaccountable.
+    for col in ("principal", "tool", "scope", "args_digest"):
+        assert nullable.get(col) == "NO", col
+
+
+def test_platform_audit_log_accepts_null_platform_role_row(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    pg_conn.execute(
+        "INSERT INTO platform_audit_log (principal, tool, scope, args_digest) "
+        "VALUES ('alice', 'accounting.report', 'granted-set:a,b', 'deadbeef')"
+    )
+    row = pg_conn.execute(
+        "SELECT platform_role, agent_session FROM platform_audit_log WHERE principal = 'alice'"
+    ).fetchone()
+    assert row == (None, None)
+
+
 def test_migration_0002_creates_accounting_tables(pg_conn: psycopg.Connection) -> None:
     migrate.apply_migrations(pg_conn)
     assert _tables(pg_conn) >= M1_TABLES
@@ -353,4 +390,4 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
             migrate.apply_migrations(pg_conn)
         holder.rollback()  # release the lock
     pg_conn.execute("SET lock_timeout = '0'")
-    assert migrate.apply_migrations(pg_conn) == ["0001", "0002", "0003", "0004"]
+    assert migrate.apply_migrations(pg_conn) == ["0001", "0002", "0003", "0004", "0005"]
