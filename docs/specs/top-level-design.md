@@ -406,6 +406,45 @@ Milestone-based. ("Sprint" is avoided per the project doc-style guard.)
 - **M1 — Allocation/accounting depth.** Real reservation/lease semantics,
   admission control, ledger, quotas/budgets, OIDC/RBAC hardening. Still
   local-libvirt, but the allocation plane becomes real.
+
+  *M1.1–M1.4 are the local-libvirt **feature-deepening band**: they harden and
+  extend the M1 platform on the single provider before the provider-expansion
+  milestones (M2+). M1.1 is foundational and lands first (M1.2 and M1.3 both
+  build on its seam); M1.4 may follow in either order, and M1.5 fault-injection
+  hardening still precedes the provider milestones.*
+
+- **M1.1 — Platform-scoped RBAC tier.**
+  ([ADR-0043](../adr/0043-platform-scoped-rbac-tier.md), contract
+  [`m1.1-platform-rbac-tier.md`](m1.1-platform-rbac-tier.md)) A `platform_roles`
+  claim tier (`platform_admin` / `platform_operator` / `platform_auditor`),
+  orthogonal to the per-project roles, for the cross-project and
+  shared-infrastructure authority the per-project model cannot express (the
+  cross-project role ADR-0006 deferred). First delivery: the role-model seam plus
+  `accounting.report` — a granted-set form managers reach under existing membership
+  (no platform grant) and an all-projects form gated `platform_auditor` — with a
+  `platform_audit_log` for read-access auditing. Foundational to M1.2 and M1.3.
+- **M1.2 — Live-stack end-to-end validation.**
+  ([ADR-0042](../adr/0042-live-stack-e2e-mcp-http.md), contract
+  [`m1.2-live-stack-e2e.md`](m1.2-live-stack-e2e.md)) An operator-run, real-libvirt
+  test that drives the full spine — allocate → provision → build → install → boot →
+  attach → force-crash → capture vmcore → release — over the **live MCP HTTP
+  stack** (server + worker + reconciler against Postgres + S3 + OIDC), under
+  per-project role tokens plus a `platform_auditor` token (which exercises M1.1's
+  `accounting.report` over the wire). Replaces the unimplemented M0
+  walking-skeleton stub; proves the model on real infrastructure end-to-end
+  (operator-run, not GitHub-CI).
+- **M1.3 — Platform operations.** The platform_operator/admin tooling: host
+  cordon / drain / maintenance status, force-reconcile and worker/queue control,
+  runtime capacity/cost tuning, and break-glass cross-project teardown /
+  force-release; the platform-auditor reads `audit.query` and `inventory.list`;
+  and the bare-`require_role` denial-audit retrofit. Builds on the M1.1 seam.
+- **M1.4 — System catalog, availability & scheduling.** Named system **shapes**
+  (small … max) over the provisioning profile plus **full custom** configuration
+  (CPU/memory/PCIe passthrough); a **fleet availability** view (which hosts/shapes
+  are free now); a **reservation/backlog scheduler** so scarce hardware is used
+  efficiently ("always work queued"); and **system reuse** + `systems.list`.
+  Realizes latent domain-model concepts already named above — Resource
+  `capabilities` (PCIe), `cost_class`, the `draining` status, and reservations.
 - **M1.5 — Fault-injection provider.** A mock provider behind the real plane
   interfaces that forces secret resolution and injects latency and failures
   (provision timeout, lease expiry mid-job, worker death, transport drop). It

@@ -1,6 +1,10 @@
 # ADR 0035 — Walking-skeleton end-to-end integration-test harness (M0)
 
-- **Status:** Proposed
+- **Status:** Proposed — the **gated full-path tier** (§1, gated portion) is superseded, and
+  §3 is **amended for the live tier**, by [ADR-0042](0042-live-stack-e2e-mcp-http.md). The
+  **non-gated** criterion tier (§1 non-gated portion: #3/#4/#6), its in-process
+  `RequestContext` construction (§3), the teardown-via-`Discovery.list_owned` assertion
+  (§2, #5), and the pinned fixtures + preflight (§4) remain in force.
 - **Date:** 2026-06-04
 - **Issue:** #26 (M0: End-to-end walking-skeleton integration test)
 - **Depends on:** every M0 plane (#3–#25) — this issue exercises their handlers, not
@@ -41,12 +45,16 @@ behaviour itself is already decided in the per-plane ADRs; nothing here changes 
 
 ### 1. Two tiers: a `live_vm`-gated full-path test, plus non-gated handler-level tests for the criteria that don't need a hypervisor
 
-`tests/integration/test_walking_skeleton.py` carries both. The full spine
+*Superseded by [ADR-0042](0042-live-stack-e2e-mcp-http.md) — the gated full-path test is
+replaced by `tests/integration/test_live_stack.py` (a wire-driven `live_stack` test); the
+non-gated tier below remains in force.*
+
+~~`tests/integration/test_walking_skeleton.py` carries both. The full spine
 (`@pytest.mark.live_vm`, `# pragma: no cover - live_vm`) reads its fixture locations from
 env (`KDIVE_GUEST_IMAGE`, `KDIVE_KERNEL_SRC`) and `pytest.skip`s with an actionable reason
 when they are absent — the same idiom every merged plane uses for its real-host smoke test
 (e.g. `tests/providers/local_libvirt/test_build.py::test_live_vm_real_make_build_id_matches_readelf`).
-It never runs on `pull_request`; PR CI stays green by deselecting `-m "not live_vm"`.
+It never runs on `pull_request`; PR CI stays green by deselecting `-m "not live_vm"`.~~
 
 Three of the six criteria are decided by **policy over data**, not by the hypervisor, so
 they are written as non-gated tests that call handlers directly with injected fakes — the
@@ -66,11 +74,18 @@ repo's unit of testing ([ADR-0019](0019-tool-response-envelope.md); handlers, ne
   filter to `redacted` rows and return only object-key refs (never artifact content). No
   domain involved.
 
-The remaining three (#1 path completes, #2 every transition audited, #5 teardown leaves
-no orphan) are asserted inside the gated full-path test, where a real domain exists to
-provision and tear down.
+*Superseded by [ADR-0042](0042-live-stack-e2e-mcp-http.md) — #1/#2/#5 are now asserted by
+the live-stack wire driver, not this gated test.*
 
-**Queue-drive contract (gated test).** Five steps are async job kinds (`provision`,
+~~The remaining three (#1 path completes, #2 every transition audited, #5 teardown leaves
+no orphan) are asserted inside the gated full-path test, where a real domain exists to
+provision and tear down.~~
+
+*Superseded by [ADR-0042](0042-live-stack-e2e-mcp-http.md) §1 — the queue-drive contract is
+honoured by the shipping `worker`/`reconciler` processes draining the queue, not an in-test
+`Worker.run_once()`.*
+
+~~**Queue-drive contract (gated test).** Five steps are async job kinds (`provision`,
 `build`, `install`, `boot`, `capture_vmcore`); each returns a job handle and only its
 *committed* result unblocks the next dependent tool — `runs.boot` returns
 `install_first` until a succeeded `install` `run_steps` row commits, and
@@ -79,7 +94,7 @@ enqueued job to `succeeded` through the **production worker spine** — `Worker.
 (`jobs/worker.py`) dequeuing under the real lease, dispatching the registered handler —
 before issuing the next dependent tool, rather than calling handlers inline. This keeps
 criterion #1's "real path" honest (the dequeue/lease/handler path is what ships) and makes
-the ordering edges deterministic instead of racing admission against the next call.
+the ordering edges deterministic instead of racing admission against the next call.~~
 
 **Considered & rejected — a non-gated "inline-worker" full path with fakes for every
 plane.** We could drive the *entire* spine in CI by injecting a fake `Provisioner`,
@@ -117,14 +132,16 @@ checks the bookkeeping, not the physical cleanup, so it would pass even if `tear
 silently failed to destroy the domain — the precise leak #5 exists to catch. The
 `list_owned` enumeration is the authoritative check.
 
-### 3. The mock OIDC issuer lives only in `docker-compose` for a manual live run; handler-level tests construct `RequestContext` directly
+### 3. ~~The mock OIDC issuer lives only in `docker-compose` for a manual live run~~; handler-level tests construct `RequestContext` directly
 
 Every non-gated test builds a `RequestContext(principal, agent_session, projects, roles)`
 in-process — the established pattern across the merged plane suites — so no token minting,
-JWKS endpoint, or network is on the unit path. The `docker-compose.yml` (Postgres + MinIO
-+ a mock OIDC issuer) exists to stand up the *server* for an operator driving the real path
-by hand or on a self-hosted runner; it is harness infrastructure, not a per-test
-dependency.
+JWKS endpoint, or network is on the unit path. *Amended by
+[ADR-0042](0042-live-stack-e2e-mcp-http.md) §3 — the live-stack tier now obtains real tokens
+from the issuer and validates them through the server's `JWTVerifier`:* ~~The
+`docker-compose.yml` (Postgres + MinIO + a mock OIDC issuer) exists to stand up the *server*
+for an operator driving the real path by hand or on a self-hosted runner; it is harness
+infrastructure, not a per-test dependency.~~
 
 **Considered & rejected — minting real signed JWTs and verifying them through `JWTVerifier`
 in every criterion test.** The auth/JWKS path is already covered by `tests/mcp/test_auth.py`

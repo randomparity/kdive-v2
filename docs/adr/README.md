@@ -71,3 +71,5 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0039](0039-ssh-transport-live-introspection.md) | SSH transport + live drgn introspection (M1) | Proposed |
 | [0040](0040-admission-lifecycle-concurrency.md) | M1 admission & lifecycle concurrency: lock hierarchy, request idempotency, atomic reconciliation | Proposed |
 | [0041](0041-versioning-release-process.md) | Versioning policy (SemVer, milestone→minor) & tag-driven release process | Proposed |
+| [0042](0042-live-stack-e2e-mcp-http.md) | Live-stack end-to-end functional test over MCP HTTP; supersedes the gated tier of 0035 (M1.2) | Proposed |
+| [0043](0043-platform-scoped-rbac-tier.md) | Platform-scoped RBAC tier (`platform_roles`); cross-project auditor surface (extends 0006) | Proposed |
