@@ -36,12 +36,16 @@ must be metered **before** the `allocate` phase or the spine is denied and never
 write, mirroring D's `_grant_force_crash_scope`):
 
 - a `budgets` row for `_PROJECT` with a large `limit_kcu` (so admission's
-  `(limit − spent) ≥ estimate` always passes) and `spent_kcu = 0`,
+  `(limit − spent) ≥ estimate` always passes); the upsert writes **`limit_kcu` only**, leaving
+  `spent_kcu` untouched (matching production `set_budget` / `BUDGETS.upsert`) — a first insert
+  starts `spent_kcu` at `0`, and a re-run keeps the DB-maintained running total consistent with
+  the ledger Σ rather than resetting it,
 - a `quotas` row for `_PROJECT` with `max_concurrent_allocations`/`max_concurrent_systems`
   ≥ 1 (the spine's concurrency).
 
-Helper: `async def _seed_metering(db_url, project) -> None` (idempotent upsert, so a re-run
-does not error). Seeded up front alongside the capability-scope grant.
+Helper: `async def _seed_metering(db_url, project) -> None` — an `INSERT … ON CONFLICT
+(project) DO UPDATE SET limit_kcu = …` for the budget (spent_kcu preserved) and a caps upsert
+for the quota, so a re-run does not error. Seeded up front alongside the capability-scope grant.
 
 ### Placement
 
@@ -52,10 +56,12 @@ ledger rows for the run's allocation are committed (ADR-0046 §1).
 
 ### The `report` phase (inside `test_spine_over_the_wire`)
 
-A window `start` is captured at the `allocate` phase — `datetime.now(UTC)` taken **before**
-the run reserves anything — and threaded forward to isolate this run's spend from prior runs
-of the fixed-constant `_PROJECT` (ADR-0046 §2). Within the existing `async with op, admin:`
-block, after `teardown`:
+A window `start` is captured **just before** the `allocate` phase by reading the **Postgres
+server clock** — `SELECT now()` on `db_url` (helper `_db_now(db_url) -> datetime`) — not the
+test-host clock, so the window bound shares one clock with `ledger.ts` (`DEFAULT now()`) and
+no skew can drop a reserved row from the window (ADR-0046 §2). It is threaded forward to
+isolate this run's spend from prior runs of the fixed-constant `_PROJECT`. Within the existing
+`async with op, admin:` block, after `teardown`:
 
 1. Mint a `platform_auditor` token. The spine's `_token(...)` helper already accepts
    `platform_roles`; mint with `role="viewer"` on `_PROJECT` (so it is a project member for
@@ -96,8 +102,10 @@ A standalone `live_stack`-marked test (no real system needed, like the `viewer` 
 
 ### New helpers (added to `test_live_stack.py`, alongside D's helpers)
 
-- `async def _seed_metering(db_url, project) -> None` — out-of-band `budgets` + `quotas`
-  upsert so admission can grant.
+- `async def _seed_metering(db_url, project) -> None` — out-of-band `budgets` (limit-only) +
+  `quotas` upsert so admission can grant.
+- `async def _db_now(db_url) -> datetime` — read the Postgres server clock (`SELECT now()`)
+  for the window start.
 - `async def _ledger_sums(db_url, project, since) -> tuple[Decimal, Decimal]` — `(reserved,
   reconciled)` quantized DB sums over `ts >= since`.
 - `def _report_artifact_dir() -> Path` — resolve `KDIVE_ARTIFACT_DIR` or the out-of-tree

@@ -54,9 +54,12 @@ project with no ledger rows).
 E therefore seeds, **out of band** before `allocate` (mirroring D's `_grant_force_crash_scope`
 direct DB write), one `budgets` row for `_PROJECT` with a `limit_kcu` large enough to admit
 the spine's estimate, plus one `quotas` row with caps ≥ the spine's concurrency (1 allocation,
-1 system). This is the minimal real metering admission requires; it is a test prerequisite,
-not product behaviour. It is established up front (like the capability-scope grant), not
-discovered mid-spine.
+1 system). The budget upsert writes **`limit_kcu` only** and leaves `spent_kcu` untouched
+(matching production `accounting.set_budget` / `BUDGETS.upsert`), so across re-runs of the
+fixed-constant `_PROJECT` the DB-maintained `spent_kcu` running total stays consistent with
+the ledger Σ (a fresh insert starts it at `0`). This is the minimal real metering admission
+requires; it is a test prerequisite, not product behaviour, established up front (like the
+capability-scope grant), not discovered mid-spine.
 
 **Latent D gap:** because D's merged spine also seeds no budget/quota, D's own `allocate`
 phase would be denied on real hardware. D was verified on the skip path, so this never
@@ -82,10 +85,14 @@ The spine runs one project (`_PROJECT`), and `_PROJECT` is a fixed constant whos
 **persist across repeated spine runs** (nothing deletes them). An all-time rollup would
 therefore sum every prior run's spend, so "reflects *this run's* real spend" would be
 unfalsifiable — the number only grows. To isolate the run, the phase captures a window
-**`start`** at the `allocate` phase (a `now(UTC)` taken before the run reserves anything) and
-passes `window=[start, None]` to `accounting.report`. `ledger.ts` is `timestamptz`; the
-window half-open-bounds it to rows written **at or after** the run began, so the rollup
-reflects only this run's spend.
+**`start`** just before the `allocate` phase — **read from the Postgres server clock**
+(`SELECT now()` on `KDIVE_DATABASE_URL`), not the test-host clock — and passes
+`window=[start, None]` to `accounting.report`. `ledger.ts` is `timestamptz` with
+`DEFAULT now()` (the same server clock), so the window bound and every ledger timestamp share
+**one** clock; there is no client/server skew that could push a reserved row before `start`
+and silently drop it from the window (which would fail `reserved > 0` as a confusing "no
+spend"). The window half-open-bounds `ts` to rows written **at or after** the run began, so
+the rollup reflects only this run's spend.
 
 The phase drives `accounting.report`'s **all-projects** form under a `platform_auditor` token
 with that window and asserts on the `_PROJECT` row of the returned rollup:
