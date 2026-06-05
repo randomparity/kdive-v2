@@ -63,19 +63,21 @@ def _callees(fn: Callable[..., Any]) -> set[str]:
     return names
 
 
-def _reaches_symbol(fn: Callable[..., Any], target: str, *, depth: int = 5) -> bool:
-    """Whether ``fn`` calls ``target`` directly or via a module-local delegate it calls.
+def _reaches_symbol(fn: Callable[..., Any], target: str) -> bool:
+    """Whether ``fn`` calls ``target`` directly or via a delegate it transitively calls.
 
     The `@app.tool` wrappers are 1:1 delegators: the security-relevant call
     (``assert_destructive_allowed``) lives one frame deeper, in the module-level handler the
     wrapper invokes (`force_crash_system`, `reprovision_system`), never in the wrapper body.
     Parsing only ``fn`` would miss it — so follow each called ``Name`` that resolves to a
     function in ``fn``'s own module globals (a nested closure still carries its module's
-    globals), bounded by ``depth`` and a visited set against recursion.
+    globals). Termination is the ``seen`` set over the finite function graph; there is no
+    depth cap, because a numeric horizon would silently fail open (report "no gate reached")
+    for a call buried below it — the very vacuity this backstop exists to prevent.
     """
     seen: set[Any] = set()
 
-    def _walk(f: Callable[..., Any], budget: int) -> bool:
+    def _walk(f: Callable[..., Any]) -> bool:
         try:
             tree = ast.parse(textwrap.dedent(inspect.getsource(f)))
         except (OSError, TypeError):
@@ -91,17 +93,15 @@ def _reaches_symbol(fn: Callable[..., Any], target: str, *, depth: int = 5) -> b
                     local_calls.add(callee.id)
                 elif isinstance(callee, ast.Attribute) and callee.attr == target:
                     return True
-        if budget <= 0:
-            return False
         for name in local_calls:
             delegate = glb.get(name)
             if inspect.isfunction(delegate) and delegate not in seen:
                 seen.add(delegate)
-                if _walk(delegate, budget - 1):
+                if _walk(delegate):
                     return True
         return False
 
-    return _walk(fn, depth)
+    return _walk(fn)
 
 
 def _unique_anchor(tool: FunctionTool, freq: Counter[str]) -> str:
@@ -173,14 +173,12 @@ def test_gate_callers_are_in_the_destructive_set() -> None:
 
 
 def test_backstop_actually_detects_the_known_gate_callers() -> None:
-    # Canary against a vacuous backstop: the two tools that gate today must be detected as
-    # gate-reachers. This fails if the reach analysis stops at the wrapper body (the gate
-    # call is one delegate deeper), which would silently make the backstop above trivially
-    # true and let a newly-gated op ship without destructiveHint.
-    gate_reachers = _gate_reachers()
-    assert {"control.force_crash", "systems.reprovision"} <= gate_reachers, (
-        f"backstop failed to detect known gate-callers; saw {sorted(gate_reachers)}"
-    )
+    # Canary against a vacuous backstop: the gate-reacher set must be EXACTLY the two tools
+    # that call assert_destructive_allowed today. Equality (not subset) catches both a broken
+    # mechanism — the reach analysis stopping at the wrapper body would empty this set — and
+    # an unexpected new reacher, which then must be reviewed into DESTRUCTIVE_TOOLS and pinned
+    # here, mirroring test_destructive_tools_set_is_exactly_the_four.
+    assert _gate_reachers() == {"control.force_crash", "systems.reprovision"}
 
 
 def test_implemented_tools_have_a_covering_test() -> None:
