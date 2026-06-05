@@ -12,8 +12,12 @@ is safe in CI and on any host (CI deselects ``live_stack``).
 Acceptance asserted over the wire / against the stack's Postgres + MinIO: protocol (well-formed
 envelopes, JWKS-validated tokens), #1 (redacted vmcore in MinIO), #2 (audit per transition +
 force_crash, split by attributing principal — driver vs ``system:reconciler``), #3 (redaction
-does not leak through the wire), #5 (``torn_down`` + ``Discovery.list_owned()`` empty), and the
-two RBAC negatives (viewer raised-path; operator force_crash ``authorization_denied`` envelope).
+does not leak through the wire), #5 (``torn_down`` + ``Discovery.list_owned()`` empty), the
+report phase (``accounting.report`` all-projects form under a ``platform_auditor`` token,
+windowed to this run, asserting ``reserved``/``reconciled``/variance against the ledger and
+emitting a JSON report artifact — ADR-0046), and the RBAC negatives (viewer raised-path;
+operator force_crash ``authorization_denied`` envelope; project-only token denied the
+all-projects report with an ``authorization_denied`` envelope).
 
 Two non-gated unit tests exercise the ``phase`` naming contract so a regression is caught in
 normal CI; the spine + RBAC tests are ``live_stack``-marked and skip without a stack.
@@ -22,15 +26,20 @@ normal CI; the spine + RBAC tests are ``live_stack``-marked and skip without a s
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import tempfile
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 import psycopg
 import pytest
 
+from kdive.domain.cost import quantize_kcu
 from kdive.mcp.responses import ToolResponse
 from tests.integration.live_stack.conftest import require_issuer, require_stack
 from tests.integration.live_stack.harness import (
@@ -148,6 +157,104 @@ async def _grant_force_crash_scope(db_url: str, allocation_id: str) -> None:
             (scope, allocation_id),
         )
         await conn.commit()
+
+
+# --- out-of-band metering seed + report-phase DB helpers (ADR-0046 §0/§2) --------------------
+
+# Admission is fail-closed on metering (ADR-0007 §4): _within_budget and _within_alloc_quota
+# both deny a project with no row, writing no ledger row. The spine never sets a budget over
+# the wire, so seed both out of band before allocate (mirrors _grant_force_crash_scope), or the
+# report phase has no spend to assert (ADR-0046 §0).
+_SEED_LIMIT_KCU = "1000000"
+_SEED_MAX_ALLOCATIONS = 4
+_SEED_MAX_SYSTEMS = 4
+
+
+async def _seed_metering(db_url: str, project: str) -> None:
+    """Seed the budget (limit-only) + quota rows admission requires, out of band.
+
+    The budget upsert writes ``limit_kcu`` only and leaves ``spent_kcu`` untouched (matching
+    production ``set_budget`` / ``BUDGETS.upsert``), so a re-run of the fixed-constant project
+    keeps the DB-maintained running total consistent with the ledger Σ; a first insert starts
+    it at 0. Both upserts are idempotent on the ``project`` primary key.
+    """
+    async with await psycopg.AsyncConnection.connect(db_url) as conn:
+        await conn.execute(
+            "INSERT INTO budgets (project, limit_kcu) VALUES (%s, %s) "
+            "ON CONFLICT (project) DO UPDATE SET limit_kcu = EXCLUDED.limit_kcu",
+            (project, _SEED_LIMIT_KCU),
+        )
+        await conn.execute(
+            "INSERT INTO quotas (project, max_concurrent_allocations, max_concurrent_systems) "
+            "VALUES (%s, %s, %s) ON CONFLICT (project) DO UPDATE SET "
+            "max_concurrent_allocations = EXCLUDED.max_concurrent_allocations, "
+            "max_concurrent_systems = EXCLUDED.max_concurrent_systems",
+            (project, _SEED_MAX_ALLOCATIONS, _SEED_MAX_SYSTEMS),
+        )
+        await conn.commit()
+
+
+async def _db_now(db_url: str) -> datetime:
+    """Read the Postgres server clock, so the report window shares one clock with ledger.ts."""
+    async with await psycopg.AsyncConnection.connect(db_url) as conn, conn.cursor() as cur:
+        await cur.execute("SELECT now()")
+        row = await cur.fetchone()
+    if row is None:
+        raise RuntimeError("SELECT now() returned no row")
+    return row[0]
+
+
+async def _ledger_sums(db_url: str, project: str, since: datetime) -> tuple[Decimal, Decimal]:
+    """Return ``(reserved, reconciled)`` ledger kcu_delta sums for ``project`` over ``ts >= since``.
+
+    Quantized via the domain ``quantize_kcu`` so the DB cross-check compares like-for-like with
+    the wire rollup (which the tool also quantizes).
+    """
+    async with await psycopg.AsyncConnection.connect(db_url) as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT "
+            "COALESCE(SUM(kcu_delta) FILTER (WHERE event_type = 'reserved'), 0), "
+            "COALESCE(SUM(kcu_delta) FILTER (WHERE event_type = 'reconciled'), 0) "
+            "FROM ledger WHERE project = %s AND ts >= %s",
+            (project, since),
+        )
+        row = await cur.fetchone()
+    if row is None:
+        raise RuntimeError("ledger sum query returned no row")
+    return quantize_kcu(Decimal(row[0])), quantize_kcu(Decimal(row[1]))
+
+
+_ARTIFACT_DIR_ENV = "KDIVE_ARTIFACT_DIR"
+_ARTIFACT_NAME = "accounting-report.json"
+
+
+def _report_artifact_dir() -> Path:
+    """Resolve the artifact dir: ``KDIVE_ARTIFACT_DIR`` or an out-of-tree temp default.
+
+    The default lives under ``tempfile.gettempdir()`` (never inside the repo) so a live run
+    does not dirty the working tree or get walked by whole-tree tooling (ADR-0046 §3).
+    """
+    override = os.environ.get(_ARTIFACT_DIR_ENV)
+    base = (
+        Path(override) if override else Path(tempfile.gettempdir()) / "kdive-live-stack-artifacts"
+    )
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _write_report_artifact(payload: dict[str, object]) -> Path:
+    """Write the report payload as ``accounting-report.json``; return its path."""
+    path = _report_artifact_dir() / _ARTIFACT_NAME
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    return path
+
+
+def _find_project_row(rows: list[dict[str, object]], project: str) -> dict[str, object]:
+    """Return the rollup row for ``project``, or fail the phase if absent (no spend rolled up)."""
+    for row in rows:
+        if row.get("project") == project:
+            return row
+    raise AssertionError(f"no rollup row for project {project!r} (no spend in the window?)")
 
 
 async def _count_audit(db_url: str, *, object_id: str, transition: str, principal: str) -> int:
@@ -291,6 +398,27 @@ def test_viewer_denied_operator_op_over_the_wire() -> None:
     asyncio.run(_run())
 
 
+@pytest.mark.live_stack
+def test_report_all_projects_denied_to_project_token() -> None:
+    """A project-only token is denied accounting.report's all-projects form over the wire.
+
+    Verified against the tool: the all-projects form catches the raised AuthorizationError and
+    *returns* ToolResponse.failure(..., AUTHORIZATION_DENIED) — a well-formed error envelope,
+    not a raised tool error. So assert the envelope shape (like crash-rbac-negative), not a
+    raised LiveStackToolError (ADR-0046 §3).
+    """
+    issuer, base_url, _db = _spine_preflight()
+
+    async def _run() -> None:
+        project_only = LiveStackClient.over_http(base_url, _token(issuer, role="viewer"))
+        async with project_only:
+            denied = await _scalar(project_only, "accounting.report", scope="all-projects")
+        assert denied.status == "error", "project-only token was not denied (#101)"
+        assert denied.error_category == "authorization_denied", "wrong denial category (#101)"
+
+    asyncio.run(_run())
+
+
 # --- the full spine -------------------------------------------------------------------------
 
 
@@ -300,12 +428,17 @@ def test_spine_over_the_wire() -> None:
     issuer, base_url, db_url = _spine_preflight()
     operator_token = _token(issuer, role="operator")
     admin_token = _token(issuer, role="admin")
+    auditor_token = _token(issuer, role="viewer", platform_roles=["platform_auditor"])
 
     async def _run() -> None:
         op = LiveStackClient.over_http(base_url, operator_token)
         admin = LiveStackClient.over_http(base_url, admin_token)
         system_id = allocation_id = run_id = ""
         async with op, admin:
+            # out-of-band: meter the project (admission is fail-closed, ADR-0046 §0), then
+            # capture the report window start from the DB clock (shares ledger.ts's clock).
+            await _seed_metering(db_url, _PROJECT)
+            window_start = await _db_now(db_url)
             async with phase("allocate"):
                 env = _ok(
                     await _scalar(
@@ -388,6 +521,8 @@ def test_spine_over_the_wire() -> None:
                 )
             async with phase("teardown"):  # reconciler-driven (≥30s) → torn_down
                 await _await_system_state(op, "teardown", system_id, "torn_down")
+            async with phase("report"):  # all-projects rollup under platform_auditor
+                await _assert_report(base_url, auditor_token, db_url, window_start)
 
         await _assert_audit(db_url, allocation_id=allocation_id, system_id=system_id)
         await _assert_teardown(db_url, system_id)
@@ -444,3 +579,49 @@ async def _assert_teardown(db_url: str, system_id: str) -> None:
     )
     owned_ids = {o["system_id"] for o in disc.list_owned()}
     assert system_id not in owned_ids, "released system still owned (#5)"
+
+
+async def _assert_report(
+    base_url: str, auditor_token: str, db_url: str, window_start: datetime
+) -> None:
+    """Drive accounting.report (all-projects) under platform_auditor; assert windowed spend.
+
+    Asserts the _PROJECT rollup row reflects this run's real spend (windowed wire rollup ==
+    windowed DB ledger sums), then emits + re-asserts the JSON report artifact (ADR-0046 §2/§3).
+    """
+    auditor = LiveStackClient.over_http(base_url, auditor_token)
+    async with auditor:
+        env = _ok(
+            await _scalar(
+                auditor,
+                "accounting.report",
+                scope="all-projects",
+                window=[window_start.isoformat(), None],
+            ),
+            "report",
+        )
+    rows = json.loads(env.data["rows"])
+    total = json.loads(env.data["total"])
+    row = _find_project_row(rows, _PROJECT)
+    reserved = Decimal(str(row["reserved"]))
+    reconciled = Decimal(str(row["reconciled"]))
+    variance = Decimal(str(row["variance"]))
+    assert reserved > 0, "report shows no reserved spend for the run (#101)"
+    assert variance == reconciled - reserved, "report variance != reconciled - reserved (#101)"
+    db_reserved, db_reconciled = await _ledger_sums(db_url, _PROJECT, window_start)
+    assert reserved == db_reserved, f"wire reserved {reserved} != DB {db_reserved} (#101)"
+    assert reconciled == db_reconciled, f"wire reconciled {reconciled} != DB {db_reconciled} (#101)"
+    artifact = _write_report_artifact(
+        {
+            "scope": env.data["scope"],
+            "window": [window_start.isoformat(), None],
+            "project_row": row,
+            "total": total,
+        }
+    )
+    assert artifact.exists(), f"report artifact not written at {artifact} (#101)"
+    written = json.loads(artifact.read_text())
+    project_row = written["project_row"]
+    assert Decimal(str(project_row["reserved"])) == reserved, "artifact reserved drift (#101)"
+    assert Decimal(str(project_row["reconciled"])) == reconciled, "artifact reconciled drift (#101)"
+    assert Decimal(str(project_row["variance"])) == variance, "artifact variance drift (#101)"

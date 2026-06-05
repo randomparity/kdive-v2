@@ -25,6 +25,9 @@ node_modules/
 build/
 *.egg-info/
 
+# Live-stack report artifacts (default is out-of-tree; this guards a repo-local override)
+kdive-live-stack-artifacts/
+
 # Agents and orchestration
 .claude-flow/
 .swarm/
