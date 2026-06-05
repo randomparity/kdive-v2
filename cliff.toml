@@ -67,12 +67,14 @@ filter_unconventional = true
 # Assigns commits to groups.
 # Optionally sets the commit's scope and can decide to exclude commits from further processing.
 commit_parsers = [
+  # Security first: a `(security)` scope on any type routes here before the type parsers
+  # below claim it (parsers are first-match-wins, so this must precede `^feat`/`^fix`).
+  { message = "^\\w+\\(security\\)", group = "Security" },
   { message = "^feat", group = "Added" },
   { message = "^fix", group = "Fixed" },
   { message = "^perf", group = "Changed" },
   { message = "^refactor", group = "Changed" },
   { message = "^docs", group = "Documentation" },
-  { body = ".*security", group = "Security" },
   { message = "^revert", group = "Changed" },
   { message = "^chore\\(release\\)", skip = true },
   { message = "^chore", skip = true },

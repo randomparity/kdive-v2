@@ -29,6 +29,19 @@ Never hand-edit the version: editing `pyproject.toml` alone desyncs `uv.lock` an
    internal GitHub Release with the artifacts attached.
 4. Open the post-release "begin `<next>`-dev" bump PR (above).
 
+## Commit conventions the changelog depends on
+
+git-cliff categorizes from the commit message, so two cases need an explicit marker or they
+are mis- or under-reported:
+
+- **Breaking changes** (a renamed/removed MCP tool, a changed `ToolResponse` shape, a
+  non-back-compatible migration — the contract in [ADR-0041](adr/0041-versioning-release-process.md)
+  decision 1) **must** carry a `!` (`feat!: …`) or a `BREAKING CHANGE:` footer. Without it
+  the change lands only in its normal group and the `⚠ Breaking Changes` heading misses it —
+  and a breaking change forces a **minor** bump, so this is load-bearing.
+- **Security fixes** use a `(security)` scope, e.g. `fix(security): …`, which routes them to
+  the Keep-a-Changelog `Security` group (a plain `fix:` goes to `Fixed`).
+
 ## Version reporting
 
 `python -m kdive --version` and the startup log show `X.Y.Z+g<sha>` for a release build and
