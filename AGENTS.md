@@ -30,6 +30,8 @@ run the same recipes locally rather than reinventing the underlying command:
 | `just test-live` | the `live_vm` suite (needs a KVM/libvirt host + kdump guest image) |
 | `just ci` | the full PR gate: lint, type, lint-shell, lint-workflows, check-mermaid, test |
 | `just compose-up` / `compose-down` | Postgres + MinIO + mock-OIDC backing services for a live run |
+| `just stack-up` | bring the live-stack backends up healthy + print host-process env (see runbook) |
+| `just test-live-stack` | the `live_stack` suite; skips cleanly when the stack/fixtures are absent |
 
 Run a single test: `uv run python -m pytest tests/mcp/test_allocations_tools.py::test_name -q`
 
@@ -137,6 +139,10 @@ transport.
   operator-provided KVM/nested-virt host with libvirt and a kdump-enabled guest image, and
   run only as a manually-dispatched self-hosted CI job. Unit/service tests depend only on
   disposable Postgres + MinIO + mock OIDC.
+- **`live_stack` tests** drive the spine over the real MCP HTTP transport against a running
+  host `server`/`worker`/`reconciler` + the compose backends; operator bring-up is in
+  [`docs/runbooks/live-stack.md`](docs/runbooks/live-stack.md) (ADR-0042). `just
+  test-live-stack` skips cleanly when the stack/fixtures (or the marked suite) are absent.
 - Tests mirror the package tree under `tests/`; `tests/adversarial/` holds concurrency /
   property-based (hypothesis) race tests, `tests/integration/` holds the end-to-end
   milestone exercises.
