@@ -24,11 +24,14 @@ def test_mutating_is_not_readonly_not_destructive() -> None:
 
 
 def test_destructive_tools_set_is_exactly_the_four() -> None:
-    assert frozenset(
-        {
-            "control.power",
-            "control.force_crash",
-            "systems.teardown",
-            "systems.reprovision",
-        }
-    ) == _docmeta.DESTRUCTIVE_TOOLS
+    assert (
+        frozenset(
+            {
+                "control.power",
+                "control.force_crash",
+                "systems.teardown",
+                "systems.reprovision",
+            }
+        )
+        == _docmeta.DESTRUCTIVE_TOOLS
+    )
