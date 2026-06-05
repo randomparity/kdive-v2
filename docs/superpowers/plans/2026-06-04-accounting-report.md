@@ -92,8 +92,13 @@ response shape is uniform regardless of `group_by`.
 `src/kdive/mcp/tools/accounting.py`, registered as `accounting.report`.
 
 - Validate `scope ∈ {granted-set, all-projects}` and `group_by ∈ {None, principal}`
-  (else `configuration_error`). Parse `window` (two optional ISO-8601 strings →
-  `datetime`; malformed → `configuration_error`).
+  (else `configuration_error`). Parse `window` (two optional **timezone-aware** ISO-8601
+  strings → `datetime`; a malformed bound, a tz-naive bound — `ledger.ts` is `timestamptz`
+  — or a non-ordered `start >= end` range all → `configuration_error`, so a bad window
+  surfaces an error rather than a silently-empty rollup).
+- **all-projects universe** = `SELECT project FROM ledger UNION SELECT project FROM budgets`
+  — every project with spend *or* a budget, so a project with ledger rows but no (or a
+  removed) budget is not dropped from the cross-tenant oversight total.
 - **granted-set**: resolve target set (default vs named per the settled rules), then
   `report(...)`, then audit-by-shape. `require_role` raising on a named non-member
   propagates (matches `accounting.usage`).

@@ -407,9 +407,18 @@ def _held_platform_roles(ctx: RequestContext) -> str | None:
 
 
 async def _all_projects(conn: AsyncConnection) -> list[str]:
-    """The project universe for the all-projects form: every project with a budget row."""
+    """The project universe for the all-projects form: every project with spend or a budget.
+
+    The oversight read must span *every* project (ADR-0043 §3), so the universe unions the
+    ``ledger`` and ``budgets`` projects — a project that has ledger spend but no (or a
+    removed) budget row is still reported, rather than silently dropped from the cross-tenant
+    total. A budgeted project with no spend yet still appears (it contributes an empty
+    rollup, so no row, but the set is honest about what was considered).
+    """
     async with conn.cursor() as cur:
-        await cur.execute("SELECT DISTINCT project FROM budgets ORDER BY project")
+        await cur.execute(
+            "SELECT project FROM ledger UNION SELECT project FROM budgets ORDER BY project"
+        )
         rows = await cur.fetchall()
     return [str(row[0]) for row in rows]
 
@@ -428,8 +437,11 @@ def _parse_group_by(group_by: str | None) -> Literal["principal"] | None:
 def _parse_window(window: object) -> tuple[datetime | None, datetime | None] | None:
     """Parse ``window`` into a ``(start, end)`` datetime pair, or ``None`` for all time.
 
-    ``window`` is a two-element ``[start, end]`` of ISO-8601 strings (either may be
-    ``None``), or ``None``. A non-pair or unparseable bound fails closed.
+    ``window`` is a two-element ``[start, end]`` of **timezone-aware** ISO-8601 strings
+    (either may be ``None``), or ``None``. Fails closed (``configuration_error``) on a
+    non-pair, an unparseable or tz-naive bound, or a non-ordered ``start >= end`` range —
+    so a malformed window surfaces an error rather than a silently-empty rollup. ``ledger.ts``
+    is ``timestamptz``; a tz-naive bound would compare in an unintended zone.
     """
     if window is None:
         return None
@@ -437,11 +449,15 @@ def _parse_window(window: object) -> tuple[datetime | None, datetime | None] | N
         raise CategorizedError(
             "window must be a [start, end] pair", category=ErrorCategory.CONFIGURATION_ERROR
         )
-    start, end = window
-    parsed = (_parse_instant(start), _parse_instant(end))
-    if parsed == (None, None):
+    start, end = (_parse_instant(window[0]), _parse_instant(window[1]))
+    if start is None and end is None:
         return None
-    return parsed
+    if start is not None and end is not None and start >= end:
+        raise CategorizedError(
+            f"window start {start.isoformat()} must precede end {end.isoformat()}",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    return (start, end)
 
 
 def _parse_instant(value: object) -> datetime | None:
@@ -453,12 +469,18 @@ def _parse_instant(value: object) -> datetime | None:
             category=ErrorCategory.CONFIGURATION_ERROR,
         )
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         raise CategorizedError(
             f"window bound {value!r} is not a valid ISO-8601 timestamp",
             category=ErrorCategory.CONFIGURATION_ERROR,
         ) from None
+    if parsed.tzinfo is None:
+        raise CategorizedError(
+            f"window bound {value!r} must be timezone-aware (ledger.ts is timestamptz)",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    return parsed
 
 
 def _report_args(

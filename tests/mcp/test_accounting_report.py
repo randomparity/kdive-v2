@@ -455,3 +455,67 @@ def test_invalid_window_is_config_error(migrated_url: str) -> None:
         assert resp.error_category == "configuration_error"
 
     asyncio.run(_run())
+
+
+def test_naive_window_bound_is_config_error(migrated_url: str) -> None:
+    # ledger.ts is timestamptz; a tz-naive bound must fail closed, not compare in an
+    # unintended zone.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await acct_tools.report(
+                pool, _ctx(), scope="granted-set", window=["2026-01-01T00:00:00", None]
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_inverted_window_is_config_error(migrated_url: str) -> None:
+    # start >= end must error rather than return a silently-empty rollup.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await acct_tools.report(
+                pool,
+                _ctx(),
+                scope="granted-set",
+                window=["2026-02-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"],
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_granted_set_explicit_empty_list_is_empty_rollup_unaudited(migrated_url: str) -> None:
+    # Naming an explicit empty list resolves to zero projects: an empty rollup (success),
+    # no audit row (distinct from the default-to-ctx.projects path).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _seed_two_projects(pool)
+            ctx = _ctx(roles={"proj-a": Role.VIEWER}, projects=("proj-a",))
+            resp = await acct_tools.report(pool, ctx, scope="granted-set", projects=[])
+        assert resp.status == "ok"
+        assert _rows(resp) == []
+        assert await _count_platform_audit(migrated_url) == 0
+
+    asyncio.run(_run())
+
+
+def test_all_projects_universe_includes_ledger_without_budget(migrated_url: str) -> None:
+    # The oversight read must span every project: a project with ledger spend but no budget
+    # row is still reported (not dropped from the cross-tenant total).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            async with pool.connection() as conn:
+                res = await _resource(conn)
+                # proj-x has ledger rows but NO budget row.
+                x = await _alloc(conn, res, "proj-x", "xavier")
+                await _ledger(conn, "proj-x", x, "reserved", "42")
+            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_AUDITOR}))
+            resp = await acct_tools.report(pool, ctx, scope="all-projects")
+        assert resp.status == "ok"
+        by_project = {r["project"]: r for r in _rows(resp)}
+        assert by_project["proj-x"]["reserved"] == "42.0000"
+
+    asyncio.run(_run())
