@@ -48,6 +48,36 @@ test:
 test-live:
     uv run python -m pytest -m live_vm -q
 
+# Bring up the live-stack backing services healthy, then print the host-process env + steps.
+# Reuses the compose backends; the operator starts server/worker/reconciler (see the runbook
+# docs/runbooks/live-stack.md). Idempotent and re-runnable.
+stack-up:
+    docker compose up -d --wait
+    @echo "Backends healthy. Export this env, then start the host processes:"
+    @echo "  export KDIVE_DATABASE_URL=postgresql://kdive:kdive@localhost:5432/kdive"
+    @echo "  export KDIVE_OIDC_ISSUER=http://localhost:8090/default"
+    @echo "  export KDIVE_OIDC_JWKS_URI=http://localhost:8090/default/jwks"
+    @echo "  export KDIVE_OIDC_AUDIENCE=kdive"
+    @echo "  export KDIVE_S3_ENDPOINT_URL=http://localhost:9000"
+    @echo "  export KDIVE_S3_BUCKET=kdive-artifacts KDIVE_S3_REGION=us-east-1"
+    @echo "  export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin"
+    @echo "Then in three terminals: python -m kdive server | worker | reconciler"
+    @echo "Full runbook: docs/runbooks/live-stack.md"
+
+# Run the live_stack suite (needs `just stack-up` + VM fixtures). --strict-markers fails a
+# mis-marked test instead of silently deselecting; pytest exit 5 ("no tests collected", e.g.
+# the marked driver not yet present) is tolerated as a clean skip, other codes propagate.
+test-live-stack:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rc=0
+    uv run python -m pytest -m live_stack --strict-markers -q || rc=$?
+    if [[ "$rc" -eq 5 ]]; then
+      echo "no live_stack tests collected — skipping cleanly (stack/fixtures or marked suite absent)"
+      exit 0
+    fi
+    exit "$rc"
+
 # Build wheel + sdist with build info baked in, then remove the stamp so it never lingers
 # in the editable checkout (a leftover would shadow live-git version reporting). Pass
 # release=true only when building from a release tag.
