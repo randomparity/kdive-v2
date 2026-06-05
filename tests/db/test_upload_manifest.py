@@ -74,6 +74,38 @@ def test_full_set_replacement(migrated_url: str) -> None:
     asyncio.run(_run_test())
 
 
+def test_remint_updates_deadline(migrated_url: str) -> None:
+    """A re-mint with a longer ttl moves the deadline forward (proves EXCLUDED.deadline)."""
+
+    async def _run_test() -> None:
+        owner_id = uuid4()
+        async with await _connect(migrated_url) as conn:
+            await replace_manifest(
+                conn,
+                owner_kind="runs",
+                owner_id=owner_id,
+                prefix=f"local/runs/{owner_id}/",
+                entries=[ManifestEntry("kernel", "Zm9v", 10)],
+                ttl=timedelta(hours=1),
+            )
+            got1 = await get_manifest(conn, "runs", owner_id)
+            assert got1 is not None
+            first_deadline = got1.deadline
+            await replace_manifest(
+                conn,
+                owner_kind="runs",
+                owner_id=owner_id,
+                prefix=f"local/runs/{owner_id}/",
+                entries=[ManifestEntry("kernel", "Zm9v", 10)],
+                ttl=timedelta(hours=5),
+            )
+            got2 = await get_manifest(conn, "runs", owner_id)
+        assert got2 is not None
+        assert got2.deadline > first_deadline
+
+    asyncio.run(_run_test())
+
+
 def test_absent_returns_none(migrated_url: str) -> None:
     """get_manifest returns None when no manifest exists for the owner."""
 
@@ -101,6 +133,19 @@ def test_delete_removes_row(migrated_url: str) -> None:
                 entries=entries,
                 ttl=timedelta(hours=1),
             )
+            await delete_manifest(conn, "runs", owner_id)
+            got = await get_manifest(conn, "runs", owner_id)
+        assert got is None
+
+    asyncio.run(_run_test())
+
+
+def test_delete_is_idempotent(migrated_url: str) -> None:
+    """delete_manifest on an absent owner does not raise; get_manifest stays None."""
+
+    async def _run_test() -> None:
+        owner_id = uuid4()
+        async with await _connect(migrated_url) as conn:
             await delete_manifest(conn, "runs", owner_id)
             got = await get_manifest(conn, "runs", owner_id)
         assert got is None

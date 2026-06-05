@@ -18,3 +18,5 @@ CREATE TABLE upload_manifests (
 );
 CREATE TRIGGER upload_manifests_set_updated_at BEFORE UPDATE ON upload_manifests
     FOR EACH ROW WHEN (OLD.* IS DISTINCT FROM NEW.*) EXECUTE FUNCTION set_updated_at();
+-- The reaper scans WHERE deadline < now() (ADR-0048 §6); index the scan column.
+CREATE INDEX upload_manifests_deadline_idx ON upload_manifests (deadline);
