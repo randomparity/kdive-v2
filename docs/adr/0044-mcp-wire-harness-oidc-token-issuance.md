@@ -16,7 +16,7 @@
 ## Context
 
 ADR-0042 §3 carried one open assumption that gates the whole live-stack epic: that
-`navikt/mock-oauth2-server` (pinned `3.1.4` in `docker-compose.yml`) can mint the
+`navikt/mock-oauth2-server` (pinned `3.0.3` in `docker-compose.yml`) can mint the
 **nested-object `roles` claim** (`{<project>: <role>}`) the server's `roles_from_claims`
 parser expects — not only flat string/array claims — through its token flow, **and** the
 flat **`platform_roles` array claim** ADR-0043 introduces. ADR-0042 made sub-issue A's wire
@@ -50,8 +50,9 @@ Three facts bound the decision:
   **rejected** it. ADR-0042 §3's open assumption is therefore **confirmed** — the issuer's
   login-form `claims` flow into the access token, not only the id_token. The `JSON_CONFIG`/
   token-exchange fallback is **not needed** and is recorded only as the contingency had the
-  probe failed. (During the probe the compose `oidc` tag was found to point at a nonexistent
-  image — `3.1.4` is unpublished; latest 3.x is `3.0.3` — and was corrected in the same branch.)
+  probe failed. (The probe also surfaced that the compose `oidc` tag pointed at a nonexistent
+  image — `3.1.4` was never published; the latest 3.x is `3.0.3` — corrected to `3.0.3` in the
+  same branch.)
 
 ## Decision
 
@@ -112,15 +113,19 @@ PR — the host-first/real-JWKS shape of ADR-0042 §3 would not change, only A's
   the raw transport result). A `LiveStackClient.over_http(base_url, token)` classmethod builds
   the streamable-HTTP + bearer client for the live tier; the constructor also accepts an
   already-built in-memory client so the lower tiers reuse the same envelope-parsing seam D
-  imports. **Envelope parsing (fastmcp 3.4.0):** `Client.call_tool` returns a
-  `CallToolResult`; the parser reads its **`.data`** field (the deserialized structured
-  output, populated from the tool's output schema), validating it into `ToolResponse`
-  (`mcp/responses.py`). A tool whose return annotation is `list[ToolResponse]` (only
-  `resources.list` here) yields a list under `.data`, so `call_tool` returns
-  `list[ToolResponse]`; a single-object tool yields a dict, returning one `ToolResponse`. The
-  single-vs-list discrimination is **by the parsed payload's JSON type** (list → list, object →
-  scalar), pinned by a test asserting both shapes — not by a per-tool table the harness would
-  have to maintain.
+  imports. **Envelope parsing (fastmcp 3.4.0, verified by probe):** `Client.call_tool` returns
+  a `CallToolResult`. Its **`.data`** field is **already deserialized** by FastMCP into a
+  pydantic model built from the tool's output schema — a generated class (`Root`), **not** the
+  project's `ToolResponse` and **not** a raw dict. For a scalar tool `.data` is one such model;
+  for a `list[ToolResponse]` tool (only `resources.list` here) `.data` is a **`list`** of them.
+  `call_tool` therefore converts each item back to the project envelope with
+  `ToolResponse.model_validate(item.model_dump())`, returning a single `ToolResponse` when
+  `.data` is a model and `list[ToolResponse]` when it is a list. Single-vs-list discrimination
+  is **by `isinstance(result.data, list)`** — not by a per-tool table. (The raw-dict
+  alternative, `CallToolResult.structured_content`, wraps list results as `{"result": [...]}`
+  while `.data` gives the bare list; `.data` is used to avoid that asymmetry.) A pinning test
+  asserts the concrete shape — `.data` is a list for `resources.list` and a model for a scalar
+  tool — so a future fastmcp change to this surface fails loudly.
 - `mint_token(...)` and an `OidcIssuer` config (issuer base URL, audience, client id) read
   from the same `KDIVE_OIDC_*`/`KDIVE_STACK_*` env the server uses.
 

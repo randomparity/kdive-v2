@@ -110,15 +110,21 @@ class LiveStackClient:
     async def call_tool(self, name: str, **args) -> ToolResponse | list[ToolResponse]: ...
 ```
 
-**Envelope-parsing contract (fastmcp 3.4.0).** `Client.call_tool` returns a `CallToolResult`;
-`call_tool` reads its **`.data`** attribute — the deserialized structured output FastMCP
-builds from the tool's declared output schema — and validates it into the project's
-`ToolResponse` (`mcp/responses.py`). Discrimination is **by the parsed JSON type of `.data`**:
-a JSON **array** → `list[ToolResponse]` (only `resources.list` returns a list here); a JSON
-**object** → a single `ToolResponse`. No per-tool table is maintained. A test pins both shapes
-(`resources.list` → list, a scalar tool → one envelope) so D imports a defined contract, not an
-inferred one. The constructor takes an already-built `fastmcp.Client` so the in-memory tier
-injects a client over `build_app(...)` and the live tier uses `over_http`.
+**Envelope-parsing contract (fastmcp 3.4.0, verified by probe).** `Client.call_tool` returns a
+`CallToolResult`. Its **`.data`** attribute is **already deserialized** by FastMCP into a
+pydantic model generated from the tool's output schema (class `Root`) — **not** the project's
+`ToolResponse`, **not** a raw dict. For a scalar tool `.data` is one such model; for a
+`list[ToolResponse]` tool (only `resources.list` here) `.data` is a **`list`** of them.
+`call_tool` converts each item to the project envelope with
+`ToolResponse.model_validate(item.model_dump())`, returning a single `ToolResponse` when
+`.data` is a model and `list[ToolResponse]` when it is a list. Discrimination is **by
+`isinstance(result.data, list)`** — no per-tool table. (The raw-dict alternative
+`CallToolResult.structured_content` wraps list results as `{"result": [...]}` while `.data`
+gives the bare list; `.data` is used to avoid that asymmetry.) A pinning test asserts the
+concrete shape (`resources.list` → `.data` is a list; a scalar tool → `.data` is a model) so a
+future fastmcp change fails loudly, and D imports a defined contract, not an inferred one. The
+constructor takes an already-built `fastmcp.Client` so the in-memory tier injects a client over
+`build_app(...)` and the live tier uses `over_http`.
 
 ## Smoke test — three tiers
 
@@ -179,8 +185,9 @@ scoping, no seeded rows), so it returns a well-formed envelope for every role ag
 - `roles_from_claims` on the verified nested object → the expected map; a malformed `roles`
   value (non-string) → `AuthError` (the existing fail-closed path, asserted on issuer-minted
   claims).
-- `LiveStackClient.call_tool` parses single-object (`.data` is an object) and list (`.data` is
-  an array) envelopes; `list_tools` returns the expected M0/M1 names.
+- `LiveStackClient.call_tool` parses scalar (`.data` is a model) and list (`.data` is a list of
+  models) envelopes into `ToolResponse`; a pinning test asserts `.data`'s concrete type;
+  `list_tools` returns the expected M0/M1 names.
 - Each tier's preflight skips cleanly (no stack / no issuer / no Docker) and does not error.
 
 ## Acceptance (issue #98)
