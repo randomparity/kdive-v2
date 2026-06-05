@@ -25,12 +25,12 @@ The whole change is test code; guardrails are `just lint` / `just type` / `just 
 
 - [ ] **Step 1: Add the imports**
 
-At the top of the file, ensure `Decimal` and `datetime`/`UTC` and `quantize_kcu` are imported. Add to the existing import block:
+At the top of the file, ensure `Decimal`, `datetime`, and `quantize_kcu` are imported. Add to the existing import block:
 
 ```python
 import json
 import tempfile
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 
 from kdive.domain.cost import quantize_kcu
@@ -334,5 +334,5 @@ git commit -m "test: wire RBAC negative for all-projects report (#101)"
 
 - **Spec coverage:** Metering seed (Task 1) → spec "Metering prerequisite"; DB-clock window (Task 1 `_db_now` + Task 3 capture) → spec §2; ledger cross-check (Task 1 `_ledger_sums` + Task 3) → spec step 5; artifact out-of-tree (Task 2 + Task 3) → spec step 6; report phase (Task 3) → spec "report phase"; RBAC negative (Task 4) → spec "wire RBAC negative". All mapped.
 - **Placeholders:** none — every step shows the literal code/command.
-- **Type consistency:** `_db_now -> datetime`, `_ledger_sums(db_url, project, since: datetime) -> tuple[Decimal, Decimal]`, `_seed_metering(db_url, project) -> None`, `_write_report_artifact(payload) -> Path`, `_find_project_row(rows, project) -> dict`. `_assert_report(base_url, auditor_token, db_url, window_start)` uses all consistently. `window_start` is a server-clock `datetime`; `.isoformat()` is tz-aware (Postgres `now()` returns tz-aware), satisfying the tool's `_parse_window` tz check.
+- **Type consistency:** `_db_now -> datetime`, `_ledger_sums(db_url, project, since: datetime) -> tuple[Decimal, Decimal]`, `_seed_metering(db_url, project) -> None`, `_write_report_artifact(payload) -> Path`, `_find_project_row(rows, project) -> dict`. `_assert_report(base_url, auditor_token, db_url, window_start)` uses all consistently. `window_start` is the DB server-clock `datetime` from `_db_now`; `.isoformat()` is tz-aware (Postgres `now()` returns tz-aware), satisfying the tool's `_parse_window` tz check. No `datetime.now(UTC)` is used, so `UTC` is not imported (ruff `F` would flag it unused).
 - **Separate-from-D:** Task 3/4 are the report phase + negative, committed apart from any D change; D's phases are unmodified except the appended `report` phase and the `window_start`/seed capture at the top of the existing block.
