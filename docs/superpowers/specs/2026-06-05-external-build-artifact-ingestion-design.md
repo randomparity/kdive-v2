@@ -30,8 +30,9 @@ implement install/boot against a real, install-ready Run.
 
 In scope:
 
-- `src/kdive/store/objectstore.py` — `presign_put(key, *, sha256, expires_in)` and
-  `head(key)` (existence + size + checksum metadata).
+- `src/kdive/store/objectstore.py` — `presign_put(key, *, sha256, size_bytes, expires_in)`
+  (signs the checksum + content-length conditions), `head(key)` (existence + size + checksum
+  metadata), and `list(prefix)` + `delete(key)` for the reaper.
 - `src/kdive/profiles/build.py` — `BuildProfile.source: Literal["server", "external"]`
   (default `"server"`) plus the external manifest fields (declared artifact set, cmdline,
   rootfs reference).
@@ -40,17 +41,23 @@ In scope:
   artifacts or a System for a rootfs).
 - `src/kdive/mcp/tools/runs.py` — `runs.complete_build` (validate the Run's uploads, record
   the `BuildOutput` + cmdline in the step ledger, drive `created → running → succeeded`).
-- `src/kdive/profiles/provisioning.py` — extend the rootfs reference so `rootfs_image_ref`
-  resolves a source kind (`upload` object key / `url` / `catalog` name), enabling "rootfs
-  image or URL". The existing provisioning *attach* is unchanged.
+- `src/kdive/profiles/provisioning.py` + the provisioning plane — extend the rootfs
+  reference so `rootfs_image_ref` resolves a source kind (`upload` object key / `url` /
+  `catalog` name), enabling "rootfs image or URL"; when it consumes an `upload`-kind rootfs,
+  the plane commits its write-once `artifacts` row (so the reaper exempts it). The existing
+  disk *attach* is otherwise unchanged.
 - `src/kdive/providers/local_libvirt/build.py` — `validate_external_artifacts(...)`,
-  reusing `parse_gnu_build_id` semantics for the shape checks.
+  reusing `parse_gnu_build_id` (shape checks + the ranged `build_id` extraction).
+- the reconciler (ADR-0021) — an owner-agnostic reaper that deletes manifest-keyed objects
+  for an owner (a `created` Run or a `defined`/never-provisioned System) past the upload
+  deadline. No `artifacts`-row state change (the row stays write-once).
 - A ported rootfs catalog (`catalog`-kind references), from v1
   `src/kdive/rootfs/catalog_data.json`.
 
 Out of scope (next spec): install-plane fetch from the store (gap B2), serial-marker
 readiness (B4), the rootfs builder port (A1), and actually booting the uploaded kernel.
-This lane only **produces and records** an install-ready Run.
+This lane only **produces and records** a well-formed Run; it does not prove the kernel
+boots.
 
 ## 3. Domain mapping: reuse the Run, swap the producer
 
@@ -115,15 +122,22 @@ out: ToolResponse{ uploads: [{ name, key, upload_url, expires_in }],
 - For `owner_kind: run` the Run must be `CREATED` with profile `source: external`, and the
   names are build artifacts (`kernel`/`initrd`/`vmlinux`); for `owner_kind: system` the name
   is `rootfs` and the System must not yet be provisioned. A mismatch → `configuration_error`.
-- Object keys are the **deterministic owner-keyed keys** the build plane already uses
-  (`runs/<run_id>/<name>`, `systems/<system_id>/<name>`), so install/provisioning read them
-  by the same convention.
-- Each `upload_url` is a presigned PUT that pins the agent-declared `sha256` via S3's
-  `x-amz-checksum-sha256`, so the store rejects a mismatched body on upload — integrity is
-  enforced at the store with no server-side download.
-- `size_bytes` is bounded by a configurable per-artifact cap; an implausible declaration is
-  rejected before a URL is minted.
-- Idempotent: re-calling re-mints (short-TTL) URLs for the same keys.
+- Object keys are the existing `{tenant}/{kind}/{object_id}/{name}` layout (`_artifact_key`):
+  `{tenant}/runs/<run_id>/<name>`, `{tenant}/systems/<system_id>/<name>`, so
+  install/provisioning read them by the same convention.
+- Each `upload_url` is a presigned PUT that **signs the upload conditions**: the
+  agent-declared `x-amz-checksum-sha256` (required header) and a `content-length-range`
+  pinned to the declared `size_bytes`. The store rejects, at PUT time, a body whose checksum
+  or length does not match — so the cap and the integrity pin do not depend on the client
+  behaving. (MinIO presigned-PUT checksum enforcement is the `live_stack`-tested assumption.)
+- `create_upload` **persists the declared manifest** — per artifact `(name, sha256,
+  size_bytes)`, plus an upload-deadline timestamp — as owner state. The manifest is both the
+  reference value `complete_build` compares the stored object's checksum against and the
+  reaper's record of minted keys (§6 orphan lifecycle). No `artifacts` row is written yet —
+  the row stays write-once and is created at `complete_build`. `size_bytes` over a
+  configurable cap is rejected before a URL is minted.
+- Idempotent: re-calling re-mints (short-TTL) URLs and rewrites the manifest for the same
+  keys.
 
 ### `runs.complete_build`
 
@@ -136,12 +150,12 @@ out: ToolResponse{ run_id, status: "succeeded",
                    suggested_next_actions: ["runs.get"] }
 ```
 
-- Validates the Run's uploaded artifacts (§5), records `BuildOutput` + cmdline in the
+- Validates the Run's uploaded artifacts (§5), writes the write-once `artifacts` rows
+  (`register_artifact_row`, as in the server lane), records `BuildOutput` + cmdline in the
   `run_steps` ledger, and drives `created → running → succeeded` under the per-Run advisory
-  lock — the same finalize path as `_finalize_build`, fed by uploads. The rootfs is **not** an
-  input here; it was bound to the System at provisioning. `suggested_next_actions` is
-  `runs.get` because the System is already `ready` — the next real action (install/boot) is
-  the following spec's tool.
+  lock — the same finalize path as `_finalize_build`, fed by uploads. The rootfs is **not** an input here; it was bound to the System at
+  provisioning. `suggested_next_actions` is `runs.get` because the System is already `ready`
+  — the next real action (install/boot) is the following spec's tool.
 - Idempotent via the existing `run_steps` `ON CONFLICT (run_id, step) DO NOTHING` plus the
   `_existing_build_result` short-read: a second `complete_build` is a no-op success.
 
@@ -151,16 +165,19 @@ At `complete_build`, per declared Run artifact (kernel/initrd/vmlinux):
 
 - **Existence + size** — object-store `HEAD`; a missing object → `configuration_error`
   naming `artifacts.create_upload` (an upload was skipped or failed).
-- **Integrity** — the store enforced `sha256` on PUT; `complete_build` reads back the
-  checksum metadata and confirms it matches the declared digest. No full download.
+- **Integrity** — the store enforced the signed `sha256` + length on PUT; `complete_build`
+  reads each object's stored checksum/size via `head` and confirms it matches the
+  **persisted manifest** from `create_upload`. No full download.
 - **Shape** — a small ranged read of the leading bytes asserts ELF magic (`\x7fELF`) for
   `vmlinux` and the bzImage magic for `kernel`; catches a truncated or wrong file cheaply.
-- **`build_id`** — recorded as **agent-declared metadata** (extracted from the agent's
-  local `vmlinux`), used for symbol pairing. It is **not** re-derived server-side, which
-  would require downloading the multi-GB `vmlinux`. The `sha256` pin is the integrity
-  anchor; `build_id` is the pairing hint. A deferred server-side `objcopy` (after the
-  install/debug plane downloads the artifact anyway) is the future hardening, tracked in
-  the install/debug spec, not here.
+- **`build_id`** — verified, not merely trusted: when a `vmlinux` is present, the declared
+  `build_id` is checked against the uploaded file by extracting its `.note.gnu.build-id`
+  server-side **without a full download** — read the ELF header (`e_shoff`), then the
+  section header table, then the note section (a few byte-range GETs feeding the existing
+  `parse_gnu_build_id`). A mismatch → `validation_failure`. This guards against silently
+  *mispaired* symbols (the debug plane decoding a vmcore against the wrong symbol table —
+  plausible-looking garbage). Full-artifact `objcopy` re-derivation stays deferred to a
+  plane that downloads the `vmlinux` anyway.
 **Rootfs** is validated when its reference is resolved at System provisioning, not at
 `complete_build`: `kind: upload` → `HEAD` the System-owned key; `kind: url` → a
 reachability/`HEAD` check and a required declared `sha256`; `kind: catalog` → resolve the
@@ -168,18 +185,33 @@ name against the ported catalog (real, checksummed entries).
 
 ## 6. Error handling, state, security
 
-- **State guards** — every transition goes through `domain/state.py` `can_transition`.
-  `complete_build` acts only on a `CREATED` Run; `complete_build` on a `server`-source Run
-  → `configuration_error`. A repeat `complete_build` is an idempotent success.
+- **State guards (symmetric lane gate)** — every transition goes through `domain/state.py`
+  `can_transition`. Both entry tools are source-gated: `complete_build` acts only on a
+  `CREATED` `external`-source Run (a `server`-source Run → `configuration_error`), and
+  `runs.build` rejects an `external`-source Run with `configuration_error`. Without the
+  `runs.build` half, an external Run could be driven into the stubbed server `make` path or
+  race a concurrent `complete_build` for the single `created → running` transition. A repeat
+  `complete_build` is an idempotent success.
+- **Orphan lifecycle (prefix-reaped, no row state)** — the `artifacts` row stays write-once
+  and is written when an object is *committed*: by `complete_build` for build artifacts, by
+  the provisioning plane for a rootfs it consumes. The reconciler (ADR-0021) reaps by **owner
+  key-prefix**: for any owner still in its pre-finalize state past the upload deadline — a
+  `created` Run **or** a `defined`/never-provisioned System — it `list`s every object under
+  `{tenant}/runs/<run_id>/` or `{tenant}/systems/<system_id>/` and `delete`s only those with
+  **no committed `artifacts` row**. The "uncommitted past deadline" predicate exempts a
+  referenced/in-flight object (a rootfs the operator is slow to provision, a Run before
+  `complete_build`), so the reaper never deletes live input — only true orphans. Prefix
+  listing (not the manifest's current key-list) is immune to a re-mint that dropped a
+  declared name. The deadline is a fixed TTL stamped on the manifest at mint time.
 - **Error taxonomy** (existing `ErrorCategory`, no new strings) — missing upload →
-  `configuration_error`; checksum/magic mismatch → `validation_failure` if defined for the
-  surface, else `configuration_error`; presign/object-store failure →
+  `configuration_error`; checksum/magic/`build_id` mismatch → `validation_failure` if defined
+  for the surface, else `configuration_error`; presign/object-store failure →
   `infrastructure_failure`. Every failure envelope carries `error_category`, enforced at
   `ToolResponse` construction.
 - **Concurrency** — `complete_build` holds the per-Run advisory lock, like
   `_build_locked`/`_finalize_build`, so concurrent completes serialize to a single ledger
   row.
-- **Security** — presigned URLs are short-TTL and scoped to a single Run-keyed object key
+- **Security** — presigned URLs are short-TTL and scoped to a single owner-keyed object key
   (no list, no other keys). Artifacts are stored `SENSITIVE` with the `build` retention
   class, as for server builds. No secrets cross the MCP boundary — the agent uploads
   straight to the store; the redactor covers any URL credentials in responses.
@@ -188,19 +220,31 @@ name against the ported catalog (real, checksummed entries).
 
 Tests mirror the package tree; the `ObjectStore` is injected, so no real S3 in unit tests.
 
-- **Unit** — `create_upload` presign shaping (keys, TTL, checksum pin); state-guard
-  rejections (wrong source, wrong Run state); `complete_build` happy path writes the ledger
-  and drives `CREATED→SUCCEEDED`; idempotent re-complete; each validation failure path
-  (missing object, checksum mismatch, bad magic, unreachable URL, unknown catalog name).
+- **Unit** — `create_upload` presign shaping (keys, TTL, signed checksum + length
+  conditions), manifest + deadline persistence (no `artifacts` row yet); state-guard
+  rejections both directions
+  (`runs.build` on external, `complete_build` on server, wrong Run state); `complete_build`
+  happy path writes the write-once `artifacts` rows, writes the ledger, drives
+  `CREATED→SUCCEEDED`; idempotent
+  re-complete; each validation failure path (missing object, checksum/size mismatch vs.
+  manifest, bad magic, `build_id` mismatch vs. the uploaded `vmlinux`, unreachable rootfs
+  URL, unknown catalog name).
 - **Adversarial** (`tests/adversarial/`) — concurrent `complete_build` on one Run
-  serializes to a single ledger row.
-- **`live_stack`-gated** — the real presigned round-trip against MinIO (upload then
-  `complete_build`); skips cleanly without the stack.
+  serializes to a single ledger row; the reconciler prefix-reaps every **uncommitted** object
+  under an abandoned `created` Run's and an abandoned `defined` System's key-prefix past the
+  deadline (including a dropped-on-re-mint name), but **leaves a committed object** (a
+  rootfs row written by a slow-but-real provision) untouched — no untracked object survives,
+  no live input is destroyed.
+- **`live_stack`-gated** — the real presigned round-trip against MinIO, asserting the store
+  **rejects** a body whose checksum or length disagrees with the signed declaration, then a
+  matching upload + `complete_build` succeeds; skips cleanly without the stack.
 
 ## 8. Success criterion
 
 Done = an agent can upload locally-built artifacts and a completed external-build Run lands
-`succeeded` with a validated `BuildOutput` (`kernel_ref`, optional `vmlinux`/`build_id`)
-plus a resolved rootfs reference — i.e., everything the install plane needs, stopping short
-of booting. Install/boot consumption (B2 fetch, serial-marker readiness, the rootfs builder
-port) is the next spec.
+`succeeded` with a **validated, well-formed** `BuildOutput` (`kernel_ref`, optional
+`vmlinux`/`build_id`) — checksum matched against the manifest, magic present, `build_id`
+paired to the `vmlinux` — over a System whose rootfs reference resolved. This is everything
+the install plane needs to *attempt* a boot; it does **not** prove the kernel boots.
+Bootability is established only by the next spec's install/boot work (B2 fetch, serial-marker
+readiness, the rootfs builder port), which is where actual install/boot verification lives.
