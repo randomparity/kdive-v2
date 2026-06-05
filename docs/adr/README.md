@@ -73,3 +73,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0041](0041-versioning-release-process.md) | Versioning policy (SemVer, milestone→minor) & tag-driven release process | Proposed |
 | [0042](0042-live-stack-e2e-mcp-http.md) | Live-stack end-to-end functional test over MCP HTTP; supersedes the gated tier of 0035 (M1.2) | Proposed |
 | [0043](0043-platform-scoped-rbac-tier.md) | Platform-scoped RBAC tier (`platform_roles`); cross-project auditor surface (extends 0006) | Proposed |
+| [0044](0044-mcp-wire-harness-oidc-token-issuance.md) | MCP-over-HTTP wire harness + OIDC token issuance; closes ADR-0042 §3's claim-shape gate (M1.2) | Proposed |
