@@ -42,7 +42,11 @@ class _FakeClient:
     async def __aexit__(self, *exc: object) -> None:
         return None
 
-    async def call_tool(self, name: str, args: dict[str, object]) -> _FakeResult:
+    async def call_tool(
+        self, name: str, args: dict[str, object], *, raise_on_error: bool = True
+    ) -> _FakeResult:
+        # Mirror fastmcp.Client.call_tool's signature: the harness passes raise_on_error=False
+        # so it gets the error result back and does its own typed LiveStackToolError wrapping.
         return self._result
 
 

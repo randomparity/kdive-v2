@@ -131,6 +131,19 @@ def _spine_preflight() -> tuple[OidcIssuer, str, str]:
     return issuer, base_url, db_url
 
 
+def _wire_preflight() -> tuple[OidcIssuer, str]:
+    """Resolve issuer + stack URL for the RBAC-negative wire checks (no VM, no DB).
+
+    These tests exercise a denial that fires in the auth/RBAC layer before any provisioning
+    or DB read, so they need only a reachable issuer and a running server — not the guest
+    image / kernel tree the booting spine requires. Gating them behind ``_spine_preflight``
+    would make them skip forever on any host without the (currently unbuildable) VM fixtures.
+    """
+    issuer = require_issuer()  # skips if the OIDC issuer is unset/unreachable
+    base_url = require_stack()  # skips if KDIVE_STACK_BASE_URL is unset
+    return issuer, base_url
+
+
 def _ok(envelope: ToolResponse, phase_name: str) -> ToolResponse:
     """Return the envelope if non-failure, else raise a SpinePhaseError naming the phase."""
     if envelope.status in {"error", "failed"}:
@@ -385,7 +398,7 @@ def test_viewer_denied_operator_op_over_the_wire() -> None:
     ``require_role`` (role) boundary, not the ``require_project`` (membership) boundary that
     ``allocations.request`` checks first.
     """
-    issuer, base_url, _db = _spine_preflight()
+    issuer, base_url = _wire_preflight()
 
     async def _run() -> None:
         viewer = LiveStackClient.over_http(base_url, _token(issuer, role="viewer"))
@@ -407,7 +420,7 @@ def test_report_all_projects_denied_to_project_token() -> None:
     not a raised tool error. So assert the envelope shape (like crash-rbac-negative), not a
     raised LiveStackToolError (ADR-0046 §3).
     """
-    issuer, base_url, _db = _spine_preflight()
+    issuer, base_url = _wire_preflight()
 
     async def _run() -> None:
         project_only = LiveStackClient.over_http(base_url, _token(issuer, role="viewer"))

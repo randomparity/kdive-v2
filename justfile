@@ -52,8 +52,14 @@ test-live:
 # Bring up the live-stack backing services healthy, then print the host-process env + steps.
 # Reuses the compose backends; the operator starts server/worker/reconciler (see the runbook
 # docs/runbooks/live-stack.md). Idempotent and re-runnable.
+#
+# `--wait` is scoped to the three long-running backends: it treats ANY container exit as a wait
+# failure, so the one-shot `minio-init` (creates the bucket, then exits 0) would make a healthy
+# stack report exit 1. Run that init separately to completion — its exit code still propagates,
+# so a real bucket-creation failure fails the recipe.
 stack-up:
-    docker compose up -d --wait
+    docker compose up -d --wait postgres minio oidc
+    docker compose run --rm minio-init
     @echo "Backends healthy. Export this env, then start the host processes:"
     @echo "  export KDIVE_DATABASE_URL=postgresql://kdive:kdive@localhost:5432/kdive" # pragma: allowlist secret — local dev only
     @echo "  export KDIVE_OIDC_ISSUER=http://localhost:8090/default"

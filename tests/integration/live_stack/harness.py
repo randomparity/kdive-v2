@@ -274,8 +274,13 @@ class LiveStackClient:
         A tool-error result (``is_error`` true — a handler that *raised*, e.g. an authz denial
         that surfaces as a raise rather than a ``ToolResponse``) raises
         :class:`LiveStackToolError` before the structured-content parse (ADR-0045 §2).
+
+        ``raise_on_error=False`` is required: fastmcp's ``Client.call_tool`` otherwise raises
+        its own ``fastmcp.exceptions.ToolError`` on an error result, defeating the typed
+        ``LiveStackToolError`` wrapping the driver asserts on. Passing it returns the
+        ``CallToolResult`` so the ``is_error`` branch below can re-raise the typed error.
         """
-        result = await self._client.call_tool(name, args)
+        result = await self._client.call_tool(name, args, raise_on_error=False)
         if getattr(result, "is_error", False):
             raise LiveStackToolError(name, _tool_error_text(result))
         payload = result.structured_content
