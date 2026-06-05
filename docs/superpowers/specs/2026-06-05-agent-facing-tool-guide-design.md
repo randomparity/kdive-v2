@@ -158,8 +158,9 @@ destructive op needs a manual set update. An admin-role anchor can't substitute,
   registry's `Tool` objects.
 - Core is a **pure function** `registry → list[ToolDoc] → markdown`, unit-testable without
   the filesystem. The thin outer shell writes files.
-- Per tool, renders: name, a maturity badge, hint badges (read-only / destructive /
-  idempotent / long-running), the description, and a parameter table (name, type from the
+- Per tool, renders: name, a maturity badge, hint badges (read-only / destructive — the
+  two hints tools actually set; `idempotentHint` and a `long_running` marker are not set on
+  any tool today, so they get no badge), the description, and a parameter table (name, type from the
   JSON schema, required, description).
 - Groups tools by namespace; **deterministic** (sorted) ordering so output is stable and
   diffable.
@@ -176,7 +177,7 @@ destructive op needs a manual set update. An admin-role anchor can't substitute,
 | `index.md` | What KDIVE is, the build→boot→debug premise, how an agent drives it, a map into the reference | top-level-design |
 | `concepts.md` | The six durable objects and their lifecycle ordering (`Resource ─< Allocation ─< System ─< Run ─< DebugSession`, plus `Investigation`) | ADR-0003, ADR-0026 |
 | `response-envelope.md` | The uniform `ToolResponse` (id, status, `suggested_next_actions`, artifact `refs`, `error_category` on failure) and the references-not-log-dumps rule | ADR-0019 |
-| `async-jobs.md` | The long-op pattern: a tool returns `{job_id, status: running}`; the agent polls `jobs.*`/`jobs.wait`. Which tools are long-running (the `long_running` flag the badges expose) | ADR-0008, ADR-0018 |
+| `async-jobs.md` | The long-op pattern: a tool returns `{job_id, status: running}`; the agent polls `jobs.*`/`jobs.wait`. Which tools are long-running (a hand-authored table, since long-running is not a generated badge) | ADR-0008, ADR-0018 |
 | `safety-and-rbac.md` | RBAC roles, the deny-by-default destructive-op gate (capability scope + role + profile opt-in), secret-by-reference + redaction | ADR-0020, ADR-0027, ADR-0028 |
 | `errors.md` | The stable `ErrorCategory` taxonomy (`domain/errors.py`) and how to read/recover from a failure envelope | ADR-0019 |
 
