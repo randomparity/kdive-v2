@@ -1,5 +1,8 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+# Pinned git-cliff version — referenced by the changelog recipe and release.yml (one place).
+GIT_CLIFF := "git-cliff@2.13.1"
+
 # List available recipes.
 default:
     @just --list
@@ -54,6 +57,10 @@ build release="false":
     trap 'rm -f src/kdive/_buildinfo.py' EXIT
     ./scripts/stamp-buildinfo.sh "{{release}}"
     uv build
+
+# Regenerate CHANGELOG.md from conventional-commit history (Keep a Changelog).
+changelog:
+    uvx {{GIT_CLIFF}} --output CHANGELOG.md
 
 # Start the operator backing services (Postgres + MinIO + mock OIDC) for a live run.
 compose-up:
