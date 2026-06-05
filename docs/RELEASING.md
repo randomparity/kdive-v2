@@ -4,7 +4,7 @@ This project follows [ADR-0041](adr/0041-versioning-release-process.md): SemVer 
 `0.y.z` phase, milestone→minor, with the **in-tree version always pointing at the next
 unreleased version** so a `-dev` build is never ambiguous across a release boundary.
 
-## Version bumps (each via `uv version`, which updates `pyproject.toml` + `uv.lock`)
+## Version bumps (each via `just set-version`, which runs `uv version` to update `pyproject.toml` + `uv.lock`)
 
 - **At a Milestone's start** — `just set-version <next-minor>` (e.g. `0.2.0` for M1), on a
   branch → PR → merge.
