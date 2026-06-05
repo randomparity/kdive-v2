@@ -1,12 +1,12 @@
-"""The M0 walking-skeleton end-to-end integration test (#26, ADR-0035).
+"""The M0 walking-skeleton exit-criterion tests (#26, ADR-0035).
 
-The full happy spine (`allocations.request → … → allocations.release`) only runs against an
-operator-provided libvirt/KVM host with a kdump-enabled guest image, so it is `live_vm`-gated
-and SKIPs in CI (`test_walking_skeleton_full_path`). Three of the six M0 exit criteria are
-decided by **policy over data**, not by the hypervisor, so they are exercised here as
-non-gated tests that call handlers directly with injected fakes — the repo's unit of testing
-(ADR-0019: handlers, never MCP). They run on every PR against the disposable Postgres
-(ADR-0015):
+The full happy spine over a real KVM host is now driven by the M1.2 phase-structured spine
+driver `tests/integration/test_live_stack.py` (over the live MCP HTTP transport); the M0
+`live_vm` full-path stub (`test_walking_skeleton_full_path`) it replaced has been deleted
+(ADR-0042 §5). Three of the six M0 exit criteria are decided by **policy over data**, not by
+the hypervisor, so they are exercised here as non-gated tests that call handlers directly with
+injected fakes — the repo's unit of testing (ADR-0019: handlers, never MCP). They run on every
+PR against the disposable Postgres (ADR-0015):
 
 - Exit criterion #6 (destructive gate refusal) — ``test_force_crash_refused_when_gate_check_absent``
 - Exit criterion #4 (idempotent step replay) — ``test_completed_step_replay_does_not_re_execute``
@@ -294,7 +294,11 @@ def test_raw_vmcore_is_sensitive_and_unreachable(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-# --- exit criteria #1/#2/#5: the full path (live_vm-gated) ----------------------------------
+# --- live_vm fixture preflight (shared by the M1 live introspection test) -------------------
+# The M0 full-path tier (`test_walking_skeleton_full_path`) was superseded by the M1.2
+# phase-structured spine driver `tests/integration/test_live_stack.py` and deleted
+# (ADR-0042 §5, replace-don't-deprecate). This preflight remains because the M1
+# `test_c8_live_introspect_over_ssh` (test_m1_allocation_accounting.py) reuses it.
 
 _GUEST_IMAGE_ENV = "KDIVE_GUEST_IMAGE"
 _KERNEL_TREE_ENV = "KDIVE_KERNEL_SRC"
@@ -323,24 +327,3 @@ def _live_vm_preflight(*, require_ssh: bool = False) -> tuple[Path, Path]:
     if require_ssh and not os.environ.get(_LIVE_SSH_ENV):
         pytest.skip(f"{_LIVE_SSH_ENV} unset; run scripts/live-vm/check-ssh-reachable.sh <host>")
     return Path(image), Path(tree)
-
-
-@pytest.mark.live_vm
-def test_walking_skeleton_full_path(migrated_url: str) -> None:  # pragma: no cover - live_vm
-    """#1/#2/#5: drive the full spine on a real libvirt host (SKIPs in CI; ADR-0035 §1).
-
-    The operator runs the two fixture scripts, points ``KDIVE_GUEST_IMAGE``/``KDIVE_KERNEL_SRC``
-    at their output, and runs this under `just test-live` on a KVM host. Each async job is driven
-    to ``succeeded`` through the production ``Worker.run_once()`` spine before the next dependent
-    tool (the queue-drive contract), then:
-
-    - #1 path completes: a fetchable redacted vmcore artifact exists at the end.
-    - #2 attribution: every transition + force_crash wrote an ``audit_log`` row under the
-      request's ``(principal, agent_session, project)`` tuple.
-    - #5 teardown: after ``allocations.release`` the System is ``torn_down`` and
-      ``Discovery.list_owned()`` returns no ``OwnedInfra`` for the released ``system_id``.
-
-    The body is wired by the live_vm runner; it is deselected in CI via ``-m "not live_vm"``.
-    """
-    _live_vm_preflight()
-    raise NotImplementedError("live_vm full-path harness wired by the live_vm runner")
