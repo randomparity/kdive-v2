@@ -28,7 +28,8 @@ from tests.mcp.conftest import AUDIENCE, ISSUER, make_keypair
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TESTS_DIR = _REPO_ROOT / "tests"
 # Common callees every wrapper names; never a tool-unique anchor.
-_SHARED_CALLEES = frozenset({"current_context"})
+# Includes _docmeta annotation helpers that appear in @app.tool decorator sources.
+_SHARED_CALLEES = frozenset({"current_context", "read_only", "mutating", "destructive"})
 
 
 def _build_tools() -> list[FunctionTool]:

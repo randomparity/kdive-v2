@@ -15,7 +15,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
@@ -23,6 +23,7 @@ from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
+from pydantic import Field
 
 from kdive.db.idempotency import run_step
 from kdive.db.locks import LockScope, advisory_xact_lock
@@ -41,6 +42,7 @@ from kdive.jobs.models import HandlerRegistry
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools import _docmeta
 from kdive.profiles.build import BuildProfile
 from kdive.providers.local_libvirt.build import Builder, BuildOutput, LocalLibvirtBuild
 from kdive.providers.local_libvirt.install import (
@@ -625,14 +627,30 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `runs.*` tools on ``app``, bound to ``pool``."""
 
-    @app.tool(name="runs.get")
-    async def runs_get(run_id: str) -> ToolResponse:
+    @app.tool(
+        name="runs.get",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "implemented"},
+    )
+    async def runs_get(
+        run_id: Annotated[str, Field(description="The Run to render.")],
+    ) -> ToolResponse:
+        """Render a Run; a failed Run maps to a failure envelope. Requires project membership."""
         return await get_run(pool, current_context(), run_id)
 
-    @app.tool(name="runs.create")
+    @app.tool(
+        name="runs.create",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "implemented"},
+    )
     async def runs_create(
-        investigation_id: str, system_id: str, build_profile: dict[str, Any]
+        investigation_id: Annotated[str, Field(description="Investigation to attach the Run to.")],
+        system_id: Annotated[str, Field(description="Ready System (active Allocation) to bind.")],
+        build_profile: Annotated[
+            dict[str, Any], Field(description="Build profile for the Run's kernel.")
+        ],
     ) -> ToolResponse:
+        """Bind a Run to a ready System and Investigation in one transaction. Requires operator."""
         return await create_run(
             pool,
             current_context(),
@@ -641,16 +659,37 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             build_profile=build_profile,
         )
 
-    @app.tool(name="runs.build")
-    async def runs_build(run_id: str) -> ToolResponse:
+    @app.tool(
+        name="runs.build",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "partial"},
+    )
+    async def runs_build(
+        run_id: Annotated[str, Field(description="The Run to build.")],
+    ) -> ToolResponse:
+        """Enqueue the kernel build job for a Run; poll jobs.* for completion. Requires operator."""
         return await build_run(pool, current_context(), run_id)
 
-    @app.tool(name="runs.install")
-    async def runs_install(run_id: str) -> ToolResponse:
+    @app.tool(
+        name="runs.install",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "partial"},
+    )
+    async def runs_install(
+        run_id: Annotated[str, Field(description="The Run whose built kernel to install.")],
+    ) -> ToolResponse:
+        """Enqueue the install job for a built Run; poll jobs.* for completion. Operator only."""
         return await install_run(pool, current_context(), run_id)
 
-    @app.tool(name="runs.boot")
-    async def runs_boot(run_id: str) -> ToolResponse:
+    @app.tool(
+        name="runs.boot",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "partial"},
+    )
+    async def runs_boot(
+        run_id: Annotated[str, Field(description="The Run whose installed kernel to boot.")],
+    ) -> ToolResponse:
+        """Enqueue the boot job for an installed Run; poll jobs.* for completion. Operator only."""
         return await boot_run(pool, current_context(), run_id)
 
 
