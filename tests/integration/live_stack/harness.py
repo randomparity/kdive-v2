@@ -34,6 +34,32 @@ _REDIRECT_URI = "http://localhost:1234/callback"
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
+class LiveStackToolError(RuntimeError):
+    """A tool call returned an error result over the wire (e.g. a raised authz denial).
+
+    fastmcp surfaces a handler that *raises* (rather than returning a :class:`ToolResponse`)
+    as a tool-error ``CallToolResult`` (``is_error`` true, no ``structured_content``). The
+    driver asserts the RBAC raised-path on this typed error rather than on an
+    ``error_category`` (ADR-0045 §2).
+    """
+
+    def __init__(self, tool: str, message: str) -> None:
+        self.tool = tool
+        self.message = message
+        super().__init__(f"tool {tool!r} returned an error: {message}")
+
+
+def _tool_error_text(result: object) -> str:
+    """Best-effort human-readable text from a tool-error ``CallToolResult``."""
+    content = getattr(result, "content", None)
+    if content:
+        first = content[0]
+        text = getattr(first, "text", None)
+        if isinstance(text, str):
+            return text
+    return "tool error"
+
+
 @dataclass(frozen=True)
 class OidcIssuer:
     """The mock-OIDC issuer the harness mints tokens from (ADR-0044).
@@ -244,8 +270,14 @@ class LiveStackClient:
         of envelopes; any other object is one envelope. ``CallToolResult.data`` is not used:
         it is a FastMCP-generated plain class (``Root``), not a pydantic model, so it has no
         ``model_dump``.
+
+        A tool-error result (``is_error`` true — a handler that *raised*, e.g. an authz denial
+        that surfaces as a raise rather than a ``ToolResponse``) raises
+        :class:`LiveStackToolError` before the structured-content parse (ADR-0045 §2).
         """
         result = await self._client.call_tool(name, args)
+        if getattr(result, "is_error", False):
+            raise LiveStackToolError(name, _tool_error_text(result))
         payload = result.structured_content
         if payload is None:
             raise RuntimeError(f"tool {name!r} returned no structured content")
