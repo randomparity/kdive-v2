@@ -45,6 +45,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+pythonpath = ["."]
 markers = [
   "live_vm: requires an operator-provided libvirt/KVM environment (KVM/nested-virt host, libvirt, kdump-enabled guest image)",
   "live_stack: requires a running kdive stack (host server/worker/reconciler + Postgres/MinIO/OIDC backends) and a reachable OIDC issuer, beyond the live_vm KVM host",
