@@ -1,4 +1,3 @@
-# tests/mcp/test_tool_docs.py
 """The ADR-0047 documentation guard, over the live FastMCP registry.
 
 Builds the app with a null pool + a local-keypair verifier (the service-test
@@ -76,16 +75,14 @@ def _test_sources() -> str:
     blobs: list[str] = []
     for path in _TESTS_DIR.rglob("test_*.py"):
         text = path.read_text(encoding="utf-8")
-        if "live_vm" in text or "live_stack" in text:
+        if "pytest.mark.live_vm" in text or "pytest.mark.live_stack" in text:
             continue
         blobs.append(text)
     return "\n".join(blobs)
 
 
 TOOLS = _build_tools()
-FREQ: Counter[str] = Counter()
-for _t in TOOLS:
-    FREQ.update(c for c in _callees(_t.fn) if c not in _SHARED_CALLEES)
+FREQ: Counter[str] = Counter(c for t in TOOLS for c in _callees(t.fn) if c not in _SHARED_CALLEES)
 
 
 def test_every_tool_has_a_description() -> None:
