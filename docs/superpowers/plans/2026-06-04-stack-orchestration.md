@@ -106,21 +106,54 @@ Expected: `stack-up` and `test-live-stack` appear with their doc comments.
 Run: `just test-live-stack`
 Expected: exit 0; output contains pytest's `… deselected` summary **and** the line `no live_stack tests collected — skipping cleanly …`.
 
-- [ ] **Step 4: Lint the recipe shell**
+- [ ] **Step 4: Parse-check the justfile**
 
-Run: `just lint-shell` is scripts-only; lint the recipe body directly:
+Run: `just --dump --dump-format just >/dev/null`
+Expected: exits 0 (the justfile parses).
+
+- [ ] **Step 5: Lint the recipe's bash explicitly**
+
+`just lint-shell` globs `scripts/` only and the shellcheck/shfmt pre-commit hooks match
+`*.sh` — neither lints an inline justfile recipe. So extract the `test-live-stack` recipe
+body (everything after the `#!/usr/bin/env bash` shebang line) to a temp file and lint it
+the same way the project lints scripts:
+
 ```bash
-just --dump --dump-format just >/dev/null   # parse-check the justfile
+tmp="$(mktemp --suffix=.sh)"
+cat > "$tmp" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+rc=0
+uv run python -m pytest -m live_stack --strict-markers -q || rc=$?
+if [[ "$rc" -eq 5 ]]; then
+  echo "no live_stack tests collected — skipping cleanly (stack/fixtures or marked suite absent)"
+  exit 0
+fi
+exit "$rc"
+EOF
+shellcheck "$tmp" && shfmt -i 2 -d "$tmp" && echo "recipe bash clean"
+rm -f "$tmp"
 ```
-Then extract-and-check the bash recipe is clean (shfmt 2-space, shellcheck SC clean). Since the recipe lives in the justfile, verify by reading it: `set -euo pipefail` present, `rc` quoted, no unquoted expansions.
-Expected: justfile parses; no shellcheck-class issues in the recipe.
 
-- [ ] **Step 5: Commit**
+Expected: `shellcheck` reports no issues; `shfmt -d` prints no diff; `recipe bash clean`.
+If `shfmt -d` shows a diff, reconcile the justfile recipe to the 2-space form so the
+committed recipe matches what shfmt would produce.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add justfile
 git commit -m "feat: add stack-up and test-live-stack recipes"
 ```
+
+> **Unverified assumption (record, don't silently rely):** `docker compose up -d --wait`
+> waits for `running|healthy`. `minio-init` is a one-shot that exits 0; on some compose
+> versions `--wait` can report a run-to-completion service as not-running. This worktree
+> cannot confirm `stack-up` returns 0 end-to-end because the pinned
+> `mock-oauth2-server:3.1.4` image 404s on ghcr.io (spec "Known risk"). So `stack-up`'s
+> `--wait`/`minio-init` interaction is **unverified until run on a host with pullable
+> images**; the runbook must state this and the first operator confirms it. It does not
+> block this issue's acceptance (the clean-skip path needs no containers).
 
 ---
 
