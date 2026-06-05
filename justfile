@@ -97,7 +97,7 @@ audit:
 set-version VERSION:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ ! "{{VERSION}}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    if [[ ! "{{VERSION}}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
       echo "VERSION must be MAJOR.MINOR.PATCH, got '{{VERSION}}'" >&2
       exit 1
     fi
@@ -116,7 +116,7 @@ release VERSION:
     [[ "$(git branch --show-current)" == "main" ]] || { echo "not on main" >&2; exit 1; }
     [[ -z "$(git status --porcelain)" ]] || { echo "working tree not clean" >&2; exit 1; }
     git fetch --quiet origin main
-    [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || { echo "behind origin/main" >&2; exit 1; }
+    [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || { echo "HEAD is not at origin/main (behind, ahead, or diverged) — sync first" >&2; exit 1; }
     current="$(uv version --short)"
     [[ "$current" == "{{VERSION}}" ]] || { echo "pyproject version $current != {{VERSION}}" >&2; exit 1; }
     git tag -a "v{{VERSION}}" -m "Release v{{VERSION}}"
