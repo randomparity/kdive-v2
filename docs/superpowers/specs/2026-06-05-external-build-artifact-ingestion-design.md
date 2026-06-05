@@ -7,8 +7,9 @@
   without first solving server-side kernel builds.
 - **Depends on:** the Build plane (#18, [ADR-0029](../../adr/0029-build-plane-local-make.md)
   — the `BuildProfile`, `Run`/`run_steps` ledger, and `BuildOutput` contract this reuses),
-  the object-store client ([ADR-0028](../../adr/0028-object-store-client.md)), and the
-  Investigation/Run lifecycle (#17, the `runs.*` surface).
+  the object store ([ADR-0017](../../adr/0017-object-store-client-interface.md) /
+  [ADR-0013](../../adr/0013-object-store-layout-retention.md)), and the Investigation/Run
+  lifecycle (#17, the `runs.*` surface).
 - **ADR:** [ADR-0048](../../adr/0048-external-build-artifact-ingestion.md) (the decisions
   this spec settles).
 
@@ -33,9 +34,15 @@ In scope:
 - `src/kdive/store/objectstore.py` — `presign_put(key, *, sha256, size_bytes, expires_in)`
   (signs the checksum + content-length conditions), `head(key)` (existence + size + checksum
   metadata), and `list(prefix)` + `delete(key)` for the reaper.
-- `src/kdive/profiles/build.py` — `BuildProfile.source: Literal["server", "external"]`
-  (default `"server"`) plus the external manifest fields (declared artifact set, cmdline,
-  rootfs reference).
+- `src/kdive/profiles/build.py` — make `BuildProfile` a **`source`-discriminated** schema.
+  `BuildProfile` today is `extra="forbid", frozen=True` with required `kernel_source_ref` +
+  `config_ref` (source-tree fields a local build does not have), so a flat field addition
+  won't fit. Split by `source`: the `server` variant keeps `kernel_source_ref`/`config_ref`
+  (+ optional `patch_ref`); the `external` variant requires none of them (the discriminator
+  `source: external` is enough). `parse` dispatches on `source` (default `server`, preserving
+  existing documents). The artifact manifest is declared at `create_upload` (§4) and the
+  `cmdline` at `complete_build` (§4) — neither lives in the profile — and the rootfs stays on
+  the provisioning profile (§3).
 - `src/kdive/mcp/tools/artifacts.py` — `artifacts.create_upload` (mint a presigned PUT per
   declared artifact under an owner's deterministic keys; owner is a Run for build
   artifacts or a System for a rootfs).
@@ -48,9 +55,12 @@ In scope:
   disk *attach* is otherwise unchanged.
 - `src/kdive/providers/local_libvirt/build.py` — `validate_external_artifacts(...)`,
   reusing `parse_gnu_build_id` (shape checks + the ranged `build_id` extraction).
-- the reconciler (ADR-0021) — an owner-agnostic reaper that deletes manifest-keyed objects
-  for an owner (a `created` Run or a `defined`/never-provisioned System) past the upload
-  deadline. No `artifacts`-row state change (the row stays write-once).
+- `src/kdive/db/` (migration) — owner-scoped upload-manifest storage (the declared
+  `(name, sha256, size_bytes)` set + deadline written at `create_upload`); no change to the
+  write-once `artifacts` row shape.
+- the reconciler (ADR-0021) — an owner-agnostic reaper that prefix-lists an owner's objects
+  (a `created` Run or a `defined`/never-provisioned System) and deletes the uncommitted ones
+  past the upload deadline (§6). No `artifacts`-row state change (the row stays write-once).
 - A ported rootfs catalog (`catalog`-kind references), from v1
   `src/kdive/rootfs/catalog_data.json`.
 
@@ -101,8 +111,8 @@ Settled properties:
   `LibvirtProfile.rootfs_image_ref`, extended to resolve a source kind — `upload` (an
   uploaded qcow2 object key from a System-owned `create_upload`), `url` (an external URL +
   declared `sha256`), or `catalog` (a name resolved against the ported catalog). The build
-  artifacts (kernel/initrd/vmlinux/cmdline) belong to the Run; the rootfs belongs to the
-  System and is attached by the existing provisioning plane.
+  artifacts (kernel/initrd/vmlinux) and the `cmdline` belong to the Run; the rootfs belongs
+  to the System and is attached by the existing provisioning plane.
 
 ## 4. Tool surface
 
@@ -131,13 +141,20 @@ out: ToolResponse{ uploads: [{ name, key, upload_url, expires_in }],
   or length does not match — so the cap and the integrity pin do not depend on the client
   behaving. (MinIO presigned-PUT checksum enforcement is the `live_stack`-tested assumption.)
 - `create_upload` **persists the declared manifest** — per artifact `(name, sha256,
-  size_bytes)`, plus an upload-deadline timestamp — as owner state. The manifest is both the
-  reference value `complete_build` compares the stored object's checksum against and the
-  reaper's record of minted keys (§6 orphan lifecycle). No `artifacts` row is written yet —
-  the row stays write-once and is created at `complete_build`. `size_bytes` over a
-  configurable cap is rejected before a URL is minted.
-- Idempotent: re-calling re-mints (short-TTL) URLs and rewrites the manifest for the same
-  keys.
+  size_bytes)`, plus an upload-deadline timestamp — in owner-scoped mutable state (a
+  dedicated upload-manifest column/row keyed by owner), **not** the immutable `build_profile`.
+  The manifest holds the **checksum reference values** `complete_build` compares each stored
+  object against, and the **deadline** the reaper keys off (the reaper itself lists by
+  prefix, not from the manifest — §6). No `artifacts` row is written yet — the row stays
+  write-once and is created at `complete_build`. `size_bytes` over a configurable cap is
+  rejected before a URL is minted.
+- **Manifest semantics: one call, full set.** A `create_upload` call **replaces** the
+  owner's manifest with the declared set — the agent declares all of an owner's artifacts in
+  a single call. Re-calling is therefore idempotent (re-mints short-TTL URLs, rewrites the
+  same manifest) and also the way to correct a declaration before finalize; it is **not** a
+  way to add artifacts incrementally (a second call with a narrower set drops the others
+  from the manifest, and their objects become uncommitted — prefix-reaped on abandon). The
+  kernel-required check (§5) reads this single authoritative manifest.
 
 ### `runs.complete_build`
 
@@ -156,12 +173,25 @@ out: ToolResponse{ run_id, status: "succeeded",
   lock — the same finalize path as `_finalize_build`, fed by uploads. The rootfs is **not** an input here; it was bound to the System at
   provisioning. `suggested_next_actions` is `runs.get` because the System is already `ready`
   — the next real action (install/boot) is the following spec's tool.
-- Idempotent via the existing `run_steps` `ON CONFLICT (run_id, step) DO NOTHING` plus the
-  `_existing_build_result` short-read: a second `complete_build` is a no-op success.
+- Idempotent, and the order is load-bearing: `complete_build` **first** consults the
+  `run_steps` `_existing_build_result` short-read and returns the recorded success if the
+  build step is already finalized — **before** applying the `CREATED`/`source` state guard
+  (§6). So a retry after a dropped connection (the Run is now `succeeded`, not `CREATED`)
+  returns the prior success, not an illegal-transition/`configuration_error`. Only a Run with
+  no finalized build step reaches the guard. The write-once `artifacts` rows are likewise
+  written under the short-read, so a retry never double-inserts. (This mirrors how the server
+  lane's `_finalize_build` short-read shields a re-dispatched job.)
 
 ## 5. Validation & integrity
 
-At `complete_build`, per declared Run artifact (kernel/initrd/vmlinux):
+At `complete_build`:
+
+- **Required set** — a `kernel` artifact must be present in the manifest and uploaded
+  (`HEAD` hit); a `complete_build` with no `kernel` → `configuration_error` (the install
+  plane reads `kernel_ref` as mandatory). `initrd`/`vmlinux` are optional. This is the one
+  invariant that gates finalize regardless of what the agent declared.
+
+Then, per declared Run artifact (kernel/initrd/vmlinux):
 
 - **Existence + size** — object-store `HEAD`; a missing object → `configuration_error`
   naming `artifacts.create_upload` (an upload was skipped or failed).
@@ -174,7 +204,8 @@ At `complete_build`, per declared Run artifact (kernel/initrd/vmlinux):
   `build_id` is checked against the uploaded file by extracting its `.note.gnu.build-id`
   server-side **without a full download** — read the ELF header (`e_shoff`), then the
   section header table, then the note section (a few byte-range GETs feeding the existing
-  `parse_gnu_build_id`). A mismatch → `validation_failure`. This guards against silently
+  `parse_gnu_build_id`). A mismatch → `build_failure` (a defective uploaded build, the same
+  category ADR-0029 uses for a server build with no build-id). This guards against silently
   *mispaired* symbols (the debug plane decoding a vmcore against the wrong symbol table —
   plausible-looking garbage). Full-artifact `objcopy` re-derivation stays deferred to a
   plane that downloads the `vmlinux` anyway.
@@ -203,11 +234,12 @@ name against the ported catalog (real, checksummed entries).
   `complete_build`), so the reaper never deletes live input — only true orphans. Prefix
   listing (not the manifest's current key-list) is immune to a re-mint that dropped a
   declared name. The deadline is a fixed TTL stamped on the manifest at mint time.
-- **Error taxonomy** (existing `ErrorCategory`, no new strings) — missing upload →
-  `configuration_error`; checksum/magic/`build_id` mismatch → `validation_failure` if defined
-  for the surface, else `configuration_error`; presign/object-store failure →
-  `infrastructure_failure`. Every failure envelope carries `error_category`, enforced at
-  `ToolResponse` construction.
+- **Error taxonomy** (existing `ErrorCategory`, no new strings) — missing/skipped upload →
+  `configuration_error` (an input the agent didn't provide); a defective uploaded artifact
+  (checksum/size mismatch vs. manifest, bad ELF/bzImage magic, `build_id` mismatch) →
+  `build_failure` (matching ADR-0029's defective-build categorization); presign/object-store
+  failure → `infrastructure_failure`. Every failure envelope carries `error_category`,
+  enforced at `ToolResponse` construction.
 - **Concurrency** — `complete_build` holds the per-Run advisory lock, like
   `_build_locked`/`_finalize_build`, so concurrent completes serialize to a single ledger
   row.
