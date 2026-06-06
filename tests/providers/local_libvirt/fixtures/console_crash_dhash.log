@@ -1,0 +1,11 @@
+[    0.000000] Linux version 7.0.0 (kdive@demo) #1 SMP PREEMPT_DYNAMIC
+[    0.000000] Command line: console=ttyS0 dhash_entries=1
+[    0.512345] Dentry cache hash table entries: 1 (order: 0, 8 bytes, linear)
+[    1.004221] Run /sbin/init as init process
+[   22.103442] watchdog: BUG: soft lockup - CPU#0 stuck for 22s! [systemd-udevd:142]
+[   22.103442] CPU: 0 PID: 142 Comm: systemd-udevd Not tainted 7.0.0 #1
+[   22.103442] Call Trace:
+[   22.103442]  __d_lookup+0x4a/0x120
+[   22.103442]  d_lookup+0x35/0x70
+[   22.103442]  lookup_fast+0x6c/0x150
+[   22.103442]  walk_component+0x2b/0x180

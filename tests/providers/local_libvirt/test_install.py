@@ -18,6 +18,7 @@ from kdive.providers.local_libvirt.install import (
     LocalLibvirtInstall,
     ReadinessResult,
     _stage_object,
+    classify_console,
 )
 from kdive.store.objectstore import FetchedArtifact
 from tests.providers.local_libvirt.conftest import FakeDomain, FakeLibvirtConn
@@ -406,8 +407,91 @@ def test_live_vm_real_install_boot() -> None:  # pragma: no cover - live_vm
     import shutil
 
     uri = os.environ.get("KDIVE_LIBVIRT_URI")
-    if not uri or not shutil.which("virsh"):
-        pytest.skip("KDIVE_LIBVIRT_URI or virsh unavailable")
-    # The real redefine + power-cycle + readiness preflight runs against the operator-provided
-    # libvirt host; wired by the live_vm runner as part of the #19 gated suite.
-    raise NotImplementedError("live_vm real install/boot harness wired by the live_vm runner")
+    system_id = os.environ.get("KDIVE_LIVE_VM_SYSTEM_ID")
+    if not uri or not shutil.which("virsh") or not system_id:
+        pytest.skip("KDIVE_LIBVIRT_URI, virsh, or KDIVE_LIVE_VM_SYSTEM_ID unavailable")
+    # The operator points KDIVE_LIVE_VM_SYSTEM_ID at a System already provisioned + installed
+    # with a kdive-ready rootfs (epic #123 build/install harness). boot() power-cycles it and
+    # drives the real _real_readiness console probe; a clean kdive-ready boot resolves without
+    # raising. The vulnerable-vs-fixed A/B is exercised host-free by the committed crash/clean
+    # fixtures (test_*_fixture_classifies_*) and end-to-end by the #123 integration harness.
+    booter = LocalLibvirtInstall.from_env()
+    booter.boot(UUID(system_id))  # no raise == readiness resolved ok at the marker
+
+
+# --- classify_console: the pure readiness verdict core (ADR-0055) --------------------
+
+_MARKER = "kdive-ready"
+
+
+@pytest.mark.parametrize(
+    "signature_line",
+    [
+        "[   22.10] Kernel panic - not syncing: Attempted to kill init!",
+        "[   22.10] watchdog: BUG: soft lockup - CPU#0 stuck for 22s! [udevd:142]",
+        "[   22.10] Oops: 0000 [#1] PREEMPT SMP",
+        "[   22.10] general protection fault: 0000 [#1] SMP",
+        "[   22.10] Unable to handle kernel paging request at virtual address 0",
+        "[   22.10] BUG: KASAN: slab-out-of-bounds in __d_lookup+0x1a/0x2b",
+        "[   22.10] BUG: KFENCE: use-after-free read in d_lookup",
+        "[   22.10] rcu: INFO: rcu_sched self-detected stall on CPU",
+    ],
+)
+def test_classify_crash_signatures_resolve_crashed(signature_line: str) -> None:
+    data = f"[    0.00] booting\n{signature_line}\n  __d_lookup+0x1a\n".encode()
+    assert classify_console(data, marker=_MARKER) == "crashed"
+
+
+def test_classify_marker_line_alone_is_ready() -> None:
+    data = b"[    0.00] booting\n[    3.40] systemd: reached target\nkdive-ready\n"
+    assert classify_console(data, marker=_MARKER) == "ready"
+
+
+def test_classify_empty_is_pending() -> None:
+    assert classify_console(b"", marker=_MARKER) == "pending"
+
+
+def test_classify_no_marker_no_crash_is_pending() -> None:
+    data = b"[    0.00] Linux version 7.0.0\n[    1.10] still booting\n"
+    assert classify_console(data, marker=_MARKER) == "pending"
+
+
+def test_classify_debug_substring_is_not_a_crash() -> None:
+    # `(?<![A-Za-z])BUG:` must not match `DEBUG:` (no false crash on a benign line).
+    data = b"[    1.0] app DEBUG: initializing the readiness subsystem\nkdive-ready\n"
+    assert classify_console(data, marker=_MARKER) == "ready"
+
+
+def test_classify_crash_before_marker_wins() -> None:
+    data = b"[    1.0] Kernel panic - not syncing\n[    2.0] late\nkdive-ready\n"
+    assert classify_console(data, marker=_MARKER) == "crashed"
+
+
+def test_classify_signature_after_marker_stays_ready() -> None:
+    # Pre-marker scoping: a signature *after* the marker line does not flip a healthy boot.
+    data = b"kdive-ready\n[    4.0] some-daemon: BUG: benign post-marker chatter\n"
+    assert classify_console(data, marker=_MARKER) == "ready"
+
+
+def test_classify_systemd_unit_line_is_not_the_marker() -> None:
+    # Whole-line match: `Starting kdive-ready.service` contains the substring but is not the signal.
+    data = b"[    3.2] systemd[1]: Starting kdive-ready.service - KDIVE marker...\n"
+    assert classify_console(data, marker=_MARKER) == "pending"
+
+
+def test_classify_malformed_utf8_does_not_raise() -> None:
+    data = b"\xff\xfe partial \x80 bytes, still booting\n"
+    assert classify_console(data, marker=_MARKER) == "pending"
+
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_crash_fixture_classifies_crashed() -> None:
+    data = (_FIXTURES / "console_crash_dhash.log").read_bytes()
+    assert classify_console(data) == "crashed"
+
+
+def test_clean_fixture_classifies_ready() -> None:
+    data = (_FIXTURES / "console_clean_ready.log").read_bytes()
+    assert classify_console(data) == "ready"

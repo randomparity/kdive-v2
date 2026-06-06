@@ -27,10 +27,11 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import xml.etree.ElementTree as ET  # noqa: S405 - constructs/edits self-owned domain XML only
 from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple, Protocol
+from typing import Literal, NamedTuple, Protocol
 from uuid import UUID
 
 import libvirt
@@ -49,6 +50,27 @@ _DEFAULT_URI = "qemu:///system"
 _STAGING_ENV = "KDIVE_INSTALL_STAGING"
 _DEFAULT_STAGING = "/var/lib/kdive/install"
 _DEFAULT_BOOT_WINDOW_POLLS = 30
+# The boot window is _DEFAULT_BOOT_WINDOW_POLLS × _POLL_INTERVAL_SECONDS = 150s (ADR-0055 §7):
+# boot()._await_ready loops the poll count; _real_readiness owns the per-poll cadence.
+_POLL_INTERVAL_SECONDS = 5.0
+_DOMSTATE_PROBE_TIMEOUT = 10
+_TERMINAL_DOMSTATES = frozenset({"shut off", "crashed"})
+
+_READINESS_MARKER = "kdive-ready"
+# Fatal/stall-grade kernel crash signatures (ADR-0055 §4). Fail-closed and additive.
+# The lookbehinds keep `BUG:`/`Oops:` from matching benign substrings (e.g. `DEBUG:`).
+_CRASH_SIGNATURE = re.compile(
+    r"Kernel panic"
+    r"|(?<![A-Za-z])BUG:"
+    r"|(?<![A-Za-z])Oops:"
+    r"|general protection fault"
+    r"|[Uu]nable to handle kernel"
+    r"|KASAN:"
+    r"|KFENCE:"
+    r"|detected stall"
+)
+
+ConsoleVerdict = Literal["ready", "crashed", "pending"]
 
 
 class ReadinessResult(NamedTuple):
@@ -333,6 +355,29 @@ def read_console_log(path: Path) -> bytes:
         return b""
 
 
+def classify_console(data: bytes, *, marker: str = _READINESS_MARKER) -> ConsoleVerdict:
+    """Classify a console capture: did the System reach the marker, crash, or neither?
+
+    The marker is matched as a whole line — the readiness unit echoes the bare line
+    ``kdive-ready`` to the console, while systemd's ``Starting kdive-ready.service`` line
+    (same substring) is not the signal (ADR-0055 §3). A crash signature (§4) in the
+    pre-marker region wins (crash-wins, fail-closed). Bytes are decoded utf-8 with
+    ``errors="replace"`` so a partial multibyte tail or non-UTF-8 console never raises.
+
+    Returns:
+        ``"crashed"`` if a crash signature precedes the marker (or the marker is absent),
+        ``"ready"`` if a bare marker line is present with no crash before it, else
+        ``"pending"``.
+    """
+    text = data.decode("utf-8", errors="replace")
+    marker_re = re.compile(rf"^[^\S\n]*{re.escape(marker)}[^\S\n]*$", re.MULTILINE)
+    marker_match = marker_re.search(text)
+    region = text if marker_match is None else text[: marker_match.start()]
+    if _CRASH_SIGNATURE.search(region):
+        return "crashed"
+    return "ready" if marker_match is not None else "pending"
+
+
 class _ObjectReader(Protocol):
     def get_artifact(self, key: str, etag: str | None) -> FetchedArtifact: ...
 
@@ -388,4 +433,11 @@ def _real_readiness(system_id: UUID) -> ReadinessResult:  # pragma: no cover - l
     )
 
 
-__all__ = ["Booter", "Installer", "LocalLibvirtInstall", "ReadinessResult", "read_console_log"]
+__all__ = [
+    "Booter",
+    "Installer",
+    "LocalLibvirtInstall",
+    "ReadinessResult",
+    "classify_console",
+    "read_console_log",
+]
