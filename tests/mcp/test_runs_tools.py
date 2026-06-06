@@ -1872,6 +1872,41 @@ def test_install_handler_no_initrd_when_ledger_initrd_blank(migrated_url: str) -
     asyncio.run(_run())
 
 
+def test_install_handler_forwards_ledger_cmdline_to_installer(migrated_url: str) -> None:
+    """The dhash_entries=1 trigger recorded in the build ledger reaches install() (#128)."""
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(
+                pool, build_profile={**_VALID_BUILD, "cmdline": "console=ttyS0 dhash_entries=1"}
+            )  # bare System => console method, cmdline migrated into the build ledger
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _FakeInstaller()
+            async with pool.connection() as conn:
+                await runs_tools.install_handler(conn, job, installer)
+        assert installer.calls[0][3] == "console=ttyS0 dhash_entries=1"
+
+    asyncio.run(_run())
+
+
+def test_install_handler_forwards_default_cmdline_when_ledger_has_none(migrated_url: str) -> None:
+    """A succeeded run with no ledger cmdline installs the method default, not a stale value."""
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(
+                pool,
+                build_profile=copy.deepcopy(_VALID_BUILD),  # no cmdline key
+            )
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _FakeInstaller()
+            async with pool.connection() as conn:
+                await runs_tools.install_handler(conn, job, installer)
+        assert installer.calls[0][3] == "console=ttyS0"  # _NONKDUMP_DEFAULT_CMDLINE
+
+    asyncio.run(_run())
+
+
 @pytest.mark.parametrize(
     "cmdline",
     ["console=ttyS0 dhash_entries=1 panic_on_oops=1", "console=ttyS0"],
