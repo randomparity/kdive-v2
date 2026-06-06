@@ -23,6 +23,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple, Protocol
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from kdive.db.upload_manifest import ManifestEntry
@@ -281,6 +282,40 @@ def _real_read_build_id(workspace: Path) -> str:  # pragma: no cover - live_vm
         )
         notes = Path(note_file.name).read_bytes()
     return parse_gnu_build_id(notes)
+
+
+def _ref_error(kind: str, message: str) -> CategorizedError:
+    """A ``CONFIGURATION_ERROR`` for a bad ref; ``details`` names the field, never its value."""
+    return CategorizedError(
+        message, category=ErrorCategory.CONFIGURATION_ERROR, details={"kind": kind}
+    )
+
+
+def _resolve_local_ref(ref: str, *, kind: str) -> Path:
+    """Resolve a build-profile ref (``config_ref``/``patch_ref``) to an existing local file.
+
+    Accepts a ``file:///abs/path`` URL (empty authority) or a bare absolute path; rejects a
+    non-local scheme, a ``file://`` URL with a host, a non-absolute path, or a path that is
+    not an existing regular file. The submitted ref value is never echoed in the error.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` (``details={"kind": kind}``) for any
+            unsupported or unresolvable reference.
+    """
+    parts = urlsplit(ref)
+    if parts.scheme == "file":
+        if parts.netloc:
+            raise _ref_error(kind, "config/patch ref must be a local file:// URL (no host)")
+        path = Path(parts.path)
+    elif parts.scheme == "":
+        path = Path(ref)
+    else:
+        raise _ref_error(kind, "config/patch ref scheme is not a local reference")
+    if not path.is_absolute():
+        raise _ref_error(kind, "config/patch ref must be an absolute path")
+    if not path.is_file():
+        raise _ref_error(kind, "config/patch ref does not resolve to a readable file")
+    return path
 
 
 class _ValidatorStore(Protocol):

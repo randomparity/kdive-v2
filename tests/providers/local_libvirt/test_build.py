@@ -16,6 +16,7 @@ from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.providers.local_libvirt.build import (
     LocalLibvirtBuild,
+    _resolve_local_ref,
     parse_gnu_build_id,
 )
 from kdive.store.objectstore import StoredArtifact
@@ -265,3 +266,56 @@ def test_live_vm_real_make_build_id_matches_readelf() -> None:  # pragma: no cov
     # extracted build-id equals `readelf -n vmlinux` lives here so extraction is tested
     # against a real ELF. Implemented as part of the live_vm gated suite (#18).
     raise NotImplementedError("live_vm real-make harness wired by the live_vm runner")
+
+
+# --- _resolve_local_ref -------------------------------------------------------------
+
+
+def test_resolve_local_ref_file_url(tmp_path: Path) -> None:
+    target = tmp_path / "x.config"
+    target.write_text("CONFIG_X=y\n")
+    assert _resolve_local_ref(f"file://{target}", kind="config_ref") == target
+
+
+def test_resolve_local_ref_bare_absolute_path(tmp_path: Path) -> None:
+    target = tmp_path / "x.config"
+    target.write_text("CONFIG_X=y\n")
+    assert _resolve_local_ref(str(target), kind="config_ref") == target
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "https://example.com/x.config",
+        "git+https://example.com/x#v1",
+        "s3://bucket/x.config",
+    ],
+)
+def test_resolve_local_ref_rejects_non_local_scheme(ref: str) -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _resolve_local_ref(ref, kind="config_ref")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_resolve_local_ref_rejects_file_url_with_netloc() -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _resolve_local_ref("file://host/path/x.config", kind="config_ref")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_resolve_local_ref_rejects_relative_path() -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _resolve_local_ref("configs/x.config", kind="config_ref")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_resolve_local_ref_rejects_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _resolve_local_ref(str(tmp_path / "absent.config"), kind="config_ref")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_resolve_local_ref_rejects_directory(tmp_path: Path) -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _resolve_local_ref(str(tmp_path), kind="config_ref")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
