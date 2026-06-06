@@ -83,3 +83,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0051](0051-install-method-conditional-crashkernel.md) | Install-time capture-method resolution + method-conditional crashkernel gate (refines 0049/0030, closes #116) | Proposed |
 | [0052](0052-bootable-rootfs-image-builder.md) | Bootable kdive-ready rootfs builder: whole-disk-ext4 layout + managed SSH key (G3, closes #124) | Proposed |
 | [0053](0053-build-checkout-seam.md) | Build checkout seam: warm-tree rsync + local config/patch refs (G1, closes #125) | Proposed |
+| [0054](0054-object-store-unconditional-read.md) | Object-store unconditional read for system-produced keys (G2, closes #126) | Proposed |

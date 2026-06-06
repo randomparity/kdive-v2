@@ -140,9 +140,13 @@ the command line:
    object store to a **per-Run** host-local staging path libvirt can read — keyed
    `…/{system_id}/{run_id}/{kernel,initrd}`, so a later Run on the same System stages to
    a distinct path and the redefine references *this* Run's kernel (never a stale
-   overwrite of another Run's file). The fetch writes to a temp file and renames into
-   place, so a fetch that fails partway leaves no partial file the redefine could point
-   at. It then `defineXML`s the domain with the direct-kernel `<os>` (`<kernel>`,
+   overwrite of another Run's file). The key is the Run's own freshly-written
+   `kernel_ref` (no client etag handle), so the fetch reads the object **unconditionally**
+   (`get_artifact(ref, None)`, ADR-0054) rather than the client-serving conditional GET;
+   a vanished key still surfaces as `stale_handle` via the 404 mapping. The fetch writes
+   to a temp file and renames into place, so a fetch that fails partway leaves no partial
+   file the redefine could point at. It then `defineXML`s the domain with the
+   direct-kernel `<os>` (`<kernel>`,
    `<initrd>`, `<cmdline>`) referencing that per-Run path. The redefine is idempotent
    (libvirt `defineXML` overwrites the persistent config); the `run_steps('install')`
    ledger makes the *handler body* replay-safe so a succeeded re-dispatch re-fetches
