@@ -2,6 +2,17 @@
 
 # `systems` tools
 
+## `systems.define`
+
+`implemented`
+
+Create a System in 'defined' for a granted Allocation (upload window). Operator only.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `allocation_id` | `string` | yes | Granted Allocation to create a DEFINED System for. |
+| `profile` | `object` | yes | Provisioning profile for the System; an 'upload' rootfs opens a pre-provision rootfs-upload window. |
+
 ## `systems.get`
 
 `implemented` · `read-only`

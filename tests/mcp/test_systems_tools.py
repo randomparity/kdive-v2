@@ -40,7 +40,7 @@ from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     register_local_libvirt_resource,
 )
-from kdive.security.rbac import Role
+from kdive.security.rbac import AuthorizationError, Role
 from kdive.store.objectstore import ObjectStore, artifact_key
 from tests.providers.local_libvirt.conftest import FakeLibvirtConn
 
@@ -1380,6 +1380,119 @@ def test_reprovision_rejects_upload_rootfs(migrated_url: str) -> None:
             resp = await systems_tools.reprovision_system(
                 pool, _ctx(), system_id=sys_id, profile=profile
             )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+# --- systems.define ------------------------------------------------------------------------
+
+
+async def _define(pool: AsyncConnectionPool, ctx: RequestContext, alloc_id: str, profile):
+    return await systems_tools.define_system(pool, ctx, allocation_id=alloc_id, profile=profile)
+
+
+def test_define_inserts_defined_system_and_activates_allocation(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await _define(pool, _ctx(), alloc_id, _upload_profile())
+            assert resp.status == "defined"
+            assert resp.suggested_next_actions == ["artifacts.create_upload", "systems.provision"]
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state, allocation_id FROM systems")
+                sys_row = await cur.fetchone()
+                await cur.execute("SELECT state FROM allocations WHERE id = %s", (alloc_id,))
+                alloc_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM audit_log WHERE transition IN "
+                    "('->defined', 'granted->active')"
+                )
+                audit_row = await cur.fetchone()
+        assert sys_row is not None and sys_row["state"] == "defined"
+        assert str(sys_row["allocation_id"]) == alloc_id
+        assert alloc_row is not None and alloc_row["state"] == "active"
+        assert audit_row is not None and audit_row["n"] == 2
+
+    asyncio.run(_run())
+
+
+def test_define_is_idempotent(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            first = await _define(pool, _ctx(), alloc_id, _upload_profile())
+            second = await _define(pool, _ctx(), alloc_id, _upload_profile())
+            assert first.object_id == second.object_id
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+                await cur.execute("SELECT state FROM allocations WHERE id = %s", (alloc_id,))
+                alloc_row = await cur.fetchone()
+        assert sys_n is not None and sys_n["n"] == 1  # one System
+        assert alloc_row is not None and alloc_row["state"] == "active"  # not re-flipped
+
+    asyncio.run(_run())
+
+
+def test_define_non_granted_allocation_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            async with pool.connection() as conn:
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.RELEASING)
+            resp = await _define(pool, _ctx(), alloc_id, _upload_profile())
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == "releasing"
+
+    asyncio.run(_run())
+
+
+def test_define_existing_non_defined_system_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            await _seed_system(pool, alloc_id, SystemState.READY)
+            resp = await _define(pool, _ctx(), alloc_id, _upload_profile())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == "ready"
+        assert sys_n is not None and sys_n["n"] == 1  # no second System minted
+
+    asyncio.run(_run())
+
+
+def test_define_over_quota_is_quota_exceeded(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool, systems_quota=0)
+            resp = await _define(pool, _ctx(), alloc_id, _upload_profile())
+        assert resp.status == "error"
+        assert resp.error_category == "quota_exceeded"
+
+    asyncio.run(_run())
+
+
+def test_define_requires_operator(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            with pytest.raises(AuthorizationError):
+                await _define(pool, _ctx(role=None), alloc_id, _upload_profile())
+
+    asyncio.run(_run())
+
+
+def test_define_foreign_allocation_is_not_found(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await _define(pool, _ctx(projects=("other",)), alloc_id, _upload_profile())
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
 

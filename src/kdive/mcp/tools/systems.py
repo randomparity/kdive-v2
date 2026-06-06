@@ -96,6 +96,16 @@ def _envelope_for_system(system: System) -> ToolResponse:
     )
 
 
+def _defined_envelope(system: System) -> ToolResponse:
+    """Render a freshly-defined System: status ``defined``, pointing at the upload window."""
+    return ToolResponse.success(
+        str(system.id),
+        SystemState.DEFINED.value,
+        suggested_next_actions=["artifacts.create_upload", "systems.provision"],
+        data={"project": system.project},
+    )
+
+
 async def get_system(
     pool: AsyncConnectionPool, ctx: RequestContext, system_id: str
 ) -> ToolResponse:
@@ -330,6 +340,110 @@ async def _provision_locked(
             f"{alloc_id}:provision",
         )
         return _system_job_envelope(job, system.id)
+
+
+async def define_system(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    allocation_id: str,
+    profile: dict[str, Any],
+) -> ToolResponse:
+    """Create a System in ``defined`` for a ``granted`` Allocation (ADR-0025 decision 10).
+
+    The create-without-provision producer: it opens the rootfs-upload window (ADR-0048 §5).
+    Validates the profile (``upload`` rootfs is admitted here — this is the one tool that
+    opens an upload window), then under the per-allocation lock inserts the System at
+    ``defined`` and flips the Allocation ``granted -> active``. Operator only. Returns a
+    System envelope (no job — define does no provider work).
+    """
+    uid = _as_uuid(allocation_id)
+    if uid is None:
+        return _config_error(allocation_id)
+    try:
+        parsed = ProvisioningProfile.parse(profile)
+        validate_profile(parsed)
+    except CategorizedError as exc:
+        return ToolResponse.failure(allocation_id, exc.category)
+    with bind_context(principal=ctx.principal):
+        try:
+            return await _define_locked(pool, ctx, uid, parsed)
+        except IllegalTransition:
+            async with pool.connection() as conn:
+                latest = await ALLOCATIONS.get(conn, uid)
+            data = {"current_status": latest.state.value} if latest else {}
+            return _config_error(allocation_id, data=data)
+
+
+async def _define_locked(
+    pool: AsyncConnectionPool, ctx: RequestContext, alloc_id: UUID, profile: ProvisioningProfile
+) -> ToolResponse:
+    """Insert a ``defined`` System and flip the Allocation active, under PROJECT->ALLOCATION."""
+    async with pool.connection() as probe:
+        probe_alloc = await ALLOCATIONS.get(probe, alloc_id)
+    if probe_alloc is None or probe_alloc.project not in ctx.projects:
+        return _config_error(str(alloc_id))
+    project = probe_alloc.project
+    async with (
+        pool.connection() as conn,
+        conn.transaction(),
+        advisory_xact_lock(conn, LockScope.PROJECT, project),
+        advisory_xact_lock(conn, LockScope.ALLOCATION, alloc_id),
+    ):
+        alloc = await ALLOCATIONS.get(conn, alloc_id)
+        if alloc is None or alloc.project not in ctx.projects:
+            return _config_error(str(alloc_id))
+        require_role(ctx, alloc.project, Role.OPERATOR)
+        existing = await _find_system_for_allocation(conn, alloc_id)
+        if existing is not None:
+            if existing.state is SystemState.DEFINED:
+                return _defined_envelope(existing)  # idempotent re-define
+            return _config_error(str(existing.id), data={"current_status": existing.state.value})
+        if alloc.state is not AllocationState.GRANTED:
+            return _config_error(str(alloc_id), data={"current_status": alloc.state.value})
+        if not await _within_system_quota(conn, alloc.project):
+            return ToolResponse.failure(
+                str(alloc_id),
+                ErrorCategory.QUOTA_EXCEEDED,
+                suggested_next_actions=["systems.get", "allocations.list"],
+            )
+        now = datetime.now(UTC)  # placeholder; the DB sets created_at/updated_at
+        system = await SYSTEMS.insert(
+            conn,
+            System(
+                id=uuid4(),
+                created_at=now,
+                updated_at=now,
+                principal=ctx.principal,
+                agent_session=ctx.agent_session,
+                project=alloc.project,
+                allocation_id=alloc_id,
+                state=SystemState.DEFINED,
+                provisioning_profile=profile.model_dump(by_alias=True),
+            ),
+        )
+        await audit.record(
+            conn,
+            ctx,
+            tool="systems.define",
+            object_kind="systems",
+            object_id=system.id,
+            transition="->defined",
+            args={"allocation_id": str(alloc_id)},
+            project=alloc.project,
+        )
+        await ALLOCATIONS.update_state(conn, alloc_id, AllocationState.ACTIVE)
+        await audit.record(
+            conn,
+            ctx,
+            tool="systems.define",
+            object_kind="allocations",
+            object_id=alloc_id,
+            transition="granted->active",
+            args={"allocation_id": str(alloc_id)},
+            project=alloc.project,
+        )
+        return _defined_envelope(system)
 
 
 async def _commit_uploaded_rootfs(
@@ -728,6 +842,28 @@ async def teardown_handler(
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `systems.*` tools on ``app``, bound to ``pool``."""
+
+    @app.tool(
+        name="systems.define",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "implemented"},
+    )
+    async def systems_define(
+        allocation_id: Annotated[
+            str, Field(description="Granted Allocation to create a DEFINED System for.")
+        ],
+        profile: Annotated[
+            dict[str, Any],
+            Field(
+                description="Provisioning profile for the System; an 'upload' rootfs opens a "
+                "pre-provision rootfs-upload window."
+            ),
+        ],
+    ) -> ToolResponse:
+        """Create a System in 'defined' for a granted Allocation (upload window). Operator only."""
+        return await define_system(
+            pool, current_context(), allocation_id=allocation_id, profile=profile
+        )
 
     @app.tool(
         name="systems.provision",

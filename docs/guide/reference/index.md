@@ -49,6 +49,7 @@
 | [`runs.create`](runs.md#runscreate) | `implemented` |
 | [`runs.get`](runs.md#runsget) | `implemented` |
 | [`runs.install`](runs.md#runsinstall) | `partial` |
+| [`systems.define`](systems.md#systemsdefine) | `implemented` |
 | [`systems.get`](systems.md#systemsget) | `implemented` |
 | [`systems.provision`](systems.md#systemsprovision) | `partial` |
 | [`systems.reprovision`](systems.md#systemsreprovision) | `partial` |
