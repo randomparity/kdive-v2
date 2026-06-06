@@ -931,6 +931,31 @@ async def _seed_succeeded_run(
     return run_id
 
 
+async def _seed_succeeded_run_on_system(pool: AsyncConnectionPool, system_id: str) -> str:
+    """A second built Run bound to an existing System (a re-boot of the same System)."""
+    inv_id = await _seed_investigation(pool)
+    async with pool.connection() as conn:
+        run = await RUNS.insert(
+            conn,
+            Run(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="user-1",
+                project="proj",
+                investigation_id=UUID(inv_id),
+                system_id=UUID(system_id),
+                state=RunState.SUCCEEDED,
+                build_profile=copy.deepcopy(_SUCCEEDED_BUILD),
+                failure_category=None,
+            ),
+        )
+        await conn.execute(
+            "UPDATE runs SET kernel_ref=%s WHERE id=%s", (f"local/runs/{run.id}/kernel", run.id)
+        )
+    return str(run.id)
+
+
 async def _record_install_step(pool: AsyncConnectionPool, run_id: str) -> None:
     async with pool.connection() as conn:
         await conn.execute(
@@ -1469,6 +1494,73 @@ def test_boot_handler_console_is_readable_via_artifacts(
         assert console.status == "available"
         assert console.refs is not None
         assert console.refs.get("object", "").endswith("/console")
+
+    asyncio.run(_run())
+
+
+def test_boot_handler_reboot_refreshes_console_etag(
+    migrated_url: str,
+    minio_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Re-booting a System refreshes the console row's etag to match the rewritten object.
+
+    The console object key is System-scoped, so a second boot of the same System (a new
+    Run) overwrites the object with a new etag. Before the fix the ledger insert was skipped
+    whenever a `%/console` row already existed, leaving the row pinned to the FIRST boot's
+    etag while the object held the second boot's content — a consumer's conditional `If-Match`
+    GET then hit STALE_HANDLE. The row's etag must instead track the stored object.
+
+    The two boots run sequentially, matching M0 (a System's Runs boot one at a time). Two Runs
+    booting one System *concurrently* is not serialized by boot_handler and is out of scope.
+    """
+    monkeypatch.setattr(runs_tools, "object_store_from_env", lambda: minio_store)
+    monkeypatch.setattr(runs_tools, "console_log_path", lambda sid: tmp_path / f"{sid}.log")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            # First boot of the System registers the console row at the first object's etag.
+            run1 = await _seed_succeeded_run(pool)
+            await _record_install_step(pool, run1)
+            sid = await _system_id_of(pool, run1)
+            (tmp_path / f"{sid}.log").write_bytes(b"[    0.0] FIRST-BOOT-MARKER ready\n")
+            job1 = await _enqueue_job(pool, JobKind.BOOT, run1, "boot")
+            async with pool.connection() as conn:
+                await runs_tools.boot_handler(conn, job1, _FakeBooter())
+
+            # Second boot of the SAME System (new Run): the host console log is overwritten
+            # with different content, so put_artifact rewrites the object at the same key.
+            run2 = await _seed_succeeded_run_on_system(pool, sid)
+            await _record_install_step(pool, run2)
+            (tmp_path / f"{sid}.log").write_bytes(b"[    0.0] SECOND-BOOT-MARKER oops\n")
+            job2 = await _enqueue_job(pool, JobKind.BOOT, run2, "boot")
+            async with pool.connection() as conn:
+                await runs_tools.boot_handler(conn, job2, _FakeBooter())
+
+            n = await _count(
+                pool,
+                "SELECT count(*) AS n FROM artifacts WHERE object_key LIKE %s",
+                ("%/console",),
+            )
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT object_key, etag FROM artifacts WHERE object_key LIKE %s",
+                    ("%/console",),
+                )
+                row = await cur.fetchone()
+
+        assert n == 1  # still one System-scoped console row, never a duplicate
+        assert row is not None
+        # The row's etag must equal the rewritten object's etag — no stale-etag row.
+        head = minio_store.head(row["object_key"])
+        assert head is not None
+        assert row["etag"] == head.etag
+        # And the consequence the issue names: a conditional If-Match GET (the pattern
+        # get_artifact uses) resolves to the SECOND boot's console, not a STALE_HANDLE.
+        fetched = minio_store.get_artifact(row["object_key"], row["etag"])
+        assert b"SECOND-BOOT-MARKER" in fetched.data
+        assert b"FIRST-BOOT-MARKER" not in fetched.data
 
     asyncio.run(_run())
 

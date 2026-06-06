@@ -106,3 +106,11 @@ reviews do not re-litigate them.
   one-time shift rather than versioned; revisit if profiles persist across a schema change.
 - A second provider is a pure addition: a new supported-set, a new `provider.<name>` profile
   section, and new verb→mechanism realizations — no change to the agent-facing method vocabulary.
+- The console artifact stays System-scoped (one `…/systems/{system_id}/console` object + row), but
+  a re-boot of the same System (a new Run) overwrites that object with a fresh etag. Boot-plane
+  registration therefore **refreshes** the existing row's etag to the rewritten object's instead
+  of skipping the write, so the row never keeps a stale etag that a later conditional `If-Match`
+  read would reject as `STALE_HANDLE` ([#117](https://github.com/randomparity/kdive/issues/117)).
+  An identical-content replay re-puts the same etag, so the refresh is a no-op and registration
+  stays idempotent. Retaining each prior boot's console independently is out of scope — it would
+  require Run-scoping the System-scoped key (and the host console tee), a larger change deferred.
