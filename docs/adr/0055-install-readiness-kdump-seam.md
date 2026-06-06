@@ -45,12 +45,17 @@ is captured and redacted by the `runs.boot` handler's console-artifact registrat
 ### 3. A crash *before* the marker wins (fail-closed precedence, pre-marker scan region)
 
 A crash signature in the **pre-marker** region (all console output before the first marker
-occurrence; the whole console when the marker is absent) yields `crashed` even if the marker
+**line**; the whole console when the marker line is absent) yields `crashed` even if the marker
 later appears. The seam's purpose is a trustworthy verification signal; a false `ok` would defeat
 it. Scoping the match to the pre-marker region is what prevents a *false* `crashed`: a fixed
-kernel that reaches `kdive-ready` and then logs benign console text containing a signature
-substring stays `ready`, because post-marker output is not matched. A non-fatal signature *before*
-the marker still resolves `crashed` — the accepted fail-closed cost of crash-wins.
+kernel that reaches the `kdive-ready` line and then logs benign console text containing a
+signature substring stays `ready`, because post-marker output is not matched. A non-fatal
+signature *before* the marker still resolves `crashed` — the accepted fail-closed cost of
+crash-wins. The marker is matched **line-anchored** (`(?m)^\s*kdive-ready\s*$`), not as a bare
+substring: ADR-0052's unit is named `kdive-ready.service` and systemd prints
+`Starting kdive-ready.service…` to the console (`console=ttyS0`, no `quiet`), so a substring
+match would fire on the unit-name line and mis-locate the pre-marker boundary; only the service's
+bare-line echo is the signal.
 
 ### 4. Crash signatures are a fail-closed, additive set; committed fixtures guard CI
 

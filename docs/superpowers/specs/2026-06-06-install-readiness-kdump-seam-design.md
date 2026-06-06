@@ -69,19 +69,28 @@ def classify_console(data: bytes, *, marker: str) -> ConsoleVerdict
 ```
 
 - **`crashed`** — a kernel crash/stall signature (§4) appears in the **pre-marker** region of
-  the console (all output before the first `marker` occurrence, or the whole console when the
-  marker is absent). Resolved **first** (crash-wins precedence, §4.1).
-- **`ready`** — the `marker` is present and no crash signature precedes it.
+  the console (all output before the first marker **line**, or the whole console when the marker
+  line is absent). Resolved **first** (crash-wins precedence, §4.1).
+- **`ready`** — a marker line is present and no crash signature precedes it.
 - **`pending`** — neither; the guest is still booting (or the log is not yet written).
 
-The scan region matters: the matcher inspects only output **up to the first marker**. A boot
-that reached `kdive-ready` with no crash before it is `ready`; benign console text *after* the
-marker (userspace service logs, later non-fatal kernel messages) cannot retroactively flip a
-healthy boot to `crashed`. With the marker absent the whole console is scanned, so a crash that
-prevents the marker still resolves `crashed`.
+**The marker is matched as a whole line, not a bare substring.** ADR-0052's readiness unit is
+named `kdive-ready.service` and its `ExecStart` writes the bare line `kdive-ready\n` directly to
+`/dev/ttyS0`; with the demo cmdline (`console=ttyS0`, no `quiet`) systemd *also* prints
+`Starting kdive-ready.service…` / `Started kdive-ready.service.` to that console — lines that
+*contain* the substring `kdive-ready` but are **not** the signal. A substring match would fire on
+the systemd unit-name line (declaring `ready` at unit-start, and truncating the pre-marker scan
+region there). So the classifier matches the marker line-anchored — `(?m)^\s*kdive-ready\s*$` —
+which the service's bare echo satisfies and the `kdive-ready.service` status lines do not.
+
+The scan region matters: the matcher inspects only output **up to the first marker line**. A boot
+that reached the `kdive-ready` line with no crash before it is `ready`; benign console text
+*after* the marker (userspace service logs, later non-fatal kernel messages) cannot retroactively
+flip a healthy boot to `crashed`. With the marker line absent the whole console is scanned, so a
+crash that prevents the marker still resolves `crashed`.
 
 **Precondition — the console log is per-boot-fresh (truncate-on-start).** Pre-marker scoping is
-correct only if "the first marker" is *this* boot's marker, not a stale one from a prior boot. It
+correct only if "the first marker line" is *this* boot's marker, not a stale one from a prior boot. It
 is: `provisioning.py` emits `<serial><log file=…/>` with **no `append` attribute`**, and
 QEMU/libvirt default the chardev `logappend` to off → the log is **truncated on each domain
 `create()`**, which `boot()`'s power-cycle (destroy→create) always performs. So each boot starts
@@ -126,12 +135,12 @@ output is caught; if it is not, the fix is to add that signature.
 ### 4.1 Precedence: a crash *before* the marker wins
 
 When a crash signature appears in the pre-marker region (§3), the verdict is **`crashed`** even
-if the marker later appears. This is fail-closed: the seam exists to produce a trustworthy
+if the marker line later appears. This is fail-closed: the seam exists to produce a trustworthy
 verification signal, and a false `ok` would defeat it. The demo's vulnerable boot crashes
 *before* the rootfs emits the marker, so this is the common path, not a corner case.
 
 Scoping the match to the pre-marker region (rather than the whole console) is what keeps a
-*healthy* boot from a false `crashed`: a fixed kernel that reaches `kdive-ready` and then logs
+*healthy* boot from a false `crashed`: a fixed kernel that reaches the `kdive-ready` line and then logs
 benign console text containing a signature substring (a userspace service printing `BUG:`, a
 later non-fatal kernel message) stays `ready`, because only pre-marker output is matched. The
 residual case — a *non-fatal* signature substring emitted **before** the marker on an otherwise
@@ -229,19 +238,23 @@ larger change; it is a follow-up.
 ## 7. Verification
 
 - **Unit — signature mechanism (host-free):** `classify_console` returns `crashed` for each
-  signature in §4, `ready` for the marker alone, `pending` for empty/benign/`DEBUG:`-containing
-  bytes and for malformed UTF-8; a crash *before* the marker → `crashed`, a benign signature
-  substring *after* the marker → `ready` (§4.1). `_kdump_capture_present` is `True` only when a
-  staged initrd exists; the kdump gate raises `CONFIGURATION_ERROR` for a kdump method with no
-  initrd (incl. `initrd_ref=None`) and proceeds with one (the existing kdump tests, rewritten to
-  the initrd-presence contract).
+  signature in §4, `ready` for the bare marker line alone, `pending` for empty/benign/`DEBUG:`-containing
+  bytes and for malformed UTF-8; a crash *before* the marker line → `crashed`, a benign signature
+  substring *after* the marker line → `ready` (§4.1). The marker is whole-line: a
+  `Starting kdive-ready.service` line **without** the bare `kdive-ready` echo → `pending` (the
+  systemd unit-name line is not the signal, §3); the bare-line echo → `ready`.
+  `_kdump_capture_present` is `True` only when a staged initrd exists; the kdump gate raises
+  `CONFIGURATION_ERROR` for a kdump method with no initrd (incl. `initrd_ref=None`) and proceeds
+  with one (the existing kdump tests, rewritten to the initrd-presence contract).
 - **Unit — committed console fixtures (host-free, the CI guard against tautology):** two fixture
   files under `tests/providers/local_libvirt/fixtures/` — a **crash** console and a **clean**
   console — drive `classify_console` in a CI test: the crash fixture → `crashed`, the clean
   fixture → `ready`. Each is realistic multi-line `ttyS0` output with the `[ ddddd.dddddd]`
-  timestamp prefixes and surrounding benign lines (the clean fixture *includes* a post-marker
-  line containing a signature substring to lock in the pre-marker scoping; the crash fixture
-  carries a soft-lockup/RCU-stall header with `__d_lookup` in the backtrace). Sourced from a real
+  timestamp prefixes and surrounding benign lines (the clean fixture *includes* both a
+  `Starting kdive-ready.service` systemd status line **and** the later bare `kdive-ready` echo —
+  locking in the whole-line match — plus a post-marker line containing a signature substring to
+  lock in the pre-marker scoping; the crash fixture carries a soft-lockup/RCU-stall header with
+  `__d_lookup` in the backtrace). Sourced from a real
   `dhash_entries=1` run where one exists, else a format-faithful representative the operator
   replaces with a captured log via the `live_vm` acceptance. This makes the demo's output shape a
   falsifiable check in the merge gate, not only behind the manual `live_vm` job.
