@@ -11,6 +11,7 @@ import pytest
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, Sensitivity
 from kdive.jobs import queue
@@ -57,9 +58,11 @@ class _FakeRetriever:
         self._sys_id = sys_id
         self._raises = raises
         self.calls = 0
+        self.methods: list[CaptureMethod] = []
 
-    def capture(self, system_id: UUID) -> CaptureOutput:
+    def capture(self, system_id: UUID, method: CaptureMethod) -> CaptureOutput:
         self.calls += 1
+        self.methods.append(method)
         if self._raises is not None:
             raise self._raises
         return _capture_output(self._sys_id)
@@ -68,7 +71,7 @@ class _FakeRetriever:
 class _NoCaptureRetriever:
     """Fails the test if .capture is ever called (idempotency probe)."""
 
-    def capture(self, system_id: UUID) -> CaptureOutput:
+    def capture(self, system_id: UUID, method: CaptureMethod) -> CaptureOutput:
         raise AssertionError("capture must not be called when a vmcore row already exists")
 
 
@@ -120,7 +123,7 @@ def test_fetch_vmcore_crashed_enqueues_job(migrated_url: str) -> None:
                 await cur.execute(
                     "SELECT count(*) AS n FROM jobs WHERE kind = 'capture_vmcore' "
                     "AND dedup_key = %s",
-                    (f"{sys_id}:capture_vmcore",),
+                    (f"{sys_id}:capture_vmcore:host_dump",),
                 )
                 row = await cur.fetchone()
         assert row is not None and row["n"] == 1
@@ -162,17 +165,60 @@ def test_fetch_vmcore_malformed_uuid_is_config_error(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_fetch_rejects_unsupported_method(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id = await seed_crashed_system(pool)
+            resp = await vmcore_tools.fetch_vmcore(pool, _ctx(), system_id=sys_id, method="kdump")
+            assert resp.status == "error"
+            assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+
+    asyncio.run(_run())
+
+
+def test_fetch_rejects_non_core_method(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id = await seed_crashed_system(pool)
+            resp = await vmcore_tools.fetch_vmcore(pool, _ctx(), system_id=sys_id, method="console")
+            assert resp.status == "error"
+            assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+
+    asyncio.run(_run())
+
+
+def test_fetch_records_method_in_dedup_key(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id = await seed_crashed_system(pool)
+            resp = await vmcore_tools.fetch_vmcore(
+                pool, _ctx(), system_id=sys_id, method="host_dump"
+            )
+            assert resp.status == "queued"
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE dedup_key = %s",
+                    (f"{sys_id}:capture_vmcore:host_dump",),
+                )
+                row = await cur.fetchone()
+        assert row is not None and row["n"] == 1
+
+    asyncio.run(_run())
+
+
 # --- capture handler -----------------------------------------------------------------------
 
 
-async def _enqueue_capture(pool: AsyncConnectionPool, sys_id: str) -> Job:
+async def _enqueue_capture(
+    pool: AsyncConnectionPool, sys_id: str, method: str = "host_dump"
+) -> Job:
     async with pool.connection() as conn:
         return await queue.enqueue(
             conn,
             JobKind.CAPTURE_VMCORE,
-            {"system_id": sys_id},
+            {"system_id": sys_id, "method": method},
             _AUTH,
-            f"{sys_id}:capture_vmcore",
+            f"{sys_id}:capture_vmcore:{method}",
         )
 
 
@@ -205,6 +251,19 @@ def test_capture_handler_stores_rows_and_returns_ref(migrated_url: str) -> None:
                 )
                 rows = await cur.fetchall()
         assert [r["sensitivity"] for r in rows] == ["redacted", "sensitive"]
+
+    asyncio.run(_run())
+
+
+def test_capture_handler_plumbs_method_to_retriever(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id = await seed_crashed_system(pool)
+            job = await _enqueue_capture(pool, sys_id, method="host_dump")
+            retriever = _FakeRetriever(sys_id)
+            async with pool.connection() as conn:
+                await vmcore_tools.capture_handler(conn, job, retriever)
+        assert retriever.methods == [CaptureMethod.HOST_DUMP]
 
     asyncio.run(_run())
 
