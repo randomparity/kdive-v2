@@ -1558,3 +1558,49 @@ def test_provision_create_lane_requires_profile(migrated_url: str) -> None:
         assert resp.error_category == "configuration_error"
 
     asyncio.run(_run())
+
+
+# --- teardown of a DEFINED System (defined -> torn_down, #111) ------------------------------
+
+
+def test_teardown_handler_drives_defined_system_to_torn_down(migrated_url: str) -> None:
+    # An abandoned DEFINED System (no domain) is terminable via defined -> torn_down (#111).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
+            job = await _enqueue_teardown(pool, sys_id)
+            prov = _FakeProvisioning()
+            async with pool.connection() as conn:
+                await systems_tools.teardown_handler(conn, job, prov)
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+        assert sys_row is not None and sys_row["state"] == "torn_down"
+        assert prov.torn_down == [f"kdive-{sys_id}"]  # best-effort destroy of the absent domain
+
+    asyncio.run(_run())
+
+
+def test_reconciler_gc_tears_down_defined_orphan(migrated_url: str) -> None:
+    # Releasing the allocation orphans its DEFINED System; the reconciler enqueues a teardown
+    # the handler can now complete (defined -> torn_down), freeing the quota slot (#111).
+    from kdive.reconciler.loop import _repair_orphaned_systems
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
+            async with pool.connection() as conn:
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.RELEASING)
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.RELEASED)
+                enqueued = await _repair_orphaned_systems(conn)
+            assert enqueued == 1
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE dedup_key = %s", (f"{sys_id}:teardown",)
+                )
+                job_n = await cur.fetchone()
+        assert job_n is not None and job_n["n"] == 1
+
+    asyncio.run(_run())
