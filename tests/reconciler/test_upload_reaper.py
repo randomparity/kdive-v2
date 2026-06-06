@@ -23,8 +23,10 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.db import upload_manifest
 from kdive.db.locks import LockScope
 from kdive.db.upload_manifest import ManifestEntry
-from kdive.domain.state import RunState, SystemState
+from kdive.domain.state import RunState
+from kdive.mcp.tools import systems as systems_tools
 from kdive.reconciler.loop import _reap_one_owner, _repair_abandoned_uploads
+from tests.mcp.test_systems_tools import _ctx, _granted_allocation, _upload_profile
 from tests.reconciler.conftest import connect, run_repair, seed_run, seed_system
 
 
@@ -55,6 +57,20 @@ def _reap(store: _FakeStore):
     return lambda conn: _repair_abandoned_uploads(conn, store)
 
 
+async def _defined_system_via_define(url: str) -> UUID:
+    """Produce a DEFINED upload-kind System through systems.define (the real producer, #111).
+
+    The reaper tests need a System that *stays* ``defined`` (so its uncommitted upload object
+    is reapable); this exercises the producer instead of a seeded fixture.
+    """
+    async with AsyncConnectionPool(url, min_size=1, max_size=2) as pool:
+        alloc_id = await _granted_allocation(pool)
+        resp = await systems_tools.define_system(
+            pool, _ctx(), allocation_id=alloc_id, profile=_upload_profile()
+        )
+    return UUID(resp.object_id)
+
+
 def test_reaps_uncommitted_objects_past_deadline_for_created_run(migrated_url: str) -> None:
     async def _run() -> None:
         async with await connect(migrated_url) as seed:
@@ -81,12 +97,10 @@ def test_reaps_uncommitted_objects_past_deadline_for_created_run(migrated_url: s
 
 
 def test_reaps_uncommitted_objects_past_deadline_for_defined_system(migrated_url: str) -> None:
-    # Seeds DEFINED directly because no producer exists yet (#111); this validates the
-    # systems arm of the reaper in isolation until systems.define lands.
     async def _run() -> None:
+        system_id = await _defined_system_via_define(migrated_url)
+        prefix = f"local/systems/{system_id}/"
         async with await connect(migrated_url) as seed:
-            system_id = await seed_system(seed, system_state=SystemState.DEFINED)
-            prefix = f"local/systems/{system_id}/"
             await upload_manifest.replace_manifest(
                 seed,
                 owner_kind="systems",
@@ -108,9 +122,9 @@ def test_reaps_uncommitted_objects_past_deadline_for_defined_system(migrated_url
 
 def test_exempts_committed_object(migrated_url: str) -> None:
     async def _run() -> None:
+        system_id = await _defined_system_via_define(migrated_url)
+        prefix = f"local/systems/{system_id}/"
         async with await connect(migrated_url) as seed:
-            system_id = await seed_system(seed, system_state=SystemState.DEFINED)
-            prefix = f"local/systems/{system_id}/"
             await _insert_artifact_row(
                 seed, owner_kind="systems", owner_id=system_id, object_key=f"{prefix}rootfs"
             )

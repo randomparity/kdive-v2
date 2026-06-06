@@ -34,8 +34,10 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import artifacts as artifacts_tools
+from kdive.mcp.tools import systems as systems_tools
 from kdive.security.rbac import AuthorizationError, Role
 from kdive.store.objectstore import PresignedUpload
+from tests.mcp.test_systems_tools import _granted_allocation
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _EXTERNAL_PROFILE: dict[str, Any] = {"schema_version": 1, "source": "external"}
@@ -140,6 +142,17 @@ async def _seed_system(
             ),
         )
     return str(system.id)
+
+
+async def _defined_system_via_tool(
+    pool: AsyncConnectionPool, *, rootfs_kind: str = "upload"
+) -> str:
+    """Produce a DEFINED System through systems.define (the real producer, #111)."""
+    alloc_id = await _granted_allocation(pool)
+    resp = await systems_tools.define_system(
+        pool, _ctx(), allocation_id=alloc_id, profile=_provisioning_profile(rootfs_kind)
+    )
+    return resp.object_id
 
 
 async def _seed_created_run(
@@ -333,11 +346,9 @@ def test_create_upload_requires_operator(migrated_url: str) -> None:
 
 
 def test_create_upload_for_defined_system_mints_rootfs_and_persists(migrated_url: str) -> None:
-    # Seeds DEFINED directly because no producer exists yet (#111); this validates the
-    # System rootfs-upload consumer in isolation until systems.define lands.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            sys_id = await _seed_system(pool, state=SystemState.DEFINED)
+            sys_id = await _defined_system_via_tool(pool)
             store = _FakeStore()
             responses = await artifacts_tools.create_upload(
                 pool,
@@ -363,7 +374,7 @@ def test_create_upload_rejects_non_upload_kind_defined_system(migrated_url: str)
     # else the object would be minted, never committed, and orphaned past the reaper (#111).
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            sys_id = await _seed_system(pool, state=SystemState.DEFINED, rootfs_kind="path")
+            sys_id = await _defined_system_via_tool(pool, rootfs_kind="path")
             store = _FakeStore()
             responses = await artifacts_tools.create_upload(
                 pool,
@@ -384,7 +395,7 @@ def test_create_upload_rejects_non_upload_kind_defined_system(migrated_url: str)
 def test_create_upload_rejects_non_rootfs_name_for_system(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            sys_id = await _seed_system(pool, state=SystemState.DEFINED)
+            sys_id = await _defined_system_via_tool(pool)
             store = _FakeStore()
             out = await artifacts_tools.create_upload(
                 pool,
