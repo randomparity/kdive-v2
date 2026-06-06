@@ -68,7 +68,8 @@ create it, and `rsync` only creates the destination's final path component, not 
 parents. Creating it here means a missing `KDIVE_BUILD_WORKSPACE` root is handled
 deterministically rather than surfacing as an opaque rsync copy failure. It then runs:
 
-`rsync -a --delete <kernel_src>/ <workspace>/`. Rationale:
+`rsync -a --delete -- <kernel_src>/ <workspace>/` (the `--` ends option parsing so a path
+is never read as an rsync flag). Rationale:
 
 - `-a` preserves the source's build products (`.o`, `.cmd`, `vmlinux`…), so the in-tree
   `make` is incremental relative to the operator's warm build state — only what the patch
@@ -83,8 +84,10 @@ deterministically rather than surfacing as an opaque rsync copy failure. It then
 
 Failure mapping:
 
-- `kernel_src` empty or not an existing directory → `CONFIGURATION_ERROR` (the operator has
-  not pointed `KDIVE_KERNEL_SRC` at a tree). Checked before invoking rsync.
+- `kernel_src` empty, not an absolute path, the filesystem root, or not an existing
+  directory → `CONFIGURATION_ERROR` (the operator has not pointed `KDIVE_KERNEL_SRC` at a
+  real tree). Checked before invoking rsync; rejecting non-absolute and root paths closes a
+  degenerate "rsync the whole root" / option-injection surface.
 - `rsync` binary absent → `MISSING_DEPENDENCY`.
 - `rsync` non-zero exit → `INFRASTRUCTURE_FAILURE` (a copy failure — disk full, permissions
   — is host infrastructure, not a build/config defect), with a redacted stderr tail.

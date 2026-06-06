@@ -41,8 +41,10 @@ profile's `config_ref`/`patch_ref` resolve, and what category a non-applying pat
    "already-applied" failure). The seam creates the per-Run workspace (`mkdir(parents=True,
    exist_ok=True)`) before rsync, since `build()` does not and rsync does not create missing
    parent directories. A copy failure (disk, permissions) is `INFRASTRUCTURE_FAILURE`; an
-   absent `rsync` is `MISSING_DEPENDENCY`; an unset/invalid `KDIVE_KERNEL_SRC` is caught
-   before rsync as `CONFIGURATION_ERROR`.
+   absent `rsync` is `MISSING_DEPENDENCY`; an unset/non-absolute/root/invalid
+   `KDIVE_KERNEL_SRC` is caught before rsync as `CONFIGURATION_ERROR`. The rsync and
+   `git apply` argv use an end-of-options `--` so a path can never be parsed as a flag, and
+   the absolute-non-root guard removes the degenerate "sync the whole root" case.
 
 3. **`config_ref` and `patch_ref` resolve as *local* references only.** A `file://` URL or
    a bare absolute path resolving to an existing regular file. A non-local scheme

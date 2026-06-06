@@ -352,8 +352,8 @@ def _apply_patch(patch_ref: str, workspace: Path) -> None:
             "git is required to apply a build patch",
             category=ErrorCategory.MISSING_DEPENDENCY,
         )
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["git", "apply", "-p1", str(patch)],
+    result = subprocess.run(  # noqa: S603 - fixed argv, no shell; -- ends option parsing
+        ["git", "apply", "-p1", "--", str(patch)],
         cwd=workspace,
         capture_output=True,
         text=True,
@@ -374,13 +374,15 @@ def _sync_tree(kernel_src: str, workspace: Path) -> None:
     does not create missing parent directories.
 
     Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` if ``kernel_src`` is empty or not a
-            directory; ``MISSING_DEPENDENCY`` if ``rsync`` is absent;
-            ``INFRASTRUCTURE_FAILURE`` on a non-zero rsync exit (redacted stderr in details).
+        CategorizedError: ``CONFIGURATION_ERROR`` if ``kernel_src`` is empty, not an
+            absolute path, the filesystem root, or not a directory; ``MISSING_DEPENDENCY``
+            if ``rsync`` is absent; ``INFRASTRUCTURE_FAILURE`` on a non-zero rsync exit
+            (redacted stderr in details).
     """
-    if not kernel_src or not Path(kernel_src).is_dir():
+    source = Path(kernel_src) if kernel_src else None
+    if source is None or not source.is_absolute() or source == source.parent or not source.is_dir():
         raise CategorizedError(
-            "KDIVE_KERNEL_SRC is not set to an existing kernel source tree",
+            "KDIVE_KERNEL_SRC must be an absolute path to an existing kernel source tree",
             category=ErrorCategory.CONFIGURATION_ERROR,
         )
     if shutil.which("rsync") is None:
@@ -389,8 +391,10 @@ def _sync_tree(kernel_src: str, workspace: Path) -> None:
             category=ErrorCategory.MISSING_DEPENDENCY,
         )
     workspace.mkdir(parents=True, exist_ok=True)
+    # `--` ends option parsing so a path is never mistaken for an rsync flag; the trailing
+    # slash on the source copies its *contents* into the workspace, not a nested dir.
     result = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["rsync", "-a", "--delete", f"{kernel_src.rstrip('/')}/", f"{workspace}/"],
+        ["rsync", "-a", "--delete", "--", f"{source}/", f"{workspace}/"],
         capture_output=True,
         text=True,
         check=False,

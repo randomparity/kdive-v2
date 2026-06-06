@@ -474,6 +474,20 @@ def test_sync_tree_nonexistent_kernel_src_is_configuration_error(tmp_path: Path)
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
+def test_sync_tree_relative_kernel_src_is_configuration_error(tmp_path: Path) -> None:
+    # A non-absolute kernel_src is rejected before any rsync (no option-injection surface).
+    with pytest.raises(CategorizedError) as caught:
+        _sync_tree("linux", tmp_path / "ws")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_sync_tree_filesystem_root_is_configuration_error(tmp_path: Path) -> None:
+    # kernel_src="/" must never be accepted — it would rsync the entire root filesystem.
+    with pytest.raises(CategorizedError) as caught:
+        _sync_tree("/", tmp_path / "ws")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
 def test_sync_tree_missing_rsync_is_missing_dependency(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -503,7 +517,8 @@ def test_sync_tree_creates_workspace_and_invokes_rsync(
     _sync_tree(str(src), workspace)
 
     assert workspace.is_dir()  # mkdir(parents=True) ran before rsync
-    assert calls == [["rsync", "-a", "--delete", f"{src}/", f"{workspace}/"]]
+    # `--` terminates option parsing so a path is never read as an rsync flag.
+    assert calls == [["rsync", "-a", "--delete", "--", f"{src}/", f"{workspace}/"]]
 
 
 def test_sync_tree_rsync_nonzero_is_infrastructure_failure(
