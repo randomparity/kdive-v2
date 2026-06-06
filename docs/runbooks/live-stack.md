@@ -75,11 +75,22 @@ The spine boots a real guest and builds a real kernel, so the suite needs an
 operator-provided guest image and kernel tree (the ADR-0035 fixtures, reused unchanged):
 
 ```bash
-scripts/live-vm/build-guest-image.sh    # writes the kdump-enabled guest image
+scripts/live-vm/build-guest-image.sh    # builds the bootable kdive-ready rootfs qcow2
 scripts/live-vm/fetch-kernel-tree.sh     # checks out the pinned kernel source tree
 export KDIVE_GUEST_IMAGE=/path/to/guest-image
 export KDIVE_KERNEL_SRC=/path/to/kernel-tree
 ```
+
+The builder runs unprivileged and writes the rootfs to `KDIVE_ROOTFS` (default
+`/var/lib/kdive/rootfs/minimal.qcow2`). For the default root-owned path, an OS admin
+pre-prepares the output directory once and makes it writable by the build user; the
+per-build write and the final `chmod 0644` are unprivileged. The image is left `0644` so
+the separate `qemu` user can read it under `qemu:///system`. Under SELinux the file also
+needs the `virt_image_t` label (the standard label for libvirt-managed images); this is the
+host-side file label and is independent of the guest-internal SELinux the builder disables.
+The build is idempotent on the destination path — delete the file to force a rebuild after
+changing any build input (`KDIVE_ROOTFS_DEBUG`, `KDIVE_ROOTFS_VMLINUX`,
+`KDIVE_ROOTFS_SSH_USER`, `KDIVE_ROOTFS_SIZE`, or a rotated managed SSH key).
 
 Point `KDIVE_GUEST_IMAGE` and `KDIVE_KERNEL_SRC` at the scripts' output. The `live_stack`
 preflight skips with the exact script to run when either is missing.
