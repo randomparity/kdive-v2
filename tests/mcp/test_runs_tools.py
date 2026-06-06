@@ -1571,3 +1571,69 @@ def _assert_ports() -> None:
     _i: Installer = _FakeInstaller()
     _b: Booter = _FakeBooter()
     assert _i is not None and _b is not None
+
+
+def _system_with_profile(profile: dict[str, Any]) -> System:
+    return System(
+        id=uuid4(),
+        created_at=_DT,
+        updated_at=_DT,
+        principal="user-1",
+        project="proj",
+        allocation_id=uuid4(),
+        state=SystemState.READY,
+        provisioning_profile=profile,
+    )
+
+
+def _profile_dump(**local_libvirt: Any) -> dict[str, Any]:
+    """A real ProvisioningProfile.model_dump(by_alias=True) — pins the 'local-libvirt' alias."""
+    from kdive.profiles.provisioning import ProvisioningProfile
+
+    section: dict[str, Any] = {"rootfs": {"kind": "path", "path": "/img"}}
+    section.update(local_libvirt)
+    return ProvisioningProfile.model_validate(
+        {
+            "schema_version": 1,
+            "arch": "x86_64",
+            "vcpu": 2,
+            "memory_mb": 2048,
+            "disk_gb": 10,
+            "boot_method": "direct-kernel",
+            "kernel_source_ref": "git+https://git.kernel.org#v6.9",
+            "provider": {"local-libvirt": section},
+        }
+    ).model_dump(by_alias=True)
+
+
+def test_install_method_kdump_when_crashkernel_set() -> None:
+    system = _system_with_profile(_profile_dump(crashkernel="256M"))
+    assert runs_tools._install_method_for(system) is CaptureMethod.KDUMP
+
+
+def test_install_method_gdbstub_when_flag_set() -> None:
+    system = _system_with_profile(_profile_dump(debug={"gdbstub": True}))
+    assert runs_tools._install_method_for(system) is CaptureMethod.GDBSTUB
+
+
+def test_install_method_host_dump_when_preserve_on_crash() -> None:
+    system = _system_with_profile(_profile_dump(debug={"preserve_on_crash": True}))
+    assert runs_tools._install_method_for(system) is CaptureMethod.HOST_DUMP
+
+
+def test_install_method_console_for_bare_system() -> None:
+    system = _system_with_profile(_profile_dump())
+    assert runs_tools._install_method_for(system) is CaptureMethod.CONSOLE
+
+
+def test_install_method_console_for_partial_profile_does_not_raise() -> None:
+    # The minimal seed profile (no provider section) must resolve, not raise.
+    system = _system_with_profile({"schema_version": 1})
+    assert runs_tools._install_method_for(system) is CaptureMethod.CONSOLE
+
+
+def test_install_method_reads_alias_not_attribute_spelling() -> None:
+    # A crashkernel under the WRONG key 'local_libvirt' must NOT resolve kdump:
+    # the resolver reads the persisted alias 'local-libvirt' (ADR-0051 Decision 1).
+    system = _system_with_profile({"provider": {"local_libvirt": {"crashkernel": "256M"}}})
+    assert runs_tools._install_method_for(system) is CaptureMethod.CONSOLE

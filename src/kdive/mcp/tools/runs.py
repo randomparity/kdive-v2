@@ -30,8 +30,9 @@ from kdive.db.idempotency import run_step
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, ARTIFACTS, INVESTIGATIONS, RUNS, SYSTEMS
 from kdive.db.upload_manifest import ManifestEntry
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Investigation, Job, JobKind, Run, Sensitivity
+from kdive.domain.models import Investigation, Job, JobKind, ResourceKind, Run, Sensitivity, System
 from kdive.domain.state import (
     AllocationState,
     IllegalTransition,
@@ -650,6 +651,41 @@ def _cmdline_for(run: Run) -> str:
     """
     value = run.build_profile.get("cmdline")
     return value if isinstance(value, str) and value.strip() else _DEFAULT_CMDLINE
+
+
+def _local_libvirt_section(profile: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The `provider['local-libvirt']` section of a stored profile, or `{}` (loose read).
+
+    Navigates the persisted **alias** key (`ResourceKind.LOCAL_LIBVIRT.value`, `"local-libvirt"`),
+    which is what `ProvisioningProfile.model_dump(by_alias=True)` writes — not the Python
+    attribute spelling `local_libvirt`. A missing/odd-shaped profile yields `{}` rather than
+    raising, mirroring `_cmdline_for`'s loose read (ADR-0051 Decision 1).
+    """
+    provider = profile.get("provider")
+    if not isinstance(provider, Mapping):
+        return {}
+    section = provider.get(ResourceKind.LOCAL_LIBVIRT.value)
+    return section if isinstance(section, Mapping) else {}
+
+
+def _install_method_for(system: System) -> CaptureMethod:
+    """Resolve the capture method the System is provisioned for (ADR-0051 Decision 1).
+
+    A non-empty `crashkernel` reservation means the System is provisioned for kdump
+    (`crashkernel ⇔ kdump`, ADR-0049 §5); otherwise the `debug` flags select the non-kdump
+    method, defaulting to the always-on `console` baseline (ADR-0049 §4).
+    """
+    section = _local_libvirt_section(system.provisioning_profile)
+    crashkernel = section.get("crashkernel")
+    if isinstance(crashkernel, str) and crashkernel.strip():
+        return CaptureMethod.KDUMP
+    debug = section.get("debug")
+    debug = debug if isinstance(debug, Mapping) else {}
+    if debug.get("gdbstub") is True:
+        return CaptureMethod.GDBSTUB
+    if debug.get("preserve_on_crash") is True:
+        return CaptureMethod.HOST_DUMP
+    return CaptureMethod.CONSOLE
 
 
 async def install_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> ToolResponse:
