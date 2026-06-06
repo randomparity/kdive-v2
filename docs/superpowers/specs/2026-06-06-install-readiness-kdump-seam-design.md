@@ -43,10 +43,11 @@ In scope (one source file + tests):
     domain liveness, and maps the classifier verdict to `ReadinessResult`.
   - Replace the injected `kdump_check` seam with a host-observable initrd-presence check in
     `install()` (the staged kdump capture environment's carrier; §5).
-- `tests/providers/local_libvirt/test_install.py` — unit tests for the classifier (every
-  signature, the marker, precedence, empty/malformed bytes), the kdump initrd-presence gate,
-  and the existing `live_vm` `test_live_vm_real_install_boot` stub filled with the real
-  boot-to-verdict acceptance (still `live_vm`-gated).
+- `tests/providers/local_libvirt/test_install.py` (+ `tests/providers/local_libvirt/fixtures/`)
+  — unit tests for the classifier (every signature, the marker, pre-marker precedence,
+  empty/malformed bytes), two committed console fixtures (crash + clean) classified in CI (§7),
+  the kdump initrd-presence gate, and the existing `live_vm` `test_live_vm_real_install_boot`
+  stub filled with the real boot-to-verdict acceptance (still `live_vm`-gated).
 
 Out of scope: the `virsh domstate` subprocess and the console tail loop stay behind the
 existing `live_vm` gate (no running host in CI); per-rootfs readiness-marker resolution
@@ -67,10 +68,17 @@ ConsoleVerdict = Literal["ready", "crashed", "pending"]
 def classify_console(data: bytes, *, marker: str) -> ConsoleVerdict
 ```
 
-- **`crashed`** — the console contains a kernel crash/stall signature (§4). Resolved
-  **first** (crash-wins precedence, §4.1).
-- **`ready`** — the console contains the readiness `marker` and no crash signature.
+- **`crashed`** — a kernel crash/stall signature (§4) appears in the **pre-marker** region of
+  the console (all output before the first `marker` occurrence, or the whole console when the
+  marker is absent). Resolved **first** (crash-wins precedence, §4.1).
+- **`ready`** — the `marker` is present and no crash signature precedes it.
 - **`pending`** — neither; the guest is still booting (or the log is not yet written).
+
+The scan region matters: the matcher inspects only output **up to the first marker**. A boot
+that reached `kdive-ready` with no crash before it is `ready`; benign console text *after* the
+marker (userspace service logs, later non-fatal kernel messages) cannot retroactively flip a
+healthy boot to `crashed`. With the marker absent the whole console is scanned, so a crash that
+prevents the marker still resolves `crashed`.
 
 `data` is decoded `utf-8` with `errors="replace"` so a partial multibyte tail or non-UTF-8
 console bytes never raise — they classify as `pending` until more output arrives. Empty bytes
@@ -104,13 +112,21 @@ benign line containing `DEBUG:` does **not** crash; the marker → `ready`). The
 acceptance (§7) is the falsifiable validation that the demo's **actual** `dhash_entries=1`
 output is caught; if it is not, the fix is to add that signature.
 
-### 4.1 Precedence: crash wins over marker
+### 4.1 Precedence: a crash *before* the marker wins
 
-When both a crash signature and the marker are present in the scanned console, the verdict is
-**`crashed`**. This is fail-closed: the seam exists to produce a trustworthy verification
-signal, and a false `ok` would defeat it. In practice the demo's vulnerable boot crashes
-*before* the rootfs emits the marker, so the marker is absent; the precedence only governs the
-pathological both-present case (e.g. a stale marker from a prior boot in a reused log, §6).
+When a crash signature appears in the pre-marker region (§3), the verdict is **`crashed`** even
+if the marker later appears. This is fail-closed: the seam exists to produce a trustworthy
+verification signal, and a false `ok` would defeat it. The demo's vulnerable boot crashes
+*before* the rootfs emits the marker, so this is the common path, not a corner case.
+
+Scoping the match to the pre-marker region (rather than the whole console) is what keeps a
+*healthy* boot from a false `crashed`: a fixed kernel that reaches `kdive-ready` and then logs
+benign console text containing a signature substring (a userspace service printing `BUG:`, a
+later non-fatal kernel message) stays `ready`, because only pre-marker output is matched. The
+residual case — a *non-fatal* signature substring emitted **before** the marker on an otherwise
+healthy boot (e.g. a benign lockdep splat) — still resolves `crashed`; this is accepted as the
+fail-closed cost of the settled crash-wins stance, and the §7 clean-boot fixture guards against
+the common forms.
 
 ## 5. kdump-check: host-observable initrd presence
 
@@ -134,6 +150,16 @@ initrd_path.exists()`. This is **necessary but not sufficient** — it does not 
 is kdump-capable; the deeper guest-side verification lands with #115. The check is honest about
 that scope rather than overstating a presence check as a full kdump readiness proof.
 
+**Boundary — embedded-initramfs kdump kernels.** `install()` supports `initrd_ref=None` (a
+bzImage with an embedded initramfs; `install.py` docstring §§ "When `initrd_ref` is `None`").
+The host-presence gate requires a *separately staged* initrd, so a kdump-method install with an
+embedded initramfs (`initrd_ref=None`) is rejected as `configuration_error`. This is an explicit
+M0 boundary, not an oversight: the host cannot tell from `initrd_ref=None` whether a kdump
+*capture* environment is embedded, and the demo path is `console`, not `kdump` — so M0's
+coarse host gate requires the separate initrd, and the only verifier that can judge an embedded
+capture environment (regardless of delivery) is #115's in-guest probe, which supersedes this
+gate. A kdump kernel that embeds its capture initramfs is therefore unsupported until #115.
+
 This **replaces** the injected `kdump_check` seam (ADR-0030 §4 routed it through the same
 `readiness`-style seam): the prerequisite is now deterministic host I/O on a path `install()`
 already holds, so an injected `live_vm` seam is unnecessary indirection. The seam, its
@@ -146,16 +172,38 @@ accumulates whether the System ever answered, with **no inter-poll sleep** — s
 inject a fast fake and run without a real wait. To keep that contract unchanged, `_real_readiness`
 is a single per-poll probe whose **own** cadence lives inside the `live_vm` wrapper (the
 "injected poll clock" the module docstring names): on a `pending` verdict it checks liveness and,
-if the guest is still running, sleeps one poll interval before returning `answered=False`. The
-total boot window is therefore `boot_window_polls × poll interval`, owned entirely by the
-`live_vm`-gated seam — `_await_ready` and every unit test are untouched.
+if the guest is still running, sleeps one poll interval before returning `answered=False`.
 
-Liveness uses `virsh domstate` (ported from v1's `_domain_is_running`): a guest that has
-**exited** without reaching the marker is `answered=True, ok=False` (→ `READINESS_FAILURE`,
-matching v1's `exited`), distinct from a guest that never comes up at all (`answered=False`
-across the whole window → `BOOT_TIMEOUT`). A panic typically leaves the domain *running* (hung
-at the panic), so panic detection rests on the console **string** (§4), not on `domstate` —
-this is the discrimination the issue calls out.
+**The window is two pinned constants, co-located in `install.py` so neither drifts unseen.** The
+effective boot window is `boot_window_polls × _POLL_INTERVAL_SECONDS`. With the existing default
+`_DEFAULT_BOOT_WINDOW_POLLS = 30` and `_POLL_INTERVAL_SECONDS = 5`, the window is **150 s** —
+chosen with margin over a cold boot of a freshly-built `~/src/linux` kernel through the rootfs
+to the `kdive-ready` userspace marker (tens of seconds on the demo host). Both constants live
+next to each other with a comment stating their product *is* the window; the `live_vm` acceptance
+(§7) is the falsifiable check that 150 s clears the real fixed boot (resolving `ok`, not a
+false `BOOT_TIMEOUT`). If the demo host is slower, the interval — not the count — is the tuning
+knob. The probe is read-only and stateless across calls, so it holds no cross-poll deadline; the
+count×interval product is the only window, and it is the same whether the seam is hit 30 times or
+returns terminally on the first.
+
+Liveness uses `virsh domstate` (ported from v1's `_domain_is_running`), and the **exit verdict is
+guarded exactly as v1 guarded it** — an early `domstate` blip must not become a spurious
+`READINESS_FAILURE`:
+
+- A probe that **errors or times out** is *not* proof the guest stopped → treat as `pending`
+  (keep polling), matching v1's "a flaky/slow probe keeps waiting."
+- Only an explicit **terminal** state (`shut off`, `crashed`) counts as exited. Any other
+  non-`running` state (`paused`, `in shutdown`, `pmsuspended`, the brief just-created state) is
+  *not* terminal → `pending`.
+- Before declaring exited, the probe **re-reads the console once more** and re-classifies: a
+  marker (or crash) that landed just before the guest stopped is honored. Only when the re-read
+  still yields `pending` and the state is terminal does the probe return `answered=True,
+  ok=False` (→ `READINESS_FAILURE`, matching v1's `exited`).
+
+A guest that never comes up at all stays `pending` every poll (`answered=False` across the whole
+window → `BOOT_TIMEOUT`). A panic typically leaves the domain *running* (hung at the panic), so
+panic detection rests on the console **string** (§4), not on `domstate` — this is the
+discrimination the issue calls out.
 
 The readiness `marker` is the demo's literal `kdive-ready` (ADR-0052), a module constant.
 Per-rootfs marker resolution (threading the catalog `readiness_marker` through the seam) needs
@@ -164,17 +212,29 @@ larger change; it is a follow-up.
 
 ## 7. Verification
 
-- **Unit (host-free, the prescribed boundary):** `classify_console` returns `crashed` for each
+- **Unit — signature mechanism (host-free):** `classify_console` returns `crashed` for each
   signature in §4, `ready` for the marker alone, `pending` for empty/benign/`DEBUG:`-containing
-  bytes and for malformed UTF-8; crash-wins precedence when both present. `_kdump_capture_present`
-  is `True` only when a staged initrd exists; the kdump gate raises `CONFIGURATION_ERROR` for a
-  kdump method with no initrd and proceeds with one (the existing kdump tests, rewritten to the
-  initrd-presence contract).
-- **`live_vm` acceptance (operator-run, gated):** fill `test_live_vm_real_install_boot` to boot
-  `~/src/linux` @ 7.0 — `dhash_entries=1` resolves to `READINESS_FAILURE` with the `__d_lookup`
-  snippet present in the recorded console artifact; the fixed kernel (or without the param)
-  resolves `ok` at the `kdive-ready` marker. This is the falsifiable check that the §4 signature
-  set catches the demo's real output.
+  bytes and for malformed UTF-8; a crash *before* the marker → `crashed`, a benign signature
+  substring *after* the marker → `ready` (§4.1). `_kdump_capture_present` is `True` only when a
+  staged initrd exists; the kdump gate raises `CONFIGURATION_ERROR` for a kdump method with no
+  initrd (incl. `initrd_ref=None`) and proceeds with one (the existing kdump tests, rewritten to
+  the initrd-presence contract).
+- **Unit — committed console fixtures (host-free, the CI guard against tautology):** two fixture
+  files under `tests/providers/local_libvirt/fixtures/` — a **crash** console and a **clean**
+  console — drive `classify_console` in a CI test: the crash fixture → `crashed`, the clean
+  fixture → `ready`. Each is realistic multi-line `ttyS0` output with the `[ ddddd.dddddd]`
+  timestamp prefixes and surrounding benign lines (the clean fixture *includes* a post-marker
+  line containing a signature substring to lock in the pre-marker scoping; the crash fixture
+  carries a soft-lockup/RCU-stall header with `__d_lookup` in the backtrace). Sourced from a real
+  `dhash_entries=1` run where one exists, else a format-faithful representative the operator
+  replaces with a captured log via the `live_vm` acceptance. This makes the demo's output shape a
+  falsifiable check in the merge gate, not only behind the manual `live_vm` job.
+- **`live_vm` acceptance (operator-run, gated, ground truth):** fill `test_live_vm_real_install_boot`
+  to boot `~/src/linux` @ 7.0 — `dhash_entries=1` resolves to `READINESS_FAILURE` with the
+  `__d_lookup` snippet present in the recorded console artifact; the fixed kernel (or without the
+  param) resolves `ok` at the `kdive-ready` marker within the §6 window. This is the authoritative
+  check that the §4 signatures catch the demo's **real** output and that the §6 window clears a
+  real fixed boot; a mismatch is fixed by adding the signature and/or refreshing the fixtures.
 
 ## 8. Risks & limitations
 
@@ -188,5 +248,13 @@ larger change; it is a follow-up.
   later-silent-hang sequence. The v1 `start_position` offset that solved this needs `boot()` to
   thread the pre-power-cycle byte offset into the seam — a `boot()`/seam-signature change scoped
   out here and tracked as a follow-up.
-- **Signature completeness.** The §4 set is best-effort; the live_vm acceptance is the guard.
-- **kdump check is presence-only** (§5); full in-guest verification is #115.
+- **Signature completeness.** The §4 set is best-effort; the §7 committed fixtures guard the
+  common forms in CI and the `live_vm` acceptance is the ground-truth guard.
+- **Boot-window calibration.** The 150 s window (§6) is sized for the demo host; a materially
+  slower host needs the interval raised, validated by the `live_vm` acceptance resolving `ok`.
+- **Pre-marker false-positive residual.** A non-fatal signature substring emitted *before* the
+  marker on a healthy boot still resolves `crashed` (§4.1) — accepted as the fail-closed cost of
+  crash-wins; the clean fixture guards the common post-marker forms but cannot cover a benign
+  pre-marker splat.
+- **kdump check is presence-only** (§5) and rejects embedded-initramfs kdump kernels; full
+  in-guest verification regardless of initramfs delivery is #115.
