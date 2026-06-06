@@ -39,6 +39,7 @@ from defusedxml.ElementTree import fromstring as _safe_fromstring
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.local_libvirt.provisioning import domain_name_for
+from kdive.store.objectstore import FetchedArtifact, object_store_from_env
 
 _log = logging.getLogger(__name__)
 
@@ -135,10 +136,12 @@ class LocalLibvirtInstall:
     def from_env(cls) -> LocalLibvirtInstall:
         """Build from the ``KDIVE_*`` environment; does not connect to libvirt or the store.
 
-        The real object-store fetch and the real kdump/readiness preflight are `live_vm`-only
-        seams (they need a host and a kernel tree), so they default to stubs that raise
-        ``MISSING_DEPENDENCY`` off the gate — exactly as the build plane's real `make`/checkout
-        seams do — and the worker registers its handlers without a host present.
+        The fetch seam is the real object-store read (`_real_fetch` → `_stage_object`,
+        ADR-0054): it builds the store lazily from the ``KDIVE_S3_*`` env on the first call,
+        so the worker registers its handlers without S3 env present, and the network I/O runs
+        only when an install fetches. The real kdump/readiness preflight remain `live_vm`-only
+        seams (they need a running host), so they default to stubs that raise
+        ``MISSING_DEPENDENCY`` off the gate until G4 wires them.
         """
         host_uri = os.environ.get(_URI_ENV, _DEFAULT_URI)
         staging_root = Path(os.environ.get(_STAGING_ENV, _DEFAULT_STAGING))
@@ -321,12 +324,32 @@ def read_console_log(path: Path) -> bytes:
         return b""
 
 
-def _real_fetch(kernel_ref: str, dest: Path) -> None:  # pragma: no cover - live_vm
-    raise CategorizedError(
-        "real object-store fetch runs only under the live_vm gate",
-        category=ErrorCategory.MISSING_DEPENDENCY,
-        details={"kernel_ref": kernel_ref, "dest": str(dest)},
-    )
+class _ObjectReader(Protocol):
+    def get_artifact(self, key: str, etag: str | None) -> FetchedArtifact: ...
+
+
+def _stage_object(store: _ObjectReader, ref: str, dest: Path) -> None:
+    """Read object ``ref`` from the store and write it to ``dest`` via temp-then-rename.
+
+    ``ref`` is a key the system itself produced (the Run's ``kernel_ref``/``initrd_ref``),
+    so the read is **unconditional** (``etag=None``, ADR-0054) — the install plane holds no
+    client handle to validate. The bytes are written to a sibling ``.part`` file and
+    atomically renamed into ``dest``, so a failure partway leaves ``dest`` untouched and no
+    partial file the redefine could point at. Store errors (``STALE_HANDLE`` for a vanished
+    key, ``INFRASTRUCTURE_FAILURE`` otherwise) propagate as the install plane's categorized
+    failures.
+    """
+    data = store.get_artifact(ref, None).data
+    tmp = dest.with_name(dest.name + ".part")
+    try:
+        tmp.write_bytes(data)
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _real_fetch(ref: str, dest: Path) -> None:  # pragma: no cover - live_vm
+    _stage_object(object_store_from_env(), ref, dest)
 
 
 def _real_kdump_check(system_id: UUID) -> bool:  # pragma: no cover - live_vm
