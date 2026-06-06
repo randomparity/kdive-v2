@@ -82,7 +82,36 @@ In `_seed_succeeded_run_on_system` (≈ line 943), after the `kernel_ref` UPDATE
 
 Confirm `Jsonb` is imported in the test file (it is used elsewhere; if not, add `from psycopg.types.json import Jsonb`).
 
-- [ ] **Step 2: (no test run yet — `_cmdline_for` is still sync; this step only prepares the helpers)**
+- [ ] **Step 2: Re-scope total-`run_steps` count assertions to the relevant step**
+
+A succeeded Run now faithfully carries a build ledger row, so any test that asserts the *total*
+`run_steps` count after `_seed_succeeded_run`/`_seed_succeeded_run_on_system` must scope its count
+to the step it means. Find them: `rg -n "FROM run_steps WHERE run_id=%s\"" tests/mcp/test_runs_tools.py`.
+The known break is `test_install_handler_failure_records_no_step` (≈ line 1312): it seeds via
+`_seed_succeeded_run(pool)` and asserts `nsteps == 0` over `SELECT count(*) FROM run_steps WHERE
+run_id=%s`. Change that query (and any sibling that seeds a succeeded run and asserts a total of 0)
+to scope to install/boot:
+
+```python
+            nsteps = await _count(
+                pool,
+                "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='install'",
+                (run_id,),
+            )
+```
+
+`assert nsteps == 0` then means "no *install* row on failure", which is the test's real intent; the
+build row from the faithful seed is expected. (`test_install_handler_missing_kernel_ref_is_config_error`
+at ≈ line 1334 uses `_seed_run(..., state=SUCCEEDED)` directly — no build row added — so it is
+unaffected; leave it. The build-handler tests around ≈ line 781 use `_seed_running_run`, also
+unmodified.)
+
+- [ ] **Step 3: Run the suite to confirm the seed change alone is green**
+
+`_cmdline_for` is still sync at this point, so the only behavioral change is the extra build row.
+Run: `uv run python -m pytest tests/mcp/test_runs_tools.py -q`
+Expected: PASS (the re-scoped count assertions hold; the extra build row is harmless to every other
+test). If a test still fails on a total count, re-scope it the same way.
 
 ### Sub-task 1.2 — Make `_cmdline_for` async + ledger-sourced (RED → GREEN)
 
@@ -190,9 +219,9 @@ def test_build_run_records_cmdline_in_the_build_ledger(migrated_url: str) -> Non
             run_id = await _seed_running_built_run(pool, sys_id)  # created-state server run
             ctx = request_context(Role.OPERATOR)
             env = await runs_tools.build_run(pool, ctx, run_id, cmdline="console=ttyS0 dhash_entries=1")
-            assert env.status == "queued"
+            assert env.status != "error"  # a job-handle envelope, not a failure
             async with pool.connection() as conn:
-                job = await _dequeue_one(conn)  # the enqueued build job
+                job = await _build_job_for(conn, run_id)  # the enqueued build job
                 await runs_tools.build_handler(conn, job, _RecordingBuilder())
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -212,7 +241,7 @@ def test_build_run_without_cmdline_records_none(migrated_url: str) -> None:
             ctx = request_context(Role.OPERATOR)
             await runs_tools.build_run(pool, ctx, run_id)
             async with pool.connection() as conn:
-                job = await _dequeue_one(conn)
+                job = await _build_job_for(conn, run_id)
                 await runs_tools.build_handler(conn, job, _RecordingBuilder())
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -243,14 +272,19 @@ async def _seed_running_built_run(pool: AsyncConnectionPool, system_id: str) -> 
     return str(run.id)
 
 
-async def _dequeue_one(conn: AsyncConnection) -> Job:
-    """Claim the single queued job (the test enqueued exactly one)."""
-    job = await queue.dequeue(conn)
-    assert job is not None
-    return job
+async def _build_job_for(conn: AsyncConnection, run_id: str) -> Job:
+    """Fetch the enqueued build job by its dedup key (no dequeue — avoids charging an attempt)."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT * FROM jobs WHERE dedup_key = %s", (f"{run_id}:build",))
+        row = await cur.fetchone()
+    assert row is not None
+    return Job.model_validate(row)
 ```
 
-(`_VALID_BUILD` is the existing valid `ServerBuildProfile` dict; confirm `queue` and `Job` are imported.)
+(`_VALID_BUILD` is the existing valid `ServerBuildProfile` dict; confirm `Job`, `dict_row`, and
+`RUNS`/`uuid4`/`_DT`/`copy` are imported — most already are. Fetching by dedup key matches the
+build-handler tests' pattern and avoids `queue.dequeue`'s required `worker_id` arg + attempt
+charge.)
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -365,9 +399,7 @@ from __future__ import annotations
 
 import pytest
 
-from kdive.domain.capture import CaptureMethod
-from kdive.mcp.tools.runs import _install_method_for
-from kdive.profiles.build import ServerBuildProfile, BuildProfile
+from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile
 from tests.integration import _dcache_demo as demo
 
@@ -399,12 +431,13 @@ def test_provisioning_profile_is_console_only(monkeypatch: pytest.MonkeyPatch) -
     raw = demo.demo_provisioning_profile()
     parsed = ProvisioningProfile.parse(raw)  # does not raise
     assert parsed is not None
-    # Stored shape resolves to the always-on CONSOLE tier (no crashkernel, ADR-0051 §1).
-    from kdive.domain.models import System  # local import: build a minimal System for the resolver
-    method = _install_method_for(
-        System.model_construct(provisioning_profile=raw)  # ty: ignore[missing-argument]
-    )
-    assert method is CaptureMethod.CONSOLE
+    # Console-only invariant: no crashkernel reservation (→ _install_method_for resolves CONSOLE,
+    # ADR-0051 §1), no SSH credential, no destructive opt-in. Assert the stored section directly —
+    # the falsifiable shape — rather than constructing a full System for the resolver.
+    section = raw["provider"]["local-libvirt"]
+    assert "crashkernel" not in section
+    assert "ssh_credential_ref" not in section
+    assert "destructive_ops" not in section
 
 
 def test_demo_cmdline_carries_the_trigger() -> None:
@@ -417,8 +450,6 @@ def test_preflight_skips_when_env_absent(monkeypatch: pytest.MonkeyPatch) -> Non
     with pytest.raises(pytest.skip.Exception):
         demo.demo_preflight()
 ```
-
-Note: if `_install_method_for` needs a real `System` shape the `model_construct` stub cannot satisfy, replace that sub-assertion with a direct check on the stored section — `assert "crashkernel" not in raw["provider"]["local-libvirt"]` — which is the falsifiable console-only invariant. Prefer the `_install_method_for` call if it works against a constructed System; fall back to the section check otherwise.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -648,4 +679,4 @@ git status   # expect clean
 - **Spec coverage:** Part A → Task 1 (1.2 `_cmdline_for` ledger, 1.3 `build_run` param + record + log + doc). Part B → Task 2. Part C (incl. teardown finally) → Task 3 (the `live_vm` body encodes provision→A→B→teardown; the runbook carries the full sequence). Part D → Task 4. Success criteria: Wiring → 1.2/1.3 tests; Profiles → Task 2 tests; Skip → Task 2 preflight test + Task 3 skip; End-to-end → Task 3 (manual). Edges: blank cmdline (1.2 default path), external-source (existing gate, unchanged), kdump-missing-crashkernel (existing install gate, unchanged — now ledger-sourced), false-negative (Task 3 dhash-in-console assert + 1.3 install log + runbook flag), bad patch / bad config / aborted-run (runbook, Task 4). Test plan → Tasks 1–3 + Task 5 doc checks.
 - **Placeholder scan:** every code step shows the code; commands have expected output. No TBD/TODO.
 - **Type consistency:** `_cmdline_for(conn, run, method)` async — both call sites updated and awaited (1.2 Step 3). `_enqueue_build(conn, ctx, run, cmdline)` — `_build_locked` updated to pass cmdline (1.3 Step 3). `demo_build_profile(*, fixed)`, `demo_provisioning_profile()`, `demo_preflight()`, `DEMO_CMDLINE` — names match across Tasks 2/3 and the tests.
-- **Known caveat for the executor:** if any existing install/boot test in `test_runs_tools.py` builds a succeeded Run *inline* (not via `_seed_succeeded_run*`) and asserts a non-default installer cmdline, add a `_seed_build_ledger(pool, run_id, cmdline=…)` call to it (1.2 Step 4). The `just type` whole-tree run will catch a missed `await` on `_cmdline_for`.
+- **Known caveat for the executor:** Task 1.1 Step 2 re-scopes the total-`run_steps` count assertions (the build row a faithful succeeded-run seed now carries); the known break is `test_install_handler_failure_records_no_step`. If any other install/boot test builds a succeeded Run *inline* (not via `_seed_succeeded_run*`) and asserts a non-default installer cmdline, add a `_seed_build_ledger(pool, run_id, cmdline=…)` call to it. The `just type` whole-tree run catches a missed `await` on `_cmdline_for`; the `_build_job_for` helper fetches the build job by dedup key (no `queue.dequeue` `worker_id` arg).
