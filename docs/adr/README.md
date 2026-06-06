@@ -80,3 +80,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0048](0048-external-build-artifact-ingestion.md) | External-build artifact ingestion: agent uploads, no server-side make (amended by #111) | Proposed |
 | [0049](0049-crash-capture-tiers.md) | Crash-capture tiers: provider-agnostic method, local-libvirt realizations (M0) | Proposed |
 | [0050](0050-vmcore-method-aware-storage.md) | Method-aware vmcore storage: first-method-wins per System (refines 0049/0031, closes #118) | Proposed |
+| [0051](0051-install-method-conditional-crashkernel.md) | Install-time capture-method resolution + method-conditional crashkernel gate (refines 0049/0030, closes #116) | Proposed |

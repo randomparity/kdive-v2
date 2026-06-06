@@ -216,8 +216,16 @@ or drgn over the bytes regardless of how the bytes were produced) and are implem
 and raises `configuration_error` if the kdump path is absent (`install.py:155`). This blocks a
 non-kdump boot. Changes:
 
-- The install/boot handler learns the Run's capture method (from the Run/build profile). The
-  kdump preflight runs **only** for `method="kdump"`; the three non-kdump methods skip it.
+- The install/boot handler resolves the capture method from the **System's resolved provisioning
+  profile** (`provider.local_libvirt`): a non-empty `crashkernel` ⇒ `kdump`; else `debug.gdbstub`
+  ⇒ `gdbstub`; else `debug.preserve_on_crash` ⇒ `host_dump`; else `console`. This is the
+  provisioned-for intent of ADR-0049 Decision 3, and the `crashkernel ⇔ kdump` mapping of
+  Decision 5. The `runs.install` tool gate requires the `crashkernel=` cmdline token **iff** the
+  resolved method is `kdump`; the `_kdump_check` preflight likewise runs **only** for
+  `method="kdump"`, and the three non-kdump methods skip both. The tool-layer resolution,
+  method-conditional gate, and the `_DEFAULT_CMDLINE` kdump/non-kdump split are
+  [ADR-0051](../../adr/0051-install-method-conditional-crashkernel.md) (#116); the provider-layer
+  `_kdump_check` gating is Task 2.3 below.
 - **Crash-during-boot is success for a `preserve_on_crash` Run, not a boot failure.** The dcache
   bug panics during early boot (path lookups in init), *before* any readiness marker, so
   `_await_ready` would otherwise raise `boot_timeout`/`readiness_failure` and mark the Run failed —
