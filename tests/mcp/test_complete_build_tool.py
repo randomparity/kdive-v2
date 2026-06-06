@@ -253,6 +253,46 @@ def test_build_run_rejects_external_source(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_complete_build_malformed_stored_profile_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(pool, {"source": "bogus"})
+            resp = await runs_tools.complete_build(
+                pool, _ctx(), str(run_id), build_id=None, cmdline="x"
+            )
+        assert resp.status == "error"  # a structured failure, not a raised ToolError
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+
+    asyncio.run(_run())
+
+
+def test_complete_build_rejects_run_with_no_manifest(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_external_run(pool)
+            resp = await runs_tools.complete_build(
+                pool, _ctx(), str(run_id), build_id=None, cmdline="x"
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+
+    asyncio.run(_run())
+
+
+def test_complete_build_rejects_non_created_run(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_external_run_with_manifest(pool)
+            async with pool.connection() as conn:
+                await conn.execute("UPDATE runs SET state='failed' WHERE id=%s", (run_id,))
+            resp = await runs_tools.complete_build(
+                pool, _ctx(), str(run_id), build_id=None, cmdline="x"
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert resp.data["current_status"] == RunState.FAILED.value
+
+    asyncio.run(_run())
+
+
 def test_complete_build_writes_artifact_rows_and_deletes_manifest(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:

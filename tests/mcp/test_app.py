@@ -41,7 +41,14 @@ def test_build_app_registers_jobs_tools() -> None:
             "investigations.link",
             "investigations.unlink",
         } <= names
-        assert {"runs.create", "runs.get", "runs.build", "runs.install", "runs.boot"} <= names
+        assert {
+            "runs.create",
+            "runs.get",
+            "runs.build",
+            "runs.complete_build",
+            "runs.install",
+            "runs.boot",
+        } <= names
         assert {"control.power", "control.force_crash"} <= names
         assert {
             "vmcore.fetch",

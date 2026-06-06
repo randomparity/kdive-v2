@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Annotated, Any, Protocol
 from uuid import UUID, uuid4
@@ -29,6 +29,7 @@ from kdive.db import upload_manifest
 from kdive.db.idempotency import run_step
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, ARTIFACTS, INVESTIGATIONS, RUNS, SYSTEMS
+from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Investigation, Job, JobKind, Run, Sensitivity
 from kdive.domain.state import (
@@ -375,13 +376,25 @@ async def _finalize_build(
 
 
 class _CompleteBuildValidator(Protocol):
-    def validate(self, run_id, manifest, keys, declared_build_id) -> ValidatedUpload: ...
+    def validate(
+        self,
+        run_id: UUID,
+        manifest: Sequence[ManifestEntry],
+        keys: Mapping[str, str],
+        declared_build_id: str | None,
+    ) -> ValidatedUpload: ...
 
 
 class _StoreBackedValidator:
     """Default validator: builds an ObjectStore from env and runs the provider validator."""
 
-    def validate(self, run_id, manifest, keys, declared_build_id) -> ValidatedUpload:
+    def validate(
+        self,
+        run_id: UUID,
+        manifest: Sequence[ManifestEntry],
+        keys: Mapping[str, str],
+        declared_build_id: str | None,
+    ) -> ValidatedUpload:
         store = object_store_from_env()
         return validate_external_artifacts(
             store, manifest=manifest, keys=keys, declared_build_id=declared_build_id
@@ -418,7 +431,10 @@ async def complete_build(
             if recorded is not None:
                 return _complete_envelope(uid, recorded)
 
-            guard = _complete_build_guard(run)
+            try:
+                guard = _complete_build_guard(run)
+            except CategorizedError as exc:
+                return ToolResponse.failure(run_id, exc.category)
             if guard is not None:
                 return guard
 
