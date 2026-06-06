@@ -15,7 +15,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
@@ -25,11 +25,12 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
+from kdive.db import upload_manifest
 from kdive.db.idempotency import run_step
 from kdive.db.locks import LockScope, advisory_xact_lock
-from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RUNS, SYSTEMS
+from kdive.db.repositories import ALLOCATIONS, ARTIFACTS, INVESTIGATIONS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Investigation, Job, JobKind, Run
+from kdive.domain.models import Investigation, Job, JobKind, Run, Sensitivity
 from kdive.domain.state import (
     AllocationState,
     IllegalTransition,
@@ -43,8 +44,14 @@ from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.profiles.build import BuildProfile, ServerBuildProfile
-from kdive.providers.local_libvirt.build import Builder, BuildOutput, LocalLibvirtBuild
+from kdive.profiles.build import BuildProfile, ExternalBuildProfile, ServerBuildProfile
+from kdive.providers.local_libvirt.build import (
+    Builder,
+    BuildOutput,
+    LocalLibvirtBuild,
+    ValidatedUpload,
+    validate_external_artifacts,
+)
 from kdive.providers.local_libvirt.install import (
     Booter,
     Installer,
@@ -52,6 +59,12 @@ from kdive.providers.local_libvirt.install import (
 )
 from kdive.security import audit
 from kdive.security.rbac import Role, require_role
+from kdive.store.objectstore import (
+    HeadResult,
+    StoredArtifact,
+    object_store_from_env,
+    register_artifact_row,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -308,9 +321,11 @@ async def build_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str)
                 return _config_error(run_id)
             require_role(ctx, run.project, Role.OPERATOR)
             try:
-                BuildProfile.parse(run.build_profile)
+                parsed = BuildProfile.parse(run.build_profile)
             except CategorizedError as exc:
                 return ToolResponse.failure(run_id, exc.category)
+            if parsed.source != "server":
+                return _config_error(run_id, data={"reason": "external_source_uses_complete_build"})
             return await _build_locked(conn, ctx, run)
 
 
@@ -357,6 +372,163 @@ async def _finalize_build(
             args={"run_id": str(run.id)},
             project=run.project,
         )
+
+
+class _CompleteBuildValidator(Protocol):
+    def validate(self, run_id, manifest, keys, declared_build_id) -> ValidatedUpload: ...
+
+
+class _StoreBackedValidator:
+    """Default validator: builds an ObjectStore from env and runs the provider validator."""
+
+    def validate(self, run_id, manifest, keys, declared_build_id) -> ValidatedUpload:
+        store = object_store_from_env()
+        return validate_external_artifacts(
+            store, manifest=manifest, keys=keys, declared_build_id=declared_build_id
+        )
+
+
+async def complete_build(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    run_id: str,
+    *,
+    build_id: str | None,
+    cmdline: str,
+    validator: _CompleteBuildValidator | None = None,
+) -> ToolResponse:
+    """Validate an external Run's uploads and finalize it ``created → succeeded``.
+
+    Idempotent: a recorded ``(run_id, "build")`` ledger row short-circuits to the prior
+    success BEFORE the CREATED/source guard, so a retry after a dropped connection returns
+    success, not an illegal-transition error. Requires operator.
+    """
+    validator = validator or _StoreBackedValidator()
+    uid = _as_uuid(run_id)
+    if uid is None:
+        return _config_error(run_id)
+    with bind_context(principal=ctx.principal):
+        async with pool.connection() as conn:
+            run = await RUNS.get(conn, uid)
+            if run is None or run.project not in ctx.projects:
+                return _config_error(run_id)
+            require_role(ctx, run.project, Role.OPERATOR)
+
+            recorded = await _existing_build_result(conn, uid)
+            if recorded is not None:
+                return _complete_envelope(uid, recorded)
+
+            guard = _complete_build_guard(run)
+            if guard is not None:
+                return guard
+
+            manifest_row = await upload_manifest.get_manifest(conn, "runs", uid)
+            if manifest_row is None:
+                return _config_error(run_id, data={"reason": "no_upload_manifest"})
+            keys = {e.name: f"{manifest_row.prefix}{e.name}" for e in manifest_row.entries}
+
+            try:
+                validated = await asyncio.to_thread(
+                    validator.validate, uid, list(manifest_row.entries), keys, build_id
+                )
+            except CategorizedError as exc:
+                return ToolResponse.failure(run_id, exc.category)
+
+            return await _finalize_external_build(
+                conn, ctx, run, validated.output, cmdline, keys, validated.heads
+            )
+
+
+def _complete_build_guard(run: Run) -> ToolResponse | None:
+    """Reject a non-external or non-CREATED Run; ``None`` means proceed to finalize."""
+    parsed = BuildProfile.parse(run.build_profile)
+    if not isinstance(parsed, ExternalBuildProfile):
+        return _config_error(str(run.id), data={"reason": "not_external_source"})
+    if run.state is not RunState.CREATED:
+        return _config_error(str(run.id), data={"current_status": run.state.value})
+    return None
+
+
+def _complete_envelope(run_id: UUID, result: dict[str, Any]) -> ToolResponse:
+    """Build the success envelope from a ledger ``result`` (used live and on replay)."""
+    refs = {"kernel": result["kernel_ref"]}
+    if result.get("debuginfo_ref"):
+        refs["vmlinux"] = result["debuginfo_ref"]
+    if result.get("initrd_ref"):
+        refs["initrd"] = result["initrd_ref"]
+    return ToolResponse.success(
+        str(run_id), "succeeded", suggested_next_actions=["runs.get"], refs=refs
+    )
+
+
+async def _finalize_external_build(
+    conn: AsyncConnection,
+    ctx: RequestContext,
+    run: Run,
+    output: BuildOutput,
+    cmdline: str,
+    keys: dict[str, str],
+    heads: dict[str, HeadResult],
+) -> ToolResponse:
+    """Write artifact rows + ledger + drive created→succeeded under the per-Run lock.
+
+    Collapses ``created → succeeded`` in one locked transaction via guarded raw ``UPDATE``s
+    (``WHERE state='created'``), bypassing ``can_transition`` the same way the server lane's
+    ``_finalize_build`` does for ``running → succeeded`` — so no ``state.py`` edge change is
+    needed. One write-once ``artifacts`` row is written per uploaded object, keyed by its
+    OWN object key (``keys[name]``) — so an ``initrd`` is recorded against its real key,
+    never the kernel's or vmlinux's (``BuildOutput`` carries no initrd field).
+    """
+    # ``cmdline`` is recorded in the LEDGER result, not in build_profile (an immutable
+    # request input; ExternalBuildProfile is extra="forbid"). The install path's
+    # _cmdline_for still reads build_profile, so this is inert until install is wired to
+    # read it from the ledger (next spec) — intentional for this spec's scope.
+    result = {
+        "kernel_ref": output.kernel_ref,
+        "debuginfo_ref": output.debuginfo_ref,
+        "initrd_ref": keys.get("initrd", ""),
+        "build_id": output.build_id,
+        "cmdline": cmdline,
+    }
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run.id):
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT state FROM runs WHERE id = %s FOR UPDATE", (run.id,))
+            row = await cur.fetchone()
+        if row is None:
+            return _config_error(str(run.id))
+        state = RunState(row["state"])
+        if state is RunState.SUCCEEDED:  # a racing complete won; idempotent success
+            recorded = await _existing_build_result(conn, run.id)
+            return _complete_envelope(run.id, recorded or result)
+        if state is not RunState.CREATED:
+            return _config_error(str(run.id), data={"current_status": state.value})
+        for name, head in heads.items():
+            stored = StoredArtifact(keys[name], head.etag, Sensitivity.SENSITIVE, "build")
+            await ARTIFACTS.insert(
+                conn, register_artifact_row(stored, owner_kind="runs", owner_id=run.id)
+            )
+        await conn.execute(
+            "INSERT INTO run_steps (run_id, step, state, result) "
+            "VALUES (%s, 'build', 'succeeded', %s) ON CONFLICT (run_id, step) DO NOTHING",
+            (run.id, Jsonb(result)),
+        )
+        await conn.execute(
+            "UPDATE runs SET kernel_ref = %s, debuginfo_ref = %s, state = 'succeeded' "
+            "WHERE id = %s AND state = 'created'",
+            (output.kernel_ref, output.debuginfo_ref or None, run.id),
+        )
+        await audit.record(
+            conn,
+            ctx,
+            tool="runs.complete_build",
+            object_kind="runs",
+            object_id=run.id,
+            transition="created->succeeded",
+            args={"run_id": str(run.id)},
+            project=run.project,
+        )
+        await upload_manifest.delete_manifest(conn, "runs", run.id)
+    return _complete_envelope(run.id, result)
 
 
 async def _fail_build(conn: AsyncConnection, job: Job, run: Run, category: ErrorCategory) -> None:
@@ -678,6 +850,29 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     ) -> ToolResponse:
         """Enqueue the kernel build job for a Run; poll jobs.* for completion. Requires operator."""
         return await build_run(pool, current_context(), run_id)
+
+    @app.tool(
+        name="runs.complete_build",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "implemented"},
+    )
+    async def runs_complete_build(
+        run_id: Annotated[str, Field(description="The external-build Run to finalize.")],
+        cmdline: Annotated[
+            str, Field(description="Kernel command line, e.g. 'console=ttyS0 dhash_entries=1'.")
+        ],
+        build_id: Annotated[
+            str | None,
+            Field(
+                description="GNU build-id as hex (e.g. from `readelf -n vmlinux`); required iff "
+                "a vmlinux was uploaded. Case-insensitive."
+            ),
+        ] = None,
+    ) -> ToolResponse:
+        """Validate an external Run's uploads and finalize it to succeeded. Operator only."""
+        return await complete_build(
+            pool, current_context(), run_id, build_id=build_id, cmdline=cmdline
+        )
 
     @app.tool(
         name="runs.install",
