@@ -7,6 +7,7 @@ import copy
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, LiteralString
 from uuid import UUID, uuid4
 
@@ -492,6 +493,15 @@ async def _count(pool: AsyncConnectionPool, query: LiteralString, params: tuple[
         await cur.execute(query, params)
         row = await cur.fetchone()
     return 0 if row is None else int(row["n"])
+
+
+async def _system_id_of(pool: AsyncConnectionPool, run_id: str) -> str:
+    """Resolve the System a Run is bound to (the console artifact is System-owned)."""
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT system_id FROM runs WHERE id = %s", (run_id,))
+        row = await cur.fetchone()
+    assert row is not None
+    return str(row["system_id"])
 
 
 def test_build_created_run_flips_running_and_enqueues(migrated_url: str) -> None:
@@ -1319,15 +1329,20 @@ def test_boot_handler_registers_console_on_success(
     migrated_url: str,
     minio_store: Any,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     # The clean-boot console is the A/B baseline (the `ls /proc`-ran-without-panic
     # evidence) the feature exists to produce, so registration must fire on success too.
+    # A real clean boot's console is non-empty (it prints the readiness marker).
     monkeypatch.setattr(runs_tools, "object_store_from_env", lambda: minio_store)
+    monkeypatch.setattr(runs_tools, "console_log_path", lambda sid: tmp_path / f"{sid}.log")
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_succeeded_run(pool)
             await _record_install_step(pool, run_id)
+            sid = await _system_id_of(pool, run_id)
+            (tmp_path / f"{sid}.log").write_bytes(b"[    0.0] KDIVE-BUSYBOX-READY\n")
             job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
             booter = _FakeBooter()  # clean success, no error
             async with pool.connection() as conn:
@@ -1344,7 +1359,7 @@ def test_boot_handler_registers_console_on_success(
                 ("%/console",),
             )
         assert nsteps == 1  # boot step recorded succeeded
-        assert n == 1  # console registered on the happy path
+        assert n == 1  # non-empty console registered on the happy path
 
     asyncio.run(_run())
 
@@ -1353,13 +1368,19 @@ def test_boot_handler_registers_console_even_on_failure(
     migrated_url: str,
     minio_store: Any,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    # On a crash the panic fires before readiness, but the oops console IS on disk — so a
+    # non-empty console must still be captured even though the boot step raises.
     monkeypatch.setattr(runs_tools, "object_store_from_env", lambda: minio_store)
+    monkeypatch.setattr(runs_tools, "console_log_path", lambda sid: tmp_path / f"{sid}.log")
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_succeeded_run(pool)
             await _record_install_step(pool, run_id)
+            sid = await _system_id_of(pool, run_id)
+            (tmp_path / f"{sid}.log").write_bytes(b"Kernel panic - not syncing: __d_lookup\n")
             job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
             booter = _FakeBooter(error=ErrorCategory.BOOT_TIMEOUT)
             async with pool.connection() as conn:
@@ -1375,10 +1396,48 @@ def test_boot_handler_registers_console_even_on_failure(
     asyncio.run(_run())
 
 
+def test_boot_handler_skips_empty_console(
+    migrated_url: str,
+    minio_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # An empty/unreadable console means capture FAILED (a real boot's console is non-empty).
+    # Registering empty bytes as an `available` artifact would be indistinguishable from a
+    # crash-free console and could drive a false "fixed" A/B verdict, so it must NOT register.
+    monkeypatch.setattr(runs_tools, "object_store_from_env", lambda: minio_store)
+    monkeypatch.setattr(runs_tools, "console_log_path", lambda sid: tmp_path / f"{sid}.log")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_install_step(pool, run_id)
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter()  # clean success, but no console file was written
+            async with pool.connection() as conn:
+                result = await runs_tools.boot_handler(conn, job, booter)
+            assert result == run_id
+            nsteps = await _count(
+                pool,
+                "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='boot'",
+                (run_id,),
+            )
+            n = await _count(
+                pool,
+                "SELECT count(*) AS n FROM artifacts WHERE object_key LIKE %s",
+                ("%/console",),
+            )
+        assert nsteps == 1  # boot itself succeeded
+        assert n == 0  # but an empty console capture registers nothing
+
+    asyncio.run(_run())
+
+
 def test_boot_handler_console_is_readable_via_artifacts(
     migrated_url: str,
     minio_store: Any,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """The registered console artifact must be readable through artifacts_list (ADR-0049 D4).
 
@@ -1388,23 +1447,19 @@ def test_boot_handler_console_is_readable_via_artifacts(
     from kdive.mcp.tools import artifacts as artifacts_tools
 
     monkeypatch.setattr(runs_tools, "object_store_from_env", lambda: minio_store)
+    monkeypatch.setattr(runs_tools, "console_log_path", lambda sid: tmp_path / f"{sid}.log")
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_succeeded_run(pool)
             await _record_install_step(pool, run_id)
+            system_id = await _system_id_of(pool, run_id)
+            (tmp_path / f"{system_id}.log").write_bytes(b"[    0.0] KDIVE-BUSYBOX-READY\n")
             job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
             booter = _FakeBooter()  # clean success
             async with pool.connection() as conn:
                 result = await runs_tools.boot_handler(conn, job, booter)
             assert result == run_id
-
-            # Resolve the system_id the Run was bound to (needed to call artifacts_list).
-            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute("SELECT system_id FROM runs WHERE id = %s", (run_id,))
-                row = await cur.fetchone()
-            assert row is not None
-            system_id = str(row["system_id"])
 
             # artifacts_list must return the console as a redacted artifact envelope.
             listed = await artifacts_tools.artifacts_list(pool, _ctx(), system_id=system_id)

@@ -771,6 +771,10 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
     job_ctx = _ctx_from_job(job, run.project)
 
     async def _do() -> dict[str, Any]:
+        # `method`/`initrd_ref` are left at their defaults (HOST_DUMP, no initrd): the Tier-0
+        # boot vehicle is a single bzImage with an embedded initramfs, so no external initrd is
+        # staged. Threading the resolved capture method + a ledger `initrd_ref` through this
+        # call site (and relaxing the `runs.install` crashkernel gate for non-kdump) is #116.
         await asyncio.to_thread(
             installer.install, run.system_id, run_id, kernel_ref, cmdline=cmdline
         )
@@ -847,27 +851,41 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
         # Guard so a store/insert failure never masks the boot error that caused the finally.
         try:
             raw = await asyncio.to_thread(read_console_log, console_log_path(run.system_id))
-            redacted = Redactor().redact_text(raw.decode("utf-8", "replace")).encode("utf-8")
-            stored = await asyncio.to_thread(
-                lambda: object_store_from_env().put_artifact(
-                    "local",
-                    "systems",
-                    str(run.system_id),
-                    "console",
-                    data=redacted,
-                    sensitivity=Sensitivity.REDACTED,
-                    retention_class="console",
+            if not raw:
+                # An empty read means the console was never captured (the log is absent or
+                # unreadable). A real boot's console is non-empty — even a clean boot prints
+                # the readiness marker. Registering empty bytes as an `available` artifact
+                # would be indistinguishable from a crash-free console and could drive a
+                # false "fixed" A/B verdict, so skip registration and log the miss instead.
+                _log.warning(
+                    "console log for system %s is empty or unreadable; "
+                    "registering no console artifact",
+                    run.system_id,
                 )
-            )
-            # No advisory lock (unlike vmcore.py's capture): the (run_id, "boot") job dedup
-            # key serializes re-dispatch, and a later replay sees the existing /console row
-            # and skips — so a lock-held double-check isn't needed to stay idempotent here.
-            async with conn.transaction():
-                if await _existing_console_key(conn, run.system_id) is None:
-                    await ARTIFACTS.insert(
-                        conn,
-                        register_artifact_row(stored, owner_kind="systems", owner_id=run.system_id),
+            else:
+                redacted = Redactor().redact_text(raw.decode("utf-8", "replace")).encode("utf-8")
+                stored = await asyncio.to_thread(
+                    lambda: object_store_from_env().put_artifact(
+                        "local",
+                        "systems",
+                        str(run.system_id),
+                        "console",
+                        data=redacted,
+                        sensitivity=Sensitivity.REDACTED,
+                        retention_class="console",
                     )
+                )
+                # No advisory lock (unlike vmcore.py's capture): the (run_id, "boot") job dedup
+                # key serializes re-dispatch, and a later replay sees the existing /console row
+                # and skips — so a lock-held double-check isn't needed to stay idempotent here.
+                async with conn.transaction():
+                    if await _existing_console_key(conn, run.system_id) is None:
+                        await ARTIFACTS.insert(
+                            conn,
+                            register_artifact_row(
+                                stored, owner_kind="systems", owner_id=run.system_id
+                            ),
+                        )
         except Exception:
             _log.warning(
                 "console artifact registration failed for system %s; boot outcome unaffected",
