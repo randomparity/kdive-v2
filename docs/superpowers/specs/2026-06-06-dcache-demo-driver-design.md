@@ -107,6 +107,15 @@ from env (ADR-0056 §3–4):
 4. **Run B (fixed):** a new Run on the **same** System: `create_run(build_profile=
    demo_build_profile(fixed=True))` → `build_run(cmdline=DEMO_CMDLINE)` → install → boot. Assert the
    boot **succeeds** and the (overwritten) console artifact classifies as `ready`.
+5. **Teardown (a `finally`/fixture finalizer):** the handler-level driver runs no reconciler, so it
+   tears the System down itself — `allocations.release` then the teardown handler (`virsh destroy` +
+   `undefine` the `kdive-{system_id}` domain) — and removes the per-Run staging dirs. This runs even
+   when an assertion fails mid-A/B, so a left-running domain or staged disk does not leak across
+   runs; a System left behind by a hard-aborted run (the process killed before the finalizer) is the
+   operator's to reap (the runbook documents the `virsh` cleanup).
+
+`demo_provisioning_profile()` pins concrete sizes — `vcpu: 2`, `memory_mb: 2048`, `disk_gb: 20`
+(the live_stack profile's sizing) — so the helper is unambiguous.
 
 The `crashed`/`ready` console classification is the ground-truth assertion (ADR-0055's
 `classify_console`); the boot-job outcome (`readiness_failure`/`boot_timeout` vs success) is the
@@ -144,6 +153,8 @@ Three dependencies the driver rests on, made explicit so a reorder cannot quietl
 4. The one command that reproduces test-case 05 (`just test-live` scoped to the demo), and the
    agent-facing tool-by-tool walkthrough (allocate → provision → create-run → build(cmdline) →
    install → boot, twice).
+5. Cleanup: `allocations.release` + teardown, and how to reap a leftover System from an aborted run
+   (`virsh destroy`/`undefine kdive-<system_id>`, remove `/var/lib/kdive/install/<system_id>`).
 
 ## Success criteria (falsifiable)
 
@@ -185,6 +196,12 @@ Three dependencies the driver rests on, made explicit so a reorder cannot quietl
 - **`KDIVE_DEMO_FIX_PATCH` does not apply** (stale tree, fuzz, CRLF) → G1's `_apply_patch` maps it
   to `configuration_error` at Run B's *build*, not its boot. The runbook pre-checks with
   `git apply --check`.
+- **`KDIVE_TEST_BUILD_CONFIG` misses a prerequisite** (`CONFIG_CRASH_DUMP` / DWARF / BTF) → Run A
+  fails at *build* with `build_failure` from the ADR-0029 config preflight, before any boot —
+  distinct from a boot crash. The runbook says to verify the `.config` satisfies the preflight.
+- **Aborted run leaves a System** (the driver process is killed before the teardown finalizer) →
+  the `kdive-{system_id}` domain and its staging persist; the runbook documents `virsh destroy` /
+  `undefine` + removing the staging dirs to reap it before re-running.
 - **Vulnerable boot leaves the System bootable for Run B** — a console crash does not flip System
   state; verified by the topology decision (ADR-0056 §5).
 
