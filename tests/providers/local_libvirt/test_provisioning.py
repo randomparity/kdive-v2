@@ -17,6 +17,7 @@ from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.local_libvirt import discovery
 from kdive.providers.local_libvirt.provisioning import (
     LocalLibvirtProvisioning,
+    console_log_path,
     domain_name_for,
     render_domain_xml,
     validate_profile,
@@ -291,3 +292,22 @@ def test_from_env_does_not_connect(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("KDIVE_LIBVIRT_URI", "qemu:///system")
     prov = LocalLibvirtProvisioning.from_env()  # building must not open a connection
     assert isinstance(prov, LocalLibvirtProvisioning)
+
+
+def test_domain_xml_has_serial_console_with_log() -> None:
+    # Parse with defusedxml (XXE-safe), matching install.py's _safe_fromstring; stdlib ET
+    # parsing is vulnerable to XXE/billion-laughs even on self-rendered strings in tests.
+    sid = UUID("00000000-0000-0000-0000-0000000000aa")
+    root = _safe_fromstring(render_domain_xml(sid, _profile()))
+    serial = root.find("./devices/serial[@type='pty']")
+    assert serial is not None
+    log = serial.find("log")
+    assert log is not None
+    assert log.get("file") == str(console_log_path(sid))
+    # The paired <console> redirect is what makes the serial device usable.
+    console = root.find("./devices/console[@type='pty']")
+    assert console is not None
+    target = console.find("target")
+    assert target is not None
+    assert target.get("type") == "serial"
+    assert target.get("port") == "0"
