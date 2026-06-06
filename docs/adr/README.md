@@ -84,3 +84,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0052](0052-bootable-rootfs-image-builder.md) | Bootable kdive-ready rootfs builder: whole-disk-ext4 layout + managed SSH key (G3, closes #124) | Proposed |
 | [0053](0053-build-checkout-seam.md) | Build checkout seam: warm-tree rsync + local config/patch refs (G1, closes #125) | Proposed |
 | [0054](0054-object-store-unconditional-read.md) | Object-store unconditional read for system-produced keys (G2, closes #126) | Proposed |
+| [0055](0055-install-readiness-kdump-seam.md) | Install readiness console classifier + host initrd-presence kdump gate (G4, closes #127) | Proposed |

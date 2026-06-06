@@ -1,0 +1,10 @@
+[    0.000000] Linux version 7.0.0 (kdive@demo) #1 SMP PREEMPT_DYNAMIC
+[    0.000000] Command line: console=ttyS0
+[    0.512345] Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    1.004221] Run /sbin/init as init process
+[    2.220110] systemd-udevd DEBUG: initializing the readiness subsystem
+[    3.200400] systemd[1]: Starting kdive-ready.service - KDIVE readiness marker...
+kdive-ready
+[    3.401200] systemd[1]: Started kdive-ready.service.
+[    3.510000] some-daemon[321]: BUG: benign post-marker chatter, must not flip the verdict
+[    3.600000] systemd[1]: Startup finished.

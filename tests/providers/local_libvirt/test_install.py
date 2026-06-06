@@ -18,6 +18,8 @@ from kdive.providers.local_libvirt.install import (
     LocalLibvirtInstall,
     ReadinessResult,
     _stage_object,
+    _verdict_to_result,
+    classify_console,
 )
 from kdive.store.objectstore import FetchedArtifact
 from tests.providers.local_libvirt.conftest import FakeDomain, FakeLibvirtConn
@@ -47,14 +49,10 @@ class _Fetch:
 
 @dataclass
 class _Readiness:
-    """Canned readiness/kdump seam. answered=False → never-answered; ok=False → answered-fail."""
+    """Canned readiness seam. answered=False → never-answered; ok=False → answered-fail."""
 
     answered: bool = True
     ok: bool = True
-    kdump_present: bool = True
-
-    def kdump_check(self, system_id: UUID) -> bool:
-        return self.kdump_present
 
     def readiness(self, system_id: UUID) -> ReadinessResult:
         return ReadinessResult(answered=self.answered, ok=self.ok)
@@ -83,7 +81,6 @@ def _install(
         connect=lambda: conn,
         fetch_kernel=fetch,
         fetch_initrd=fetch,
-        kdump_check=seam.kdump_check,
         readiness=seam.readiness,
         staging_root=staging_root,
         boot_window_polls=3,
@@ -141,21 +138,21 @@ def test_install_does_not_inject_xml_from_cmdline(tmp_path: Path) -> None:
 # --- install: kdump prerequisite -----------------------------------------------------
 
 
-def test_install_kdump_absent_is_config_error_before_redefine(tmp_path: Path) -> None:
+def test_install_kdump_without_initrd_is_config_error_before_redefine(tmp_path: Path) -> None:
+    # method=KDUMP with no initrd_ref: the capture initramfs is absent → CONFIGURATION_ERROR,
+    # nothing redefined (the crashkernel reservation is inert without a capture initrd).
     conn = _conn_with_existing()
-    seam = _Readiness(kdump_present=False)
-    inst = _install(conn=conn, seam=seam, staging_root=tmp_path)
+    inst = _install(conn=conn, staging_root=tmp_path)
     with pytest.raises(CategorizedError) as caught:
         inst.install(_SYS, _RUN, _KERNEL_REF, cmdline=_CMDLINE, method=CaptureMethod.KDUMP)
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert conn.defined_xml == []  # nothing redefined on a missing capture path
 
 
-def test_install_kdump_present_proceeds(tmp_path: Path) -> None:
-    # method=KDUMP with the capture path present: install proceeds and redefines the domain.
+def test_install_kdump_with_initrd_proceeds(tmp_path: Path) -> None:
+    # method=KDUMP with a staged initrd present: install proceeds and redefines once.
     conn = _conn_with_existing()
-    seam = _Readiness(kdump_present=True)
-    inst = _install(conn=conn, seam=seam, staging_root=tmp_path)
+    inst = _install(conn=conn, staging_root=tmp_path)
     inst.install(
         _SYS,
         _RUN,
@@ -286,11 +283,8 @@ def test_read_console_log_missing_is_empty(tmp_path: Path) -> None:
 # --- method-conditional kdump + optional initrd --------------------------------------
 
 
-def test_install_skips_kdump_check_and_omits_initrd(tmp_path: Path) -> None:
-    """CONSOLE method: kdump_check never called; no initrd fetched; no <initrd> in XML."""
-
-    def _kdump_must_not_run(_sid: UUID) -> bool:
-        raise AssertionError("kdump_check called for a non-kdump method")
+def test_install_console_method_omits_initrd(tmp_path: Path) -> None:
+    """CONSOLE method, no initrd_ref: no initrd fetched; no <initrd> in XML."""
 
     def _initrd_must_not_run(_ref: str, _dest: Path) -> None:
         raise AssertionError("initrd fetched when no initrd_ref given")
@@ -300,11 +294,10 @@ def test_install_skips_kdump_check_and_omits_initrd(tmp_path: Path) -> None:
         connect=lambda: conn,
         fetch_kernel=lambda _ref, _dest: None,
         fetch_initrd=_initrd_must_not_run,
-        kdump_check=_kdump_must_not_run,
         readiness=lambda _sid: ReadinessResult(answered=True, ok=True),
         staging_root=tmp_path,
     )
-    # CONSOLE + no initrd_ref: kdump_check skipped, no initrd fetched, no <initrd> rendered.
+    # CONSOLE + no initrd_ref: no initrd fetched, no <initrd> rendered.
     installer.install(
         _SYS, _RUN, _KERNEL_REF, cmdline="console=ttyS0", method=CaptureMethod.CONSOLE
     )
@@ -406,8 +399,110 @@ def test_live_vm_real_install_boot() -> None:  # pragma: no cover - live_vm
     import shutil
 
     uri = os.environ.get("KDIVE_LIBVIRT_URI")
-    if not uri or not shutil.which("virsh"):
-        pytest.skip("KDIVE_LIBVIRT_URI or virsh unavailable")
-    # The real redefine + power-cycle + readiness preflight runs against the operator-provided
-    # libvirt host; wired by the live_vm runner as part of the #19 gated suite.
-    raise NotImplementedError("live_vm real install/boot harness wired by the live_vm runner")
+    system_id = os.environ.get("KDIVE_LIVE_VM_SYSTEM_ID")
+    if not uri or not shutil.which("virsh") or not system_id:
+        pytest.skip("KDIVE_LIBVIRT_URI, virsh, or KDIVE_LIVE_VM_SYSTEM_ID unavailable")
+    # The operator points KDIVE_LIVE_VM_SYSTEM_ID at a System already provisioned + installed
+    # with a kdive-ready rootfs (epic #123 build/install harness). boot() power-cycles it and
+    # drives the real _real_readiness console probe; a clean kdive-ready boot resolves without
+    # raising. The vulnerable-vs-fixed A/B is exercised host-free by the committed crash/clean
+    # fixtures (test_*_fixture_classifies_*) and end-to-end by the #123 integration harness.
+    booter = LocalLibvirtInstall.from_env()
+    booter.boot(UUID(system_id))  # no raise == readiness resolved ok at the marker
+
+
+# --- classify_console: the pure readiness verdict core (ADR-0055) --------------------
+
+_MARKER = "kdive-ready"
+
+
+@pytest.mark.parametrize(
+    "signature_line",
+    [
+        "[   22.10] Kernel panic - not syncing: Attempted to kill init!",
+        "[   22.10] watchdog: BUG: soft lockup - CPU#0 stuck for 22s! [udevd:142]",
+        "[   22.10] Oops: 0000 [#1] PREEMPT SMP",
+        "[   22.10] general protection fault: 0000 [#1] SMP",
+        "[   22.10] Unable to handle kernel paging request at virtual address 0",
+        "[   22.10] BUG: KASAN: slab-out-of-bounds in __d_lookup+0x1a/0x2b",
+        "[   22.10] BUG: KFENCE: use-after-free read in d_lookup",
+        "[   22.10] rcu: INFO: rcu_sched self-detected stall on CPU",
+    ],
+)
+def test_classify_crash_signatures_resolve_crashed(signature_line: str) -> None:
+    data = f"[    0.00] booting\n{signature_line}\n  __d_lookup+0x1a\n".encode()
+    assert classify_console(data, marker=_MARKER) == "crashed"
+
+
+def test_classify_marker_line_alone_is_ready() -> None:
+    data = b"[    0.00] booting\n[    3.40] systemd: reached target\nkdive-ready\n"
+    assert classify_console(data, marker=_MARKER) == "ready"
+
+
+def test_classify_empty_is_pending() -> None:
+    assert classify_console(b"", marker=_MARKER) == "pending"
+
+
+def test_classify_no_marker_no_crash_is_pending() -> None:
+    data = b"[    0.00] Linux version 7.0.0\n[    1.10] still booting\n"
+    assert classify_console(data, marker=_MARKER) == "pending"
+
+
+def test_classify_debug_substring_is_not_a_crash() -> None:
+    # `(?<![A-Za-z])BUG:` must not match `DEBUG:` (no false crash on a benign line).
+    data = b"[    1.0] app DEBUG: initializing the readiness subsystem\nkdive-ready\n"
+    assert classify_console(data, marker=_MARKER) == "ready"
+
+
+def test_classify_crash_before_marker_wins() -> None:
+    data = b"[    1.0] Kernel panic - not syncing\n[    2.0] late\nkdive-ready\n"
+    assert classify_console(data, marker=_MARKER) == "crashed"
+
+
+def test_classify_signature_after_marker_stays_ready() -> None:
+    # Pre-marker scoping: a signature *after* the marker line does not flip a healthy boot.
+    data = b"kdive-ready\n[    4.0] some-daemon: BUG: benign post-marker chatter\n"
+    assert classify_console(data, marker=_MARKER) == "ready"
+
+
+def test_classify_systemd_unit_line_is_not_the_marker() -> None:
+    # Whole-line match: `Starting kdive-ready.service` contains the substring but is not the signal.
+    data = b"[    3.2] systemd[1]: Starting kdive-ready.service - KDIVE marker...\n"
+    assert classify_console(data, marker=_MARKER) == "pending"
+
+
+def test_classify_malformed_utf8_does_not_raise() -> None:
+    data = b"\xff\xfe partial \x80 bytes, still booting\n"
+    assert classify_console(data, marker=_MARKER) == "pending"
+
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_verdict_to_result_crashed_is_answered_failure() -> None:
+    # The demo's load-bearing signal: a crashed verdict must resolve to readiness failure.
+    assert _verdict_to_result("crashed", exited=False) == ReadinessResult(answered=True, ok=False)
+
+
+def test_verdict_to_result_ready_is_answered_ok() -> None:
+    assert _verdict_to_result("ready", exited=False) == ReadinessResult(answered=True, ok=True)
+
+
+def test_verdict_to_result_pending_running_keeps_polling() -> None:
+    # A still-booting guest is not yet answered → None tells the probe to keep polling.
+    assert _verdict_to_result("pending", exited=False) is None
+
+
+def test_verdict_to_result_pending_exited_is_answered_failure() -> None:
+    # A guest that exited without reaching the marker is answered-but-failed (v1's `exited`).
+    assert _verdict_to_result("pending", exited=True) == ReadinessResult(answered=True, ok=False)
+
+
+def test_crash_fixture_classifies_crashed() -> None:
+    data = (_FIXTURES / "console_crash_dhash.log").read_bytes()
+    assert classify_console(data) == "crashed"
+
+
+def test_clean_fixture_classifies_ready() -> None:
+    data = (_FIXTURES / "console_clean_ready.log").read_bytes()
+    assert classify_console(data) == "ready"

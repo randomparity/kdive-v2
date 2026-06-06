@@ -27,10 +27,13 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
+import subprocess  # noqa: S404 - virsh domstate is invoked with a fixed argv, no shell
+import time
 import xml.etree.ElementTree as ET  # noqa: S405 - constructs/edits self-owned domain XML only
 from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple, Protocol
+from typing import Literal, NamedTuple, Protocol
 from uuid import UUID
 
 import libvirt
@@ -39,7 +42,7 @@ from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.local_libvirt.provisioning import domain_name_for
+from kdive.providers.local_libvirt.provisioning import console_log_path, domain_name_for
 from kdive.store.objectstore import FetchedArtifact, object_store_from_env
 
 _log = logging.getLogger(__name__)
@@ -49,6 +52,27 @@ _DEFAULT_URI = "qemu:///system"
 _STAGING_ENV = "KDIVE_INSTALL_STAGING"
 _DEFAULT_STAGING = "/var/lib/kdive/install"
 _DEFAULT_BOOT_WINDOW_POLLS = 30
+# The boot window is _DEFAULT_BOOT_WINDOW_POLLS × _POLL_INTERVAL_SECONDS = 150s (ADR-0055 §7):
+# boot()._await_ready loops the poll count; _real_readiness owns the per-poll cadence.
+_POLL_INTERVAL_SECONDS = 5.0
+_DOMSTATE_PROBE_TIMEOUT = 10
+_TERMINAL_DOMSTATES = frozenset({"shut off", "crashed"})
+
+_READINESS_MARKER = "kdive-ready"
+# Fatal/stall-grade kernel crash signatures (ADR-0055 §4). Fail-closed and additive.
+# The lookbehinds keep `BUG:`/`Oops:` from matching benign substrings (e.g. `DEBUG:`).
+_CRASH_SIGNATURE = re.compile(
+    r"Kernel panic"
+    r"|(?<![A-Za-z])BUG:"
+    r"|(?<![A-Za-z])Oops:"
+    r"|general protection fault"
+    r"|[Uu]nable to handle kernel"
+    r"|KASAN:"
+    r"|KFENCE:"
+    r"|detected stall"
+)
+
+ConsoleVerdict = Literal["ready", "crashed", "pending"]
 
 
 class ReadinessResult(NamedTuple):
@@ -73,7 +97,6 @@ class _LibvirtConn(Protocol):
 
 type Connect = Callable[[], _LibvirtConn]
 type Fetch = Callable[[str, Path], None]
-type KdumpCheck = Callable[[UUID], bool]
 type Readiness = Callable[[UUID], ReadinessResult]
 
 
@@ -120,7 +143,6 @@ class LocalLibvirtInstall:
         connect: Connect,
         fetch_kernel: Fetch,
         fetch_initrd: Fetch,
-        kdump_check: KdumpCheck,
         readiness: Readiness,
         staging_root: Path,
         boot_window_polls: int = _DEFAULT_BOOT_WINDOW_POLLS,
@@ -128,7 +150,6 @@ class LocalLibvirtInstall:
         self._connect = connect
         self._fetch_kernel = fetch_kernel
         self._fetch_initrd = fetch_initrd
-        self._kdump_check = kdump_check
         self._readiness = readiness
         self._staging_root = staging_root
         self._boot_window_polls = boot_window_polls
@@ -140,9 +161,9 @@ class LocalLibvirtInstall:
         The fetch seam is the real object-store read (`_real_fetch` → `_stage_object`,
         ADR-0054): it builds the store lazily from the ``KDIVE_S3_*`` env on the first call,
         so the worker registers its handlers without S3 env present, and the network I/O runs
-        only when an install fetches. The real kdump/readiness preflight remain `live_vm`-only
-        seams (they need a running host), so they default to stubs that raise
-        ``MISSING_DEPENDENCY`` off the gate until G4 wires them.
+        only when an install fetches. The real readiness preflight (`_real_readiness`) tails the
+        teed console under the `live_vm` gate (it needs a running host); the kdump prerequisite
+        is a host-observable initrd-presence check inside ``install`` (ADR-0055 §5), not a seam.
         """
         host_uri = os.environ.get(_URI_ENV, _DEFAULT_URI)
         staging_root = Path(os.environ.get(_STAGING_ENV, _DEFAULT_STAGING))
@@ -150,7 +171,6 @@ class LocalLibvirtInstall:
             connect=lambda: libvirt.open(host_uri),
             fetch_kernel=_real_fetch,
             fetch_initrd=_real_fetch,
-            kdump_check=_real_kdump_check,
             readiness=_real_readiness,
             staging_root=staging_root,
         )
@@ -192,9 +212,9 @@ class LocalLibvirtInstall:
         if initrd_ref is not None:
             initrd_path = staging_dir / "initrd"
             self._fetch_initrd(initrd_ref, initrd_path)
-        if method is CaptureMethod.KDUMP and not self._kdump_check(system_id):
+        if method is CaptureMethod.KDUMP and not _kdump_capture_present(initrd_path):
             raise CategorizedError(
-                "kdump capture service/initramfs not present on the staged System",
+                "kdump capture initramfs not staged (a separate initrd is required for kdump)",
                 category=ErrorCategory.CONFIGURATION_ERROR,
                 details={"system_id": str(system_id)},
             )
@@ -333,6 +353,29 @@ def read_console_log(path: Path) -> bytes:
         return b""
 
 
+def classify_console(data: bytes, *, marker: str = _READINESS_MARKER) -> ConsoleVerdict:
+    """Classify a console capture: did the System reach the marker, crash, or neither?
+
+    The marker is matched as a whole line — the readiness unit echoes the bare line
+    ``kdive-ready`` to the console, while systemd's ``Starting kdive-ready.service`` line
+    (same substring) is not the signal (ADR-0055 §3). A crash signature (§4) in the
+    pre-marker region wins (crash-wins, fail-closed). Bytes are decoded utf-8 with
+    ``errors="replace"`` so a partial multibyte tail or non-UTF-8 console never raises.
+
+    Returns:
+        ``"crashed"`` if a crash signature precedes the marker (or the marker is absent),
+        ``"ready"`` if a bare marker line is present with no crash before it, else
+        ``"pending"``.
+    """
+    text = data.decode("utf-8", errors="replace")
+    marker_re = re.compile(rf"^[^\S\n]*{re.escape(marker)}[^\S\n]*$", re.MULTILINE)
+    marker_match = marker_re.search(text)
+    region = text if marker_match is None else text[: marker_match.start()]
+    if _CRASH_SIGNATURE.search(region):
+        return "crashed"
+    return "ready" if marker_match is not None else "pending"
+
+
 class _ObjectReader(Protocol):
     def get_artifact(self, key: str, etag: str | None) -> FetchedArtifact: ...
 
@@ -372,20 +415,85 @@ def _real_fetch(ref: str, dest: Path) -> None:  # pragma: no cover - live_vm
     _stage_object(object_store_from_env(), ref, dest)
 
 
-def _real_kdump_check(system_id: UUID) -> bool:  # pragma: no cover - live_vm
-    raise CategorizedError(
-        "real kdump preflight runs only under the live_vm gate",
-        category=ErrorCategory.MISSING_DEPENDENCY,
-        details={"system_id": str(system_id)},
-    )
+def _kdump_capture_present(initrd_path: Path | None) -> bool:
+    """Host-observable kdump prerequisite: a separate capture initramfs was staged.
+
+    A ``crashkernel=`` reservation is inert without a capture initramfs (ADR-0030 §4).
+    This is necessary, not sufficient — it does not prove the initrd is kdump-capable;
+    the in-guest verification lands with #115 (ADR-0055 §5). An embedded-initramfs kernel
+    (``initrd_ref=None`` → ``initrd_path is None``) is rejected for kdump (the M0 boundary).
+    """
+    return initrd_path is not None and initrd_path.exists()
+
+
+def _domain_exited(domain_name: str) -> bool:  # pragma: no cover - live_vm
+    """True only if ``virsh domstate`` reports a terminal state (shut off / crashed).
+
+    A probe error/timeout or a transient non-running state (``paused``, ``in shutdown``)
+    is not proof of exit (v1: a flaky/slow probe keeps waiting), so it returns ``False``
+    and the caller keeps polling (ADR-0055 §7).
+    """
+    uri = os.environ.get(_URI_ENV, _DEFAULT_URI)
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["virsh", "-c", uri, "domstate", domain_name],
+            capture_output=True,
+            text=True,
+            timeout=_DOMSTATE_PROBE_TIMEOUT,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return proc.stdout.strip().lower() in _TERMINAL_DOMSTATES
+
+
+def _verdict_to_result(verdict: ConsoleVerdict, *, exited: bool) -> ReadinessResult | None:
+    """Map a console verdict (+ domain-exited flag) to a readiness result, or ``None``.
+
+    Pure (host-free, the unit-tested core of the live probe, ADR-0055 §6/§7):
+
+    - ``ready`` → answered + ok (the marker line was reached).
+    - ``crashed`` → answered + not ok (a pre-marker crash signature — the demo's failure signal).
+    - ``pending`` with the guest **exited** → answered + not ok (v1's ``exited``: it stopped
+      without reaching the marker).
+    - ``pending`` with the guest still running → ``None``, meaning "no answer yet, keep polling".
+    """
+    if verdict == "ready":
+        return ReadinessResult(answered=True, ok=True)
+    if verdict == "crashed":
+        return ReadinessResult(answered=True, ok=False)
+    if exited:
+        return ReadinessResult(answered=True, ok=False)
+    return None
 
 
 def _real_readiness(system_id: UUID) -> ReadinessResult:  # pragma: no cover - live_vm
-    raise CategorizedError(
-        "real run-readiness preflight runs only under the live_vm gate",
-        category=ErrorCategory.MISSING_DEPENDENCY,
-        details={"system_id": str(system_id)},
-    )
+    """One run-readiness probe of the System's truncated console (ADR-0055 §6/§7).
+
+    A single per-poll probe — ``boot()._await_ready`` drives the repetition. Reads the
+    console, classifies it (`classify_console`), and maps the verdict (`_verdict_to_result`).
+    On a ``pending`` verdict it re-reads once after a `virsh domstate` exit check so a marker
+    or crash that landed just before the guest stopped is honored; a still-running guest
+    sleeps one poll interval and stays unanswered, so the boot window (poll count × interval)
+    elapses as ``boot_timeout`` if the System never comes up.
+    """
+    log_path = console_log_path(system_id)
+    result = _verdict_to_result(classify_console(read_console_log(log_path)), exited=False)
+    if result is not None:
+        return result
+    if _domain_exited(domain_name_for(system_id)):
+        return _verdict_to_result(
+            classify_console(read_console_log(log_path)), exited=True
+        ) or ReadinessResult(answered=True, ok=False)
+    time.sleep(_POLL_INTERVAL_SECONDS)
+    return ReadinessResult(answered=False, ok=False)
 
 
-__all__ = ["Booter", "Installer", "LocalLibvirtInstall", "ReadinessResult", "read_console_log"]
+__all__ = [
+    "Booter",
+    "Installer",
+    "LocalLibvirtInstall",
+    "ReadinessResult",
+    "classify_console",
+    "read_console_log",
+]
