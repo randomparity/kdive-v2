@@ -10,6 +10,7 @@ Enqueue a capture_vmcore job on a crashed System. Requires operator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
+| `method` | `string` | no | Capture method; must be supported by the local-libvirt provider. |
 | `system_id` | `string` | yes | The crashed System whose vmcore to capture. |
 
 ## `vmcore.list`
