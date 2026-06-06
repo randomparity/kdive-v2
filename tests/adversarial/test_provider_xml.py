@@ -62,7 +62,7 @@ def _profile(
             "provider": {
                 "local-libvirt": {
                     "domain_xml_params": {},
-                    "rootfs_image_ref": rootfs,
+                    "rootfs": {"kind": "path", "path": rootfs},
                     "crashkernel": "256M",
                 }
             },

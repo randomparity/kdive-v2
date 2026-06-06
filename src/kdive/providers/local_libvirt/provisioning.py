@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from typing import Protocol
@@ -25,8 +26,9 @@ from uuid import UUID
 import libvirt
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.profiles.provisioning import ProvisioningProfile
+from kdive.profiles.provisioning import ProvisioningProfile, RootfsSource
 from kdive.providers.local_libvirt.discovery import _KDIVE_METADATA_NS
+from kdive.rootfs.catalog import load_catalog
 
 _log = logging.getLogger(__name__)
 
@@ -34,6 +36,8 @@ _URI_ENV = "KDIVE_LIBVIRT_URI"
 _DEFAULT_URI = "qemu:///system"
 _DEFAULT_MACHINE = "q35"
 SUPPORTED_DOMAIN_XML_PARAMS = frozenset({"machine"})
+_ROOTFS_DIR = "/var/lib/kdive/rootfs"
+_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 
 # Register the kdive metadata prefix once at import (global ElementTree state) so the
 # rendered tag serializes as `kdive:system` rather than an auto-generated `ns0:` prefix.
@@ -86,14 +90,75 @@ def domain_name_for(system_id: UUID) -> str:
     return f"kdive-{system_id}"
 
 
+def resolve_rootfs_path(rootfs: RootfsSource, *, tenant: str, system_id: UUID) -> str:
+    """Resolve a rootfs source to the libvirt-readable disk path (ADR-0048 §5).
+
+    ``path`` is the declared file; ``upload`` is the System-owned object's local staging
+    path; ``url``/``catalog`` resolve to a content-/name-addressed staging path under the
+    rootfs dir (fetch lands in the next spec). The reference is validated here; existence
+    of an unfetched image is the next spec's concern.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` for a malformed url checksum or unknown
+            catalog name.
+    """
+    if rootfs.kind == "path":
+        return rootfs.path
+    if rootfs.kind == "upload":
+        return f"{_ROOTFS_DIR}/{tenant}-systems-{system_id}-rootfs.qcow2"
+    if rootfs.kind == "url":
+        if not _SHA256.match(rootfs.sha256):
+            raise CategorizedError(
+                "rootfs url sha256 must be 'sha256:<64-hex>'",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+            )
+        return f"{_ROOTFS_DIR}/url-{rootfs.sha256.removeprefix('sha256:')}.qcow2"
+    entry = load_catalog().lookup(rootfs.name)
+    if entry is None:
+        raise CategorizedError(
+            f"unknown rootfs catalog name: {rootfs.name}",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"name": rootfs.name},
+        )
+    return f"{_ROOTFS_DIR}/{entry.name}.qcow2"
+
+
+def validate_rootfs_reference(rootfs: RootfsSource) -> None:
+    """Validate a rootfs reference's resolvability (a synchronous tool-boundary check).
+
+    Mirrors :func:`resolve_rootfs_path`'s static checks (url sha256 format, catalog-name
+    existence) but needs no ``system_id`` — so ``systems.provision`` rejects a bad reference
+    synchronously as ``configuration_error`` instead of dead-lettering the provision job.
+    The ``upload``/``path`` kinds need no static check (an ``upload`` object's existence is
+    verified at provision-consume time, §5).
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` for a malformed url checksum or unknown
+            catalog name.
+    """
+    if rootfs.kind == "url" and not _SHA256.match(rootfs.sha256):
+        raise CategorizedError(
+            "rootfs url sha256 must be 'sha256:<64-hex>'",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    if rootfs.kind == "catalog" and load_catalog().lookup(rootfs.name) is None:
+        raise CategorizedError(
+            f"unknown rootfs catalog name: {rootfs.name}",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"name": rootfs.name},
+        )
+
+
 def validate_profile(profile: ProvisioningProfile) -> None:
     """Reject a profile whose libvirt ``domain_xml_params`` carry an unsupported key.
 
     Called at the tool boundary so a bad param is a synchronous ``configuration_error``
-    response, not a dead-lettered provision job.
+    response, not a dead-lettered provision job. Also validates the rootfs reference's
+    static resolvability (ADR-0048 §5).
 
     Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` naming the unsupported key(s).
+        CategorizedError: ``CONFIGURATION_ERROR`` naming the unsupported key(s), or for an
+            unresolvable rootfs reference.
     """
     params = profile.provider.local_libvirt.domain_xml_params
     unknown = sorted(set(params) - SUPPORTED_DOMAIN_XML_PARAMS)
@@ -103,6 +168,7 @@ def validate_profile(profile: ProvisioningProfile) -> None:
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"unsupported": unknown, "supported": sorted(SUPPORTED_DOMAIN_XML_PARAMS)},
         )
+    validate_rootfs_reference(profile.provider.local_libvirt.rootfs)
 
 
 def render_domain_xml(system_id: UUID, profile: ProvisioningProfile) -> str:
@@ -124,7 +190,8 @@ def render_domain_xml(system_id: UUID, profile: ProvisioningProfile) -> str:
     ET.SubElement(os_el, "type", arch=profile.arch, machine=machine).text = "hvm"
     devices = ET.SubElement(domain, "devices")
     disk = ET.SubElement(devices, "disk", type="file", device="disk")
-    ET.SubElement(disk, "source", file=section.rootfs_image_ref)
+    rootfs_path = resolve_rootfs_path(section.rootfs, tenant="local", system_id=system_id)
+    ET.SubElement(disk, "source", file=rootfs_path)
     ET.SubElement(disk, "target", dev="vda", bus="virtio")
     metadata = ET.SubElement(domain, "metadata")
     ET.SubElement(metadata, f"{{{_KDIVE_METADATA_NS}}}system").text = str(system_id)

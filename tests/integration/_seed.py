@@ -58,7 +58,10 @@ PROVISIONING_PROFILE: dict[str, Any] = {
     "provider": {
         "local-libvirt": {
             "domain_xml_params": {"machine": "q35"},
-            "rootfs_image_ref": "oci://registry.internal/rootfs/fedora-40@sha256:abc",
+            "rootfs": {
+                "kind": "path",
+                "path": "oci://registry.internal/rootfs/fedora-40@sha256:abc",
+            },
             "crashkernel": "256M",
         }
     },

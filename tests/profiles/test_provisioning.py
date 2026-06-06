@@ -22,7 +22,10 @@ _VALID: dict[str, Any] = {
     "provider": {
         "local-libvirt": {
             "domain_xml_params": {"machine": "pc-q35-9.0"},
-            "rootfs_image_ref": "oci://registry.internal/rootfs/fedora-40@sha256:abc123",
+            "rootfs": {
+                "kind": "path",
+                "path": "oci://registry.internal/rootfs/fedora-40@sha256:abc123",
+            },
             "crashkernel": "256M",
         }
     },
@@ -45,7 +48,9 @@ def test_valid_libvirt_profile_parses() -> None:
     assert profile.boot_method is BootMethod.DIRECT_KERNEL
     assert profile.kernel_source_ref.startswith("git+https://")
     assert profile.provider.local_libvirt.domain_xml_params == {"machine": "pc-q35-9.0"}
-    assert profile.provider.local_libvirt.rootfs_image_ref.startswith("oci://")
+    rootfs = profile.provider.local_libvirt.rootfs
+    assert rootfs.kind == "path"
+    assert rootfs.path.startswith("oci://")
 
 
 def test_crashkernel_is_present() -> None:
@@ -128,7 +133,7 @@ def test_missing_core_field_raises_configuration_error(field: str) -> None:
     _expect_configuration_error(data)
 
 
-@pytest.mark.parametrize("field", ["rootfs_image_ref", "crashkernel"])
+@pytest.mark.parametrize("field", ["rootfs", "crashkernel"])
 def test_missing_libvirt_field_raises_configuration_error(field: str) -> None:
     data = _valid()
     del data["provider"]["local-libvirt"][field]
@@ -184,10 +189,17 @@ def test_blank_core_string_rejected(field: str, value: str) -> None:
 
 
 @pytest.mark.parametrize("value", ["", "   "])
-@pytest.mark.parametrize("field", ["rootfs_image_ref", "crashkernel"])
-def test_blank_libvirt_string_rejected(field: str, value: str) -> None:
+def test_blank_crashkernel_rejected(value: str) -> None:
     data = _valid()
-    data["provider"]["local-libvirt"][field] = value
+    data["provider"]["local-libvirt"]["crashkernel"] = value
+    _expect_configuration_error(data)
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_blank_rootfs_path_rejected(value: str) -> None:
+    # A path-kind rootfs with a blank file path is as malformed as a blank string field was.
+    data = _valid()
+    data["provider"]["local-libvirt"]["rootfs"] = {"kind": "path", "path": value}
     _expect_configuration_error(data)
 
 
