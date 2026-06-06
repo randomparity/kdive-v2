@@ -17,23 +17,29 @@ synchronous; the async build handler offloads the whole call via ``asyncio.to_th
 from __future__ import annotations
 
 import os
+import struct
 import subprocess  # noqa: S404 - make is invoked with a fixed argv, no shell
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple, Protocol
 from uuid import UUID
 
+from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
-from kdive.store.objectstore import StoredArtifact, object_store_from_env
+from kdive.store.objectstore import HeadResult, StoredArtifact, object_store_from_env
 
 _WORKSPACE_ENV = "KDIVE_BUILD_WORKSPACE"
 _KERNEL_SRC_ENV = "KDIVE_KERNEL_SRC"
 _DEFAULT_WORKSPACE = "/var/lib/kdive/build"
 _RETENTION_CLASS = "build"
 _NT_GNU_BUILD_ID = 3
+_ELF_MAGIC = b"\x7fELF"
+_BZIMAGE_MAGIC = b"HdrS"
+_BZIMAGE_MAGIC_OFFSET = 0x202
+_SHT_NOTE = 7
 
 # The kdump prerequisite is satisfied by CONFIG_CRASH_DUMP; symbolization needs DWARF or
 # BTF debuginfo. Each tuple is an OR-group: the config must enable at least one of each.
@@ -273,4 +279,150 @@ def _real_read_build_id(workspace: Path) -> str:  # pragma: no cover - live_vm
     return parse_gnu_build_id(notes)
 
 
-__all__ = ["BuildOutput", "Builder", "LocalLibvirtBuild", "parse_gnu_build_id"]
+class _ValidatorStore(Protocol):
+    def head(self, key: str) -> HeadResult | None: ...
+    def get_range(self, key: str, *, start: int, length: int) -> bytes: ...
+
+
+class ValidatedUpload(NamedTuple):
+    """Validation result: the recorded ``BuildOutput`` plus the per-name ``HeadResult``s.
+
+    The heads (etag/size/checksum per uploaded object) are returned so the finalize step
+    writes the write-once ``artifacts`` rows from this one validation pass — no second
+    HEAD, and no second object-store handle — which keeps ``complete_build`` injectable.
+    """
+
+    output: BuildOutput
+    heads: dict[str, HeadResult]
+
+
+def _build_failure(message: str, **details: object) -> CategorizedError:
+    return CategorizedError(message, category=ErrorCategory.BUILD_FAILURE, details=details)
+
+
+def validate_external_artifacts(
+    store: _ValidatorStore,
+    *,
+    manifest: Sequence[ManifestEntry],
+    keys: Mapping[str, str],
+    declared_build_id: str | None,
+) -> ValidatedUpload:
+    """Validate uploaded build artifacts; return the ``BuildOutput`` plus per-name heads.
+
+    Order (ADR-0048 §5): require ``kernel``; then per declared artifact HEAD existence +
+    size, checksum vs the manifest, and leading-byte magic; then, if a ``vmlinux`` is
+    present, verify the declared ``build_id`` against its ranged ``.note.gnu.build-id``.
+
+    ``declared_build_id`` is the GNU build-id as hex (the value ``parse_gnu_build_id``
+    yields); the comparison is case-insensitive and the returned ``BuildOutput.build_id``
+    is the normalized lowercase-hex value extracted from the file, not the raw input.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` (a missing/skipped upload, or a vmlinux
+            with no declared build_id); ``BUILD_FAILURE`` (checksum/size/magic/build_id
+            defect); ``INFRASTRUCTURE_FAILURE`` propagated from the store.
+    """
+    by_name = {e.name: e for e in manifest}
+    if "kernel" not in by_name or "kernel" not in keys:
+        raise CategorizedError(
+            "external build is missing the required kernel artifact",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    heads: dict[str, HeadResult] = {}
+    for name, entry in by_name.items():
+        key = keys[name]
+        head = store.head(key)
+        if head is None:
+            raise CategorizedError(
+                f"declared artifact {name!r} was never uploaded",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"name": name},
+            )
+        if head.size_bytes != entry.size_bytes or head.checksum_sha256 != entry.sha256:
+            raise _build_failure("uploaded artifact disagrees with its manifest", name=name)
+        _check_magic(store, name, key)
+        heads[name] = head
+
+    build_id = ""
+    if "vmlinux" in by_name:
+        if not declared_build_id:
+            raise CategorizedError(
+                "a vmlinux upload requires a declared build_id",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+            )
+        actual = extract_build_id_ranged(store, keys["vmlinux"])  # lowercase hex
+        if actual != declared_build_id.lower():
+            raise _build_failure("declared build_id does not match the uploaded vmlinux")
+        build_id = actual
+
+    output = BuildOutput(
+        kernel_ref=keys["kernel"],
+        debuginfo_ref=keys.get("vmlinux", ""),
+        build_id=build_id,
+    )
+    return ValidatedUpload(output=output, heads=heads)
+
+
+def _check_magic(store: _ValidatorStore, name: str, key: str) -> None:
+    if name == "vmlinux":
+        if store.get_range(key, start=0, length=4) != _ELF_MAGIC:
+            raise _build_failure("vmlinux is not an ELF file", name=name)
+    elif name == "kernel":
+        magic = store.get_range(key, start=_BZIMAGE_MAGIC_OFFSET, length=4)
+        if magic != _BZIMAGE_MAGIC:
+            raise _build_failure("kernel is not a bzImage", name=name)
+    # initrd has no cheap universal magic; checksum + size already gate it.
+
+
+def extract_build_id_ranged(store: _ValidatorStore, key: str) -> str:
+    """Extract a vmlinux's GNU build-id via ranged ELF64-LE reads (no full download).
+
+    Reads the ELF header (``e_shoff``/``e_shentsize``/``e_shnum``/``e_shstrndx``), the
+    section header table, the section-name string table, and the ``.note.gnu.build-id``
+    section bytes — then feeds them to :func:`parse_gnu_build_id`.
+
+    Raises:
+        CategorizedError: ``BUILD_FAILURE`` if the ELF is malformed or carries no build-id.
+    """
+    header = store.get_range(key, start=0, length=64)
+    if header[:4] != _ELF_MAGIC or header[4] != 2 or header[5] != 1:  # ELFCLASS64, ELFDATA2LSB
+        raise _build_failure("vmlinux is not a 64-bit little-endian ELF")
+    e_shoff = struct.unpack_from("<Q", header, 0x28)[0]
+    e_shentsize = struct.unpack_from("<H", header, 0x3A)[0]
+    e_shnum = struct.unpack_from("<H", header, 0x3C)[0]
+    e_shstrndx = struct.unpack_from("<H", header, 0x3E)[0]
+    if e_shoff == 0 or e_shnum == 0 or e_shentsize < 64:
+        raise _build_failure("vmlinux has no usable section header table")
+    sht = store.get_range(key, start=e_shoff, length=e_shentsize * e_shnum)
+    shstr = _read_section(store, key, sht, e_shentsize, e_shstrndx)
+    for i in range(e_shnum):
+        off = i * e_shentsize
+        sh_name = struct.unpack_from("<I", sht, off)[0]
+        sh_type = struct.unpack_from("<I", sht, off + 4)[0]
+        if sh_type != _SHT_NOTE:
+            continue
+        name = shstr[sh_name : shstr.index(b"\x00", sh_name)]
+        if name == b".note.gnu.build-id":
+            notes = _read_section(store, key, sht, e_shentsize, i)
+            return parse_gnu_build_id(notes)
+    raise _build_failure("vmlinux carries no .note.gnu.build-id section")
+
+
+def _read_section(
+    store: _ValidatorStore, key: str, sht: bytes, e_shentsize: int, index: int
+) -> bytes:
+    off = index * e_shentsize
+    sh_offset = struct.unpack_from("<Q", sht, off + 0x18)[0]
+    sh_size = struct.unpack_from("<Q", sht, off + 0x20)[0]
+    return store.get_range(key, start=sh_offset, length=sh_size)
+
+
+__all__ = [
+    "BuildOutput",
+    "Builder",
+    "LocalLibvirtBuild",
+    "ValidatedUpload",
+    "extract_build_id_ranged",
+    "parse_gnu_build_id",
+    "validate_external_artifacts",
+]
