@@ -4,7 +4,7 @@
 
 **Goal:** Replace `build.py:_real_checkout`'s `MISSING_DEPENDENCY` stub with a real warm-tree checkout — rsync the operator's `KDIVE_KERNEL_SRC` into the per-Run workspace, stage the profile's `.config`, and apply its optional patch — with a clean categorized error contract.
 
-**Architecture:** Decompose into four module-level helpers (`_resolve_local_ref`, `_stage_config`, `_apply_patch`, `_sync_tree`) that `_real_checkout` composes in order. Every branch is unit-tested host-free by mocking `subprocess.run`/`shutil.which`; the composition's ordering is tested by monkeypatching the three step helpers; only the real-`make` end-to-end assertion stays `live_vm`-gated. No code needs a `# pragma: no cover` because the mocked tests execute every branch.
+**Architecture:** Decompose into four module-level helpers (`_resolve_local_ref`, `_stage_config`, `_apply_patch`, `_sync_tree`) that `_real_checkout` composes in order. Every branch is unit-tested host-free by mocking `subprocess.run`/`shutil.which`; the composition's ordering is tested by monkeypatching the three step helpers; only the real-`make` end-to-end assertion stays `live_vm`-gated. No *new checkout* code needs a `# pragma: no cover` because the mocked tests execute every branch; the pre-existing `_real_read_config`/`_real_run_make`/`_real_read_build_id` pragmas are unchanged.
 
 **Tech Stack:** Python 3.13, `subprocess` (rsync, `git apply`), `urllib.parse.urlsplit`, `kdive.security.redaction.Redactor`, `pytest` (`uv run python -m pytest`).
 
@@ -17,9 +17,9 @@
 - **Modify** `src/kdive/providers/local_libvirt/build.py`:
   - new imports: `shutil`, `from urllib.parse import urlsplit`, `from kdive.security.redaction import Redactor`.
   - new module constant `_STDERR_TAIL = 2000`.
-  - new helpers `_redacted_tail`, `_resolve_local_ref`, `_stage_config`, `_apply_patch`, `_sync_tree`.
+  - new helpers `_redacted_tail`, `_resolve_local_ref`, `_ref_error`, `_stage_config`, `_apply_patch`, `_sync_tree`.
   - rewrite `_real_checkout` to compose them (drop its `# pragma: no cover - live_vm`).
-  - export the new helpers in `__all__` (so tests import them from the module surface).
+  - **no `__all__` change:** the new helpers are underscore-private and imported by name in tests (`from ...build import _resolve_local_ref`), which works regardless of `__all__`; adding private names to the public export list would be a lint/convention smell.
 - **Modify** `tests/providers/local_libvirt/test_build.py`:
   - host-free unit tests for each helper + the composition; fill the `live_vm` real-make stub.
 
@@ -590,9 +590,12 @@ def _real_checkout(kernel_src: str, profile: ServerBuildProfile, workspace: Path
 Run: `uv run python -m pytest tests/providers/local_libvirt/test_build.py -k real_checkout -q`
 Expected: PASS (2 tests).
 
-- [ ] **Step 5: Add the helpers to `__all__` and commit**
+- [ ] **Step 5: Commit the composition**
 
-Add `"_apply_patch"`, `"_resolve_local_ref"`, `"_stage_config"`, `"_sync_tree"` is NOT required for `__all__` (leading underscore names are private); instead confirm the tests import them directly by name (they do). Skip `__all__` edits.
+No `__all__` edit: the helpers are underscore-private and the tests import them by name
+(`from kdive.providers.local_libvirt.build import _resolve_local_ref`, and
+`from kdive.providers.local_libvirt import build as build_module` for the monkeypatch
+targets), which does not depend on `__all__`.
 
 ```bash
 git add src/kdive/providers/local_libvirt/build.py tests/providers/local_libvirt/test_build.py
@@ -667,8 +670,10 @@ def test_live_vm_real_make_build_id_matches_readelf() -> None:  # pragma: no cov
 - [ ] **Step 2: Verify the test collects and skips cleanly (no `live_vm` env in CI/dev)**
 
 Run: `uv run python -m pytest tests/providers/local_libvirt/test_build.py -k live_vm_real_make -q`
-Expected: the `live_vm` marker is deselected by the default `-m "not live_vm"` config, OR the
-test SKIPs. Either way: no failure, no error. Confirm it does not error on collection.
+Expected: the test SKIPs (the `live_vm` env — `KDIVE_KERNEL_SRC`/`KDIVE_TEST_BUILD_CONFIG` —
+is absent) or is deselected by the marker filter. Either way: no failure, no collection error.
+(Whether the `-m "not live_vm"` filter lives in `pyproject` `addopts` or the `just test`
+recipe, the env guard makes this SKIP regardless when run directly.)
 
 - [ ] **Step 3: Commit**
 
