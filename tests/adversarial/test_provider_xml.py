@@ -96,6 +96,17 @@ def test_render_domain_xml_never_lets_a_profile_value_inject_markup(rootfs: str)
     assert root.find("evil") is None and root.tag == "domain"
 
 
+def test_console_log_element_does_not_enable_append() -> None:
+    # Readiness pre-marker scoping (ADR-0055 §3/§8) relies on the console log being
+    # truncated per create(). QEMU/libvirt default logappend=off; the rendered <log> must
+    # not set append='on', or a stale prior-boot marker could survive into the next boot.
+    domain = ET.fromstring(render_domain_xml(_SYS, _profile()))  # noqa: S314 - self-rendered
+    logs = domain.findall("./devices/serial/log")
+    assert logs, "the always-on serial console <log> tee must be present (ADR-0049 §4)"
+    for log in logs:
+        assert log.get("append") != "on"
+
+
 # --- parsing libvirtd output: install must defend XMLDesc like discovery does --------
 
 
