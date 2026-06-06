@@ -1375,6 +1375,49 @@ def test_boot_handler_registers_console_even_on_failure(
     asyncio.run(_run())
 
 
+def test_boot_handler_console_is_readable_via_artifacts(
+    migrated_url: str,
+    minio_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The registered console artifact must be readable through artifacts_list (ADR-0049 D4).
+
+    The SQL-count tests only verify the row was inserted; this test proves the artifacts
+    read surface actually returns the console artifact, closing the behavioral gap.
+    """
+    from kdive.mcp.tools import artifacts as artifacts_tools
+
+    monkeypatch.setattr(runs_tools, "object_store_from_env", lambda: minio_store)
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_install_step(pool, run_id)
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter()  # clean success
+            async with pool.connection() as conn:
+                result = await runs_tools.boot_handler(conn, job, booter)
+            assert result == run_id
+
+            # Resolve the system_id the Run was bound to (needed to call artifacts_list).
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT system_id FROM runs WHERE id = %s", (run_id,))
+                row = await cur.fetchone()
+            assert row is not None
+            system_id = str(row["system_id"])
+
+            # artifacts_list must return the console as a redacted artifact envelope.
+            listed = await artifacts_tools.artifacts_list(pool, _ctx(), system_id=system_id)
+
+        assert len(listed) == 1
+        console = listed[0]
+        assert console.status == "available"
+        assert console.refs is not None
+        assert console.refs.get("object", "").endswith("/console")
+
+    asyncio.run(_run())
+
+
 def _assert_ports() -> None:
     # Structural conformance: the fakes satisfy the realized Protocols (ty enforces; this
     # keeps the import used and documents the contract).
