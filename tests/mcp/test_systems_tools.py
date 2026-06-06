@@ -1497,3 +1497,64 @@ def test_define_foreign_allocation_is_not_found(migrated_url: str) -> None:
         assert resp.error_category == "configuration_error"
 
     asyncio.run(_run())
+
+
+# --- systems.provision admits a DEFINED System ---------------------------------------------
+
+
+def test_provision_admits_defined_system_without_profile(migrated_url: str) -> None:
+    # systems.provision(allocation_id) with no profile drives an existing DEFINED System
+    # defined -> provisioning and enqueues its provision job (#111).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
+            resp = await systems_tools.provision_system(
+                pool, _ctx(), allocation_id=alloc_id, profile=None
+            )
+            assert resp.status == "queued"
+            assert resp.data["system_id"] == sys_id
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+                await cur.execute("SELECT state FROM allocations WHERE id = %s", (alloc_id,))
+                alloc_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM audit_log WHERE transition = 'defined->provisioning'"
+                )
+                audit_row = await cur.fetchone()
+        assert sys_row is not None and sys_row["state"] == "provisioning"
+        assert alloc_row is not None and alloc_row["state"] == "active"  # untouched (set at define)
+        assert audit_row is not None and audit_row["n"] == 1
+
+    asyncio.run(_run())
+
+
+def test_provision_create_lane_rejects_upload(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await systems_tools.provision_system(
+                pool, _ctx(), allocation_id=alloc_id, profile=_upload_profile()
+            )
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert sys_n is not None and sys_n["n"] == 0  # fail fast, no System inserted
+
+    asyncio.run(_run())
+
+
+def test_provision_create_lane_requires_profile(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await systems_tools.provision_system(
+                pool, _ctx(), allocation_id=alloc_id, profile=None
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())

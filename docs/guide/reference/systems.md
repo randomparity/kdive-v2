@@ -27,12 +27,12 @@ Render a System; failed maps to a failure envelope. Requires project membership.
 
 `partial`
 
-Mint a System for a granted Allocation and enqueue the provision job. Operator only.
+Mint or admit a System for a granted Allocation and enqueue provision. Operator only.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `allocation_id` | `string` | yes | Granted Allocation to provision a System for. |
-| `profile` | `object` | yes | Provisioning profile selecting the kernel/image and resources for the new System. |
+| `profile` | `any` | no | Provisioning profile for the create lane (required when no System exists yet); ignored when admitting an already-defined System. |
 
 ## `systems.reprovision`
 
