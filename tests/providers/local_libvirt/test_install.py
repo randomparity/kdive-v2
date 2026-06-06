@@ -18,6 +18,7 @@ from kdive.providers.local_libvirt.install import (
     LocalLibvirtInstall,
     ReadinessResult,
     _stage_object,
+    _verdict_to_result,
     classify_console,
 )
 from kdive.store.objectstore import FetchedArtifact
@@ -476,6 +477,25 @@ def test_classify_malformed_utf8_does_not_raise() -> None:
 
 
 _FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_verdict_to_result_crashed_is_answered_failure() -> None:
+    # The demo's load-bearing signal: a crashed verdict must resolve to readiness failure.
+    assert _verdict_to_result("crashed", exited=False) == ReadinessResult(answered=True, ok=False)
+
+
+def test_verdict_to_result_ready_is_answered_ok() -> None:
+    assert _verdict_to_result("ready", exited=False) == ReadinessResult(answered=True, ok=True)
+
+
+def test_verdict_to_result_pending_running_keeps_polling() -> None:
+    # A still-booting guest is not yet answered → None tells the probe to keep polling.
+    assert _verdict_to_result("pending", exited=False) is None
+
+
+def test_verdict_to_result_pending_exited_is_answered_failure() -> None:
+    # A guest that exited without reaching the marker is answered-but-failed (v1's `exited`).
+    assert _verdict_to_result("pending", exited=True) == ReadinessResult(answered=True, ok=False)
 
 
 def test_crash_fixture_classifies_crashed() -> None:

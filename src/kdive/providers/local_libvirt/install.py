@@ -447,26 +447,44 @@ def _domain_exited(domain_name: str) -> bool:  # pragma: no cover - live_vm
     return proc.stdout.strip().lower() in _TERMINAL_DOMSTATES
 
 
-def _real_readiness(system_id: UUID) -> ReadinessResult:  # pragma: no cover - live_vm
-    """One run-readiness probe of the System's truncated console (ADR-0055 §6/§7).
+def _verdict_to_result(verdict: ConsoleVerdict, *, exited: bool) -> ReadinessResult | None:
+    """Map a console verdict (+ domain-exited flag) to a readiness result, or ``None``.
 
-    A single per-poll probe — ``boot()._await_ready`` drives the repetition. Classify the
-    console: a marker line → ``answered, ok``; a pre-marker crash signature → ``answered,
-    not ok`` (resolved early, not waited out). On ``pending``, a *terminally exited* guest
-    (after a final re-read that still finds neither) is ``answered, not ok`` (v1's
-    ``exited``); a still-running guest sleeps one poll interval and stays unanswered, so the
-    boot window (poll count × interval) elapses as ``boot_timeout`` if it never comes up.
+    Pure (host-free, the unit-tested core of the live probe, ADR-0055 §6/§7):
+
+    - ``ready`` → answered + ok (the marker line was reached).
+    - ``crashed`` → answered + not ok (a pre-marker crash signature — the demo's failure signal).
+    - ``pending`` with the guest **exited** → answered + not ok (v1's ``exited``: it stopped
+      without reaching the marker).
+    - ``pending`` with the guest still running → ``None``, meaning "no answer yet, keep polling".
     """
-    log_path = console_log_path(system_id)
-    verdict = classify_console(read_console_log(log_path))
     if verdict == "ready":
         return ReadinessResult(answered=True, ok=True)
     if verdict == "crashed":
         return ReadinessResult(answered=True, ok=False)
-    if _domain_exited(domain_name_for(system_id)):
-        if classify_console(read_console_log(log_path)) == "ready":
-            return ReadinessResult(answered=True, ok=True)
+    if exited:
         return ReadinessResult(answered=True, ok=False)
+    return None
+
+
+def _real_readiness(system_id: UUID) -> ReadinessResult:  # pragma: no cover - live_vm
+    """One run-readiness probe of the System's truncated console (ADR-0055 §6/§7).
+
+    A single per-poll probe — ``boot()._await_ready`` drives the repetition. Reads the
+    console, classifies it (`classify_console`), and maps the verdict (`_verdict_to_result`).
+    On a ``pending`` verdict it re-reads once after a `virsh domstate` exit check so a marker
+    or crash that landed just before the guest stopped is honored; a still-running guest
+    sleeps one poll interval and stays unanswered, so the boot window (poll count × interval)
+    elapses as ``boot_timeout`` if the System never comes up.
+    """
+    log_path = console_log_path(system_id)
+    result = _verdict_to_result(classify_console(read_console_log(log_path)), exited=False)
+    if result is not None:
+        return result
+    if _domain_exited(domain_name_for(system_id)):
+        return _verdict_to_result(
+            classify_console(read_console_log(log_path)), exited=True
+        ) or ReadinessResult(answered=True, ok=False)
     time.sleep(_POLL_INTERVAL_SECONDS)
     return ReadinessResult(answered=False, ok=False)
 
