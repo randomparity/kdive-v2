@@ -133,7 +133,7 @@ def test_missing_core_field_raises_configuration_error(field: str) -> None:
     _expect_configuration_error(data)
 
 
-@pytest.mark.parametrize("field", ["rootfs", "crashkernel"])
+@pytest.mark.parametrize("field", ["rootfs"])
 def test_missing_libvirt_field_raises_configuration_error(field: str) -> None:
     data = _valid()
     del data["provider"]["local-libvirt"][field]
@@ -313,3 +313,33 @@ def test_destructive_ops_rejects_blank_entry() -> None:
     data["provider"]["local-libvirt"]["destructive_ops"] = [" "]
     with pytest.raises(CategorizedError):
         ProvisioningProfile.parse(data)
+
+
+def test_debug_block_defaults_to_disabled() -> None:
+    profile = ProvisioningProfile.parse(_valid())
+    debug = profile.provider.local_libvirt.debug
+    assert debug.preserve_on_crash is False
+    assert debug.gdbstub is False
+
+
+def test_debug_flags_parse_when_present() -> None:
+    data = _valid()
+    data["provider"]["local-libvirt"]["debug"] = {"preserve_on_crash": True, "gdbstub": True}
+    profile = ProvisioningProfile.parse(data)
+    assert profile.provider.local_libvirt.debug.preserve_on_crash is True
+    assert profile.provider.local_libvirt.debug.gdbstub is True
+
+
+def test_debug_block_rejects_unknown_key() -> None:
+    data = _valid()
+    data["provider"]["local-libvirt"]["debug"] = {"bogus": True}
+    with pytest.raises(CategorizedError) as exc:
+        ProvisioningProfile.parse(data)
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_crashkernel_is_optional() -> None:
+    data = _valid()
+    del data["provider"]["local-libvirt"]["crashkernel"]
+    profile = ProvisioningProfile.parse(data)
+    assert profile.provider.local_libvirt.crashkernel is None

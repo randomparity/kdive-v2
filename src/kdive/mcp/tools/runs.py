@@ -15,7 +15,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any, LiteralString, Protocol
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
@@ -57,9 +57,12 @@ from kdive.providers.local_libvirt.install import (
     Booter,
     Installer,
     LocalLibvirtInstall,
+    read_console_log,
 )
+from kdive.providers.local_libvirt.provisioning import console_log_path
 from kdive.security import audit
 from kdive.security.rbac import Role, require_role
+from kdive.security.redaction import Redactor
 from kdive.store.objectstore import (
     HeadResult,
     StoredArtifact,
@@ -768,6 +771,10 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
     job_ctx = _ctx_from_job(job, run.project)
 
     async def _do() -> dict[str, Any]:
+        # `method`/`initrd_ref` are left at their defaults (HOST_DUMP, no initrd): the Tier-0
+        # boot vehicle is a single bzImage with an embedded initramfs, so no external initrd is
+        # staged. Threading the resolved capture method + a ledger `initrd_ref` through this
+        # call site (and relaxing the `runs.install` crashkernel gate for non-kdump) is #116.
         await asyncio.to_thread(
             installer.install, run.system_id, run_id, kernel_ref, cmdline=cmdline
         )
@@ -785,6 +792,20 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
 
     await _run_step_locked(conn, run_id, "install", _do)
     return str(run_id)
+
+
+_CONSOLE_KEY_SQL: LiteralString = (
+    "SELECT object_key FROM artifacts "
+    "WHERE owner_kind = 'systems' AND owner_id = %s AND object_key LIKE %s"
+)
+
+
+async def _existing_console_key(conn: AsyncConnection, system_id: UUID) -> str | None:
+    """Return the System's console object key, or ``None`` (idempotency on replay)."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(_CONSOLE_KEY_SQL, (system_id, "%/console"))
+        row = await cur.fetchone()
+    return None if row is None else str(row["object_key"])
 
 
 async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str | None:
@@ -822,7 +843,55 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
         )
         return {"system_id": str(run.system_id)}
 
-    await _run_step_locked(conn, run_id, "boot", _do)
+    try:
+        await _run_step_locked(conn, run_id, "boot", _do)
+    finally:
+        # Register the console log as a `redacted` artifact regardless of boot outcome —
+        # a kernel panic fires *before* readiness so the console is the crash signal.
+        # Guard so a store/insert failure never masks the boot error that caused the finally.
+        try:
+            raw = await asyncio.to_thread(read_console_log, console_log_path(run.system_id))
+            if not raw:
+                # An empty read means the console was never captured (the log is absent or
+                # unreadable). A real boot's console is non-empty — even a clean boot prints
+                # the readiness marker. Registering empty bytes as an `available` artifact
+                # would be indistinguishable from a crash-free console and could drive a
+                # false "fixed" A/B verdict, so skip registration and log the miss instead.
+                _log.warning(
+                    "console log for system %s is empty or unreadable; "
+                    "registering no console artifact",
+                    run.system_id,
+                )
+            else:
+                redacted = Redactor().redact_text(raw.decode("utf-8", "replace")).encode("utf-8")
+                stored = await asyncio.to_thread(
+                    lambda: object_store_from_env().put_artifact(
+                        "local",
+                        "systems",
+                        str(run.system_id),
+                        "console",
+                        data=redacted,
+                        sensitivity=Sensitivity.REDACTED,
+                        retention_class="console",
+                    )
+                )
+                # No advisory lock (unlike vmcore.py's capture): the (run_id, "boot") job dedup
+                # key serializes re-dispatch, and a later replay sees the existing /console row
+                # and skips — so a lock-held double-check isn't needed to stay idempotent here.
+                async with conn.transaction():
+                    if await _existing_console_key(conn, run.system_id) is None:
+                        await ARTIFACTS.insert(
+                            conn,
+                            register_artifact_row(
+                                stored, owner_kind="systems", owner_id=run.system_id
+                            ),
+                        )
+        except Exception:
+            _log.warning(
+                "console artifact registration failed for system %s; boot outcome unaffected",
+                run.system_id,
+                exc_info=True,
+            )
     return str(run_id)
 
 

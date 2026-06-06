@@ -79,6 +79,18 @@ type RootfsSource = Annotated[
 """A discriminated rootfs source (ADR-0048 §3); ``kind`` selects the variant."""
 
 
+class LibvirtDebugOptions(_ProfileBase):
+    """Per-System debug provisioning flags (ADR-0049 Decision 3).
+
+    Bound at provision/boot; declare which capture methods the System is
+    provisioned for. ``preserve_on_crash`` adds a pvpanic device +
+    ``<on_crash>preserve</on_crash>``; ``gdbstub`` adds the QEMU ``-gdb`` argument.
+    """
+
+    preserve_on_crash: bool = False
+    gdbstub: bool = False
+
+
 class LibvirtProfile(_ProfileBase):
     """The ``local-libvirt`` provider section (ADR-0024 decisions 1, 2b, 2c).
 
@@ -87,21 +99,24 @@ class LibvirtProfile(_ProfileBase):
     ``path`` (a declared file), ``upload`` (a System-owned uploaded object), ``url``
     (a content-addressed fetch), or ``catalog`` (a curated image by name); the resolver
     maps it to the libvirt-readable disk path at provisioning. ``crashkernel`` is an
-    opaque non-empty token (the kdump prerequisite — the booted kernel is the arbiter of
-    its grammar). ``destructive_ops`` is the optionally-empty list of destructive op kinds
-    this profile opts in (e.g. ``["force_crash"]``); the control plane's gate resolves the
-    opt-in factor from it (deny-by-default — an absent or empty list refuses every
-    destructive op, ADR-0028 §2). ``ssh_credential_ref`` is the optional opaque
-    **reference** (never the value) into the file-ref secret backend that the live ssh
-    transport resolves a guest credential through (ADR-0039 §2); a profile that does not
-    opt into live ssh introspection leaves it ``None``.
+    optional opaque non-empty token (the kdump prerequisite — the booted kernel is the
+    arbiter of its grammar); ``None`` when the System is not provisioned for kdump.
+    ``destructive_ops`` is the optionally-empty list of destructive op kinds this profile
+    opts in (e.g. ``["force_crash"]``); the control plane's gate resolves the opt-in
+    factor from it (deny-by-default — an absent or empty list refuses every destructive
+    op, ADR-0028 §2). ``ssh_credential_ref`` is the optional opaque **reference** (never
+    the value) into the file-ref secret backend that the live ssh transport resolves a
+    guest credential through (ADR-0039 §2); a profile that does not opt into live ssh
+    introspection leaves it ``None``. ``debug`` declares which crash-capture methods the
+    System is provisioned for (ADR-0049 Decision 3); defaults to all flags disabled.
     """
 
     domain_xml_params: dict[NonEmptyStr, NonEmptyStr] = Field(default_factory=dict)
     rootfs: RootfsSource
-    crashkernel: NonEmptyStr
+    crashkernel: NonEmptyStr | None = None
     destructive_ops: list[NonEmptyStr] = Field(default_factory=list)
     ssh_credential_ref: NonEmptyStr | None = None
+    debug: LibvirtDebugOptions = Field(default_factory=LibvirtDebugOptions)
 
 
 class ProviderSection(_ProfileBase):

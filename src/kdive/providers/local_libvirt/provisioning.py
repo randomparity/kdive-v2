@@ -20,6 +20,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
+from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
@@ -37,7 +38,14 @@ _DEFAULT_URI = "qemu:///system"
 _DEFAULT_MACHINE = "q35"
 SUPPORTED_DOMAIN_XML_PARAMS = frozenset({"machine"})
 _ROOTFS_DIR = "/var/lib/kdive/rootfs"
+_CONSOLE_DIR = "/var/lib/kdive/console"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}\Z")
+
+
+def console_log_path(system_id: UUID) -> Path:
+    """The deterministic host path libvirt tees the System's serial console to."""
+    return Path(_CONSOLE_DIR) / f"{system_id}.log"
+
 
 # Register the kdive metadata prefix once at import (global ElementTree state) so the
 # rendered tag serializes as `kdive:system` rather than an auto-generated `ns0:` prefix.
@@ -200,9 +208,10 @@ def validate_profile(profile: ProvisioningProfile) -> None:
 def render_domain_xml(system_id: UUID, profile: ProvisioningProfile) -> str:
     """Render the tagged libvirt domain XML for a System (ADR-0025 §3).
 
-    Renders the domain shell, the rootfs disk, and the kdive metadata tag — no
-    ``<kernel>``/``<cmdline>`` (the kdump ``crashkernel=`` reservation is the install/boot
-    plane's, #17, and is inert without a ``<kernel>`` element).
+    Renders the domain shell, the rootfs disk, the always-on serial console with a ``<log>``
+    tee to ``_CONSOLE_DIR``, and the kdive metadata tag — no ``<kernel>``/``<cmdline>`` (the
+    kdump ``crashkernel=`` reservation is the install/boot plane's, #17, and is inert without a
+    ``<kernel>`` element).
     """
     validate_profile(profile)
     section = profile.provider.local_libvirt
@@ -219,6 +228,11 @@ def render_domain_xml(system_id: UUID, profile: ProvisioningProfile) -> str:
     rootfs_path = resolve_rootfs_path(section.rootfs, tenant="local", system_id=system_id)
     ET.SubElement(disk, "source", file=rootfs_path)
     ET.SubElement(disk, "target", dev="vda", bus="virtio")
+    serial = ET.SubElement(devices, "serial", type="pty")
+    ET.SubElement(serial, "log", file=str(console_log_path(system_id)))
+    ET.SubElement(serial, "target", port="0")
+    console = ET.SubElement(devices, "console", type="pty")
+    ET.SubElement(console, "target", type="serial", port="0")
     metadata = ET.SubElement(domain, "metadata")
     ET.SubElement(metadata, f"{{{_KDIVE_METADATA_NS}}}system").text = str(system_id)
 

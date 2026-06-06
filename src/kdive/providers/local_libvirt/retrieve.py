@@ -1,8 +1,8 @@
 """Local-libvirt Retrieve plane: capture a kdump vmcore and run crash postmortem (ADR-0031).
 
 `LocalLibvirtRetrieve` realizes two seam-injected ports, mirroring `LocalLibvirtBuild`:
-`Retriever.capture(system_id)` waits for kdump, stores the raw `sensitive` core and a
-`redacted` dmesg derivative, and returns both refs plus the core's build-id;
+`Retriever.capture(system_id, method)` dispatches to the appropriate seam, stores the raw
+`sensitive` core and a `redacted` dmesg derivative, and returns both refs plus the core's build-id;
 `CrashPostmortem.run(...)` symbolizes the core against the Run's `debuginfo_ref` over an
 injected `crash` subprocess. The slow, host-bound operations are `live_vm`-gated seams, so
 the orchestration and the full error contract are unit-tested with fakes. The crash-command
@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import NamedTuple, Protocol
 from uuid import UUID
 
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.security.redaction import Redactor
@@ -65,7 +66,7 @@ class CaptureOutput(NamedTuple):
 class Retriever(Protocol):
     """The handler-facing capture port (realized M0 contract), keyed on the System."""
 
-    def capture(self, system_id: UUID) -> CaptureOutput: ...
+    def capture(self, system_id: UUID, method: CaptureMethod) -> CaptureOutput: ...
 
 
 class _StorePort(Protocol):
@@ -112,6 +113,7 @@ class CrashPostmortem(Protocol):
 
 
 type _WaitForVmcore = Callable[[UUID], bytes | None]
+type _HostDumpCapture = Callable[[UUID], bytes | None]
 type _ReadBuildId = Callable[[bytes], str]
 type _ExtractRedacted = Callable[[bytes], bytes]
 type _FetchObject = Callable[[str], bytes]
@@ -129,6 +131,7 @@ class LocalLibvirtRetrieve:
         wait_for_vmcore: _WaitForVmcore,
         read_vmcore_build_id: _ReadBuildId,
         extract_redacted: _ExtractRedacted,
+        host_dump_capture: _HostDumpCapture,
         fetch_object: _FetchObject | None = None,
         run_crash: _RunCrash | None = None,
     ) -> None:
@@ -138,6 +141,7 @@ class LocalLibvirtRetrieve:
         self._wait_for_vmcore = wait_for_vmcore
         self._read_vmcore_build_id = read_vmcore_build_id
         self._extract_redacted = extract_redacted
+        self._host_dump_capture = host_dump_capture
         self._fetch_object = fetch_object
         self._run_crash = run_crash
 
@@ -150,21 +154,25 @@ class LocalLibvirtRetrieve:
             wait_for_vmcore=_real_wait_for_vmcore,
             read_vmcore_build_id=_real_read_vmcore_build_id,
             extract_redacted=_real_extract_redacted,
+            host_dump_capture=_real_host_dump_capture,
             fetch_object=_real_fetch_object,
             run_crash=_real_run_crash,
         )
 
-    def capture(self, system_id: UUID) -> CaptureOutput:
-        """Wait for kdump, store the raw + redacted core, return both refs and the build-id.
+    def capture(self, system_id: UUID, method: CaptureMethod) -> CaptureOutput:
+        """Capture a core via ``method``; store raw + redacted; return refs + build-id.
 
         Raises:
             CategorizedError: ``READINESS_FAILURE`` if no complete core appears in the
                 window; ``INFRASTRUCTURE_FAILURE`` propagated from a failed artifact store.
         """
-        data = self._wait_for_vmcore(system_id)
+        if method is CaptureMethod.HOST_DUMP:
+            data = self._host_dump_capture(system_id)
+        else:  # CaptureMethod.KDUMP
+            data = self._wait_for_vmcore(system_id)
         if data is None:
             raise CategorizedError(
-                "no complete vmcore appeared within the capture window",
+                "no complete core appeared within the capture window",
                 category=ErrorCategory.READINESS_FAILURE,
                 details={"system_id": str(system_id)},
             )
@@ -247,6 +255,14 @@ def _real_wait_for_vmcore(system_id: UUID) -> bytes | None:  # pragma: no cover 
         "real kdump capture runs only under the live_vm gate",
         category=ErrorCategory.MISSING_DEPENDENCY,
         details={"system_id": str(system_id), "crash_dir_env": _CRASH_DIR_ENV},
+    )
+
+
+def _real_host_dump_capture(system_id: UUID) -> bytes | None:  # pragma: no cover - live_vm
+    raise CategorizedError(
+        "real host-dump capture runs only under the live_vm gate",
+        category=ErrorCategory.MISSING_DEPENDENCY,
+        details={"system_id": str(system_id)},
     )
 
 

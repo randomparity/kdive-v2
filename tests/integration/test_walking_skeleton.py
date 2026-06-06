@@ -25,6 +25,7 @@ import pytest
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import SystemState
@@ -77,7 +78,7 @@ class _SecretBearingRetriever:
         self._system_id = system_id
         self.calls = 0
 
-    def capture(self, system_id: UUID) -> CaptureOutput:
+    def capture(self, system_id: UUID, method: CaptureMethod) -> CaptureOutput:
         from kdive.domain.models import Sensitivity
         from kdive.store.objectstore import StoredArtifact
 
@@ -224,14 +225,16 @@ def test_completed_step_replay_does_not_re_execute(migrated_url: str) -> None:
 # --- exit criterion #3: redaction ----------------------------------------------------------
 
 
-async def _enqueue_capture(pool: AsyncConnectionPool, system_id: str) -> Job:
+async def _enqueue_capture(
+    pool: AsyncConnectionPool, system_id: str, method: str = "host_dump"
+) -> Job:
     async with pool.connection() as conn:
         return await queue.enqueue(
             conn,
             JobKind.CAPTURE_VMCORE,
-            {"system_id": system_id},
+            {"system_id": system_id, "method": method},
             _AUTH,
-            f"{system_id}:capture_vmcore",
+            f"{system_id}:capture_vmcore:{method}",
         )
 
 

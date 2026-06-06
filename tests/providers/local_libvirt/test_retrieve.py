@@ -7,6 +7,7 @@ from uuid import UUID
 
 import pytest
 
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.providers.local_libvirt.retrieve import (
@@ -80,12 +81,13 @@ def _retriever(store: _FakeStore, *, core: bytes | None) -> LocalLibvirtRetrieve
         wait_for_vmcore=lambda system_id: core,
         read_vmcore_build_id=lambda data: "deadbeef",
         extract_redacted=lambda data: b"dmesg: password=[REDACTED]",
+        host_dump_capture=lambda _sid: pytest.fail("host_dump seam used on kdump path"),
     )
 
 
 def test_capture_stores_two_artifacts_and_returns_build_id() -> None:
     store = _FakeStore()
-    out = _retriever(store, core=b"RAWCORE").capture(_SYS)
+    out = _retriever(store, core=b"RAWCORE").capture(_SYS, CaptureMethod.KDUMP)
     assert isinstance(out, CaptureOutput)
     assert out.raw.key == f"{_TENANT}/systems/{_SYS}/vmcore"
     assert out.redacted.key == f"{_TENANT}/systems/{_SYS}/vmcore-redacted"
@@ -99,13 +101,13 @@ def test_capture_stores_two_artifacts_and_returns_build_id() -> None:
 
 def test_capture_no_core_is_readiness_failure() -> None:
     with pytest.raises(CategorizedError) as exc:
-        _retriever(_FakeStore(), core=None).capture(_SYS)
+        _retriever(_FakeStore(), core=None).capture(_SYS, CaptureMethod.KDUMP)
     assert exc.value.category is ErrorCategory.READINESS_FAILURE
 
 
 def test_capture_store_failure_is_infrastructure_failure() -> None:
     with pytest.raises(CategorizedError) as exc:
-        _retriever(_FakeStore(fail_on="vmcore"), core=b"X").capture(_SYS)
+        _retriever(_FakeStore(fail_on="vmcore"), core=b"X").capture(_SYS, CaptureMethod.KDUMP)
     assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
 
@@ -116,6 +118,7 @@ def _crash_retriever(*, observed_build_id: str, crash: CrashResult) -> LocalLibv
         wait_for_vmcore=lambda s: None,
         read_vmcore_build_id=lambda data: observed_build_id,
         extract_redacted=lambda data: b"",
+        host_dump_capture=lambda s: None,
         fetch_object=lambda ref: b"BYTES",
         run_crash=lambda vmlinux, vmcore, script: crash,
     )
@@ -143,3 +146,18 @@ def test_run_build_id_mismatch_is_configuration_error() -> None:
             commands=["log"],
         )
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_capture_host_dump_uses_dump_seam() -> None:
+    store = _FakeStore()
+    retr = LocalLibvirtRetrieve(
+        tenant="local",
+        store_factory=lambda: store,
+        wait_for_vmcore=lambda _sid: pytest.fail("kdump seam used for host_dump"),
+        read_vmcore_build_id=lambda _b: "bid",
+        extract_redacted=lambda _b: b"dmesg",
+        host_dump_capture=lambda _sid: b"\x7fELFcore",
+    )
+    out = retr.capture(_SYS, CaptureMethod.HOST_DUMP)
+    assert out.vmcore_build_id == "bid"
+    assert out.raw is not None and out.redacted is not None

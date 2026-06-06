@@ -1,19 +1,20 @@
 """The `vmcore.*` / `postmortem.*` MCP tools + the capture job handler (ADR-0031).
 
-`vmcore.fetch(system_id)` admits a `capture_vmcore` job on a `crashed` System
-(dedup `{system_id}:capture_vmcore`); `capture_handler` waits for kdump under the per-System
-advisory lock, stores the raw `sensitive` core + a `redacted` derivative, and inserts both
-`artifacts` rows (skipping re-capture if a `vmcore` row already exists). `vmcore.list` is a
-`redacted`-only read. `postmortem.crash`/`.triage` are synchronous, ungated offline reads that
-load the Run's `debuginfo_ref`, validate caller commands against the allowlist, run the
-`CrashPostmortem` port over the captured core, and redact output before returning it.
+`vmcore.fetch(system_id, method)` admits a `capture_vmcore` job on a `crashed` System
+(dedup `{system_id}:capture_vmcore:{method}`); `capture_handler` dispatches to the capture seam
+under the per-System advisory lock, stores the raw `sensitive` core + a `redacted` derivative,
+and inserts both `artifacts` rows (skipping re-capture if a `vmcore` row already exists).
+`vmcore.list` is a `redacted`-only read. `postmortem.crash`/`.triage` are synchronous, ungated
+offline reads that load the Run's `debuginfo_ref`, validate caller commands against the
+allowlist, run the `CrashPostmortem` port over the captured core, and redact output before
+returning it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Annotated, Any, LiteralString, NamedTuple
+from typing import Annotated, Any, Literal, LiteralString, NamedTuple
 from uuid import UUID
 
 from fastmcp import FastMCP
@@ -24,6 +25,7 @@ from pydantic import Field
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, RUNS, SYSTEMS
+from kdive.domain.capture import LOCAL_LIBVIRT_SUPPORTED, CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, System
 from kdive.domain.state import SystemState
@@ -124,13 +126,37 @@ def _system_job_envelope(job: Job, system_id: UUID) -> ToolResponse:
 # --- vmcore.fetch (admission) --------------------------------------------------------------
 
 
+# The core-producing methods valid for vmcore.fetch (excludes console/gdbstub).
+_VMCORE_METHODS: frozenset[CaptureMethod] = frozenset(
+    {CaptureMethod.HOST_DUMP, CaptureMethod.KDUMP}
+)
+
+
 async def fetch_vmcore(
-    pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    system_id: str,
+    method: str = "host_dump",
 ) -> ToolResponse:
     """Admit a `capture_vmcore` job on a `crashed` System (operator); return the job handle."""
     uid = _as_uuid(system_id)
     if uid is None:
         return _config_error(system_id)
+    try:
+        capture_method = CaptureMethod(method)
+    except ValueError:
+        return _config_error(system_id, data={"method": method, "reason": "unknown capture method"})
+    if capture_method not in _VMCORE_METHODS:
+        return _config_error(
+            system_id,
+            data={"method": method, "reason": "method does not produce a vmcore"},
+        )
+    if capture_method not in LOCAL_LIBVIRT_SUPPORTED:
+        return _config_error(
+            system_id,
+            data={"method": method, "reason": "method not supported by local-libvirt provider"},
+        )
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             system = await SYSTEMS.get(conn, uid)
@@ -142,9 +168,9 @@ async def fetch_vmcore(
             job = await queue.enqueue(
                 conn,
                 JobKind.CAPTURE_VMCORE,
-                {"system_id": system_id},
+                {"system_id": system_id, "method": capture_method.value},
                 _authorizing(ctx, system.project),
-                f"{system_id}:capture_vmcore",
+                f"{system_id}:capture_vmcore:{capture_method.value}",
             )
         return _system_job_envelope(job, uid)
 
@@ -208,10 +234,11 @@ async def capture_handler(conn: AsyncConnection, job: Job, retriever: Retriever)
     `readiness_failure` for no core) propagates so the worker dead-letters the job.
     """
     system_id = UUID(job.payload["system_id"])
+    method = CaptureMethod(job.payload["method"])
     precheck = await _precheck_system(conn, system_id)
     if isinstance(precheck, str):
         return precheck
-    output = await asyncio.to_thread(retriever.capture, system_id)
+    output = await asyncio.to_thread(retriever.capture, system_id, method)
     return await _finalize_capture(conn, job, precheck, output)
 
 
@@ -336,9 +363,13 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     )
     async def vmcore_fetch(
         system_id: Annotated[str, Field(description="The crashed System whose vmcore to capture.")],
+        method: Annotated[
+            Literal["host_dump", "kdump"],
+            Field(description="Capture method; must be supported by the local-libvirt provider."),
+        ] = "host_dump",
     ) -> ToolResponse:
         """Enqueue a capture_vmcore job on a crashed System. Requires operator."""
-        return await fetch_vmcore(pool, current_context(), system_id=system_id)
+        return await fetch_vmcore(pool, current_context(), system_id=system_id, method=method)
 
     @app.tool(
         name="vmcore.list",
