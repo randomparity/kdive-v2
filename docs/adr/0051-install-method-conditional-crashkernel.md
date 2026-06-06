@@ -51,6 +51,14 @@ made method-conditional and the param can be threaded. Where to resolve it is th
    `ProvisioningProfile.parse`), mirroring the existing `_cmdline_for` loose read of
    `run.build_profile`: install needs only the `crashkernel`/`debug` subset, partially-seeded M0
    Systems must not raise, and a future provider's `provider.<name>.debug` adds no coupling here.
+   The navigated key is the **alias** the profile is persisted under, not the Python attribute
+   name: `system.provisioning_profile` is a `ProvisioningProfile.model_dump(by_alias=True)`
+   (`systems.py`), so the section lives at `provider["local-libvirt"]`
+   (`ResourceKind.LOCAL_LIBVIRT.value`), **not** `provider["local_libvirt"]`. A loose read against
+   the wrong spelling returns `None` silently — making *every* System resolve non-kdump and
+   defeating the gate with no error — so the alias is pinned by a test (Decision 4 / the plan)
+   that seeds a real `model_dump(by_alias=True)` profile with `crashkernel` set and asserts the
+   kdump install is rejected, rather than trusting prose.
 
 2. **The `runs.install` crashkernel gate is method-conditional.** The `crashkernel=` cmdline
    token is required **iff** the resolved method is `kdump`. For `console`/`host_dump`/`gdbstub`
@@ -91,10 +99,14 @@ made method-conditional and the param can be threaded. Where to resolve it is th
   `configuration_error` rather than resolving a method against a missing profile.
 - `install_handler` reads the build ledger to recover `initrd_ref`; this is the same
   `_existing_build_result` short read the build finalize already uses, so no new query shape.
-- A profile that is malformed enough that the loose read cannot find `crashkernel` resolves to a
-  non-kdump method (fail-open on the kdump prerequisite). This is unreachable in production —
-  `systems.define`/`update` persist a parsed `ProvisioningProfile.model_dump`, so the field is
-  well-formed — and a genuinely kdump-intended System with a readable `crashkernel` is unaffected.
+- A loose read that cannot find `crashkernel` resolves to a non-kdump method (fail-open on the
+  kdump prerequisite). Two distinct sources of "cannot find" exist and are handled differently:
+  a **malformed profile** is unreachable in production (`systems.define`/`update` persist a parsed
+  `ProvisioningProfile.model_dump`, so the field is well-formed); a **mis-spelled navigation key**
+  (`local_libvirt` instead of the `local-libvirt` alias) is an ordinary code bug that the loose
+  read would hide on every System, not just malformed ones — that is why Decision 1 pins the alias
+  with a test rather than relying on the field being present. A genuinely kdump-intended System
+  with a readable `crashkernel` under the correct alias is unaffected.
 - The cmdline still rides through `_render_direct_kernel_xml` verbatim; this ADR does not add the
   flag-derived panic-escalation/`nokaslr` tokens (spec §8, deferred to the Tier-1/Tier-2 plans).
 
