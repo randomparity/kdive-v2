@@ -486,3 +486,55 @@ def test_sync_tree_rsync_nonzero_is_infrastructure_failure(
         _sync_tree(str(src), tmp_path / "ws")
     assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
     assert "stderr" in caught.value.details
+
+
+# --- _real_checkout composition (host-free, never skipped) --------------------------
+
+
+def test_real_checkout_calls_steps_in_order_with_right_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    order: list[str] = []
+    seen: dict[str, object] = {}
+
+    def _sync(kernel_src: str, ws: Path) -> None:
+        order.append("sync")
+        seen["sync"] = (kernel_src, ws)
+
+    def _stage(config_ref: str, ws: Path) -> None:
+        order.append("stage")
+        seen["stage"] = (config_ref, ws)
+
+    def _patch(patch_ref: str, ws: Path) -> None:
+        order.append("patch")
+        seen["patch"] = (patch_ref, ws)
+
+    monkeypatch.setattr(build_module, "_sync_tree", _sync)
+    monkeypatch.setattr(build_module, "_stage_config", _stage)
+    monkeypatch.setattr(build_module, "_apply_patch", _patch)
+
+    profile = BuildProfile.parse(
+        {**_VALID_PROFILE, "config_ref": "/configs/c", "patch_ref": "/patches/p"}
+    )
+    assert isinstance(profile, ServerBuildProfile)
+    build_module._real_checkout("/src/linux", profile, workspace)
+
+    assert order == ["sync", "stage", "patch"]
+    assert seen["sync"] == ("/src/linux", workspace)
+    assert seen["stage"] == ("/configs/c", workspace)
+    assert seen["patch"] == ("/patches/p", workspace)
+
+
+def test_real_checkout_skips_patch_when_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    monkeypatch.setattr(build_module, "_sync_tree", lambda *_: order.append("sync"))
+    monkeypatch.setattr(build_module, "_stage_config", lambda *_: order.append("stage"))
+    monkeypatch.setattr(build_module, "_apply_patch", lambda *_: order.append("patch"))
+
+    profile = _profile()  # patch_ref is None
+    build_module._real_checkout("/src/linux", profile, tmp_path / "ws")
+
+    assert order == ["sync", "stage"]  # no patch step

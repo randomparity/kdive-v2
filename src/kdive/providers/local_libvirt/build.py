@@ -246,14 +246,18 @@ def _make_checkout(kernel_src: str) -> _Checkout:
     return _checkout
 
 
-def _real_checkout(  # pragma: no cover - live_vm
-    kernel_src: str, profile: ServerBuildProfile, workspace: Path
-) -> None:
-    raise CategorizedError(
-        "real warm-tree checkout runs only under the live_vm gate",
-        category=ErrorCategory.MISSING_DEPENDENCY,
-        details={"kernel_src": kernel_src, "config_ref": profile.config_ref},
-    )
+def _real_checkout(kernel_src: str, profile: ServerBuildProfile, workspace: Path) -> None:
+    """Materialize a warm per-Run workspace, stage the ``.config``, apply any patch.
+
+    Steps run in order so the resetting rsync (sync) precedes config-staging and patch
+    application; see ADR-0053 for the per-step failure contract. The rsync sync and the
+    later ``make`` run only on a real build host (``live_vm``); this composition itself is
+    unit-tested with the steps stubbed.
+    """
+    _sync_tree(kernel_src, workspace)
+    _stage_config(profile.config_ref, workspace)
+    if profile.patch_ref is not None:
+        _apply_patch(profile.patch_ref, workspace)
 
 
 def _real_read_config(workspace: Path) -> str:  # pragma: no cover - live_vm
