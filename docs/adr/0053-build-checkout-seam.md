@@ -36,7 +36,11 @@ profile's `config_ref`/`patch_ref` resolve, and what category a non-applying pat
    source's build products so the in-tree `make` recompiles only what the patch touched
    (the warm-tree performance contract); `--delete` makes a re-sync into a
    partially-populated workspace exactly mirror the source, which is the idempotency the
-   issue asks for. A copy failure (disk, permissions) is `INFRASTRUCTURE_FAILURE`; an
+   issue asks for — and because that resetting rsync runs before every config-stage and
+   patch-apply, a re-dispatched checkout always patches a pristine tree (no
+   "already-applied" failure). The seam creates the per-Run workspace (`mkdir(parents=True,
+   exist_ok=True)`) before rsync, since `build()` does not and rsync does not create missing
+   parent directories. A copy failure (disk, permissions) is `INFRASTRUCTURE_FAILURE`; an
    absent `rsync` is `MISSING_DEPENDENCY`; an unset/invalid `KDIVE_KERNEL_SRC` is caught
    before rsync as `CONFIGURATION_ERROR`.
 
@@ -59,13 +63,24 @@ profile's `config_ref`/`patch_ref` resolve, and what category a non-applying pat
    is applied with `git apply -p1` (the natural consumer of a `git diff`); an absent `git`
    is `MISSING_DEPENDENCY`.
 
-5. **Decompose into host-free helpers; only rsync/`make` stays `live_vm`-gated.**
-   `_resolve_local_ref`, `_stage_config`, and `_apply_patch` are unit-tested directly
-   (the first two host-free; `_apply_patch` needs only the `git` binary and skips if
-   absent), while `_sync_tree` and the composed `_real_checkout` keep the
-   `# pragma: no cover - live_vm` because they shell out to rsync. The injected `checkout`
+5. **Decompose so only the rsync subprocess stays `live_vm`-gated; the composition is
+   host-free-tested.** `_resolve_local_ref`, `_stage_config`, and `_apply_patch` are
+   unit-tested directly (the first two host-free; `_apply_patch` needs only the `git` binary
+   and skips if absent). Crucially, `_real_checkout`'s *orchestration* (sync → stage → patch
+   ordering and argument wiring) is **also** host-free-tested by monkeypatching the
+   `_sync_tree` rsync leaf with a recorder — so a wiring bug cannot hide behind the gate. Only
+   the actual `rsync` exec carries `# pragma: no cover - live_vm`. The injected `checkout`
    seam on `LocalLibvirtBuild` is unchanged, so the existing fake-seam tests of `build()`
-   still cover the orchestration without a toolchain — the contract ADR-0029 §4 set.
+   still cover the higher orchestration without a toolchain — the contract ADR-0029 §4 set.
+
+6. **The end-to-end acceptance is the (previously stubbed) `live_vm` test, now implemented.**
+   `test_live_vm_real_make_build_id_matches_readelf` was a `NotImplementedError` placeholder;
+   this change fills it so that, on the demo host (with `KDIVE_KERNEL_SRC` + `readelf`), it
+   drives the real `build()` and asserts the extracted build-id equals `readelf -n`. It is the
+   executable form of "produces a real `bzImage` + `vmlinux` with a build-id" — gated, run on
+   the demo host, not in CI. Re-running the effective config through the preflight after
+   kbuild's `syncconfig` (which can drop options a fragment/mismatched `.config` leaves
+   unspecified) is a recorded follow-on, not done here.
 
 ## Consequences
 
@@ -81,6 +96,11 @@ profile's `config_ref`/`patch_ref` resolve, and what category a non-applying pat
   follow-on, not a quiet widening of `_resolve_local_ref`.
 - `profile.kernel_source_ref` is recorded but unverified against the warm tree in this lane;
   provenance verification (tree matches the declared ref) is a future follow-on.
+- `config_ref` is assumed to be a complete `.config` for the target tree; a fragment or a
+  mismatched-version config is silently completed by kbuild's `syncconfig`, and the pre-`make`
+  preflight inspects the staged (not the effective) config. Re-preflighting the effective
+  config is a named follow-on, deliberately not done here (it would change `build()`'s `make`
+  step).
 
 ## Considered & rejected
 
