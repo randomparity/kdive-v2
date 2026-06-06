@@ -3,11 +3,13 @@
 `LocalLibvirtInstall` realizes two handler-facing ports keyed on the System-tagged libvirt
 domain (`kdive-{system_id}`, minted by the provisioning plane, ADR-0025):
 
-- `install(system_id, run_id, kernel_ref, *, cmdline)` stages the built kernel/initrd to a
-  **per-Run** host-local path (`{staging_root}/{system_id}/{run_id}/{kernel,initrd}`) via a
-  temp-then-rename fetch, verifies the kdump capture prerequisite (`configuration_error` if
-  absent — checked **before** any redefine), and `defineXML`s the domain with a direct-kernel
-  `<os>` (`<kernel>`/`<initrd>`/`<cmdline>`) referencing that path. The `<os>` is built with
+- `install(system_id, run_id, kernel_ref, *, cmdline, method, initrd_ref)` stages the kernel
+  (and optionally an initrd) to a **per-Run** host-local path
+  (`{staging_root}/{system_id}/{run_id}/{kernel[,initrd]}`) via a temp-then-rename fetch.
+  The kdump capture prerequisite check fires only for `method=CaptureMethod.KDUMP`; non-kdump
+  boots skip it. When `initrd_ref` is ``None`` (e.g. a bzImage with embedded initramfs) no
+  initrd is fetched and no `<initrd>` element is emitted. `defineXML`s the domain with a
+  direct-kernel `<os>` (`<kernel>`/[`<initrd>`]/`<cmdline>`). The `<os>` is built with
   `xml.etree.ElementTree` (no string interpolation), so a `cmdline` value cannot inject XML.
 - `boot(system_id)` power-cycles the domain into the staged `<kernel>` (`destroy` if running,
   then `create`) and polls the run-readiness preflight within a bounded window: the System
@@ -34,6 +36,7 @@ import libvirt
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.local_libvirt.provisioning import domain_name_for
 
@@ -77,9 +80,19 @@ class Installer(Protocol):
 
     `run_id` keys the per-Run staging path (ADR-0030 §5); `cmdline` is the gated command line
     (the `crashkernel=` reservation is enforced at the `runs.install` tool, before this runs).
+    `method` gates the kdump preflight; `initrd_ref` is omitted for embedded-initramfs kernels.
     """
 
-    def install(self, system_id: UUID, run_id: UUID, kernel_ref: str, *, cmdline: str) -> None: ...
+    def install(
+        self,
+        system_id: UUID,
+        run_id: UUID,
+        kernel_ref: str,
+        *,
+        cmdline: str,
+        method: CaptureMethod = CaptureMethod.HOST_DUMP,
+        initrd_ref: str | None = None,
+    ) -> None: ...
 
 
 class Booter(Protocol):
@@ -138,21 +151,36 @@ class LocalLibvirtInstall:
             staging_root=staging_root,
         )
 
-    def install(self, system_id: UUID, run_id: UUID, kernel_ref: str, *, cmdline: str) -> None:
-        """Stage the kernel/initrd and redefine the domain for direct-kernel boot.
+    def install(
+        self,
+        system_id: UUID,
+        run_id: UUID,
+        kernel_ref: str,
+        *,
+        cmdline: str,
+        method: CaptureMethod = CaptureMethod.HOST_DUMP,
+        initrd_ref: str | None = None,
+    ) -> None:
+        """Stage the kernel (and optionally initrd) and redefine the domain for direct-kernel boot.
+
+        The initrd fetch and ``<initrd>`` element are omitted when ``initrd_ref`` is ``None``
+        (e.g. a bzImage with an embedded initramfs). The kdump preflight is gated on
+        ``method == CaptureMethod.KDUMP`` — non-kdump boots do not require kdump prerequisites.
 
         Raises:
             CategorizedError: ``CONFIGURATION_ERROR`` if the kdump capture path is absent
-                (checked before any redefine); ``INSTALL_FAILURE`` on a libvirt redefine error;
-                any fetch error category propagated from the object-store seam.
+                (method=kdump only, checked before any redefine); ``INSTALL_FAILURE`` on a
+                libvirt redefine error; any fetch error category propagated from the seam.
         """
         staging_dir = self._staging_root / str(system_id) / str(run_id)
         staging_dir.mkdir(parents=True, exist_ok=True)
         kernel_path = staging_dir / "kernel"
-        initrd_path = staging_dir / "initrd"
         self._fetch_kernel(kernel_ref, kernel_path)
-        self._fetch_initrd(kernel_ref, initrd_path)
-        if not self._kdump_check(system_id):
+        initrd_path: Path | None = None
+        if initrd_ref is not None:
+            initrd_path = staging_dir / "initrd"
+            self._fetch_initrd(initrd_ref, initrd_path)
+        if method is CaptureMethod.KDUMP and not self._kdump_check(system_id):
             raise CategorizedError(
                 "kdump capture service/initramfs not present on the staged System",
                 category=ErrorCategory.CONFIGURATION_ERROR,
@@ -193,10 +221,14 @@ class LocalLibvirtInstall:
         conn: _LibvirtConn,
         domain_name: str,
         kernel_path: Path,
-        initrd_path: Path,
+        initrd_path: Path | None,
         cmdline: str,
     ) -> str:
-        """Read the existing domain XML and add a direct-kernel `<os>` section (ADR-0030 §5)."""
+        """Read the existing domain XML and add a direct-kernel `<os>` section (ADR-0030 §5).
+
+        ``initrd_path`` is optional: when ``None`` (embedded-initramfs kernel) no ``<initrd>``
+        element is emitted, so libvirt boots the kernel without a separate initrd.
+        """
         try:
             domain = conn.lookupByName(domain_name)
             current = domain.XMLDesc(0)
@@ -218,7 +250,8 @@ class LocalLibvirtInstall:
             if existing is not None:
                 os_el.remove(existing)
         ET.SubElement(os_el, "kernel").text = str(kernel_path)
-        ET.SubElement(os_el, "initrd").text = str(initrd_path)
+        if initrd_path is not None:
+            ET.SubElement(os_el, "initrd").text = str(initrd_path)
         ET.SubElement(os_el, "cmdline").text = cmdline
         return ET.tostring(root, encoding="unicode")
 

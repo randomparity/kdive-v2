@@ -856,6 +856,7 @@ def test_register_handlers_binds_build() -> None:
 
 # --- runs.install / runs.boot (install + boot plane, #19) ----------------------------
 
+from kdive.domain.capture import CaptureMethod  # noqa: E402
 from kdive.providers.local_libvirt.install import (  # noqa: E402
     Booter,
     Installer,
@@ -874,7 +875,16 @@ class _FakeInstaller:
         self.calls: list[tuple[UUID, UUID, str, str]] = []
         self._error = error
 
-    def install(self, system_id: UUID, run_id: UUID, kernel_ref: str, *, cmdline: str) -> None:
+    def install(
+        self,
+        system_id: UUID,
+        run_id: UUID,
+        kernel_ref: str,
+        *,
+        cmdline: str,
+        method: CaptureMethod = CaptureMethod.HOST_DUMP,
+        initrd_ref: str | None = None,
+    ) -> None:
         self.calls.append((system_id, run_id, kernel_ref, cmdline))
         if self._error is not None:
             raise CategorizedError("boom", category=self._error)
@@ -1153,7 +1163,16 @@ class _SlowInstaller:
     def __init__(self) -> None:
         self.calls: list[UUID] = []
 
-    def install(self, system_id: UUID, run_id: UUID, kernel_ref: str, *, cmdline: str) -> None:
+    def install(
+        self,
+        system_id: UUID,
+        run_id: UUID,
+        kernel_ref: str,
+        *,
+        cmdline: str,
+        method: CaptureMethod = CaptureMethod.HOST_DUMP,
+        initrd_ref: str | None = None,
+    ) -> None:
         import time
 
         self.calls.append(run_id)

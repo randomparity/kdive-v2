@@ -11,6 +11,7 @@ from uuid import UUID
 import libvirt
 import pytest
 
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.local_libvirt.install import (
     LocalLibvirtInstall,
@@ -21,6 +22,7 @@ from tests.providers.local_libvirt.conftest import FakeDomain, FakeLibvirtConn
 _SYS = UUID("11111111-1111-1111-1111-111111111111")
 _RUN = UUID("22222222-2222-2222-2222-222222222222")
 _KERNEL_REF = "local/runs/22222222-2222-2222-2222-222222222222/kernel"
+_INITRD_REF = "local/runs/22222222-2222-2222-2222-222222222222/initrd"
 _CMDLINE = "console=ttyS0 crashkernel=256M"
 
 
@@ -91,7 +93,7 @@ def _install(
 def test_install_redefines_direct_kernel_os(tmp_path: Path) -> None:
     conn = _conn_with_existing()
     inst = _install(conn=conn, staging_root=tmp_path)
-    inst.install(_SYS, _RUN, _KERNEL_REF, cmdline=_CMDLINE)
+    inst.install(_SYS, _RUN, _KERNEL_REF, cmdline=_CMDLINE, initrd_ref=_INITRD_REF)
 
     assert len(conn.defined_xml) == 1
     domain = ET.fromstring(conn.defined_xml[0])  # noqa: S314 - self-rendered, trusted
@@ -111,7 +113,7 @@ def test_install_stages_kernel_and_initrd_to_per_run_path(tmp_path: Path) -> Non
     conn = _conn_with_existing()
     fetch = _Fetch()
     inst = _install(conn=conn, fetch=fetch, staging_root=tmp_path)
-    inst.install(_SYS, _RUN, _KERNEL_REF, cmdline=_CMDLINE)
+    inst.install(_SYS, _RUN, _KERNEL_REF, cmdline=_CMDLINE, initrd_ref=_INITRD_REF)
 
     staged_dir = tmp_path / str(_SYS) / str(_RUN)
     assert (staged_dir / "kernel").exists()
@@ -141,9 +143,25 @@ def test_install_kdump_absent_is_config_error_before_redefine(tmp_path: Path) ->
     seam = _Readiness(kdump_present=False)
     inst = _install(conn=conn, seam=seam, staging_root=tmp_path)
     with pytest.raises(CategorizedError) as caught:
-        inst.install(_SYS, _RUN, _KERNEL_REF, cmdline=_CMDLINE)
+        inst.install(_SYS, _RUN, _KERNEL_REF, cmdline=_CMDLINE, method=CaptureMethod.KDUMP)
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert conn.defined_xml == []  # nothing redefined on a missing capture path
+
+
+def test_install_kdump_present_proceeds(tmp_path: Path) -> None:
+    # method=KDUMP with the capture path present: install proceeds and redefines the domain.
+    conn = _conn_with_existing()
+    seam = _Readiness(kdump_present=True)
+    inst = _install(conn=conn, seam=seam, staging_root=tmp_path)
+    inst.install(
+        _SYS,
+        _RUN,
+        _KERNEL_REF,
+        cmdline=_CMDLINE,
+        method=CaptureMethod.KDUMP,
+        initrd_ref=_INITRD_REF,
+    )
+    assert len(conn.defined_xml) == 1  # redefined once, no CONFIGURATION_ERROR raised
 
 
 # --- install: failures ---------------------------------------------------------------
@@ -260,6 +278,38 @@ def test_read_console_log_missing_is_empty(tmp_path: Path) -> None:
     from kdive.providers.local_libvirt.install import read_console_log
 
     assert read_console_log(tmp_path / "absent.log") == b""
+
+
+# --- method-conditional kdump + optional initrd --------------------------------------
+
+
+def test_install_skips_kdump_check_and_omits_initrd(tmp_path: Path) -> None:
+    """CONSOLE method: kdump_check never called; no initrd fetched; no <initrd> in XML."""
+
+    def _kdump_must_not_run(_sid: UUID) -> bool:
+        raise AssertionError("kdump_check called for a non-kdump method")
+
+    def _initrd_must_not_run(_ref: str, _dest: Path) -> None:
+        raise AssertionError("initrd fetched when no initrd_ref given")
+
+    conn = _conn_with_existing()
+    installer = LocalLibvirtInstall(
+        connect=lambda: conn,
+        fetch_kernel=lambda _ref, _dest: None,
+        fetch_initrd=_initrd_must_not_run,
+        kdump_check=_kdump_must_not_run,
+        readiness=lambda _sid: ReadinessResult(answered=True, ok=True),
+        staging_root=tmp_path,
+    )
+    # CONSOLE + no initrd_ref: kdump_check skipped, no initrd fetched, no <initrd> rendered.
+    installer.install(
+        _SYS, _RUN, _KERNEL_REF, cmdline="console=ttyS0", method=CaptureMethod.CONSOLE
+    )
+    assert len(conn.defined_xml) == 1
+    domain = ET.fromstring(conn.defined_xml[0])  # noqa: S314 - self-rendered, trusted
+    os_el = domain.find("os")
+    assert os_el is not None
+    assert os_el.find("initrd") is None
 
 
 # --- live_vm real redefine + boot ----------------------------------------------------
