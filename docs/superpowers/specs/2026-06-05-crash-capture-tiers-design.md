@@ -96,14 +96,18 @@ profile section (`provider.local_libvirt.debug`); a future cloud provider adds
 
 ## 4. Tool surface
 
-`vmcore.fetch` (`mcp/tools/vmcore.py:337`) gains an optional `method`:
+The method vocabulary is unified, but each method **dispatches to the plane that realizes it**
+(ADR-0049 Decision 1) — it is not one argument on one tool.
+
+**`host_dump` / `kdump` → `vmcore.fetch`** (the core-producing methods). `vmcore.fetch`
+(`mcp/tools/vmcore.py:337`) gains an optional `method`:
 
 ```python
 async def vmcore_fetch(
     system_id: Annotated[str, Field(description="The crashed System whose core to capture.")],
     method: Annotated[
-        Literal["console", "host_dump", "gdbstub", "kdump"],
-        Field(description="Capture method; the provider rejects an unsupported method."),
+        Literal["host_dump", "kdump"],
+        Field(description="Core-producing capture method; the provider rejects an unsupported one."),
     ] = "host_dump",
 ) -> ToolResponse: ...
 ```
@@ -112,12 +116,18 @@ async def vmcore_fetch(
   dedup key becomes `{system_id}:capture_vmcore:{method}` so two methods on one System are
   distinct jobs, not deduped into one.
 - `capture_handler` (`vmcore.py:202`) passes `method` to `retriever.capture(system_id, method)`.
-- An unsupported method for the System's provider is a synchronous `configuration_error` at the
-  tool boundary (validated against the provider supported-set), **before** any job is admitted.
-- `console` is a special case: the console artifact already exists (the always-on `<log file>`),
-  so `vmcore.fetch(method="console")` registers the captured console log as a `redacted` artifact
-  rather than producing a memory image. `postmortem.*` remains a `host_dump`/`kdump` reader (it
-  needs a core); console capture feeds the A/B scoring path (next session) and `artifacts.*`.
+- A method outside the provider supported-set, or one the System was not provisioned for (e.g.
+  `host_dump` without `preserve_on_crash`), is a synchronous `configuration_error` at the tool
+  boundary, **before** any job is admitted. `kdump` is rejected until #115 ships it.
+
+**`gdbstub` → the Connect plane** — reached via `debug.*` / `open_transport(system, "gdbstub")`,
+a live transport that produces no core (§9). It is not a `vmcore.fetch` method.
+
+**`console` → an artifact read** — the boot/console plane registers the always-on console
+`<log file>` as a `redacted` artifact when the boot window closes (ready, crashed, or timed out),
+and the agent reads it via `artifacts.*`. It is not a `vmcore.fetch` method and is **not**
+`CRASHED`-gated, so the healthy A/B baseline (a non-crashing System) is readable. `postmortem.*`
+remains a `host_dump`/`kdump` core reader (it needs a core).
 
 ## 5. Provisioning profile changes
 
@@ -214,9 +224,11 @@ satisfying the existing `_is_loopback_literal` gate.
   never a 500, never an admitted job.
 - **`host_dump` with no crashed/preserved domain** → the dump seam fails fast; surfaced as the
   existing `readiness_failure`/`infrastructure_failure` contract of `capture`.
-- **State gating** — `vmcore.fetch` already requires `SystemState.CRASHED` (`vmcore.py:140`).
-  For `host_dump` the System reaches `CRASHED` via pvpanic → `<on_crash>preserve</on_crash>` →
-  reconcile. **This mapping is an assumption to verify** (see §13), not built here.
+- **State gating** — only the core-producing methods go through `vmcore.fetch`, which already
+  requires `SystemState.CRASHED` (`vmcore.py:140`). For `host_dump` the System reaches `CRASHED`
+  via pvpanic → `<on_crash>preserve</on_crash>` → reconcile. **This mapping is an assumption to
+  verify** (see §13), not built here. `console` (an `artifacts.*` read) and `gdbstub` (a Connect
+  transport) are **not** `vmcore.fetch` and **not** `CRASHED`-gated.
 - **Security** — all domain-XML additions are constructed with `ElementTree` (no interpolation);
   the gdbstub endpoint is loopback-only (the ported "F2" SSRF control); the console/dmesg
   artifacts pass through the existing `Redactor`; the crash-command allowlist (`postmortem.*`)
@@ -226,8 +238,11 @@ satisfying the existing `_is_loopback_literal` gate.
 
 Mirroring the plane's existing fakes-over-seams approach (orchestration tested without a host):
 
-- **vmcore.fetch** — `method` recorded on the job payload; dedup key includes the method;
-  unsupported method rejected synchronously; `console` registers a redacted console artifact.
+- **vmcore.fetch** — `method` (`host_dump`/`kdump`) recorded on the job payload; dedup key
+  includes the method; an unsupported or not-provisioned-for method rejected synchronously.
+- **console registration** — the boot/console plane registers the console log as a `redacted`
+  artifact on every boot-window close (ready, crashed, **and** timed out), so the vulnerable
+  branch's pre-readiness oops is captured; the artifact is readable without a `CRASHED` state.
 - **capture()** — seam selection by method; `host_dump` seam fake returns bytes → raw+redacted
   rows; ELF-magic rejection path; build-id/redact seams exercised independently of source.
 - **render_domain_xml** — console+`<log>` always present; `preserve_on_crash` ⇒ pvpanic +
@@ -247,10 +262,11 @@ Mirroring the plane's existing fakes-over-seams approach (orchestration tested w
 
 On the local host, for a System booted with `dhash_entries=1`:
 
-1. `method="console"` returns the oops/KASAN text naming `__d_lookup()`.
-2. `method="host_dump"` produces a drgn/`crash`-loadable core; `postmortem.triage` returns a
-   backtrace.
-3. `method="gdbstub"` yields a reachable RSP endpoint a debugger attaches to.
+1. The **console** artifact read returns the oops/KASAN text naming `__d_lookup()`.
+2. `vmcore.fetch(method="host_dump")` produces a drgn/`crash`-loadable core; `postmortem.triage`
+   returns a backtrace.
+3. The **gdbstub** Connect transport (`open_transport(system, "gdbstub")`) yields a reachable RSP
+   endpoint a debugger attaches to.
 4. A clean boot (no bad parameter) produces none of the above crash signals — the A/B contrast
    the scoring layer (next session) will consume.
 
@@ -264,5 +280,12 @@ On the local host, for a System booted with `dhash_entries=1`:
 2. **Console-as-capture artifact shape.** Registering a console log under the `vmcore.*`
    artifact owner/key conventions (which assume a core) needs a small naming decision so
    `vmcore.list`'s `…/vmcore-redacted` filter and the console artifact coexist cleanly.
-3. The Run→method plumbing (how the install/boot handler learns the capture method) reuses the
+3. **host_dump build-id provenance.** A `virsh dump --memory-only` image carries the build-id in a
+   `VMCOREINFO` `PT_NOTE` only if the guest exposes `vmcoreinfo` (the `fw_cfg etc/vmcoreinfo`
+   path); the non-kdump boot does not guarantee it. If absent, `_read_vmcore_build_id` cannot
+   recover it and `postmortem.crash`'s provenance gate (`retrieve.py`,
+   `observed != expected_build_id` → `configuration_error`) rejects the core. Confirm the note is
+   present (enable the vmcoreinfo fw_cfg in the boot path) or define a host_dump-specific fallback
+   before claiming Tier-1 → drgn/`crash` parity (ADR-0049 Decision 7).
+4. The Run→method plumbing (how the install/boot handler learns the capture method) reuses the
    build-profile carrier; the exact field is settled in the implementation plan.
