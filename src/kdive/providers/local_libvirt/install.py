@@ -24,6 +24,7 @@ host; the real `libvirt.open`/object-store path is `live_vm`-only.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import xml.etree.ElementTree as ET  # noqa: S405 - constructs/edits self-owned domain XML only
@@ -173,10 +174,18 @@ class LocalLibvirtInstall:
         Raises:
             CategorizedError: ``CONFIGURATION_ERROR`` if the kdump capture path is absent
                 (method=kdump only, checked before any redefine); ``INSTALL_FAILURE`` on a
-                libvirt redefine error; any fetch error category propagated from the seam.
+                libvirt redefine error; ``INFRASTRUCTURE_FAILURE`` if the per-Run staging
+                directory cannot be created; any fetch error category propagated from the seam.
         """
         staging_dir = self._staging_root / str(system_id) / str(run_id)
-        staging_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            staging_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise CategorizedError(
+                "failed to create the per-Run staging directory",
+                category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+                details={"op": "mkdir", "dest": str(staging_dir)},
+            ) from exc
         kernel_path = staging_dir / "kernel"
         self._fetch_kernel(kernel_ref, kernel_path)
         initrd_path: Path | None = None
@@ -335,17 +344,28 @@ def _stage_object(store: _ObjectReader, ref: str, dest: Path) -> None:
     so the read is **unconditional** (``etag=None``, ADR-0054) — the install plane holds no
     client handle to validate. The bytes are written to a sibling ``.part`` file and
     atomically renamed into ``dest``, so a failure partway leaves ``dest`` untouched and no
-    partial file the redefine could point at. Store errors (``STALE_HANDLE`` for a vanished
-    key, ``INFRASTRUCTURE_FAILURE`` otherwise) propagate as the install plane's categorized
-    failures.
+    partial file the redefine could point at.
+
+    Raises:
+        CategorizedError: a store fault — ``STALE_HANDLE`` for a vanished key,
+            ``INFRASTRUCTURE_FAILURE`` otherwise (from ``get_artifact``); or a local
+            staging-write fault (disk full, permission), mapped to
+            ``INFRASTRUCTURE_FAILURE`` with the destination path so the failure is not an
+            opaque ``OSError`` out of the seam.
     """
     data = store.get_artifact(ref, None).data
     tmp = dest.with_name(dest.name + ".part")
     try:
         tmp.write_bytes(data)
         tmp.replace(dest)
-    finally:
-        tmp.unlink(missing_ok=True)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink()  # best-effort: drop any partial temp; never mask the real error
+        raise CategorizedError(
+            "failed to write the staged object to the per-Run path",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details={"op": "stage", "dest": str(dest)},
+        ) from exc
 
 
 def _real_fetch(ref: str, dest: Path) -> None:  # pragma: no cover - live_vm

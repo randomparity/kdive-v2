@@ -370,6 +370,34 @@ def test_stage_object_propagates_store_error_and_leaves_dest_intact(tmp_path: Pa
     assert list(tmp_path.iterdir()) == [dest]
 
 
+def test_stage_object_categorizes_local_write_failure(tmp_path: Path) -> None:
+    dest = tmp_path / "kernel"
+    # A directory at the .part path makes write_bytes raise IsADirectoryError (an OSError),
+    # standing in for a disk-full/permission staging-write fault.
+    (tmp_path / "kernel.part").mkdir()
+    store = _FakeStore(data=b"kernel-bytes")
+
+    with pytest.raises(CategorizedError) as excinfo:
+        _stage_object(store, _KERNEL_REF, dest)
+
+    # The local write fault is a categorized infrastructure failure, not a raw OSError.
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert excinfo.value.details["dest"] == str(dest)
+    assert not dest.exists()
+
+
+def test_install_categorizes_staging_mkdir_failure(tmp_path: Path) -> None:
+    # A regular file where the per-System staging dir must be makes mkdir(parents=True) fail.
+    (tmp_path / str(_SYS)).write_bytes(b"not-a-dir")
+    inst = _install(conn=_conn_with_existing(), staging_root=tmp_path)
+
+    with pytest.raises(CategorizedError) as excinfo:
+        inst.install(_SYS, _RUN, _KERNEL_REF, cmdline=_CMDLINE, initrd_ref=_INITRD_REF)
+
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert excinfo.value.details["op"] == "mkdir"
+
+
 # --- live_vm real redefine + boot ----------------------------------------------------
 
 
