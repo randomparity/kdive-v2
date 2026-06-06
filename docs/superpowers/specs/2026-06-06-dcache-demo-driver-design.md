@@ -93,14 +93,34 @@ from env (ADR-0056 §3–4):
 3. Open an investigation. **Run A (vulnerable):** `create_run(build_profile=demo_build_profile(fixed=False))`
    → `build_run(cmdline=DEMO_CMDLINE)` + `build_handler` (real `LocalLibvirtBuild`) →
    `install_run` + `install_handler` (real `Installer`) → `boot_run` + `boot_handler` (real
-   `Booter`). Assert the boot **fails** `readiness_failure` and the registered console artifact
-   classifies as `crashed` with `__d_lookup` in the captured text.
+   `Booter`). Capture and assert Run A's evidence **before** Run B's install/boot overwrites it:
+   the registered console artifact classifies as `crashed` with `__d_lookup` in the captured text,
+   and that same console shows `dhash_entries=1` in its `Command line:` line (so a clean boot from a
+   *missing* cmdline is distinguished from a fixed kernel — see the false-negative edge below). The
+   boot itself fails — `readiness_failure` if the crash signature is seen, `boot_timeout` if the
+   guest hangs without one.
 4. **Run B (fixed):** a new Run on the **same** System: `create_run(build_profile=
    demo_build_profile(fixed=True))` → `build_run(cmdline=DEMO_CMDLINE)` → install → boot. Assert the
    boot **succeeds** and the (overwritten) console artifact classifies as `ready`.
 
-The `crashed`/`ready` classification is the ground-truth assertion (ADR-0055's `classify_console`);
-the boot-job outcome (raise vs success) is the secondary assertion.
+The `crashed`/`ready` console classification is the ground-truth assertion (ADR-0055's
+`classify_console`); the boot-job outcome (`readiness_failure`/`boot_timeout` vs success) is the
+secondary assertion.
+
+Three dependencies the driver rests on, made explicit so a reorder cannot quietly void the A/B:
+
+- **Install selects the kernel, not boot.** `boot(system_id)` only power-cycles the domain;
+  `install()` is what redefines the domain XML to the per-Run staged kernel
+  (`{staging_root}/{system_id}/{run_id}/kernel`, `install.py` `defineXML`). So Run B boots the fixed
+  kernel only because Run B's `install_handler` redefines the shared domain *before* Run B's boot;
+  the per-Run staging path keeps A's and B's kernels distinct on disk.
+- **Console capture before overwrite.** The console object and the host log are System-scoped and
+  truncated/overwritten on each `create()` (the G4 precondition; `boot_handler` etag-refresh). Run
+  A's `crashed` evidence must be read and asserted before Run B boots; the A and B verdicts are not
+  both recoverable from the System-scoped console after the run finishes.
+- **A/B differs only by the patch.** Both Runs use the same `$KDIVE_TEST_BUILD_CONFIG` and the same
+  `DEMO_CMDLINE`; the only difference is Run B's `patch_ref`. This is the invariant that makes Run
+  B's `ready` verdict attributable to the dcache fix rather than to config or cmdline drift.
 
 ### Part D — host staging + runbook (the acceptance artifact)
 
@@ -112,7 +132,10 @@ the boot-job outcome (raise vs success) is the secondary assertion.
    console dirs to writable paths. No libvirt network (console-only).
 3. Generating `KDIVE_TEST_BUILD_CONFIG` (`make defconfig`, then enable `CONFIG_CRASH_DUMP` and one
    of `CONFIG_DEBUG_INFO_DWARF5` / `…DWARF4` / `…BTF`) and `KDIVE_DEMO_FIX_PATCH` (the dcache fix as
-   a `-p1` patch).
+   a `-p1` patch). The runbook names the fix's provenance (the 7.0.1 dcache change) and tells the
+   operator to verify the patch applies with `git apply --check` against the v7.0 tree before the
+   run — a patch that does not apply fails Run B at *build* with `configuration_error` (G1), not at
+   boot.
 4. The one command that reproduces test-case 05 (`just test-live` scoped to the demo), and the
    agent-facing tool-by-tool walkthrough (allocate → provision → create-run → build(cmdline) →
    install → boot, twice).
@@ -129,8 +152,12 @@ the boot-job outcome (raise vs success) is the secondary assertion.
 - **Skip (CI / any host):** the driver and the preflight skip cleanly with an actionable reason
   when any of the four env vars is absent.
 - **End-to-end (`live_vm`, manual):** on the real host, Run A's console classifies `crashed`
-  (`__d_lookup`) and its boot fails `readiness_failure`; Run B (fixed, same System) classifies
-  `ready` and boots clean. The runbook's one command drives this.
+  (`__d_lookup`) and shows `dhash_entries=1` in its `Command line:` line, and its boot fails
+  (`readiness_failure` if the signature is seen, else `boot_timeout`); Run B (fixed, same System,
+  same config + cmdline, only `patch_ref` added) classifies `ready` and boots clean. The runbook's
+  one command drives this. **Dependency:** crash detection relies on the real `dhash_entries=1`
+  output carrying a recognized crash signature in the pre-marker region; if a real capture hangs
+  without one, the fix is a one-line signature addition (ADR-0055 §4), not a driver change.
 
 ## Edges and failure modes
 
@@ -141,9 +168,18 @@ the boot-job outcome (raise vs success) is the secondary assertion.
   sets cmdline via `complete_build`).
 - **kdump + ledger cmdline without `crashkernel=`** → `install_run` returns
   `configuration_error` `cmdline_missing_crashkernel` (unchanged gate, now over the ledger source).
-- **No build ledger row at install time** (install raced before build finalize) → method default;
-  the existing `runs.boot` "install first" / build-succeeded gates already order the steps for the
-  demo (the driver `jobs.wait`s build before install).
+- **No build ledger cmdline → silent false-negative A/B.** If `runs.build` is called without
+  `cmdline=` (or before the build finalize commits), `_cmdline_for` returns the method default
+  (`console=ttyS0`, no `dhash_entries=1`) and the "vulnerable" kernel boots clean — the bug never
+  triggers and the A/B is vacuous. This is the most likely operator mistake in the runbook's
+  tool-by-tool path. Mitigations: the driver asserts Run A's console shows `dhash_entries=1`
+  (Part C) so a missing cmdline is distinguished from a fixed kernel, `install_handler` logs the
+  resolved cmdline, and the runbook flags the `cmdline=` argument as load-bearing. (The
+  `runs.boot` "install first" / build-succeeded gates still order the steps; the driver `jobs.wait`s
+  build before install.)
+- **`KDIVE_DEMO_FIX_PATCH` does not apply** (stale tree, fuzz, CRLF) → G1's `_apply_patch` maps it
+  to `configuration_error` at Run B's *build*, not its boot. The runbook pre-checks with
+  `git apply --check`.
 - **Vulnerable boot leaves the System bootable for Run B** — a console crash does not flip System
   state; verified by the topology decision (ADR-0056 §5).
 

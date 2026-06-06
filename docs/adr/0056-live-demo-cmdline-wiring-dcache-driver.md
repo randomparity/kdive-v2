@@ -113,8 +113,10 @@ duplicating the stack bring-up.
 
 ## Consequences
 
-- `dhash_entries=1` reaches boot: the vulnerable kernel resolves to `readiness_failure` with the
-  `__d_lookup` console snippet (ADR-0055), the fixed kernel to `ok` at `kdive-ready`.
+- `dhash_entries=1` reaches boot: the vulnerable kernel's console classifies `crashed`
+  (`__d_lookup`, ADR-0055) and its boot fails — `readiness_failure` when the crash signature is
+  seen in the pre-marker region, `boot_timeout` if it hangs without one; the fixed kernel boots
+  `ok` to `kdive-ready`. The console classification is the ground-truth signal, not the category.
 - The external lane's previously-inert `complete_build(cmdline=…)` is now live too (Decision 2);
   `docs/guide/reference/runs.md`'s "inert until that wiring lands" note is corrected, and the
   agent-facing tool guide / its snapshot are regenerated for the new `runs.build` `cmdline` param.
