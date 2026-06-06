@@ -272,7 +272,34 @@ def test_note_sh_name_past_shstrtab_is_build_failure() -> None:
 
 
 def test_extract_build_id_ranged_truncated_header_is_build_failure() -> None:
-    store = _FakeStore({"v": b"\x7fELF\x02\x01"}, {})
+    blob = b"\x7fELF\x02\x01"
+    store = _FakeStore({"v": blob}, {})
     with pytest.raises(CategorizedError) as e:
-        extract_build_id_ranged(store, "v")
+        extract_build_id_ranged(store, "v", max_size=len(blob))
     assert e.value.category is ErrorCategory.BUILD_FAILURE
+
+
+def _tamper_note_sh_size(blob: bytes, sh_size: int) -> bytes:
+    """Return ``blob`` with the .note.gnu.build-id section's sh_size overwritten.
+
+    Section index 1 in ``_elf_with_build_id`` is the SHT_NOTE entry; sh_size lives at
+    offset 0x20 within its 64-byte SHT entry. Tampering the SHT (which trails the data)
+    leaves ``len(blob)`` — hence the head's declared size — unchanged.
+    """
+    mutable = bytearray(blob)
+    e_shoff = struct.unpack_from("<Q", mutable, 0x28)[0]
+    e_shentsize = struct.unpack_from("<H", mutable, 0x3A)[0]
+    struct.pack_into("<Q", mutable, e_shoff + 1 * e_shentsize + 0x20, sh_size)
+    return bytes(mutable)
+
+
+def test_oversized_section_size_is_build_failure() -> None:
+    base = _elf_with_build_id(bytes.fromhex("deadbeef"))
+    # Past the object size (max_size == len(blob)) but under the per-section cap.
+    past_object = _tamper_note_sh_size(base, len(base) + 1)
+    # Past the per-section cap (16 MiB).
+    past_cap = _tamper_note_sh_size(base, 17 * 1024 * 1024)
+    for blob in (past_object, past_cap):
+        with pytest.raises(CategorizedError) as e:
+            _validate_vmlinux_blob(blob)
+        assert e.value.category is ErrorCategory.BUILD_FAILURE

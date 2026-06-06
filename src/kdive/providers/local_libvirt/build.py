@@ -40,6 +40,10 @@ _ELF_MAGIC = b"\x7fELF"
 _BZIMAGE_MAGIC = b"HdrS"
 _BZIMAGE_MAGIC_OFFSET = 0x202
 _SHT_NOTE = 7
+# Only shstrtab and the .note.gnu.build-id section are ever ranged-read (debug sections
+# never are), so a small per-section cap bounds an untrusted vmlinux's declared sh_size
+# against a multi-GB read into the worker thread.
+_MAX_SECTION_BYTES = 16 * 1024 * 1024
 
 # The kdump prerequisite is satisfied by CONFIG_CRASH_DUMP; symbolization needs DWARF or
 # BTF debuginfo. Each tuple is an OR-group: the config must enable at least one of each.
@@ -347,7 +351,11 @@ def validate_external_artifacts(
                 "a vmlinux upload requires a declared build_id",
                 category=ErrorCategory.CONFIGURATION_ERROR,
             )
-        actual = extract_build_id_ranged(store, keys["vmlinux"])  # lowercase hex
+        # heads["vmlinux"].size_bytes is already verified equal to the manifest size and
+        # capped (artifacts.create_upload), so it is a safe ceiling for the ranged reads.
+        actual = extract_build_id_ranged(
+            store, keys["vmlinux"], max_size=heads["vmlinux"].size_bytes
+        )  # lowercase hex
         if actual != declared_build_id.lower():
             raise _build_failure("declared build_id does not match the uploaded vmlinux")
         build_id = actual
@@ -388,15 +396,20 @@ def _check_magic(store: _ValidatorStore, name: str, key: str) -> None:
     # initrd has no cheap universal magic; checksum + size already gate it.
 
 
-def extract_build_id_ranged(store: _ValidatorStore, key: str) -> str:
+def extract_build_id_ranged(store: _ValidatorStore, key: str, *, max_size: int) -> str:
     """Extract a vmlinux's GNU build-id via ranged ELF64-LE reads (no full download).
 
     Reads the ELF header (``e_shoff``/``e_shentsize``/``e_shnum``/``e_shstrndx``), the
     section header table, the section-name string table, and the ``.note.gnu.build-id``
     section bytes — then feeds them to :func:`parse_gnu_build_id`.
 
+    ``max_size`` is the verified object size; every ranged read is bounded against it (and
+    a per-section cap) so a crafted ELF declaring an oversized section cannot force a
+    multi-GB read.
+
     Raises:
-        CategorizedError: ``BUILD_FAILURE`` if the ELF is malformed or carries no build-id.
+        CategorizedError: ``BUILD_FAILURE`` if the ELF is malformed, declares a section
+            past ``max_size``/the cap, or carries no build-id.
     """
     header = store.get_range(key, start=0, length=64)
     if len(header) < 64:
@@ -410,9 +423,11 @@ def extract_build_id_ranged(store: _ValidatorStore, key: str) -> str:
         e_shstrndx = struct.unpack_from("<H", header, 0x3E)[0]
         if e_shoff == 0 or e_shnum == 0 or e_shentsize < 64:
             raise _build_failure("vmlinux has no usable section header table")
+        if e_shoff + e_shentsize * e_shnum > max_size:
+            raise _build_failure("vmlinux section header table extends past the object size")
         sht = store.get_range(key, start=e_shoff, length=e_shentsize * e_shnum)
-        shstr = _read_section(store, key, sht, e_shentsize, e_shstrndx)
-        return _find_build_id_note(store, key, sht, shstr, e_shentsize, e_shnum)
+        shstr = _read_section(store, key, sht, e_shentsize, e_shstrndx, max_size=max_size)
+        return _find_build_id_note(store, key, sht, shstr, e_shentsize, e_shnum, max_size=max_size)
     except (struct.error, ValueError, IndexError) as exc:
         raise _build_failure("vmlinux ELF is structurally malformed") from exc
 
@@ -424,6 +439,8 @@ def _find_build_id_note(
     shstr: bytes,
     e_shentsize: int,
     e_shnum: int,
+    *,
+    max_size: int,
 ) -> str:
     """Walk the SHT for the ``.note.gnu.build-id`` SHT_NOTE section and parse its build-id."""
     for i in range(e_shnum):
@@ -434,17 +451,23 @@ def _find_build_id_note(
             continue
         name = shstr[sh_name : shstr.index(b"\x00", sh_name)]
         if name == b".note.gnu.build-id":
-            notes = _read_section(store, key, sht, e_shentsize, i)
+            notes = _read_section(store, key, sht, e_shentsize, i, max_size=max_size)
             return parse_gnu_build_id(notes)
     raise _build_failure("vmlinux carries no .note.gnu.build-id section")
 
 
 def _read_section(
-    store: _ValidatorStore, key: str, sht: bytes, e_shentsize: int, index: int
+    store: _ValidatorStore, key: str, sht: bytes, e_shentsize: int, index: int, *, max_size: int
 ) -> bytes:
     off = index * e_shentsize
     sh_offset = struct.unpack_from("<Q", sht, off + 0x18)[0]
     sh_size = struct.unpack_from("<Q", sht, off + 0x20)[0]
+    if sh_size > _MAX_SECTION_BYTES:
+        raise _build_failure("vmlinux section exceeds the readable-section cap", sh_size=sh_size)
+    if sh_offset + sh_size > max_size:
+        raise _build_failure(
+            "vmlinux section extends past the object size", sh_offset=sh_offset, sh_size=sh_size
+        )
     return store.get_range(key, start=sh_offset, length=sh_size)
 
 
