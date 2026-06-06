@@ -80,6 +80,17 @@ marker (userspace service logs, later non-fatal kernel messages) cannot retroact
 healthy boot to `crashed`. With the marker absent the whole console is scanned, so a crash that
 prevents the marker still resolves `crashed`.
 
+**Precondition — the console log is per-boot-fresh (truncate-on-start).** Pre-marker scoping is
+correct only if "the first marker" is *this* boot's marker, not a stale one from a prior boot. It
+is: `provisioning.py` emits `<serial><log file=…/>` with **no `append` attribute`**, and
+QEMU/libvirt default the chardev `logappend` to off → the log is **truncated on each domain
+`create()`**, which `boot()`'s power-cycle (destroy→create) always performs. So each boot starts
+from an empty log and there is no stale marker. This is a load-bearing precondition, not an
+assumption: it is guarded by a provisioning-XML regression test asserting the `<log>` element
+carries no `append='on'` (§7). If `append='on'` were ever set, a stale prior-boot marker could
+both falsely satisfy `ready` *and* hide a later crash in the unscanned post-marker region — so
+the seam's correctness is explicitly tied to the truncate default (§8).
+
 `data` is decoded `utf-8` with `errors="replace"` so a partial multibyte tail or non-UTF-8
 console bytes never raise — they classify as `pending` until more output arrives. Empty bytes
 (absent/unreadable log, handled by the existing `read_console_log`) classify as `pending`.
@@ -184,7 +195,12 @@ next to each other with a comment stating their product *is* the window; the `li
 false `BOOT_TIMEOUT`). If the demo host is slower, the interval — not the count — is the tuning
 knob. The probe is read-only and stateless across calls, so it holds no cross-poll deadline; the
 count×interval product is the only window, and it is the same whether the seam is hit 30 times or
-returns terminally on the first.
+returns terminally on the first. Each poll re-reads and re-classifies the **whole** truncated
+log (via the existing `read_console_log`) rather than tailing from a byte offset — intentional:
+a per-boot log over a 150 s window is small, statelessness keeps the seam a pure probe, and
+correctness (find any pre-marker signature) outweighs re-scan cost on the `live_vm`-only path.
+v1's `start_position`/bounded-snippet was for cross-reset reused logs, which the truncate
+precondition (§8) makes moot here.
 
 Liveness uses `virsh domstate` (ported from v1's `_domain_is_running`), and the **exit verdict is
 guarded exactly as v1 guarded it** — an early `domstate` blip must not become a spurious
@@ -229,6 +245,12 @@ larger change; it is a follow-up.
   `dhash_entries=1` run where one exists, else a format-faithful representative the operator
   replaces with a captured log via the `live_vm` acceptance. This makes the demo's output shape a
   falsifiable check in the merge gate, not only behind the manual `live_vm` job.
+- **Unit — truncate-default regression guard (host-free):** a provisioning-XML test asserting the
+  rendered `<serial><log>` element carries no `append='on'` (the rendered XML defaults to
+  truncate). This pins the §3/§8 precondition that pre-marker scoping relies on, so a future
+  change that enables console-log append fails the gate rather than silently introducing a
+  stale-marker false-ok. Lives next to the existing provisioning-XML tests
+  (`tests/adversarial/test_provider_xml.py`).
 - **`live_vm` acceptance (operator-run, gated, ground truth):** fill `test_live_vm_real_install_boot`
   to boot `~/src/linux` @ 7.0 — `dhash_entries=1` resolves to `READINESS_FAILURE` with the
   `__d_lookup` snippet present in the recorded console artifact; the fixed kernel (or without the
@@ -238,16 +260,17 @@ larger change; it is a follow-up.
 
 ## 8. Risks & limitations
 
-- **Stale marker in a reused console log.** libvirt's serial `<log file>` tee may *append*
-  across a re-boot of the same System rather than truncate (a dependency to verify, not assume —
-  ADR-0049 already notes the System-scoped console is overwritten per boot at the artifact
-  layer, but the host log file is a separate question). If it appends, a prior boot's
-  `kdive-ready` could be read by a later boot that hangs without re-emitting it → a false `ok`.
-  Crash-wins precedence keeps the *verification* signal sound (a boot that crashes still
-  resolves not-ok despite a stale marker); the residual false-`ok` is only for a prior-success →
-  later-silent-hang sequence. The v1 `start_position` offset that solved this needs `boot()` to
-  thread the pre-power-cycle byte offset into the seam — a `boot()`/seam-signature change scoped
-  out here and tracked as a follow-up.
+- **Console-log truncation is a load-bearing precondition.** The verdict logic (pre-marker
+  scoping, §3) is sound because the console log is truncated on each `create()`: QEMU/libvirt
+  default chardev `logappend` to off and `provisioning.py` sets no `append` attribute on the
+  `<log>` element, so `boot()`'s destroy→create starts every boot from an empty log — no stale
+  marker. The risk is therefore not "the log might append" (it does not, by default) but a
+  *future regression* that sets `append='on'`: that would both falsely satisfy `ready` from a
+  prior marker and, under pre-marker scoping, hide a later crash in the unscanned post-marker
+  region (a false-ok on the vulnerable boot). The §7 provisioning-XML guard pins the truncate
+  default so the precondition cannot silently regress. v1's `start_position` offset is the
+  alternative if append is ever required; it would need `boot()` to thread the pre-power-cycle
+  offset into the seam — out of scope while the truncate default holds.
 - **Signature completeness.** The §4 set is best-effort; the §7 committed fixtures guard the
   common forms in CI and the `live_vm` acceptance is the ground-truth guard.
 - **Boot-window calibration.** The 150 s window (§6) is sized for the demo host; a materially

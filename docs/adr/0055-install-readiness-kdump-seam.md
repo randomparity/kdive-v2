@@ -113,11 +113,13 @@ that never comes up stays `pending` throughout (→ `boot_timeout`). A panic lea
 - The readiness marker is the literal `kdive-ready` (a module constant). Per-rootfs marker
   resolution (the catalog `readiness_marker`) needs the System's resolved profile, which the
   DB-free `system_id`-keyed seam cannot reach — a follow-up.
-- A stale `kdive-ready` in a libvirt log that **appends** across re-boots could produce a false
-  `ok` for a prior-success → later-silent-hang sequence. Crash-wins precedence keeps the
-  verification signal sound; the v1 `start_position` offset fix needs a `boot()`/seam-signature
-  change and is a tracked follow-up. Whether the libvirt `<log file>` tee truncates or appends on
-  domain start is a dependency to verify, not assumed.
+- Pre-marker scoping (Decision 3) is sound because the console log is **truncated on each
+  `create()`**: QEMU/libvirt default chardev `logappend` to off and `provisioning.py` sets no
+  `append` attribute, so `boot()`'s destroy→create starts every boot from an empty log — no stale
+  marker. This is a load-bearing precondition guarded by a provisioning-XML regression test (no
+  `append='on'`); a future change enabling append would reintroduce a stale-marker false-ok (and,
+  under pre-marker scoping, hide a post-marker crash), and would require v1's `start_position`
+  offset threaded through `boot()`. Out of scope while the truncate default holds.
 - kdump remains presence-only until #115 wires the in-guest probe; `local-libvirt` still does not
   advertise `kdump` in its supported-set (ADR-0049 §2).
 
