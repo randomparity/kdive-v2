@@ -87,8 +87,11 @@ _TRIAGE_COMMANDS: tuple[str, ...] = ("log", "bt")
 
 _RAW_KEY_SQL: LiteralString = (
     "SELECT object_key FROM artifacts "
-    "WHERE owner_kind = 'systems' AND owner_id = %s AND object_key LIKE %s"
+    "WHERE owner_kind = 'systems' AND owner_id = %s "
+    "AND object_key LIKE %s AND object_key NOT LIKE %s"
 )
+_RAW_KEY_LIKE = "%/vmcore-%"
+_REDACTED_LIKE = "%-redacted"
 _BUILD_STEP_SQL: LiteralString = "SELECT result FROM run_steps WHERE run_id = %s AND step = 'build'"
 
 
@@ -179,9 +182,9 @@ async def fetch_vmcore(
 
 
 async def _existing_raw_key(conn: AsyncConnection, system_id: UUID) -> str | None:
-    """Return the System's raw `vmcore` object key, or ``None`` (the execution ledger)."""
+    """Return the System's raw `vmcore-{method}` object key, or ``None`` (the execution ledger)."""
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(_RAW_KEY_SQL, (system_id, "%/vmcore"))
+        await cur.execute(_RAW_KEY_SQL, (system_id, _RAW_KEY_LIKE, _REDACTED_LIKE))
         row = await cur.fetchone()
     return None if row is None else str(row["object_key"])
 
@@ -245,12 +248,17 @@ async def capture_handler(conn: AsyncConnection, job: Job, retriever: Retriever)
 # --- vmcore.list ---------------------------------------------------------------------------
 
 
+def _is_redacted_vmcore(object_key: str) -> bool:
+    """True for a redacted vmcore derivative key (`.../vmcore-{method}-redacted`)."""
+    return "/vmcore-" in object_key and object_key.endswith("-redacted")
+
+
 async def list_vmcores(
     pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str
 ) -> list[ToolResponse]:
     """Return the System's `redacted` vmcore artifacts (`artifacts.list` for the vmcore rows)."""
     listed = await artifacts_tools.artifacts_list(pool, ctx, system_id=system_id)
-    return [r for r in listed if r.refs.get("object", "").endswith("/vmcore-redacted")]
+    return [r for r in listed if _is_redacted_vmcore(r.refs.get("object", ""))]
 
 
 # --- postmortem.crash / .triage ------------------------------------------------------------
@@ -293,7 +301,7 @@ async def _resolve_postmortem(
         if crash_command_rejection_reason(command, _CRASH_ALLOWLIST) is not None:
             return _config_error(run_id)
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(_RAW_KEY_SQL, (run.system_id, "%/vmcore"))
+        await cur.execute(_RAW_KEY_SQL, (run.system_id, _RAW_KEY_LIKE, _REDACTED_LIKE))
         row = await cur.fetchone()
     if row is None:
         return _config_error(run_id)

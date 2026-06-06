@@ -44,8 +44,11 @@ _SSH = "ssh"
 
 _RAW_KEY_SQL: LiteralString = (
     "SELECT object_key FROM artifacts "
-    "WHERE owner_kind = 'systems' AND owner_id = %s AND object_key LIKE %s"
+    "WHERE owner_kind = 'systems' AND owner_id = %s "
+    "AND object_key LIKE %s AND object_key NOT LIKE %s"
 )
+_RAW_KEY_LIKE = "%/vmcore-%"
+_REDACTED_LIKE = "%-redacted"
 _BUILD_STEP_SQL: LiteralString = "SELECT result FROM run_steps WHERE run_id = %s AND step = 'build'"
 
 
@@ -94,7 +97,7 @@ async def _resolve(
     if build_id is None:
         return _config_error(run_id)
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(_RAW_KEY_SQL, (run.system_id, "%/vmcore"))
+        await cur.execute(_RAW_KEY_SQL, (run.system_id, _RAW_KEY_LIKE, _REDACTED_LIKE))
         row = await cur.fetchone()
     if row is None:
         return _config_error(run_id)

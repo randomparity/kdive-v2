@@ -177,9 +177,12 @@ class LocalLibvirtRetrieve:
                 details={"system_id": str(system_id)},
             )
         build_id = self._read_vmcore_build_id(data)
-        raw = self._put(system_id, "vmcore", data, Sensitivity.SENSITIVE)
+        raw = self._put(system_id, f"vmcore-{method.value}", data, Sensitivity.SENSITIVE)
         redacted = self._put(
-            system_id, "vmcore-redacted", self._extract_redacted(data), Sensitivity.REDACTED
+            system_id,
+            f"vmcore-{method.value}-redacted",
+            self._extract_redacted(data),
+            Sensitivity.REDACTED,
         )
         return CaptureOutput(raw=raw, redacted=redacted, vmcore_build_id=build_id)
 

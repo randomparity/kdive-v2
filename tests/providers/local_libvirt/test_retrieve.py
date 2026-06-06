@@ -89,13 +89,13 @@ def test_capture_stores_two_artifacts_and_returns_build_id() -> None:
     store = _FakeStore()
     out = _retriever(store, core=b"RAWCORE").capture(_SYS, CaptureMethod.KDUMP)
     assert isinstance(out, CaptureOutput)
-    assert out.raw.key == f"{_TENANT}/systems/{_SYS}/vmcore"
-    assert out.redacted.key == f"{_TENANT}/systems/{_SYS}/vmcore-redacted"
+    assert out.raw.key == f"{_TENANT}/systems/{_SYS}/vmcore-kdump"
+    assert out.redacted.key == f"{_TENANT}/systems/{_SYS}/vmcore-kdump-redacted"
     assert out.vmcore_build_id == "deadbeef"
     names = {(name, sens) for _, name, sens, _ in store.puts}
-    assert ("vmcore", Sensitivity.SENSITIVE) in names
-    assert ("vmcore-redacted", Sensitivity.REDACTED) in names
-    redacted_data = next(d for _, name, _, d in store.puts if name == "vmcore-redacted")
+    assert ("vmcore-kdump", Sensitivity.SENSITIVE) in names
+    assert ("vmcore-kdump-redacted", Sensitivity.REDACTED) in names
+    redacted_data = next(d for _, name, _, d in store.puts if name == "vmcore-kdump-redacted")
     assert b"hunter2" not in redacted_data and b"[REDACTED]" in redacted_data
 
 
@@ -107,7 +107,7 @@ def test_capture_no_core_is_readiness_failure() -> None:
 
 def test_capture_store_failure_is_infrastructure_failure() -> None:
     with pytest.raises(CategorizedError) as exc:
-        _retriever(_FakeStore(fail_on="vmcore"), core=b"X").capture(_SYS, CaptureMethod.KDUMP)
+        _retriever(_FakeStore(fail_on="vmcore-kdump"), core=b"X").capture(_SYS, CaptureMethod.KDUMP)
     assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
 

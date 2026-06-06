@@ -74,7 +74,7 @@ async def _seed_vmcore_row(pool: AsyncConnectionPool, sys_id: str) -> None:
         await conn.execute(
             "INSERT INTO artifacts (owner_kind, owner_id, object_key, etag, sensitivity, "
             "retention_class) VALUES ('systems', %s, %s, 'e', 'sensitive', 'vmcore')",
-            (sys_id, f"local/systems/{sys_id}/vmcore"),
+            (sys_id, f"local/systems/{sys_id}/vmcore-host_dump"),
         )
 
 
@@ -101,7 +101,7 @@ def test_from_vmcore_happy_path_returns_redacted_report(migrated_url: str) -> No
         assert resp.data["truncated"] == "false"
         assert port.kwargs["expected_build_id"] == "deadbeef"
         assert port.kwargs["debuginfo_ref"] == "k/runs/r/vmlinux"
-        assert str(port.kwargs["vmcore_ref"]).endswith("/vmcore")
+        assert str(port.kwargs["vmcore_ref"]).endswith("/vmcore-host_dump")
 
     asyncio.run(_run())
 

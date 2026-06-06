@@ -84,10 +84,13 @@ class _SecretBearingRetriever:
 
         self.calls += 1
         raw = StoredArtifact(
-            f"local/systems/{self._system_id}/vmcore", "e1", Sensitivity.SENSITIVE, "vmcore"
+            f"local/systems/{self._system_id}/vmcore-host_dump",
+            "e1",
+            Sensitivity.SENSITIVE,
+            "vmcore",
         )
         red = StoredArtifact(
-            f"local/systems/{self._system_id}/vmcore-redacted",
+            f"local/systems/{self._system_id}/vmcore-host_dump-redacted",
             "e2",
             Sensitivity.REDACTED,
             "vmcore",
@@ -292,7 +295,8 @@ def test_raw_vmcore_is_sensitive_and_unreachable(migrated_url: str) -> None:
             raw_get = await artifacts_tools.artifacts_get(pool, ctx, artifact_id=str(raw_row["id"]))
             assert raw_get.status == "error"  # the raw row is unfetchable through the surface
         assert refs  # the redacted artifact was returned
-        assert all(not key.endswith("/vmcore") for key in refs)  # never the raw key
+        # A raw core is `.../vmcore-{method}` (no `-redacted`); it must never surface.
+        assert all(not ("/vmcore-" in key and not key.endswith("-redacted")) for key in refs)
 
     asyncio.run(_run())
 
