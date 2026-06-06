@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import struct
 import subprocess
 from dataclasses import dataclass, field
@@ -14,8 +15,13 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
+from kdive.providers.local_libvirt import build as build_module
 from kdive.providers.local_libvirt.build import (
     LocalLibvirtBuild,
+    _apply_patch,
+    _resolve_local_ref,
+    _stage_config,
+    _sync_tree,
     parse_gnu_build_id,
 )
 from kdive.store.objectstore import StoredArtifact
@@ -255,13 +261,333 @@ def test_from_env_does_not_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.live_vm
 def test_live_vm_real_make_build_id_matches_readelf() -> None:  # pragma: no cover - live_vm
+    """Drive the real seams end-to-end and assert the build-id equals ``readelf -n``.
+
+    Runs only on a real build host. Inputs come from the operator/live_vm runner:
+    ``KDIVE_KERNEL_SRC`` is the warm tree and ``KDIVE_TEST_BUILD_CONFIG`` is a ``.config``
+    (path or ``file://`` URL) that satisfies the kdump/debuginfo preflight. Absent either —
+    or ``readelf``/``rsync`` — the test skips, the established gated-suite convention.
+    """
     import os
-    import shutil
+    import re
+    import subprocess as sp
+    import tempfile
 
     src = os.environ.get("KDIVE_KERNEL_SRC")
-    if not src or not shutil.which("readelf"):
-        pytest.skip("KDIVE_KERNEL_SRC or readelf unavailable")
-    # The real build runs against the operator-provided warm tree; the assertion that the
-    # extracted build-id equals `readelf -n vmlinux` lives here so extraction is tested
-    # against a real ELF. Implemented as part of the live_vm gated suite (#18).
-    raise NotImplementedError("live_vm real-make harness wired by the live_vm runner")
+    config_ref = os.environ.get("KDIVE_TEST_BUILD_CONFIG")
+    if not src or not config_ref or not shutil.which("readelf") or not shutil.which("rsync"):
+        pytest.skip("KDIVE_KERNEL_SRC / KDIVE_TEST_BUILD_CONFIG / readelf / rsync unavailable")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = _FakeStore()
+        builder = LocalLibvirtBuild(
+            tenant=_TENANT,
+            workspace_root=Path(tmp),
+            store_factory=lambda: store,
+            checkout=lambda _run, profile, ws: build_module._real_checkout(src, profile, ws),
+            read_config=build_module._real_read_config,
+            run_make=build_module._real_run_make,
+            read_kernel_image=lambda ws: (ws / "arch/x86/boot/bzImage").read_bytes(),
+            read_vmlinux=lambda ws: (ws / "vmlinux").read_bytes(),
+            read_build_id=build_module._real_read_build_id,
+        )
+        profile = BuildProfile.parse(
+            {
+                "schema_version": 1,
+                "kernel_source_ref": f"file://{src}",
+                "config_ref": config_ref,
+                "patch_ref": None,
+            }
+        )
+        assert isinstance(profile, ServerBuildProfile)
+        out = builder.build(_RUN, profile)
+
+        vmlinux = Path(tmp) / str(_RUN) / "vmlinux"
+        notes = sp.run(
+            ["readelf", "-n", str(vmlinux)], capture_output=True, text=True, check=True
+        ).stdout
+        match = re.search(r"Build ID:\s*([0-9a-f]+)", notes)
+        assert match is not None, "readelf reported no GNU build-id"
+        assert out.build_id == match.group(1)
+
+
+# --- _resolve_local_ref -------------------------------------------------------------
+
+
+def test_resolve_local_ref_file_url(tmp_path: Path) -> None:
+    target = tmp_path / "x.config"
+    target.write_text("CONFIG_X=y\n")
+    assert _resolve_local_ref(f"file://{target}", kind="config_ref") == target
+
+
+def test_resolve_local_ref_bare_absolute_path(tmp_path: Path) -> None:
+    target = tmp_path / "x.config"
+    target.write_text("CONFIG_X=y\n")
+    assert _resolve_local_ref(str(target), kind="config_ref") == target
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "https://example.com/x.config",
+        "git+https://example.com/x#v1",
+        "s3://bucket/x.config",
+    ],
+)
+def test_resolve_local_ref_rejects_non_local_scheme(ref: str) -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _resolve_local_ref(ref, kind="config_ref")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_resolve_local_ref_rejects_file_url_with_netloc() -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _resolve_local_ref("file://host/path/x.config", kind="config_ref")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_resolve_local_ref_rejects_relative_path() -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _resolve_local_ref("configs/x.config", kind="config_ref")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_resolve_local_ref_rejects_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _resolve_local_ref(str(tmp_path / "absent.config"), kind="config_ref")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_resolve_local_ref_rejects_directory(tmp_path: Path) -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _resolve_local_ref(str(tmp_path), kind="config_ref")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+# --- _stage_config ------------------------------------------------------------------
+
+
+def test_stage_config_copies_bytes_to_workspace_dotconfig(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    config = tmp_path / "x.config"
+    config.write_text("CONFIG_FROM_REF=y\n")
+
+    _stage_config(str(config), workspace)
+
+    assert (workspace / ".config").read_text() == "CONFIG_FROM_REF=y\n"
+
+
+def test_stage_config_overwrites_existing_dotconfig(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / ".config").write_text("CONFIG_WARM_TREE=y\n")
+    config = tmp_path / "x.config"
+    config.write_text("CONFIG_FROM_REF=y\n")
+
+    _stage_config(str(config), workspace)
+
+    assert (workspace / ".config").read_text() == "CONFIG_FROM_REF=y\n"
+
+
+def test_stage_config_missing_ref_is_configuration_error(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    with pytest.raises(CategorizedError) as caught:
+        _stage_config(str(tmp_path / "absent.config"), workspace)
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+# --- _apply_patch -------------------------------------------------------------------
+
+_GOOD_PATCH = (
+    "--- a/init/main.c\n+++ b/init/main.c\n@@ -1,2 +1,2 @@\n line1\n-line2\n+line2-patched\n"
+)
+_BAD_PATCH = (
+    "--- a/init/main.c\n+++ b/init/main.c\n@@ -1,2 +1,2 @@\n nomatch1\n-nomatch2\n+nomatch3\n"
+)
+
+
+def _workspace_with_target(tmp_path: Path) -> Path:
+    workspace = tmp_path / "ws"
+    (workspace / "init").mkdir(parents=True)
+    (workspace / "init" / "main.c").write_text("line1\nline2\n")
+    return workspace
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git unavailable")
+def test_apply_patch_applies_clean_diff(tmp_path: Path) -> None:
+    workspace = _workspace_with_target(tmp_path)
+    patch = tmp_path / "fix.patch"
+    patch.write_text(_GOOD_PATCH)
+
+    _apply_patch(str(patch), workspace)
+
+    assert (workspace / "init" / "main.c").read_text() == "line1\nline2-patched\n"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git unavailable")
+def test_apply_patch_bad_diff_is_configuration_error_with_redacted_detail(tmp_path: Path) -> None:
+    workspace = _workspace_with_target(tmp_path)
+    patch = tmp_path / "bad.patch"
+    patch.write_text(_BAD_PATCH)
+
+    with pytest.raises(CategorizedError) as caught:
+        _apply_patch(str(patch), workspace)
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    stderr = caught.value.details["stderr"]
+    assert isinstance(stderr, str)
+    # the raw added patch line is never echoed back through the error detail
+    assert "nomatch3" not in stderr
+
+
+def test_apply_patch_missing_git_is_missing_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace_with_target(tmp_path)
+    patch = tmp_path / "fix.patch"
+    patch.write_text(_GOOD_PATCH)
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: None)
+
+    with pytest.raises(CategorizedError) as caught:
+        _apply_patch(str(patch), workspace)
+    assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
+
+
+# --- _sync_tree ---------------------------------------------------------------------
+
+
+def _ok_run(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+
+def test_sync_tree_missing_kernel_src_is_configuration_error(tmp_path: Path) -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _sync_tree("", tmp_path / "ws")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_sync_tree_nonexistent_kernel_src_is_configuration_error(tmp_path: Path) -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _sync_tree(str(tmp_path / "absent"), tmp_path / "ws")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_sync_tree_relative_kernel_src_is_configuration_error(tmp_path: Path) -> None:
+    # A non-absolute kernel_src is rejected before any rsync (no option-injection surface).
+    with pytest.raises(CategorizedError) as caught:
+        _sync_tree("linux", tmp_path / "ws")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_sync_tree_filesystem_root_is_configuration_error(tmp_path: Path) -> None:
+    # kernel_src="/" must never be accepted — it would rsync the entire root filesystem.
+    with pytest.raises(CategorizedError) as caught:
+        _sync_tree("/", tmp_path / "ws")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_sync_tree_missing_rsync_is_missing_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "linux"
+    src.mkdir()
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: None)
+    with pytest.raises(CategorizedError) as caught:
+        _sync_tree(str(src), tmp_path / "ws")
+    assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
+
+
+def test_sync_tree_creates_workspace_and_invokes_rsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "linux"
+    src.mkdir()
+    workspace = tmp_path / "runs" / "abc" / "ws"  # parents do not exist yet
+    calls: list[list[str]] = []
+
+    def _record(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return _ok_run()
+
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: "/usr/bin/rsync")
+    monkeypatch.setattr(build_module.subprocess, "run", _record)
+
+    _sync_tree(str(src), workspace)
+
+    assert workspace.is_dir()  # mkdir(parents=True) ran before rsync
+    # `--` terminates option parsing so a path is never read as an rsync flag.
+    assert calls == [["rsync", "-a", "--delete", "--", f"{src}/", f"{workspace}/"]]
+
+
+def test_sync_tree_rsync_nonzero_is_infrastructure_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "linux"
+    src.mkdir()
+
+    def _fail(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=23, stdout="", stderr="rsync: disk full"
+        )
+
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: "/usr/bin/rsync")
+    monkeypatch.setattr(build_module.subprocess, "run", _fail)
+
+    with pytest.raises(CategorizedError) as caught:
+        _sync_tree(str(src), tmp_path / "ws")
+    assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert "stderr" in caught.value.details
+
+
+# --- _real_checkout composition (host-free, never skipped) --------------------------
+
+
+def test_real_checkout_calls_steps_in_order_with_right_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    order: list[str] = []
+    seen: dict[str, object] = {}
+
+    def _sync(kernel_src: str, ws: Path) -> None:
+        order.append("sync")
+        seen["sync"] = (kernel_src, ws)
+
+    def _stage(config_ref: str, ws: Path) -> None:
+        order.append("stage")
+        seen["stage"] = (config_ref, ws)
+
+    def _patch(patch_ref: str, ws: Path) -> None:
+        order.append("patch")
+        seen["patch"] = (patch_ref, ws)
+
+    monkeypatch.setattr(build_module, "_sync_tree", _sync)
+    monkeypatch.setattr(build_module, "_stage_config", _stage)
+    monkeypatch.setattr(build_module, "_apply_patch", _patch)
+
+    profile = BuildProfile.parse(
+        {**_VALID_PROFILE, "config_ref": "/configs/c", "patch_ref": "/patches/p"}
+    )
+    assert isinstance(profile, ServerBuildProfile)
+    build_module._real_checkout("/src/linux", profile, workspace)
+
+    assert order == ["sync", "stage", "patch"]
+    assert seen["sync"] == ("/src/linux", workspace)
+    assert seen["stage"] == ("/configs/c", workspace)
+    assert seen["patch"] == ("/patches/p", workspace)
+
+
+def test_real_checkout_skips_patch_when_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    monkeypatch.setattr(build_module, "_sync_tree", lambda *_: order.append("sync"))
+    monkeypatch.setattr(build_module, "_stage_config", lambda *_: order.append("stage"))
+    monkeypatch.setattr(build_module, "_apply_patch", lambda *_: order.append("patch"))
+
+    profile = _profile()  # patch_ref is None
+    build_module._real_checkout("/src/linux", profile, tmp_path / "ws")
+
+    assert order == ["sync", "stage"]  # no patch step

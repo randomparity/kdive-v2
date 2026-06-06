@@ -17,18 +17,21 @@ synchronous; the async build handler offloads the whole call via ``asyncio.to_th
 from __future__ import annotations
 
 import os
+import shutil
 import struct
 import subprocess  # noqa: S404 - make is invoked with a fixed argv, no shell
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple, Protocol
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
+from kdive.security.redaction import Redactor
 from kdive.store.objectstore import HeadResult, StoredArtifact, object_store_from_env
 
 _WORKSPACE_ENV = "KDIVE_BUILD_WORKSPACE"
@@ -44,6 +47,9 @@ _SHT_NOTE = 7
 # never are), so a small per-section cap bounds an untrusted vmlinux's declared sh_size
 # against a multi-GB read into the worker thread.
 _MAX_SECTION_BYTES = 16 * 1024 * 1024
+# Trailing chars of a redacted rsync/git-apply stderr placed in error details (bounded so a
+# large/noisy failure log cannot bloat a persisted error record).
+_STDERR_TAIL = 2000
 
 # The kdump prerequisite is satisfied by CONFIG_CRASH_DUMP; symbolization needs DWARF or
 # BTF debuginfo. Each tuple is an OR-group: the config must enable at least one of each.
@@ -240,14 +246,18 @@ def _make_checkout(kernel_src: str) -> _Checkout:
     return _checkout
 
 
-def _real_checkout(  # pragma: no cover - live_vm
-    kernel_src: str, profile: ServerBuildProfile, workspace: Path
-) -> None:
-    raise CategorizedError(
-        "real warm-tree checkout runs only under the live_vm gate",
-        category=ErrorCategory.MISSING_DEPENDENCY,
-        details={"kernel_src": kernel_src, "config_ref": profile.config_ref},
-    )
+def _real_checkout(kernel_src: str, profile: ServerBuildProfile, workspace: Path) -> None:
+    """Materialize a warm per-Run workspace, stage the ``.config``, apply any patch.
+
+    Steps run in order so the resetting rsync (sync) precedes config-staging and patch
+    application; see ADR-0053 for the per-step failure contract. The rsync sync and the
+    later ``make`` run only on a real build host (``live_vm``); this composition itself is
+    unit-tested with the steps stubbed.
+    """
+    _sync_tree(kernel_src, workspace)
+    _stage_config(profile.config_ref, workspace)
+    if profile.patch_ref is not None:
+        _apply_patch(profile.patch_ref, workspace)
 
 
 def _real_read_config(workspace: Path) -> str:  # pragma: no cover - live_vm
@@ -281,6 +291,120 @@ def _real_read_build_id(workspace: Path) -> str:  # pragma: no cover - live_vm
         )
         notes = Path(note_file.name).read_bytes()
     return parse_gnu_build_id(notes)
+
+
+def _ref_error(kind: str, message: str) -> CategorizedError:
+    """A ``CONFIGURATION_ERROR`` for a bad ref; ``details`` names the field, never its value."""
+    return CategorizedError(
+        message, category=ErrorCategory.CONFIGURATION_ERROR, details={"kind": kind}
+    )
+
+
+def _resolve_local_ref(ref: str, *, kind: str) -> Path:
+    """Resolve a build-profile ref (``config_ref``/``patch_ref``) to an existing local file.
+
+    Accepts a ``file:///abs/path`` URL (empty authority) or a bare absolute path; rejects a
+    non-local scheme, a ``file://`` URL with a host, a non-absolute path, or a path that is
+    not an existing regular file. The submitted ref value is never echoed in the error.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` (``details={"kind": kind}``) for any
+            unsupported or unresolvable reference.
+    """
+    parts = urlsplit(ref)
+    if parts.scheme == "file":
+        if parts.netloc:
+            raise _ref_error(kind, "config/patch ref must be a local file:// URL (no host)")
+        path = Path(parts.path)
+    elif parts.scheme == "":
+        path = Path(ref)
+    else:
+        raise _ref_error(kind, "config/patch ref scheme is not a local reference")
+    if not path.is_absolute():
+        raise _ref_error(kind, "config/patch ref must be an absolute path")
+    if not path.is_file():
+        raise _ref_error(kind, "config/patch ref does not resolve to a readable file")
+    return path
+
+
+def _stage_config(config_ref: str, workspace: Path) -> None:
+    """Copy the resolved ``config_ref`` to ``workspace/.config`` (overwriting any existing one)."""
+    source = _resolve_local_ref(config_ref, kind="config_ref")
+    shutil.copyfile(source, workspace / ".config")
+
+
+def _redacted_tail(text: str) -> str:
+    """Redact known secrets/``key=value`` pairs, then return the trailing ``_STDERR_TAIL`` chars."""
+    return Redactor().redact_text(text)[-_STDERR_TAIL:]
+
+
+def _apply_patch(patch_ref: str, workspace: Path) -> None:
+    """Apply the resolved ``patch_ref`` to the workspace tree with ``git apply -p1``.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` if the ref is unresolvable (via
+            :func:`_resolve_local_ref`) or the patch does not apply (a redacted stderr tail
+            is placed in ``details``); ``MISSING_DEPENDENCY`` if ``git`` is absent.
+    """
+    patch = _resolve_local_ref(patch_ref, kind="patch_ref")
+    if shutil.which("git") is None:
+        raise CategorizedError(
+            "git is required to apply a build patch",
+            category=ErrorCategory.MISSING_DEPENDENCY,
+        )
+    result = subprocess.run(  # noqa: S603 - fixed argv, no shell; -- ends option parsing
+        ["git", "apply", "-p1", "--", str(patch)],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise CategorizedError(
+            "patch_ref does not apply against the kernel tree",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"stderr": _redacted_tail(result.stderr)},
+        )
+
+
+def _sync_tree(kernel_src: str, workspace: Path) -> None:
+    """Mirror the warm ``kernel_src`` tree into ``workspace`` with ``rsync -a --delete``.
+
+    Creates ``workspace`` (and missing parents) first, since ``build()`` does not and rsync
+    does not create missing parent directories.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` if ``kernel_src`` is empty, not an
+            absolute path, the filesystem root, or not a directory; ``MISSING_DEPENDENCY``
+            if ``rsync`` is absent; ``INFRASTRUCTURE_FAILURE`` on a non-zero rsync exit
+            (redacted stderr in details).
+    """
+    source = Path(kernel_src) if kernel_src else None
+    if source is None or not source.is_absolute() or source == source.parent or not source.is_dir():
+        raise CategorizedError(
+            "KDIVE_KERNEL_SRC must be an absolute path to an existing kernel source tree",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    if shutil.which("rsync") is None:
+        raise CategorizedError(
+            "rsync is required to materialize the warm kernel tree",
+            category=ErrorCategory.MISSING_DEPENDENCY,
+        )
+    workspace.mkdir(parents=True, exist_ok=True)
+    # `--` ends option parsing so a path is never mistaken for an rsync flag; the trailing
+    # slash on the source copies its *contents* into the workspace, not a nested dir.
+    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["rsync", "-a", "--delete", "--", f"{source}/", f"{workspace}/"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise CategorizedError(
+            "rsync failed to materialize the workspace tree",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details={"stderr": _redacted_tail(result.stderr)},
+        )
 
 
 class _ValidatorStore(Protocol):
