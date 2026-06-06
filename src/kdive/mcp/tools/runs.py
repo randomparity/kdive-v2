@@ -275,17 +275,24 @@ def _run_job_envelope(job: Job, run_id: UUID) -> ToolResponse:
     return base.model_copy(update={"data": {**base.data, "run_id": str(run_id)}})
 
 
-async def _enqueue_build(conn: AsyncConnection, ctx: RequestContext, run: Run) -> Job:
+async def _enqueue_build(
+    conn: AsyncConnection, ctx: RequestContext, run: Run, cmdline: str | None
+) -> Job:
+    payload: dict[str, Any] = {"run_id": str(run.id)}
+    if isinstance(cmdline, str) and cmdline.strip():
+        payload["cmdline"] = cmdline
     return await queue.enqueue(
         conn,
         JobKind.BUILD,
-        {"run_id": str(run.id)},
+        payload,
         _authorizing(ctx, run.project),
         f"{run.id}:build",
     )
 
 
-async def _build_locked(conn: AsyncConnection, ctx: RequestContext, run: Run) -> ToolResponse:
+async def _build_locked(
+    conn: AsyncConnection, ctx: RequestContext, run: Run, cmdline: str | None
+) -> ToolResponse:
     """Admit the build under the per-Run lock: flip `created → running`, then enqueue."""
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run.id):
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -310,12 +317,19 @@ async def _build_locked(conn: AsyncConnection, ctx: RequestContext, run: Run) ->
                 args={"run_id": str(run.id)},
                 project=run.project,
             )
-        job = await _enqueue_build(conn, ctx, run)
+        job = await _enqueue_build(conn, ctx, run, cmdline)
     return _run_job_envelope(job, run.id)
 
 
-async def build_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> ToolResponse:
-    """Admit an idempotent build for a Run: drive `created → running` and enqueue the job."""
+async def build_run(
+    pool: AsyncConnectionPool, ctx: RequestContext, run_id: str, *, cmdline: str | None = None
+) -> ToolResponse:
+    """Admit an idempotent build for a Run: drive `created → running` and enqueue the job.
+
+    ``cmdline`` (when given) is recorded in the build ledger and applied at boot (ADR-0056);
+    it is bound on the first build enqueue for a Run (the dedup key is ``{run_id}:build`` and
+    ``queue.enqueue`` is ``ON CONFLICT DO NOTHING``).
+    """
     uid = _as_uuid(run_id)
     if uid is None:
         return _config_error(run_id)
@@ -331,7 +345,7 @@ async def build_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str)
                 return ToolResponse.failure(run_id, exc.category)
             if parsed.source != "server":
                 return _config_error(run_id, data={"reason": "external_source_uses_complete_build"})
-            return await _build_locked(conn, ctx, run)
+            return await _build_locked(conn, ctx, run, cmdline)
 
 
 async def _existing_build_result(conn: AsyncConnection, run_id: UUID) -> dict[str, Any] | None:
@@ -519,9 +533,8 @@ async def _finalize_external_build(
     never the kernel's or vmlinux's (``BuildOutput`` carries no initrd field).
     """
     # ``cmdline`` is recorded in the LEDGER result, not in build_profile (an immutable
-    # request input; ExternalBuildProfile is extra="forbid"). The install path's
-    # _cmdline_for still reads build_profile, so this is inert until install is wired to
-    # read it from the ledger (next spec) — intentional for this spec's scope.
+    # request input; ExternalBuildProfile is extra="forbid"). ``_cmdline_for`` reads this
+    # ledger result and applies it at boot, so the external lane's cmdline is live (ADR-0056).
     result = {
         "kernel_ref": output.kernel_ref,
         "debuginfo_ref": output.debuginfo_ref,
@@ -642,6 +655,9 @@ async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> st
             "debuginfo_ref": output.debuginfo_ref,
             "build_id": output.build_id,
         }
+        cmdline = job.payload.get("cmdline")
+        if isinstance(cmdline, str) and cmdline.strip():
+            result["cmdline"] = cmdline
     await _finalize_build(conn, job, run, result)
     return str(run_id)
 
@@ -657,17 +673,20 @@ _NONKDUMP_DEFAULT_CMDLINE = "console=ttyS0"
 _CRASHKERNEL_TOKEN = "crashkernel="
 
 
-def _cmdline_for(run: Run, method: CaptureMethod) -> str:
-    """Resolve the kernel command line from the Run's opaque `build_profile`.
+async def _cmdline_for(conn: AsyncConnection, run: Run, method: CaptureMethod) -> str:
+    """Resolve the kernel command line from the build ledger (ADR-0056 §2).
 
-    The cmdline is read from the raw `build_profile` dict (not via `BuildProfile.parse`,
-    whose `extra="forbid"` would reject the `cmdline` key); an absent/blank value falls
-    back to the method-appropriate default — the kdump default reserves `crashkernel=`, the
-    non-kdump default does not (ADR-0051 §3).
+    The cmdline's source of record is the `(run_id, "build")` ledger `result["cmdline"]`,
+    written by the build handler (server lane, `runs.build cmdline=`) or `complete_build`
+    (external lane). A non-blank string is the cmdline; otherwise the method-appropriate
+    default applies — the kdump default reserves `crashkernel=`, the non-kdump default does
+    not (ADR-0051 §3).
     """
-    value = run.build_profile.get("cmdline")
-    if isinstance(value, str) and value.strip():
-        return value
+    result = await _existing_build_result(conn, run.id)
+    if result is not None:
+        value = result.get("cmdline")
+        if isinstance(value, str) and value.strip():
+            return value
     return _KDUMP_DEFAULT_CMDLINE if method is CaptureMethod.KDUMP else _NONKDUMP_DEFAULT_CMDLINE
 
 
@@ -728,7 +747,7 @@ async def install_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: st
             if system is None:  # defensive: runs.system_id is NOT NULL REFERENCES systems(id)
                 return _config_error(run_id, data={"reason": "system_gone"})
             method = _install_method_for(system)
-            cmdline = _cmdline_for(run, method)
+            cmdline = await _cmdline_for(conn, run, method)
             if method is CaptureMethod.KDUMP and _CRASHKERNEL_TOKEN not in cmdline:
                 return _config_error(run_id, data={"reason": "cmdline_missing_crashkernel"})
             return await _enqueue_step(conn, ctx, run, JobKind.INSTALL, "install", "runs.install")
@@ -839,7 +858,8 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
         )
     method = _install_method_for(system)
     kernel_ref = run.kernel_ref
-    cmdline = _cmdline_for(run, method)
+    cmdline = await _cmdline_for(conn, run, method)
+    _log.info("install: run %s resolved cmdline %r (method %s)", run_id, cmdline, method.value)
     initrd_ref = await _installed_initrd_ref(conn, run_id)
     job_ctx = _ctx_from_job(job, run.project)
 
@@ -1036,9 +1056,17 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     )
     async def runs_build(
         run_id: Annotated[str, Field(description="The Run to build.")],
+        cmdline: Annotated[
+            str | None,
+            Field(
+                description="Kernel command line recorded in the build ledger and applied at "
+                "boot (e.g. 'console=ttyS0 dhash_entries=1'). Omit for the method default. "
+                "Bound on the first build of a Run."
+            ),
+        ] = None,
     ) -> ToolResponse:
         """Enqueue the kernel build job for a Run; poll jobs.* for completion. Requires operator."""
-        return await build_run(pool, current_context(), run_id)
+        return await build_run(pool, current_context(), run_id, cmdline=cmdline)
 
     @app.tool(
         name="runs.complete_build",
@@ -1051,8 +1079,8 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             str,
             Field(
                 description="Kernel command line (e.g. 'console=ttyS0 dhash_entries=1'). "
-                "Recorded in the build ledger; not yet applied at boot (install still reads "
-                "the build profile), so it is inert until that wiring lands."
+                "Recorded in the build ledger and applied at boot via runs.install/runs.boot "
+                "(ADR-0056)."
             ),
         ],
         build_id: Annotated[
