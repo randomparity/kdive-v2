@@ -158,14 +158,18 @@ single rsync subprocess leaf stays `live_vm`:
 
 Only the actual `rsync` subprocess invocation carries `# pragma: no cover - live_vm`.
 `_real_checkout`'s *orchestration* — calling sync → stage-config → patch in that order with
-the right paths — is **not** gated: a unit test monkeypatches `_sync_tree` (the rsync leaf)
-with a recorder that populates a fake tree, then drives `_real_checkout` against real
-`tmp_path` dirs and a real local `config_ref`/`patch_ref`, asserting (a) the call order is
-sync-before-stage-before-patch, (b) `workspace/.config` holds the staged bytes, and (c) a
-bad patch still raises `CONFIGURATION_ERROR` through the composition. This closes the gap
-where a wiring bug (wrong order, a skipped step, swapped args) would otherwise only surface
-in the `live_vm` path. The injected `checkout` seam on `LocalLibvirtBuild` is unchanged, so
-the existing fake-seam tests of `build()` still drive that orchestration host-free too.
+the right paths — is **not** gated, and its wiring assertion does **not** depend on `git`
+(so it can never silently skip on a git-less machine, which is exactly where a wiring
+regression would otherwise hide). The wiring test monkeypatches **all three** step helpers
+(`_sync_tree`, `_stage_config`, `_apply_patch`) with recorders and asserts (a) the call
+order is sync→stage→patch and (b) each receives the right arguments (the patched workspace,
+the profile's `config_ref`/`patch_ref`). The *real* patch behavior — a clean diff applies, a
+bad diff raises `CONFIGURATION_ERROR` — lives in the separate, `git`-gated `_apply_patch`
+tests, and `_stage_config`'s real byte-copy lives in its own host-free test. This split keeps
+the anti-regression ordering guarantee unconditional while leaving the toolchain-touching
+behavior to the tests that genuinely need it. The injected `checkout` seam on
+`LocalLibvirtBuild` is unchanged, so the existing fake-seam tests of `build()` still drive
+that orchestration host-free too.
 
 ## 6. Redaction
 
@@ -196,13 +200,17 @@ Host-free unit tests (run in the normal suite):
 - `_apply_patch` (skip if `shutil.which("git") is None`): a clean unified diff applies and
   the target file content changes; a conflicting patch → `CONFIGURATION_ERROR` and the
   target is reported in a redacted detail, not the raw patch.
-- `_real_checkout` composition (host-free, `_sync_tree` monkeypatched to a recorder that
-  seeds a fake tree): asserts sync→stage→patch order, that `.config` holds the staged
-  bytes, and that a bad patch surfaces `CONFIGURATION_ERROR` through the composition.
+- `_real_checkout` wiring (host-free, **never skipped** — all three step helpers
+  monkeypatched to recorders, no `git`/`rsync`): asserts the sync→stage→patch call order and
+  that each helper receives the right arguments (the patched workspace, `config_ref`,
+  `patch_ref`). The real per-step behavior is covered by the helper tests above, so this test
+  guards only the composition.
 
-`git` presence: the `_apply_patch` and composition tests skip when `git` is absent, matching
-the existing suite's convention (e.g. `test_source_revision_for_git_tree`). CI installs git,
-so these run and gate there; the skip only relieves a git-less developer machine.
+`git` presence: only the `_apply_patch` tests (real `git apply` on a real diff) skip when
+`git` is absent, matching the existing suite's convention (e.g.
+`test_source_revision_for_git_tree`). CI installs git, so they run and gate there; the skip
+only relieves a git-less developer machine. The `_real_checkout` wiring test and the
+`_stage_config`/`_resolve_local_ref` tests are git-free and always run.
 
 `live_vm` end-to-end: `test_live_vm_real_make_build_id_matches_readelf` is **currently a
 `NotImplementedError` stub** (`tests/.../test_build.py:256-267`). This change fills its body
