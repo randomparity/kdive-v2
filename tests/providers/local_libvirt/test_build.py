@@ -17,6 +17,7 @@ from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.providers.local_libvirt.build import (
     LocalLibvirtBuild,
     _resolve_local_ref,
+    _stage_config,
     parse_gnu_build_id,
 )
 from kdive.store.objectstore import StoredArtifact
@@ -318,4 +319,38 @@ def test_resolve_local_ref_rejects_missing_file(tmp_path: Path) -> None:
 def test_resolve_local_ref_rejects_directory(tmp_path: Path) -> None:
     with pytest.raises(CategorizedError) as caught:
         _resolve_local_ref(str(tmp_path), kind="config_ref")
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+# --- _stage_config ------------------------------------------------------------------
+
+
+def test_stage_config_copies_bytes_to_workspace_dotconfig(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    config = tmp_path / "x.config"
+    config.write_text("CONFIG_FROM_REF=y\n")
+
+    _stage_config(str(config), workspace)
+
+    assert (workspace / ".config").read_text() == "CONFIG_FROM_REF=y\n"
+
+
+def test_stage_config_overwrites_existing_dotconfig(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / ".config").write_text("CONFIG_WARM_TREE=y\n")
+    config = tmp_path / "x.config"
+    config.write_text("CONFIG_FROM_REF=y\n")
+
+    _stage_config(str(config), workspace)
+
+    assert (workspace / ".config").read_text() == "CONFIG_FROM_REF=y\n"
+
+
+def test_stage_config_missing_ref_is_configuration_error(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    with pytest.raises(CategorizedError) as caught:
+        _stage_config(str(tmp_path / "absent.config"), workspace)
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR

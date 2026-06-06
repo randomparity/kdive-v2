@@ -17,6 +17,7 @@ synchronous; the async build handler offloads the whole call via ``asyncio.to_th
 from __future__ import annotations
 
 import os
+import shutil
 import struct
 import subprocess  # noqa: S404 - make is invoked with a fixed argv, no shell
 import tempfile
@@ -316,6 +317,12 @@ def _resolve_local_ref(ref: str, *, kind: str) -> Path:
     if not path.is_file():
         raise _ref_error(kind, "config/patch ref does not resolve to a readable file")
     return path
+
+
+def _stage_config(config_ref: str, workspace: Path) -> None:
+    """Copy the resolved ``config_ref`` to ``workspace/.config`` (overwriting any existing one)."""
+    source = _resolve_local_ref(config_ref, kind="config_ref")
+    shutil.copyfile(source, workspace / ".config")
 
 
 class _ValidatorStore(Protocol):
