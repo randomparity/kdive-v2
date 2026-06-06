@@ -1366,3 +1366,21 @@ def test_register_handlers_binds_provision_teardown_and_reprovision() -> None:
     assert registry.get(JobKind.PROVISION) is not None
     assert registry.get(JobKind.TEARDOWN) is not None
     assert registry.get(JobKind.REPROVISION) is not None
+
+
+def test_reprovision_rejects_upload_rootfs(migrated_url: str) -> None:
+    # A ready System has no upload window; an upload-kind reprovision is a fail-fast
+    # configuration_error (#111).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
+            profile = _upload_profile()
+            profile["provider"]["local-libvirt"]["destructive_ops"] = ["reprovision"]
+            resp = await systems_tools.reprovision_system(
+                pool, _ctx(), system_id=sys_id, profile=profile
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())

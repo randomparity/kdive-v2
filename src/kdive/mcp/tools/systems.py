@@ -41,6 +41,7 @@ from kdive.providers.local_libvirt.provisioning import (
     LocalLibvirtProvisioning,
     Provisioner,
     domain_name_for,
+    reject_rootfs_without_upload_window,
     validate_profile,
 )
 from kdive.security import audit
@@ -493,6 +494,7 @@ async def reprovision_system(
     try:
         parsed = ProvisioningProfile.parse(profile)
         validate_profile(parsed)
+        reject_rootfs_without_upload_window(parsed.provider.local_libvirt.rootfs)
     except CategorizedError as exc:
         return ToolResponse.failure(system_id, exc.category)
     with bind_context(principal=ctx.principal):
