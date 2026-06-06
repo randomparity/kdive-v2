@@ -75,7 +75,9 @@ async def _run_worker() -> None:
 
 
 async def _run_reconciler() -> None:
+    from kdive.domain.errors import CategorizedError
     from kdive.reconciler.loop import NullReaper, Reconciler
+    from kdive.store.objectstore import object_store_from_env
 
     pool = create_pool(min_size=1)
     await pool.open()
@@ -84,7 +86,11 @@ async def _run_reconciler() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
     try:
-        reconciler = Reconciler(pool, NullReaper())
+        upload_store = object_store_from_env()
+    except CategorizedError:
+        upload_store = None  # no S3 env: the upload reaper stays off, like NullReaper
+    try:
+        reconciler = Reconciler(pool, NullReaper(), upload_store=upload_store)
         await reconciler.run(stop)
     finally:
         await pool.close()
