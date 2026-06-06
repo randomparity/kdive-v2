@@ -1,0 +1,268 @@
+# Crash-capture tiers — design
+
+- **Status:** Draft
+- **Date:** 2026-06-05
+- **Goal:** Give agents a small, provider-agnostic menu of crash-capture methods so a
+  deliberately-crashed System can be observed without first building a production kdump
+  guest image. Ship three methods on `local-libvirt` — **console**, **host_dump**, and
+  **gdbstub** — and shape the surface so a second provider (remote-libvirt, cloud, HMC) is
+  a pure addition.
+- **Depends on:** the Retrieve/`vmcore.*` plane ([ADR-0031](../../adr/0031-retrieve-plane-vmcore-postmortem.md)
+  — the `Retriever.capture` port, `vmcore.fetch` admission, and `postmortem.*` reads this
+  extends), the Connect plane ([ADR-0032](../../adr/0032-connect-plane-gdbstub-debugsession.md) — the
+  `gdbstub` transport, RSP probe, and SSRF control reused for Tier 2), the Install/boot plane
+  ([ADR-0030](../../adr/0030-install-boot-plane.md) — the `<cmdline>` rendering and
+  `_kdump_check` this makes method-conditional), and the Provisioning plane + profile
+  ([ADR-0025](../../adr/0025-provisioning-plane-libvirt.md) / [ADR-0024](../../adr/0024-provisioning-profile-model-shape.md)
+  — the base domain XML and the provider-namespaced profile this extends).
+- **Precedent:** [ADR-0039](../../adr/0039-ssh-transport-live-introspection.md) §1 registers a
+  second transport (`ssh`) as another `kind` advertised under the one
+  `(connect, open_transport, local-libvirt)` capability — "new transport = provider change only,"
+  dispatched by capability match. Capture-method mirrors this: one capture operation, `method` as a
+  runtime argument, the provider validates the supported-set.
+- **ADR:** [ADR-0049](../../adr/0049-crash-capture-tiers.md) (the decisions this spec settles).
+
+## 1. Problem
+
+The Retrieve plane has exactly one way to get a core off a System: `_real_wait_for_vmcore`
+(`providers/local_libvirt/retrieve.py:245`) waits for an **in-guest kdump** file. kdump needs
+a kdump-capable guest rootfs (the placeholder-digest A1 gap, `scripts/live-vm/build-guest-image.sh`)
+— the single heaviest host prerequisite. Yet the deterministic dcache test case
+(`docs/test-cases/05-dcache-dhash-entries-oob-read.md`) only needs the crash *signal* (an oops
+or KASAN report naming `__d_lookup()`), which is observable by far lighter means.
+
+Three lighter capture methods need no kdump guest image, and two of them are already
+implemented in the proof-of-concept (`~/src/kdive-v1`):
+
+- **console** — serial-console oops/KASAN text; detects the crash and scores an A/B run.
+- **host_dump** — `virsh dump --memory-only` reads guest RAM host-side into a drgn-loadable
+  ELF; no in-guest tooling.
+- **gdbstub** — QEMU `-gdb` + `nokaslr`, attach gdb/drgn live (the Connect plane already does
+  the attach).
+
+This spec adds those three as selectable capture methods and decouples the non-kdump path from
+the kdump prerequisites. Full in-guest **kdump** (Tier 3) remains the production-fidelity path
+and is deferred to [#115](https://github.com/randomparity/kdive/issues/115).
+
+## 2. Scope
+
+**In scope (built now):**
+
+- A provider-agnostic `method` vocabulary: `console` | `host_dump` | `gdbstub` | `kdump`.
+- `vmcore.fetch(system_id, method=…)` threading `method` to the capture port; the provider
+  validates the method against its supported-set and rejects an unsupported one with
+  `configuration_error` (**Light** alignment — no discovery tooling yet).
+- A typed `debug` block on the `local-libvirt` profile section: `preserve_on_crash`, `gdbstub`.
+- Base domain XML gains an **always-on** serial console with a `<log file=…>` tee; the two
+  debug flags add a `pvpanic` device + `<on_crash>preserve</on_crash>` (Tier 1) and a QEMU
+  `-gdb` argument (Tier 2).
+- A `host_dump` capture seam (`virsh dump --memory-only`) and the method-agnostic
+  `read_vmcore_build_id` / `extract_redacted` seams it shares with kdump.
+- The `gdbstub` endpoint resolver (`connect.py:_real_resolve_endpoint`).
+- Making the install-time kdump preflight (`_kdump_check`) and the profile `crashkernel` field
+  **method-conditional**, so a non-kdump boot is not blocked.
+
+**Out of scope (explicitly deferred):**
+
+- Tier 3 in-guest kdump + the A1 kdump guest image → [#115](https://github.com/randomparity/kdive/issues/115).
+- A/B comparison/scoring of vulnerable-vs-fixed Runs (gap C2) → next session.
+- Patch authoring → build input (`patch_ref`, gap C1) → next session.
+- Any non-`local-libvirt` provider implementation. The vocabulary is provider-agnostic; the
+  realizations here are local-libvirt only.
+- A capture-method **discovery** MCP tool (the Full alignment option) — earns its keep when
+  provider #2 lands.
+
+## 3. Capture-method vocabulary and provider alignment
+
+The method enum is defined at the **domain** level (not inside `local-libvirt`), so it is the
+one vocabulary agents learn across every future provider. Each method is a *verb*; the provider
+maps the verb to a mechanism:
+
+| Method | local-libvirt (this spec) | remote-libvirt (future) | cloud (future) | LPAR/HMC (future) |
+|---|---|---|---|---|
+| `console` | serial `<log file>` tee | serial log on remote host → fetch | `ec2 get-console-output` | HMC vterm capture |
+| `host_dump` | `virsh dump --memory-only` | `virsh dump` remote → retrieve | unsupported | unsupported (HMC system dump differs) |
+| `gdbstub` | QEMU `-gdb` loopback | QEMU `-gdb` + ssh tunnel | unsupported | unsupported |
+| `kdump` | in-guest → host path (#115) | in-guest → fetch | in-guest → S3 | in-guest → HMC/NFS |
+
+`console` and `kdump` are near-universal verbs with provider-specific transports; `host_dump`
+and `gdbstub` are QEMU-specific and absent on cloud/HMC. The agent must therefore **not assume**
+a method exists — the provider owns a supported-set and rejects the rest. For `local-libvirt`
+the supported-set is `{console, host_dump, gdbstub}` now (kdump joins it via #115).
+
+Provider-specific *options* (the debug flags) live under the existing provider-namespaced
+profile section (`provider.local_libvirt.debug`); a future cloud provider adds
+`provider.aws.debug` with its own options and needs no realignment.
+
+## 4. Tool surface
+
+`vmcore.fetch` (`mcp/tools/vmcore.py:337`) gains an optional `method`:
+
+```python
+async def vmcore_fetch(
+    system_id: Annotated[str, Field(description="The crashed System whose core to capture.")],
+    method: Annotated[
+        Literal["console", "host_dump", "gdbstub", "kdump"],
+        Field(description="Capture method; the provider rejects an unsupported method."),
+    ] = "host_dump",
+) -> ToolResponse: ...
+```
+
+- The method is recorded on the `CAPTURE_VMCORE` job payload (`{"system_id", "method"}`) and the
+  dedup key becomes `{system_id}:capture_vmcore:{method}` so two methods on one System are
+  distinct jobs, not deduped into one.
+- `capture_handler` (`vmcore.py:202`) passes `method` to `retriever.capture(system_id, method)`.
+- An unsupported method for the System's provider is a synchronous `configuration_error` at the
+  tool boundary (validated against the provider supported-set), **before** any job is admitted.
+- `console` is a special case: the console artifact already exists (the always-on `<log file>`),
+  so `vmcore.fetch(method="console")` registers the captured console log as a `redacted` artifact
+  rather than producing a memory image. `postmortem.*` remains a `host_dump`/`kdump` reader (it
+  needs a core); console capture feeds the A/B scoring path (next session) and `artifacts.*`.
+
+## 5. Provisioning profile changes
+
+`LibvirtProfile` (`profiles/provisioning.py:82`) gains a typed, optional debug block:
+
+```python
+class LibvirtDebugOptions(_ProfileBase):
+    preserve_on_crash: bool = False  # Tier 1: pvpanic device + <on_crash>preserve> + panic=0
+    gdbstub: bool = False            # Tier 2: QEMU -gdb arg + nokaslr
+
+class LibvirtProfile(_ProfileBase):
+    ...
+    crashkernel: NonEmptyStr | None = None   # was required; now kdump-only
+    debug: LibvirtDebugOptions = Field(default_factory=LibvirtDebugOptions)
+```
+
+- `crashkernel` becomes optional. It is the kdump (`method="kdump"`) prerequisite only; a
+  non-kdump capture does not require it. The tool boundary rejects `method="kdump"` against a
+  profile with no `crashkernel`.
+- The debug block is typed, not free-form `domain_xml_params` — consistent with the existing
+  whitelist of exactly one param (`SUPPORTED_DOMAIN_XML_PARAMS = {"machine"}`,
+  `providers/local_libvirt/provisioning.py:38`). The two flags are validated structurally by
+  Pydantic; no new entry in the param whitelist.
+
+## 6. Domain XML additions
+
+`render_domain_xml` (`providers/local_libvirt/provisioning.py:200`) builds a minimal domain
+today (name, memory, vcpu, `<os>`, one virtio disk, metadata tag) — no console, no panic
+device. This spec adds, all via `ElementTree` (no string interpolation, preserving the no-XXE /
+no-injection property the module documents):
+
+1. **Always-on console** — a `<serial type="file">` (or `<serial type="pty">` + `<console>`)
+   with `<log file="{console_log_path}"/>`, where `console_log_path` is a deterministic
+   per-System host path. This is the Tier 0 artifact source and the boot-readiness signal (the
+   POC `stream_console` pattern tails this file for the readiness marker).
+2. **`preserve_on_crash` flag** → a `<panic model="pvpanic"/>` device and
+   `<on_crash>preserve</on_crash>`, so a guest panic freezes the domain (state observable as
+   crashed) instead of rebooting away. Paired with `panic=0` in the cmdline (§8).
+3. **`gdbstub` flag** → the QEMU passthrough namespace
+   (`xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0"` on `<domain>`) and
+   `<qemu:commandline><qemu:arg value="-gdb"/><qemu:arg value="tcp:127.0.0.1:{port},server=on,wait=off"/></qemu:commandline>`.
+   The port is deterministic per System (e.g. a base offset + a stable hash of `system_id`),
+   so the Connect resolver (§9) can recompute it without extra state. Paired with `nokaslr`
+   in the cmdline (§8).
+
+## 7. Capture seam (Tier 1 `host_dump`)
+
+`LocalLibvirtRetrieve.capture` (`retrieve.py:157`) is already method-agnostic: it gets core
+*bytes* from a seam, then extracts a build-id, redacts a dmesg derivative, and stores both. Only
+the byte-source seam differs by method:
+
+- **`host_dump`** — a new seam `_host_dump_capture(system_id) -> bytes`:
+  `virsh -c {uri} dump --memory-only {domain} {tmp_path}`, verify exit status and a leading ELF
+  magic (`\x7fELF`), read the bytes, unlink the temp file. Ported from POC
+  `local_libvirt_qemu.py` (`virsh dump --memory-only`, ELF-magic validation, partial-file
+  cleanup on failure). No transaction held during the dump (mirrors `capture_handler`'s slow
+  phase).
+- **`kdump`** — the existing `_real_wait_for_vmcore`, deferred (#115).
+
+`capture(system_id, method)` selects the seam; the rest of the method
+(`read_vmcore_build_id` → `_real_read_vmcore_build_id`, `extract_redacted` →
+`_real_extract_redacted`, `_put` raw+redacted) is unchanged and shared. The two extraction
+seams are **method-agnostic** (they parse an ELF core's notes / run `makedumpfile --dump-dmesg`
+or drgn over the bytes regardless of how the bytes were produced) and are implemented here so a
+`host_dump` core is fully usable by `postmortem.*`.
+
+## 8. Install-plane changes
+
+`LocalLibvirtInstall.install` (`install.py:141`) currently calls `_kdump_check` unconditionally
+and raises `configuration_error` if the kdump path is absent (`install.py:155`). This blocks a
+non-kdump boot. Changes:
+
+- The install/boot handler learns the Run's capture method (from the Run/build profile). The
+  kdump preflight runs **only** for `method="kdump"`; the three non-kdump methods skip it.
+- The effective cmdline is composed from the Run cmdline plus flag-derived tokens: append
+  `panic=0` when `preserve_on_crash`, `nokaslr` when `gdbstub`. `console=ttyS0` is part of the
+  Run cmdline (always present for the console artifact). The bug parameter (`dhash_entries=1`)
+  rides through unchanged — `_render_direct_kernel_xml` already renders `<cmdline>` verbatim
+  (`install.py:222`).
+
+## 9. Connect-plane change (Tier 2 endpoint)
+
+The Connect plane (`connect.py`) is complete except for one stub. `_open_gdbstub` (orchestration),
+the loopback-only SSRF control, and the RSP reachability probe (`rsp_reachable`,
+`_real_probe`) are implemented. Only `_real_resolve_endpoint` (`connect.py:286`) raises. This
+spec implements it: resolve the System's gdbstub endpoint to `("127.0.0.1", port)`, where `port`
+is the same deterministic per-System port rendered into the domain XML (§6.3). No new state — the
+port is a pure function of `system_id`. Loopback-only is preserved (the value is `127.0.0.1`),
+satisfying the existing `_is_loopback_literal` gate.
+
+## 10. Error handling, state, security
+
+- **Unsupported method** → `configuration_error` at the tool boundary (provider supported-set),
+  never a 500, never an admitted job.
+- **`host_dump` with no crashed/preserved domain** → the dump seam fails fast; surfaced as the
+  existing `readiness_failure`/`infrastructure_failure` contract of `capture`.
+- **State gating** — `vmcore.fetch` already requires `SystemState.CRASHED` (`vmcore.py:140`).
+  For `host_dump` the System reaches `CRASHED` via pvpanic → `<on_crash>preserve</on_crash>` →
+  reconcile. **This mapping is an assumption to verify** (see §13), not built here.
+- **Security** — all domain-XML additions are constructed with `ElementTree` (no interpolation);
+  the gdbstub endpoint is loopback-only (the ported "F2" SSRF control); the console/dmesg
+  artifacts pass through the existing `Redactor`; the crash-command allowlist (`postmortem.*`)
+  is untouched.
+
+## 11. Testing
+
+Mirroring the plane's existing fakes-over-seams approach (orchestration tested without a host):
+
+- **vmcore.fetch** — `method` recorded on the job payload; dedup key includes the method;
+  unsupported method rejected synchronously; `console` registers a redacted console artifact.
+- **capture()** — seam selection by method; `host_dump` seam fake returns bytes → raw+redacted
+  rows; ELF-magic rejection path; build-id/redact seams exercised independently of source.
+- **render_domain_xml** — console+`<log>` always present; `preserve_on_crash` ⇒ pvpanic +
+  `<on_crash>preserve`; `gdbstub` ⇒ qemu `-gdb` arg with the deterministic port; neither flag ⇒
+  neither element (golden-XML assertions).
+- **install** — `_kdump_check` skipped for non-kdump methods, enforced for kdump; cmdline
+  composition appends `panic=0`/`nokaslr` per flag; bug param preserved.
+- **connect** — `_real_resolve_endpoint` returns the same port rendered into the XML; loopback
+  gate holds.
+- **profile** — `crashkernel` optional; `method="kdump"` against a no-`crashkernel` profile
+  rejected; typed `debug` block round-trips and rejects unknown keys (`extra="forbid"`).
+- **live_vm (gated)** — one end-to-end on the real host: boot v7.0.0 with `dhash_entries=1`,
+  observe the console oops (Tier 0), `host_dump` a drgn-loadable core (Tier 1), and attach
+  over gdbstub (Tier 2).
+
+## 12. Success criterion
+
+On the local host, for a System booted with `dhash_entries=1`:
+
+1. `method="console"` returns the oops/KASAN text naming `__d_lookup()`.
+2. `method="host_dump"` produces a drgn/`crash`-loadable core; `postmortem.triage` returns a
+   backtrace.
+3. `method="gdbstub"` yields a reachable RSP endpoint a debugger attaches to.
+4. A clean boot (no bad parameter) produces none of the above crash signals — the A/B contrast
+   the scoring layer (next session) will consume.
+
+## 13. Open dependencies / assumptions to verify (not built here)
+
+1. **CRASHED-state mapping.** `vmcore.fetch` admits only on `SystemState.CRASHED`. A guest panic
+   via pvpanic + `<on_crash>preserve>` must land the System in `CRASHED` through the
+   discovery/reconcile path. If reconcile does not map a pvpanic-preserved (libvirt "crashed")
+   domain to `SystemState.CRASHED`, that is an added dependency — flagged here, to be confirmed
+   before implementation, not silently assumed.
+2. **Console-as-capture artifact shape.** Registering a console log under the `vmcore.*`
+   artifact owner/key conventions (which assume a core) needs a small naming decision so
+   `vmcore.list`'s `…/vmcore-redacted` filter and the console artifact coexist cleanly.
+3. The Run→method plumbing (how the install/boot handler learns the capture method) reuses the
+   build-profile carrier; the exact field is settled in the implementation plan.
