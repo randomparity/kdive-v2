@@ -65,6 +65,15 @@ In scope:
   `upload` only where there is no upload window (the `systems.provision` *create* branch and
   `systems.reprovision`). The worker's `render_domain_xml` path therefore renders an
   `upload` rootfs for an admitted `DEFINED` System.
+- `src/kdive/domain/state.py` — **add the `defined → torn_down` state edge** so a `DEFINED`
+  System that is never provisioned (operator abandons it, its Allocation is released, or its
+  lease expires) is terminable (§5a). Without it, `teardown_handler`'s `update_state(...
+  TORN_DOWN)` raises `IllegalTransition` and the teardown job dead-letters, leaking the
+  quota slot. `tests/domain/test_state.py`'s LEGAL table is updated in the same change.
+- `src/kdive/mcp/tools/artifacts.py` — make `_owner_accepts_upload`'s System branch
+  **kind-aware**: admit an upload only for a `DEFINED` System whose **stored profile's
+  `rootfs.kind == "upload"`** (§5b), so an upload cannot be minted against a System that will
+  never commit it (which would orphan the object past the reaper's reach).
 - ADR-0025 and ADR-0048 amendments (§7 below).
 - `tests/mcp/test_create_upload_tool.py`, `tests/reconciler/test_upload_reaper.py` — replace
   the directly-seeded `DEFINED` fixtures with `systems.define`, exercising the producer.
@@ -78,8 +87,16 @@ Out of scope (unchanged):
 - Multipart/`> 5 GiB` uploads (#112), the install/boot plane, the rootfs *fetch* for
   `url`/`catalog` (still the next spec's concern — `resolve_rootfs_path` returns a staging
   path; existence of an unfetched image is not this spec's problem).
-- Defining a System for `path`/`url`/`catalog` rootfs kinds is *permitted* but pointless
-  (no upload step); the motivating and tested case is `upload`.
+- **Staging the uploaded object to the libvirt-readable disk.** `_commit_uploaded_rootfs`
+  writes the artifacts *row* and deletes the manifest; it does **not** copy the object-store
+  qcow2 down to `resolve_rootfs_path`'s local staging path. So a real (`live_vm`) provision of
+  an `upload` System references a not-yet-staged disk and does **not** boot — staging lands
+  with the `url`/`catalog` fetch and install/boot in the next spec (ADR-0048 §7: this lane
+  "stops at a recorded, well-formed" object, not bootability). #111's reachability is the
+  **DB/tool lane** (row written, state machine driven) under a fake provider — *not* a boot.
+- Defining a System for `path`/`url`/`catalog` rootfs kinds is *permitted* but does no useful
+  work (no upload step); the motivating and tested case is `upload`. A `create_upload` against
+  a non-`upload` `DEFINED` System is **rejected** (§5b), not silently accepted.
 
 ## 3. The lifecycle, end to end
 
@@ -152,6 +169,28 @@ window ADR-0025 decision 2's rejected alternative warns against.
 work (no domain, no slow libvirt call), so there is nothing to poll. This differs from
 `systems.provision`, which returns a job handle because it enqueues provider work.
 
+### 4a. A `DEFINED` System must be terminable: add the `defined → torn_down` edge
+
+`define` makes `defined` a **durable** state — an operator can create it and sit there
+(before uploading, or having abandoned the upload), and its Allocation can be released or
+its lease can expire underneath it. Every one of those paths ends in a teardown:
+`systems.teardown` (admin), or the reconciler's orphaned-System GC after
+`allocations.release`/lease-expiry. `teardown_handler` drives the System with a single
+`update_state(state → torn_down)`. But the committed table has `defined → {provisioning,
+failed}` only — so tearing down a `DEFINED` System raises `IllegalTransition`, the teardown
+job dead-letters, the System persists, and it keeps counting against
+`max_concurrent_systems` (`_NON_TERMINAL_SYSTEM`) forever — a quota slot that can never be
+reclaimed.
+
+This spec therefore **adds the `defined → torn_down` edge**, mirroring ADR-0025 decision 5's
+additive `provisioning → torn_down` for the identical shape of problem (a
+synchronously-created object must be terminable *before* it advances). It is additive
+(`systems_state_check` already lists `torn_down`, no migration), routes through neither
+`failed` (which would stamp a failure the System never earned — decision 5's reasoning) nor a
+domain destroy (a `DEFINED` System has no domain; `teardown(domain_name)` swallows
+`VIR_ERR_NO_DOMAIN`, so the existing best-effort destroy is a safe no-op). `tests/domain/
+test_state.py`'s LEGAL table gains the edge in the same change.
+
 ## 5. `systems.provision` admits a `DEFINED` System
 
 `provision_system` keeps its find-or-create shape and gains a third case. `profile` is now
@@ -176,7 +215,32 @@ work (no domain, no slow libvirt call), so there is nothing to poll. This differ
 The `provision` **handler** is unchanged: it requires the System to be `PROVISIONING` on
 entry (now reached from either `defined` or a fresh insert), renders the domain (the
 worker's `render_domain_xml → validate_profile → validate_rootfs_reference` now accepts the
-`upload` reference), and on `provisioning → ready` runs `_commit_uploaded_rootfs`.
+`upload` reference), and on `provisioning → ready` runs `_commit_uploaded_rootfs`. If the
+`upload` object is absent, `_commit_uploaded_rootfs` raises `configuration_error` and the
+`provisioning → ready` transaction rolls back, leaving the System `provisioning`. The fake
+provider does no real `defineXML`/`create`; under a real provider a domain would already be
+started here, and the existing
+`test_provision_handler_absent_uploaded_rootfs_fails_config_error` pins the deliberate
+no-compensation behavior (the System is non-terminal, so the started domain is left for an
+idempotent retry). Both the absent-object failure and any real-provider domain-staging are
+governed by the out-of-scope staging note (§2) and ADR-0048 §7, not introduced here.
+
+### 5b. `create_upload` admits an upload only for an `upload`-kind `DEFINED` System
+
+`_owner_accepts_upload`'s System branch today checks only `state is DEFINED`. With `define`
+able to store *any* rootfs kind, that is too loose: `define(path-profile)` followed by
+`create_upload(system, rootfs)` would mint a PUT and persist a manifest, the agent would
+upload, and then `_commit_uploaded_rootfs` (which no-ops for `kind != "upload"`) would never
+write the artifacts row or delete the manifest. Once the System leaves `defined` for `ready`,
+the reaper's pre-finalize predicate (`systems.state = 'defined'`) no longer matches it, so
+the uncommitted object is **never reaped** — a silent, unobservable storage leak.
+
+The fix makes the branch **kind-aware**: admit an upload only when the System is `DEFINED`
+**and** its stored profile's `rootfs.kind == "upload"`. A `create_upload` against a
+non-`upload` `DEFINED` System returns the existing `owner_not_accepting_upload`
+`configuration_error`. (The `defined → torn_down` edge of §4a is what then lets the operator
+discard such a System; the reaper still cleans an `upload`-kind System abandoned before
+provision, because that one stays `defined` until its deadline.)
 
 ## 6. Splitting static validation from lane admissibility
 
@@ -210,12 +274,14 @@ behavior `tests/.../test_*` pins) while letting the define-then-provision lane t
   writes it" but "materialized by `systems.define` (#111) for the create-without-provision /
   rootfs-upload lane; `systems.provision`'s *create* lane still inserts directly at
   `provisioning` (admission-style, decision 1's reasoning holds for the one-step path)." A
-  new decision records the `define` producer, the `granted → active`-at-define flip, and the
-  `defined → provisioning` admission branch with the stored-profile rule.
+  new decision records the `define` producer, the `granted → active`-at-define flip, the
+  `defined → provisioning` admission branch with the stored-profile rule, and the additive
+  `defined → torn_down` edge (§4a) alongside decision 5's `provisioning → torn_down`.
 - **ADR-0048** §5's forward-plumbing **Note** (the `upload` kind "awaits its producer…
   `validate_rootfs_reference` rejects an `upload` reference") becomes: the producer is
   `systems.define` (#111); the boundary rejection is narrowed to the lanes without an upload
-  window; the lane is live end-to-end.
+  window; `create_upload` admits a System only when its stored profile is `upload`-kind
+  (§5b); the lane is live end-to-end at the DB/tool level (boot deferred per §2 staging).
 
 ## 8. Testing
 
@@ -238,6 +304,13 @@ a `FakeProvisioning`, and `minio_store` for the object HEAD.
 - **Lane split**: `validate_rootfs_reference` accepts `upload` (well-formed) and still
   rejects a malformed `url` sha256 / unknown catalog name; `render_domain_xml` renders an
   `upload` rootfs to its staging path; the create-lane / reprovision guard rejects `upload`.
+- **`defined → torn_down`** (§4a): the state table admits the edge (LEGAL-table test);
+  `teardown_handler` drives a `DEFINED` System (admin teardown, and a reconciler GC after
+  release) to `torn_down` without `IllegalTransition` and freeing its quota slot; the
+  no-domain `teardown` call is a no-op (no `VIR_ERR_NO_DOMAIN` raised).
+- **Kind-aware `create_upload`** (§5b): `create_upload(system)` for an `upload`-kind
+  `DEFINED` System succeeds; for a `path`/`url`/`catalog`-kind `DEFINED` System it returns
+  `owner_not_accepting_upload` (`configuration_error`) — no PUT minted, no manifest.
 - **End-to-end reachability** (`tests/integration/` or alongside the systems tests): seed
   resource + `granted` allocation → `systems.define(upload profile)` → `create_upload` →
   stage the object in `minio_store` → `systems.provision(allocation_id)` → run
@@ -256,6 +329,12 @@ a `FakeProvisioning`, and `minio_store` for the object HEAD.
   `DEFINED` System and admits it once (the `defined → provisioning` edge is one-way; a
   re-issue lands in the retry lane).
 - **Release mid-`define`:** serialized on the allocation lock (§4).
+- **Abandoned `DEFINED` System (never provisioned):** terminable via the `defined →
+  torn_down` edge (§4a) — admin `systems.teardown` or the reconciler's release/lease-expiry
+  GC reclaims the quota slot; the no-domain teardown is a no-op.
+- **`create_upload` against a non-`upload` `DEFINED` System:** rejected
+  (`owner_not_accepting_upload`, §5b) — no object is ever minted that the reaper could not
+  later clean.
 - **`upload` profile defined but never uploaded, then provisioned:** the handler's
   `_commit_uploaded_rootfs` HEAD returns `None` → `configuration_error`, the
   `provisioning → ready` transaction rolls back, the System stays `provisioning` for an
@@ -272,11 +351,16 @@ a `FakeProvisioning`, and `minio_store` for the object HEAD.
 1. `systems.define(granted_allocation, profile)` inserts a `DEFINED` System and flips the
    allocation `granted → active`, idempotently, operator-only, quota-enforced.
 2. `systems.provision(allocation_id)` (no profile) drives an existing `DEFINED` System
-   `defined → provisioning` and enqueues its provision job; the handler then drives it to
-   `ready` and commits an `upload` rootfs.
+   `defined → provisioning` and enqueues its provision job; under a **fake provider** the
+   handler then drives it to `ready`, writes the System-owned write-once `upload` artifacts
+   row, and deletes the manifest. This is **DB/tool-lane reachability**, not a boot —
+   staging the object to the libvirt disk and live boot are out of scope (§2).
 3. The `upload` rootfs kind is rejected only where there is no upload window (one-step
    provision, reprovision), accepted via `define`, and renders in the worker.
-4. The end-to-end reachability test passes; the two `DEFINED`-seeding fixtures are rewritten
+4. A `DEFINED` System is terminable: `teardown` drives `defined → torn_down` (no
+   `IllegalTransition`) and frees its quota slot (§4a). `create_upload` is rejected for a
+   non-`upload`-kind `DEFINED` System (§5b).
+5. The end-to-end reachability test passes; the two `DEFINED`-seeding fixtures are rewritten
    to use `systems.define`; the `#111` forward-plumbing comments become live-path comments.
-5. ADR-0025 and ADR-0048 describe the real producer.
-6. `just ci` is green; no gating weakened.
+6. ADR-0025 and ADR-0048 describe the real producer (and the `defined → torn_down` edge).
+7. `just ci` is green; no gating weakened.

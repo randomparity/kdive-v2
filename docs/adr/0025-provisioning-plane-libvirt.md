@@ -263,6 +263,20 @@ The `upload`-rootfs boundary fence (#110, `validate_rootfs_reference` rejecting 
 a separate **lane** guard rejects `upload` only where there is no upload window — the
 `systems.provision` *create* branch and `systems.reprovision`. `define` admits it.
 
+Because `define` makes `defined` a **durable, abandonable** state (an operator may sit in it,
+its Allocation may be released, its lease may expire), a `DEFINED` System must be
+*terminable*. This issue therefore **adds the `defined → torn_down` edge** — additively, the
+same shape and reasoning as decision 5's `provisioning → torn_down` (a synchronously-created
+object must be terminable before it advances; routing through `failed` would stamp an
+unearned failure signal). Without it, `teardown_handler`'s `update_state(... torn_down)`
+raises `IllegalTransition` for a `DEFINED` System, the teardown job dead-letters, and the
+abandoned System leaks its `max_concurrent_systems` slot indefinitely. A `DEFINED` System
+has no domain, so the handler's best-effort `teardown(domain_name)` is a safe no-op
+(`VIR_ERR_NO_DOMAIN` swallowed). Correspondingly, `artifacts.create_upload` admits a System
+upload only when the System is `DEFINED` **and** its stored profile is `upload`-kind, so an
+upload is never minted against a System that would never commit it (which would orphan the
+object past the upload reaper's `state = 'defined'` predicate once the System advanced).
+
 ## Consequences
 
 - The walking-skeleton path gains `systems.provision`/`.get`/`.teardown`; provisioning is
