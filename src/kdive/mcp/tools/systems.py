@@ -11,6 +11,7 @@ domain. Handlers reconstruct a RequestContext from the job's authorizing tuple t
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -23,10 +24,11 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
+from kdive.db import upload_manifest
 from kdive.db.locks import LockScope, advisory_xact_lock
-from kdive.db.repositories import ALLOCATIONS, SYSTEMS
+from kdive.db.repositories import ALLOCATIONS, ARTIFACTS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Job, JobKind, System
+from kdive.domain.models import Job, JobKind, Sensitivity, System
 from kdive.domain.state import AllocationState, IllegalTransition, RunState, SystemState
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
@@ -44,6 +46,12 @@ from kdive.providers.local_libvirt.provisioning import (
 from kdive.security import audit
 from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
 from kdive.security.rbac import Role, require_role
+from kdive.store.objectstore import (
+    StoredArtifact,
+    artifact_key,
+    object_store_from_env,
+    register_artifact_row,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -159,7 +167,7 @@ async def _open_billing_interval(conn: AsyncConnection, allocation_id: UUID) -> 
 
 # System states that occupy a per-project quota slot (terminal torn_down/failed do not).
 _NON_TERMINAL_SYSTEM = (
-    SystemState.DEFINED,
+    SystemState.DEFINED,  # forward-plumbing: no producer yet (#111)
     SystemState.PROVISIONING,
     SystemState.READY,
     SystemState.REPROVISIONING,
@@ -323,6 +331,63 @@ async def _provision_locked(
         return _system_job_envelope(job, system.id)
 
 
+async def _commit_uploaded_rootfs(
+    conn: AsyncConnection, system: System, profile: ProvisioningProfile
+) -> None:
+    """Commit the write-once artifacts row for an 'upload'-kind rootfs (ADR-0048 §6).
+
+    Called inside the locked provisioning->ready transition. For an ``upload`` rootfs it
+    verifies the System-owned object exists (HEAD, off-thread), writes the write-once
+    ``artifacts`` row, and deletes the upload manifest so the reaper exempts the object.
+    Other kinds are a no-op.
+
+    Forward-plumbing: the provisioning tool boundary rejects an ``upload`` rootfs until the
+    DEFINED producer lands (#111), so no persisted profile reaches this commit yet. This
+    branch and its absent-object guard remain for when that producer exists;
+    ``path``/``url``/``catalog`` are unaffected.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` if an ``upload`` rootfs was never uploaded.
+    """
+    rootfs = profile.provider.local_libvirt.rootfs
+    if rootfs.kind != "upload":
+        return
+    key = artifact_key("local", "systems", str(system.id), "rootfs")
+    head = await asyncio.to_thread(object_store_from_env().head, key)
+    if head is None:
+        raise CategorizedError(
+            "upload-kind rootfs was never uploaded",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"system_id": str(system.id)},
+        )
+    stored = StoredArtifact(key, head.etag, Sensitivity.SENSITIVE, "rootfs")
+    await ARTIFACTS.insert(
+        conn, register_artifact_row(stored, owner_kind="systems", owner_id=system.id)
+    )
+    await upload_manifest.delete_manifest(conn, "systems", system.id)
+
+
+async def _finalize_provision_ready(
+    conn: AsyncConnection, job: Job, system: System, profile: ProvisioningProfile
+) -> None:
+    """Run the provisioning->ready follow-on (caller holds the System lock + transaction).
+
+    Must be called from within the caller's open ``conn.transaction()`` under the held
+    ``LockScope.SYSTEM`` advisory lock — it opens neither, so the artifacts commit, billing
+    open, and audit land atomically with the UPDATE-to-READY in the same locked transaction.
+    """
+    await _commit_uploaded_rootfs(conn, system, profile)
+    await _open_billing_interval(conn, system.allocation_id)
+    await _audit_transition(
+        conn,
+        job,
+        project=system.project,
+        object_id=system.id,
+        transition="provisioning->ready",
+        tool="systems.provision",
+    )
+
+
 async def provision_handler(
     conn: AsyncConnection, job: Job, provisioning: Provisioner
 ) -> str | None:
@@ -377,21 +442,14 @@ async def provision_handler(
             await cur.execute("SELECT state FROM systems WHERE id = %s FOR UPDATE", (system_id,))
             row = await cur.fetchone()
             current = SystemState(row["state"]) if row is not None else None
-            if current is SystemState.PROVISIONING:
-                await cur.execute(
-                    "UPDATE systems SET state = %s, domain_name = %s WHERE id = %s",
-                    (SystemState.READY.value, domain_name, system_id),
-                )
+        # The FOR UPDATE row lock and the advisory lock are held until this transaction
+        # commits, so the UPDATE + finalize run after the cursor closes but still under both.
         if current is SystemState.PROVISIONING:
-            await _open_billing_interval(conn, system.allocation_id)
-            await _audit_transition(
-                conn,
-                job,
-                project=system.project,
-                object_id=system_id,
-                transition="provisioning->ready",
-                tool="systems.provision",
+            await conn.execute(
+                "UPDATE systems SET state = %s, domain_name = %s WHERE id = %s",
+                (SystemState.READY.value, domain_name, system_id),
             )
+            await _finalize_provision_ready(conn, job, system, profile)
     # Outside the lock. If a concurrent *teardown* drove the System terminal while we were
     # mid-provision, clean up the domain we just created. A non-terminal, non-provisioning
     # state (``ready``/``crashed``) means a concurrent *same-job* provision (lease lapse →

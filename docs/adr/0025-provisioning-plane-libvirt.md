@@ -239,7 +239,9 @@ until wired, unchanged from today.
   Rejected: it materializes a `defined` row that exists for microseconds inside one
   transaction and writes a second audit row for a transition no observer can interleave on
   — the same reasoning that made admission skip `requested` (decision 1). The abstract
-  machine keeps `defined` for the M1 create-without-provision path.
+  machine keeps `defined` for a create-without-provision path. (That path was never built —
+  M1 shipped reprovision-in-place, not create-without-provision — so nothing produces a
+  `defined` System today; the producer is tracked by #111.)
 - **Create the System row inside the handler (key dedup on the System).** Rejected: there
   is no System id before the row exists, so the dedup key could not be `system_id`; and a
   tool that returns a job handle for a System the agent cannot yet `systems.get` is worse

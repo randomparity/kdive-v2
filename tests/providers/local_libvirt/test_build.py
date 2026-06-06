@@ -13,7 +13,7 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
-from kdive.profiles.build import BuildProfile
+from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.providers.local_libvirt.build import (
     LocalLibvirtBuild,
     parse_gnu_build_id,
@@ -55,8 +55,10 @@ def _gnu_build_id_note(build_id: bytes) -> bytes:
     return header + name + desc + b"\x00" * pad
 
 
-def _profile() -> BuildProfile:
-    return BuildProfile.parse(_VALID_PROFILE)
+def _profile() -> ServerBuildProfile:
+    profile = BuildProfile.parse(_VALID_PROFILE)
+    assert isinstance(profile, ServerBuildProfile)
+    return profile
 
 
 @dataclass
@@ -97,7 +99,7 @@ class _Seams:
     make_calls: int = 0
     checkout_calls: int = 0
 
-    def checkout(self, run_id: UUID, profile: BuildProfile, workspace: Path) -> None:
+    def checkout(self, run_id: UUID, profile: ServerBuildProfile, workspace: Path) -> None:
         self.checkout_calls += 1
 
     def read_config(self, workspace: Path) -> str:

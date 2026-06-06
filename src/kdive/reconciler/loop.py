@@ -66,6 +66,14 @@ class InfraReaper(Protocol):
     async def destroy(self, name: str) -> None: ...
 
 
+@runtime_checkable
+class UploadStore(Protocol):
+    """The narrow object-store port the upload reaper consumes."""
+
+    def list_prefix(self, prefix: str) -> list[str]: ...
+    def delete(self, key: str) -> None: ...
+
+
 class NullReaper:
     """The M0 default reaper: owns nothing, destroys nothing.
 
@@ -92,6 +100,7 @@ class ReconcileReport:
     leaked_domains: int
     idempotency_keys_gcd: int
     failures: tuple[str, ...]
+    abandoned_uploads: int = 0
 
 
 async def _sweep_expired_allocations(conn: AsyncConnection) -> int:
@@ -373,10 +382,94 @@ async def _repair_leaked_domains(conn: AsyncConnection, reaper: InfraReaper) -> 
     return reaped
 
 
+# The "systems"/"defined" arm is forward-plumbing: nothing produces a DEFINED System yet
+# (#111), so only the "runs"/"created" arm reaps in practice today.
+_UPLOAD_PRE_FINALIZE = {"runs": "created", "systems": "defined"}
+
+
+async def _repair_abandoned_uploads(conn: AsyncConnection, store: UploadStore) -> int:
+    """Prefix-reap uncommitted objects of pre-finalize owners past their upload deadline.
+
+    Candidate-selects ``upload_manifests`` rows with ``deadline < now()`` whose owner is
+    still pre-finalize (a ``created`` Run or a ``defined`` System), then reaps each under
+    its per-owner advisory lock. Returns the number of owners reaped (ADR-0048 §6).
+    """
+    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT m.owner_kind, m.owner_id FROM upload_manifests m "
+            "WHERE m.deadline < now() AND ("
+            "  (m.owner_kind = 'runs' AND EXISTS ("
+            "     SELECT 1 FROM runs r WHERE r.id = m.owner_id AND r.state = 'created')) "
+            "  OR (m.owner_kind = 'systems' AND EXISTS ("
+            "     SELECT 1 FROM systems s WHERE s.id = m.owner_id AND s.state = 'defined')))"
+        )
+        candidates = await cur.fetchall()
+    reaped = 0
+    for cand in candidates:
+        scope = LockScope.RUN if cand["owner_kind"] == "runs" else LockScope.SYSTEM
+        if await _reap_one_owner(conn, store, cand["owner_kind"], cand["owner_id"], scope):
+            reaped += 1
+    return reaped
+
+
+async def _reap_one_owner(
+    conn: AsyncConnection, store: UploadStore, owner_kind: str, owner_id: UUID, scope: LockScope
+) -> bool:
+    """Re-validate under the per-owner lock, then prefix-reap + delete the manifest.
+
+    The lock serializes against a concurrent ``create_upload`` re-mint, ``complete_build``,
+    or provision-consume on the **same** owner (which all take this lock), so a renewed
+    deadline or a finalized owner is observed *before* any delete — mirroring
+    :func:`_expire_one`'s locked re-read fence. Unlike :func:`_repair_leaked_domains`
+    (whose ``destroy`` runs unlocked because libvirt can hang), the bounded S3 deletes run
+    under the narrow per-owner lock so a re-mint cannot interleave between the re-check and
+    the manifest delete. Deletes only objects with **no committed ``artifacts`` row**, so a
+    referenced/consumed object (a slow-but-real rootfs) is never destroyed. The synchronous
+    boto3-backed ``list_prefix``/``delete`` are offloaded via ``asyncio.to_thread`` so they
+    do not block the event loop; the ``await`` only yields the loop — nothing else touches
+    ``conn`` meanwhile, so the lock + transaction stay held across the deletes (the fence).
+    """
+    async with conn.transaction(), advisory_xact_lock(conn, scope, owner_id):
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT prefix FROM upload_manifests "
+                "WHERE owner_kind = %s AND owner_id = %s AND deadline < now()",
+                (owner_kind, owner_id),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return False  # renewed (deadline pushed out) or already reaped since the select
+        if not await _owner_pre_finalize(conn, owner_kind, owner_id):
+            return False  # owner finalized between the candidate select and this lock
+        for key in await asyncio.to_thread(store.list_prefix, row["prefix"]):
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT 1 FROM artifacts WHERE object_key = %s", (key,))
+                if await cur.fetchone() is None:
+                    await asyncio.to_thread(store.delete, key)
+        await conn.execute(
+            "DELETE FROM upload_manifests WHERE owner_kind = %s AND owner_id = %s",
+            (owner_kind, owner_id),
+        )
+    _log.info("reconciler: abandoned upload owner %s/%s reaped", owner_kind, owner_id)
+    return True
+
+
+async def _owner_pre_finalize(conn: AsyncConnection, owner_kind: str, owner_id: UUID) -> bool:
+    """Report whether the owner is still in its pre-finalize state (locked re-read)."""
+    table = "runs" if owner_kind == "runs" else "systems"
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            f"SELECT 1 FROM {table} WHERE id = %s AND state = %s",  # noqa: S608 - 2-value whitelist
+            (owner_id, _UPLOAD_PRE_FINALIZE[owner_kind]),
+        )
+        return await cur.fetchone() is not None
+
+
 async def reconcile_once(
     pool: AsyncConnectionPool,
     reaper: InfraReaper,
     *,
+    upload_store: UploadStore | None = None,
     debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
     idempotency_retention: timedelta = DEFAULT_IDEMPOTENCY_RETENTION,
 ) -> ReconcileReport:
@@ -402,6 +495,7 @@ async def reconcile_once(
         "dead_sessions": 0,
         "leaked_domains": 0,
         "idempotency_keys_gcd": 0,
+        "abandoned_uploads": 0,
     }
     failures: list[str] = []
 
@@ -423,6 +517,10 @@ async def reconcile_once(
     await _isolated(
         "idempotency_keys_gcd", lambda conn: _gc_idempotency_keys(conn, idempotency_retention)
     )
+    if upload_store is not None:
+        await _isolated(
+            "abandoned_uploads", lambda conn: _repair_abandoned_uploads(conn, upload_store)
+        )
 
     return ReconcileReport(
         expired_allocations=counts["expired_allocations"],
@@ -432,6 +530,7 @@ async def reconcile_once(
         leaked_domains=counts["leaked_domains"],
         idempotency_keys_gcd=counts["idempotency_keys_gcd"],
         failures=tuple(failures),
+        abandoned_uploads=counts["abandoned_uploads"],
     )
 
 
@@ -443,12 +542,14 @@ class Reconciler:
         pool: AsyncConnectionPool,
         reaper: InfraReaper,
         *,
+        upload_store: UploadStore | None = None,
         interval: timedelta = DEFAULT_INTERVAL,
         debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
         idempotency_retention: timedelta = DEFAULT_IDEMPOTENCY_RETENTION,
     ) -> None:
         self._pool = pool
         self._reaper = reaper
+        self._upload_store = upload_store
         self._interval = interval
         self._debug_session_stale_after = debug_session_stale_after
         self._idempotency_retention = idempotency_retention
@@ -458,6 +559,7 @@ class Reconciler:
         return await reconcile_once(
             self._pool,
             self._reaper,
+            upload_store=self._upload_store,
             debug_session_stale_after=self._debug_session_stale_after,
             idempotency_retention=self._idempotency_retention,
         )

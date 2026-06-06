@@ -22,6 +22,18 @@ Enqueue the kernel build job for a Run; poll jobs.* for completion. Requires ope
 |---|---|---|---|
 | `run_id` | `string` | yes | The Run to build. |
 
+## `runs.complete_build`
+
+`implemented`
+
+Validate an external Run's uploads and finalize it to succeeded. Operator only.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `build_id` | `any` | no | GNU build-id as hex (e.g. from `readelf -n vmlinux`); required iff a vmlinux was uploaded. Case-insensitive. |
+| `cmdline` | `string` | yes | Kernel command line (e.g. 'console=ttyS0 dhash_entries=1'). Recorded in the build ledger; not yet applied at boot (install still reads the build profile), so it is inert until that wiring lands. |
+| `run_id` | `string` | yes | The external-build Run to finalize. |
+
 ## `runs.create`
 
 `implemented`

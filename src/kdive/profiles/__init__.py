@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kdive.profiles.build import BuildProfile
+from kdive.profiles.build import BuildProfile, ExternalBuildProfile, ServerBuildProfile
 from kdive.profiles.provisioning import (
     BootMethod,
     LibvirtProfile,
@@ -13,7 +13,9 @@ from kdive.profiles.provisioning import (
 __all__ = [
     "BootMethod",
     "BuildProfile",
+    "ExternalBuildProfile",
     "LibvirtProfile",
     "ProviderSection",
     "ProvisioningProfile",
+    "ServerBuildProfile",
 ]

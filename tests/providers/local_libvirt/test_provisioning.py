@@ -36,7 +36,10 @@ _VALID: dict[str, Any] = {
     "provider": {
         "local-libvirt": {
             "domain_xml_params": {"machine": "pc-q35-9.0"},
-            "rootfs_image_ref": "oci://registry.internal/rootfs/fedora-40@sha256:abc123",
+            "rootfs": {
+                "kind": "path",
+                "path": "oci://registry.internal/rootfs/fedora-40@sha256:abc123",
+            },
             "crashkernel": "256M",
         }
     },

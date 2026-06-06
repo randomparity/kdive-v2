@@ -14,6 +14,7 @@
 | [`allocations.release`](allocations.md#allocationsrelease) | `implemented` |
 | [`allocations.renew`](allocations.md#allocationsrenew) | `implemented` |
 | [`allocations.request`](allocations.md#allocationsrequest) | `implemented` |
+| [`artifacts.create_upload`](artifacts.md#artifactscreate_upload) | `implemented` |
 | [`artifacts.get`](artifacts.md#artifactsget) | `partial` |
 | [`artifacts.list`](artifacts.md#artifactslist) | `partial` |
 | [`control.force_crash`](control.md#controlforce_crash) | `partial` |
@@ -44,6 +45,7 @@
 | [`resources.list`](resources.md#resourceslist) | `implemented` |
 | [`runs.boot`](runs.md#runsboot) | `partial` |
 | [`runs.build`](runs.md#runsbuild) | `partial` |
+| [`runs.complete_build`](runs.md#runscomplete_build) | `implemented` |
 | [`runs.create`](runs.md#runscreate) | `implemented` |
 | [`runs.get`](runs.md#runsget) | `implemented` |
 | [`runs.install`](runs.md#runsinstall) | `partial` |

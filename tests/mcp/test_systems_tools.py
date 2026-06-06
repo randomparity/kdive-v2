@@ -6,7 +6,7 @@ import asyncio
 import copy
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -17,6 +17,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db import upload_manifest
 from kdive.db.repositories import ALLOCATIONS, BUDGETS, INVESTIGATIONS, QUOTAS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import (
@@ -27,6 +28,7 @@ from kdive.domain.models import (
     JobKind,
     Quota,
     Run,
+    Sensitivity,
     System,
 )
 from kdive.domain.state import AllocationState, InvestigationState, RunState, SystemState
@@ -39,6 +41,7 @@ from kdive.providers.local_libvirt.discovery import (
     register_local_libvirt_resource,
 )
 from kdive.security.rbac import Role
+from kdive.store.objectstore import ObjectStore, artifact_key
 from tests.providers.local_libvirt.conftest import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -54,7 +57,10 @@ _PROFILE: dict[str, Any] = {
     "provider": {
         "local-libvirt": {
             "domain_xml_params": {"machine": "q35"},
-            "rootfs_image_ref": "oci://registry.internal/rootfs/fedora-40@sha256:abc",
+            "rootfs": {
+                "kind": "path",
+                "path": "oci://registry.internal/rootfs/fedora-40@sha256:abc",
+            },
             "crashkernel": "256M",
         }
     },
@@ -724,6 +730,136 @@ def test_provision_handler_concurrent_same_job_ready_does_not_tear_down(migrated
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
                 row = await cur.fetchone()
         assert row is not None and row["state"] == "ready"
+
+    asyncio.run(_run())
+
+
+# --- upload-rootfs artifacts commit (ADR-0048 §6) ------------------------------------------
+#
+# These drive provision_handler with a directly-seeded upload profile, BYPASSING the tool
+# boundary. As of the #111 gate, validate_rootfs_reference rejects kind:upload, so no real
+# tool can persist an upload profile — this commit path is unreachable end-to-end until #111
+# lands the DEFINED producer. The tests stay to lock the worker-side contract for that work;
+# their green status is NOT a shipping upload-rootfs capability.
+
+
+def _upload_profile() -> dict[str, Any]:
+    p = _profile()
+    p["provider"]["local-libvirt"]["rootfs"] = {"kind": "upload"}
+    return p
+
+
+async def _seed_system_with_profile(
+    pool: AsyncConnectionPool, alloc_id: str, state: SystemState, profile: dict[str, Any]
+) -> str:
+    async with pool.connection() as conn:
+        system = await SYSTEMS.insert(
+            conn,
+            System(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="user-1",
+                project="proj",
+                allocation_id=UUID(alloc_id),
+                state=state,
+                provisioning_profile=profile,
+            ),
+        )
+    return str(system.id)
+
+
+def test_provision_handler_commits_uploaded_rootfs_artifact(
+    migrated_url: str, minio_store: ObjectStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An upload-kind rootfs whose object is present: the provisioning->ready transition
+    # writes one systems-owned write-once artifacts row and deletes the upload manifest
+    # (so the reaper exempts the object).
+    monkeypatch.setattr(systems_tools, "object_store_from_env", lambda: minio_store)
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system_with_profile(
+                pool, alloc_id, SystemState.PROVISIONING, _upload_profile()
+            )
+            key = artifact_key("local", "systems", sys_id, "rootfs")
+            minio_store.put_artifact(
+                "local",
+                "systems",
+                sys_id,
+                "rootfs",
+                data=b"rootfs-image-bytes",
+                sensitivity=Sensitivity.SENSITIVE,
+                retention_class="rootfs",
+            )
+            async with pool.connection() as conn:
+                await upload_manifest.replace_manifest(
+                    conn,
+                    owner_kind="systems",
+                    owner_id=UUID(sys_id),
+                    prefix=f"local/systems/{sys_id}/",
+                    entries=[upload_manifest.ManifestEntry("rootfs", "sha256:x", 18)],
+                    ttl=timedelta(hours=1),
+                )
+            job = await _enqueue_provision(pool, sys_id, alloc_id)
+            async with pool.connection() as conn:
+                await systems_tools.provision_handler(conn, job, _FakeProvisioning())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT owner_kind, object_key, sensitivity, retention_class "
+                    "FROM artifacts WHERE owner_id = %s",
+                    (sys_id,),
+                )
+                art_rows = await cur.fetchall()
+            async with pool.connection() as conn:
+                manifest = await upload_manifest.get_manifest(conn, "systems", UUID(sys_id))
+        assert sys_row is not None and sys_row["state"] == "ready"
+        assert len(art_rows) == 1  # exactly one write-once row
+        assert art_rows[0]["owner_kind"] == "systems"
+        assert art_rows[0]["object_key"] == key
+        assert art_rows[0]["sensitivity"] == "sensitive"
+        assert art_rows[0]["retention_class"] == "rootfs"
+        assert manifest is None  # the upload manifest was deleted (reaper exempts the object)
+
+    asyncio.run(_run())
+
+
+def test_provision_handler_absent_uploaded_rootfs_fails_config_error(
+    migrated_url: str, minio_store: ObjectStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An upload-kind rootfs whose object was never uploaded: the commit raises
+    # configuration_error inside the ready transition, which rolls back — the System stays
+    # provisioning (a retry re-checks) and no artifacts row is written.
+    monkeypatch.setattr(systems_tools, "object_store_from_env", lambda: minio_store)
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system_with_profile(
+                pool, alloc_id, SystemState.PROVISIONING, _upload_profile()
+            )
+            job = await _enqueue_provision(pool, sys_id, alloc_id)
+            prov = _FakeProvisioning()
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError) as caught:
+                    await systems_tools.provision_handler(conn, job, prov)
+            assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+            # The System rolls back to provisioning (not terminal), so the terminal-teardown
+            # compensation deliberately does NOT fire — the started domain is left in place for
+            # an idempotent retry.
+            assert prov.torn_down == []
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM artifacts WHERE owner_id = %s", (sys_id,)
+                )
+                art_n = await cur.fetchone()
+        assert sys_row is not None and sys_row["state"] == "provisioning"  # rolled back
+        assert art_n is not None and art_n["n"] == 0
 
     asyncio.run(_run())
 

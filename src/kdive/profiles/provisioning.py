@@ -50,22 +50,55 @@ class _ProfileBase(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class _PathRootfs(_ProfileBase):
+    kind: Literal["path"]
+    path: NonEmptyStr
+
+
+class _UploadRootfs(_ProfileBase):
+    # Forward-plumbing: this kind is only reachable from a DEFINED System, which nothing
+    # produces yet (#111). path/url/catalog are usable today.
+    kind: Literal["upload"]
+
+
+class _UrlRootfs(_ProfileBase):
+    kind: Literal["url"]
+    url: NonEmptyStr
+    sha256: NonEmptyStr  # 'sha256:<64-hex>'; format checked at resolve
+
+
+class _CatalogRootfs(_ProfileBase):
+    kind: Literal["catalog"]
+    name: NonEmptyStr
+
+
+type RootfsSource = Annotated[
+    _PathRootfs | _UploadRootfs | _UrlRootfs | _CatalogRootfs,
+    Field(discriminator="kind"),
+]
+"""A discriminated rootfs source (ADR-0048 §3); ``kind`` selects the variant."""
+
+
 class LibvirtProfile(_ProfileBase):
     """The ``local-libvirt`` provider section (ADR-0024 decisions 1, 2b, 2c).
 
     ``domain_xml_params`` is an optionally-empty map whose values are non-empty;
-    ``crashkernel`` is an opaque non-empty token (the kdump prerequisite — the booted
-    kernel is the arbiter of its grammar). ``destructive_ops`` is the optionally-empty
-    list of destructive op kinds this profile opts in (e.g. ``["force_crash"]``); the
-    control plane's gate resolves the opt-in factor from it (deny-by-default — an absent
-    or empty list refuses every destructive op, ADR-0028 §2). ``ssh_credential_ref`` is the
-    optional opaque **reference** (never the value) into the file-ref secret backend that
-    the live ssh transport resolves a guest credential through (ADR-0039 §2); a profile that
-    does not opt into live ssh introspection leaves it ``None``.
+    ``rootfs`` is the discriminated rootfs source (ADR-0048 §3) keyed by ``kind`` —
+    ``path`` (a declared file), ``upload`` (a System-owned uploaded object), ``url``
+    (a content-addressed fetch), or ``catalog`` (a curated image by name); the resolver
+    maps it to the libvirt-readable disk path at provisioning. ``crashkernel`` is an
+    opaque non-empty token (the kdump prerequisite — the booted kernel is the arbiter of
+    its grammar). ``destructive_ops`` is the optionally-empty list of destructive op kinds
+    this profile opts in (e.g. ``["force_crash"]``); the control plane's gate resolves the
+    opt-in factor from it (deny-by-default — an absent or empty list refuses every
+    destructive op, ADR-0028 §2). ``ssh_credential_ref`` is the optional opaque
+    **reference** (never the value) into the file-ref secret backend that the live ssh
+    transport resolves a guest credential through (ADR-0039 §2); a profile that does not
+    opt into live ssh introspection leaves it ``None``.
     """
 
     domain_xml_params: dict[NonEmptyStr, NonEmptyStr] = Field(default_factory=dict)
-    rootfs_image_ref: NonEmptyStr
+    rootfs: RootfsSource
     crashkernel: NonEmptyStr
     destructive_ops: list[NonEmptyStr] = Field(default_factory=list)
     ssh_credential_ref: NonEmptyStr | None = None
