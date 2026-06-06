@@ -31,6 +31,7 @@ from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
+from kdive.security.redaction import Redactor
 from kdive.store.objectstore import HeadResult, StoredArtifact, object_store_from_env
 
 _WORKSPACE_ENV = "KDIVE_BUILD_WORKSPACE"
@@ -46,6 +47,9 @@ _SHT_NOTE = 7
 # never are), so a small per-section cap bounds an untrusted vmlinux's declared sh_size
 # against a multi-GB read into the worker thread.
 _MAX_SECTION_BYTES = 16 * 1024 * 1024
+# Trailing chars of a redacted rsync/git-apply stderr placed in error details (bounded so a
+# large/noisy failure log cannot bloat a persisted error record).
+_STDERR_TAIL = 2000
 
 # The kdump prerequisite is satisfied by CONFIG_CRASH_DUMP; symbolization needs DWARF or
 # BTF debuginfo. Each tuple is an OR-group: the config must enable at least one of each.
@@ -323,6 +327,40 @@ def _stage_config(config_ref: str, workspace: Path) -> None:
     """Copy the resolved ``config_ref`` to ``workspace/.config`` (overwriting any existing one)."""
     source = _resolve_local_ref(config_ref, kind="config_ref")
     shutil.copyfile(source, workspace / ".config")
+
+
+def _redacted_tail(text: str) -> str:
+    """Redact known secrets/``key=value`` pairs, then return the trailing ``_STDERR_TAIL`` chars."""
+    return Redactor().redact_text(text)[-_STDERR_TAIL:]
+
+
+def _apply_patch(patch_ref: str, workspace: Path) -> None:
+    """Apply the resolved ``patch_ref`` to the workspace tree with ``git apply -p1``.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` if the ref is unresolvable (via
+            :func:`_resolve_local_ref`) or the patch does not apply (a redacted stderr tail
+            is placed in ``details``); ``MISSING_DEPENDENCY`` if ``git`` is absent.
+    """
+    patch = _resolve_local_ref(patch_ref, kind="patch_ref")
+    if shutil.which("git") is None:
+        raise CategorizedError(
+            "git is required to apply a build patch",
+            category=ErrorCategory.MISSING_DEPENDENCY,
+        )
+    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["git", "apply", "-p1", str(patch)],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise CategorizedError(
+            "patch_ref does not apply against the kernel tree",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"stderr": _redacted_tail(result.stderr)},
+        )
 
 
 class _ValidatorStore(Protocol):

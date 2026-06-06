@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import struct
 import subprocess
 from dataclasses import dataclass, field
@@ -14,8 +15,10 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
+from kdive.providers.local_libvirt import build as build_module
 from kdive.providers.local_libvirt.build import (
     LocalLibvirtBuild,
+    _apply_patch,
     _resolve_local_ref,
     _stage_config,
     parse_gnu_build_id,
@@ -354,3 +357,60 @@ def test_stage_config_missing_ref_is_configuration_error(tmp_path: Path) -> None
     with pytest.raises(CategorizedError) as caught:
         _stage_config(str(tmp_path / "absent.config"), workspace)
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+# --- _apply_patch -------------------------------------------------------------------
+
+_GOOD_PATCH = (
+    "--- a/init/main.c\n+++ b/init/main.c\n@@ -1,2 +1,2 @@\n line1\n-line2\n+line2-patched\n"
+)
+_BAD_PATCH = (
+    "--- a/init/main.c\n+++ b/init/main.c\n@@ -1,2 +1,2 @@\n nomatch1\n-nomatch2\n+nomatch3\n"
+)
+
+
+def _workspace_with_target(tmp_path: Path) -> Path:
+    workspace = tmp_path / "ws"
+    (workspace / "init").mkdir(parents=True)
+    (workspace / "init" / "main.c").write_text("line1\nline2\n")
+    return workspace
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git unavailable")
+def test_apply_patch_applies_clean_diff(tmp_path: Path) -> None:
+    workspace = _workspace_with_target(tmp_path)
+    patch = tmp_path / "fix.patch"
+    patch.write_text(_GOOD_PATCH)
+
+    _apply_patch(str(patch), workspace)
+
+    assert (workspace / "init" / "main.c").read_text() == "line1\nline2-patched\n"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git unavailable")
+def test_apply_patch_bad_diff_is_configuration_error_with_redacted_detail(tmp_path: Path) -> None:
+    workspace = _workspace_with_target(tmp_path)
+    patch = tmp_path / "bad.patch"
+    patch.write_text(_BAD_PATCH)
+
+    with pytest.raises(CategorizedError) as caught:
+        _apply_patch(str(patch), workspace)
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    stderr = caught.value.details["stderr"]
+    assert isinstance(stderr, str)
+    # the raw added patch line is never echoed back through the error detail
+    assert "nomatch3" not in stderr
+
+
+def test_apply_patch_missing_git_is_missing_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace_with_target(tmp_path)
+    patch = tmp_path / "fix.patch"
+    patch.write_text(_GOOD_PATCH)
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: None)
+
+    with pytest.raises(CategorizedError) as caught:
+        _apply_patch(str(patch), workspace)
+    assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
