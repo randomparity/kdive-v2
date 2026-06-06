@@ -280,9 +280,10 @@ class ObjectStore:
         The agent must send the returned ``required_headers`` (the signed
         ``x-amz-checksum-sha256`` and ``x-amz-meta-*`` metadata); S3 rejects a PUT whose
         checksum disagrees with the signed value, and the metadata lands on the object so
-        the later install fetch (`get_artifact`) reads its sensitivity. ``size_bytes`` is
-        recorded by the caller's manifest and capped before this is called; presigned-PUT
-        length enforcement is asserted by the `live_stack` test (ADR-0048 §2).
+        the later install fetch (`get_artifact`) reads its sensitivity. This mints a single
+        PUT (the 5 GiB single-object ceiling on real S3); ``size_bytes`` is recorded by the
+        caller's manifest and capped to that ceiling before this is called. The `live_stack`
+        test asserts the **checksum** binding, not the upload length (ADR-0048 §2).
 
         Raises:
             CategorizedError: presigning fails

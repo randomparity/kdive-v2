@@ -257,6 +257,47 @@ def test_create_upload_rejects_oversize_before_minting(migrated_url: str) -> Non
     asyncio.run(_run())
 
 
+def test_create_upload_rejects_just_over_5gib(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
+            store = _FakeStore()
+            five_gib = 5 * 1024 * 1024 * 1024
+            out = await artifacts_tools.create_upload(
+                pool,
+                _ctx(),
+                owner_kind="run",
+                owner_id=run_id,
+                artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": five_gib + 1}],
+                store=store,
+            )
+        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out[0].data["reason"] == "size_out_of_range"
+        assert store.calls == []  # rejected before minting any presigned PUT
+
+    asyncio.run(_run())
+
+
+def test_create_upload_accepts_exactly_5gib(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
+            store = _FakeStore()
+            five_gib = 5 * 1024 * 1024 * 1024
+            responses = await artifacts_tools.create_upload(
+                pool,
+                _ctx(),
+                owner_kind="run",
+                owner_id=run_id,
+                artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": five_gib}],
+                store=store,
+            )
+        assert responses[0].object_id == f"local/runs/{run_id}/kernel"
+        assert store.calls == [(f"local/runs/{run_id}/kernel", "aaa", five_gib)]
+
+    asyncio.run(_run())
+
+
 def test_create_upload_requires_operator(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -275,6 +316,8 @@ def test_create_upload_requires_operator(migrated_url: str) -> None:
 
 
 def test_create_upload_for_defined_system_mints_rootfs_and_persists(migrated_url: str) -> None:
+    # Seeds DEFINED directly because no producer exists yet (#111); this validates the
+    # System rootfs-upload consumer in isolation until systems.define lands.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await _seed_system(pool, state=SystemState.DEFINED)

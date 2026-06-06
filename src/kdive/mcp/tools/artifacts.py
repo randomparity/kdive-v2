@@ -47,7 +47,9 @@ _BUILD_ARTIFACT_NAMES = frozenset({"kernel", "initrd", "vmlinux"})
 _ROOTFS_NAME = "rootfs"
 _RETENTION_CLASS = "build"
 _DEFAULT_UPLOAD_TTL_SECONDS = 86400
-_DEFAULT_MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024
+# The single presigned PUT caps at 5 GiB on real S3, so a larger declared size would mint
+# a PUT the store rejects mid-upload. Uploads above this need multipart/split — see #112.
+_DEFAULT_MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024
 
 
 def _upload_ttl() -> timedelta:
@@ -111,6 +113,8 @@ async def _owner_accepts_upload(conn: AsyncConnection, owner_kind: str, owner_id
             return False
         parsed = BuildProfile.parse(run.build_profile)
         return isinstance(parsed, ExternalBuildProfile)
+    # Forward-plumbing: nothing produces a DEFINED System yet (no systems.define), so this
+    # System branch is unreachable until the create-without-provision path lands (#111).
     system = await SYSTEMS.get(conn, owner_id)
     return system is not None and system.state is SystemState.DEFINED
 
@@ -225,6 +229,7 @@ async def create_upload(
     if uid is None or owner_kind not in ("run", "system"):
         return [_config_error(owner_id)]
     kind = "runs" if owner_kind == "run" else "systems"
+    # The 'system' arm is forward-plumbing for the DEFINED rootfs-upload lane (#111).
     next_action = "runs.complete_build" if owner_kind == "run" else "systems.provision"
 
     with bind_context(principal=ctx.principal):
