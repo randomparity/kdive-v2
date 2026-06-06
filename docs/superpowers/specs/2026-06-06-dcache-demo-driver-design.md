@@ -43,7 +43,11 @@ Source of record: the `(run_id, "build")` ledger `result["cmdline"]`, for **both
    (`e.g. 'console=ttyS0 dhash_entries=1'`).
 2. The build job payload carries the cmdline: `_enqueue_build` writes
    `{"run_id": …, "cmdline": cmdline}` when `cmdline` is a non-blank string (omitted otherwise, so
-   existing dedup-key and payload shapes are unchanged for the default path).
+   existing dedup-key and payload shapes are unchanged for the default path). **Binding is
+   first-enqueue-wins:** the build dedup key is `{run.id}:build` and `queue.enqueue` is
+   `INSERT … ON CONFLICT (dedup_key) DO NOTHING`, so the cmdline is captured only on the *first*
+   `runs.build` enqueue for a Run; a later `runs.build` with a different cmdline on the same Run is
+   a payload no-op. The runbook calls `runs.build(cmdline=…)` as the Run's first build.
 3. `build_handler` reads `job.payload.get("cmdline")` and, when present, sets
    `result["cmdline"]` before `_finalize_build` writes the ledger row. A rebuild that finds an
    existing ledger row keeps that row (the existing `_existing_build_result` short-circuit) —
@@ -52,7 +56,8 @@ Source of record: the `(run_id, "build")` ledger `result["cmdline"]`, for **both
    `_existing_build_result(conn, run.id)`; `result["cmdline"]` (non-blank `str`) wins, else the
    method default. The `build_profile` read is removed (ADR-0056 §2).
 5. Both call sites — the `install_run` admission gate and `install_handler` — `await` the new
-   signature; both already hold a `conn`.
+   signature; both already hold a `conn`. `install_handler` emits an `info` log of the resolved
+   cmdline so a default-cmdline boot (the false-negative below) is diagnosable from the worker log.
 
 Behavior matrix (`_cmdline_for`):
 
@@ -192,11 +197,17 @@ Three dependencies the driver rests on, made explicit so a reorder cannot quietl
 
 ## Test plan
 
-- `tests/.../test_dcache_demo_profiles.py` (host-free): profile shapes + method resolution + the
-  preflight skip.
+- The demo profile helper is **test-only** glue (not shipped `src/` product code): it lives at
+  `tests/integration/_dcache_demo.py`, imported by both the host-free profile test and the
+  `live_vm` driver.
+- `tests/integration/test_dcache_demo_profiles.py` (host-free): profile shapes + method resolution
+  via `_install_method_for` + the preflight skip.
 - `tests/mcp/test_runs_tools.py`: the rewritten `_cmdline_for` ledger-source tests + a
   `build_run(cmdline=…)`-records-the-ledger test (against the disposable Postgres) and the
   default-when-absent path.
 - `tests/integration/test_dcache_demo.py`: the `@pytest.mark.live_vm` A/B driver (skips in CI).
-- Regenerate the agent-facing tool guide snapshot for the new `runs.build` `cmdline` param and
-  correct `docs/guide/reference/runs.md`.
+- The new `runs.build` `cmdline` param needs a description (enforced in CI by
+  `tests/mcp/test_tool_docs.py::test_every_parameter_has_a_description`) and `runs.build` a covering
+  test (`test_implemented_tools_have_a_covering_test`); correct `docs/guide/reference/runs.md`'s
+  "inert until that wiring lands" note, and regenerate the ADR-0047 generated tool guide only if a
+  committed copy exists.
