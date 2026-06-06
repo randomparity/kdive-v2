@@ -111,11 +111,26 @@ it through the host `python3`, which may predate the project's venv.
    fixtures test require: a pre-existing destination → log a message containing `idempotent` and
    exit 0 before requiring any tool. The guard runs first (after arg parsing), so a second run on
    an existing image is a no-op even with an empty `PATH`.
-2. **Managed-key path.** v1 invoked `kdive.prereqs.managed_ssh_key` from a `src` layout under the
+   The guard is **presence-only**: any existing file at the destination is treated as a finished
+   image — it does *not* validate the qcow2. A build killed mid-Stage-2 can leave a truncated or
+   zero-byte file; the documented recovery is **delete the destination and re-run** (a partial
+   image is never auto-repaired). The `[[ -f "$dest" ]]` test follows symlinks, so a symlinked
+   destination pointing at a regular file short-circuits to the `idempotent` exit before the
+   Stage-0 symlink refusal (change 2) is reached; this is safe because the guard performs no write,
+   but it means the symlink refusal only governs the *build* path, not the no-op path.
+2. **Early output-dir preflight (new, before Stage 1).** v1 only `mkdir -p`s the output parent in
+   Stage 2 — *after* the minutes-long `virt-builder` run — so a missing or unwritable output
+   directory (the §3.3 operational obligation) wastes the whole build before failing. The port adds
+   a **Stage-0 preflight** that runs after the idempotency guard and before any libguestfs tool:
+   refuse a symlinked destination, canonicalize the parent, and assert the output directory exists
+   and is writable (creating it when its own parent is writable). It fails fast with an actionable
+   message naming `KDIVE_ROOTFS` and the host-guide pre-prepare step. This subsumes v1's late
+   `mkdir -p`; the post-build symlink re-assertion is retained.
+3. **Managed-key path.** v1 invoked `kdive.prereqs.managed_ssh_key` from a `src` layout under the
    repo root. The rewrite's package is `src/kdive/prereqs/`; the builder sets
    `PYTHONPATH="${REPO_ROOT}/src"` and invokes `python3 -m kdive.prereqs.managed_ssh_key
    --ensure-public-key`. `KDIVE_ROOTFS_AUTHORIZED_KEY` still short-circuits the helper.
-3. **Name retained.** The file stays `build-guest-image.sh` (overwrite in place) so the fixtures
+4. **Name retained.** The file stays `build-guest-image.sh` (overwrite in place) so the fixtures
    test, the gated integration preflight, and the runbooks need no rename. The header comment is
    rewritten to describe the real two-stage rootfs build (the old "kdump scaffold" comment is
    removed — no stale prose).
@@ -152,6 +167,24 @@ the path for a host-built artifact today.
 - **Gating is unchanged.** The real build is exercised only by the gated `live_vm` tier; nothing
   in this issue un-gates or widens an existing gate.
 
+### 6.1 Manual boot-to-marker acceptance (runnable check for acceptance #1)
+
+Acceptance #1 is a host-and-network-dependent boot that does not run in CI; it is verified once,
+by hand, on this host. The check uses a **good** kernel and a **clean** cmdline — *not* the demo's
+`dhash_entries=1` cmdline, which crashes in `__d_lookup()` before userspace and so never reaches
+the marker (the demo's failure signal is the separate G4 console-crash path, not this readiness
+marker). Procedure:
+
+1. Build: `KDIVE_ROOTFS=/var/lib/kdive/rootfs/minimal.qcow2 scripts/live-vm/build-guest-image.sh`.
+2. Direct-kernel boot under `qemu:///system` with a known-good Linux 7.0 `bzImage`, no initrd,
+   `root=/dev/vda console=ttyS0`, the console teed to a file (the same layout ADR-0030 boots).
+3. **Pass signal:** the literal line `kdive-ready` appears on the `ttyS0` console log within the
+   boot-timeout window. **Fail signals:** a `login:` prompt with no preceding `kdive-ready`
+   (unit did not fire), or a `local-fs.target` stall (a layout/fstab regression).
+
+This procedure is the falsifiable definition of "boots to the `kdive-ready` marker"; record its
+result in the PR.
+
 ## 7. Pre-built-image-catalog direction (recorded, not built)
 
 The long-term target is a **catalog of pre-built images**, with local `path`/`upload` as the
@@ -168,7 +201,12 @@ direction stays open without a schema change now:
 ## 8. Acceptance (maps to #124)
 
 1. Builder runs unprivileged on this host and emits a qcow2 that boots under `qemu:///system` to
-   the `kdive-ready` console marker.
+   the `kdive-ready` console marker — verified by the §6.1 manual procedure. **Host prerequisites
+   for this real build:** the libguestfs suite (`virt-builder`, `virt-tar-out`, `virt-make-fs`,
+   `guestfish`) + `qemu-img`, and **network reachability** (or a pre-seeded `virt-builder`
+   template cache) so `virt-builder fedora-43` can fetch the Fedora template on first use. The
+   builder fails fast with an actionable message when a tool or the `fedora-43` template index
+   entry is absent.
 2. `build-guest-image.sh` is replaced (not a stub); the produced image is referenceable via
    `rootfs: {kind: "path"}` / `$KDIVE_GUEST_IMAGE`.
 3. Host-side image labeling/readability is documented.
