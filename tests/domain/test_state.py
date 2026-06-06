@@ -52,7 +52,11 @@ LEGAL: dict[type[StrEnum], dict[StrEnum, set[StrEnum]]] = {
         AllocationState.FAILED: set(),
     },
     SystemState: {
-        SystemState.DEFINED: {SystemState.PROVISIONING, SystemState.FAILED},
+        SystemState.DEFINED: {
+            SystemState.PROVISIONING,
+            SystemState.TORN_DOWN,
+            SystemState.FAILED,
+        },
         SystemState.PROVISIONING: {
             SystemState.READY,
             SystemState.FAILED,

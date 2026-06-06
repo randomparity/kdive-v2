@@ -43,8 +43,15 @@ as `provisioning`**. The issue body ("Create the `systems` row (`provisioning`) 
 and the parent spec's sequence diagram ("insert System (provisioning) + enqueue provision
 job") both state this; the acceptance line "drives `defined → provisioning → ready`"
 describes the abstract machine, not the materialized rows (the same way the Allocation
-machine names `requested` though no row is ever written in it). `defined` is reserved for
-a future create-without-provision path (M1 reprovision); M0 never writes it.
+machine names `requested` though no row is ever written in it). M0's `systems.provision`
+never writes `defined`.
+
+> **Amended (#111).** `defined` is no longer unmaterialized. The create-without-provision
+> path *is* built — `systems.define` (decision 10) inserts a System at `defined` for the
+> rootfs-upload lane (ADR-0048 §5), and `systems.provision` gains a `defined → provisioning`
+> admission branch that consumes it. This decision's "insert directly at `provisioning`"
+> still governs the **one-step** `systems.provision` *create* lane (no prior `define`); only
+> the deliberate upload lane materializes `defined`.
 
 The insert at `provisioning` is what makes the **row-first ordering** of
 [ADR-0021](0021-reconciler-loop-drift-repair.md) hold: the non-terminal `systems` row
@@ -216,6 +223,60 @@ reconciler consumes (`teardown` of an orphaned System) is fully live after #16; 
 *leaked-domain* repair (a domain whose row is gone entirely) stays a `NullReaper` no-op
 until wired, unchanged from today.
 
+### 10. `systems.define` materializes `defined`; `systems.provision` admits it (amended, #111)
+
+The rootfs-upload lane (ADR-0048 §5) needs a System in `defined` as its pre-provision
+upload window: create the System, upload a rootfs qcow2 to its object key, then provision —
+at which point the plane commits the uploaded rootfs. #16 left `defined` unmaterialized
+(decision 1) because M0 had no such window; #111 adds the producer.
+
+- **`systems.define(allocation_id, profile)`** (operator), in one transaction under
+  `PROJECT → ALLOCATION` locks: validate the profile (`upload` rootfs is admitted here —
+  this is the one tool that opens an upload window), find-or-return the allocation's System
+  (an existing `defined` System is returned idempotently; any other state is a
+  `configuration_error` — one System per Allocation), enforce `max_concurrent_systems`
+  (a `defined` System occupies a slot), insert the System at `defined` storing the profile,
+  flip the Allocation `granted → active`, and audit both transitions. It returns a **System
+  envelope**, not a job handle — `define` does no provider work, so there is nothing to
+  poll.
+
+  `granted → active` flips **at define**, for the same reason decision 2 flips it at
+  provision: a System exists on the host slot the instant its row is written, so `active`
+  (and the allocation lock that serializes a concurrent `allocations.release`) must attach
+  to that instant — not to a later provision. `provision`-from-`defined` therefore leaves
+  the already-`active` allocation untouched. Billing's `active_started_at` still stamps only
+  when the first System reaches `ready` (ADR-0007 §3), so a never-provisioned `defined`
+  System opens no billing interval.
+
+- **`systems.provision`** gains a `defined → provisioning` **admission** branch: when a
+  `defined` System exists for the allocation, transition it to `provisioning` under the
+  allocation lock and enqueue the `provision` job. The **stored** profile is provisioned
+  (decision 7 — the row is the profile's system of record); `provision`'s `profile` argument
+  becomes optional and is ignored on this branch. The one-step *create* lane (no prior
+  `define`) still inserts directly at `provisioning` (decision 1). The handler is unchanged
+  — it requires `provisioning` on entry, now reachable from either `defined` or a fresh
+  insert.
+
+The `upload`-rootfs boundary fence (#110, `validate_rootfs_reference` rejecting `kind:upload`
+"until #111") is split: static well-formedness (url/catalog checks) stays in
+`validate_rootfs_reference` so the worker's `render_domain_xml` renders an `upload` rootfs;
+a separate **lane** guard rejects `upload` only where there is no upload window — the
+`systems.provision` *create* branch and `systems.reprovision`. `define` admits it.
+
+Because `define` makes `defined` a **durable, abandonable** state (an operator may sit in it,
+its Allocation may be released, its lease may expire), a `DEFINED` System must be
+*terminable*. This issue therefore **adds the `defined → torn_down` edge** — additively, the
+same shape and reasoning as decision 5's `provisioning → torn_down` (a synchronously-created
+object must be terminable before it advances; routing through `failed` would stamp an
+unearned failure signal). Without it, `teardown_handler`'s `update_state(... torn_down)`
+raises `IllegalTransition` for a `DEFINED` System, the teardown job dead-letters, and the
+abandoned System leaks its `max_concurrent_systems` slot indefinitely. A `DEFINED` System
+has no domain, so the handler's best-effort `teardown(domain_name)` is a safe no-op
+(`VIR_ERR_NO_DOMAIN` swallowed). Correspondingly, `artifacts.create_upload` admits a System
+upload only when the System is `DEFINED` **and** its stored profile is `upload`-kind, so an
+upload is never minted against a System that would never commit it (which would orphan the
+object past the upload reaper's `state = 'defined'` predicate once the System advanced).
+
 ## Consequences
 
 - The walking-skeleton path gains `systems.provision`/`.get`/`.teardown`; provisioning is
@@ -232,16 +293,21 @@ until wired, unchanged from today.
   (discovery); a change to it is a single-constant change with both sides' tests guarding it.
 - The reconciler's *leaked-domain* repair remains dormant in production until a later issue
   injects a real reaper (decision 8); this is stated, not silently assumed.
+- `defined` becomes a materialized state via `systems.define` (decision 10, #111); the
+  rootfs-upload lane (ADR-0048 §5) is live end-to-end, and the `upload`-rootfs consumers
+  shipped on #110 gain their producer.
 
 ## Alternatives considered
 
-- **Insert the System as `defined`, then transition `defined → provisioning` in the tool.**
-  Rejected: it materializes a `defined` row that exists for microseconds inside one
-  transaction and writes a second audit row for a transition no observer can interleave on
-  — the same reasoning that made admission skip `requested` (decision 1). The abstract
-  machine keeps `defined` for a create-without-provision path. (That path was never built —
-  M1 shipped reprovision-in-place, not create-without-provision — so nothing produces a
-  `defined` System today; the producer is tracked by #111.)
+- **Insert the System as `defined`, then transition `defined → provisioning` in the tool
+  (for the *one-step* `systems.provision` create lane).** Rejected for the one-step lane: it
+  materializes a `defined` row that exists for microseconds inside one transaction and
+  writes a second audit row for a transition no observer can interleave on — the same
+  reasoning that made admission skip `requested` (decision 1). This is **not** the same as
+  the deliberate `systems.define` producer (decision 10): there the `defined` row is
+  durable and observer-visible (an operator uploads a rootfs against it before any
+  provision), so materializing it is the point, not waste. The one-step create lane keeps
+  inserting directly at `provisioning`.
 - **Create the System row inside the handler (key dedup on the System).** Rejected: there
   is no System id before the row exists, so the dedup key could not be `system_id`; and a
   tool that returns a job handle for a System the agent cannot yet `systems.get` is worse

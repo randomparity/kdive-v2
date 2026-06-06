@@ -40,7 +40,7 @@ from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     register_local_libvirt_resource,
 )
-from kdive.security.rbac import Role
+from kdive.security.rbac import AuthorizationError, Role
 from kdive.store.objectstore import ObjectStore, artifact_key
 from tests.providers.local_libvirt.conftest import FakeLibvirtConn
 
@@ -736,11 +736,10 @@ def test_provision_handler_concurrent_same_job_ready_does_not_tear_down(migrated
 
 # --- upload-rootfs artifacts commit (ADR-0048 §6) ------------------------------------------
 #
-# These drive provision_handler with a directly-seeded upload profile, BYPASSING the tool
-# boundary. As of the #111 gate, validate_rootfs_reference rejects kind:upload, so no real
-# tool can persist an upload profile — this commit path is unreachable end-to-end until #111
-# lands the DEFINED producer. The tests stay to lock the worker-side contract for that work;
-# their green status is NOT a shipping upload-rootfs capability.
+# These drive provision_handler with a directly-seeded PROVISIONING upload profile to unit-
+# test the worker-side provisioning->ready commit in isolation. The full lane is reachable
+# end-to-end via systems.define + artifacts.create_upload + systems.provision (#111); see
+# tests/integration/test_systems_define_upload_provision.py for that reachability proof.
 
 
 def _upload_profile() -> dict[str, Any]:
@@ -1366,3 +1365,271 @@ def test_register_handlers_binds_provision_teardown_and_reprovision() -> None:
     assert registry.get(JobKind.PROVISION) is not None
     assert registry.get(JobKind.TEARDOWN) is not None
     assert registry.get(JobKind.REPROVISION) is not None
+
+
+def test_reprovision_rejects_upload_rootfs(migrated_url: str) -> None:
+    # A ready System has no upload window; an upload-kind reprovision is a fail-fast
+    # configuration_error (#111).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
+            profile = _upload_profile()
+            profile["provider"]["local-libvirt"]["destructive_ops"] = ["reprovision"]
+            resp = await systems_tools.reprovision_system(
+                pool, _ctx(), system_id=sys_id, profile=profile
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+# --- systems.define ------------------------------------------------------------------------
+
+
+async def _define(pool: AsyncConnectionPool, ctx: RequestContext, alloc_id: str, profile):
+    return await systems_tools.define_system(pool, ctx, allocation_id=alloc_id, profile=profile)
+
+
+def test_define_inserts_defined_system_and_activates_allocation(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await _define(pool, _ctx(), alloc_id, _upload_profile())
+            assert resp.status == "defined"
+            assert resp.suggested_next_actions == ["artifacts.create_upload", "systems.provision"]
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state, allocation_id FROM systems")
+                sys_row = await cur.fetchone()
+                await cur.execute("SELECT state FROM allocations WHERE id = %s", (alloc_id,))
+                alloc_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM audit_log WHERE transition IN "
+                    "('->defined', 'granted->active')"
+                )
+                audit_row = await cur.fetchone()
+        assert sys_row is not None and sys_row["state"] == "defined"
+        assert str(sys_row["allocation_id"]) == alloc_id
+        assert alloc_row is not None and alloc_row["state"] == "active"
+        assert audit_row is not None and audit_row["n"] == 2
+
+    asyncio.run(_run())
+
+
+def test_define_is_idempotent(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            first = await _define(pool, _ctx(), alloc_id, _upload_profile())
+            second = await _define(pool, _ctx(), alloc_id, _upload_profile())
+            assert first.object_id == second.object_id
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+                await cur.execute("SELECT state FROM allocations WHERE id = %s", (alloc_id,))
+                alloc_row = await cur.fetchone()
+        assert sys_n is not None and sys_n["n"] == 1  # one System
+        assert alloc_row is not None and alloc_row["state"] == "active"  # not re-flipped
+
+    asyncio.run(_run())
+
+
+def test_define_non_granted_allocation_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            async with pool.connection() as conn:
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.RELEASING)
+            resp = await _define(pool, _ctx(), alloc_id, _upload_profile())
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == "releasing"
+
+    asyncio.run(_run())
+
+
+def test_define_existing_non_defined_system_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            await _seed_system(pool, alloc_id, SystemState.READY)
+            resp = await _define(pool, _ctx(), alloc_id, _upload_profile())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == "ready"
+        assert sys_n is not None and sys_n["n"] == 1  # no second System minted
+
+    asyncio.run(_run())
+
+
+def test_define_over_quota_is_quota_exceeded(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool, systems_quota=0)
+            resp = await _define(pool, _ctx(), alloc_id, _upload_profile())
+        assert resp.status == "error"
+        assert resp.error_category == "quota_exceeded"
+
+    asyncio.run(_run())
+
+
+def test_define_requires_operator(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            with pytest.raises(AuthorizationError):
+                await _define(pool, _ctx(role=None), alloc_id, _upload_profile())
+
+    asyncio.run(_run())
+
+
+def test_define_foreign_allocation_is_not_found(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await _define(pool, _ctx(projects=("other",)), alloc_id, _upload_profile())
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+# --- systems.provision admits a DEFINED System ---------------------------------------------
+
+
+def test_provision_admits_defined_system_without_profile(migrated_url: str) -> None:
+    # systems.provision(allocation_id) with no profile drives an existing DEFINED System
+    # defined -> provisioning and enqueues its provision job (#111).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
+            resp = await systems_tools.provision_system(
+                pool, _ctx(), allocation_id=alloc_id, profile=None
+            )
+            assert resp.status == "queued"
+            assert resp.data["system_id"] == sys_id
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+                await cur.execute("SELECT state FROM allocations WHERE id = %s", (alloc_id,))
+                alloc_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM audit_log WHERE transition = 'defined->provisioning'"
+                )
+                audit_row = await cur.fetchone()
+        assert sys_row is not None and sys_row["state"] == "provisioning"
+        assert alloc_row is not None and alloc_row["state"] == "active"  # untouched (set at define)
+        assert audit_row is not None and audit_row["n"] == 1
+
+    asyncio.run(_run())
+
+
+def test_provision_admit_refuses_released_allocation(migrated_url: str) -> None:
+    # A DEFINED System whose lease was released (but not yet reaped) must not be admitted to
+    # provisioning — symmetric with the create lane's granted check (#111 review).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
+            async with pool.connection() as conn:
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.RELEASING)
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.RELEASED)
+            resp = await systems_tools.provision_system(
+                pool, _ctx(), allocation_id=alloc_id, profile=None
+            )
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE dedup_key = %s",
+                    (f"{alloc_id}:provision",),
+                )
+                job_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == "released"
+        assert sys_row is not None and sys_row["state"] == "defined"  # not advanced
+        assert job_row is not None and job_row["n"] == 0  # no provision job enqueued
+
+    asyncio.run(_run())
+
+
+def test_provision_create_lane_rejects_upload(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await systems_tools.provision_system(
+                pool, _ctx(), allocation_id=alloc_id, profile=_upload_profile()
+            )
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert sys_n is not None and sys_n["n"] == 0  # fail fast, no System inserted
+
+    asyncio.run(_run())
+
+
+def test_provision_create_lane_requires_profile(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await systems_tools.provision_system(
+                pool, _ctx(), allocation_id=alloc_id, profile=None
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+# --- teardown of a DEFINED System (defined -> torn_down, #111) ------------------------------
+
+
+def test_teardown_handler_drives_defined_system_to_torn_down(migrated_url: str) -> None:
+    # An abandoned DEFINED System (no domain) is terminable via defined -> torn_down (#111).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
+            job = await _enqueue_teardown(pool, sys_id)
+            prov = _FakeProvisioning()
+            async with pool.connection() as conn:
+                await systems_tools.teardown_handler(conn, job, prov)
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+        assert sys_row is not None and sys_row["state"] == "torn_down"
+        assert prov.torn_down == [f"kdive-{sys_id}"]  # best-effort destroy of the absent domain
+
+    asyncio.run(_run())
+
+
+def test_reconciler_gc_tears_down_defined_orphan(migrated_url: str) -> None:
+    # Releasing the allocation orphans its DEFINED System; the reconciler enqueues a teardown
+    # the handler can now complete (defined -> torn_down), freeing the quota slot (#111).
+    from kdive.reconciler.loop import _repair_orphaned_systems
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
+            async with pool.connection() as conn:
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.RELEASING)
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.RELEASED)
+                enqueued = await _repair_orphaned_systems(conn)
+            assert enqueued == 1
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE dedup_key = %s", (f"{sys_id}:teardown",)
+                )
+                job_n = await cur.fetchone()
+        assert job_n is not None and job_n["n"] == 1
+
+    asyncio.run(_run())

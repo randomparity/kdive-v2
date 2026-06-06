@@ -60,7 +60,9 @@ class SystemState(StrEnum):
 
     M1 reprovision-in-place (ADR-0038) cycles a ready System through
     ``ready → reprovisioning → ready`` on the same row; an interrupted reprovision
-    fails to ``reprovisioning → failed``.
+    fails to ``reprovisioning → failed``. ``defined → torn_down`` (ADR-0025 decision 10,
+    #111) lets an abandoned create-without-provision System be torn down without first
+    advancing to ``provisioning``.
     """
 
     DEFINED = "defined"
@@ -147,7 +149,9 @@ _TRANSITIONS: dict[type[StrEnum], dict[StrEnum, frozenset[StrEnum]]] = {
         AllocationState.FAILED: frozenset(),
     },
     SystemState: {
-        SystemState.DEFINED: frozenset({SystemState.PROVISIONING, SystemState.FAILED}),
+        SystemState.DEFINED: frozenset(
+            {SystemState.PROVISIONING, SystemState.TORN_DOWN, SystemState.FAILED}
+        ),
         SystemState.PROVISIONING: frozenset(
             {SystemState.READY, SystemState.FAILED, SystemState.TORN_DOWN}
         ),

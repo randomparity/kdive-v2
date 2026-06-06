@@ -18,6 +18,7 @@ from kdive.security.rbac import Role
 
 # Re-export the disposable-Postgres fixtures so the integration tests can request them.
 from tests.db.conftest import migrated_url, pg_conn, postgres_url  # noqa: F401
+from tests.store.conftest import minio_store  # noqa: F401
 
 
 @asynccontextmanager

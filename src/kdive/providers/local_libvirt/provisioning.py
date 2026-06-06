@@ -105,9 +105,9 @@ def resolve_rootfs_path(rootfs: RootfsSource, *, tenant: str, system_id: UUID) -
     if rootfs.kind == "path":
         return rootfs.path
     if rootfs.kind == "upload":
-        # Forward-plumbing for the worker: the tool boundary (validate_rootfs_reference)
-        # rejects an upload reference until the DEFINED producer lands (#111), so no
-        # persisted upload profile reaches this branch yet.
+        # The System-owned uploaded object's local staging path. The object is committed
+        # (its artifacts row written) at provisioning->ready by _commit_uploaded_rootfs;
+        # staging the bytes down to this path is the install/boot spec's concern (ADR-0048 §7).
         return f"{_ROOTFS_DIR}/{tenant}-systems-{system_id}-rootfs.qcow2"
     if rootfs.kind == "url":
         if not _SHA256.match(rootfs.sha256):
@@ -127,26 +127,20 @@ def resolve_rootfs_path(rootfs: RootfsSource, *, tenant: str, system_id: UUID) -
 
 
 def validate_rootfs_reference(rootfs: RootfsSource) -> None:
-    """Validate a rootfs reference's resolvability (a synchronous tool-boundary check).
+    """Validate a rootfs reference's *static* well-formedness (a synchronous boundary check).
 
     Mirrors :func:`resolve_rootfs_path`'s static checks (url sha256 format, catalog-name
-    existence) but needs no ``system_id`` — so ``systems.provision`` rejects a bad reference
-    synchronously as ``configuration_error`` instead of dead-lettering the provision job.
-    ``path`` needs no static check. ``upload`` is rejected here until its producer lands
-    (#111): nothing creates the ``DEFINED`` System that opens a rootfs upload window, so an
-    ``upload`` reference can never have a staged object — fail fast at the boundary rather
-    than insert a System and dead-letter (or leak a started domain) at commit time.
+    existence) but needs no ``system_id`` — so the provisioning tool boundary and the worker's
+    ``render_domain_xml`` reject a syntactically broken reference as ``configuration_error``
+    instead of dead-lettering the provision job. ``path``/``upload`` carry nothing to check;
+    an ``upload`` is well-formed here so the worker can render an admitted ``DEFINED`` System's
+    upload rootfs. Lane admissibility (an ``upload`` needs a prior upload window) is a separate
+    concern — see :func:`reject_rootfs_without_upload_window`.
 
     Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` for a malformed url checksum, unknown
-            catalog name, or the not-yet-available ``upload`` kind.
+        CategorizedError: ``CONFIGURATION_ERROR`` for a malformed url checksum or unknown
+            catalog name.
     """
-    if rootfs.kind == "upload":
-        raise CategorizedError(
-            "rootfs 'upload' kind is not yet available (no create-without-provision path); "
-            "use 'path', 'url', or 'catalog' (#111)",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
     if rootfs.kind == "url" and not _SHA256.match(rootfs.sha256):
         raise CategorizedError(
             "rootfs url sha256 must be 'sha256:<64-hex>'",
@@ -157,6 +151,27 @@ def validate_rootfs_reference(rootfs: RootfsSource) -> None:
             f"unknown rootfs catalog name: {rootfs.name}",
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"name": rootfs.name},
+        )
+
+
+def reject_rootfs_without_upload_window(rootfs: RootfsSource) -> None:
+    """Reject an ``upload`` rootfs in a lane that has no pre-provision upload window.
+
+    An ``upload`` rootfs resolves a System-owned object that exists only after
+    ``systems.define`` opens an upload window and the agent PUTs it (ADR-0048 §5). The
+    one-step ``systems.provision`` *create* lane and ``systems.reprovision`` have no such
+    window, so an ``upload`` reference there can never have a staged object — fail fast at the
+    boundary rather than insert/replace and dead-letter (or leak a started domain) at commit.
+    ``define`` and the worker do **not** call this guard.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` for an ``upload`` rootfs.
+    """
+    if rootfs.kind == "upload":
+        raise CategorizedError(
+            "rootfs 'upload' kind requires systems.define + artifacts.create_upload first; "
+            "use 'path', 'url', or 'catalog' for a one-step provision",
+            category=ErrorCategory.CONFIGURATION_ERROR,
         )
 
 

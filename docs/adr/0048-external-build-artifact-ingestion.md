@@ -99,13 +99,16 @@ reference is validated when resolved at provisioning and attached by the existin
 provisioning plane. This matches the "rootfs image or URL" requirement and keeps the
 build/provisioning boundary intact.
 
-> **Note.** The `upload` source kind awaits its producer: it needs a `DEFINED` System (the
-> pre-provision upload window), and nothing creates a `DEFINED` System yet — the
-> create-without-provision path (`systems.define`) is tracked by #111. Until then the
-> provisioning tool boundary (`validate_rootfs_reference`) rejects an `upload` reference
-> (fail-fast `configuration_error`, no dead-lettered job or leaked domain); the worker-side
-> resolver and commit consumers remain as forward-plumbing. The `path`/`url`/`catalog` kinds
-> are unaffected and usable today.
+> **Note (resolved by #111).** The `upload` source kind needs a `DEFINED` System as its
+> pre-provision upload window. That producer now exists — `systems.define`
+> ([ADR-0025](0025-provisioning-plane-libvirt.md) decision 10) inserts a System at `defined`
+> and flips its Allocation `granted → active`; `artifacts.create_upload`'s System branch
+> opens the window; `systems.provision` then admits the `DEFINED` System
+> (`defined → provisioning`) and the handler commits the uploaded rootfs. The boundary
+> `upload` rejection is no longer blanket: `validate_rootfs_reference` accepts a well-formed
+> `upload` reference (so the worker renders it), and a `configuration_error` fail-fast is
+> kept only for the lanes with no upload window — the one-step `systems.provision` *create*
+> lane and `systems.reprovision`. The `path`/`url`/`catalog` kinds are unchanged.
 
 ### 6. Orphaned uploads are prefix-reaped, no row state
 

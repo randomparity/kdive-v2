@@ -76,3 +76,5 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0044](0044-mcp-wire-harness-oidc-token-issuance.md) | MCP-over-HTTP wire harness + OIDC token issuance; closes ADR-0042 §3's claim-shape gate (M1.2) | Proposed |
 | [0045](0045-spine-driver-capability-grant-phase-naming.md) | Spine driver: out-of-band destructive-capability grant + phase-failure naming contract (M1.2, refines 0042 §4) | Proposed |
 | [0046](0046-spine-report-phase-accounting-assertions-artifact.md) | Spine `report` phase: accounting assertions + report artifact (M1.2, refines 0042 §6) | Proposed |
+| [0047](0047-agent-facing-tool-guide-generation.md) | Agent-facing tool-guide generation | Proposed |
+| [0048](0048-external-build-artifact-ingestion.md) | External-build artifact ingestion: agent uploads, no server-side make (amended by #111) | Proposed |

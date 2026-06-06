@@ -32,6 +32,7 @@ from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
+from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.security.rbac import Role, require_role
 from kdive.store.objectstore import (
     PresignedUpload,
@@ -113,10 +114,13 @@ async def _owner_accepts_upload(conn: AsyncConnection, owner_kind: str, owner_id
             return False
         parsed = BuildProfile.parse(run.build_profile)
         return isinstance(parsed, ExternalBuildProfile)
-    # Forward-plumbing: nothing produces a DEFINED System yet (no systems.define), so this
-    # System branch is unreachable until the create-without-provision path lands (#111).
+    # A System opens a rootfs-upload window only in DEFINED with an upload-kind rootfs;
+    # the provisioning plane commits it at provisioning->ready (#111, ADR-0048 §5/§6).
     system = await SYSTEMS.get(conn, owner_id)
-    return system is not None and system.state is SystemState.DEFINED
+    if system is None or system.state is not SystemState.DEFINED:
+        return False
+    parsed = ProvisioningProfile.parse(system.provisioning_profile)
+    return parsed.provider.local_libvirt.rootfs.kind == "upload"
 
 
 async def _owner_project(conn: AsyncConnection, kind: str, owner_id: UUID) -> str | None:
@@ -229,7 +233,8 @@ async def create_upload(
     if uid is None or owner_kind not in ("run", "system"):
         return [_config_error(owner_id)]
     kind = "runs" if owner_kind == "run" else "systems"
-    # The 'system' arm is forward-plumbing for the DEFINED rootfs-upload lane (#111).
+    # The 'system' arm is the DEFINED rootfs-upload lane: create the window with
+    # systems.define, upload here, then systems.provision admits it and commits the rootfs.
     next_action = "runs.complete_build" if owner_kind == "run" else "systems.provision"
 
     with bind_context(principal=ctx.principal):
