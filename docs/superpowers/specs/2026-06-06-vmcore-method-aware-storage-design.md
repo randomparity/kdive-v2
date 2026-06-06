@@ -49,11 +49,17 @@ guarantees ≤1 raw row, so each reader resolves an unambiguous core with no met
 
 ### 3. Method-aware idempotency — the capture handler (`vmcore.py`)
 
-A small helper parses the method from a raw key:
+A small helper parses the method from a raw key. It **fails fast** on a key that carries no
+`/vmcore-{method}` segment: the producer only ever writes method-suffixed keys, so a bare `vmcore`
+key is a real inconsistency, not a silent "different method" (which would wedge the System's
+capture path with a garbage `existing_method`). Bare `vmcore` keys are unsupported post-rename.
 
 ```
 def _captured_method(object_key: str) -> str:   # '.../vmcore-host_dump' -> 'host_dump'
-    return object_key.rsplit("/vmcore-", 1)[-1]
+    head, sep, method = object_key.rpartition("/vmcore-")
+    if not sep or not method:
+        raise CategorizedError("malformed vmcore object key", INFRASTRUCTURE_FAILURE, ...)
+    return method
 ```
 
 `_precheck_system` and `_finalize_capture` take the job's `method` and, on finding an existing raw
@@ -61,9 +67,31 @@ core, branch:
 
 - existing method **==** requested → return the existing key (idempotent re-dispatch; unchanged).
 - existing method **!=** requested → raise `CategorizedError(CONFIGURATION_ERROR)` with
-  `details={system_id, existing_method, requested_method}`. The worker dead-letters the job; the
-  agent learns from the job's failure state (no silent substitution). Enforced under the existing
-  per-System advisory lock, so two racing different-method jobs resolve to one winner + one reject.
+  `details={system_id, existing_method, requested_method}`.
+
+The reject lives in **both** places, deliberately:
+
+- **`_precheck_system`** (before the slow `capture()` seam) rejects the common case **orphan-free**
+  — no bytes are written to the object store because `capture()` is never called.
+- **`_finalize_capture`** (after `capture()`, under the lock) is the **race backstop**: post-#115,
+  two different-method jobs can both pass precheck (no core yet), both run `capture()`, and the
+  loser's finalize re-check then rejects. The loser's already-written object is orphaned — see
+  "Object-store orphan" below. This is the same shape as the existing same-method post-capture
+  race; the per-System advisory lock still guarantees exactly one winner.
+
+The agent-facing signal is the job's recorded `error_category` (`configuration_error`) — the same
+mechanism every async handler failure uses. The `details` (which method) are carried on the
+`CategorizedError` for logs/operators only; `queue.fail` persists the **category**, not the
+details (see ADR-0050 Decision 4). M0 satisfies the issue's "fails" branch with this typed
+failure; the richer synchronous "explains" arrives with the #115 admission fast-path.
+
+### Object-store orphan (accepted)
+
+The race backstop above leaves the loser's captured object unreferenced (its row is never
+inserted). No inline cleanup is added: the object carries `retention_class="vmcore"` like any core
+and is reaped by the existing retention/reconciler sweep, and the case is only reachable post-#115
+under genuine concurrency. This matches the pre-existing same-method race; this change does not
+introduce a new *kind* of leak, only a second trigger for the same one.
 
 ### 4. `vmcore.list` redacted filter (`vmcore.py`)
 
@@ -81,8 +109,12 @@ Redacted keys are now `…/vmcore-{method}-redacted`. The list filter changes fr
   returns the raw key.
 - **reader continuity:** `postmortem.crash` and `introspect.from_vmcore` resolve the
   method-suffixed raw core (fixtures updated `vmcore` → `vmcore-host_dump`).
-- **redaction guard:** the surface-wide guard still finds no raw key in any read response, updated
-  for the new raw-key shape.
+- **redaction guard (must stay non-vacuous):** the existing guard asserts
+  `not key.endswith("/vmcore")` — after the rename **no** key ends in `/vmcore`, so that assertion
+  becomes a tautology and silently stops protecting. Replace it with a check against the *new* raw
+  shape: a raw core is any key with a `/vmcore-` segment that does **not** end in `-redacted`;
+  assert no such key appears in any read response.
+- **malformed key:** `_captured_method` raises on a bare `vmcore` key (no `/vmcore-` segment).
 
 ## Out of scope
 
