@@ -99,6 +99,11 @@ reference is validated when resolved at provisioning and attached by the existin
 provisioning plane. This matches the "rootfs image or URL" requirement and keeps the
 build/provisioning boundary intact.
 
+> **Note.** The `upload` source kind awaits its producer: it is only reachable from a
+> `DEFINED` System (the pre-provision upload window), and nothing creates a `DEFINED` System
+> yet — the create-without-provision path (`systems.define`) is tracked by #111. The
+> `path`/`url`/`catalog` kinds are unaffected and usable today.
+
 ### 6. Orphaned uploads are prefix-reaped, no row state
 
 Direct presigned upload separates the object write (done by the agent) from the

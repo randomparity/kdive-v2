@@ -382,6 +382,8 @@ async def _repair_leaked_domains(conn: AsyncConnection, reaper: InfraReaper) -> 
     return reaped
 
 
+# The "systems"/"defined" arm is forward-plumbing: nothing produces a DEFINED System yet
+# (#111), so only the "runs"/"created" arm reaps in practice today.
 _UPLOAD_PRE_FINALIZE = {"runs": "created", "systems": "defined"}
 
 

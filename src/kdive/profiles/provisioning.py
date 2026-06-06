@@ -56,6 +56,8 @@ class _PathRootfs(_ProfileBase):
 
 
 class _UploadRootfs(_ProfileBase):
+    # Forward-plumbing: this kind is only reachable from a DEFINED System, which nothing
+    # produces yet (#111). path/url/catalog are usable today.
     kind: Literal["upload"]
 
 

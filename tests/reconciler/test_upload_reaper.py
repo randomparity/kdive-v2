@@ -81,6 +81,8 @@ def test_reaps_uncommitted_objects_past_deadline_for_created_run(migrated_url: s
 
 
 def test_reaps_uncommitted_objects_past_deadline_for_defined_system(migrated_url: str) -> None:
+    # Seeds DEFINED directly because no producer exists yet (#111); this validates the
+    # systems arm of the reaper in isolation until systems.define lands.
     async def _run() -> None:
         async with await connect(migrated_url) as seed:
             system_id = await seed_system(seed, system_state=SystemState.DEFINED)

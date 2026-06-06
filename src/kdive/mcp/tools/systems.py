@@ -167,7 +167,7 @@ async def _open_billing_interval(conn: AsyncConnection, allocation_id: UUID) -> 
 
 # System states that occupy a per-project quota slot (terminal torn_down/failed do not).
 _NON_TERMINAL_SYSTEM = (
-    SystemState.DEFINED,
+    SystemState.DEFINED,  # forward-plumbing: no producer yet (#111)
     SystemState.PROVISIONING,
     SystemState.READY,
     SystemState.REPROVISIONING,
@@ -340,6 +340,9 @@ async def _commit_uploaded_rootfs(
     verifies the System-owned object exists (HEAD, off-thread), writes the write-once
     ``artifacts`` row, and deletes the upload manifest so the reaper exempts the object.
     Other kinds are a no-op.
+
+    Forward-plumbing: an ``upload`` rootfs is only reachable from a DEFINED System, which
+    nothing produces yet (#111); ``path``/``url``/``catalog`` are unaffected.
 
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` if an ``upload`` rootfs was never uploaded.

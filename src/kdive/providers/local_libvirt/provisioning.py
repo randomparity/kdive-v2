@@ -105,6 +105,7 @@ def resolve_rootfs_path(rootfs: RootfsSource, *, tenant: str, system_id: UUID) -
     if rootfs.kind == "path":
         return rootfs.path
     if rootfs.kind == "upload":
+        # Forward-plumbing: only reachable from a DEFINED System, no producer yet (#111).
         return f"{_ROOTFS_DIR}/{tenant}-systems-{system_id}-rootfs.qcow2"
     if rootfs.kind == "url":
         if not _SHA256.match(rootfs.sha256):
