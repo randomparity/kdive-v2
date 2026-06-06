@@ -15,7 +15,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Annotated, Any, LiteralString, Protocol
+from typing import Annotated, Any, LiteralString, NamedTuple, Protocol
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
@@ -794,18 +794,27 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
     return str(run_id)
 
 
-_CONSOLE_KEY_SQL: LiteralString = (
-    "SELECT object_key FROM artifacts "
+_CONSOLE_ROW_SQL: LiteralString = (
+    "SELECT id, etag FROM artifacts "
     "WHERE owner_kind = 'systems' AND owner_id = %s AND object_key LIKE %s"
 )
 
+_REFRESH_CONSOLE_ETAG_SQL: LiteralString = "UPDATE artifacts SET etag = %s WHERE id = %s"
 
-async def _existing_console_key(conn: AsyncConnection, system_id: UUID) -> str | None:
-    """Return the System's console object key, or ``None`` (idempotency on replay)."""
+
+class _ConsoleRow(NamedTuple):
+    """An existing console artifact row's id and etag (replay idempotency + etag refresh)."""
+
+    id: UUID
+    etag: str
+
+
+async def _existing_console_row(conn: AsyncConnection, system_id: UUID) -> _ConsoleRow | None:
+    """Return the System's console artifact row (id, etag), or ``None`` if unregistered."""
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(_CONSOLE_KEY_SQL, (system_id, "%/console"))
+        await cur.execute(_CONSOLE_ROW_SQL, (system_id, "%/console"))
         row = await cur.fetchone()
-    return None if row is None else str(row["object_key"])
+    return None if row is None else _ConsoleRow(row["id"], str(row["etag"]))
 
 
 async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str | None:
@@ -875,17 +884,26 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
                         retention_class="console",
                     )
                 )
-                # No advisory lock (unlike vmcore.py's capture): the (run_id, "boot") job dedup
-                # key serializes re-dispatch, and a later replay sees the existing /console row
-                # and skips — so a lock-held double-check isn't needed to stay idempotent here.
+                # The console object key is System-scoped, so a re-boot of the same System
+                # (a new Run) overwrites the object with a fresh etag. Insert the row on the
+                # first registration; on a re-boot refresh the existing row's etag so it tracks
+                # the rewritten object — otherwise the row keeps the first boot's etag while the
+                # object holds the latest content, and a later conditional `If-Match` read of
+                # the row's etag hits STALE_HANDLE (#117). No advisory lock (unlike vmcore.py's
+                # capture): the (run_id, "boot") job dedup key serializes a single Run's
+                # re-dispatch, and a replay re-puts identical bytes (same etag), so the etag
+                # compare makes the refresh a no-op — registration stays idempotent.
                 async with conn.transaction():
-                    if await _existing_console_key(conn, run.system_id) is None:
+                    existing = await _existing_console_row(conn, run.system_id)
+                    if existing is None:
                         await ARTIFACTS.insert(
                             conn,
                             register_artifact_row(
                                 stored, owner_kind="systems", owner_id=run.system_id
                             ),
                         )
+                    elif existing.etag != stored.etag:
+                        await conn.execute(_REFRESH_CONSOLE_ETAG_SQL, (stored.etag, existing.id))
         except Exception:
             _log.warning(
                 "console artifact registration failed for system %s; boot outcome unaffected",
