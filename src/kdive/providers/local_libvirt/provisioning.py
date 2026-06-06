@@ -105,7 +105,9 @@ def resolve_rootfs_path(rootfs: RootfsSource, *, tenant: str, system_id: UUID) -
     if rootfs.kind == "path":
         return rootfs.path
     if rootfs.kind == "upload":
-        # Forward-plumbing: only reachable from a DEFINED System, no producer yet (#111).
+        # Forward-plumbing for the worker: the tool boundary (validate_rootfs_reference)
+        # rejects an upload reference until the DEFINED producer lands (#111), so no
+        # persisted upload profile reaches this branch yet.
         return f"{_ROOTFS_DIR}/{tenant}-systems-{system_id}-rootfs.qcow2"
     if rootfs.kind == "url":
         if not _SHA256.match(rootfs.sha256):
@@ -130,13 +132,21 @@ def validate_rootfs_reference(rootfs: RootfsSource) -> None:
     Mirrors :func:`resolve_rootfs_path`'s static checks (url sha256 format, catalog-name
     existence) but needs no ``system_id`` — so ``systems.provision`` rejects a bad reference
     synchronously as ``configuration_error`` instead of dead-lettering the provision job.
-    The ``upload``/``path`` kinds need no static check (an ``upload`` object's existence is
-    verified at provision-consume time, §5).
+    ``path`` needs no static check. ``upload`` is rejected here until its producer lands
+    (#111): nothing creates the ``DEFINED`` System that opens a rootfs upload window, so an
+    ``upload`` reference can never have a staged object — fail fast at the boundary rather
+    than insert a System and dead-letter (or leak a started domain) at commit time.
 
     Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` for a malformed url checksum or unknown
-            catalog name.
+        CategorizedError: ``CONFIGURATION_ERROR`` for a malformed url checksum, unknown
+            catalog name, or the not-yet-available ``upload`` kind.
     """
+    if rootfs.kind == "upload":
+        raise CategorizedError(
+            "rootfs 'upload' kind is not yet available (no create-without-provision path); "
+            "use 'path', 'url', or 'catalog' (#111)",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
     if rootfs.kind == "url" and not _SHA256.match(rootfs.sha256):
         raise CategorizedError(
             "rootfs url sha256 must be 'sha256:<64-hex>'",

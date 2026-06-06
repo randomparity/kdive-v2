@@ -341,8 +341,10 @@ async def _commit_uploaded_rootfs(
     ``artifacts`` row, and deletes the upload manifest so the reaper exempts the object.
     Other kinds are a no-op.
 
-    Forward-plumbing: an ``upload`` rootfs is only reachable from a DEFINED System, which
-    nothing produces yet (#111); ``path``/``url``/``catalog`` are unaffected.
+    Forward-plumbing: the provisioning tool boundary rejects an ``upload`` rootfs until the
+    DEFINED producer lands (#111), so no persisted profile reaches this commit yet. This
+    branch and its absent-object guard remain for when that producer exists;
+    ``path``/``url``/``catalog`` are unaffected.
 
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` if an ``upload`` rootfs was never uploaded.
