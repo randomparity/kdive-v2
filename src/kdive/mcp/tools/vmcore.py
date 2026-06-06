@@ -189,8 +189,41 @@ async def _existing_raw_key(conn: AsyncConnection, system_id: UUID) -> str | Non
     return None if row is None else str(row["object_key"])
 
 
-async def _precheck_system(conn: AsyncConnection, system_id: UUID) -> System | str:
-    """Under the per-System lock, return an existing raw key (str) or the System to capture."""
+def _captured_method(object_key: str) -> str:
+    """The method suffix of a raw vmcore key (`.../vmcore-host_dump` -> `host_dump`)."""
+    _, sep, method = object_key.rpartition("/vmcore-")
+    if not sep or not method:
+        raise CategorizedError(
+            "malformed raw vmcore object key (no method suffix)",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details={"object_key": object_key},
+        )
+    return method
+
+
+def _ensure_method_match(existing_key: str, method: CaptureMethod, system_id: UUID) -> None:
+    """Raise `configuration_error` when an existing core was captured by a different method."""
+    captured = _captured_method(existing_key)
+    if captured != method.value:
+        raise CategorizedError(
+            "a vmcore captured via a different method already exists for this System",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={
+                "system_id": str(system_id),
+                "existing_method": captured,
+                "requested_method": method.value,
+            },
+        )
+
+
+async def _precheck_system(
+    conn: AsyncConnection, system_id: UUID, method: CaptureMethod
+) -> System | str:
+    """Under the per-System lock, return an existing same-method key, or the System to capture.
+
+    Raises `configuration_error` if a core from a different method already exists (first method
+    wins) — before the slow `capture` seam, so the common case writes no object.
+    """
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
         system = await SYSTEMS.get(conn, system_id)
         if system is None:
@@ -200,14 +233,25 @@ async def _precheck_system(conn: AsyncConnection, system_id: UUID) -> System | s
                 details={"system_id": str(system_id)},
             )
         existing = await _existing_raw_key(conn, system_id)
-        return existing if existing is not None else system
+        if existing is not None:
+            _ensure_method_match(existing, method, system_id)
+            return existing
+        return system
 
 
-async def _finalize_capture(conn: AsyncConnection, job: Job, system: System, output: Any) -> str:
-    """Insert both artifact rows + audit under the per-System lock; tolerate a concurrent win."""
+async def _finalize_capture(
+    conn: AsyncConnection, job: Job, system: System, method: CaptureMethod, output: Any
+) -> str:
+    """Insert both artifact rows + audit under the per-System lock; tolerate a concurrent win.
+
+    A concurrent winner of the *same* method is returned idempotently; a *different*-method core
+    (the post-#115 race backstop) raises `configuration_error` after `capture` already ran, so its
+    object is orphaned — see ADR-0050. The non-racing common case rejects in `_precheck_system`.
+    """
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system.id):
         existing = await _existing_raw_key(conn, system.id)
         if existing is not None:
+            _ensure_method_match(existing, method, system.id)
             return existing
         await ARTIFACTS.insert(
             conn, register_artifact_row(output.raw, owner_kind="systems", owner_id=system.id)
@@ -238,11 +282,11 @@ async def capture_handler(conn: AsyncConnection, job: Job, retriever: Retriever)
     """
     system_id = UUID(job.payload["system_id"])
     method = CaptureMethod(job.payload["method"])
-    precheck = await _precheck_system(conn, system_id)
+    precheck = await _precheck_system(conn, system_id, method)
     if isinstance(precheck, str):
         return precheck
     output = await asyncio.to_thread(retriever.capture, system_id, method)
-    return await _finalize_capture(conn, job, precheck, output)
+    return await _finalize_capture(conn, job, precheck, method, output)
 
 
 # --- vmcore.list ---------------------------------------------------------------------------

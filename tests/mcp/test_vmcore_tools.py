@@ -292,6 +292,34 @@ def test_capture_handler_idempotent_skips_recapture(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_capture_handler_rejects_different_method(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id = await seed_crashed_system(pool)
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "INSERT INTO artifacts (owner_kind, owner_id, object_key, etag, sensitivity, "
+                    "retention_class) VALUES ('systems', %s, %s, 'e', 'sensitive', 'vmcore')",
+                    (sys_id, f"local/systems/{sys_id}/vmcore-host_dump"),
+                )
+            job = await _enqueue_capture(pool, sys_id, method="kdump")
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError) as exc:
+                    await vmcore_tools.capture_handler(conn, job, _NoCaptureRetriever())
+            assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+            assert exc.value.details["existing_method"] == "host_dump"
+            assert exc.value.details["requested_method"] == "kdump"
+            assert await _artifact_count(pool, sys_id) == 1  # no second core written
+
+    asyncio.run(_run())
+
+
+def test_captured_method_rejects_bare_key() -> None:
+    with pytest.raises(CategorizedError) as exc:
+        vmcore_tools._captured_method("local/systems/x/vmcore")
+    assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
 def test_capture_handler_no_core_raises_readiness(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
