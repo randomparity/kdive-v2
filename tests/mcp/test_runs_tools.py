@@ -12,6 +12,7 @@ from typing import Any, LiteralString
 from uuid import UUID, uuid4
 
 import pytest
+from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -708,6 +709,58 @@ async def _seed_running_run(pool: AsyncConnectionPool) -> str:
     async with pool.connection() as conn:
         await conn.execute("UPDATE runs SET state='running' WHERE id=%s", (run_id,))
     return run_id
+
+
+async def _build_job_for(conn: AsyncConnection, run_id: str) -> Job:
+    """Fetch the enqueued build job by its dedup key (no dequeue — no attempt charge)."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT * FROM jobs WHERE dedup_key=%s", (f"{run_id}:build",))
+        row = await cur.fetchone()
+    assert row is not None
+    return Job.model_validate(row)
+
+
+def test_build_run_records_cmdline_in_the_build_ledger(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=RunState.CREATED, build_profile=copy.deepcopy(_VALID_BUILD)
+            )
+            env = await runs_tools.build_run(
+                pool, _ctx(Role.OPERATOR), run_id, cmdline="console=ttyS0 dhash_entries=1"
+            )
+            assert env.status != "error"
+            async with pool.connection() as conn:
+                job = await _build_job_for(conn, run_id)
+                await runs_tools.build_handler(conn, job, _FakeBuilder())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT result FROM run_steps WHERE run_id=%s AND step='build'", (run_id,)
+                )
+                row = await cur.fetchone()
+            assert row is not None and row["result"]["cmdline"] == "console=ttyS0 dhash_entries=1"
+
+    asyncio.run(_run())
+
+
+def test_build_run_without_cmdline_records_none(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=RunState.CREATED, build_profile=copy.deepcopy(_VALID_BUILD)
+            )
+            await runs_tools.build_run(pool, _ctx(Role.OPERATOR), run_id)
+            async with pool.connection() as conn:
+                job = await _build_job_for(conn, run_id)
+                await runs_tools.build_handler(conn, job, _FakeBuilder())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT result FROM run_steps WHERE run_id=%s AND step='build'", (run_id,)
+                )
+                row = await cur.fetchone()
+            assert row is not None and "cmdline" not in row["result"]
+
+    asyncio.run(_run())
 
 
 def test_build_handler_drives_run_succeeded_sets_refs(migrated_url: str) -> None:

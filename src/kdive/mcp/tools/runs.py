@@ -275,17 +275,24 @@ def _run_job_envelope(job: Job, run_id: UUID) -> ToolResponse:
     return base.model_copy(update={"data": {**base.data, "run_id": str(run_id)}})
 
 
-async def _enqueue_build(conn: AsyncConnection, ctx: RequestContext, run: Run) -> Job:
+async def _enqueue_build(
+    conn: AsyncConnection, ctx: RequestContext, run: Run, cmdline: str | None
+) -> Job:
+    payload: dict[str, Any] = {"run_id": str(run.id)}
+    if isinstance(cmdline, str) and cmdline.strip():
+        payload["cmdline"] = cmdline
     return await queue.enqueue(
         conn,
         JobKind.BUILD,
-        {"run_id": str(run.id)},
+        payload,
         _authorizing(ctx, run.project),
         f"{run.id}:build",
     )
 
 
-async def _build_locked(conn: AsyncConnection, ctx: RequestContext, run: Run) -> ToolResponse:
+async def _build_locked(
+    conn: AsyncConnection, ctx: RequestContext, run: Run, cmdline: str | None
+) -> ToolResponse:
     """Admit the build under the per-Run lock: flip `created → running`, then enqueue."""
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run.id):
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -310,12 +317,19 @@ async def _build_locked(conn: AsyncConnection, ctx: RequestContext, run: Run) ->
                 args={"run_id": str(run.id)},
                 project=run.project,
             )
-        job = await _enqueue_build(conn, ctx, run)
+        job = await _enqueue_build(conn, ctx, run, cmdline)
     return _run_job_envelope(job, run.id)
 
 
-async def build_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> ToolResponse:
-    """Admit an idempotent build for a Run: drive `created → running` and enqueue the job."""
+async def build_run(
+    pool: AsyncConnectionPool, ctx: RequestContext, run_id: str, *, cmdline: str | None = None
+) -> ToolResponse:
+    """Admit an idempotent build for a Run: drive `created → running` and enqueue the job.
+
+    ``cmdline`` (when given) is recorded in the build ledger and applied at boot (ADR-0056);
+    it is bound on the first build enqueue for a Run (the dedup key is ``{run_id}:build`` and
+    ``queue.enqueue`` is ``ON CONFLICT DO NOTHING``).
+    """
     uid = _as_uuid(run_id)
     if uid is None:
         return _config_error(run_id)
@@ -331,7 +345,7 @@ async def build_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str)
                 return ToolResponse.failure(run_id, exc.category)
             if parsed.source != "server":
                 return _config_error(run_id, data={"reason": "external_source_uses_complete_build"})
-            return await _build_locked(conn, ctx, run)
+            return await _build_locked(conn, ctx, run, cmdline)
 
 
 async def _existing_build_result(conn: AsyncConnection, run_id: UUID) -> dict[str, Any] | None:
@@ -642,6 +656,9 @@ async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> st
             "debuginfo_ref": output.debuginfo_ref,
             "build_id": output.build_id,
         }
+        cmdline = job.payload.get("cmdline")
+        if isinstance(cmdline, str) and cmdline.strip():
+            result["cmdline"] = cmdline
     await _finalize_build(conn, job, run, result)
     return str(run_id)
 
@@ -1040,9 +1057,17 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     )
     async def runs_build(
         run_id: Annotated[str, Field(description="The Run to build.")],
+        cmdline: Annotated[
+            str | None,
+            Field(
+                description="Kernel command line recorded in the build ledger and applied at "
+                "boot (e.g. 'console=ttyS0 dhash_entries=1'). Omit for the method default. "
+                "Bound on the first build of a Run."
+            ),
+        ] = None,
     ) -> ToolResponse:
         """Enqueue the kernel build job for a Run; poll jobs.* for completion. Requires operator."""
-        return await build_run(pool, current_context(), run_id)
+        return await build_run(pool, current_context(), run_id, cmdline=cmdline)
 
     @app.tool(
         name="runs.complete_build",
@@ -1055,8 +1080,8 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             str,
             Field(
                 description="Kernel command line (e.g. 'console=ttyS0 dhash_entries=1'). "
-                "Recorded in the build ledger; not yet applied at boot (install still reads "
-                "the build profile), so it is inert until that wiring lands."
+                "Recorded in the build ledger and applied at boot via runs.install/runs.boot "
+                "(ADR-0056)."
             ),
         ],
         build_id: Annotated[
