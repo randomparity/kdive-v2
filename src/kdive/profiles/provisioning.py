@@ -56,8 +56,8 @@ class _PathRootfs(_ProfileBase):
 
 
 class _UploadRootfs(_ProfileBase):
-    # Forward-plumbing: this kind is only reachable from a DEFINED System, which nothing
-    # produces yet (#111). path/url/catalog are usable today.
+    # A System-owned uploaded qcow2; opened by systems.define + artifacts.create_upload and
+    # committed at provisioning->ready (ADR-0048 §5, #111). path/url/catalog are alternatives.
     kind: Literal["upload"]
 
 

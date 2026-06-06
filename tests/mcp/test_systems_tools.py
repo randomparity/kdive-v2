@@ -736,11 +736,10 @@ def test_provision_handler_concurrent_same_job_ready_does_not_tear_down(migrated
 
 # --- upload-rootfs artifacts commit (ADR-0048 §6) ------------------------------------------
 #
-# These drive provision_handler with a directly-seeded upload profile, BYPASSING the tool
-# boundary. As of the #111 gate, validate_rootfs_reference rejects kind:upload, so no real
-# tool can persist an upload profile — this commit path is unreachable end-to-end until #111
-# lands the DEFINED producer. The tests stay to lock the worker-side contract for that work;
-# their green status is NOT a shipping upload-rootfs capability.
+# These drive provision_handler with a directly-seeded PROVISIONING upload profile to unit-
+# test the worker-side provisioning->ready commit in isolation. The full lane is reachable
+# end-to-end via systems.define + artifacts.create_upload + systems.provision (#111); see
+# tests/integration/test_systems_define_upload_provision.py for that reachability proof.
 
 
 def _upload_profile() -> dict[str, Any]:

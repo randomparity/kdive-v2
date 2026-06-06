@@ -233,7 +233,8 @@ async def create_upload(
     if uid is None or owner_kind not in ("run", "system"):
         return [_config_error(owner_id)]
     kind = "runs" if owner_kind == "run" else "systems"
-    # The 'system' arm is forward-plumbing for the DEFINED rootfs-upload lane (#111).
+    # The 'system' arm is the DEFINED rootfs-upload lane: create the window with
+    # systems.define, upload here, then systems.provision admits it and commits the rootfs.
     next_action = "runs.complete_build" if owner_kind == "run" else "systems.provision"
 
     with bind_context(principal=ctx.principal):
