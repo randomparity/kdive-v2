@@ -43,10 +43,15 @@ async def _pool(url: str) -> AsyncIterator[AsyncConnectionPool]:
         await pool.close()
 
 
-def _capture_output(sys_id: str) -> CaptureOutput:
-    raw = StoredArtifact(f"local/systems/{sys_id}/vmcore", "e1", Sensitivity.SENSITIVE, "vmcore")
+def _capture_output(sys_id: str, method: CaptureMethod = CaptureMethod.HOST_DUMP) -> CaptureOutput:
+    raw = StoredArtifact(
+        f"local/systems/{sys_id}/vmcore-{method.value}", "e1", Sensitivity.SENSITIVE, "vmcore"
+    )
     red = StoredArtifact(
-        f"local/systems/{sys_id}/vmcore-redacted", "e2", Sensitivity.REDACTED, "vmcore"
+        f"local/systems/{sys_id}/vmcore-{method.value}-redacted",
+        "e2",
+        Sensitivity.REDACTED,
+        "vmcore",
     )
     return CaptureOutput(raw=raw, redacted=red, vmcore_build_id="deadbeef")
 
@@ -65,7 +70,7 @@ class _FakeRetriever:
         self.methods.append(method)
         if self._raises is not None:
             raise self._raises
-        return _capture_output(self._sys_id)
+        return _capture_output(self._sys_id, method)
 
 
 class _NoCaptureRetriever:
@@ -240,7 +245,7 @@ def test_capture_handler_stores_rows_and_returns_ref(migrated_url: str) -> None:
             retriever = _FakeRetriever(sys_id)
             async with pool.connection() as conn:
                 ref = await vmcore_tools.capture_handler(conn, job, retriever)
-            assert ref == f"local/systems/{sys_id}/vmcore"
+            assert ref == f"local/systems/{sys_id}/vmcore-host_dump"
             assert retriever.calls == 1
             assert await _artifact_count(pool, sys_id) == 2
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -276,15 +281,43 @@ def test_capture_handler_idempotent_skips_recapture(migrated_url: str) -> None:
                 await conn.execute(
                     "INSERT INTO artifacts (owner_kind, owner_id, object_key, etag, sensitivity, "
                     "retention_class) VALUES ('systems', %s, %s, 'e', 'sensitive', 'vmcore')",
-                    (sys_id, f"local/systems/{sys_id}/vmcore"),
+                    (sys_id, f"local/systems/{sys_id}/vmcore-host_dump"),
                 )
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
                 ref = await vmcore_tools.capture_handler(conn, job, _NoCaptureRetriever())
-            assert ref == f"local/systems/{sys_id}/vmcore"
+            assert ref == f"local/systems/{sys_id}/vmcore-host_dump"
             assert await _artifact_count(pool, sys_id) == 1  # no second row
 
     asyncio.run(_run())
+
+
+def test_capture_handler_rejects_different_method(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id = await seed_crashed_system(pool)
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "INSERT INTO artifacts (owner_kind, owner_id, object_key, etag, sensitivity, "
+                    "retention_class) VALUES ('systems', %s, %s, 'e', 'sensitive', 'vmcore')",
+                    (sys_id, f"local/systems/{sys_id}/vmcore-host_dump"),
+                )
+            job = await _enqueue_capture(pool, sys_id, method="kdump")
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError) as exc:
+                    await vmcore_tools.capture_handler(conn, job, _NoCaptureRetriever())
+            assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+            assert exc.value.details["existing_method"] == "host_dump"
+            assert exc.value.details["requested_method"] == "kdump"
+            assert await _artifact_count(pool, sys_id) == 1  # no second core written
+
+    asyncio.run(_run())
+
+
+def test_captured_method_rejects_bare_key() -> None:
+    with pytest.raises(CategorizedError) as exc:
+        vmcore_tools._captured_method("local/systems/x/vmcore")
+    assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
 
 def test_capture_handler_no_core_raises_readiness(migrated_url: str) -> None:
@@ -328,7 +361,7 @@ def test_list_vmcores_redacted_only(migrated_url: str) -> None:
                 await vmcore_tools.capture_handler(conn, job, _FakeRetriever(sys_id))
             resp = await vmcore_tools.list_vmcores(pool, _ctx(), system_id=sys_id)
         keys = {r.refs["object"] for r in resp}
-        assert keys == {f"local/systems/{sys_id}/vmcore-redacted"}
+        assert keys == {f"local/systems/{sys_id}/vmcore-host_dump-redacted"}
 
     asyncio.run(_run())
 
@@ -468,7 +501,8 @@ def test_no_raw_vmcore_key_in_any_read_response(migrated_url: str) -> None:
                 got = await artifacts_tools.artifacts_get(pool, _ctx(), artifact_id=r.object_id)
                 refs.extend(got.refs.values())
         assert refs  # something was returned
-        assert all(not key.endswith("/vmcore") for key in refs)  # never the raw key
+        # A raw core is `.../vmcore-{method}` (no `-redacted`); it must never surface.
+        assert all(not ("/vmcore-" in key and not key.endswith("-redacted")) for key in refs)
 
     asyncio.run(_run())
 

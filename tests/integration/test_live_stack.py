@@ -522,7 +522,10 @@ def test_spine_over_the_wire() -> None:
                 assert isinstance(cores, list) and cores, "no vmcore artifact listed (#1)"
                 refs = [v for c in cores for v in c.refs.values()]
                 assert refs, "no vmcore refs (#1)"
-                assert all(not r.endswith("/vmcore") for r in refs), "raw vmcore leaked (#1)"
+                # A raw core is `.../vmcore-{method}` (no `-redacted`); it must never surface.
+                assert all(not ("/vmcore-" in r and not r.endswith("-redacted")) for r in refs), (
+                    "raw vmcore leaked (#1)"
+                )
             async with phase("introspect"):
                 env = _ok(await _scalar(op, "introspect.from_vmcore", run_id=run_id), "introspect")
                 report = env.data.get("report", "")
