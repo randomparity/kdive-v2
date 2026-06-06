@@ -1529,6 +1529,36 @@ def test_provision_admits_defined_system_without_profile(migrated_url: str) -> N
     asyncio.run(_run())
 
 
+def test_provision_admit_refuses_released_allocation(migrated_url: str) -> None:
+    # A DEFINED System whose lease was released (but not yet reaped) must not be admitted to
+    # provisioning — symmetric with the create lane's granted check (#111 review).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
+            async with pool.connection() as conn:
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.RELEASING)
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.RELEASED)
+            resp = await systems_tools.provision_system(
+                pool, _ctx(), allocation_id=alloc_id, profile=None
+            )
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE dedup_key = %s",
+                    (f"{alloc_id}:provision",),
+                )
+                job_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.data["current_status"] == "released"
+        assert sys_row is not None and sys_row["state"] == "defined"  # not advanced
+        assert job_row is not None and job_row["n"] == 0  # no provision job enqueued
+
+    asyncio.run(_run())
+
+
 def test_provision_create_lane_rejects_upload(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:

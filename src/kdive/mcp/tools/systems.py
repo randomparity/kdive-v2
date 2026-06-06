@@ -288,6 +288,12 @@ async def _provision_locked(
                     str(existing.id), data={"current_status": existing.state.value}
                 )
             if existing.state is SystemState.DEFINED:
+                # Admit advances state (defined->provisioning), so — like the create lane's
+                # `granted` check — it must refuse a System whose lease is no longer active
+                # (released/expired before the reconciler reaped it); otherwise it would
+                # drive a doomed System into provisioning and spawn a provider job.
+                if alloc.state is not AllocationState.ACTIVE:
+                    return _config_error(str(alloc_id), data={"current_status": alloc.state.value})
                 return await _admit_defined(conn, ctx, alloc, existing)
             job = await queue.enqueue(
                 conn,
