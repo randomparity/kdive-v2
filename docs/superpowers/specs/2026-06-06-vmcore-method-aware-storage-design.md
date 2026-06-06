@@ -115,6 +115,12 @@ Redacted keys are now `…/vmcore-{method}-redacted`. The list filter changes fr
   shape: a raw core is any key with a `/vmcore-` segment that does **not** end in `-redacted`;
   assert no such key appears in any read response.
 - **malformed key:** `_captured_method` raises on a bare `vmcore` key (no `/vmcore-` segment).
+- **producer-side fakes emit the new shape:** the handler-driven tests above store via the fake
+  retriever, not hand-inserted rows. Its `_capture_output` helper (`tests/mcp/test_vmcore_tools.py`)
+  and the integration equivalent (`tests/integration/test_walking_skeleton.py`) must emit
+  method-suffixed keys (`vmcore-{method}` / `vmcore-{method}-redacted`), or the new reader SQL
+  (`LIKE '%/vmcore-%'`) won't match the stored core and the very tests meant to prove the fix would
+  fail (or get "fixed" by loosening the pattern, silently regressing method-awareness).
 
 ## Out of scope
 
