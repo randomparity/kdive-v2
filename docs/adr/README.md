@@ -81,3 +81,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0049](0049-crash-capture-tiers.md) | Crash-capture tiers: provider-agnostic method, local-libvirt realizations (M0) | Proposed |
 | [0050](0050-vmcore-method-aware-storage.md) | Method-aware vmcore storage: first-method-wins per System (refines 0049/0031, closes #118) | Proposed |
 | [0051](0051-install-method-conditional-crashkernel.md) | Install-time capture-method resolution + method-conditional crashkernel gate (refines 0049/0030, closes #116) | Proposed |
+| [0052](0052-bootable-rootfs-image-builder.md) | Bootable kdive-ready rootfs builder: whole-disk-ext4 layout + managed SSH key (G3, closes #124) | Proposed |
