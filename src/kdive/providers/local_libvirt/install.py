@@ -272,6 +272,22 @@ class LocalLibvirtInstall:
         )
 
 
+def read_console_log(path: Path) -> bytes:
+    """Read the System's console log; absent → empty (boot may not have written).
+
+    A ``PermissionError`` (the worker cannot read qemu's ``0600`` log — see Task 2.4's
+    group setup) is treated as empty but **logged**, so a permission fault is never a
+    silent empty console.
+    """
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return b""
+    except PermissionError:
+        _log.warning("console log %s not readable by the worker; registering empty", path)
+        return b""
+
+
 def _real_fetch(kernel_ref: str, dest: Path) -> None:  # pragma: no cover - live_vm
     raise CategorizedError(
         "real object-store fetch runs only under the live_vm gate",
@@ -296,4 +312,4 @@ def _real_readiness(system_id: UUID) -> ReadinessResult:  # pragma: no cover - l
     )
 
 
-__all__ = ["Booter", "Installer", "LocalLibvirtInstall", "ReadinessResult"]
+__all__ = ["Booter", "Installer", "LocalLibvirtInstall", "ReadinessResult", "read_console_log"]

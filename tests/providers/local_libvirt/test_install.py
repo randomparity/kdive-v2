@@ -245,6 +245,23 @@ def test_from_env_does_not_connect(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(inst, LocalLibvirtInstall)
 
 
+# --- read_console_log ----------------------------------------------------------------
+
+
+def test_read_console_log_returns_bytes(tmp_path: Path) -> None:
+    from kdive.providers.local_libvirt.install import read_console_log
+
+    log = tmp_path / "sys.log"
+    log.write_bytes(b"[ 0.0] Kernel panic - __d_lookup\n")
+    assert b"__d_lookup" in read_console_log(log)
+
+
+def test_read_console_log_missing_is_empty(tmp_path: Path) -> None:
+    from kdive.providers.local_libvirt.install import read_console_log
+
+    assert read_console_log(tmp_path / "absent.log") == b""
+
+
 # --- live_vm real redefine + boot ----------------------------------------------------
 
 

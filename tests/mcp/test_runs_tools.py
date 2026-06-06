@@ -1296,6 +1296,66 @@ def test_register_handlers_binds_install_and_boot() -> None:
     assert registry.get(JobKind.BOOT) is not None
 
 
+def test_boot_handler_registers_console_on_success(
+    migrated_url: str,
+    minio_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The clean-boot console is the A/B baseline (the `ls /proc`-ran-without-panic
+    # evidence) the feature exists to produce, so registration must fire on success too.
+    monkeypatch.setattr(runs_tools, "object_store_from_env", lambda: minio_store)
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_install_step(pool, run_id)
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter()  # clean success, no error
+            async with pool.connection() as conn:
+                result = await runs_tools.boot_handler(conn, job, booter)
+            assert result == run_id
+            nsteps = await _count(
+                pool,
+                "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='boot'",
+                (run_id,),
+            )
+            n = await _count(
+                pool,
+                "SELECT count(*) AS n FROM artifacts WHERE object_key LIKE %s",
+                ("%/console",),
+            )
+        assert nsteps == 1  # boot step recorded succeeded
+        assert n == 1  # console registered on the happy path
+
+    asyncio.run(_run())
+
+
+def test_boot_handler_registers_console_even_on_failure(
+    migrated_url: str,
+    minio_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runs_tools, "object_store_from_env", lambda: minio_store)
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_install_step(pool, run_id)
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter(error=ErrorCategory.BOOT_TIMEOUT)
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError):
+                    await runs_tools.boot_handler(conn, job, booter)
+            n = await _count(
+                pool,
+                "SELECT count(*) AS n FROM artifacts WHERE object_key LIKE %s",
+                ("%/console",),
+            )
+        assert n == 1
+
+    asyncio.run(_run())
+
+
 def _assert_ports() -> None:
     # Structural conformance: the fakes satisfy the realized Protocols (ty enforces; this
     # keeps the import used and documents the contract).

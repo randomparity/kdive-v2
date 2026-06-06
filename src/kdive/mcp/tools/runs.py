@@ -15,7 +15,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any, LiteralString, Protocol
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
@@ -57,9 +57,12 @@ from kdive.providers.local_libvirt.install import (
     Booter,
     Installer,
     LocalLibvirtInstall,
+    read_console_log,
 )
+from kdive.providers.local_libvirt.provisioning import console_log_path
 from kdive.security import audit
 from kdive.security.rbac import Role, require_role
+from kdive.security.redaction import Redactor
 from kdive.store.objectstore import (
     HeadResult,
     StoredArtifact,
@@ -787,6 +790,20 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
     return str(run_id)
 
 
+_CONSOLE_KEY_SQL: LiteralString = (
+    "SELECT object_key FROM artifacts "
+    "WHERE owner_kind = 'systems' AND owner_id = %s AND object_key LIKE %s"
+)
+
+
+async def _existing_console_key(conn: AsyncConnection, system_id: UUID) -> str | None:
+    """Return the System's console object key, or ``None`` (idempotency on replay)."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(_CONSOLE_KEY_SQL, (system_id, "%/console"))
+        row = await cur.fetchone()
+    return None if row is None else str(row["object_key"])
+
+
 async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str | None:
     """Boot the installed kernel and confirm run-readiness, recording the `boot` step (ADR-0030).
 
@@ -822,7 +839,41 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
         )
         return {"system_id": str(run.system_id)}
 
-    await _run_step_locked(conn, run_id, "boot", _do)
+    try:
+        await _run_step_locked(conn, run_id, "boot", _do)
+    finally:
+        # Register the console log as a `redacted` artifact regardless of boot outcome —
+        # a kernel panic fires *before* readiness so the console is the crash signal.
+        # Guard so a store/insert failure never masks the boot error that caused the finally.
+        try:
+            raw = await asyncio.to_thread(read_console_log, console_log_path(run.system_id))
+            redacted = Redactor().redact_text(raw.decode("utf-8", "replace")).encode("utf-8")
+            stored = await asyncio.to_thread(
+                lambda: object_store_from_env().put_artifact(
+                    "local",
+                    "systems",
+                    str(run.system_id),
+                    "console",
+                    data=redacted,
+                    sensitivity=Sensitivity.REDACTED,
+                    retention_class="console",
+                )
+            )
+            # No advisory lock (unlike vmcore.py's capture): the (run_id, "boot") job dedup
+            # key serializes re-dispatch, and a later replay sees the existing /console row
+            # and skips — so a lock-held double-check isn't needed to stay idempotent here.
+            async with conn.transaction():
+                if await _existing_console_key(conn, run.system_id) is None:
+                    await ARTIFACTS.insert(
+                        conn,
+                        register_artifact_row(stored, owner_kind="systems", owner_id=run.system_id),
+                    )
+        except Exception:
+            _log.warning(
+                "console artifact registration failed for system %s; boot outcome unaffected",
+                run.system_id,
+                exc_info=True,
+            )
     return str(run_id)
 
 
