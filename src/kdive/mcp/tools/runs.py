@@ -415,6 +415,11 @@ async def complete_build(
     Idempotent: a recorded ``(run_id, "build")`` ledger row short-circuits to the prior
     success BEFORE the CREATED/source guard, so a retry after a dropped connection returns
     success, not an illegal-transition error. Requires operator.
+
+    ``cmdline`` is persisted in the build ledger for a later install step to consume; it is
+    **not yet applied at boot** (the install path still reads ``build_profile``), so a custom
+    cmdline here is recorded but inert until that wiring lands. Pass it for forward-record,
+    not to influence this build's boot.
     """
     validator = validator or _StoreBackedValidator()
     uid = _as_uuid(run_id)
@@ -875,7 +880,12 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     async def runs_complete_build(
         run_id: Annotated[str, Field(description="The external-build Run to finalize.")],
         cmdline: Annotated[
-            str, Field(description="Kernel command line, e.g. 'console=ttyS0 dhash_entries=1'.")
+            str,
+            Field(
+                description="Kernel command line (e.g. 'console=ttyS0 dhash_entries=1'). "
+                "Recorded in the build ledger; not yet applied at boot (install still reads "
+                "the build profile), so it is inert until that wiring lands."
+            ),
         ],
         build_id: Annotated[
             str | None,
