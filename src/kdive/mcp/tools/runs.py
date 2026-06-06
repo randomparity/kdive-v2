@@ -347,6 +347,20 @@ async def _existing_build_result(conn: AsyncConnection, run_id: UUID) -> dict[st
     return result if isinstance(result, dict) else None
 
 
+async def _installed_initrd_ref(conn: AsyncConnection, run_id: UUID) -> str | None:
+    """The build ledger's recorded `initrd_ref`, or `None` (server builds record none).
+
+    The external-build lane records the uploaded initrd's object key in the `(run_id, "build")`
+    ledger result (`_finalize_external_build`); a blank/absent value means no external initrd is
+    staged (a bzImage with an embedded initramfs), so the install emits no `<initrd>`.
+    """
+    result = await _existing_build_result(conn, run_id)
+    if result is None:
+        return None
+    ref = result.get("initrd_ref")
+    return ref if isinstance(ref, str) and ref else None
+
+
 async def _finalize_build(
     conn: AsyncConnection, job: Job, run: Run, result: dict[str, Any]
 ) -> None:
@@ -634,23 +648,27 @@ async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> st
 
 # --- install + boot plane (#19, ADR-0030) --------------------------------------------
 
-# Default kernel command line for direct-kernel boot. It MUST carry a `crashkernel=`
-# reservation (the kdump prerequisite); an operator override that drops it is rejected
-# at `runs.install`. The reservation reserves boot-time memory for the capture kernel;
-# the build plane separately compiles kdump in via `CONFIG_CRASH_DUMP` (ADR-0029 §3).
-_DEFAULT_CMDLINE = "console=ttyS0 crashkernel=256M"
+# Default kernel command lines for direct-kernel boot, split by capture method. The kdump
+# default carries a `crashkernel=` reservation (the kdump prerequisite); the non-kdump default
+# does not — the non-kdump tiers (console/host_dump/gdbstub) boot without it (ADR-0049 §5,
+# ADR-0051 §3). An operator override (the Run's `cmdline`) replaces the default entirely.
+_KDUMP_DEFAULT_CMDLINE = "console=ttyS0 crashkernel=256M"
+_NONKDUMP_DEFAULT_CMDLINE = "console=ttyS0"
 _CRASHKERNEL_TOKEN = "crashkernel="
 
 
-def _cmdline_for(run: Run) -> str:
+def _cmdline_for(run: Run, method: CaptureMethod) -> str:
     """Resolve the kernel command line from the Run's opaque `build_profile`.
 
     The cmdline is read from the raw `build_profile` dict (not via `BuildProfile.parse`,
     whose `extra="forbid"` would reject the `cmdline` key); an absent/blank value falls
-    back to the kdump-reserving default.
+    back to the method-appropriate default — the kdump default reserves `crashkernel=`, the
+    non-kdump default does not (ADR-0051 §3).
     """
     value = run.build_profile.get("cmdline")
-    return value if isinstance(value, str) and value.strip() else _DEFAULT_CMDLINE
+    if isinstance(value, str) and value.strip():
+        return value
+    return _KDUMP_DEFAULT_CMDLINE if method is CaptureMethod.KDUMP else _NONKDUMP_DEFAULT_CMDLINE
 
 
 def _local_libvirt_section(profile: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -689,7 +707,12 @@ def _install_method_for(system: System) -> CaptureMethod:
 
 
 async def install_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> ToolResponse:
-    """Admit an idempotent install for a built Run; reject a cmdline lacking `crashkernel=`."""
+    """Admit an idempotent install for a built Run; require `crashkernel=` only for kdump.
+
+    The capture method is resolved from the System's provisioning profile (ADR-0051 §1): a
+    kdump-provisioned System (a `crashkernel` reservation) must carry a `crashkernel=` cmdline
+    token; the non-kdump tiers are admitted without it.
+    """
     uid = _as_uuid(run_id)
     if uid is None:
         return _config_error(run_id)
@@ -701,7 +724,12 @@ async def install_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: st
             require_role(ctx, run.project, Role.OPERATOR)
             if run.state is not RunState.SUCCEEDED:
                 return _config_error(run_id, data={"current_status": run.state.value})
-            if _CRASHKERNEL_TOKEN not in _cmdline_for(run):
+            system = await SYSTEMS.get(conn, run.system_id)
+            if system is None:  # defensive: runs.system_id is NOT NULL REFERENCES systems(id)
+                return _config_error(run_id, data={"reason": "system_gone"})
+            method = _install_method_for(system)
+            cmdline = _cmdline_for(run, method)
+            if method is CaptureMethod.KDUMP and _CRASHKERNEL_TOKEN not in cmdline:
                 return _config_error(run_id, data={"reason": "cmdline_missing_crashkernel"})
             return await _enqueue_step(conn, ctx, run, JobKind.INSTALL, "install", "runs.install")
 
@@ -802,17 +830,28 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"run_id": str(run_id)},
         )
+    system = await SYSTEMS.get(conn, run.system_id)
+    if system is None:  # defensive: runs.system_id is NOT NULL REFERENCES systems(id)
+        raise CategorizedError(
+            "install target system is gone",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"run_id": str(run_id), "system_id": str(run.system_id)},
+        )
+    method = _install_method_for(system)
     kernel_ref = run.kernel_ref
-    cmdline = _cmdline_for(run)
+    cmdline = _cmdline_for(run, method)
+    initrd_ref = await _installed_initrd_ref(conn, run_id)
     job_ctx = _ctx_from_job(job, run.project)
 
     async def _do() -> dict[str, Any]:
-        # `method`/`initrd_ref` are left at their defaults (HOST_DUMP, no initrd): the Tier-0
-        # boot vehicle is a single bzImage with an embedded initramfs, so no external initrd is
-        # staged. Threading the resolved capture method + a ledger `initrd_ref` through this
-        # call site (and relaxing the `runs.install` crashkernel gate for non-kdump) is #116.
         await asyncio.to_thread(
-            installer.install, run.system_id, run_id, kernel_ref, cmdline=cmdline
+            installer.install,
+            run.system_id,
+            run_id,
+            kernel_ref,
+            cmdline=cmdline,
+            method=method,
+            initrd_ref=initrd_ref,
         )
         await audit.record(
             conn,

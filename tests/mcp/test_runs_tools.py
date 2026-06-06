@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RESOURCES, RUNS, SYSTEMS
@@ -67,6 +68,7 @@ async def _seed_system(
     system_state: SystemState = SystemState.READY,
     alloc_state: AllocationState = AllocationState.ACTIVE,
     project: str = "proj",
+    provisioning_profile: dict[str, Any] | None = None,
 ) -> str:
     """Insert a Resource + Allocation + System directly and return the system id."""
     async with pool.connection() as conn:
@@ -105,7 +107,9 @@ async def _seed_system(
                 project=project,
                 allocation_id=alloc.id,
                 state=system_state,
-                provisioning_profile={"schema_version": 1},
+                provisioning_profile=provisioning_profile
+                if provisioning_profile is not None
+                else {"schema_version": 1},
             ),
         )
     return str(system.id)
@@ -140,9 +144,10 @@ async def _seed_run(
     failure: ErrorCategory | None = None,
     build_profile: dict[str, Any] | None = None,
     project: str = "proj",
+    provisioning_profile: dict[str, Any] | None = None,
 ) -> str:
     inv_id = await _seed_investigation(pool, project=project)
-    sys_id = await _seed_system(pool, project=project)
+    sys_id = await _seed_system(pool, project=project, provisioning_profile=provisioning_profile)
     async with pool.connection() as conn:
         run = await RUNS.insert(
             conn,
@@ -879,10 +884,10 @@ _SUCCEEDED_BUILD: dict[str, Any] = {
 
 
 class _FakeInstaller:
-    """Records install() calls; returns or raises a canned category."""
+    """Records install() calls (incl. method/initrd_ref); returns or raises a canned category."""
 
     def __init__(self, *, error: ErrorCategory | None = None) -> None:
-        self.calls: list[tuple[UUID, UUID, str, str]] = []
+        self.calls: list[tuple[UUID, UUID, str, str, CaptureMethod, str | None]] = []
         self._error = error
 
     def install(
@@ -895,7 +900,7 @@ class _FakeInstaller:
         method: CaptureMethod = CaptureMethod.HOST_DUMP,
         initrd_ref: str | None = None,
     ) -> None:
-        self.calls.append((system_id, run_id, kernel_ref, cmdline))
+        self.calls.append((system_id, run_id, kernel_ref, cmdline, method, initrd_ref))
         if self._error is not None:
             raise CategorizedError("boom", category=self._error)
 
@@ -914,7 +919,10 @@ class _FakeBooter:
 
 
 async def _seed_succeeded_run(
-    pool: AsyncConnectionPool, *, build_profile: dict[str, Any] | None = None
+    pool: AsyncConnectionPool,
+    *,
+    build_profile: dict[str, Any] | None = None,
+    provisioning_profile: dict[str, Any] | None = None,
 ) -> str:
     """A built Run: state succeeded, kernel_ref set (the install plane's precondition)."""
     run_id = await _seed_run(
@@ -923,6 +931,7 @@ async def _seed_succeeded_run(
         build_profile=build_profile
         if build_profile is not None
         else copy.deepcopy(_SUCCEEDED_BUILD),
+        provisioning_profile=provisioning_profile,
     )
     async with pool.connection() as conn:
         await conn.execute(
@@ -1013,16 +1022,76 @@ def test_install_is_idempotent_returns_same_job(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_install_cmdline_without_crashkernel_is_config_error_no_job(migrated_url: str) -> None:
+def test_cmdline_default_is_kdump_reserving_for_kdump() -> None:
+    run = _run_with_build_profile({"schema_version": 1})
+    assert "crashkernel=" in runs_tools._cmdline_for(run, CaptureMethod.KDUMP)
+
+
+def test_cmdline_default_omits_crashkernel_for_non_kdump() -> None:
+    run = _run_with_build_profile({"schema_version": 1})
+    assert "crashkernel=" not in runs_tools._cmdline_for(run, CaptureMethod.CONSOLE)
+
+
+def test_cmdline_explicit_overrides_default_for_any_method() -> None:
+    run = _run_with_build_profile({"cmdline": "console=ttyS0 dhash_entries=1"})
+    assert runs_tools._cmdline_for(run, CaptureMethod.KDUMP) == "console=ttyS0 dhash_entries=1"
+
+
+def _run_with_build_profile(build_profile: dict[str, Any]) -> Run:
+    return Run(
+        id=uuid4(),
+        created_at=_DT,
+        updated_at=_DT,
+        principal="user-1",
+        project="proj",
+        investigation_id=uuid4(),
+        system_id=uuid4(),
+        state=RunState.SUCCEEDED,
+        build_profile=build_profile,
+    )
+
+
+def test_install_nonkdump_system_admits_cmdline_without_crashkernel(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_succeeded_run(
                 pool, build_profile={**_VALID_BUILD, "cmdline": "console=ttyS0"}
+            )  # bare System (default seed profile) => method console
+            resp = await _install(pool, _ctx(), run_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs", ())
+        assert resp.status == "queued"
+        assert njobs == 1
+
+    asyncio.run(_run())
+
+
+def test_install_kdump_system_without_crashkernel_is_config_error_no_job(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(
+                pool,
+                build_profile={**_VALID_BUILD, "cmdline": "console=ttyS0"},
+                provisioning_profile=_profile_dump(crashkernel="256M"),
             )
             resp = await _install(pool, _ctx(), run_id)
             njobs = await _count(pool, "SELECT count(*) AS n FROM jobs", ())
         assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.data["reason"] == "cmdline_missing_crashkernel"
         assert njobs == 0
+
+    asyncio.run(_run())
+
+
+def test_install_kdump_system_with_crashkernel_enqueues(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(
+                pool,
+                build_profile={**_VALID_BUILD, "cmdline": "console=ttyS0 crashkernel=256M"},
+                provisioning_profile=_profile_dump(crashkernel="256M"),
+            )
+            resp = await _install(pool, _ctx(), run_id)
+        assert resp.status == "queued"
 
     asyncio.run(_run())
 
@@ -1637,3 +1706,73 @@ def test_install_method_reads_alias_not_attribute_spelling() -> None:
     # the resolver reads the persisted alias 'local-libvirt' (ADR-0051 Decision 1).
     system = _system_with_profile({"provider": {"local_libvirt": {"crashkernel": "256M"}}})
     assert runs_tools._install_method_for(system) is CaptureMethod.CONSOLE
+
+
+async def _record_build_ledger(
+    pool: AsyncConnectionPool, run_id: str, result: dict[str, Any]
+) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO run_steps (run_id, step, state, result) "
+            "VALUES (%s, 'build', 'succeeded', %s) ON CONFLICT (run_id, step) DO NOTHING",
+            (run_id, Jsonb(result)),
+        )
+
+
+def test_install_handler_forwards_console_method_for_bare_system(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)  # bare System => console
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _FakeInstaller()
+            async with pool.connection() as conn:
+                await runs_tools.install_handler(conn, job, installer)
+        assert installer.calls[0][4] is CaptureMethod.CONSOLE
+        assert installer.calls[0][5] is None  # no initrd
+
+    asyncio.run(_run())
+
+
+def test_install_handler_forwards_host_dump_for_preserve_on_crash(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(
+                pool, provisioning_profile=_profile_dump(debug={"preserve_on_crash": True})
+            )
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _FakeInstaller()
+            async with pool.connection() as conn:
+                await runs_tools.install_handler(conn, job, installer)
+        assert installer.calls[0][4] is CaptureMethod.HOST_DUMP
+
+    asyncio.run(_run())
+
+
+def test_install_handler_forwards_initrd_ref_from_build_ledger(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_build_ledger(
+                pool, run_id, {"kernel_ref": "k", "initrd_ref": "local/runs/x/initrd"}
+            )
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _FakeInstaller()
+            async with pool.connection() as conn:
+                await runs_tools.install_handler(conn, job, installer)
+        assert installer.calls[0][5] == "local/runs/x/initrd"
+
+    asyncio.run(_run())
+
+
+def test_install_handler_no_initrd_when_ledger_initrd_blank(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_build_ledger(pool, run_id, {"kernel_ref": "k", "initrd_ref": ""})
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _FakeInstaller()
+            async with pool.connection() as conn:
+                await runs_tools.install_handler(conn, job, installer)
+        assert installer.calls[0][5] is None
+
+    asyncio.run(_run())
