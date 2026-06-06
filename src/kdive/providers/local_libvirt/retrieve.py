@@ -284,7 +284,9 @@ def _real_extract_redacted(data: bytes) -> bytes:  # pragma: no cover - live_vm
 
 
 def _real_fetch_object(ref: str) -> bytes:  # pragma: no cover - live_vm
-    return object_store_from_env().get_artifact(ref, "").data
+    # The ref is a key the system itself produced; there is no client etag handle, so the
+    # read is unconditional (ADR-0054). An empty etag would 412 here, not skip the check.
+    return object_store_from_env().get_artifact(ref, None).data
 
 
 def _real_run_crash(  # pragma: no cover - live_vm
