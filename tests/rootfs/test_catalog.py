@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.rootfs.catalog import RootfsCatalog, load_catalog
 
 
@@ -58,3 +61,9 @@ def test_entry_rejects_bad_checksum() -> None:
                 "ssh_user": "fedora",
             }
         )
+
+
+def test_load_catalog_missing_file_maps_to_infrastructure_failure() -> None:
+    with pytest.raises(CategorizedError) as exc_info:
+        load_catalog(Path("/nonexistent/catalog.json"))
+    assert exc_info.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
