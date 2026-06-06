@@ -62,15 +62,30 @@ The two pre-existing `get_artifact(ref, "")` seams (`introspect_drgn`, `retrieve
 corrected to `get_artifact(ref, None)` in the same change — they are the same key-only,
 no-handle read and carried the same latent defect.
 
+A genuinely vanished staging key (retention GC, a rolled-back build write) still 404s and
+maps to `STALE_HANDLE`, which the worker dead-letters as the install job's `error_category`
+(`worker.py` turns a `CategorizedError` into `queue.fail(job, exc.category)`). This is
+deliberately **not** re-mapped: `STALE_HANDLE` ("the recorded artifact ref no longer
+resolves") is the most specific accurate category, and the agent's recovery is the same as
+for *every* install-step failure — a **new Run**, not an in-place refetch (ADR-0030 §2:
+install/boot failures record no `run_steps` row and are recovered by a fresh Run on the
+System). So there is no `STALE_HANDLE`-specific "refetch the same handle" affordance to
+mislead here; the install-step failure model is uniform across categories. A unit test
+pins that a missing key under `etag=None` propagates `STALE_HANDLE` through the fetch seam.
+
 ### 3. The testable core is factored behind an injected store, not the env factory
 
 `_real_fetch` stays a thin `# pragma: no cover - live_vm` wrapper that supplies
 `object_store_from_env()`. The temp-then-rename + error-propagation logic moves to
 `_stage_object(store, ref, dest)`, which takes the store as a parameter and is unit-tested
 with an in-memory fake store — so the staging contract is exercised host-free while only
-the one `object_store_from_env()` wiring line is uncovered. The `Fetch` seam shape
-(`Callable[[str, Path], None]`) is unchanged, so the install plane's injected-seam unit
-tests are untouched (ADR-0030 §5, #126 acceptance).
+the one `object_store_from_env()` wiring line is uncovered. Because the etag-choosing call
+site (`get_artifact(ref, …)`) lives in `_stage_object`, the fake store **records the etag
+argument it receives** and the unit test asserts it is `None` — so the very bug this ADR
+removes (an empty/non-`None` etag that 404s every fetch) cannot silently regress in the
+no-cover wrapper; the unconditional-read intent is verified at the call site, not only at
+the store layer. The `Fetch` seam shape (`Callable[[str, Path], None]`) is unchanged, so
+the install plane's injected-seam unit tests are untouched (ADR-0030 §5, #126 acceptance).
 
 ## Consequences
 
@@ -80,10 +95,13 @@ tests are untouched (ADR-0030 §5, #126 acceptance).
 - A latent `stale_handle`-on-every-fetch defect in two `live_vm` seams is removed; the
   install fetch is correct on first real use.
 - A genuinely rotated/GC'd staging key still surfaces as `STALE_HANDLE` (via the 404
-  mapping), so the categorized-failure contract the install handler propagates is intact.
+  mapping); the install job is dead-lettered with that category and the agent recovers
+  with a new Run (ADR-0030 §2), the same recovery as any install-step failure — so the
+  category is accurate, not just propagated.
 - `get_artifact`'s signature widens to `etag: str | None`; callers passing a real etag are
-  source-compatible. One MinIO-backed test pins the unconditional read; one pins that a
-  missing key under `etag=None` is still `STALE_HANDLE`.
+  source-compatible. Tests pin: the unconditional read (MinIO), a missing key under
+  `etag=None` is still `STALE_HANDLE` (MinIO), and `_stage_object` passes `etag=None` to
+  the store (host-free, guards against an empty-etag regression in the no-cover wrapper).
 
 ## Considered & rejected
 
@@ -106,3 +124,10 @@ tests are untouched (ADR-0030 §5, #126 acceptance).
   key nothing else writes. The unconditional GET is the honest single-round-trip operation.
 - **Keep the `get_artifact(ref, "")` empty-etag idiom.** Rejected: verified to raise
   `STALE_HANDLE` against MinIO — it does not read the object at all.
+- **Re-map a missing staging key to a non-`STALE_HANDLE` install category at the seam**
+  (e.g. `configuration_error` "kernel artifact gone, rebuild"). Rejected: it adds a
+  translation layer for no behavioral gain. `STALE_HANDLE` already means "the recorded ref
+  no longer resolves" — the most specific accurate category — and ADR-0030 §2 makes the
+  recovery for *every* install-step failure a new Run, so no `STALE_HANDLE`-specific
+  "refetch the same handle" affordance exists to mislead an agent. Re-mapping would only
+  make the category less precise. The contract is made explicit and tested instead.
