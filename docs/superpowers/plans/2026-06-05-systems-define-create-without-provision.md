@@ -246,7 +246,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 `validate_profile` no longer rejects `upload` (Task 2), so `reprovision_system` must reject it explicitly — a `ready` System has no upload window.
 
 **Files:**
-- Modify: `src/kdive/mcp/tools/systems.py:40-45` (import), `493-497` (`reprovision_system` validation)
+- Modify: `src/kdive/mcp/tools/systems.py` — the `from kdive.providers.local_libvirt.provisioning import (...)` block, and the validation block inside `reprovision_system`. (Anchor edits on these snippets, not line numbers — earlier tasks shift line numbers in this file.)
 - Test: `tests/mcp/test_systems_tools.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -279,7 +279,7 @@ Expected: FAIL — without the guard, validation passes and the System advances 
 
 - [ ] **Step 3: Import the guard and call it in `reprovision_system`**
 
-In `src/kdive/mcp/tools/systems.py`, extend the provider import (lines 40-45) to add `reject_rootfs_without_upload_window`:
+In `src/kdive/mcp/tools/systems.py`, extend the `from kdive.providers.local_libvirt.provisioning import (...)` block to add `reject_rootfs_without_upload_window`:
 
 ```python
 from kdive.providers.local_libvirt.provisioning import (
@@ -291,7 +291,7 @@ from kdive.providers.local_libvirt.provisioning import (
 )
 ```
 
-In `reprovision_system`, change the validation block (lines 493-497) from:
+In `reprovision_system`, change its validation block (the `try:` that parses + `validate_profile`s the profile and returns `ToolResponse.failure(system_id, exc.category)`) from:
 
 ```python
     try:
@@ -378,7 +378,7 @@ Expected: FAIL — `systems_tools.define_system` does not exist (AttributeError)
 
 - [ ] **Step 3: Implement `_defined_envelope`, `define_system`, `_define_locked`**
 
-In `src/kdive/mcp/tools/systems.py`, add after `_envelope_for_system` (after line 95):
+In `src/kdive/mcp/tools/systems.py`, add immediately after the `_envelope_for_system` function:
 
 ```python
 def _defined_envelope(system: System) -> ToolResponse:
@@ -391,7 +391,7 @@ def _defined_envelope(system: System) -> ToolResponse:
     )
 ```
 
-Add, after `provision_system`/`_provision_locked` (after line 331), the `define` tool:
+Add, immediately after the `_provision_locked` function (its body ends with `return _system_job_envelope(job, system.id)`), the `define` tool:
 
 ```python
 async def define_system(
@@ -500,7 +500,7 @@ async def _define_locked(
 
 - [ ] **Step 4: Register the `systems.define` tool**
 
-In `src/kdive/mcp/tools/systems.py` `register()`, add before the `systems.provision` block (before line 730):
+In `src/kdive/mcp/tools/systems.py` `register()`, add before the existing `@app.tool(name="systems.provision", ...)` block:
 
 ```python
     @app.tool(
@@ -712,7 +712,7 @@ Expected: FAIL — `provision_system` rejects `profile=None` (TypeError/validati
 
 - [ ] **Step 3: Make `provision_system`'s profile optional and validate conditionally**
 
-In `src/kdive/mcp/tools/systems.py`, replace `provision_system` (lines 214-237) with:
+In `src/kdive/mcp/tools/systems.py`, replace the entire `provision_system` function (the `async def provision_system(...)` whose `except IllegalTransition:` returns `_config_error(allocation_id, data=data)`) with:
 
 ```python
 async def provision_system(
@@ -750,7 +750,7 @@ async def provision_system(
 
 - [ ] **Step 4: Add the admit-`defined` branch and create-lane guards in `_provision_locked`**
 
-In `src/kdive/mcp/tools/systems.py`, change `_provision_locked`'s signature (line 240-242) so `profile` is optional:
+In `src/kdive/mcp/tools/systems.py`, change `_provision_locked`'s signature (the `async def _provision_locked(...)` currently typed `profile: ProvisioningProfile`) so `profile` is optional:
 
 ```python
 async def _provision_locked(
@@ -761,7 +761,7 @@ async def _provision_locked(
 ) -> ToolResponse:
 ```
 
-Replace the existing-System branch and the create block (lines 263-302) — that is, from `existing = await _find_system_for_allocation(...)` down to the `SYSTEMS.insert(...)` System construction — with:
+Inside `_provision_locked`, replace the existing-System branch and the create block — from the `existing = await _find_system_for_allocation(conn, alloc_id)` line down to and including the `SYSTEMS.insert(...)` that constructs the `System(... state=SystemState.PROVISIONING ...)` — with:
 
 ```python
         existing = await _find_system_for_allocation(conn, alloc_id)
@@ -814,7 +814,7 @@ Replace the existing-System branch and the create block (lines 263-302) — that
         )
 ```
 
-Then add `_admit_defined` after `_provision_locked` (after line 331):
+Then add `_admit_defined` immediately after the `_provision_locked` function:
 
 ```python
 async def _admit_defined(
@@ -847,11 +847,11 @@ async def _admit_defined(
     return _system_job_envelope(job, system.id)
 ```
 
-Ensure `Allocation` is imported in `systems.py` (it imports from `kdive.domain.models` — add `Allocation` to that import list at line 31 if absent).
+Ensure `Allocation` is imported in `systems.py` (add it to the existing `from kdive.domain.models import (...)` list if absent).
 
 - [ ] **Step 5: Make the `systems.provision` tool wrapper's `profile` optional**
 
-In `register()`'s `systems_provision` wrapper (lines 735-750), change the `profile` parameter to default `None`:
+In `register()`'s `systems_provision` wrapper (the `@app.tool(name="systems.provision", ...)` inner function), change the `profile` parameter to default `None`:
 
 ```python
     async def systems_provision(
@@ -1206,7 +1206,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `tests/mcp/test_create_upload_tool.py` (the two `_seed_system(state=DEFINED)` call sites + the stale `#111` comment)
-- Modify: `tests/reconciler/test_upload_reaper.py` (the three `seed_system(system_state=DEFINED)` call sites + the stale `#111` comments)
+- Modify: `tests/reconciler/test_upload_reaper.py` (the two `seed_system(system_state=DEFINED)` call sites — `test_reaps_uncommitted_objects_past_deadline_for_defined_system` and `test_exempts_committed_object` — + the stale `#111` comment)
 
 - [ ] **Step 1: Replace the create_upload-tool `DEFINED` seeds with a `systems.define` helper**
 
@@ -1265,9 +1265,93 @@ and delete the now-stale `# Seeds DEFINED directly because no producer exists ye
 
 - [ ] **Step 2: Replace the reaper-test `DEFINED` seeds with `systems.define`**
 
-In `tests/reconciler/test_upload_reaper.py`, add an analogous `_defined_system_via_tool(pool)` helper (or import the reconciler conftest's `seed_system` and follow it with a `systems.define` call). The reaper tests need an `upload`-kind `DEFINED` System (so the manifest+object are reapable). For the three sites that call `seed_system(seed, system_state=SystemState.DEFINED)`, produce the System via `systems.define` with an `upload` profile instead, and delete the `# Seeds DEFINED directly ... (#111)` comments.
+The reaper tests seed through a single autocommit `connect()` connection (not a pool) with an `ACTIVE` allocation, so `seed_system(seed, system_state=SystemState.DEFINED)` cannot simply be swapped for `define_system` (which needs an `AsyncConnectionPool`, a `granted` allocation, and a `quotas` row). Add a self-contained helper that opens its own short-lived pool, seeds the prerequisites, and calls the producer.
 
-Because the reaper tests operate on `(owner_kind="systems", owner_id)`, the helper must return the `UUID`. Mirror the helper from Step 1, returning `UUID(resp.object_id)`.
+In `tests/reconciler/test_upload_reaper.py`, extend the imports:
+
+```python
+from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
+
+from kdive.db.repositories import ALLOCATIONS, QUOTAS, RESOURCES
+from kdive.domain.models import Allocation, Quota, Resource, ResourceKind
+from kdive.domain.state import AllocationState, ResourceStatus, RunState, SystemState
+from kdive.mcp.auth import RequestContext
+from kdive.mcp.tools import systems as systems_tools
+from kdive.security.rbac import Role
+```
+
+Add, after the `_FakeStore`/`_insert_artifact_row` helpers (around line 56), the producer helper and a valid upload profile:
+
+```python
+_DT = datetime(2026, 1, 1, tzinfo=UTC)
+_UPLOAD_PROFILE: dict[str, object] = {
+    "schema_version": 1,
+    "arch": "x86_64",
+    "vcpu": 1,
+    "memory_mb": 1024,
+    "disk_gb": 10,
+    "boot_method": "direct-kernel",
+    "kernel_source_ref": "git+https://example/linux.git#v6.9",
+    "provider": {"local-libvirt": {"rootfs": {"kind": "upload"}, "crashkernel": "256M"}},
+}
+
+
+async def _defined_system_via_define(url: str, *, project: str = "proj") -> UUID:
+    """Produce a DEFINED System through systems.define (the real producer, #111).
+
+    Seeds a resource + quota + granted allocation in a short-lived pool, then calls
+    systems.define (insert at DEFINED, flip the allocation granted->active). Returns the id.
+    """
+    async with AsyncConnectionPool(url, min_size=1, max_size=2) as pool:
+        async with pool.connection() as conn:
+            res = await RESOURCES.insert(
+                conn,
+                Resource(
+                    id=uuid4(), created_at=_DT, updated_at=_DT, kind=ResourceKind.LOCAL_LIBVIRT,
+                    pool="local-libvirt", cost_class="local", status=ResourceStatus.AVAILABLE,
+                    host_uri="qemu:///system",
+                ),
+            )
+            await QUOTAS.upsert(
+                conn,
+                Quota(project=project, max_concurrent_allocations=1_000_000,
+                      max_concurrent_systems=1_000_000, updated_at=_DT),
+            )
+            alloc = await ALLOCATIONS.insert(
+                conn,
+                Allocation(
+                    id=uuid4(), created_at=_DT, updated_at=_DT, principal="user-1",
+                    project=project, resource_id=res.id, state=AllocationState.GRANTED,
+                ),
+            )
+        ctx = RequestContext(
+            principal="user-1", agent_session="s", projects=(project,),
+            roles={project: Role.OPERATOR},
+        )
+        resp = await systems_tools.define_system(
+            pool, ctx, allocation_id=str(alloc.id), profile=_UPLOAD_PROFILE
+        )
+    return UUID(resp.object_id)
+```
+
+Then, at the **two** sites that seed a `DEFINED` System — `test_reaps_uncommitted_objects_past_deadline_for_defined_system` and `test_exempts_committed_object` — delete the `# Seeds DEFINED directly ... (#111)` comment and replace:
+
+```python
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed, system_state=SystemState.DEFINED)
+            prefix = f"local/systems/{system_id}/"
+```
+
+with (note the producer runs first, then the `seed` connection only writes the manifest / artifact row):
+
+```python
+        system_id = await _defined_system_via_define(migrated_url)
+        prefix = f"local/systems/{system_id}/"
+        async with await connect(migrated_url) as seed:
+```
+
+(For `test_exempts_committed_object`, the `_insert_artifact_row` + `replace_manifest` calls stay inside the `async with await connect(...) as seed:` block, now opened after the producer helper. Re-indent the manifest/artifact writes to remain under that `seed` block.)
 
 - [ ] **Step 3: Run both rewritten test files**
 
@@ -1291,7 +1375,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ## Task 10: Comment hygiene — `#111` forward-plumbing becomes live-path
 
 **Files:**
-- Modify: `src/kdive/mcp/tools/artifacts.py:115-117` & `232`, `src/kdive/mcp/tools/systems.py:170-175` & `_commit_uploaded_rootfs` docstring (337-351), `src/kdive/reconciler/loop.py:385-387`, `src/kdive/profiles/provisioning.py:_UploadRootfs` comment (around 60), `tests/mcp/test_systems_tools.py` (the stale `#111` comment near `_upload_profile`)
+- Modify (anchor on the named snippet, not line numbers — earlier tasks shift these files): `src/kdive/mcp/tools/artifacts.py` (the `_owner_accepts_upload` System comment & the `create_upload` `next_action` comment), `src/kdive/mcp/tools/systems.py` (the `_NON_TERMINAL_SYSTEM` `DEFINED` comment & the `_commit_uploaded_rootfs` docstring), `src/kdive/reconciler/loop.py` (the `_UPLOAD_PRE_FINALIZE` comment), `src/kdive/profiles/provisioning.py` (the `_UploadRootfs` comment), `tests/mcp/test_systems_tools.py` (the stale `#111` comment near `_upload_profile`)
 
 - [ ] **Step 1: Rewrite each forward-plumbing comment to describe the live path**
 
