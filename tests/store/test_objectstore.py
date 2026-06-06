@@ -107,6 +107,49 @@ def test_get_artifact_maps_body_read_failure_to_infrastructure_failure() -> None
     assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
 
+class _RecordingClient:
+    """A stub S3 client that records the kwargs of its last ``get_object`` call."""
+
+    def __init__(self) -> None:
+        self.last_kwargs: dict[str, object] | None = None
+
+    def get_object(self, **kwargs: object) -> dict[str, object]:
+        self.last_kwargs = kwargs
+        return {
+            "Metadata": {"sensitivity": "redacted", "retention-class": "vmcore"},
+            "Body": _StaticBody(b"bytes"),
+        }
+
+
+class _StaticBody:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def read(self) -> bytes:
+        return self._data
+
+
+def test_get_artifact_with_etag_sends_if_match() -> None:
+    client = _RecordingClient()
+    store = ObjectStore(client, "bucket")
+
+    store.get_artifact("t/vmcore/oid/core", "abc123")
+
+    assert client.last_kwargs is not None
+    assert client.last_kwargs.get("IfMatch") == '"abc123"'
+
+
+def test_get_artifact_none_etag_omits_if_match() -> None:
+    client = _RecordingClient()
+    store = ObjectStore(client, "bucket")
+
+    fetched = store.get_artifact("t/vmcore/oid/core", None)
+
+    assert client.last_kwargs is not None
+    assert "IfMatch" not in client.last_kwargs
+    assert fetched.data == b"bytes"
+
+
 def test_register_artifact_row_maps_stored_and_owner() -> None:
     stored = StoredArtifact("t/vmcore/oid/core", "etag123", Sensitivity.REDACTED, "vmcore")
     owner_id = uuid4()
@@ -165,6 +208,32 @@ def test_put_get_round_trip(minio_store: ObjectStore, key_ns: str) -> None:
     assert '"' not in stored.etag  # stored etag is the bare value
     fetched = minio_store.get_artifact(stored.key, stored.etag)
     assert fetched.data == b"payload-bytes"
+
+
+def test_get_artifact_unconditional_reads_without_etag(
+    minio_store: ObjectStore, key_ns: str
+) -> None:
+    stored = minio_store.put_artifact(
+        key_ns,
+        "runs",
+        "run-1",
+        "kernel",
+        data=b"bzimage-bytes",
+        sensitivity=Sensitivity.SENSITIVE,
+        retention_class="build",
+    )
+
+    fetched = minio_store.get_artifact(stored.key, None)
+    assert fetched.data == b"bzimage-bytes"
+    assert fetched.sensitivity is Sensitivity.SENSITIVE
+
+
+def test_get_artifact_unconditional_missing_key_raises_stale_handle(
+    minio_store: ObjectStore, key_ns: str
+) -> None:
+    with pytest.raises(CategorizedError) as excinfo:
+        minio_store.get_artifact(f"{key_ns}/runs/none/kernel", None)
+    assert excinfo.value.category is ErrorCategory.STALE_HANDLE
 
 
 def test_put_uses_the_key_scheme(minio_store: ObjectStore, key_ns: str) -> None:

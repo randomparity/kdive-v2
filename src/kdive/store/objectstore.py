@@ -181,21 +181,28 @@ class ObjectStore:
             raise _infrastructure_error("put_object", key, err) from err
         return StoredArtifact(key, _normalize_etag(resp["ETag"]), sensitivity, retention_class)
 
-    def get_artifact(self, key: str, etag: str) -> FetchedArtifact:
-        """Fetch the object at ``key`` iff its etag still matches ``etag``.
+    def get_artifact(self, key: str, etag: str | None) -> FetchedArtifact:
+        """Fetch the object at ``key``, optionally guarded by an ``If-Match`` on ``etag``.
 
-        ``etag`` is the bare value from :class:`StoredArtifact`; the conditional GET
-        re-quotes it for the ``If-Match`` header. Async callers must offload via
-        ``asyncio.to_thread``.
+        When ``etag`` is a bare value (from :class:`StoredArtifact`), the GET is
+        conditional — the client-serving path's stale-handle check (ADR-0017 §3): a 412
+        mismatch raises ``STALE_HANDLE``. When ``etag`` is ``None`` the GET is
+        unconditional, for callers that hold a key the system itself produced and no
+        client handle to validate (the install staging fetch and the symbolization
+        fetches, ADR-0054); a 404 still raises ``STALE_HANDLE``. Async callers must
+        offload via ``asyncio.to_thread``.
 
         Raises:
-            CategorizedError: the object is missing or the etag no longer matches
-                (:attr:`ErrorCategory.STALE_HANDLE`); the object lacks interpretable
-                sensitivity metadata, or the get otherwise fails
+            CategorizedError: the object is missing or (with an ``etag``) no longer
+                matches (:attr:`ErrorCategory.STALE_HANDLE`); the object lacks
+                interpretable sensitivity metadata, or the get otherwise fails
                 (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
         """
+        get_kwargs: dict[str, Any] = {"Bucket": self._bucket, "Key": key}
+        if etag is not None:
+            get_kwargs["IfMatch"] = f'"{etag}"'
         try:
-            resp = self._client.get_object(Bucket=self._bucket, Key=key, IfMatch=f'"{etag}"')
+            resp = self._client.get_object(**get_kwargs)
         except ClientError as err:
             status = err.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
             if status in _STALE_STATUSES:

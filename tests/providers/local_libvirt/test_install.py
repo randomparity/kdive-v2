@@ -13,10 +13,13 @@ import pytest
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.models import Sensitivity
 from kdive.providers.local_libvirt.install import (
     LocalLibvirtInstall,
     ReadinessResult,
+    _stage_object,
 )
+from kdive.store.objectstore import FetchedArtifact
 from tests.providers.local_libvirt.conftest import FakeDomain, FakeLibvirtConn
 
 _SYS = UUID("11111111-1111-1111-1111-111111111111")
@@ -310,6 +313,89 @@ def test_install_skips_kdump_check_and_omits_initrd(tmp_path: Path) -> None:
     os_el = domain.find("os")
     assert os_el is not None
     assert os_el.find("initrd") is None
+
+
+# --- _stage_object: object-store read → temp-then-rename ------------------------------
+
+
+@dataclass
+class _FakeStore:
+    """Records the (ref, etag) of each get_artifact and returns canned bytes or raises."""
+
+    data: bytes = b"bzimage-bytes"
+    error: CategorizedError | None = None
+    calls: list[tuple[str, str | None]] = field(default_factory=list)
+
+    def get_artifact(self, key: str, etag: str | None) -> FetchedArtifact:
+        self.calls.append((key, etag))
+        if self.error is not None:
+            raise self.error
+        return FetchedArtifact(self.data, Sensitivity.SENSITIVE, "build")
+
+
+def test_stage_object_writes_bytes_via_temp_then_rename(tmp_path: Path) -> None:
+    store = _FakeStore(data=b"real-kernel")
+    dest = tmp_path / "kernel"
+
+    _stage_object(store, _KERNEL_REF, dest)
+
+    assert dest.read_bytes() == b"real-kernel"
+    # The temp file is renamed into place, never left behind.
+    assert list(tmp_path.iterdir()) == [dest]
+
+
+def test_stage_object_reads_unconditionally_with_none_etag(tmp_path: Path) -> None:
+    store = _FakeStore()
+
+    _stage_object(store, _KERNEL_REF, tmp_path / "kernel")
+
+    # ADR-0054 regression guard: the seam must read with etag=None (an empty/non-None etag
+    # would 412 on a real store). This is the only place the etag argument is chosen.
+    assert store.calls == [(_KERNEL_REF, None)]
+
+
+def test_stage_object_propagates_store_error_and_leaves_dest_intact(tmp_path: Path) -> None:
+    dest = tmp_path / "kernel"
+    dest.write_bytes(b"previously-staged")
+    store = _FakeStore(
+        error=CategorizedError("gone", category=ErrorCategory.STALE_HANDLE),
+    )
+
+    with pytest.raises(CategorizedError) as excinfo:
+        _stage_object(store, _KERNEL_REF, dest)
+
+    assert excinfo.value.category is ErrorCategory.STALE_HANDLE
+    # A failed fetch leaves the prior file untouched and no partial temp behind.
+    assert dest.read_bytes() == b"previously-staged"
+    assert list(tmp_path.iterdir()) == [dest]
+
+
+def test_stage_object_categorizes_local_write_failure(tmp_path: Path) -> None:
+    dest = tmp_path / "kernel"
+    # A directory at the .part path makes write_bytes raise IsADirectoryError (an OSError),
+    # standing in for a disk-full/permission staging-write fault.
+    (tmp_path / "kernel.part").mkdir()
+    store = _FakeStore(data=b"kernel-bytes")
+
+    with pytest.raises(CategorizedError) as excinfo:
+        _stage_object(store, _KERNEL_REF, dest)
+
+    # The local write fault is a categorized infrastructure failure, not a raw OSError.
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert excinfo.value.details["dest"] == str(dest)
+    assert not dest.exists()
+
+
+def test_install_categorizes_staging_mkdir_failure(tmp_path: Path) -> None:
+    # A regular file where the per-System staging dir must be makes mkdir(parents=True) fail.
+    (tmp_path / str(_SYS)).write_bytes(b"not-a-dir")
+    inst = _install(conn=_conn_with_existing(), staging_root=tmp_path)
+
+    with pytest.raises(CategorizedError) as excinfo:
+        inst.install(_SYS, _RUN, _KERNEL_REF, cmdline=_CMDLINE, initrd_ref=_INITRD_REF)
+
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert excinfo.value.details["op"] == "mkdir"
 
 
 # --- live_vm real redefine + boot ----------------------------------------------------
