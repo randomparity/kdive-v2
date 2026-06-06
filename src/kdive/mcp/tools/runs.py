@@ -657,17 +657,20 @@ _NONKDUMP_DEFAULT_CMDLINE = "console=ttyS0"
 _CRASHKERNEL_TOKEN = "crashkernel="
 
 
-def _cmdline_for(run: Run, method: CaptureMethod) -> str:
-    """Resolve the kernel command line from the Run's opaque `build_profile`.
+async def _cmdline_for(conn: AsyncConnection, run: Run, method: CaptureMethod) -> str:
+    """Resolve the kernel command line from the build ledger (ADR-0056 §2).
 
-    The cmdline is read from the raw `build_profile` dict (not via `BuildProfile.parse`,
-    whose `extra="forbid"` would reject the `cmdline` key); an absent/blank value falls
-    back to the method-appropriate default — the kdump default reserves `crashkernel=`, the
-    non-kdump default does not (ADR-0051 §3).
+    The cmdline's source of record is the `(run_id, "build")` ledger `result["cmdline"]`,
+    written by the build handler (server lane, `runs.build cmdline=`) or `complete_build`
+    (external lane). A non-blank string is the cmdline; otherwise the method-appropriate
+    default applies — the kdump default reserves `crashkernel=`, the non-kdump default does
+    not (ADR-0051 §3).
     """
-    value = run.build_profile.get("cmdline")
-    if isinstance(value, str) and value.strip():
-        return value
+    result = await _existing_build_result(conn, run.id)
+    if result is not None:
+        value = result.get("cmdline")
+        if isinstance(value, str) and value.strip():
+            return value
     return _KDUMP_DEFAULT_CMDLINE if method is CaptureMethod.KDUMP else _NONKDUMP_DEFAULT_CMDLINE
 
 
@@ -728,7 +731,7 @@ async def install_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: st
             if system is None:  # defensive: runs.system_id is NOT NULL REFERENCES systems(id)
                 return _config_error(run_id, data={"reason": "system_gone"})
             method = _install_method_for(system)
-            cmdline = _cmdline_for(run, method)
+            cmdline = await _cmdline_for(conn, run, method)
             if method is CaptureMethod.KDUMP and _CRASHKERNEL_TOKEN not in cmdline:
                 return _config_error(run_id, data={"reason": "cmdline_missing_crashkernel"})
             return await _enqueue_step(conn, ctx, run, JobKind.INSTALL, "install", "runs.install")
@@ -839,7 +842,8 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
         )
     method = _install_method_for(system)
     kernel_ref = run.kernel_ref
-    cmdline = _cmdline_for(run, method)
+    cmdline = await _cmdline_for(conn, run, method)
+    _log.info("install: run %s resolved cmdline %r (method %s)", run_id, cmdline, method.value)
     initrd_ref = await _installed_initrd_ref(conn, run_id)
     job_ctx = _ctx_from_job(job, run.project)
 

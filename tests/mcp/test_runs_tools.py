@@ -937,6 +937,9 @@ async def _seed_succeeded_run(
         await conn.execute(
             "UPDATE runs SET kernel_ref=%s WHERE id=%s", (f"local/runs/{run_id}/kernel", run_id)
         )
+    await _seed_build_ledger(
+        pool, run_id, cmdline=(build_profile or _SUCCEEDED_BUILD).get("cmdline")
+    )
     return run_id
 
 
@@ -962,6 +965,7 @@ async def _seed_succeeded_run_on_system(pool: AsyncConnectionPool, system_id: st
         await conn.execute(
             "UPDATE runs SET kernel_ref=%s WHERE id=%s", (f"local/runs/{run.id}/kernel", run.id)
         )
+    await _seed_build_ledger(pool, str(run.id), cmdline=_SUCCEEDED_BUILD.get("cmdline"))
     return str(run.id)
 
 
@@ -971,6 +975,25 @@ async def _record_install_step(pool: AsyncConnectionPool, run_id: str) -> None:
             "INSERT INTO run_steps (run_id, step, state, result) "
             "VALUES (%s, 'install', 'succeeded', '{}'::jsonb)",
             (run_id,),
+        )
+
+
+async def _seed_build_ledger(
+    pool: AsyncConnectionPool, run_id: str, *, cmdline: str | None
+) -> None:
+    """Record a (run_id, 'build') ledger row, optionally carrying the resolved cmdline."""
+    result: dict[str, Any] = {
+        "kernel_ref": f"local/runs/{run_id}/kernel",
+        "debuginfo_ref": f"local/runs/{run_id}/vmlinux",
+        "build_id": "abcdef0123456789",
+    }
+    if cmdline is not None:
+        result["cmdline"] = cmdline
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO run_steps (run_id, step, state, result) "
+            "VALUES (%s, 'build', 'succeeded', %s) ON CONFLICT (run_id, step) DO NOTHING",
+            (run_id, Jsonb(result)),
         )
 
 
@@ -1022,33 +1045,46 @@ def test_install_is_idempotent_returns_same_job(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_cmdline_default_is_kdump_reserving_for_kdump() -> None:
-    run = _run_with_build_profile({"schema_version": 1})
-    assert "crashkernel=" in runs_tools._cmdline_for(run, CaptureMethod.KDUMP)
+def test_cmdline_default_is_kdump_reserving_for_kdump(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool, build_profile={"schema_version": 1})
+            async with pool.connection() as conn:
+                run = await RUNS.get(conn, UUID(run_id))
+                assert run is not None
+                cmdline = await runs_tools._cmdline_for(conn, run, CaptureMethod.KDUMP)
+            assert "crashkernel=" in cmdline
+
+    asyncio.run(_run())
 
 
-def test_cmdline_default_omits_crashkernel_for_non_kdump() -> None:
-    run = _run_with_build_profile({"schema_version": 1})
-    assert "crashkernel=" not in runs_tools._cmdline_for(run, CaptureMethod.CONSOLE)
+def test_cmdline_default_omits_crashkernel_for_non_kdump(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool, build_profile={"schema_version": 1})
+            async with pool.connection() as conn:
+                run = await RUNS.get(conn, UUID(run_id))
+                assert run is not None
+                cmdline = await runs_tools._cmdline_for(conn, run, CaptureMethod.CONSOLE)
+            assert "crashkernel=" not in cmdline
+
+    asyncio.run(_run())
 
 
-def test_cmdline_explicit_overrides_default_for_any_method() -> None:
-    run = _run_with_build_profile({"cmdline": "console=ttyS0 dhash_entries=1"})
-    assert runs_tools._cmdline_for(run, CaptureMethod.KDUMP) == "console=ttyS0 dhash_entries=1"
+def test_cmdline_from_ledger_overrides_default_for_any_method(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(
+                pool,
+                build_profile={"schema_version": 1, "cmdline": "console=ttyS0 dhash_entries=1"},
+            )
+            async with pool.connection() as conn:
+                run = await RUNS.get(conn, UUID(run_id))
+                assert run is not None
+                cmdline = await runs_tools._cmdline_for(conn, run, CaptureMethod.KDUMP)
+            assert cmdline == "console=ttyS0 dhash_entries=1"
 
-
-def _run_with_build_profile(build_profile: dict[str, Any]) -> Run:
-    return Run(
-        id=uuid4(),
-        created_at=_DT,
-        updated_at=_DT,
-        principal="user-1",
-        project="proj",
-        investigation_id=uuid4(),
-        system_id=uuid4(),
-        state=RunState.SUCCEEDED,
-        build_profile=build_profile,
-    )
+    asyncio.run(_run())
 
 
 def test_install_nonkdump_system_admits_cmdline_without_crashkernel(migrated_url: str) -> None:
@@ -1320,12 +1356,14 @@ def test_install_handler_failure_records_no_step(migrated_url: str) -> None:
                     await runs_tools.install_handler(conn, job, installer)
             assert caught.value.category is ErrorCategory.INSTALL_FAILURE
             nsteps = await _count(
-                pool, "SELECT count(*) AS n FROM run_steps WHERE run_id=%s", (run_id,)
+                pool,
+                "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='install'",
+                (run_id,),
             )
             nstate = await _count(
                 pool, "SELECT count(*) AS n FROM runs WHERE id=%s AND state='succeeded'", (run_id,)
             )
-        assert nsteps == 0  # no ledger row on failure
+        assert nsteps == 0  # no install ledger row on failure (the build row is expected)
         assert nstate == 1  # Run still succeeded
 
     asyncio.run(_run())
@@ -1711,10 +1749,13 @@ def test_install_method_reads_alias_not_attribute_spelling() -> None:
 async def _record_build_ledger(
     pool: AsyncConnectionPool, run_id: str, result: dict[str, Any]
 ) -> None:
+    # Upsert: a succeeded-run seed (`_seed_build_ledger`) already inserts a build row, so a test
+    # that needs a specific build result (e.g. an initrd_ref) overwrites it rather than no-op'ing.
     async with pool.connection() as conn:
         await conn.execute(
             "INSERT INTO run_steps (run_id, step, state, result) "
-            "VALUES (%s, 'build', 'succeeded', %s) ON CONFLICT (run_id, step) DO NOTHING",
+            "VALUES (%s, 'build', 'succeeded', %s) "
+            "ON CONFLICT (run_id, step) DO UPDATE SET result = EXCLUDED.result",
             (run_id, Jsonb(result)),
         )
 
