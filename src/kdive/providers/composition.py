@@ -180,8 +180,8 @@ class _DispatchedCrashPostmortem:
     def __init__(self, registry: CapabilityRegistry) -> None:
         self._registry = registry
 
-    def run(self, *args: object, **kwargs: object) -> CrashOutput:
-        call = self._registry.dispatch(Plane.RETRIEVE, "run", _LOCAL_KIND).call
+    def run_crash_postmortem(self, *args: object, **kwargs: object) -> CrashOutput:
+        call = self._registry.dispatch(Plane.RETRIEVE, "run_crash_postmortem", _LOCAL_KIND).call
         return cast(CrashOutput, call(*args, **kwargs))
 
 
@@ -198,8 +198,8 @@ class _DispatchedLiveIntrospector:
     def __init__(self, registry: CapabilityRegistry) -> None:
         self._registry = registry
 
-    def run(self, *args: object, **kwargs: object) -> IntrospectOutput:
-        call = self._registry.dispatch(Plane.DEBUG, "run", _LOCAL_KIND).call
+    def introspect_live(self, *args: object, **kwargs: object) -> IntrospectOutput:
+        call = self._registry.dispatch(Plane.DEBUG, "introspect_live", _LOCAL_KIND).call
         return cast(IntrospectOutput, call(*args, **kwargs))
 
 
@@ -309,7 +309,7 @@ def build_default_provider_runtime() -> ProviderRuntime:
         retrieve,
         [
             _capability(Plane.RETRIEVE, "capture", _LONG_RUNNING_CONTRACT),
-            _capability(Plane.RETRIEVE, "run", _SYNC_CONTRACT),
+            _capability(Plane.RETRIEVE, "run_crash_postmortem", _SYNC_CONTRACT),
         ],
         "retrieve",
     )
@@ -322,7 +322,7 @@ def build_default_provider_runtime() -> ProviderRuntime:
     _register_provider(
         registry,
         LocalLibvirtLiveIntrospect.from_env(),
-        [_capability(Plane.DEBUG, "run", _SYNC_CONTRACT)],
+        [_capability(Plane.DEBUG, "introspect_live", _SYNC_CONTRACT)],
         "live-introspect",
     )
     return ProviderRuntime(registry)

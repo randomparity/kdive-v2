@@ -243,7 +243,7 @@ def _live_ctx(role: Role | None = Role.OPERATOR, *, projects: tuple[str, ...] = 
 
 
 class _FakeLiveIntrospector:
-    """Records the run() transport_handle; returns a canned output or raises a planted error."""
+    """Records live introspection input; returns a canned output or raises a planted error."""
 
     def __init__(
         self, *, output: IntrospectOutput | None = None, raises: CategorizedError | None = None
@@ -252,7 +252,7 @@ class _FakeLiveIntrospector:
         self._raises = raises
         self.kwargs: dict[str, object] = {}
 
-    def run(self, *, transport_handle: str) -> IntrospectOutput:
+    def introspect_live(self, *, transport_handle: str) -> IntrospectOutput:
         self.kwargs = {"transport_handle": transport_handle}
         if self._raises is not None:
             raise self._raises

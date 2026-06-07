@@ -344,10 +344,10 @@ class LocalLibvirtLiveIntrospect:
 
     @classmethod
     def from_env(cls) -> LocalLibvirtLiveIntrospect:
-        """Build from env; the drgn seam is left ``None`` so ``run`` raises off-gate."""
+        """Build from env; the drgn seam is left ``None`` so ``introspect_live`` raises off-gate."""
         return cls()
 
-    def run(self, *, transport_handle: str) -> IntrospectOutput:
+    def introspect_live(self, *, transport_handle: str) -> IntrospectOutput:
         """Attach drgn to the live kernel, run the helpers, return a redacted report.
 
         Raises:

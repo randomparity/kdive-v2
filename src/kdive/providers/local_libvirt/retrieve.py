@@ -3,9 +3,10 @@
 `LocalLibvirtRetrieve` realizes two seam-injected ports, mirroring `LocalLibvirtBuild`:
 `Retriever.capture(system_id, method)` dispatches to the appropriate seam, stores the raw
 `sensitive` core and a `redacted` dmesg derivative, and returns both refs plus the core's build-id;
-`CrashPostmortem.run(...)` symbolizes the core against the Run's `debuginfo_ref` over an
-injected `crash` subprocess. The slow, host-bound operations are `live_vm`-gated seams, so
-the orchestration and the full error contract are unit-tested with fakes. The crash-command
+`CrashPostmortem.run_crash_postmortem(...)` symbolizes the core against the Run's
+`debuginfo_ref` over an injected `crash` subprocess. The slow, host-bound operations are
+`live_vm`-gated seams, so the orchestration and the full error contract are unit-tested with
+fakes. The crash-command
 validator is the load-bearing security control: the postmortem path is never gated, so every
 caller command is sanitized and allowlist-checked before any `crash` invocation.
 """
@@ -163,7 +164,7 @@ class LocalLibvirtRetrieve:
             retention_class=_RETENTION_CLASS,
         )
 
-    def run(
+    def run_crash_postmortem(
         self,
         *,
         vmcore_ref: str,

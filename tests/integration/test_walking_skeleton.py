@@ -104,7 +104,7 @@ class _SecretBearingCrash:
     # Fake credential the test asserts is masked; not a real secret.
     PLANTED_SECRET = "hunter2-s3cr3t"  # pragma: allowlist secret
 
-    def run(
+    def run_crash_postmortem(
         self, *, vmcore_ref: str, debuginfo_ref: str, expected_build_id: str, commands: list[str]
     ) -> CrashOutput:
         return CrashOutput(

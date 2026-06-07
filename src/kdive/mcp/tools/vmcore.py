@@ -232,7 +232,7 @@ async def postmortem_crash(
             return resolved
         try:
             output = await asyncio.to_thread(
-                crash.run,
+                crash.run_crash_postmortem,
                 vmcore_ref=resolved.vmcore_ref,
                 debuginfo_ref=resolved.debuginfo_ref,
                 expected_build_id=resolved.build_id,

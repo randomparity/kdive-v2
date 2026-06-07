@@ -126,7 +126,7 @@ def _crash_retriever(*, observed_build_id: str, crash: CrashResult) -> LocalLibv
 
 def test_run_returns_redacted_crash_output() -> None:
     crash = CrashResult(exit_status=0, stdout=b"$ log\npassword=hunter2\nok", stderr=b"")
-    out = _crash_retriever(observed_build_id="deadbeef", crash=crash).run(
+    out = _crash_retriever(observed_build_id="deadbeef", crash=crash).run_crash_postmortem(
         vmcore_ref="k/systems/s/vmcore",
         debuginfo_ref="k/runs/r/vmlinux",
         expected_build_id="deadbeef",
@@ -139,7 +139,7 @@ def test_run_returns_redacted_crash_output() -> None:
 def test_run_build_id_mismatch_is_configuration_error() -> None:
     crash = CrashResult(exit_status=0, stdout=b"", stderr=b"")
     with pytest.raises(CategorizedError) as exc:
-        _crash_retriever(observed_build_id="aaaa", crash=crash).run(
+        _crash_retriever(observed_build_id="aaaa", crash=crash).run_crash_postmortem(
             vmcore_ref="v",
             debuginfo_ref="d",
             expected_build_id="bbbb",

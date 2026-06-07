@@ -166,7 +166,7 @@ class Retriever(Protocol):
 class CrashPostmortem(Protocol):
     """Crash postmortem port for command batches over a captured vmcore."""
 
-    def run(
+    def run_crash_postmortem(
         self,
         *,
         vmcore_ref: str,
@@ -187,7 +187,7 @@ class VmcoreIntrospector(Protocol):
 class LiveIntrospector(Protocol):
     """Live introspection port over an existing transport handle."""
 
-    def run(self, *, transport_handle: str) -> IntrospectOutput: ...
+    def introspect_live(self, *, transport_handle: str) -> IntrospectOutput: ...
 
 
 class GdbMiAttachment(Protocol):

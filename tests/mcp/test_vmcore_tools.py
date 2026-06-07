@@ -82,12 +82,12 @@ class _NoCaptureRetriever:
 
 
 class _FakeCrash:
-    """Records the run() kwargs; returns a canned CrashOutput with a planted secret."""
+    """Records postmortem kwargs; returns a canned CrashOutput with a planted secret."""
 
     def __init__(self) -> None:
         self.kwargs: dict[str, object] = {}
 
-    def run(
+    def run_crash_postmortem(
         self, *, vmcore_ref: str, debuginfo_ref: str, expected_build_id: str, commands: list[str]
     ) -> CrashOutput:
         self.kwargs = {
@@ -104,12 +104,12 @@ class _FakeCrash:
 
 
 class _RaisingCrash:
-    """A CrashPostmortem whose run() raises a planted CategorizedError (e.g. provenance)."""
+    """A CrashPostmortem that raises a planted CategorizedError."""
 
     def __init__(self, category: ErrorCategory) -> None:
         self._category = category
 
-    def run(
+    def run_crash_postmortem(
         self, *, vmcore_ref: str, debuginfo_ref: str, expected_build_id: str, commands: list[str]
     ) -> CrashOutput:
         raise CategorizedError("planted", category=self._category)
