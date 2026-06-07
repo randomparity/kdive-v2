@@ -31,6 +31,7 @@ from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import systems as systems_tools
 from kdive.planes import systems as systems_handlers
+from kdive.security.audit import args_digest
 from kdive.security.rbac import AuthorizationError, Role
 from kdive.store.objectstore import ArtifactWriteRequest, ObjectStore, artifact_key
 from tests.mcp.systems_support import (
@@ -775,12 +776,45 @@ async def _teardown(pool: AsyncConnectionPool, ctx: RequestContext, system_id: s
     return await systems_tools.teardown_system(pool, ctx, system_id)
 
 
+def _teardown_profile() -> dict[str, Any]:
+    p = _profile()
+    p["provider"]["local-libvirt"]["destructive_ops"] = ["teardown"]
+    return p
+
+
+async def _scoped_teardown_allocation(pool: AsyncConnectionPool) -> str:
+    alloc_id = await _granted_allocation(pool)
+    async with pool.connection() as conn:
+        await conn.execute(
+            'UPDATE allocations SET capability_scope = \'{"destructive_ops": ["teardown"]}\' '
+            "WHERE id = %s",
+            (alloc_id,),
+        )
+    return alloc_id
+
+
+async def _seed_teardown_system(
+    pool: AsyncConnectionPool,
+    alloc_id: str,
+    state: SystemState,
+    *,
+    profile: dict[str, Any] | None = None,
+) -> str:
+    sys_id = await _seed_system(pool, alloc_id, state)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE systems SET provisioning_profile = %s WHERE id = %s",
+            (Jsonb(profile or _teardown_profile()), sys_id),
+        )
+    return sys_id
+
+
 def test_teardown_tool_enqueues_job(migrated_url: str) -> None:
-    # teardown is a destructive-administration op: admin-only (ADR-0037 §1/§2).
+    # teardown is a destructive-administration op: admin-only plus scope/profile gate.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            alloc_id = await _granted_allocation(pool)
-            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
+            alloc_id = await _scoped_teardown_allocation(pool)
+            sys_id = await _seed_teardown_system(pool, alloc_id, SystemState.READY)
             resp = await _teardown(pool, _ctx(Role.ADMIN), sys_id)
             assert resp.data["system_id"] == sys_id
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -796,8 +830,8 @@ def test_teardown_tool_enqueues_job(migrated_url: str) -> None:
 def test_teardown_tool_already_torn_down_no_job(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            alloc_id = await _granted_allocation(pool)
-            sys_id = await _seed_system(pool, alloc_id, SystemState.TORN_DOWN)
+            alloc_id = await _scoped_teardown_allocation(pool)
+            sys_id = await _seed_teardown_system(pool, alloc_id, SystemState.TORN_DOWN)
             resp = await _teardown(pool, _ctx(Role.ADMIN), sys_id)
             assert resp.status == "torn_down"
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -809,21 +843,69 @@ def test_teardown_tool_already_torn_down_no_job(migrated_url: str) -> None:
 
 
 @pytest.mark.parametrize("role", [Role.VIEWER, Role.OPERATOR])
-def test_teardown_tool_below_admin_raises(migrated_url: str, role: Role) -> None:
+def test_teardown_tool_below_admin_denied(migrated_url: str, role: Role) -> None:
     # teardown is admin-only: both viewer AND operator are refused (ADR-0037 §2).
-    from kdive.security.rbac import AuthorizationError
-
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            alloc_id = await _granted_allocation(pool)
-            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
-            with pytest.raises(AuthorizationError):
-                await _teardown(pool, _ctx(role), sys_id)
+            alloc_id = await _scoped_teardown_allocation(pool)
+            sys_id = await _seed_teardown_system(pool, alloc_id, SystemState.READY)
+            resp = await _teardown(pool, _ctx(role), sys_id)
             # The denied op enqueued no teardown job.
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT count(*) AS n FROM jobs WHERE kind = 'teardown'")
                 row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT transition FROM audit_log WHERE transition = 'teardown:denied'"
+                )
+                audit_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "authorization_denied"
         assert row is not None and row["n"] == 0
+        assert audit_row is not None
+
+    asyncio.run(_run())
+
+
+def test_teardown_tool_without_scope_denied_and_audited(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_teardown_system(pool, alloc_id, SystemState.READY)
+            resp = await _teardown(pool, _ctx(Role.ADMIN), sys_id)
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT args_digest FROM audit_log WHERE transition = 'teardown:denied'"
+                )
+                audit_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "authorization_denied"
+        assert audit_row is not None
+        assert audit_row["args_digest"] == args_digest(
+            {"system_id": sys_id, "missing": ["capability_scope"]}
+        )
+
+    asyncio.run(_run())
+
+
+def test_teardown_tool_without_profile_opt_in_denied(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_teardown_allocation(pool)
+            sys_id = await _seed_teardown_system(
+                pool, alloc_id, SystemState.READY, profile=_profile()
+            )
+            resp = await _teardown(pool, _ctx(Role.ADMIN), sys_id)
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT args_digest FROM audit_log WHERE transition = 'teardown:denied'"
+                )
+                audit_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "authorization_denied"
+        assert audit_row is not None
+        assert audit_row["args_digest"] == args_digest(
+            {"system_id": sys_id, "missing": ["profile_opt_in"]}
+        )
 
     asyncio.run(_run())
 

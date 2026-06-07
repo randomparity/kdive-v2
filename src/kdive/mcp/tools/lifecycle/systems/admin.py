@@ -33,10 +33,11 @@ from kdive.profiles.provisioning import (
 from kdive.security import audit
 from kdive.security.context import RequestContext
 from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
-from kdive.security.rbac import Role, require_role
+from kdive.security.rbac import Role
 
 _NON_TERMINAL_RUN = frozenset({RunState.CREATED, RunState.RUNNING})
 _REPROVISION = "reprovision"
+_TEARDOWN = "teardown"
 
 
 async def reprovision_system(
@@ -80,18 +81,7 @@ async def _reprovision_locked(
         try:
             assert_destructive_allowed(ctx, allocation, op, required_role=Role.OPERATOR)
         except DestructiveOpDenied as denied:
-            await audit.record(
-                conn,
-                ctx,
-                audit.AuditEvent(
-                    tool="systems.reprovision",
-                    object_kind="systems",
-                    object_id=system_id,
-                    transition="reprovision:denied",
-                    args={"system_id": str(system_id), "missing": denied.missing},
-                    project=system.project,
-                ),
-            )
+            await _audit_destructive_denied(conn, ctx, system, _REPROVISION, denied.missing)
             return ToolResponse.failure(str(system_id), ErrorCategory.AUTHORIZATION_DENIED)
         digest = profile_digest(profile)
         dedup_key = f"{system_id}:reprovision:{digest}"
@@ -110,6 +100,31 @@ async def _reprovision_locked(
 def _reprovision_opt_in(profile: ProvisioningProfile) -> bool:
     """Resolve the gate's profile opt-in factor from the target profile."""
     return destructive_opt_in(profile, _REPROVISION)
+
+
+def _teardown_opt_in(profile: ProvisioningProfile) -> bool:
+    return destructive_opt_in(profile, _TEARDOWN)
+
+
+async def _audit_destructive_denied(
+    conn: AsyncConnection,
+    ctx: RequestContext,
+    system: System,
+    op_kind: str,
+    missing: list[str],
+) -> None:
+    await audit.record(
+        conn,
+        ctx,
+        audit.AuditEvent(
+            tool=f"systems.{op_kind}",
+            object_kind="systems",
+            object_id=system.id,
+            transition=f"{op_kind}:denied",
+            args={"system_id": str(system.id), "missing": missing},
+            project=system.project,
+        ),
+    )
 
 
 async def _has_live_run(conn: AsyncConnection, system_id: UUID) -> bool:
@@ -172,11 +187,27 @@ async def teardown_system(
     if uid is None:
         return _config_error(system_id)
     with bind_context(principal=ctx.principal):
-        async with pool.connection() as conn:
+        async with (
+            pool.connection() as conn,
+            conn.transaction(),
+            advisory_xact_lock(conn, LockScope.SYSTEM, uid),
+        ):
             system = await SYSTEMS.get(conn, uid)
             if system is None or system.project not in ctx.projects:
                 return _config_error(system_id)
-            require_role(ctx, system.project, Role.ADMIN)
+            allocation = await ALLOCATIONS.get(conn, system.allocation_id)
+            if allocation is None or allocation.project not in ctx.projects:
+                return _config_error(system_id)
+            try:
+                profile = ProvisioningProfile.parse(system.provisioning_profile)
+            except CategorizedError as exc:
+                return ToolResponse.failure(system_id, exc.category)
+            op = DestructiveOp(kind=_TEARDOWN, profile_opt_in=_teardown_opt_in(profile))
+            try:
+                assert_destructive_allowed(ctx, allocation, op, required_role=Role.ADMIN)
+            except DestructiveOpDenied as denied:
+                await _audit_destructive_denied(conn, ctx, system, _TEARDOWN, denied.missing)
+                return ToolResponse.failure(system_id, ErrorCategory.AUTHORIZATION_DENIED)
             if system.state is SystemState.TORN_DOWN:
                 return ToolResponse.success(
                     system_id,
