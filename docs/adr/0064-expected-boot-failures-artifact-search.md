@@ -50,6 +50,10 @@ step is recorded as succeeded with a structured result such as:
 ```
 
 This is a workflow verdict only. It does not replace agent inspection of the evidence artifact.
+It also does not transition the System to `crashed`: the System row represents reusable
+capacity/configuration for subsequent A/B Runs. `debug.start_session` rejects Runs whose
+succeeded boot step has `boot_outcome = "expected_crash_observed"` because that Run is not a
+live-debuggable guest.
 
 ### 3. Evidence remains artifact-backed; envelopes do not carry full logs
 
@@ -96,6 +100,11 @@ does not claim a reproduced outcome.
   hidden boolean.
 - Existing raw/sensitive artifact protections stay intact: raw vmcores and sensitive artifacts
   remain unreachable from the artifact read/search tools.
+- Expected-crash reproduction does not consume the reusable System row. A fixed-kernel Run may
+  reuse the same System, or the agent may request another System when it needs a different
+  configuration.
+- Active live debugging after an expected panic is not implied by this ADR. Agents inspect
+  bounded artifacts first; vmcore/crash-debug flows remain separate provider capabilities.
 - The first search surface is System-owned artifacts only, matching the current console/vmcore
   artifact access model. Run-owned redacted artifact reads need their own ownership/project
   resolution before they are admitted.

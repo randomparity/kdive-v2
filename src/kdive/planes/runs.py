@@ -16,7 +16,7 @@ from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, Run, Sensitivity
-from kdive.domain.state import IllegalTransition, RunState, SystemState
+from kdive.domain.state import IllegalTransition, RunState
 from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
@@ -33,7 +33,6 @@ from kdive.providers.ports import Booter, Builder, BuildOutput, Installer
 from kdive.providers.runtime_paths import console_log_path, read_console_log
 from kdive.security import audit
 from kdive.security.artifact_search import ArtifactSearchInputError, search_text
-from kdive.security.context import RequestContext
 from kdive.security.redaction import Redactor
 from kdive.store.objectstore import (
     ArtifactWriteRequest,
@@ -268,37 +267,6 @@ def _expected_crash_matches(run: Run, redacted_console: bytes) -> bool:
         return False
 
 
-async def _mark_expected_crash_system(conn: AsyncConnection, ctx: RequestContext, run: Run) -> None:
-    system = await SYSTEMS.get(conn, run.system_id)
-    if system is None:
-        raise CategorizedError(
-            "expected-crash boot target system is gone",
-            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-            details={"run_id": str(run.id), "system_id": str(run.system_id)},
-        )
-    if system.state is SystemState.CRASHED:
-        return
-    if system.state is not SystemState.READY:
-        raise CategorizedError(
-            "expected-crash boot observed on a non-ready system",
-            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-            details={"run_id": str(run.id), "system_id": str(run.system_id)},
-        )
-    await SYSTEMS.update_state(conn, run.system_id, SystemState.CRASHED)
-    await audit.record(
-        conn,
-        ctx,
-        audit.AuditEvent(
-            tool="runs.boot",
-            object_kind="systems",
-            object_id=run.system_id,
-            transition="ready->crashed",
-            args={"run_id": str(run.id), "reason": "expected_crash_observed"},
-            project=run.project,
-        ),
-    )
-
-
 async def _boot_step_locked(
     conn: AsyncConnection,
     system_id: UUID,
@@ -356,7 +324,6 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
                     and artifact.data
                     and _expected_crash_matches(run, artifact.data)
                 ):
-                    await _mark_expected_crash_system(conn, job_ctx, run)
                     await _record_boot_audit()
                     return {
                         "system_id": str(run.system_id),

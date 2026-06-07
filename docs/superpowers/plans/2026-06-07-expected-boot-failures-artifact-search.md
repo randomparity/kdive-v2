@@ -40,8 +40,8 @@ object-store adapter, `uv`, `ruff`, `ty`, `pytest`.
 - Modify `src/kdive/planes/runs.py`
   - Refactors console capture into a helper returning artifact id/key.
   - Suppresses `readiness_failure` only when Run expectation matches redacted console evidence.
-  - Marks the System `crashed` for an observed expected crash so live-debug attach is not
-    accidentally enabled by the succeeded boot ledger step.
+- Modify `src/kdive/mcp/tools/debug/sessions.py`
+  - Rejects live debug attach for Runs whose boot ledger recorded `expected_crash_observed`.
 - Modify `docs/guide/reference/artifacts.md`
   - Documents `artifacts.search_text`.
 - Modify `docs/guide/reference/index.md`
@@ -1057,7 +1057,7 @@ def test_boot_handler_records_expected_crash_observed(
         assert step["result"]["evidence_kind"] == "console"
         assert step["result"]["evidence_artifact_id"]
         assert system is not None
-        assert system["state"] == "crashed"
+        assert system["state"] == "ready"
 
     asyncio.run(_run())
 
@@ -1098,28 +1098,36 @@ Add a debug-session regression test to `tests/mcp/debug/test_debug_tools.py` nea
 `test_start_session_non_ready_system_is_config_error`:
 
 ```python
-def test_start_session_rejects_expected_crash_system(migrated_url: str) -> None:
+def test_start_session_rejects_expected_crash_run(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
-            sys_id = await _seed_system(pool, alloc_id, SystemState.CRASHED)
-            run_id = await _seed_run(pool, sys_id)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
+            run_id = await _seed_run(
+                pool,
+                sys_id,
+                boot_result={"boot_outcome": "expected_crash_observed"},
+            )
+            conn_fake = _FakeConnector()
             resp = await debug_tools.start_session(
                 pool,
                 _ctx(),
                 run_id=run_id,
                 transport="gdbstub",
-                connector=_FakeConnector(),
+                connector=conn_fake,
             )
+            count = await _session_count(pool)
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
-        assert resp.data["current_status"] == "crashed"
+        assert resp.data["reason"] == "expected_crash_not_live_debuggable"
+        assert count == 0
+        assert conn_fake.opened == []
 
     asyncio.run(_run())
 ```
 
-The test must prove the crashed-System state produced by the expected-crash boot outcome does
-not become attachable through the existing live-session path.
+The test must prove the expected-crash Run outcome does not become attachable through the
+existing live-session path while preserving the System for the next Run.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1130,11 +1138,11 @@ uv run python -m pytest tests/mcp/lifecycle/test_runs_tools.py::test_boot_handle
 ```
 
 Expected: first test fails because `boot_handler` re-raises `READINESS_FAILURE`; the
-debug-session regression fails until the expected-crash path marks the System crashed.
+debug-session regression fails until attach preconditions inspect the boot ledger.
 Run the debug regression separately while it is still red:
 
 ```bash
-uv run python -m pytest tests/mcp/debug/test_debug_tools.py::test_start_session_rejects_expected_crash_system -q
+uv run python -m pytest tests/mcp/debug/test_debug_tools.py::test_start_session_rejects_expected_crash_run -q
 ```
 
 - [ ] **Step 3: Refactor console capture into a helper**
@@ -1229,48 +1237,8 @@ def _expected_crash_matches(run: Run, redacted_console: bytes) -> bool:
         return False
 ```
 
-Add a helper that marks the System crashed only after the expected-crash evidence matches:
-
-```python
-async def _mark_expected_crash_system(
-    conn: AsyncConnection, ctx: RequestContext, run: Run
-) -> None:
-    system = await SYSTEMS.get(conn, run.system_id)
-    if system is None:
-        raise CategorizedError(
-            "expected-crash boot target system is gone",
-            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-            details={"run_id": str(run.id), "system_id": str(run.system_id)},
-        )
-    if system.state is SystemState.CRASHED:
-        return
-    if system.state is not SystemState.READY:
-        raise CategorizedError(
-            "expected-crash boot observed on a non-ready system",
-            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-            details={"run_id": str(run.id), "system_id": str(run.system_id)},
-        )
-    await SYSTEMS.update_state(conn, run.system_id, SystemState.CRASHED)
-    await audit.record(
-        conn,
-        ctx,
-        audit.AuditEvent(
-            tool="runs.boot",
-            object_kind="systems",
-            object_id=run.system_id,
-            transition="ready->crashed",
-            args={"run_id": str(run.id), "reason": "expected_crash_observed"},
-            project=run.project,
-        ),
-    )
-```
-
-This is deliberately part of the expected-crash branch, not a generic readiness-failure path:
-unexpected boot crashes keep current job-failure semantics.
-
-This helper assumes the caller already holds the System advisory lock. Do not acquire
-`LockScope.SYSTEM` from inside the existing `_run_step_locked` Run lock; that reverses the
-project lock order (`SYSTEM` before `RUN`) and can deadlock with other System-scoped paths.
+Do not mark the System crashed when expected-crash evidence matches. The expected-crash result is
+Run-scoped evidence; the System remains reusable for the next vulnerable/fixed A/B Run.
 
 Add a boot-specific step wrapper that preserves the lock order while keeping the provider call
 inside the idempotency check:
@@ -1337,7 +1305,6 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
                 and artifact.data
                 and _expected_crash_matches(run, artifact.data)
             ):
-                await _mark_expected_crash_system(conn, job_ctx, run)
                 await _record_boot_audit()
                 return {
                     "system_id": str(run.system_id),
@@ -1387,7 +1354,7 @@ Expected: all pass.
 Also run:
 
 ```bash
-uv run python -m pytest tests/mcp/debug/test_debug_tools.py::test_start_session_rejects_expected_crash_system -q
+uv run python -m pytest tests/mcp/debug/test_debug_tools.py::test_start_session_rejects_expected_crash_run -q
 ```
 
 Expected: pass, proving the expected-crash reproduction result is not an implicit live-debug
@@ -1396,7 +1363,7 @@ attach mechanism.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/kdive/planes/runs.py tests/mcp/lifecycle/test_runs_tools.py tests/mcp/debug/test_debug_tools.py
+git add src/kdive/planes/runs.py src/kdive/mcp/tools/debug/sessions.py tests/mcp/lifecycle/test_runs_tools.py tests/mcp/debug/test_debug_tools.py
 git commit -m "feat: record expected boot crash outcomes"
 ```
 
@@ -1412,7 +1379,7 @@ git commit -m "feat: record expected boot crash outcomes"
 Run:
 
 ```bash
-uv run python -m pytest tests/mcp/lifecycle/test_runs_tools.py tests/mcp/catalog/test_artifacts_tools.py tests/mcp/debug/test_debug_tools.py::test_start_session_rejects_expected_crash_system tests/security/test_artifact_search.py -q
+uv run python -m pytest tests/mcp/lifecycle/test_runs_tools.py tests/mcp/catalog/test_artifacts_tools.py tests/mcp/debug/test_debug_tools.py::test_start_session_rejects_expected_crash_run tests/security/test_artifact_search.py -q
 ```
 
 Expected: all pass.

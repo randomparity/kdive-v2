@@ -214,8 +214,8 @@ Oversized artifacts:
 
 ## 7. Boot outcome flow
 
-The worker `boot_handler` already stores a redacted console artifact in a `finally` block. This
-design makes that artifact id available to the boot-result logic.
+The worker `boot_handler` captures and registers the redacted console artifact around boot
+success/failure handling. This design makes that artifact id available to the boot-result logic.
 
 Flow:
 
@@ -238,6 +238,8 @@ Flow:
 }
 ```
 
+   - Leave the System row reusable. This outcome is a Run verdict, not a System lifecycle
+     transition.
    - If it does not match, re-raise the original boot failure.
 3. `booter.boot(system_id)` raises any other category.
    - Register the console artifact if non-empty.
@@ -257,6 +259,9 @@ Implementation shape:
 - When the exception is suppressed, let the job handler return normally so the job queue records a
   succeeded job, and write `run_steps.boot` as `succeeded` with `boot_outcome:
   "expected_crash_observed"`.
+- Reject `debug.start_session` for Runs whose succeeded boot step result has `boot_outcome:
+  "expected_crash_observed"`. Post-panic active debugging is not implied by the reproduced boot
+  outcome.
 - When the exception is re-raised, preserve the original job failure category.
 
 ## 8. Provider gaps needed for the live demo

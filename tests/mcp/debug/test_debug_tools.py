@@ -163,6 +163,7 @@ async def _seed_run(
     *,
     state: RunState = RunState.SUCCEEDED,
     booted: bool = True,
+    boot_result: dict[str, Any] | None = None,
 ) -> str:
     async with pool.connection() as conn:
         inv = await INVESTIGATIONS.insert(
@@ -195,7 +196,7 @@ async def _seed_run(
             await conn.execute(
                 "INSERT INTO run_steps (run_id, step, state, result) "
                 "VALUES (%s, 'boot', 'succeeded', %s)",
-                (run.id, Jsonb({})),
+                (run.id, Jsonb({} if boot_result is None else boot_result)),
             )
     return str(run.id)
 
@@ -406,24 +407,30 @@ def test_start_session_non_ready_system_is_config_error(migrated_url: str) -> No
     asyncio.run(_run())
 
 
-def test_start_session_rejects_expected_crash_system(migrated_url: str) -> None:
+def test_start_session_rejects_expected_crash_run(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
-            sys_id = await _seed_system(pool, alloc_id, SystemState.CRASHED)
-            run_id = await _seed_run(pool, sys_id)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
+            run_id = await _seed_run(
+                pool,
+                sys_id,
+                boot_result={"boot_outcome": "expected_crash_observed"},
+            )
+            conn_fake = _FakeConnector()
             resp = await debug_tools.start_session(
                 pool,
                 _ctx(),
                 run_id=run_id,
                 transport="gdbstub",
-                connector=_FakeConnector(),
+                connector=conn_fake,
             )
             count = await _session_count(pool)
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
-        assert resp.data["current_status"] == "crashed"
+        assert resp.data["reason"] == "expected_crash_not_live_debuggable"
         assert count == 0
+        assert conn_fake.opened == []
 
     asyncio.run(_run())
 

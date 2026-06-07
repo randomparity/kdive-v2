@@ -1793,7 +1793,41 @@ def test_boot_handler_records_expected_crash_observed(
         assert step["result"]["evidence_kind"] == "console"
         assert step["result"]["evidence_artifact_id"]
         assert system is not None
-        assert system["state"] == "crashed"
+        assert system["state"] == "ready"
+
+    asyncio.run(_run())
+
+
+def test_expected_crash_observed_system_can_host_next_run(
+    migrated_url: str,
+    minio_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(runs_handlers, "object_store_from_env", lambda: minio_store)
+    monkeypatch.setattr(runs_handlers, "console_log_path", lambda sid: tmp_path / f"{sid}.log")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _set_expected_boot_failure(pool, run_id)
+            await _record_install_step(pool, run_id)
+            sys_id = await _system_id_of(pool, run_id)
+            (tmp_path / f"{sys_id}.log").write_bytes(b"Kernel panic\nRIP: __d_lookup+0x1\n")
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter(error=ErrorCategory.READINESS_FAILURE)
+            async with pool.connection() as conn:
+                await runs_handlers.boot_handler(conn, job, booter)
+
+            inv_id = await _seed_investigation(pool)
+            resp = await _create(pool, _ctx(), inv_id, sys_id)
+
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id=%s", (sys_id,))
+                system = await cur.fetchone()
+        assert resp.status == "created"
+        assert system is not None
+        assert system["state"] == "ready"
 
     asyncio.run(_run())
 
