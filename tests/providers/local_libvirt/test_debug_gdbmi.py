@@ -201,6 +201,59 @@ def test_read_registers_rejects_bad_name(tmp_path: Path) -> None:
     assert exc.value.details["code"] == "bad_register"
 
 
+def test_read_registers_rejects_empty_gdb_payload(tmp_path: Path) -> None:
+    controller = _FakeMiController(
+        responses={
+            "-data-list-register-names": [
+                {"type": "result", "message": "done", "payload": {"register-names": ["rax"]}}
+            ],
+            "-data-list-register-values x": [
+                {"type": "result", "message": "done", "payload": {"register-values": []}}
+            ],
+        }
+    )
+    with pytest.raises(CategorizedError) as exc:
+        _engine().read_registers(_attachment(controller, tmp_path), ["rax"])
+    assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
+    assert exc.value.details == {
+        "code": "missing_registers",
+        "requested": ["rax"],
+        "missing": ["rax"],
+    }
+
+
+def test_read_registers_rejects_partial_gdb_payload(tmp_path: Path) -> None:
+    controller = _FakeMiController(
+        responses={
+            "-data-list-register-names": [
+                {
+                    "type": "result",
+                    "message": "done",
+                    "payload": {"register-names": ["rax", "rbx", "rcx"]},
+                }
+            ],
+            "-data-list-register-values x": [
+                {
+                    "type": "result",
+                    "message": "done",
+                    "payload": {
+                        "register-values": [
+                            {"number": "0", "value": "0xdead"},
+                            {"number": "2", "value": "0xcafe"},
+                        ]
+                    },
+                }
+            ],
+        }
+    )
+    with pytest.raises(CategorizedError) as exc:
+        _engine().read_registers(_attachment(controller, tmp_path), ["rax", "rbx", "rcx"])
+    assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
+    assert exc.value.details["code"] == "missing_registers"
+    assert exc.value.details["requested"] == ["rax", "rbx", "rcx"]
+    assert exc.value.details["missing"] == ["rbx"]
+
+
 # --- read_memory: cap + bytes verbatim -----------------------------------------------------
 
 

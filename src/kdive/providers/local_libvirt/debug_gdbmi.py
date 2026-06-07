@@ -436,6 +436,13 @@ class GdbMiEngine:
                 ordinal = str(ordered_names.index(name))
                 if ordinal in by_number:
                     registers[name] = by_number[ordinal]
+        missing = [name for name in requested if name not in registers]
+        if missing:
+            raise CategorizedError(
+                "gdb/MI omitted requested register data",
+                category=ErrorCategory.DEBUG_ATTACH_FAILURE,
+                details={"code": "missing_registers", "requested": requested, "missing": missing},
+            )
         return self.redactor.redact_value({"registers": registers})
 
     def read_memory(self, attachment: GdbMiAttachment, *, address: int, byte_count: int) -> bytes:
