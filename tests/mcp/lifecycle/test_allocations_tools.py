@@ -18,11 +18,9 @@ from kdive.domain.state import AllocationState, IllegalTransition
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.lifecycle import allocations as alloc_tools
-from kdive.providers.local_libvirt.discovery import (
-    LocalLibvirtDiscovery,
-    register_local_libvirt_resource,
-)
+from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.rbac import AuthorizationError, Role
+from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -54,8 +52,8 @@ async def _register(
         concurrent_allocation_cap=cap,
     )
     async with pool.connection() as conn:
-        res = await register_local_libvirt_resource(
-            conn, disc, pool="local-libvirt", cost_class="local"
+        res = await register_discovered_resource(
+            conn, disc.list_resources()[0], pool="local-libvirt", cost_class="local"
         )
         # The M1 gate denies a project with no budget/quota row; seed generous rows so the
         # host cap (or the explicit test budget) is the binding constraint.

@@ -39,10 +39,8 @@ from kdive.domain.state import (
     RunState,
     SystemState,
 )
-from kdive.providers.local_libvirt.discovery import (
-    LocalLibvirtDiscovery,
-    register_local_libvirt_resource,
-)
+from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
+from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -102,8 +100,8 @@ async def register_resource(
         concurrent_allocation_cap=concurrent_allocation_cap,
     )
     async with pool.connection() as conn:
-        res = await register_local_libvirt_resource(
-            conn, disc, pool="local-libvirt", cost_class=cost_class
+        res = await register_discovered_resource(
+            conn, disc.list_resources()[0], pool="local-libvirt", cost_class=cost_class
         )
     return str(res.id)
 
@@ -156,8 +154,8 @@ async def seed_granted_allocation(
         concurrent_allocation_cap=2,
     )
     async with pool.connection() as conn:
-        res = await register_local_libvirt_resource(
-            conn, disc, pool="local-libvirt", cost_class="local"
+        res = await register_discovered_resource(
+            conn, disc.list_resources()[0], pool="local-libvirt", cost_class="local"
         )
         alloc = await ALLOCATIONS.insert(
             conn,

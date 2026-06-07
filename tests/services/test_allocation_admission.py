@@ -24,10 +24,10 @@ from kdive.db.repositories import ALLOCATIONS, BUDGETS, QUOTAS, RESOURCES
 from kdive.domain.cost import Selector
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Allocation, Budget, Quota, Resource, ResourceKind
+from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
 from kdive.services.allocation_admission import (
-    CONCURRENT_ALLOCATION_CAP_KEY,
     AllocationRequest,
     admit,
 )

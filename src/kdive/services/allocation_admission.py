@@ -50,6 +50,7 @@ from kdive.domain.cost import (
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.lease import resolve_window_hours
 from kdive.domain.models import Allocation, Resource
+from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState
 from kdive.security import audit
 from kdive.services import accounting
@@ -58,10 +59,6 @@ if TYPE_CHECKING:
     from kdive.security.context import RequestContext
 
 _SECONDS_PER_HOUR = 3600
-
-# The resource-capabilities key carrying the per-host concurrent-Allocation cap. Owned
-# here (the consumer); the discovery provider imports it to advertise the cap.
-CONCURRENT_ALLOCATION_CAP_KEY = "concurrent_allocation_cap"
 
 # The idempotency-store ``kind`` discriminator for a request grant (ADR-0040 §3); the
 # renewal path (#67) reuses the store under its own kind.

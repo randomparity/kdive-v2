@@ -19,11 +19,9 @@ from kdive.domain.state import AllocationState
 from kdive.jobs import queue
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import systems as systems_tools
-from kdive.providers.local_libvirt.discovery import (
-    LocalLibvirtDiscovery,
-    register_local_libvirt_resource,
-)
+from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.rbac import Role
+from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 TEST_DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -85,8 +83,8 @@ async def granted_allocation(
         concurrent_allocation_cap=cap,
     )
     async with conn_pool.connection() as conn:
-        res = await register_local_libvirt_resource(
-            conn, disc, pool="local-libvirt", cost_class="local"
+        res = await register_discovered_resource(
+            conn, disc.list_resources()[0], pool="local-libvirt", cost_class="local"
         )
         await QUOTAS.upsert(
             conn,

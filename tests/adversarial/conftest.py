@@ -20,8 +20,8 @@ from psycopg import sql
 from kdive.db.repositories import ALLOCATIONS, BUDGETS, QUOTAS, RESOURCES
 from kdive.domain.cost import Selector
 from kdive.domain.models import Allocation, Budget, Quota, Resource, ResourceKind
+from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState, ResourceStatus
-from kdive.services.allocation_admission import CONCURRENT_ALLOCATION_CAP_KEY
 from tests.db.conftest import migrated_url, pg_conn, postgres_url  # noqa: F401
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

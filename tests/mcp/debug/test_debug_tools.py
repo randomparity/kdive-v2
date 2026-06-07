@@ -40,14 +40,12 @@ from kdive.domain.state import (
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.debug import sessions as debug_tools
 from kdive.providers.interfaces import SystemHandle, TransportHandle
-from kdive.providers.local_libvirt.discovery import (
-    LocalLibvirtDiscovery,
-    register_local_libvirt_resource,
-)
+from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.providers.ports import TransportHandleData
 from kdive.security.paths import PathSafetyError
 from kdive.security.rbac import AuthorizationError, Role
 from kdive.security.secret_registry import SecretRegistry
+from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -122,8 +120,8 @@ async def _granted_allocation(pool: AsyncConnectionPool) -> str:
         host_uri="qemu:///system", connect=lambda: FakeLibvirtConn(), concurrent_allocation_cap=2
     )
     async with pool.connection() as conn:
-        res = await register_local_libvirt_resource(
-            conn, disc, pool="local-libvirt", cost_class="local"
+        res = await register_discovered_resource(
+            conn, disc.list_resources()[0], pool="local-libvirt", cost_class="local"
         )
         alloc = await ALLOCATIONS.insert(
             conn,

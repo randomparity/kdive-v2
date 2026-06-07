@@ -11,10 +11,8 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog import resources as resources_tools
-from kdive.providers.local_libvirt.discovery import (
-    LocalLibvirtDiscovery,
-    register_local_libvirt_resource,
-)
+from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
+from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 CTX = RequestContext(principal="user-1", agent_session="s", projects=("proj",))
@@ -40,8 +38,8 @@ def _discovery(cap: int = 2) -> LocalLibvirtDiscovery:
 
 async def _register(pool: AsyncConnectionPool) -> str:
     async with pool.connection() as conn:
-        res = await register_local_libvirt_resource(
-            conn, _discovery(), pool="local-libvirt", cost_class="local"
+        res = await register_discovered_resource(
+            conn, _discovery().list_resources()[0], pool="local-libvirt", cost_class="local"
         )
     return str(res.id)
 
