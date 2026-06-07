@@ -11,7 +11,7 @@ persisted to the per-session transcript or returned in a response. The exception
 redactor masks text/structure, and masking opaque binary memory would corrupt the requested
 dump (ADR-0034 decision 3).
 
-The ``MiController`` subprocess seam is injectable: the real :class:`PygdbmiController` drives
+The ``GdbController`` subprocess seam is injectable: the real :class:`PygdbmiController` drives
 a ``gdb`` child via pygdbmi (``live_vm``-only); tests inject a scripted fake. The live
 :class:`GdbMiAttachment` objects are held in an in-process registry keyed on ``session_id`` —
 server-process-scoped and non-durable (v1 ADR-0021): a restart strands the
@@ -30,14 +30,20 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 from pygdbmi.constants import GdbTimeoutError
 from pygdbmi.gdbmiparser import parse_response
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.ports import GdbBreakpointRef, GdbFrame, GdbMiAttachment, GdbStopRecord
+from kdive.providers.ports import (
+    GdbBreakpointRef,
+    GdbController,
+    GdbFrame,
+    GdbMiAttachment,
+    GdbStopRecord,
+)
 from kdive.security.redaction import Redactor
 
 MAX_MEMORY_READ_BYTES = 4096
@@ -147,29 +153,8 @@ def _timeout_error(command: str, timeout_sec: float) -> CategorizedError:
     )
 
 
-@runtime_checkable
-class MiController(Protocol):
-    """The injectable subprocess seam.
-
-    The real impl drives a ``gdb --interpreter=mi3`` child via pygdbmi; tests inject a scripted
-    fake. ``write`` returns the raw pygdbmi record dicts for the command; ``read`` polls for
-    further out-of-band records (the async ``*stopped`` after a ``^running``); ``exit``
-    terminates the child.
-    """
-
-    def write(self, command: str, *, timeout_sec: float) -> list[dict[str, object]]: ...
-
-    def read(self, *, timeout_sec: float) -> list[dict[str, object]]: ...
-
-    def get_gdb_response(
-        self, *, timeout_sec: float, raise_error_on_timeout: bool = True
-    ) -> list[dict[str, object]]: ...
-
-    def exit(self) -> None: ...
-
-
 class PygdbmiController:  # pragma: no cover - live_vm
-    """Real ``MiController``: a managed ``gdb --interpreter=mi3`` subprocess via ``pygdbmi``."""
+    """Real ``GdbController``: a managed ``gdb --interpreter=mi3`` child via ``pygdbmi``."""
 
     def __init__(self, command: list[str]) -> None:
         from pygdbmi.gdbcontroller import GdbController
@@ -267,7 +252,7 @@ class GdbMiEngine:
     def __init__(
         self,
         *,
-        controller_factory: Callable[[list[str]], MiController] | None = None,
+        controller_factory: Callable[[list[str]], GdbController] | None = None,
         gdb_path_finder: Callable[[str], str | None] = shutil.which,
         redactor: Redactor | None = None,
         sleep: Callable[[float], None] = time.sleep,
