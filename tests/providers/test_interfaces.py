@@ -27,6 +27,9 @@ def test_stale_plane_protocols_are_not_public_interfaces() -> None:
         "ControlPlane",
         "RetrievePlane",
         "AllocationPlane",
+        "ProvisioningProfile",
+        "BuildProfile",
+        "PowerAction",
     ):
         assert not hasattr(interfaces, name)
 

@@ -10,21 +10,21 @@ at-dispatch honored-method re-check.
 from __future__ import annotations
 
 from kdive.domain.models import Allocation, ResourceKind, Run
+from kdive.profiles.build import ParsedBuildProfile
+from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.capability import Capability, CleanupGuarantee, OpContract, Plane
 from kdive.providers.interfaces import (
     ArtifactRef,
     BreakLocation,
     BreakpointId,
-    BuildProfile,
     KernelArtifact,
     OwnedInfra,
-    PowerAction,
-    ProvisioningProfile,
     Registers,
     ResourceRecord,
     SystemHandle,
     TransportHandle,
 )
+from kdive.providers.ports import PowerAction
 
 LIBVIRT = ResourceKind.LOCAL_LIBVIRT
 
@@ -62,7 +62,7 @@ class FakeProvider:
     def teardown(self, system: SystemHandle) -> None:
         return None
 
-    def build(self, run: Run, profile: BuildProfile) -> KernelArtifact:
+    def build(self, run: Run, profile: ParsedBuildProfile) -> KernelArtifact:
         return KernelArtifact("kernel-1")
 
     def install(self, system: SystemHandle, kernel: KernelArtifact) -> None:
@@ -102,7 +102,7 @@ class PartialFakeProvider:
     def list_owned(self) -> list[OwnedInfra]:
         return []
 
-    def build(self, run: Run, profile: BuildProfile) -> KernelArtifact:
+    def build(self, run: Run, profile: ParsedBuildProfile) -> KernelArtifact:
         return KernelArtifact("kernel-1")
 
 
@@ -114,7 +114,7 @@ class MutableProvider:
     """Exposes ``build`` as a deletable instance attribute (at-dispatch re-check)."""
 
     def __init__(self) -> None:
-        def build(run: Run, profile: BuildProfile) -> KernelArtifact:
+        def build(run: Run, profile: ParsedBuildProfile) -> KernelArtifact:
             return KernelArtifact("kernel-1")
 
         self.build = build

@@ -16,11 +16,8 @@ KernelArtifact = NewType("KernelArtifact", str)
 ArtifactRef = NewType("ArtifactRef", str)
 BreakpointId = NewType("BreakpointId", str)
 
-type ProvisioningProfile = dict[str, Any]
-type BuildProfile = dict[str, Any]
 type BreakLocation = dict[str, Any]
 type Registers = dict[str, Any]
-type PowerAction = str
 
 
 class ResourceRecord(TypedDict):
