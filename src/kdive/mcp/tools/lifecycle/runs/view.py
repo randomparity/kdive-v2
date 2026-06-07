@@ -9,7 +9,7 @@ from kdive.log import bind_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
-from kdive.mcp.tools.lifecycle.runs_common import envelope_for_run
+from kdive.mcp.tools.lifecycle.runs.common import envelope_for_run
 from kdive.planes.runs_shared import install_method_for as _install_method_for
 from kdive.planes.runs_shared import system_required_cmdline
 from kdive.security.context import RequestContext

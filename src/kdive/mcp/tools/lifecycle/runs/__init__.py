@@ -11,10 +11,10 @@ from pydantic import Field
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools.lifecycle.runs_build import build_run, complete_build
-from kdive.mcp.tools.lifecycle.runs_create import create_run
-from kdive.mcp.tools.lifecycle.runs_steps import boot_run, install_run
-from kdive.mcp.tools.lifecycle.runs_view import get_run
+from kdive.mcp.tools.lifecycle.runs.build import build_run, complete_build
+from kdive.mcp.tools.lifecycle.runs.create import create_run
+from kdive.mcp.tools.lifecycle.runs.steps import boot_run, install_run
+from kdive.mcp.tools.lifecycle.runs.view import get_run
 
 __all__ = [
     "boot_run",

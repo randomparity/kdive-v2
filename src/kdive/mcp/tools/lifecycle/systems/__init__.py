@@ -11,8 +11,8 @@ from pydantic import Field
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools.lifecycle.systems_admin import reprovision_system, teardown_system
-from kdive.mcp.tools.lifecycle.systems_provision import (
+from kdive.mcp.tools.lifecycle.systems.admin import reprovision_system, teardown_system
+from kdive.mcp.tools.lifecycle.systems.provision import (
     define_system,
     get_system,
     provision_defined_system,

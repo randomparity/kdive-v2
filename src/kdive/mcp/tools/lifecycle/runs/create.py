@@ -20,7 +20,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._common import stale_handle as _stale_handle
-from kdive.mcp.tools.lifecycle.runs_common import (
+from kdive.mcp.tools.lifecycle.runs.common import (
     ALLOC_HOSTABLE,
     INVESTIGATION_OPEN_FOR_RUN,
     RUN_HOSTABLE,
