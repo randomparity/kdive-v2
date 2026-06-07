@@ -44,6 +44,7 @@ Bind a Run to a ready System and Investigation in one transaction. Requires oper
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `build_profile` | `object` | yes | Build profile for the Run's kernel. |
+| `expected_boot_failure` | `any` | no | Optional expected boot failure, e.g. {'kind':'console_crash','pattern':'Oops'}. |
 | `investigation_id` | `string` | yes | Investigation to attach the Run to. |
 | `system_id` | `string` | yes | Ready System (active Allocation) to bind. |
 

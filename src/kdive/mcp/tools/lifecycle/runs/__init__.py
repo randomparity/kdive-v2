@@ -57,7 +57,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             Field(
                 description=(
                     "Optional expected boot failure, e.g. "
-                    "{'kind':'console_crash','pattern':'Oops|__d_lookup'}."
+                    "{'kind':'console_crash','pattern':'Oops'}."
                 )
             ),
         ] = None,

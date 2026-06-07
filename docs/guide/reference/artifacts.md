@@ -43,3 +43,17 @@ List the redacted artifacts for a System. Requires viewer.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `system_id` | `string` | yes | The System whose redacted artifacts to list. |
+
+## `artifacts.search_text`
+
+`partial` · `read-only`
+
+Search a redacted System artifact with bounded literal line context.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `after_lines` | `integer` | no | Context lines after each match. |
+| `artifact_id` | `string` | yes | The redacted System artifact id. |
+| `before_lines` | `integer` | no | Context lines before each match. |
+| `max_matches` | `integer` | no | Maximum match windows to return. |
+| `pattern` | `string` | yes | Literal OR search pattern, e.g. '__d_lookup' or 'panic'. |

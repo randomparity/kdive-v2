@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -10,9 +11,11 @@ import pytest
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.domain.models import Sensitivity
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog import artifacts as artifacts_tools
 from kdive.security.rbac import AuthorizationError, Role
+from kdive.store.objectstore import FetchedArtifact, HeadResult
 from tests.mcp._seed import seed_crashed_system
 
 
@@ -53,6 +56,23 @@ async def _seed_system_with_artifacts(pool: AsyncConnectionPool) -> tuple[str, s
     return sys_id, ids[0], ids[1]
 
 
+class _SearchStore:
+    def __init__(self, data: bytes, *, size: int | None = None) -> None:
+        self.data = data
+        self.size = len(data) if size is None else size
+        self.headed = False
+        self.got = False
+
+    def head(self, key: str) -> HeadResult | None:
+        self.headed = True
+        return HeadResult(size_bytes=self.size, checksum_sha256=None, etag="e")
+
+    def get_artifact(self, key: str, etag: str | None) -> FetchedArtifact:
+        self.got = True
+        assert etag == "e"
+        return FetchedArtifact(self.data, Sensitivity.REDACTED, "console")
+
+
 def test_artifacts_list_returns_redacted_only(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -60,6 +80,92 @@ def test_artifacts_list_returns_redacted_only(migrated_url: str) -> None:
             resp = await artifacts_tools.artifacts_list(pool, _ctx(), system_id=sys_id)
         ids = {r.object_id for r in resp}
         assert ids == {red_id}  # the sensitive row is never surfaced
+
+    asyncio.run(_run())
+
+
+def test_artifacts_search_text_returns_bounded_matches(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            _, _, red_id = await _seed_system_with_artifacts(pool)
+            store = _SearchStore(b"before\nRIP: __d_lookup+0x1\nafter\n")
+            resp = await artifacts_tools.artifacts_search_text(
+                pool,
+                _ctx(),
+                artifact_id=red_id,
+                pattern="__d_lookup|Oops",
+                before_lines=1,
+                after_lines=1,
+                store=store,
+            )
+        assert resp.status == "searched"
+        assert resp.data["match_count"] == "1"
+        matches = json.loads(resp.data["matches_json"])
+        assert matches[0]["line"] == 2
+        assert matches[0]["before"] == ["before"]
+        assert matches[0]["after"] == ["after"]
+
+    asyncio.run(_run())
+
+
+def test_artifacts_search_text_sensitive_is_not_found(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            _, sens_id, _ = await _seed_system_with_artifacts(pool)
+            resp = await artifacts_tools.artifacts_search_text(
+                pool,
+                _ctx(),
+                artifact_id=sens_id,
+                pattern="panic",
+                store=_SearchStore(b"panic"),
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_artifacts_search_text_requires_viewer(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            _, _, red_id = await _seed_system_with_artifacts(pool)
+            with pytest.raises(AuthorizationError):
+                await artifacts_tools.artifacts_search_text(
+                    pool, _ctx(role=None), artifact_id=red_id, pattern="panic"
+                )
+
+    asyncio.run(_run())
+
+
+def test_artifacts_search_text_rejects_oversized_before_get(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            _, _, red_id = await _seed_system_with_artifacts(pool)
+            store = _SearchStore(b"", size=1024 * 1024 + 1)
+            resp = await artifacts_tools.artifacts_search_text(
+                pool, _ctx(), artifact_id=red_id, pattern="panic", store=store
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.data["reason"] == "artifact_too_large"
+        assert store.got is False
+
+    asyncio.run(_run())
+
+
+def test_artifacts_search_text_rejects_bad_pattern_before_head(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            _, _, red_id = await _seed_system_with_artifacts(pool)
+            store = _SearchStore(b"panic")
+            resp = await artifacts_tools.artifacts_search_text(
+                pool, _ctx(), artifact_id=red_id, pattern="a||b", store=store
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.data["reason"] == "bad_search_input"
+        assert store.headed is False
+        assert store.got is False
 
     asyncio.run(_run())
 
