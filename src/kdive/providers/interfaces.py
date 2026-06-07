@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from typing import Any, NewType, TypedDict
 
+from kdive.domain.models import ResourceKind
+from kdive.domain.state import ResourceStatus
+
 SystemHandle = NewType("SystemHandle", str)
 TransportHandle = NewType("TransportHandle", str)
 KernelArtifact = NewType("KernelArtifact", str)
@@ -24,9 +27,9 @@ class ResourceRecord(TypedDict):
     """A discovered resource host (Discovery plane)."""
 
     resource_id: str
-    kind: str
+    kind: ResourceKind
     capabilities: dict[str, Any]
-    status: str
+    status: ResourceStatus
 
 
 class OwnedInfra(TypedDict):

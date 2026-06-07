@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import kdive.providers.interfaces as interfaces
+from kdive.domain.models import ResourceKind
+from kdive.domain.state import ResourceStatus
 from kdive.providers.capability import Plane
 from kdive.providers.interfaces import (
     ArtifactRef,
@@ -47,9 +49,11 @@ def test_shared_provider_handles_are_distinct_types() -> None:
 def test_discovery_records_keep_resource_shape() -> None:
     record: ResourceRecord = {
         "resource_id": "host-1",
-        "kind": "local-libvirt",
+        "kind": ResourceKind.LOCAL_LIBVIRT,
         "capabilities": {"arch": "x86_64"},
-        "status": "available",
+        "status": ResourceStatus.AVAILABLE,
     }
 
     assert record["resource_id"] == "host-1"
+    assert record["kind"] is ResourceKind.LOCAL_LIBVIRT
+    assert record["status"] is ResourceStatus.AVAILABLE

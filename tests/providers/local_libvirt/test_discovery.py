@@ -13,6 +13,8 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.allocation_admission import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.errors import CategorizedError
+from kdive.domain.models import ResourceKind
+from kdive.domain.state import ResourceStatus
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     ensure_local_host_registered,
@@ -39,8 +41,8 @@ async def _pg(url: str) -> AsyncIterator[psycopg.AsyncConnection]:
 def test_list_resources_advertises_host_capabilities() -> None:
     record = _discovery(FakeLibvirtConn(), cap=3).list_resources()[0]
     assert record["resource_id"] == "qemu:///system"
-    assert record["kind"] == "local-libvirt"
-    assert record["status"] == "available"
+    assert record["kind"] is ResourceKind.LOCAL_LIBVIRT
+    assert record["status"] is ResourceStatus.AVAILABLE
     caps = record["capabilities"]
     assert caps["arch"] == "x86_64"
     assert caps["vcpus"] == 8

@@ -128,9 +128,9 @@ class LocalLibvirtDiscovery:
         return [
             ResourceRecord(
                 resource_id=self.host_uri,
-                kind=ResourceKind.LOCAL_LIBVIRT.value,
+                kind=ResourceKind.LOCAL_LIBVIRT,
                 capabilities=capabilities,
-                status=ResourceStatus.AVAILABLE.value,
+                status=ResourceStatus.AVAILABLE,
             )
         ]
 
@@ -171,10 +171,13 @@ async def register_local_libvirt_resource(
     """
     record = discovery.list_resources()[0]
     capabilities = record["capabilities"]
+    kind = record["kind"]
+    status = record["status"]
+    host_uri = record["resource_id"]
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "SELECT id FROM resources WHERE kind = %s AND host_uri = %s FOR UPDATE",
-            (ResourceKind.LOCAL_LIBVIRT.value, discovery.host_uri),
+            (kind.value, host_uri),
         )
         existing = await cur.fetchone()
         if existing is not None:
@@ -183,7 +186,7 @@ async def register_local_libvirt_resource(
                 "cost_class = %s WHERE id = %s RETURNING *",
                 (
                     Jsonb(capabilities),
-                    ResourceStatus.AVAILABLE.value,
+                    status.value,
                     pool,
                     cost_class,
                     existing["id"],
@@ -203,12 +206,12 @@ async def register_local_libvirt_resource(
             id=uuid4(),
             created_at=now,
             updated_at=now,
-            kind=ResourceKind.LOCAL_LIBVIRT,
+            kind=kind,
             capabilities=capabilities,
             pool=pool,
             cost_class=cost_class,
-            status=ResourceStatus.AVAILABLE,
-            host_uri=discovery.host_uri,
+            status=status,
+            host_uri=host_uri,
         ),
     )
 
