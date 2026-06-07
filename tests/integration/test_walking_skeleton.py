@@ -33,7 +33,7 @@ from kdive.jobs import queue
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import artifacts as artifacts_tools
 from kdive.mcp.tools import control as control_tools
-from kdive.mcp.tools import runs as runs_tools
+from kdive.mcp.tools import runs_handlers
 from kdive.mcp.tools import vmcore as vmcore_tools
 from kdive.providers.local_libvirt.build import BuildOutput
 from kdive.providers.local_libvirt.retrieve import CaptureOutput, CrashOutput
@@ -206,10 +206,10 @@ def test_completed_step_replay_does_not_re_execute(migrated_url: str) -> None:
             job = await _enqueue_build(pool, run_id)
             builder = _RecordingBuilder()
             async with pool.connection() as conn:
-                await runs_tools.build_handler(conn, job, builder)
+                await runs_handlers.build_handler(conn, job, builder)
             # Replay the same job: the (run_id, "build") ledger short-circuits the rebuild.
             async with pool.connection() as conn:
-                await runs_tools.build_handler(conn, job, builder)
+                await runs_handlers.build_handler(conn, job, builder)
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM runs WHERE id = %s", (run_id,))
                 run_row = await cur.fetchone()

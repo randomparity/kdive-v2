@@ -16,6 +16,7 @@ from psycopg.rows import dict_row
 from kdive.domain.models import Sensitivity
 from kdive.mcp.tools import artifacts as artifacts_tools
 from kdive.mcp.tools import systems as systems_tools
+from kdive.mcp.tools import systems_handlers
 from kdive.store.objectstore import ObjectStore, artifact_key
 from tests.mcp.test_systems_tools import (
     _ctx,
@@ -72,7 +73,7 @@ def test_define_upload_provision_reaches_ready_with_committed_rootfs(
             # 5. the provision handler drives provisioning -> ready and commits the rootfs
             job = await _enqueue_provision(pool, sys_id, alloc_id)
             async with pool.connection() as conn:
-                await systems_tools.provision_handler(conn, job, _FakeProvisioning())
+                await systems_handlers.provision_handler(conn, job, _FakeProvisioning())
 
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))

@@ -53,6 +53,7 @@ from kdive.mcp.tools import accounting as acct_tools
 from kdive.mcp.tools import allocations as alloc_tools
 from kdive.mcp.tools import control as control_tools
 from kdive.mcp.tools import systems as systems_tools
+from kdive.mcp.tools import systems_handlers
 from kdive.providers.local_libvirt.provisioning import domain_name_for
 from kdive.reconciler import loop
 from kdive.security.rbac import AuthorizationError, Role
@@ -454,7 +455,7 @@ def test_c3_reconciliation_nets_to_actual_and_usage_matches(migrated_url: str) -
             assert prov.status == "queued"
             job = await _provision_job_for_system(pool, prov.data["system_id"])
             async with pool.connection() as conn:
-                await systems_tools.provision_handler(conn, job, _FakeProvisioner())
+                await systems_handlers.provision_handler(conn, job, _FakeProvisioner())
             # The handler stamped active_started_at on ready; back-date it 2h to simulate
             # the lease running before release (no explicit seed of the interval).
             assert (await _alloc(pool, alloc_id)).active_started_at is not None
@@ -987,7 +988,7 @@ def test_c7_reprovision_in_place_cycle(migrated_url: str) -> None:
             assert job_row is not None
             job = Job.model_validate(job_row)
             async with pool.connection() as conn:
-                await systems_tools.reprovision_handler(conn, job, _RecordingProvisioner())
+                await systems_handlers.reprovision_handler(conn, job, _RecordingProvisioner())
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     "SELECT state, provisioning_profile FROM systems WHERE id = %s", (sys_id,)

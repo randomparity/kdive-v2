@@ -29,7 +29,6 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Job, JobKind, System
 from kdive.domain.state import AllocationState, IllegalTransition, RunState, SystemState
 from kdive.jobs import queue
-from kdive.jobs.models import HandlerRegistry
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
@@ -54,11 +53,9 @@ from kdive.mcp.tools._common import (
 )
 from kdive.profiles.provisioning import ProvisioningProfile, profile_digest
 from kdive.providers.composition import (
-    ProviderRuntime,
     reject_rootfs_without_upload_window,
     validate_profile,
 )
-from kdive.providers.ports import Provisioner
 from kdive.security import audit
 from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
 from kdive.security.rbac import Role, require_role
@@ -485,14 +482,6 @@ async def _define_locked(
         return _defined_envelope(system)
 
 
-async def provision_handler(
-    conn: AsyncConnection, job: Job, provisioning: Provisioner
-) -> str | None:
-    from kdive.planes import systems
-
-    return await systems.provision_handler(conn, job, provisioning)
-
-
 def _reprovision_opt_in(profile: ProvisioningProfile) -> bool:
     """Resolve the gate's profile opt-in factor from the target profile (ADR-0038 §3)."""
     return _REPROVISION in profile.provider.local_libvirt.destructive_ops
@@ -624,14 +613,6 @@ async def _admit_reprovision(
     return _system_job_envelope(job, system.id)
 
 
-async def reprovision_handler(
-    conn: AsyncConnection, job: Job, provisioning: Provisioner
-) -> str | None:
-    from kdive.planes import systems
-
-    return await systems.reprovision_handler(conn, job, provisioning)
-
-
 async def teardown_system(
     pool: AsyncConnectionPool, ctx: RequestContext, system_id: str
 ) -> ToolResponse:
@@ -667,14 +648,6 @@ async def teardown_system(
                 f"{uid}:teardown",
             )
         return _system_job_envelope(job, uid)
-
-
-async def teardown_handler(
-    conn: AsyncConnection, job: Job, provisioning: Provisioner
-) -> str | None:
-    from kdive.planes import systems
-
-    return await systems.teardown_handler(conn, job, provisioning)
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
@@ -763,17 +736,3 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         return await reprovision_system(
             pool, current_context(), system_id=system_id, profile=profile
         )
-
-
-def register_handlers(
-    registry: HandlerRegistry,
-    *,
-    provisioning: Provisioner | None = None,
-    provider_runtime: ProviderRuntime | None = None,
-) -> None:
-    """Bind the worker handlers while keeping the public app seam unchanged."""
-    from kdive.planes import systems
-
-    systems.register_handlers(
-        registry, provisioning=provisioning, provider_runtime=provider_runtime
-    )

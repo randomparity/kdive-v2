@@ -40,7 +40,6 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.jobs import queue
-from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import BuildPayload
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
@@ -66,16 +65,15 @@ from kdive.mcp.tools._common import (
 )
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
 from kdive.providers.composition import (
-    ProviderRuntime,
-    validate_external_artifacts,
-)
-from kdive.providers.composition import (
     console_log_path as _console_log_path,
 )
 from kdive.providers.composition import (
     read_console_log as _read_console_log,
 )
-from kdive.providers.ports import Booter, Builder, BuildOutput, Installer, ValidatedUpload
+from kdive.providers.composition import (
+    validate_external_artifacts,
+)
+from kdive.providers.ports import BuildOutput, ValidatedUpload
 from kdive.security import audit
 from kdive.security.rbac import Role, require_role
 from kdive.store.objectstore import (
@@ -588,12 +586,6 @@ async def _finalize_external_build(
     return _complete_envelope(run.id, result)
 
 
-async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> str | None:
-    from kdive.planes import runs
-
-    return await runs.build_handler(conn, job, builder)
-
-
 # --- install + boot plane (#19, ADR-0030) --------------------------------------------
 
 # The platform-required kernel args the install/boot plane always injects: the serial console
@@ -759,18 +751,6 @@ async def _enqueue_step(
     return _run_job_envelope(job, run.id)
 
 
-async def install_handler(conn: AsyncConnection, job: Job, installer: Installer) -> str | None:
-    from kdive.planes import runs
-
-    return await runs.install_handler(conn, job, installer)
-
-
-async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str | None:
-    from kdive.planes import runs
-
-    return await runs.boot_handler(conn, job, booter)
-
-
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `runs.*` tools on ``app``, bound to ``pool``."""
 
@@ -874,23 +854,3 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     ) -> ToolResponse:
         """Enqueue the boot job for an installed Run; poll jobs.* for completion. Operator only."""
         return await boot_run(pool, current_context(), run_id)
-
-
-def register_handlers(
-    registry: HandlerRegistry,
-    *,
-    builder: Builder | None = None,
-    installer: Installer | None = None,
-    booter: Booter | None = None,
-    provider_runtime: ProviderRuntime | None = None,
-) -> None:
-    """Bind the worker handlers while keeping the public app seam unchanged."""
-    from kdive.planes import runs
-
-    runs.register_handlers(
-        registry,
-        builder=builder,
-        installer=installer,
-        booter=booter,
-        provider_runtime=provider_runtime,
-    )

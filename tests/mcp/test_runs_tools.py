@@ -37,6 +37,7 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import runs as runs_tools
+from kdive.mcp.tools import runs_handlers
 from kdive.security.rbac import AuthorizationError, Role
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -733,7 +734,7 @@ def test_build_run_records_cmdline_in_the_build_ledger(migrated_url: str) -> Non
             assert env.status != "error"
             async with pool.connection() as conn:
                 job = await _build_job_for(conn, run_id)
-                await runs_tools.build_handler(conn, job, _FakeBuilder())
+                await runs_handlers.build_handler(conn, job, _FakeBuilder())
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     "SELECT result FROM run_steps WHERE run_id=%s AND step='build'", (run_id,)
@@ -772,7 +773,7 @@ def test_build_run_without_cmdline_records_none(migrated_url: str) -> None:
             await runs_tools.build_run(pool, _ctx(Role.OPERATOR), run_id)
             async with pool.connection() as conn:
                 job = await _build_job_for(conn, run_id)
-                await runs_tools.build_handler(conn, job, _FakeBuilder())
+                await runs_handlers.build_handler(conn, job, _FakeBuilder())
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     "SELECT result FROM run_steps WHERE run_id=%s AND step='build'", (run_id,)
@@ -790,7 +791,7 @@ def test_build_handler_drives_run_succeeded_sets_refs(migrated_url: str) -> None
             job = await _enqueue_build_job(pool, run_id)
             builder = _FakeBuilder()
             async with pool.connection() as conn:
-                result = await runs_tools.build_handler(conn, job, builder)
+                result = await runs_handlers.build_handler(conn, job, builder)
             assert result == run_id
             assert builder.calls == [UUID(run_id)]
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -825,10 +826,10 @@ def test_build_handler_replay_does_not_rebuild(migrated_url: str) -> None:
             job = await _enqueue_build_job(pool, run_id)
             builder = _FakeBuilder()
             async with pool.connection() as conn:
-                await runs_tools.build_handler(conn, job, builder)
+                await runs_handlers.build_handler(conn, job, builder)
             # Re-dispatch the same job: the ledger short-circuits the rebuild.
             async with pool.connection() as conn:
-                await runs_tools.build_handler(conn, job, builder)
+                await runs_handlers.build_handler(conn, job, builder)
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM runs WHERE id=%s", (run_id,))
                 row = await cur.fetchone()
@@ -846,7 +847,7 @@ def test_build_handler_build_failure_sets_run_failed(migrated_url: str) -> None:
             builder = _FakeBuilder(error=ErrorCategory.BUILD_FAILURE)
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as caught:
-                    await runs_tools.build_handler(conn, job, builder)
+                    await runs_handlers.build_handler(conn, job, builder)
             assert caught.value.category is ErrorCategory.BUILD_FAILURE
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state, failure_category FROM runs WHERE id=%s", (run_id,))
@@ -868,7 +869,7 @@ def test_build_handler_config_failure_sets_run_failed_config_error(migrated_url:
             builder = _FakeBuilder(error=ErrorCategory.CONFIGURATION_ERROR)
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError):
-                    await runs_tools.build_handler(conn, job, builder)
+                    await runs_handlers.build_handler(conn, job, builder)
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state, failure_category FROM runs WHERE id=%s", (run_id,))
                 row = await cur.fetchone()
@@ -888,7 +889,7 @@ def test_build_handler_tolerates_concurrent_cancel(migrated_url: str) -> None:
                 await conn.execute("UPDATE runs SET state='canceled' WHERE id=%s", (run_id,))
             builder = _FakeBuilder()
             async with pool.connection() as conn:
-                result = await runs_tools.build_handler(conn, job, builder)
+                result = await runs_handlers.build_handler(conn, job, builder)
             assert result == run_id  # does not crash
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM runs WHERE id=%s", (run_id,))
@@ -909,7 +910,7 @@ def test_build_handler_crash_window_re_dispatch_overwrites_no_orphan(migrated_ur
             crashing = _FakeBuilder(error=ErrorCategory.BUILD_FAILURE)
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError):
-                    await runs_tools.build_handler(conn, job, crashing)
+                    await runs_handlers.build_handler(conn, job, crashing)
             # The failure drove the Run terminal (failed); a real lease-lapse crash would not.
             # Reset to running to model a crash that left no ledger row but the Run still running.
             async with pool.connection() as conn:
@@ -918,7 +919,7 @@ def test_build_handler_crash_window_re_dispatch_overwrites_no_orphan(migrated_ur
                 )
             ok = _FakeBuilder()
             async with pool.connection() as conn:
-                await runs_tools.build_handler(conn, job, ok)
+                await runs_handlers.build_handler(conn, job, ok)
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state, kernel_ref FROM runs WHERE id=%s", (run_id,))
                 row = await cur.fetchone()
@@ -936,7 +937,7 @@ def test_build_handler_crash_window_re_dispatch_overwrites_no_orphan(migrated_ur
 
 def test_register_handlers_binds_build() -> None:
     registry = HandlerRegistry()
-    runs_tools.register_handlers(
+    runs_handlers.register_handlers(
         registry, builder=_FakeBuilder(), installer=_FakeInstaller(), booter=_FakeBooter()
     )
     assert registry.get(JobKind.BUILD) is not None
@@ -1356,7 +1357,7 @@ def test_install_handler_records_step_run_stays_succeeded(migrated_url: str) -> 
             job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
             installer = _FakeInstaller()
             async with pool.connection() as conn:
-                result = await runs_tools.install_handler(conn, job, installer)
+                result = await runs_handlers.install_handler(conn, job, installer)
             assert result == run_id
             assert len(installer.calls) == 1
             nsteps = await _count(
@@ -1380,9 +1381,9 @@ def test_install_handler_replay_does_not_restage(migrated_url: str) -> None:
             job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
             installer = _FakeInstaller()
             async with pool.connection() as conn:
-                await runs_tools.install_handler(conn, job, installer)
+                await runs_handlers.install_handler(conn, job, installer)
             async with pool.connection() as conn:
-                await runs_tools.install_handler(conn, job, installer)
+                await runs_handlers.install_handler(conn, job, installer)
         assert len(installer.calls) == 1  # built once
 
     asyncio.run(_run())
@@ -1423,7 +1424,7 @@ def test_install_handler_concurrent_dispatch_invokes_once(migrated_url: str) -> 
 
             async def _dispatch() -> None:
                 async with pool.connection() as conn:
-                    await runs_tools.install_handler(conn, job, installer)
+                    await runs_handlers.install_handler(conn, job, installer)
 
             first = asyncio.create_task(_dispatch())
             assert await asyncio.to_thread(installer.entered.wait, 5)
@@ -1449,7 +1450,7 @@ def test_install_handler_failure_records_no_step(migrated_url: str) -> None:
             installer = _FakeInstaller(error=ErrorCategory.INSTALL_FAILURE)
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as caught:
-                    await runs_tools.install_handler(conn, job, installer)
+                    await runs_handlers.install_handler(conn, job, installer)
             assert caught.value.category is ErrorCategory.INSTALL_FAILURE
             nsteps = await _count(
                 pool,
@@ -1475,7 +1476,7 @@ def test_install_handler_missing_kernel_ref_is_config_error(migrated_url: str) -
             installer = _FakeInstaller()
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError):
-                    await runs_tools.install_handler(conn, job, installer)
+                    await runs_handlers.install_handler(conn, job, installer)
             assert installer.calls == []  # never reached the installer
             nsteps = await _count(
                 pool, "SELECT count(*) AS n FROM run_steps WHERE run_id=%s", (run_id,)
@@ -1493,7 +1494,7 @@ def test_boot_handler_records_step_run_stays_succeeded(migrated_url: str) -> Non
             job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
             booter = _FakeBooter()
             async with pool.connection() as conn:
-                result = await runs_tools.boot_handler(conn, job, booter)
+                result = await runs_handlers.boot_handler(conn, job, booter)
             assert result == run_id
             assert len(booter.calls) == 1
             nsteps = await _count(
@@ -1514,9 +1515,9 @@ def test_boot_handler_replay_does_not_reboot(migrated_url: str) -> None:
             job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
             booter = _FakeBooter()
             async with pool.connection() as conn:
-                await runs_tools.boot_handler(conn, job, booter)
+                await runs_handlers.boot_handler(conn, job, booter)
             async with pool.connection() as conn:
-                await runs_tools.boot_handler(conn, job, booter)
+                await runs_handlers.boot_handler(conn, job, booter)
         assert len(booter.calls) == 1
 
     asyncio.run(_run())
@@ -1532,7 +1533,7 @@ def test_boot_handler_failure_records_no_step(migrated_url: str, category: Error
             booter = _FakeBooter(error=category)
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as caught:
-                    await runs_tools.boot_handler(conn, job, booter)
+                    await runs_handlers.boot_handler(conn, job, booter)
             assert caught.value.category is category
             nsteps = await _count(
                 pool,
@@ -1546,7 +1547,7 @@ def test_boot_handler_failure_records_no_step(migrated_url: str, category: Error
 
 def test_register_handlers_binds_install_and_boot() -> None:
     registry = HandlerRegistry()
-    runs_tools.register_handlers(
+    runs_handlers.register_handlers(
         registry, builder=_FakeBuilder(), installer=_FakeInstaller(), booter=_FakeBooter()
     )
     assert registry.get(JobKind.INSTALL) is not None
@@ -1574,7 +1575,7 @@ def test_boot_handler_registers_console_on_success(
             job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
             booter = _FakeBooter()  # clean success, no error
             async with pool.connection() as conn:
-                result = await runs_tools.boot_handler(conn, job, booter)
+                result = await runs_handlers.boot_handler(conn, job, booter)
             assert result == run_id
             nsteps = await _count(
                 pool,
@@ -1613,7 +1614,7 @@ def test_boot_handler_registers_console_even_on_failure(
             booter = _FakeBooter(error=ErrorCategory.BOOT_TIMEOUT)
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError):
-                    await runs_tools.boot_handler(conn, job, booter)
+                    await runs_handlers.boot_handler(conn, job, booter)
             n = await _count(
                 pool,
                 "SELECT count(*) AS n FROM artifacts WHERE object_key LIKE %s",
@@ -1643,7 +1644,7 @@ def test_boot_handler_skips_empty_console(
             job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
             booter = _FakeBooter()  # clean success, but no console file was written
             async with pool.connection() as conn:
-                result = await runs_tools.boot_handler(conn, job, booter)
+                result = await runs_handlers.boot_handler(conn, job, booter)
             assert result == run_id
             nsteps = await _count(
                 pool,
@@ -1686,7 +1687,7 @@ def test_boot_handler_console_is_readable_via_artifacts(
             job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
             booter = _FakeBooter()  # clean success
             async with pool.connection() as conn:
-                result = await runs_tools.boot_handler(conn, job, booter)
+                result = await runs_handlers.boot_handler(conn, job, booter)
             assert result == run_id
 
             # artifacts_list must return the console as a redacted artifact envelope.
@@ -1730,7 +1731,7 @@ def test_boot_handler_reboot_refreshes_console_etag(
             (tmp_path / f"{sid}.log").write_bytes(b"[    0.0] FIRST-BOOT-MARKER ready\n")
             job1 = await _enqueue_job(pool, JobKind.BOOT, run1, "boot")
             async with pool.connection() as conn:
-                await runs_tools.boot_handler(conn, job1, _FakeBooter())
+                await runs_handlers.boot_handler(conn, job1, _FakeBooter())
 
             # Second boot of the SAME System (new Run): the host console log is overwritten
             # with different content, so put_artifact rewrites the object at the same key.
@@ -1739,7 +1740,7 @@ def test_boot_handler_reboot_refreshes_console_etag(
             (tmp_path / f"{sid}.log").write_bytes(b"[    0.0] SECOND-BOOT-MARKER oops\n")
             job2 = await _enqueue_job(pool, JobKind.BOOT, run2, "boot")
             async with pool.connection() as conn:
-                await runs_tools.boot_handler(conn, job2, _FakeBooter())
+                await runs_handlers.boot_handler(conn, job2, _FakeBooter())
 
             n = await _count(
                 pool,
@@ -1863,7 +1864,7 @@ def test_install_handler_forwards_console_method_for_bare_system(migrated_url: s
             job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
             installer = _FakeInstaller()
             async with pool.connection() as conn:
-                await runs_tools.install_handler(conn, job, installer)
+                await runs_handlers.install_handler(conn, job, installer)
         assert installer.calls[0][4] is CaptureMethod.CONSOLE
         assert installer.calls[0][5] is None  # no initrd
 
@@ -1879,7 +1880,7 @@ def test_install_handler_forwards_host_dump_for_preserve_on_crash(migrated_url: 
             job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
             installer = _FakeInstaller()
             async with pool.connection() as conn:
-                await runs_tools.install_handler(conn, job, installer)
+                await runs_handlers.install_handler(conn, job, installer)
         assert installer.calls[0][4] is CaptureMethod.HOST_DUMP
 
     asyncio.run(_run())
@@ -1895,7 +1896,7 @@ def test_install_handler_forwards_initrd_ref_from_build_ledger(migrated_url: str
             job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
             installer = _FakeInstaller()
             async with pool.connection() as conn:
-                await runs_tools.install_handler(conn, job, installer)
+                await runs_handlers.install_handler(conn, job, installer)
         assert installer.calls[0][5] == "local/runs/x/initrd"
 
     asyncio.run(_run())
@@ -1909,7 +1910,7 @@ def test_install_handler_no_initrd_when_ledger_initrd_blank(migrated_url: str) -
             job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
             installer = _FakeInstaller()
             async with pool.connection() as conn:
-                await runs_tools.install_handler(conn, job, installer)
+                await runs_handlers.install_handler(conn, job, installer)
         assert installer.calls[0][5] is None
 
     asyncio.run(_run())
@@ -1926,7 +1927,7 @@ def test_install_handler_forwards_ledger_cmdline_to_installer(migrated_url: str)
             job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
             installer = _FakeInstaller()
             async with pool.connection() as conn:
-                await runs_tools.install_handler(conn, job, installer)
+                await runs_handlers.install_handler(conn, job, installer)
         assert installer.calls[0][3] == "console=ttyS0 root=/dev/vda dhash_entries=1"
 
     asyncio.run(_run())
@@ -1944,7 +1945,7 @@ def test_install_handler_forwards_default_cmdline_when_ledger_has_none(migrated_
             job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
             installer = _FakeInstaller()
             async with pool.connection() as conn:
-                await runs_tools.install_handler(conn, job, installer)
+                await runs_handlers.install_handler(conn, job, installer)
         assert installer.calls[0][3] == "console=ttyS0 root=/dev/vda"  # required base only
 
     asyncio.run(_run())

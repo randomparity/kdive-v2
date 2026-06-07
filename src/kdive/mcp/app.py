@@ -27,12 +27,14 @@ from kdive.mcp.tools import (
     investigations,
     jobs,
     resources,
+    runs_handlers,
+    systems_handlers,
 )
 from kdive.mcp.tools import control as control_tools
 from kdive.mcp.tools import runs as runs_tools
 from kdive.mcp.tools import systems as systems_tools
 from kdive.mcp.tools import vmcore as vmcore_tools
-from kdive.planes import runs, systems, vmcore
+from kdive.planes import vmcore
 from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 
 type PlaneRegistrar = Callable[[FastMCP, AsyncConnectionPool, ProviderRuntime], None]
@@ -70,8 +72,10 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
 # toolchain connection at registration). The Connect plane (#20) registers tools only — its
 # debug.start_session/end_session are synchronous, so they have no JobKind and no handler.
 _HANDLER_REGISTRARS: tuple[HandlerRegistrar, ...] = (
-    lambda registry, runtime: systems.register_handlers(registry, provider_runtime=runtime),
-    lambda registry, runtime: runs.register_handlers(registry, provider_runtime=runtime),
+    lambda registry, runtime: systems_handlers.register_handlers(
+        registry, provider_runtime=runtime
+    ),
+    lambda registry, runtime: runs_handlers.register_handlers(registry, provider_runtime=runtime),
     lambda registry, runtime: control_tools.register_handlers(registry, provider_runtime=runtime),
     lambda registry, runtime: vmcore.register_handlers(registry, provider_runtime=runtime),
 )

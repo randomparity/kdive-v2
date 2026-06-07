@@ -36,6 +36,7 @@ from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import systems as systems_tools
+from kdive.mcp.tools import systems_handlers
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     register_local_libvirt_resource,
@@ -460,7 +461,7 @@ def test_provision_handler_drives_system_ready(migrated_url: str) -> None:
             job = await _enqueue_provision(pool, sys_id, alloc_id)
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
-                result = await systems_tools.provision_handler(conn, job, prov)
+                result = await systems_handlers.provision_handler(conn, job, prov)
             assert result == sys_id
             assert prov.provisioned == [UUID(sys_id)]
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -488,7 +489,7 @@ def test_provision_handler_stamps_active_started_at_on_ready(migrated_url: str) 
             sys_id = await _seed_system(pool, alloc_id, SystemState.PROVISIONING)
             job = await _enqueue_provision(pool, sys_id, alloc_id)
             async with pool.connection() as conn:
-                await systems_tools.provision_handler(conn, job, _FakeProvisioning())
+                await systems_handlers.provision_handler(conn, job, _FakeProvisioning())
                 alloc = await ALLOCATIONS.get(conn, UUID(alloc_id))
             assert alloc is not None
             assert alloc.active_started_at is not None  # billing interval opened
@@ -516,7 +517,7 @@ def test_provision_handler_does_not_restamp_active_started_at(migrated_url: str)
             sys_id = await _seed_system(pool, alloc_id, SystemState.PROVISIONING)
             job = await _enqueue_provision(pool, sys_id, alloc_id)
             async with pool.connection() as conn:
-                await systems_tools.provision_handler(conn, job, _FakeProvisioning())
+                await systems_handlers.provision_handler(conn, job, _FakeProvisioning())
                 alloc = await ALLOCATIONS.get(conn, UUID(alloc_id))
             assert alloc is not None
             assert alloc.active_started_at == anchor  # unchanged by the second ready
@@ -532,7 +533,7 @@ def test_provision_handler_retry_on_ready_is_noop(migrated_url: str) -> None:
             job = await _enqueue_provision(pool, sys_id, alloc_id)
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
-                await systems_tools.provision_handler(conn, job, prov)
+                await systems_handlers.provision_handler(conn, job, prov)
             assert prov.provisioned == []  # already up; provider not called again
 
     asyncio.run(_run())
@@ -547,7 +548,7 @@ def test_provision_handler_provider_failure_sets_system_failed(migrated_url: str
             prov = _FakeProvisioning(provision_error=True)
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError):
-                    await systems_tools.provision_handler(conn, job, prov)
+                    await systems_handlers.provision_handler(conn, job, prov)
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state, domain_name FROM systems WHERE id = %s", (sys_id,))
                 row = await cur.fetchone()
@@ -581,7 +582,7 @@ def test_provision_handler_failure_when_already_terminal_preserves_category(
             prov = _FailAfterTerminal(migrated_url)
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as caught:
-                    await systems_tools.provision_handler(conn, job, prov)
+                    await systems_handlers.provision_handler(conn, job, prov)
             assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
@@ -602,7 +603,7 @@ def test_provision_handler_terminal_system_reaps_without_provisioning(migrated_u
             job = await _enqueue_provision(pool, sys_id, alloc_id)
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
-                result = await systems_tools.provision_handler(conn, job, prov)
+                result = await systems_handlers.provision_handler(conn, job, prov)
         assert result == sys_id
         assert prov.provisioned == []  # not re-provisioned
         assert prov.torn_down == [f"kdive-{sys_id}"]  # but the domain is idempotently reaped
@@ -640,10 +641,10 @@ def test_provision_handler_failed_compensation_retries_reap_on_requeue(migrated_
             prov = _RacingThenTeardownFails(migrated_url)
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError):  # finalize compensation teardown failed
-                    await systems_tools.provision_handler(conn, job, prov)
+                    await systems_handlers.provision_handler(conn, job, prov)
             assert prov.torn_down == []  # nothing reaped yet — the domain is still leaked
             async with pool.connection() as conn:  # requeue
-                result = await systems_tools.provision_handler(conn, job, prov)
+                result = await systems_handlers.provision_handler(conn, job, prov)
             assert result == sys_id
             assert prov.provisioned == [UUID(sys_id)]  # provider NOT re-invoked on the requeue
             assert prov.torn_down == [f"kdive-{sys_id}"]  # the created domain is finally reaped
@@ -659,7 +660,7 @@ def test_provision_handler_missing_row_is_infra_failure(migrated_url: str) -> No
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as caught:
-                    await systems_tools.provision_handler(conn, job, prov)
+                    await systems_handlers.provision_handler(conn, job, prov)
         assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
     asyncio.run(_run())
@@ -688,7 +689,7 @@ def test_provision_handler_superseded_midflight_tears_down_created_domain(
             job = await _enqueue_provision(pool, sys_id, alloc_id)
             prov = _RacingProvisioning(migrated_url)
             async with pool.connection() as conn:
-                result = await systems_tools.provision_handler(conn, job, prov)
+                result = await systems_handlers.provision_handler(conn, job, prov)
             assert result == sys_id
             assert prov.torn_down == [f"kdive-{sys_id}"]  # the created domain was cleaned up
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -723,7 +724,7 @@ def test_provision_handler_concurrent_same_job_ready_does_not_tear_down(migrated
             job = await _enqueue_provision(pool, sys_id, alloc_id)
             prov = _RacingToReady(migrated_url)
             async with pool.connection() as conn:
-                result = await systems_tools.provision_handler(conn, job, prov)
+                result = await systems_handlers.provision_handler(conn, job, prov)
             assert result == sys_id
             assert prov.torn_down == []  # the live domain was left alone
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -803,7 +804,7 @@ def test_provision_handler_commits_uploaded_rootfs_artifact(
                 )
             job = await _enqueue_provision(pool, sys_id, alloc_id)
             async with pool.connection() as conn:
-                await systems_tools.provision_handler(conn, job, _FakeProvisioning())
+                await systems_handlers.provision_handler(conn, job, _FakeProvisioning())
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
                 sys_row = await cur.fetchone()
@@ -844,7 +845,7 @@ def test_provision_handler_absent_uploaded_rootfs_fails_config_error(
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as caught:
-                    await systems_tools.provision_handler(conn, job, prov)
+                    await systems_handlers.provision_handler(conn, job, prov)
             assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
             # The System rolls back to provisioning (not terminal), so the terminal-teardown
             # compensation deliberately does NOT fire — the started domain is left in place for
@@ -935,7 +936,7 @@ def test_teardown_handler_destroys_and_sets_torn_down(migrated_url: str) -> None
             job = await _enqueue_teardown(pool, sys_id)
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
-                await systems_tools.teardown_handler(conn, job, prov)
+                await systems_handlers.teardown_handler(conn, job, prov)
             assert prov.torn_down == [f"kdive-{sys_id}"]
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
@@ -953,7 +954,7 @@ def test_teardown_handler_provisioning_system_one_transition(migrated_url: str) 
             job = await _enqueue_teardown(pool, sys_id)
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
-                await systems_tools.teardown_handler(conn, job, prov)
+                await systems_handlers.teardown_handler(conn, job, prov)
             assert prov.torn_down == [f"kdive-{sys_id}"]  # NULL domain_name -> deterministic name
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
@@ -976,7 +977,7 @@ def test_teardown_handler_already_torn_down_reattempts_destroy_no_transition(
             job = await _enqueue_teardown(pool, sys_id)
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
-                await systems_tools.teardown_handler(conn, job, prov)
+                await systems_handlers.teardown_handler(conn, job, prov)
             assert prov.torn_down == [f"kdive-{sys_id}"]  # idempotent destroy re-attempted
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -1306,7 +1307,7 @@ def test_reprovision_handler_drives_reprovisioning_to_ready(migrated_url: str) -
             job = await _enqueue_reprovision(pool, sys_id)
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
-                result = await systems_tools.reprovision_handler(conn, job, prov)
+                result = await systems_handlers.reprovision_handler(conn, job, prov)
             assert result == sys_id
             assert prov.reprovisioned == [UUID(sys_id)]
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -1333,7 +1334,7 @@ def test_reprovision_handler_provider_failure_sets_failed(migrated_url: str) -> 
             prov = _FakeProvisioning(reprovision_error=True)
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError):
-                    await systems_tools.reprovision_handler(conn, job, prov)
+                    await systems_handlers.reprovision_handler(conn, job, prov)
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
                 row = await cur.fetchone()
@@ -1350,7 +1351,7 @@ def test_reprovision_handler_retry_on_ready_is_noop(migrated_url: str) -> None:
             job = await _enqueue_reprovision(pool, sys_id)
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
-                await systems_tools.reprovision_handler(conn, job, prov)
+                await systems_handlers.reprovision_handler(conn, job, prov)
             assert prov.reprovisioned == []  # not re-applied to a finalized System
 
     asyncio.run(_run())
@@ -1361,7 +1362,7 @@ def test_reprovision_handler_retry_on_ready_is_noop(migrated_url: str) -> None:
 
 def test_register_handlers_binds_provision_teardown_and_reprovision() -> None:
     registry = HandlerRegistry()
-    systems_tools.register_handlers(registry, provisioning=_FakeProvisioning())
+    systems_handlers.register_handlers(registry, provisioning=_FakeProvisioning())
     assert registry.get(JobKind.PROVISION) is not None
     assert registry.get(JobKind.TEARDOWN) is not None
     assert registry.get(JobKind.REPROVISION) is not None
@@ -1601,7 +1602,7 @@ def test_teardown_handler_drives_defined_system_to_torn_down(migrated_url: str) 
             job = await _enqueue_teardown(pool, sys_id)
             prov = _FakeProvisioning()
             async with pool.connection() as conn:
-                await systems_tools.teardown_handler(conn, job, prov)
+                await systems_handlers.teardown_handler(conn, job, prov)
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
                 sys_row = await cur.fetchone()
