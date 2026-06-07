@@ -225,6 +225,11 @@ def render_domain_xml(system_id: UUID, profile: ProvisioningProfile) -> str:
     ET.SubElement(os_el, "type", arch=profile.arch, machine=machine).text = "hvm"
     devices = ET.SubElement(domain, "devices")
     disk = ET.SubElement(devices, "disk", type="file", device="disk")
+    # The rootfs images are qcow2 (build-guest-image.sh / virt-make-fs --format=qcow2). Without an
+    # explicit driver type libvirt defaults to raw, so the guest would read the qcow2 header as the
+    # start of the disk and fail to mount root; declare the format so /dev/vda is the ext4
+    # filesystem, not the container metadata.
+    ET.SubElement(disk, "driver", name="qemu", type="qcow2")
     rootfs_path = resolve_rootfs_path(section.rootfs, tenant="local", system_id=system_id)
     ET.SubElement(disk, "source", file=rootfs_path)
     ET.SubElement(disk, "target", dev="vda", bus="virtio")

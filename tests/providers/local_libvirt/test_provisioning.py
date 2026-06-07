@@ -71,6 +71,16 @@ def test_render_carries_name_memory_vcpu_machine_and_rootfs() -> None:
     assert source.get("file") == "oci://registry.internal/rootfs/fedora-40@sha256:abc123"
 
 
+def test_render_declares_qcow2_disk_driver() -> None:
+    # The rootfs images are qcow2; a driver-less disk makes libvirt default to raw, so the guest
+    # reads the qcow2 header instead of the ext4 filesystem and panics unable to mount root.
+    root = _safe_fromstring(render_domain_xml(_SYS, _profile()))
+    driver = root.find("devices/disk/driver")
+    assert driver is not None
+    assert driver.get("name") == "qemu"
+    assert driver.get("type") == "qcow2"
+
+
 def test_render_has_no_kernel_or_cmdline() -> None:
     # The kdump crashkernel reservation is the install/boot plane's job (#17), not provision's.
     root = _safe_fromstring(render_domain_xml(_SYS, _profile()))
