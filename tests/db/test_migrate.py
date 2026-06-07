@@ -404,4 +404,5 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
         "0005",
         "0006",
         "0007",
+        "0008",
     ]
