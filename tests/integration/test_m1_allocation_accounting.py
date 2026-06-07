@@ -78,6 +78,32 @@ def _estimate(vcpus: int, memory_gb: int, window_hours: Decimal | int | str) -> 
     return quantize_kcu(cost(_rate(vcpus, memory_gb), Decimal(str(window_hours))))
 
 
+async def _request_allocation(
+    pool: AsyncConnectionPool,
+    ctx,
+    *,
+    project: str = "proj",
+    vcpus: int,
+    memory_gb: int,
+    window: object | None = None,
+    resource_id: str | None = None,
+    kind: str | None = None,
+    idempotency_key: str | None = None,
+):
+    resource = (
+        {"mode": "id", "resource_id": resource_id}
+        if resource_id is not None
+        else {"mode": "kind", "kind": kind or "local-libvirt"}
+    )
+    return await alloc_tools.request_allocation(
+        pool,
+        ctx,
+        project=project,
+        request={"vcpus": vcpus, "memory_gb": memory_gb, "window": window, "resource": resource},
+        idempotency_key=idempotency_key,
+    )
+
+
 # --- shared DB readers ---------------------------------------------------------------------
 
 
@@ -140,7 +166,7 @@ def test_c1_within_budget_grant_writes_one_reserved_row(migrated_url: str) -> No
         async with open_pool(migrated_url) as pool:
             await register_resource(pool)
             await seed_project_limits(pool, limit_kcu=1000)
-            resp = await alloc_tools.request_allocation(
+            resp = await _request_allocation(
                 pool, _operator_ctx(), project="proj", vcpus=2, memory_gb=4, window=3
             )
             assert resp.status == "granted"
@@ -162,7 +188,7 @@ def test_c1_over_budget_denied_no_durable_row(migrated_url: str) -> None:
             await register_resource(pool)
             # rate 3.0 * 3h = 9.0 estimate; a 5.0 budget cannot cover it.
             await seed_project_limits(pool, limit_kcu=5)
-            resp = await alloc_tools.request_allocation(
+            resp = await _request_allocation(
                 pool, _operator_ctx(), project="proj", vcpus=2, memory_gb=4, window=3
             )
             assert resp.status == "error"
@@ -193,7 +219,7 @@ def test_c1_malformed_request_is_config_error_no_row(
         async with open_pool(migrated_url) as pool:
             await register_resource(pool)
             await seed_project_limits(pool, limit_kcu=1000)
-            resp = await alloc_tools.request_allocation(
+            resp = await _request_allocation(
                 pool,
                 _operator_ctx(),
                 project="proj",
@@ -217,7 +243,7 @@ def test_c1_replayed_idempotency_key_no_second_grant_or_debit(migrated_url: str)
         async with open_pool(migrated_url) as pool:
             await register_resource(pool)
             await seed_project_limits(pool, limit_kcu=1000)
-            first = await alloc_tools.request_allocation(
+            first = await _request_allocation(
                 pool,
                 _operator_ctx(),
                 project="proj",
@@ -228,7 +254,7 @@ def test_c1_replayed_idempotency_key_no_second_grant_or_debit(migrated_url: str)
             )
             assert first.status == "granted"
             spent_after_first = await _spent(pool, "proj")
-            second = await alloc_tools.request_allocation(
+            second = await _request_allocation(
                 pool,
                 _operator_ctx(),
                 project="proj",
@@ -259,7 +285,7 @@ def test_c1_same_key_two_principals_isolated(migrated_url: str) -> None:
             # operator per project, so build the second from request_context with a distinct
             # principal but the same project + role).
             op_two = request_context(Role.OPERATOR, principal="operator-two", projects=(PROJECT_A,))
-            first = await alloc_tools.request_allocation(
+            first = await _request_allocation(
                 pool,
                 op_one,
                 project=PROJECT_A,
@@ -268,7 +294,7 @@ def test_c1_same_key_two_principals_isolated(migrated_url: str) -> None:
                 window=3,
                 idempotency_key="shared-key",
             )
-            second = await alloc_tools.request_allocation(
+            second = await _request_allocation(
                 pool,
                 op_two,
                 project=PROJECT_A,
@@ -294,11 +320,11 @@ def test_c2_alloc_quota_denied(migrated_url: str) -> None:
         async with open_pool(migrated_url) as pool:
             await register_resource(pool, concurrent_allocation_cap=4)
             await seed_project_limits(pool, limit_kcu=1000, max_allocations=1)
-            first = await alloc_tools.request_allocation(
+            first = await _request_allocation(
                 pool, _operator_ctx(), project="proj", vcpus=2, memory_gb=4, window=3
             )
             assert first.status == "granted"
-            second = await alloc_tools.request_allocation(
+            second = await _request_allocation(
                 pool, _operator_ctx(), project="proj", vcpus=2, memory_gb=4, window=3
             )
             assert second.status == "error"
@@ -317,10 +343,10 @@ def test_c2_system_quota_denied(migrated_url: str) -> None:
             await register_resource(pool, concurrent_allocation_cap=4)
             await seed_project_limits(pool, limit_kcu=1000, max_allocations=4, max_systems=1)
             ctx = _operator_ctx()
-            first = await alloc_tools.request_allocation(
+            first = await _request_allocation(
                 pool, ctx, project="proj", vcpus=2, memory_gb=4, window=3
             )
-            second = await alloc_tools.request_allocation(
+            second = await _request_allocation(
                 pool, ctx, project="proj", vcpus=2, memory_gb=4, window=3
             )
             assert first.status == "granted" and second.status == "granted"
@@ -395,7 +421,7 @@ def test_c3_estimate_equals_reserved_row(migrated_url: str) -> None:
                 pool, _viewer_ctx(), project="proj", vcpus=2, memory_gb=4, window=3
             )
             assert est.status != "error"
-            grant = await alloc_tools.request_allocation(
+            grant = await _request_allocation(
                 pool, _operator_ctx(), project="proj", vcpus=2, memory_gb=4, window=3
             )
             reserved = (await _ledger_events(pool, UUID(grant.object_id)))[0][1]
@@ -443,7 +469,7 @@ def test_c3_reconciliation_nets_to_actual_and_usage_matches(migrated_url: str) -
             await register_resource(pool, concurrent_allocation_cap=4)
             await seed_project_limits(pool, limit_kcu=1000, max_systems=4)
             op = _operator_ctx()
-            grant = await alloc_tools.request_allocation(
+            grant = await _request_allocation(
                 pool, op, project="proj", vcpus=2, memory_gb=4, window=3
             )
             assert grant.status == "granted"
@@ -486,7 +512,7 @@ def test_c3_release_from_granted_credits_full_reservation(migrated_url: str) -> 
         async with open_pool(migrated_url) as pool:
             await register_resource(pool)
             await seed_project_limits(pool, limit_kcu=1000)
-            grant = await alloc_tools.request_allocation(
+            grant = await _request_allocation(
                 pool, _operator_ctx(), project="proj", vcpus=2, memory_gb=4, window=3
             )
             resp = await alloc_tools.release_allocation(pool, _operator_ctx(), grant.object_id)
@@ -733,7 +759,7 @@ def test_c5_renew_extends_window_and_charges(migrated_url: str) -> None:
         async with open_pool(migrated_url) as pool:
             await register_resource(pool)
             await seed_project_limits(pool, limit_kcu=1000)
-            grant = await alloc_tools.request_allocation(
+            grant = await _request_allocation(
                 pool, _operator_ctx(), project="proj", vcpus=2, memory_gb=4, window=3
             )
             alloc_id = UUID(grant.object_id)
@@ -761,7 +787,7 @@ def test_c5_over_budget_renew_denied_window_unchanged(migrated_url: str) -> None
             await register_resource(pool)
             # budget covers exactly the 9.0 grant; a +3h renew (9.0 more) is over budget.
             await seed_project_limits(pool, limit_kcu=9)
-            grant = await alloc_tools.request_allocation(
+            grant = await _request_allocation(
                 pool, _operator_ctx(), project="proj", vcpus=2, memory_gb=4, window=3
             )
             alloc_id = UUID(grant.object_id)
@@ -804,7 +830,7 @@ def test_c6_operator_refused_admin_bare_require_role_ops(migrated_url: str) -> N
                     pool, op, project="proj", max_concurrent_allocations=1, max_concurrent_systems=1
                 )
             # power off / teardown bind their admin check to a real System's project.
-            grant = await alloc_tools.request_allocation(
+            grant = await _request_allocation(
                 pool, op, project="proj", vcpus=2, memory_gb=4, window=3
             )
             prov = await systems_tools.provision_system(
@@ -829,7 +855,7 @@ def test_c6_operator_force_crash_returns_authorization_denied_envelope(migrated_
             await register_resource(pool)
             await seed_project_limits(pool, limit_kcu=1000)
             op = _operator_ctx()
-            grant = await alloc_tools.request_allocation(
+            grant = await _request_allocation(
                 pool, op, project="proj", vcpus=2, memory_gb=4, window=3
             )
             prov = await systems_tools.provision_system(
@@ -872,7 +898,7 @@ def test_c6_admin_and_operator_succeed_on_their_surfaces(migrated_url: str) -> N
                 )
             ).status != "error"
             op = _operator_ctx()
-            grant = await alloc_tools.request_allocation(
+            grant = await _request_allocation(
                 pool, op, project="proj", vcpus=2, memory_gb=4, window=3
             )
             prov = await systems_tools.provision_system(
@@ -953,7 +979,7 @@ def test_c7_reprovision_in_place_cycle(migrated_url: str) -> None:
             await register_resource(pool)
             op = _operator_ctx()
             await seed_project_limits(pool, limit_kcu=1000)
-            grant = await alloc_tools.request_allocation(
+            grant = await _request_allocation(
                 pool, op, project="proj", vcpus=2, memory_gb=4, window=3
             )
             prov = await systems_tools.provision_system(

@@ -405,7 +405,9 @@ def test_viewer_denied_operator_op_over_the_wire() -> None:
         async with viewer:
             with pytest.raises(LiveStackToolError):  # require_role raises → tool error
                 await viewer.call_tool(
-                    "allocations.request", project=_PROJECT, vcpus=1, memory_gb=1
+                    "allocations.request",
+                    project=_PROJECT,
+                    request={"vcpus": 1, "memory_gb": 1, "resource": {"mode": "kind"}},
                 )
 
     asyncio.run(_run())
@@ -455,7 +457,10 @@ def test_spine_over_the_wire() -> None:
             async with phase("allocate"):
                 env = _ok(
                     await _scalar(
-                        op, "allocations.request", project=_PROJECT, vcpus=2, memory_gb=2
+                        op,
+                        "allocations.request",
+                        project=_PROJECT,
+                        request={"vcpus": 2, "memory_gb": 2, "resource": {"mode": "kind"}},
                     ),
                     "allocate",
                 )

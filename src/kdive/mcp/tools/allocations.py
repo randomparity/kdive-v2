@@ -13,19 +13,25 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, RESOURCES
 from kdive.domain import accounting
-from kdive.domain.allocation_admission import AdmissionOutcome, AllocationRequest, admit
+from kdive.domain.allocation_admission import (
+    AdmissionOutcome,
+    admit,
+)
+from kdive.domain.allocation_admission import (
+    AllocationRequest as DomainAllocationRequest,
+)
 from kdive.domain.allocation_renew import RenewOutcome, renew
 from kdive.domain.cost import Selector
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -47,6 +53,30 @@ MAX_LIST_LIMIT = 200
 _DEFAULT_KIND = "local-libvirt"
 _RELEASABLE = (AllocationState.GRANTED, AllocationState.ACTIVE)
 _TERMINAL = (AllocationState.RELEASED, AllocationState.EXPIRED, AllocationState.FAILED)
+
+
+class _AllocationPayloadBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ResourceById(_AllocationPayloadBase):
+    mode: Literal["id"]
+    resource_id: str
+
+
+class ResourceByKind(_AllocationPayloadBase):
+    mode: Literal["kind"] = "kind"
+    kind: str = _DEFAULT_KIND
+
+
+type ResourceSelector = ResourceById | ResourceByKind
+
+
+class AllocationRequestPayload(_AllocationPayloadBase):
+    vcpus: int
+    memory_gb: int
+    window: object | None = None
+    resource: ResourceSelector = Field(default_factory=ResourceByKind, discriminator="mode")
 
 
 def _envelope_for_allocation(alloc: Allocation) -> ToolResponse:
@@ -83,11 +113,7 @@ async def request_allocation(
     ctx: RequestContext,
     *,
     project: str,
-    vcpus: int,
-    memory_gb: int,
-    window: object | None = None,
-    resource_id: str | None = None,
-    kind: str | None = None,
+    request: AllocationRequestPayload | dict[str, Any],
     idempotency_key: str | None = None,
 ) -> ToolResponse:
     """Admit an allocation against the project budget/quota and the selected host's cap.
@@ -101,22 +127,36 @@ async def request_allocation(
     require_project(ctx, project)
     require_role(ctx, project, Role.OPERATOR)
     with bind_context(principal=ctx.principal):
-        resolved_id = _as_uuid(resource_id) if resource_id is not None else None
-        if resource_id is not None and resolved_id is None:
-            return _config_error(resource_id)
-        selector = Selector(vcpus=vcpus, memory_gb=memory_gb)
+        try:
+            payload = (
+                request
+                if isinstance(request, AllocationRequestPayload)
+                else AllocationRequestPayload.model_validate(request)
+            )
+        except ValueError:
+            return _config_error(project)
+        resolved_id: UUID | None = None
+        kind = _DEFAULT_KIND
+        if isinstance(payload.resource, ResourceById):
+            resolved_id = _as_uuid(payload.resource.resource_id)
+            if resolved_id is None:
+                return _config_error(payload.resource.resource_id)
+        else:
+            kind = payload.resource.kind
+        selector = Selector(vcpus=payload.vcpus, memory_gb=payload.memory_gb)
         async with pool.connection() as conn:
-            resource = await _resolve_resource(conn, resolved_id, kind or _DEFAULT_KIND)
+            resource = await _resolve_resource(conn, resolved_id, kind)
             if resource is None:
-                return _config_error(resource_id or (kind or _DEFAULT_KIND))
+                object_id = str(resolved_id) if resolved_id is not None else kind
+                return _config_error(object_id)
             outcome = await admit(
                 conn,
-                AllocationRequest(
+                DomainAllocationRequest(
                     ctx=ctx,
                     resource=resource,
                     project=project,
                     selector=selector,
-                    window=window,
+                    window=payload.window,
                     idempotency_key=idempotency_key,
                 ),
             )
@@ -357,22 +397,10 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     )
     async def allocations_request(
         project: Annotated[str, Field(description="Project to admit the allocation for.")],
-        vcpus: Annotated[int, Field(description="Number of vCPUs requested.")],
-        memory_gb: Annotated[int, Field(description="Memory in GiB requested.")],
-        window: Annotated[
-            float | str | None,
-            Field(
-                description="Lease duration in hours (number or decimal string); "
-                "omit for the configured default."
-            ),
-        ] = None,
-        resource_id: Annotated[
-            str | None, Field(description="Resource UUID to target; omit to pick by kind.")
-        ] = None,
-        kind: Annotated[
-            str | None,
-            Field(description="Resource kind filter when resource_id is omitted."),
-        ] = None,
+        request: Annotated[
+            dict[str, Any],
+            Field(description="Allocation request payload: size, lease window, resource selector."),
+        ],
         idempotency_key: Annotated[
             str | None,
             Field(description="Replay-safe key; a repeated key returns the prior grant."),
@@ -383,11 +411,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             pool,
             current_context(),
             project=project,
-            vcpus=vcpus,
-            memory_gb=memory_gb,
-            window=window,
-            resource_id=resource_id,
-            kind=kind,
+            request=request,
             idempotency_key=idempotency_key,
         )
 

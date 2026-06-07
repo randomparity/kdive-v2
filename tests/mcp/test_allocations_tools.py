@@ -89,9 +89,12 @@ async def _request(
         pool,
         ctx,
         project=project,
-        vcpus=vcpus,
-        memory_gb=memory_gb,
-        window=window,
+        request={
+            "vcpus": vcpus,
+            "memory_gb": memory_gb,
+            "window": window,
+            "resource": {"mode": "kind", "kind": "local-libvirt"},
+        },
         idempotency_key=idempotency_key,
     )
 
