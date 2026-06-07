@@ -28,7 +28,6 @@ import re
 import shutil
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -38,7 +37,7 @@ from pygdbmi.constants import GdbTimeoutError
 from pygdbmi.gdbmiparser import parse_response
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.ports import GdbBreakpointRef, GdbFrame, GdbStopRecord
+from kdive.providers.ports import GdbBreakpointRef, GdbFrame, GdbMiAttachment, GdbStopRecord
 from kdive.security.redaction import Redactor
 
 MAX_MEMORY_READ_BYTES = 4096
@@ -162,6 +161,10 @@ class MiController(Protocol):
 
     def read(self, *, timeout_sec: float) -> list[dict[str, object]]: ...
 
+    def get_gdb_response(
+        self, *, timeout_sec: float, raise_error_on_timeout: bool = True
+    ) -> list[dict[str, object]]: ...
+
     def exit(self) -> None: ...
 
 
@@ -182,26 +185,20 @@ class PygdbmiController:  # pragma: no cover - live_vm
             raise _timeout_error(command, timeout_sec) from exc
 
     def read(self, *, timeout_sec: float) -> list[dict[str, object]]:
+        return self.get_gdb_response(timeout_sec=timeout_sec, raise_error_on_timeout=False)
+
+    def get_gdb_response(
+        self, *, timeout_sec: float, raise_error_on_timeout: bool = True
+    ) -> list[dict[str, object]]:
         try:
             return self._controller.get_gdb_response(
-                timeout_sec=timeout_sec, raise_error_on_timeout=False
+                timeout_sec=timeout_sec, raise_error_on_timeout=raise_error_on_timeout
             )
         except GdbTimeoutError:
             return []
 
     def exit(self) -> None:
         self._controller.exit()
-
-
-@dataclass
-class GdbMiAttachment:
-    """A live attach: the controller, its RSP endpoint, transcript path, and records so far."""
-
-    controller: MiController
-    rsp_host: str
-    rsp_port: int
-    transcript_path: Path
-    records: list[MiRecord] = field(default_factory=list)
 
 
 class _ExecutionControl:

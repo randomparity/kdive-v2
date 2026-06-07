@@ -16,12 +16,11 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.local_libvirt import debug_gdbmi
 from kdive.providers.local_libvirt.debug_gdbmi import (
     MAX_MEMORY_READ_BYTES,
-    GdbMiAttachment,
     GdbMiEngine,
     MiRecord,
     parse_mi_records,
 )
-from kdive.providers.ports import GdbMiSessionRegistry
+from kdive.providers.ports import GdbMiAttachment, GdbMiSessionRegistry
 from kdive.security.redaction import Redactor
 
 
@@ -49,6 +48,12 @@ class _FakeMiController:
     def read(self, *, timeout_sec: float) -> list[dict[str, object]]:
         del timeout_sec
         return self._reads.pop(0) if self._reads else []
+
+    def get_gdb_response(
+        self, *, timeout_sec: float, raise_error_on_timeout: bool = True
+    ) -> list[dict[str, object]]:
+        del timeout_sec, raise_error_on_timeout
+        return []
 
     def exit(self) -> None:
         self.exited = True

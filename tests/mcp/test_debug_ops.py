@@ -39,12 +39,12 @@ from kdive.mcp.tools.debug.ops import (
     DebugEngineRuntime,
     run_engine_op,
 )
-from kdive.providers.local_libvirt.debug_gdbmi import GdbMiAttachment, GdbMiEngine
+from kdive.providers.local_libvirt.debug_gdbmi import GdbMiEngine
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     register_local_libvirt_resource,
 )
-from kdive.providers.ports import TransportHandleData
+from kdive.providers.ports import GdbMiAttachment, TransportHandleData
 from kdive.security.rbac import AuthorizationError, Role
 from tests.providers.local_libvirt.conftest import FakeLibvirtConn
 
@@ -86,6 +86,12 @@ class _FakeMiController:
 
     def read(self, *, timeout_sec: float) -> list[dict[str, object]]:
         del timeout_sec
+        return []
+
+    def get_gdb_response(
+        self, *, timeout_sec: float, raise_error_on_timeout: bool = True
+    ) -> list[dict[str, object]]:
+        del timeout_sec, raise_error_on_timeout
         return []
 
     def exit(self) -> None:

@@ -7,9 +7,10 @@ import these types, but MCP and worker code should not import provider-specific 
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, NamedTuple, Protocol
+from typing import NamedTuple, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -107,6 +108,28 @@ class GdbBreakpointRef(_ProviderModel):
     func: str | None = None
     what: str | None = None
     enabled: bool | None = None
+
+
+class GdbController(Protocol):
+    """Controller operations a gdb/MI attachment exposes."""
+
+    def write(self, command: str, *, timeout_sec: float) -> list[dict[str, object]]: ...
+    def read(self, *, timeout_sec: float) -> list[dict[str, object]]: ...
+    def get_gdb_response(
+        self, *, timeout_sec: float, raise_error_on_timeout: bool = True
+    ) -> list[dict[str, object]]: ...
+    def exit(self) -> None: ...
+
+
+@dataclass
+class GdbMiAttachment:
+    """A live gdb/MI attachment plus endpoint and transcript metadata."""
+
+    controller: GdbController
+    rsp_host: str
+    rsp_port: int
+    transcript_path: Path
+    records: list[object] = field(default_factory=list)
 
 
 class TransportHandleData(NamedTuple):
@@ -229,22 +252,20 @@ class LiveIntrospector(Protocol):
     def introspect_live(self, *, transport_handle: str, helper: str) -> IntrospectOutput: ...
 
 
-class GdbMiAttachment(Protocol):
-    """Live gdb/MI attachment used by Debug-plane operations."""
-
-    controller: Any
-
-
 class GdbMiEngine(Protocol):
     """Debug operation engine over a live gdb/MI attachment."""
 
-    def set_breakpoint(self, attachment: Any, location: str) -> GdbBreakpointRef: ...
-    def clear_breakpoint(self, attachment: Any, number: str) -> None: ...
-    def list_breakpoints(self, attachment: Any) -> list[GdbBreakpointRef]: ...
-    def read_memory(self, attachment: Any, *, address: int, byte_count: int) -> bytes: ...
-    def read_registers(self, attachment: Any, register_names: list[str]) -> dict[str, object]: ...
-    def continue_(self, attachment: Any, *, timeout_sec: float) -> GdbStopRecord: ...
-    def interrupt(self, attachment: Any) -> GdbStopRecord | None: ...
+    def set_breakpoint(self, attachment: GdbMiAttachment, location: str) -> GdbBreakpointRef: ...
+    def clear_breakpoint(self, attachment: GdbMiAttachment, number: str) -> None: ...
+    def list_breakpoints(self, attachment: GdbMiAttachment) -> list[GdbBreakpointRef]: ...
+    def read_memory(
+        self, attachment: GdbMiAttachment, *, address: int, byte_count: int
+    ) -> bytes: ...
+    def read_registers(
+        self, attachment: GdbMiAttachment, register_names: list[str]
+    ) -> dict[str, object]: ...
+    def continue_(self, attachment: GdbMiAttachment, *, timeout_sec: float) -> GdbStopRecord: ...
+    def interrupt(self, attachment: GdbMiAttachment) -> GdbStopRecord | None: ...
 
 
 class GdbMiSessionRegistry:
