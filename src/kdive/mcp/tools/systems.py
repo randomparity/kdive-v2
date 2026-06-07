@@ -43,14 +43,12 @@ from kdive.mcp.tools._common import (
     config_error as _config_error,
 )
 from kdive.mcp.tools._common import (
-    context_from_job as job_context_from_job,
-)
-from kdive.mcp.tools._common import (
     job_envelope,
 )
 from kdive.mcp.tools._common import (
     stale_handle as _stale_handle,
 )
+from kdive.planes.systems import TERMINAL_SYSTEM as _TERMINAL_SYSTEM
 from kdive.profiles.provisioning import ProvisioningProfile, profile_digest
 from kdive.providers.composition import (
     reject_rootfs_without_upload_window,
@@ -59,19 +57,13 @@ from kdive.providers.composition import (
 from kdive.security import audit
 from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
 from kdive.security.rbac import Role, require_role
-from kdive.store import objectstore as _objectstore
 
 _log = logging.getLogger(__name__)
 
-_TERMINAL_SYSTEM = frozenset({SystemState.TORN_DOWN, SystemState.FAILED})
 # Non-terminal Run states that block a reprovision (ADR-0038 §4): a Run bound to the
 # System's prior boot is invalid against the new install.
 _NON_TERMINAL_RUN = frozenset({RunState.CREATED, RunState.RUNNING})
 _REPROVISION = "reprovision"
-
-
-def object_store_from_env() -> _objectstore.ObjectStore:
-    return _objectstore.object_store_from_env()
 
 
 def _envelope_for_system(system: System) -> ToolResponse:
@@ -117,41 +109,6 @@ async def get_system(
 
 def _system_job_envelope(job: Job, system_id: UUID) -> ToolResponse:
     return job_envelope(job, "system_id", system_id)
-
-
-async def _audit_transition(
-    conn: AsyncConnection, job: Job, *, project: str, object_id: UUID, transition: str, tool: str
-) -> None:
-    await audit.record(
-        conn,
-        job_context_from_job(job, project),
-        audit.AuditEvent(
-            tool=tool,
-            object_kind="systems",
-            object_id=object_id,
-            transition=transition,
-            args={"system_id": str(object_id)},
-            project=project,
-        ),
-    )
-
-
-async def _open_billing_interval(conn: AsyncConnection, allocation_id: UUID) -> None:
-    """Stamp the allocation's ``active_started_at`` when its first System reaches ``ready``.
-
-    The active billing interval opens on the ``granted -> active`` edge, defined by the
-    first System reaching ``ready`` (ADR-0007 §3); ``active_hours = active_ended_at −
-    active_started_at`` prices the reconcile credit, so a never-stamped start would
-    reconcile every active allocation at ``active_hours = 0`` and credit back the full
-    reservation. First-write-wins (``WHERE active_started_at IS NULL``): a second System on
-    the same allocation, a reprovision-in-place cycle, or a handler re-run never slides the
-    interval forward. The conditional ``UPDATE`` runs in the caller's per-System transaction.
-    """
-    await conn.execute(
-        "UPDATE allocations SET active_started_at = now() "
-        "WHERE id = %s AND active_started_at IS NULL",
-        (allocation_id,),
-    )
 
 
 # System states that occupy a per-project quota slot (terminal torn_down/failed do not).

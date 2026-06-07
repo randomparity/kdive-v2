@@ -36,7 +36,7 @@ from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import systems as systems_tools
-from kdive.mcp.tools import systems_handlers
+from kdive.planes import systems as systems_handlers
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     register_local_libvirt_resource,
@@ -786,7 +786,7 @@ def test_provision_handler_commits_uploaded_rootfs_artifact(
     # An upload-kind rootfs whose object is present: the provisioning->ready transition
     # writes one systems-owned write-once artifacts row and deletes the upload manifest
     # (so the reaper exempts the object).
-    monkeypatch.setattr(systems_tools, "object_store_from_env", lambda: minio_store)
+    monkeypatch.setattr(systems_handlers, "object_store_from_env", lambda: minio_store)
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -844,7 +844,7 @@ def test_provision_handler_absent_uploaded_rootfs_fails_config_error(
     # An upload-kind rootfs whose object was never uploaded: the commit raises
     # configuration_error inside the ready transition, which rolls back — the System stays
     # provisioning (a retry re-checks) and no artifacts row is written.
-    monkeypatch.setattr(systems_tools, "object_store_from_env", lambda: minio_store)
+    monkeypatch.setattr(systems_handlers, "object_store_from_env", lambda: minio_store)
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:

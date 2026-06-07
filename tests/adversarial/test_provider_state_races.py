@@ -28,8 +28,8 @@ from kdive.db.repositories import SYSTEMS
 from kdive.domain.models import Job, JobKind, System
 from kdive.domain.state import AllocationState, SystemState
 from kdive.jobs import queue
-from kdive.mcp.tools import control as control_tools
-from kdive.mcp.tools import systems_handlers
+from kdive.planes import control as control_plane
+from kdive.planes import systems as systems_handlers
 from kdive.providers.ports import PowerAction
 from tests.adversarial.conftest import seed_allocation, seed_resource
 
@@ -205,7 +205,7 @@ def test_concurrent_force_crash_and_teardown_end_torn_down_no_stale_nmi(migrated
 
                 async def run_crash(job: Job = cjob, ctrl: _RecordingController = ctrl) -> None:
                     async with pool.connection() as conn:
-                        await control_tools.force_crash_handler(conn, job, ctrl)
+                        await control_plane.force_crash_handler(conn, job, ctrl)
 
                 async def run_teardown(job: Job = tjob, prov: _TrackingProvisioner = prov) -> None:
                     async with pool.connection() as conn:

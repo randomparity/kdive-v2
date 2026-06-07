@@ -33,8 +33,9 @@ from kdive.jobs import queue
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import artifacts as artifacts_tools
 from kdive.mcp.tools import control as control_tools
-from kdive.mcp.tools import runs_handlers
 from kdive.mcp.tools import vmcore as vmcore_tools
+from kdive.planes import runs as runs_handlers
+from kdive.planes import vmcore as vmcore_plane
 from kdive.providers.ports import BuildOutput, CaptureOutput, CrashOutput
 from kdive.security.rbac import Role
 from tests.integration._seed import (
@@ -248,7 +249,7 @@ def test_planted_secret_is_redacted(migrated_url: str) -> None:
             sys_id, run_id = await seed_crashed_system_with_run(pool)
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
-                await vmcore_tools.capture_handler(conn, job, _SecretBearingRetriever(sys_id))
+                await vmcore_plane.capture_handler(conn, job, _SecretBearingRetriever(sys_id))
             resp = await vmcore_tools.postmortem_crash(
                 pool,
                 request_context(),
@@ -272,7 +273,7 @@ def test_raw_vmcore_is_sensitive_and_unreachable(migrated_url: str) -> None:
             sys_id, _ = await seed_crashed_system_with_run(pool)
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
-                await vmcore_tools.capture_handler(conn, job, _SecretBearingRetriever(sys_id))
+                await vmcore_plane.capture_handler(conn, job, _SecretBearingRetriever(sys_id))
             ctx = request_context()
             refs: list[str] = []
             for r in await vmcore_tools.list_vmcores(pool, ctx, system_id=sys_id):

@@ -16,7 +16,7 @@ from psycopg.rows import dict_row
 from kdive.domain.models import Sensitivity
 from kdive.mcp.tools import artifacts as artifacts_tools
 from kdive.mcp.tools import systems as systems_tools
-from kdive.mcp.tools import systems_handlers
+from kdive.planes import systems as systems_handlers
 from kdive.store.objectstore import ObjectStore, artifact_key
 from tests.mcp.test_systems_tools import (
     _ctx,
@@ -32,7 +32,7 @@ from tests.mcp.test_systems_tools import (
 def test_define_upload_provision_reaches_ready_with_committed_rootfs(
     migrated_url: str, minio_store: ObjectStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(systems_tools, "object_store_from_env", lambda: minio_store)
+    monkeypatch.setattr(systems_handlers, "object_store_from_env", lambda: minio_store)
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:

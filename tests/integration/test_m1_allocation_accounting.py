@@ -53,7 +53,7 @@ from kdive.mcp.tools import accounting as acct_tools
 from kdive.mcp.tools import allocations as alloc_tools
 from kdive.mcp.tools import control as control_tools
 from kdive.mcp.tools import systems as systems_tools
-from kdive.mcp.tools import systems_handlers
+from kdive.planes import systems as systems_handlers
 from kdive.providers.local_libvirt.provisioning import domain_name_for
 from kdive.reconciler import loop
 from kdive.security.rbac import AuthorizationError, Role

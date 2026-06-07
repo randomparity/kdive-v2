@@ -17,10 +17,12 @@ from kdive.domain.models import Job, JobKind, Sensitivity, System
 from kdive.domain.state import IllegalTransition, SystemState
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import ReprovisionPayload, SystemPayload, load_payload
-from kdive.mcp.tools import systems as plane
+from kdive.mcp.job_context import context_from_job as job_context_from_job
 from kdive.profiles.provisioning import ProvisioningProfile, profile_digest
 from kdive.providers.composition import ProviderRuntime, domain_name_for, provisioner_from_env
 from kdive.providers.ports import Provisioner
+from kdive.security import audit
+from kdive.store import objectstore as _objectstore
 from kdive.store.objectstore import (
     StoredArtifact,
     artifact_key,
@@ -28,6 +30,38 @@ from kdive.store.objectstore import (
 )
 
 _log = logging.getLogger(__name__)
+
+TERMINAL_SYSTEM = frozenset({SystemState.TORN_DOWN, SystemState.FAILED})
+
+
+def object_store_from_env() -> _objectstore.ObjectStore:
+    return _objectstore.object_store_from_env()
+
+
+async def audit_transition(
+    conn: AsyncConnection, job: Job, *, project: str, object_id: UUID, transition: str, tool: str
+) -> None:
+    await audit.record(
+        conn,
+        job_context_from_job(job, project),
+        audit.AuditEvent(
+            tool=tool,
+            object_kind="systems",
+            object_id=object_id,
+            transition=transition,
+            args={"system_id": str(object_id)},
+            project=project,
+        ),
+    )
+
+
+async def open_billing_interval(conn: AsyncConnection, allocation_id: UUID) -> None:
+    """Stamp the allocation's ``active_started_at`` when its first System reaches ``ready``."""
+    await conn.execute(
+        "UPDATE allocations SET active_started_at = now() "
+        "WHERE id = %s AND active_started_at IS NULL",
+        (allocation_id,),
+    )
 
 
 async def _commit_uploaded_rootfs(
@@ -38,7 +72,7 @@ async def _commit_uploaded_rootfs(
     if rootfs.kind != "upload":
         return
     key = artifact_key("local", "systems", str(system.id), "rootfs")
-    head = await asyncio.to_thread(plane.object_store_from_env().head, key)
+    head = await asyncio.to_thread(object_store_from_env().head, key)
     if head is None:
         raise CategorizedError(
             "upload-kind rootfs was never uploaded",
@@ -56,8 +90,8 @@ async def _finalize_provision_ready(
     conn: AsyncConnection, job: Job, system: System, profile: ProvisioningProfile
 ) -> None:
     await _commit_uploaded_rootfs(conn, system, profile)
-    await plane._open_billing_interval(conn, system.allocation_id)
-    await plane._audit_transition(
+    await open_billing_interval(conn, system.allocation_id)
+    await audit_transition(
         conn,
         job,
         project=system.project,
@@ -80,7 +114,7 @@ async def provision_handler(
             details={"system_id": str(system_id)},
         )
     if system.state is not SystemState.PROVISIONING:
-        if system.state in plane._TERMINAL_SYSTEM:
+        if system.state in TERMINAL_SYSTEM:
             provisioning.teardown(system.domain_name or domain_name_for(system_id))
         return str(system_id)
     profile = ProvisioningProfile.parse(system.provisioning_profile)
@@ -90,7 +124,7 @@ async def provision_handler(
         try:
             async with conn.transaction():
                 await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
-                await plane._audit_transition(
+                await audit_transition(
                     conn,
                     job,
                     project=system.project,
@@ -113,7 +147,7 @@ async def provision_handler(
                 (SystemState.READY.value, domain_name, system_id),
             )
             await _finalize_provision_ready(conn, job, system, profile)
-    if current in plane._TERMINAL_SYSTEM:
+    if current in TERMINAL_SYSTEM:
         provisioning.teardown(domain_name)
         _log.info("provision of system %s superseded by teardown; domain reaped", system_id)
     return str(system_id)
@@ -140,7 +174,7 @@ async def reprovision_handler(
         try:
             async with conn.transaction():
                 await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
-                await plane._audit_transition(
+                await audit_transition(
                     conn,
                     job,
                     project=system.project,
@@ -165,7 +199,7 @@ async def reprovision_handler(
                     (SystemState.READY.value, domain_name, fingerprint, system_id),
                 )
         if current is SystemState.REPROVISIONING:
-            await plane._audit_transition(
+            await audit_transition(
                 conn,
                 job,
                 project=system.project,
@@ -189,7 +223,7 @@ async def teardown_handler(
         if system.state is not SystemState.TORN_DOWN:
             old = system.state
             await SYSTEMS.update_state(conn, system_id, SystemState.TORN_DOWN)
-            await plane._audit_transition(
+            await audit_transition(
                 conn,
                 job,
                 project=system.project,

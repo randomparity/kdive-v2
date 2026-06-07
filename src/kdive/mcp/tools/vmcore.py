@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Annotated, Any, Literal, LiteralString, NamedTuple
+from typing import Annotated, Literal, LiteralString, NamedTuple
 from uuid import UUID
 
 from fastmcp import FastMCP
@@ -23,15 +23,12 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
-from kdive.db.locks import LockScope, advisory_xact_lock
-from kdive.db.repositories import ARTIFACTS, RUNS, SYSTEMS
+from kdive.db.repositories import RUNS, SYSTEMS
 from kdive.domain.capture import LOCAL_LIBVIRT_SUPPORTED, CaptureMethod
-from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Job, JobKind, System
+from kdive.domain.errors import CategorizedError
+from kdive.domain.models import Job, JobKind
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
-from kdive.jobs.models import HandlerRegistry
-from kdive.jobs.payloads import CaptureVmcorePayload, load_payload
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
@@ -47,22 +44,19 @@ from kdive.mcp.tools._common import (
     config_error as _config_error,
 )
 from kdive.mcp.tools._common import (
-    context_from_job as job_context_from_job,
-)
-from kdive.mcp.tools._common import (
     job_envelope,
 )
+from kdive.planes.vmcore import RAW_KEY_LIKE as _RAW_KEY_LIKE
+from kdive.planes.vmcore import RAW_KEY_SQL as _RAW_KEY_SQL
+from kdive.planes.vmcore import REDACTED_LIKE as _REDACTED_LIKE
 from kdive.providers.composition import (
     ProviderRuntime,
     crash_command_rejection_reason,
     crash_postmortem_from_env,
-    retriever_from_env,
 )
-from kdive.providers.ports import CrashPostmortem, Retriever
-from kdive.security import audit
+from kdive.providers.ports import CrashPostmortem
 from kdive.security.rbac import Role, require_role
 from kdive.security.redaction import Redactor
-from kdive.store.objectstore import register_artifact_row
 
 _log = logging.getLogger(__name__)
 
@@ -102,13 +96,6 @@ _CRASH_ALLOWLIST: frozenset[str] = frozenset(
 )
 _TRIAGE_COMMANDS: tuple[str, ...] = ("log", "bt")
 
-_RAW_KEY_SQL: LiteralString = (
-    "SELECT object_key FROM artifacts "
-    "WHERE owner_kind = 'systems' AND owner_id = %s "
-    "AND object_key LIKE %s AND object_key NOT LIKE %s"
-)
-_RAW_KEY_LIKE = "%/vmcore-%"
-_REDACTED_LIKE = "%-redacted"
 _BUILD_STEP_SQL: LiteralString = "SELECT result FROM run_steps WHERE run_id = %s AND step = 'build'"
 
 
@@ -166,120 +153,6 @@ async def fetch_vmcore(
                 f"{system_id}:capture_vmcore:{capture_method.value}",
             )
         return _system_job_envelope(job, uid)
-
-
-# --- capture handler -----------------------------------------------------------------------
-
-
-async def _existing_raw_key(conn: AsyncConnection, system_id: UUID) -> str | None:
-    """Return the System's raw `vmcore-{method}` object key, or ``None`` (the execution ledger)."""
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(_RAW_KEY_SQL, (system_id, _RAW_KEY_LIKE, _REDACTED_LIKE))
-        row = await cur.fetchone()
-    return None if row is None else str(row["object_key"])
-
-
-def _captured_method(object_key: str) -> str:
-    """The method suffix of a raw vmcore key (`.../vmcore-host_dump` -> `host_dump`)."""
-    _, sep, method = object_key.rpartition("/vmcore-")
-    if not sep or not method:
-        raise CategorizedError(
-            "malformed raw vmcore object key (no method suffix)",
-            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-            details={"object_key": object_key},
-        )
-    return method
-
-
-def _ensure_method_match(existing_key: str, method: CaptureMethod, system_id: UUID) -> None:
-    """Raise `configuration_error` when an existing core was captured by a different method."""
-    captured = _captured_method(existing_key)
-    if captured != method.value:
-        raise CategorizedError(
-            "a vmcore captured via a different method already exists for this System",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-            details={
-                "system_id": str(system_id),
-                "existing_method": captured,
-                "requested_method": method.value,
-            },
-        )
-
-
-async def _precheck_system(
-    conn: AsyncConnection, system_id: UUID, method: CaptureMethod
-) -> System | str:
-    """Under the per-System lock, return an existing same-method key, or the System to capture.
-
-    Raises `configuration_error` if a core from a different method already exists (first method
-    wins) — before the slow `capture` seam, so the common case writes no object.
-    """
-    async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
-        system = await SYSTEMS.get(conn, system_id)
-        if system is None:
-            raise CategorizedError(
-                "capture target system is gone",
-                category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-                details={"system_id": str(system_id)},
-            )
-        existing = await _existing_raw_key(conn, system_id)
-        if existing is not None:
-            _ensure_method_match(existing, method, system_id)
-            return existing
-        return system
-
-
-async def _finalize_capture(
-    conn: AsyncConnection, job: Job, system: System, method: CaptureMethod, output: Any
-) -> str:
-    """Insert both artifact rows + audit under the per-System lock; tolerate a concurrent win.
-
-    A concurrent winner of the *same* method is returned idempotently; a *different*-method core
-    (the post-#115 race backstop) raises `configuration_error` after `capture` already ran, so its
-    object is orphaned — see ADR-0050. The non-racing common case rejects in `_precheck_system`.
-    """
-    async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system.id):
-        existing = await _existing_raw_key(conn, system.id)
-        if existing is not None:
-            _ensure_method_match(existing, method, system.id)
-            return existing
-        await ARTIFACTS.insert(
-            conn, register_artifact_row(output.raw, owner_kind="systems", owner_id=system.id)
-        )
-        await ARTIFACTS.insert(
-            conn, register_artifact_row(output.redacted, owner_kind="systems", owner_id=system.id)
-        )
-        await audit.record(
-            conn,
-            job_context_from_job(job, system.project),
-            audit.AuditEvent(
-                tool="vmcore.fetch",
-                object_kind="systems",
-                object_id=system.id,
-                transition="capture_vmcore",
-                args={"system_id": str(system.id)},
-                project=system.project,
-            ),
-        )
-    return str(output.raw.key)
-
-
-async def capture_handler(conn: AsyncConnection, job: Job, retriever: Retriever) -> str | None:
-    """Capture the System's vmcore and store the raw + redacted rows (ADR-0031 §2/§4).
-
-    Three phases (mirroring `build_handler`): a lock-held pre-check that returns the existing
-    raw key on a re-dispatch; the slow `capture` seam with **no transaction held**; a lock-held
-    finalize that inserts both `artifacts` rows. A capture `CategorizedError` (e.g.
-    `readiness_failure` for no core) propagates so the worker dead-letters the job.
-    """
-    payload = load_payload(job, CaptureVmcorePayload)
-    system_id = UUID(payload.system_id)
-    method = CaptureMethod(payload.method)
-    precheck = await _precheck_system(conn, system_id, method)
-    if isinstance(precheck, str):
-        return precheck
-    output = await asyncio.to_thread(retriever.capture, system_id, method)
-    return await _finalize_capture(conn, job, precheck, method, output)
 
 
 # --- vmcore.list ---------------------------------------------------------------------------
@@ -459,20 +332,3 @@ def register(
     ) -> ToolResponse:
         """Run the fixed triage commands (log+bt) over a Run's captured core; redacted report."""
         return await postmortem_triage(pool, current_context(), run_id=run_id, crash=crash)
-
-
-def register_handlers(
-    registry: HandlerRegistry,
-    *,
-    retriever: Retriever | None = None,
-    provider_runtime: ProviderRuntime | None = None,
-) -> None:
-    """Bind the `capture_vmcore` job handler; build the retriever lazily from env."""
-    active = retriever or (
-        provider_runtime.retriever() if provider_runtime else retriever_from_env()
-    )
-
-    async def _capture(conn: AsyncConnection, job: Job) -> str | None:
-        return await capture_handler(conn, job, active)
-
-    registry.register(JobKind.CAPTURE_VMCORE, _capture)
