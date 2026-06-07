@@ -15,7 +15,7 @@ from kdive.providers.capability import (
     Plane,
 )
 from kdive.providers.composition import ProviderRuntime
-from kdive.providers.local_libvirt.build import BuildOutput
+from kdive.providers.ports import BuildOutput
 
 _RUN = UUID("22222222-2222-2222-2222-222222222222")
 

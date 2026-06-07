@@ -16,12 +16,19 @@ import re
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
+from kdive.providers.ports import (
+    CaptureOutput,
+    CrashOutput,
+    CrashPostmortem,
+    CrashResult,
+    Retriever,
+)
 from kdive.security.redaction import Redactor
 from kdive.store.objectstore import StoredArtifact, object_store_from_env
 
@@ -55,20 +62,6 @@ def crash_command_rejection_reason(command: str, allowlist: frozenset[str]) -> s
     return None
 
 
-class CaptureOutput(NamedTuple):
-    """A capture result: the raw + redacted StoredArtifacts and the core's GNU build-id."""
-
-    raw: StoredArtifact
-    redacted: StoredArtifact
-    vmcore_build_id: str
-
-
-class Retriever(Protocol):
-    """The handler-facing capture port (realized M0 contract), keyed on the System."""
-
-    def capture(self, system_id: UUID, method: CaptureMethod) -> CaptureOutput: ...
-
-
 class _StorePort(Protocol):
     def put_artifact(
         self,
@@ -81,35 +74,6 @@ class _StorePort(Protocol):
         sensitivity: Sensitivity,
         retention_class: str,
     ) -> StoredArtifact: ...
-
-
-class CrashResult(NamedTuple):
-    """A raw `crash` subprocess result: exit status and captured streams."""
-
-    exit_status: int
-    stdout: bytes
-    stderr: bytes
-
-
-class CrashOutput(NamedTuple):
-    """A parsed, redacted crash batch result."""
-
-    results: dict[str, object]
-    transcript: str
-    truncated: bool
-
-
-class CrashPostmortem(Protocol):
-    """The handler-facing crash-postmortem port (realized M0 contract)."""
-
-    def run(
-        self,
-        *,
-        vmcore_ref: str,
-        debuginfo_ref: str,
-        expected_build_id: str,
-        commands: list[str],
-    ) -> CrashOutput: ...
 
 
 type _WaitForVmcore = Callable[[UUID], bytes | None]

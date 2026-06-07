@@ -16,7 +16,7 @@ import asyncio
 from kdive.db.repositories import RUNS
 from kdive.domain.state import RunState
 from kdive.mcp.tools import runs as runs_tools
-from kdive.providers.local_libvirt.build import BuildOutput
+from kdive.providers.ports import BuildOutput
 from tests.mcp.test_complete_build_tool import (
     _ctx,
     _FakeValidator,

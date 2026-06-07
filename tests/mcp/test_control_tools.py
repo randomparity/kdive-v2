@@ -42,11 +42,11 @@ from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import control as control_tools
-from kdive.providers.local_libvirt.control import PowerAction
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     register_local_libvirt_resource,
 )
+from kdive.providers.ports import PowerAction
 from kdive.security.rbac import AuthorizationError, Role
 from tests.providers.local_libvirt.conftest import FakeLibvirtConn
 

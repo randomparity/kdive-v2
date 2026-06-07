@@ -30,7 +30,7 @@ from kdive.domain.state import AllocationState, SystemState
 from kdive.jobs import queue
 from kdive.mcp.tools import control as control_tools
 from kdive.mcp.tools import systems_handlers
-from kdive.providers.local_libvirt.control import PowerAction
+from kdive.providers.ports import PowerAction
 from tests.adversarial.conftest import seed_allocation, seed_resource
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

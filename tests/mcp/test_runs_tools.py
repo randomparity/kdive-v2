@@ -681,7 +681,7 @@ def test_build_concurrent_flips_once(migrated_url: str) -> None:
 from kdive.domain.models import Job, JobKind  # noqa: E402
 from kdive.jobs import queue  # noqa: E402
 from kdive.jobs.models import HandlerRegistry  # noqa: E402
-from kdive.providers.local_libvirt.build import BuildOutput  # noqa: E402
+from kdive.providers.ports import BuildOutput  # noqa: E402
 
 
 class _FakeBuilder:

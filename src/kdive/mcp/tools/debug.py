@@ -40,9 +40,14 @@ from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.debug_ops import DebugEngineRuntime, register_debug_ops
-from kdive.providers.composition import ProviderRuntime, attach_seam_from_env, connector_from_env
+from kdive.providers.composition import (
+    ProviderRuntime,
+    attach_seam_from_env,
+    connector_from_env,
+    debug_engine_from_env,
+)
 from kdive.providers.interfaces import SystemHandle, TransportHandle
-from kdive.providers.ports import Connector, GdbMiEngine
+from kdive.providers.ports import Connector
 from kdive.security import audit
 from kdive.security.paths import PathSafetyError
 from kdive.security.rbac import Role, require_role
@@ -391,7 +396,8 @@ def register(
     )
     secret_backend: SecretBackend = secret_backend_from_env()
     attach = provider_runtime.attach_seam() if provider_runtime else attach_seam_from_env()
-    runtime = DebugEngineRuntime(engine=GdbMiEngine(), attach=attach)
+    engine = provider_runtime.debug_engine() if provider_runtime else debug_engine_from_env()
+    runtime = DebugEngineRuntime(engine=engine, attach=attach)
 
     @app.tool(
         name="debug.start_session",

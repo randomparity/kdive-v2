@@ -18,7 +18,7 @@ from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import vmcore as vmcore_tools
-from kdive.providers.local_libvirt.retrieve import CaptureOutput, CrashOutput
+from kdive.providers.ports import CaptureOutput, CrashOutput
 from kdive.security.rbac import AuthorizationError, Role
 from kdive.store.objectstore import StoredArtifact
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system

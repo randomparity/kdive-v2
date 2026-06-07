@@ -23,7 +23,7 @@ import subprocess  # noqa: S404 - make is invoked with a fixed argv, no shell
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import NamedTuple, Protocol
+from typing import Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -31,6 +31,7 @@ from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
+from kdive.providers.ports import Builder, BuildOutput, ValidatedUpload
 from kdive.security.redaction import Redactor
 from kdive.store.objectstore import HeadResult, StoredArtifact, object_store_from_env
 
@@ -61,24 +62,6 @@ _REQUIRED_CONFIG: tuple[tuple[str, ...], ...] = (
     ("CONFIG_CRASH_DUMP",),
     ("CONFIG_DEBUG_INFO_DWARF4", "CONFIG_DEBUG_INFO_DWARF5", "CONFIG_DEBUG_INFO_BTF"),
 )
-
-
-class BuildOutput(NamedTuple):
-    """A build result: the two object-store keys plus the kernel's GNU build-id."""
-
-    kernel_ref: str
-    debuginfo_ref: str
-    build_id: str
-
-
-class Builder(Protocol):
-    """The handler-facing build port (the realized M0 contract, ADR-0029 §4).
-
-    The realized port stores **two** artifacts and returns both refs plus the build-id
-    the symbolization planes key on.
-    """
-
-    def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput: ...
 
 
 class _StorePort(Protocol):
@@ -454,18 +437,6 @@ def _sync_tree(kernel_src: str, workspace: Path) -> None:
 class _ValidatorStore(Protocol):
     def head(self, key: str) -> HeadResult | None: ...
     def get_range(self, key: str, *, start: int, length: int) -> bytes: ...
-
-
-class ValidatedUpload(NamedTuple):
-    """Validation result: the recorded ``BuildOutput`` plus the per-name ``HeadResult``s.
-
-    The heads (etag/size/checksum per uploaded object) are returned so the finalize step
-    writes the write-once ``artifacts`` rows from this one validation pass — no second
-    HEAD, and no second object-store handle — which keeps ``complete_build`` injectable.
-    """
-
-    output: BuildOutput
-    heads: dict[str, HeadResult]
 
 
 def _build_failure(message: str, **details: object) -> CategorizedError:

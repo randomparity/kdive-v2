@@ -18,10 +18,10 @@ from kdive.providers.local_libvirt.debug_gdbmi import (
     MAX_MEMORY_READ_BYTES,
     GdbMiAttachment,
     GdbMiEngine,
-    GdbMiSessionRegistry,
     MiRecord,
     parse_mi_records,
 )
+from kdive.providers.ports import GdbMiSessionRegistry
 from kdive.security.redaction import Redactor
 
 

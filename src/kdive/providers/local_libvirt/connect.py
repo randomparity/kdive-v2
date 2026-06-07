@@ -22,16 +22,15 @@ import ipaddress
 import socket
 import time
 from collections.abc import Callable
-from typing import NamedTuple, Protocol
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
 from kdive.providers.capability import Capability, CleanupGuarantee, OpContract, Plane
 from kdive.providers.interfaces import SystemHandle, TransportHandle
+from kdive.providers.ports import Connector, TransportHandleData
 
 _GDBSTUB = "gdbstub"
 _SSH = "ssh"
-_TRANSPORT_KINDS = frozenset({_GDBSTUB, _SSH})
 
 # Cap on bytes buffered while waiting for a complete RSP frame from an unauthenticated peer.
 # A valid `$...#xx` halt-reason reply is a few dozen bytes; the bound stops a hostile peer
@@ -71,51 +70,6 @@ def valid_rsp_frame(buffer: bytes) -> bool:
     except ValueError:
         return False
     return (sum(payload) % 256) == expected
-
-
-class TransportHandleData(NamedTuple):
-    """A decoded transport handle: the transport kind and its loopback endpoint.
-
-    Encoded as ``<kind>://<host>:<port>`` (``gdbstub`` or ``ssh``) for the
-    ``transport_handle`` column. It carries only provider-resolved, non-sensitive values (a
-    loopback endpoint), never guest output or a credential.
-    """
-
-    kind: str
-    host: str
-    port: int
-
-    def encode(self) -> str:
-        """Serialize to the ``<kind>://host:port`` wire form."""
-        return f"{self.kind}://{self.host}:{self.port}"
-
-    @classmethod
-    def decode(cls, raw: str) -> TransportHandleData:
-        """Parse a serialized handle.
-
-        Raises:
-            CategorizedError: ``CONFIGURATION_ERROR`` if ``raw`` is not a well-formed
-                ``<kind>://host:port`` handle for a known transport kind (the message names
-                the shape, not the value).
-        """
-        scheme, sep, remainder = raw.partition("://")
-        if not sep or scheme not in _TRANSPORT_KINDS:
-            raise _config_error("transport handle has no known transport scheme")
-        host, sep, port_text = remainder.rpartition(":")
-        if not sep or not host:
-            raise _config_error("transport handle is missing host:port")
-        try:
-            port = int(port_text)
-        except ValueError as exc:
-            raise _config_error("transport handle port is not an integer") from exc
-        return cls(kind=scheme, host=host, port=port)
-
-
-class Connector(Protocol):
-    """The handler-facing Connect port (the realized M0 contract), keyed on the System."""
-
-    def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle: ...
-    def close_transport(self, handle: TransportHandle) -> None: ...
 
 
 # The Connect-plane op is synchronous (a bounded reachability probe, ADR-0032 §3): not a job,

@@ -19,26 +19,18 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from enum import StrEnum
 from typing import Protocol
 
 import libvirt
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.providers.ports import Controller as Controller
+from kdive.providers.ports import PowerAction
 
 _log = logging.getLogger(__name__)
 
 _URI_ENV = "KDIVE_LIBVIRT_URI"
 _DEFAULT_URI = "qemu:///system"
-
-
-class PowerAction(StrEnum):
-    """The four M0 power actions; a typed refinement of `interfaces.PowerAction` (str)."""
-
-    ON = "on"
-    OFF = "off"
-    CYCLE = "cycle"
-    RESET = "reset"
 
 
 class _LibvirtDomain(Protocol):
@@ -55,13 +47,6 @@ class _LibvirtConn(Protocol):
 
 
 type Connect = Callable[[], _LibvirtConn]
-
-
-class Controller(Protocol):
-    """The handler-facing control port (the realized M0 contract), keyed on domain name."""
-
-    def power(self, domain_name: str, action: PowerAction) -> None: ...
-    def force_crash(self, domain_name: str) -> None: ...
 
 
 def _close(conn: _LibvirtConn) -> None:

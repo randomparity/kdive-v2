@@ -16,9 +16,10 @@ import json
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple, Protocol
+from typing import Protocol
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.providers.ports import IntrospectOutput, LiveIntrospector, VmcoreIntrospector
 from kdive.security.redaction import Redactor
 
 # Fixed in-tree caps (no caller args in M0; ADR-0033 §"Output bounds").
@@ -61,39 +62,6 @@ class _Program(Protocol):
     def boot_cmdline(self) -> str: ...
     def cpus_online(self) -> int: ...
     def mem_total_pages(self) -> int: ...
-
-
-class IntrospectOutput(NamedTuple):
-    """A redacted, size-bounded introspection report (ADR-0033 §3/§6).
-
-    The three helper sub-dicts are already `Redactor`-scrubbed when the port returns this.
-    ``truncated`` is set when any helper hit its cap or the assembled report hit the byte
-    cap (and ``tasks`` was trimmed).
-    """
-
-    tasks: dict[str, object]
-    modules: dict[str, object]
-    sysinfo: dict[str, object]
-    truncated: bool
-
-
-class VmcoreIntrospector(Protocol):
-    """The handler-facing offline-introspection port (realized M0 contract)."""
-
-    def from_vmcore(
-        self, *, vmcore_ref: str, debuginfo_ref: str, expected_build_id: str
-    ) -> IntrospectOutput: ...
-
-
-class LiveIntrospector(Protocol):
-    """The handler-facing live-introspection port (ADR-0039 §3).
-
-    Runs the same three helpers as the offline port but against a **live** guest kernel
-    reached over the session's transport handle (drgn-over-SSH), returning the same
-    redacted, byte-bounded :class:`IntrospectOutput`.
-    """
-
-    def run(self, *, transport_handle: str) -> IntrospectOutput: ...
 
 
 # --- helpers (M0 subset ported from v1 introspect/helpers/) --------------------------------

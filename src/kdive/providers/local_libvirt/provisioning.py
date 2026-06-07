@@ -30,6 +30,7 @@ import libvirt
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import ProvisioningProfile, RootfsSource
 from kdive.providers.local_libvirt.discovery import _KDIVE_METADATA_NS
+from kdive.providers.ports import Provisioner as Provisioner
 from kdive.rootfs.catalog import load_catalog
 
 _log = logging.getLogger(__name__)
@@ -85,21 +86,6 @@ def _close(conn: _LibvirtConn) -> None:
         conn.close()
     except libvirt.libvirtError:
         _log.warning("libvirt connection close failed; continuing", exc_info=True)
-
-
-class Provisioner(Protocol):
-    """The handler-facing provisioning port (the realized M0 contract).
-
-    Row-first ordering (ADR-0021/0025) mints the System **before** provisioning, so
-    this port keys on the already-minted ``system_id`` and returns the libvirt domain
-    name the handler stores and later tears down.
-    :class:`LocalLibvirtProvisioning` satisfies it structurally; the `systems.*` job handlers
-    depend on it so tests can inject a fake provider without a libvirt host.
-    """
-
-    def provision(self, system_id: UUID, profile: ProvisioningProfile) -> str: ...
-    def teardown(self, domain_name: str) -> None: ...
-    def reprovision(self, system_id: UUID, profile: ProvisioningProfile) -> str: ...
 
 
 def domain_name_for(system_id: UUID) -> str:

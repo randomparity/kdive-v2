@@ -25,7 +25,12 @@ from kdive.providers.local_libvirt.build import (
 )
 from kdive.providers.local_libvirt.connect import LocalLibvirtConnect
 from kdive.providers.local_libvirt.control import LocalLibvirtControl
-from kdive.providers.local_libvirt.debug_gdbmi import default_attach_seam
+from kdive.providers.local_libvirt.debug_gdbmi import (
+    GdbMiEngine as LocalGdbMiEngine,
+)
+from kdive.providers.local_libvirt.debug_gdbmi import (
+    default_attach_seam,
+)
 from kdive.providers.local_libvirt.install import LocalLibvirtInstall, read_console_log
 from kdive.providers.local_libvirt.introspect_drgn import (
     LocalLibvirtLiveIntrospect,
@@ -52,6 +57,7 @@ from kdive.providers.ports import (
     Controller,
     CrashOutput,
     CrashPostmortem,
+    GdbMiEngine,
     Installer,
     IntrospectOutput,
     LiveIntrospector,
@@ -234,6 +240,9 @@ class ProviderRuntime:
     def attach_seam(self) -> AttachSeam:
         return default_attach_seam
 
+    def debug_engine(self) -> GdbMiEngine:
+        return cast(GdbMiEngine, LocalGdbMiEngine())
+
 
 def _register_provider(
     registry: CapabilityRegistry, provider: object, capabilities: list[Capability], suffix: str
@@ -341,6 +350,10 @@ def connector_from_env() -> Connector:
 
 def attach_seam_from_env() -> AttachSeam:
     return build_default_provider_runtime().attach_seam()
+
+
+def debug_engine_from_env() -> GdbMiEngine:
+    return build_default_provider_runtime().debug_engine()
 
 
 def retriever_from_env() -> Retriever:

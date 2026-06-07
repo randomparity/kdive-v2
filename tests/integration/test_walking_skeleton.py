@@ -35,8 +35,7 @@ from kdive.mcp.tools import artifacts as artifacts_tools
 from kdive.mcp.tools import control as control_tools
 from kdive.mcp.tools import runs_handlers
 from kdive.mcp.tools import vmcore as vmcore_tools
-from kdive.providers.local_libvirt.build import BuildOutput
-from kdive.providers.local_libvirt.retrieve import CaptureOutput, CrashOutput
+from kdive.providers.ports import BuildOutput, CaptureOutput, CrashOutput
 from kdive.security.rbac import Role
 from tests.integration._seed import (
     seed_crashed_system_with_run,

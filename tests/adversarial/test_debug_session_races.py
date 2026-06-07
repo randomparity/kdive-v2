@@ -43,7 +43,7 @@ from kdive.domain.state import (
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import debug as debug_tools
 from kdive.providers.interfaces import SystemHandle, TransportHandle
-from kdive.providers.local_libvirt.connect import TransportHandleData
+from kdive.providers.ports import TransportHandleData
 from kdive.security.rbac import Role
 from tests.adversarial.conftest import seed_allocation, seed_resource
 

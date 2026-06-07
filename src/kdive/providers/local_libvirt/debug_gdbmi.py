@@ -13,8 +13,8 @@ dump (ADR-0034 decision 3).
 
 The ``MiController`` subprocess seam is injectable: the real :class:`PygdbmiController` drives
 a ``gdb`` child via pygdbmi (``live_vm``-only); tests inject a scripted fake. The live
-:class:`GdbMiAttachment` objects are held in an in-process :class:`GdbMiSessionRegistry` keyed
-on ``session_id`` — server-process-scoped and non-durable (v1 ADR-0021): a restart strands the
+:class:`GdbMiAttachment` objects are held in an in-process registry keyed on ``session_id`` —
+server-process-scoped and non-durable (v1 ADR-0021): a restart strands the
 attachment and the next op gets ``no_live_session``.
 """
 
@@ -26,7 +26,6 @@ import json
 import math
 import re
 import shutil
-import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -625,55 +624,6 @@ class GdbMiEngine:
         with transcript_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(self.redactor.redact_value(entry), default=str))
             handle.write("\n")
-
-
-class GdbMiSessionRegistry:
-    """In-process holder of live :class:`GdbMiAttachment` objects keyed on ``session_id``.
-
-    Lock-guards the dict; the live engine is server-process-scoped, not durable, so a server
-    restart strands the attachment and the next mutating debug.* op gets ``no_live_session``.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._sessions: dict[str, GdbMiAttachment] = {}
-
-    def register(self, session_id: str, attachment: GdbMiAttachment) -> None:
-        with self._lock:
-            self._sessions[session_id] = attachment
-
-    def get(self, session_id: str) -> GdbMiAttachment | None:
-        with self._lock:
-            return self._sessions.get(session_id)
-
-    def require(self, session_id: str) -> GdbMiAttachment:
-        attachment = self.get(session_id)
-        if attachment is None:
-            raise _config_error(
-                "no live gdb/MI session; the engine is gone (server restarted or session reaped)",
-                code="no_live_session",
-                details={"debug_session_id": session_id},
-            )
-        return attachment
-
-    def reap(self, session_id: str) -> GdbMiAttachment | None:
-        with self._lock:
-            return self._sessions.pop(session_id, None)
-
-
-@runtime_checkable
-class AttachSeam(Protocol):
-    """The lazy-attach port the Debug-plane handlers inject (ADR-0034 §4c).
-
-    Opens a gdb/MI engine over the session's RSP endpoint, loads the Run's debuginfo symbols,
-    and returns the live :class:`GdbMiAttachment`. The real default is ``live_vm``-gated (the
-    debuginfo resolver raises ``MISSING_DEPENDENCY`` outside the gate); tests inject a fake that
-    returns an attachment over a scripted :class:`MiController`.
-    """
-
-    def __call__(
-        self, *, host: str, port: int, run_id: str, transcript_path: Path
-    ) -> GdbMiAttachment: ...
 
 
 def _resolve_debuginfo_ref(run_id: str) -> str:  # pragma: no cover - live_vm

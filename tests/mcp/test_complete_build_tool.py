@@ -33,7 +33,7 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import runs as runs_tools
-from kdive.providers.local_libvirt.build import BuildOutput, ValidatedUpload
+from kdive.providers.ports import BuildOutput, ValidatedUpload
 from kdive.security.rbac import Role
 from kdive.store.objectstore import HeadResult
 
