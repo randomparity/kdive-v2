@@ -4,8 +4,8 @@ A plane issue (#11+) ships a tool surface *and* a job handler. The skeleton expo
 two symmetric seams so a plane is added by appending to a tuple here and never edits
 the entrypoint: `_PLANE_REGISTRARS` (tools, called by :func:`build_app`) and
 `_HANDLER_REGISTRARS` (worker job handlers, called by :func:`build_handler_registry`).
-Both are empty of non-jobs planes in M0; `jobs.*` register tools but no job handler
-(they are read/cancel tools, not job kinds).
+Provider-aware registrars receive the injected provider runtime, while `jobs.*` register
+tools but no job handler (they are read/cancel tools, not job kinds).
 """
 
 from __future__ import annotations
@@ -93,6 +93,8 @@ def build_app(
         pool: The shared async connection pool tools read through.
         verifier: An injected verifier (tests pass a local-keypair one); when
             ``None``, built from the OIDC env vars via :func:`build_verifier`.
+        provider_runtime: Injected provider dispatch runtime passed to provider-aware
+            tool registrars; when ``None``, built from the default provider composition.
     """
     app: FastMCP = FastMCP(name="kdive", auth=verifier or build_verifier())
     runtime = provider_runtime or build_default_provider_runtime()
@@ -102,7 +104,12 @@ def build_app(
 
 
 def build_handler_registry(*, provider_runtime: ProviderRuntime | None = None) -> HandlerRegistry:
-    """Build the worker's `HandlerRegistry` from the handler seam (empty in M0)."""
+    """Build the worker's `HandlerRegistry` from provider-aware handler registrars.
+
+    Args:
+        provider_runtime: Injected provider dispatch runtime passed to worker handler
+            registrars; when ``None``, built from the default provider composition.
+    """
     registry = HandlerRegistry()
     runtime = provider_runtime or build_default_provider_runtime()
     for register in _HANDLER_REGISTRARS:
