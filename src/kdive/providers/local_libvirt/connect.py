@@ -24,8 +24,6 @@ import time
 from collections.abc import Callable
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import ResourceKind
-from kdive.providers.capability import Capability, CleanupGuarantee, OpContract, Plane
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.ports import Connector, TransportHandleData
 
@@ -70,33 +68,6 @@ def valid_rsp_frame(buffer: bytes) -> bool:
     except ValueError:
         return False
     return (sum(payload) % 256) == expected
-
-
-# The Connect-plane op is synchronous (a bounded reachability probe, ADR-0032 §3): not a job,
-# not destructive, idempotent (re-opening yields an equivalent handle), best-effort cleanup
-# (close is a no-op for these connectionless/short-lived probes).
-_OPEN_TRANSPORT_CONTRACT = OpContract(
-    idempotent=True,
-    destructive=False,
-    cancelable=False,
-    long_running=False,
-    cleanup=CleanupGuarantee.BEST_EFFORT,
-)
-
-
-def connect_capability() -> Capability:
-    """The ``(connect, open_transport, local-libvirt)`` capability the provider advertises.
-
-    One capability covers every transport kind the backend supports (``gdbstub`` + ``ssh``);
-    the kind is the runtime argument to ``open_transport``, not a separate registry key
-    (ADR-0039 §1: "a second transport = a provider change only", behind the same capability).
-    """
-    return Capability(
-        plane=Plane.CONNECT,
-        operation="open_transport",
-        resource_kind=ResourceKind.LOCAL_LIBVIRT,
-        contract=_OPEN_TRANSPORT_CONTRACT,
-    )
 
 
 def _config_error(message: str) -> CategorizedError:
@@ -278,7 +249,6 @@ __all__ = [
     "LocalLibvirtConnect",
     "TransportHandle",
     "TransportHandleData",
-    "connect_capability",
     "rsp_frame",
     "rsp_reachable",
     "valid_rsp_frame",

@@ -27,14 +27,15 @@ state-machine edge — but it lands entirely behind the existing plane seams.
 
 ## Decision
 
-### 1. SSH is a second Connect-plane transport, registered as a capability
+### 1. SSH is a second Connect-plane transport on the typed provider runtime
 
-The `ConnectPlane` `Protocol` (`open_transport(system, kind) → TransportHandle`) is
-unchanged; M1 adds a provider capability `(connect, open_transport, local-libvirt)`
-advertising `kind="ssh"` alongside the existing `kind="gdbstub"`. The provider gains
-an `ssh` backend (port v1's SSH transport) that opens a connection to the booted
-guest. `debug.start_session(run_id, transport="ssh")` dispatches to it by capability
-match — **no core change**, the same dispatch that selects gdbstub.
+The handler-facing `Connector` port (`open_transport(system, kind) → TransportHandle`) is
+unchanged; M1 adds `kind="ssh"` alongside the existing `kind="gdbstub"` behind the same
+typed `ProviderRuntime.connector()` seam (ADR-0063). The provider gains an `ssh` backend
+(port v1's SSH transport) that opens a connection to the booted guest.
+`debug.start_session(run_id, transport="ssh")` calls
+`ProviderRuntime.connector().open_transport(system, "ssh")` — no new MCP lifecycle or
+job-dispatch path.
 
 The SSH endpoint resolution is subject to the **same loopback-IP-literal-before-IO
 control** the gdbstub transport enforces (ADR-0032 §5, the ported v1 "F2" SSRF
@@ -126,8 +127,8 @@ predicate.
 - The first real workout of the secret-resolution-and-registration contract under a
   live transport, ahead of M1.5's fault-injection provider that will stress it
   harder — a useful early signal that the contract holds.
-- SSH lands purely as a provider capability + a secret reference in the profile; the
-  Connect/Debug `Protocol`s and the dispatch core are untouched, a concrete test of
+- SSH lands purely as a provider transport implementation + a secret reference in the
+  profile; the Connect/Debug ports and typed provider runtime are untouched, a concrete test of
   the "new transport = provider change only" seam.
 - New schema is minimal: the `ssh_credential_ref` lives in the provisioning profile
   jsonb (no new column); the DebugSession `transport`/`transport_handle` columns
@@ -140,8 +141,8 @@ predicate.
   or responses. The reference + worker-boundary resolution + registry registration is
   the only allowed path.
 - **A new live-introspect transport outside the Connect plane.** Rejected: it would
-  duplicate the DebugSession lifecycle and bypass capability dispatch. SSH is a Connect
-  transport like gdbstub; reusing the seam is the point.
+  duplicate the DebugSession lifecycle and bypass the typed provider runtime. SSH is a
+  Connect transport like gdbstub; reusing the seam is the point.
 - **Run live introspection over the gdbstub instead of SSH.** Rejected: gdbstub is
   stop-the-world stub debugging; drgn live introspection wants a running kernel it can
   read via `/proc/kcore`-style access over a shell, which is the SSH path v1 already

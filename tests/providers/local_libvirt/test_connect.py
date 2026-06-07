@@ -257,37 +257,3 @@ def test_close_ssh_transport_is_noop_and_never_raises() -> None:
     connector = _ssh_connector(_FakeSshConnect())
     handle = connector.open_transport(_SYSTEM, "ssh")
     connector.close_transport(handle)  # no raise
-
-
-# --- capability dispatch (ADR-0039 §1: dispatch selects the ssh backend by capability) -----
-
-
-def test_connect_capability_is_open_transport_on_connect_plane() -> None:
-    from kdive.domain.models import ResourceKind
-    from kdive.providers.capability import Plane
-    from kdive.providers.local_libvirt.connect import connect_capability
-
-    cap = connect_capability()
-    assert cap.plane is Plane.CONNECT
-    assert cap.operation == "open_transport"
-    assert cap.resource_kind is ResourceKind.LOCAL_LIBVIRT
-
-
-def test_dispatch_selects_ssh_backend_by_capability() -> None:
-    from kdive.domain.models import ResourceKind
-    from kdive.domain.state import ResourceStatus
-    from kdive.providers.capability import CapabilityRegistry, Plane
-    from kdive.providers.local_libvirt.connect import connect_capability
-
-    registry = CapabilityRegistry()
-    connector = _ssh_connector(_FakeSshConnect())
-    registry.register(
-        connector,
-        [connect_capability()],
-        provider_id="local-libvirt",
-        health=ResourceStatus.AVAILABLE,
-        cost_class="local",
-    )
-    bound = registry.dispatch(Plane.CONNECT, "open_transport", ResourceKind.LOCAL_LIBVIRT)
-    handle = bound.call(_SYSTEM, "ssh")
-    assert TransportHandleData.decode(str(handle)).kind == "ssh"
