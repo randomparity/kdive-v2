@@ -256,6 +256,27 @@ def test_from_env_does_not_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(builder, LocalLibvirtBuild)
 
 
+# --- real seam argv (the wrappers that only run under live_vm, but whose argv is testable) ----
+
+
+def test_real_run_make_runs_parallel_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A kernel build must parallelize across cores; an argv without -j serializes it and the
+    # build takes ~15x longer on a many-core host.
+    captured: list[list[str]] = []
+
+    def _capture(argv: list[str], **__: object) -> subprocess.CompletedProcess[bytes]:
+        captured.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", _capture)
+    assert build_module._real_run_make(Path("/ws")) == 0
+    argv = captured[0]
+    assert argv[:3] == ["make", "-C", "/ws"]
+    assert any(tok.startswith("-j") and tok[2:].isdigit() and int(tok[2:]) >= 1 for tok in argv), (
+        argv
+    )
+
+
 # --- live_vm real-make build ---------------------------------------------------------
 
 

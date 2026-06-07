@@ -266,16 +266,19 @@ def _real_read_config(workspace: Path) -> str:  # pragma: no cover - live_vm
 
 def _real_run_make(workspace: Path) -> int:  # pragma: no cover - live_vm
     return subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted workspace
-        ["make", "-C", str(workspace)], check=False
+        ["make", "-C", str(workspace), f"-j{os.cpu_count() or 1}"], check=False
     ).returncode
 
 
 def _real_read_build_id(workspace: Path) -> str:  # pragma: no cover - live_vm
     """Extract the produced ``vmlinux``'s GNU build-id via the tested note parser.
 
-    Dumps the ``.note.gnu.build-id`` section as raw bytes with ``objcopy`` and feeds them
-    to :func:`parse_gnu_build_id`, so the shipped extraction is the unit-tested logic (not
-    a locale-fragile ``readelf`` text scrape).
+    Dumps the ``.notes`` section as raw bytes with ``objcopy`` and feeds them to
+    :func:`parse_gnu_build_id`, so the shipped extraction is the unit-tested logic (not a
+    locale-fragile ``readelf`` text scrape). The kernel's ``vmlinux.lds`` merges every ELF
+    note into one ``.notes`` section, so the build-id is not in a standalone
+    ``.note.gnu.build-id`` section the way a userspace binary's is; the parser scans the
+    stream for the ``NT_GNU_BUILD_ID`` note regardless of the other notes present.
     """
     with tempfile.NamedTemporaryFile(suffix=".note") as note_file:
         subprocess.run(  # noqa: S603 - fixed argv, no shell
