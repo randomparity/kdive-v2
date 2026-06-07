@@ -21,6 +21,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
+from kdive.db.artifact_queries import raw_vmcore_key
 from kdive.db.repositories import RUNS, SYSTEMS
 from kdive.domain.capture import LOCAL_LIBVIRT_SUPPORTED, CaptureMethod
 from kdive.domain.errors import CategorizedError
@@ -44,9 +45,6 @@ from kdive.mcp.tools._common import (
 from kdive.mcp.tools._common import (
     job_envelope,
 )
-from kdive.planes.vmcore import RAW_KEY_LIKE as _RAW_KEY_LIKE
-from kdive.planes.vmcore import RAW_KEY_SQL as _RAW_KEY_SQL
-from kdive.planes.vmcore import REDACTED_LIKE as _REDACTED_LIKE
 from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 from kdive.providers.local_libvirt.retrieve import crash_command_rejection_reason
 from kdive.providers.ports import CrashPostmortem
@@ -206,12 +204,10 @@ async def _resolve_postmortem(
     for command in commands:
         if crash_command_rejection_reason(command, _CRASH_ALLOWLIST) is not None:
             return _config_error(run_id)
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(_RAW_KEY_SQL, (run.system_id, _RAW_KEY_LIKE, _REDACTED_LIKE))
-        row = await cur.fetchone()
-    if row is None:
+    vmcore_ref = await raw_vmcore_key(conn, run.system_id)
+    if vmcore_ref is None:
         return _config_error(run_id)
-    return _PostmortemTargets(run.debuginfo_ref, build_id, str(row["object_key"]))
+    return _PostmortemTargets(run.debuginfo_ref, build_id, vmcore_ref)
 
 
 async def postmortem_crash(

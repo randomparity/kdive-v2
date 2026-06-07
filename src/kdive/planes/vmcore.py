@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, LiteralString
+from typing import Any
 from uuid import UUID
 
 from psycopg import AsyncConnection
-from psycopg.rows import dict_row
 
+from kdive.db.artifact_queries import raw_vmcore_key
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, SYSTEMS
 from kdive.domain.capture import CaptureMethod
@@ -21,22 +21,6 @@ from kdive.providers.composition import ProviderRuntime, build_default_provider_
 from kdive.providers.ports import Retriever
 from kdive.security import audit
 from kdive.store.objectstore import register_artifact_row
-
-RAW_KEY_SQL: LiteralString = (
-    "SELECT object_key FROM artifacts "
-    "WHERE owner_kind = 'systems' AND owner_id = %s "
-    "AND object_key LIKE %s AND object_key NOT LIKE %s"
-)
-RAW_KEY_LIKE = "%/vmcore-%"
-REDACTED_LIKE = "%-redacted"
-
-
-async def existing_raw_key(conn: AsyncConnection, system_id: UUID) -> str | None:
-    """Return the System's raw `vmcore-{method}` object key, or ``None``."""
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(RAW_KEY_SQL, (system_id, RAW_KEY_LIKE, REDACTED_LIKE))
-        row = await cur.fetchone()
-    return None if row is None else str(row["object_key"])
 
 
 def captured_method(object_key: str) -> str:
@@ -78,7 +62,7 @@ async def precheck_system(
                 category=ErrorCategory.INFRASTRUCTURE_FAILURE,
                 details={"system_id": str(system_id)},
             )
-        existing = await existing_raw_key(conn, system_id)
+        existing = await raw_vmcore_key(conn, system_id)
         if existing is not None:
             ensure_method_match(existing, method, system_id)
             return existing
@@ -90,7 +74,7 @@ async def finalize_capture(
 ) -> str:
     """Insert both artifact rows + audit under the per-System lock."""
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system.id):
-        existing = await existing_raw_key(conn, system.id)
+        existing = await raw_vmcore_key(conn, system.id)
         if existing is not None:
             ensure_method_match(existing, method, system.id)
             return existing

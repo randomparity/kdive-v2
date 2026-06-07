@@ -22,6 +22,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
+from kdive.db.artifact_queries import raw_vmcore_key
 from kdive.db.repositories import DEBUG_SESSIONS, RUNS
 from kdive.domain.errors import CategorizedError
 from kdive.domain.state import DebugSessionState
@@ -41,13 +42,6 @@ from kdive.security.rbac import Role, require_role
 _LIVE_HELPERS = frozenset({"tasks", "modules", "sysinfo"})
 _SSH = "ssh"
 
-_RAW_KEY_SQL: LiteralString = (
-    "SELECT object_key FROM artifacts "
-    "WHERE owner_kind = 'systems' AND owner_id = %s "
-    "AND object_key LIKE %s AND object_key NOT LIKE %s"
-)
-_RAW_KEY_LIKE = "%/vmcore-%"
-_REDACTED_LIKE = "%-redacted"
 _BUILD_STEP_SQL: LiteralString = "SELECT result FROM run_steps WHERE run_id = %s AND step = 'build'"
 
 
@@ -85,12 +79,10 @@ async def _resolve(
     build_id = await _build_id_for_run(conn, uid)
     if build_id is None:
         return _config_error(run_id)
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(_RAW_KEY_SQL, (run.system_id, _RAW_KEY_LIKE, _REDACTED_LIKE))
-        row = await cur.fetchone()
-    if row is None:
+    vmcore_ref = await raw_vmcore_key(conn, run.system_id)
+    if vmcore_ref is None:
         return _config_error(run_id)
-    return _Targets(run.debuginfo_ref, build_id, str(row["object_key"]))
+    return _Targets(run.debuginfo_ref, build_id, vmcore_ref)
 
 
 async def introspect_from_vmcore(
