@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import cast
 from uuid import UUID
+
+from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import Sensitivity
@@ -130,3 +134,52 @@ def test_provider_runtime_returns_typed_provider_ports_directly() -> None:
     assert output.build_id == "deadbeef"
     assert builder.calls == [(_RUN, "file:///configs/kdump.config")]
     assert runtime.install_boot() == (install, install)
+
+
+def test_provider_runtime_discovery_hook_is_optional() -> None:
+    install = _InstallProvider()
+    retrieve = _RetrieveProvider()
+    introspect = _IntrospectorProvider()
+    calls: list[AsyncConnectionPool] = []
+
+    async def _register(pool: AsyncConnectionPool) -> None:
+        calls.append(pool)
+
+    runtime = ProviderRuntime(
+        provisioner=_ProvisionProvider(),
+        builder=_BuildProvider(),
+        installer=install,
+        booter=install,
+        connector=_ConnectorProvider(),
+        controller=_ControllerProvider(),
+        retriever=retrieve,
+        crash_postmortem=retrieve,
+        vmcore_introspector=introspect,
+        live_introspector=introspect,
+        discovery_registrar=_register,
+    )
+    pool = cast(AsyncConnectionPool, object())
+
+    asyncio.run(runtime.register_discovery(pool))
+
+    assert calls == [pool]
+
+
+def test_provider_runtime_discovery_hook_noops_when_absent() -> None:
+    install = _InstallProvider()
+    retrieve = _RetrieveProvider()
+    introspect = _IntrospectorProvider()
+    runtime = ProviderRuntime(
+        provisioner=_ProvisionProvider(),
+        builder=_BuildProvider(),
+        installer=install,
+        booter=install,
+        connector=_ConnectorProvider(),
+        controller=_ControllerProvider(),
+        retriever=retrieve,
+        crash_postmortem=retrieve,
+        vmcore_introspector=introspect,
+        live_introspector=introspect,
+    )
+
+    asyncio.run(runtime.register_discovery(cast(AsyncConnectionPool, object())))

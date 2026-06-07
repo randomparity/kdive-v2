@@ -8,6 +8,10 @@ provider name.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
+from psycopg_pool import AsyncConnectionPool
+
 from kdive.domain.models import ResourceKind
 from kdive.domain.state import ResourceStatus
 from kdive.providers.capability import (
@@ -26,6 +30,7 @@ from kdive.providers.local_libvirt.debug_gdbmi import (
 from kdive.providers.local_libvirt.debug_gdbmi import (
     default_attach_seam,
 )
+from kdive.providers.local_libvirt.discovery import ensure_local_host_registered
 from kdive.providers.local_libvirt.install import LocalLibvirtInstall
 from kdive.providers.local_libvirt.introspect_drgn import (
     LocalLibvirtLiveIntrospect,
@@ -53,6 +58,7 @@ from kdive.providers.ports import (
 _LOCAL_PROVIDER_ID = "local-libvirt"
 _LOCAL_KIND = ResourceKind.LOCAL_LIBVIRT
 _LOCAL_COST_CLASS = "local"
+type DiscoveryRegistrar = Callable[[AsyncConnectionPool], Awaitable[None]]
 
 _SYNC_CONTRACT = OpContract(
     idempotent=True,
@@ -102,6 +108,7 @@ class ProviderRuntime:
         crash_postmortem: CrashPostmortem,
         vmcore_introspector: VmcoreIntrospector,
         live_introspector: LiveIntrospector,
+        discovery_registrar: DiscoveryRegistrar | None = None,
         attach_seam: AttachSeam = default_attach_seam,
         debug_engine: GdbMiEngine | None = None,
     ) -> None:
@@ -115,6 +122,7 @@ class ProviderRuntime:
         self._crash_postmortem = crash_postmortem
         self._vmcore_introspector = vmcore_introspector
         self._live_introspector = live_introspector
+        self._discovery_registrar = discovery_registrar
         self._attach_seam = attach_seam
         self._debug_engine = debug_engine if debug_engine is not None else LocalGdbMiEngine()
 
@@ -150,6 +158,11 @@ class ProviderRuntime:
 
     def debug_engine(self) -> GdbMiEngine:
         return self._debug_engine
+
+    async def register_discovery(self, pool: AsyncConnectionPool) -> None:
+        """Run provider first-start discovery registration, if this runtime has one."""
+        if self._discovery_registrar is not None:
+            await self._discovery_registrar(pool)
 
 
 def _register_provider(
@@ -250,6 +263,7 @@ def build_default_provider_runtime() -> ProviderRuntime:
         crash_postmortem=retrieve,
         vmcore_introspector=vmcore_introspector,
         live_introspector=live_introspector,
+        discovery_registrar=ensure_local_host_registered,
     )
 
 

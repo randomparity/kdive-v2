@@ -24,6 +24,7 @@ def test_reconciler_subcommand_with_log_level() -> None:
 def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     """`_run_reconciler` opens a pool, constructs a Reconciler with NullReaper, runs, closes."""
     from kdive import __main__
+    from kdive.providers import composition
     from kdive.reconciler import loop
 
     events: list[str] = []
@@ -36,6 +37,12 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
             events.append("close")
 
     monkeypatch.setattr(__main__, "create_pool", lambda **kw: _FakePool())
+
+    class _FakeRuntime:
+        async def register_discovery(self, pool: object) -> None:
+            events.append("discover")
+
+    monkeypatch.setattr(composition, "build_default_provider_runtime", lambda: _FakeRuntime())
 
     constructed: dict[str, object] = {}
 
@@ -50,5 +57,5 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
 
     asyncio.run(__main__._run_reconciler())
 
-    assert events == ["open", "run", "close"]
+    assert events == ["open", "discover", "run", "close"]
     assert isinstance(constructed["reaper"], loop.NullReaper)

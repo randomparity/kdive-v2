@@ -13,12 +13,16 @@ import logging
 import os
 import signal
 import socket
+from typing import TYPE_CHECKING
 
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.pool import create_pool
 from kdive.log import configure_logging
 from kdive.version import full_version
+
+if TYPE_CHECKING:
+    from kdive.providers.composition import ProviderRuntime
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8000
@@ -78,6 +82,7 @@ async def _run_worker() -> None:
 
 async def _run_reconciler() -> None:
     from kdive.domain.errors import CategorizedError
+    from kdive.providers.composition import build_default_provider_runtime
     from kdive.reconciler.loop import NullReaper, Reconciler
     from kdive.store.objectstore import object_store_from_env
 
@@ -91,7 +96,7 @@ async def _run_reconciler() -> None:
         upload_store = object_store_from_env()
     except CategorizedError:
         upload_store = None  # no S3 env: the upload reaper stays off, like NullReaper
-    await _register_local_host(pool)
+    await _register_provider_resources(pool, build_default_provider_runtime())
     try:
         reconciler = Reconciler(pool, NullReaper(), upload_store=upload_store)
         await reconciler.run(stop)
@@ -99,18 +104,16 @@ async def _run_reconciler() -> None:
         await pool.close()
 
 
-async def _register_local_host(pool: AsyncConnectionPool) -> None:
-    """Best-effort first-run host registration so allocations.request has a Resource (ADR-0059).
+async def _register_provider_resources(pool: AsyncConnectionPool, runtime: ProviderRuntime) -> None:
+    """Best-effort provider discovery registration so allocations.request has a Resource.
 
-    A host that can't be reached/registered must not crash the reconciler — the other repairs
-    still run, and the next startup retries; the failure is logged.
+    A provider that can't be reached/registered must not crash the reconciler — the other
+    repairs still run, and the next startup retries; the failure is logged.
     """
-    from kdive.providers.local_libvirt.discovery import ensure_local_host_registered
-
     try:
-        await ensure_local_host_registered(pool)
+        await runtime.register_discovery(pool)
     except Exception:  # noqa: BLE001 - registration failure must not crash the reconciler
-        _log.warning("reconciler: local-libvirt host registration failed at startup", exc_info=True)
+        _log.warning("reconciler: provider discovery registration failed at startup", exc_info=True)
 
 
 def main(argv: list[str] | None = None) -> None:
