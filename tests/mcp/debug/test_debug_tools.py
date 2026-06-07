@@ -550,6 +550,12 @@ def _ssh_profile() -> dict[str, Any]:
 
 
 async def _seed_ssh_system(pool: AsyncConnectionPool, alloc_id: str) -> str:
+    return await _seed_profiled_system(pool, alloc_id, _ssh_profile())
+
+
+async def _seed_profiled_system(
+    pool: AsyncConnectionPool, alloc_id: str, profile: dict[str, Any]
+) -> str:
     async with pool.connection() as conn:
         system = await SYSTEMS.insert(
             conn,
@@ -561,7 +567,7 @@ async def _seed_ssh_system(pool: AsyncConnectionPool, alloc_id: str) -> str:
                 project="proj",
                 allocation_id=UUID(alloc_id),
                 state=SystemState.READY,
-                provisioning_profile=_ssh_profile(),
+                provisioning_profile=profile,
                 domain_name="kdive-x",
             ),
         )
@@ -646,6 +652,33 @@ def test_start_session_ssh_missing_credential_ref_is_config_error(migrated_url: 
         assert resp.status == "error" and resp.error_category == "configuration_error"
         assert count == 0
         assert connector.opened == []  # no transport opened without a credential
+
+    asyncio.run(_run())
+
+
+def test_start_session_ssh_invalid_profile_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            profile = _ssh_profile()
+            profile["provider"] = {"local_libvirt": profile["provider"]["local-libvirt"]}
+            sys_id = await _seed_profiled_system(pool, alloc_id, profile)
+            run_id = await _seed_run(pool, sys_id)
+            connector = _FakeConnector()
+            backend = _OrderRecordingBackend([])
+            resp = await debug_tools.start_session(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="ssh",
+                connector=connector,
+                secret_backend=backend,
+            )
+            count = await _session_count(pool)
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert count == 0
+        assert backend.refs == []
+        assert connector.opened == []
 
     asyncio.run(_run())
 

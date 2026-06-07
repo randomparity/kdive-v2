@@ -40,6 +40,7 @@ from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.debug.ops import DebugEngineRuntime, register_debug_ops
+from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.ports import Connector
@@ -160,12 +161,12 @@ def _resolve_credential(
     """
     if transport != _SSH:
         return None
-    ref = (
-        system.provisioning_profile.get("provider", {})
-        .get("local-libvirt", {})
-        .get("ssh_credential_ref")
-    )
-    if not isinstance(ref, str) or not ref:
+    try:
+        profile = ProvisioningProfile.parse(system.provisioning_profile)
+    except CategorizedError as exc:
+        return ToolResponse.failure(str(system.id), exc.category)
+    ref = profile.provider.local_libvirt.ssh_credential_ref
+    if ref is None:
         return _config_error(str(system.id), data={"reason": "ssh_credential_ref_missing"})
     if secret_backend is None:
         return ToolResponse.failure(str(system.id), ErrorCategory.MISSING_DEPENDENCY)
