@@ -247,7 +247,7 @@ def register_handlers(
 ) -> None:
     """Bind the `provision`/`teardown`/`reprovision` job handlers."""
     runtime = provider_runtime or build_default_provider_runtime()
-    prov = provisioning or runtime.provisioner()
+    prov = provisioning or runtime.provisioner
 
     async def _provision(conn: AsyncConnection, job: Job) -> str | None:
         return await provision_handler(conn, job, prov)

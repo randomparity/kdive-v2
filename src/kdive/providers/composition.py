@@ -9,6 +9,7 @@ multi-provider path.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -50,82 +51,34 @@ from kdive.providers.ports import (
 type DiscoveryRegistrar = Callable[[AsyncConnectionPool], Awaitable[None]]
 
 
+@dataclass(frozen=True, slots=True)
 class ProviderRuntime:
     """Typed provider ports for the default runtime."""
 
-    def __init__(
-        self,
-        *,
-        provisioner: Provisioner,
-        builder: Builder,
-        installer: Installer,
-        booter: Booter,
-        connector: Connector,
-        controller: Controller,
-        retriever: Retriever,
-        crash_postmortem: CrashPostmortem,
-        vmcore_introspector: VmcoreIntrospector,
-        live_introspector: LiveIntrospector,
-        supported_capture_methods: frozenset[CaptureMethod] = frozenset(CaptureMethod),
-        discovery_registrar: DiscoveryRegistrar | None = None,
-        attach_seam: AttachSeam = default_attach_seam,
-        debug_engine: GdbMiEngine | None = None,
-    ) -> None:
-        self._provisioner = provisioner
-        self._builder = builder
-        self._installer = installer
-        self._booter = booter
-        self._connector = connector
-        self._controller = controller
-        self._retriever = retriever
-        self._crash_postmortem = crash_postmortem
-        self._vmcore_introspector = vmcore_introspector
-        self._live_introspector = live_introspector
-        self._supported_capture_methods = supported_capture_methods
-        self._discovery_registrar = discovery_registrar
-        self._attach_seam = attach_seam
-        self._debug_engine = debug_engine if debug_engine is not None else LocalGdbMiEngine()
-
-    def provisioner(self) -> Provisioner:
-        return self._provisioner
-
-    def builder(self) -> Builder:
-        return self._builder
+    provisioner: Provisioner
+    builder: Builder
+    installer: Installer
+    booter: Booter
+    connector: Connector
+    controller: Controller
+    retriever: Retriever
+    crash_postmortem: CrashPostmortem
+    vmcore_introspector: VmcoreIntrospector
+    live_introspector: LiveIntrospector
+    supported_capture_methods: frozenset[CaptureMethod] = field(
+        default_factory=lambda: frozenset(CaptureMethod)
+    )
+    discovery_registrar: DiscoveryRegistrar | None = None
+    attach_seam: AttachSeam = default_attach_seam
+    debug_engine: GdbMiEngine = field(default_factory=LocalGdbMiEngine)
 
     def install_boot(self) -> tuple[Installer, Booter]:
-        return self._installer, self._booter
-
-    def connector(self) -> Connector:
-        return self._connector
-
-    def controller(self) -> Controller:
-        return self._controller
-
-    def retriever(self) -> Retriever:
-        return self._retriever
-
-    def crash_postmortem(self) -> CrashPostmortem:
-        return self._crash_postmortem
-
-    def vmcore_introspector(self) -> VmcoreIntrospector:
-        return self._vmcore_introspector
-
-    def live_introspector(self) -> LiveIntrospector:
-        return self._live_introspector
-
-    def supported_capture_methods(self) -> frozenset[CaptureMethod]:
-        return self._supported_capture_methods
-
-    def attach_seam(self) -> AttachSeam:
-        return self._attach_seam
-
-    def debug_engine(self) -> GdbMiEngine:
-        return self._debug_engine
+        return self.installer, self.booter
 
     async def register_discovery(self, pool: AsyncConnectionPool) -> None:
         """Run provider first-start discovery registration, if this runtime has one."""
-        if self._discovery_registrar is not None:
-            await self._discovery_registrar(pool)
+        if self.discovery_registrar is not None:
+            await self.discovery_registrar(pool)
 
 
 def build_default_provider_runtime() -> ProviderRuntime:

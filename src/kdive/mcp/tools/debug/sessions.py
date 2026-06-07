@@ -389,10 +389,10 @@ def register(
     untouched. `end_session` reaps the lazy engine via the shared runtime.
     """
     provider = provider_runtime or build_default_provider_runtime()
-    connector: Connector = provider.connector()
+    connector: Connector = provider.connector
     secret_backend: SecretBackend = secret_backend_from_env()
-    attach = provider.attach_seam()
-    engine = provider.debug_engine()
+    attach = provider.attach_seam
+    engine = provider.debug_engine
     runtime = DebugEngineRuntime(engine=engine, attach=attach)
 
     @app.tool(

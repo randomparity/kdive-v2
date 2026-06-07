@@ -126,7 +126,7 @@ def register_handlers(
 ) -> None:
     """Bind the `power`/`force_crash` job handlers; build the provider lazily from env."""
     runtime = provider_runtime or build_default_provider_runtime()
-    ctrl = control or runtime.controller()
+    ctrl = control or runtime.controller
 
     async def _power(conn: AsyncConnection, job: Job) -> str | None:
         return await power_handler(conn, job, ctrl)

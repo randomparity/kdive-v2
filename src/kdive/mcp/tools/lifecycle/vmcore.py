@@ -118,7 +118,7 @@ async def fetch_vmcore(
     supported_methods = (
         supported_methods
         if supported_methods is not None
-        else build_default_provider_runtime().supported_capture_methods()
+        else build_default_provider_runtime().supported_capture_methods
     )
     uid = _as_uuid(system_id)
     if uid is None:
@@ -273,8 +273,8 @@ def register(
 ) -> None:
     """Register the `vmcore.*` / `postmortem.*` tools on ``app``, bound to ``pool``."""
     runtime = provider_runtime or build_default_provider_runtime()
-    crash = runtime.crash_postmortem()
-    supported_methods = runtime.supported_capture_methods()
+    crash = runtime.crash_postmortem
+    supported_methods = runtime.supported_capture_methods
 
     @app.tool(
         name="vmcore.fetch",

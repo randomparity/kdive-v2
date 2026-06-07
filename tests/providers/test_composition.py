@@ -131,7 +131,7 @@ def test_provider_runtime_returns_typed_provider_ports_directly() -> None:
         live_introspector=introspect,
     )
 
-    output = runtime.builder().build(_RUN, _build_profile())
+    output = runtime.builder.build(_RUN, _build_profile())
 
     assert output.build_id == "deadbeef"
     assert builder.calls == [(_RUN, "file:///configs/kdump.config")]
@@ -149,7 +149,7 @@ def test_default_runtime_does_not_build_unused_capability_registry(
 
     runtime = composition.build_default_provider_runtime()
 
-    assert runtime.builder() is not None
+    assert runtime.builder is not None
 
 
 def test_provider_runtime_discovery_hook_is_optional() -> None:

@@ -193,8 +193,8 @@ def register(
 ) -> None:
     """Register the `introspect.from_vmcore` and `introspect.run` tools on ``app``."""
     runtime = provider_runtime or build_default_provider_runtime()
-    introspector = runtime.vmcore_introspector()
-    live_introspector = runtime.live_introspector()
+    introspector = runtime.vmcore_introspector
+    live_introspector = runtime.live_introspector
 
     @app.tool(
         name="introspect.from_vmcore",

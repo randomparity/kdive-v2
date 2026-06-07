@@ -278,7 +278,7 @@ def register_handlers(
 ) -> None:
     """Bind the `build`/`install`/`boot` job handlers."""
     runtime = provider_runtime or build_default_provider_runtime()
-    build = builder or runtime.builder()
+    build = builder or runtime.builder
     if installer is None or booter is None:
         default_installer, default_booter = runtime.install_boot()
         install: Installer = installer or default_installer

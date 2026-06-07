@@ -119,7 +119,7 @@ def register_handlers(
 ) -> None:
     """Bind the `capture_vmcore` job handler; build the retriever lazily from env."""
     runtime = provider_runtime or build_default_provider_runtime()
-    active = retriever or runtime.retriever()
+    active = retriever or runtime.retriever
 
     async def _capture(conn: AsyncConnection, job: Job) -> str | None:
         return await capture_handler(conn, job, active)
