@@ -32,7 +32,7 @@ libvirt bindings, crash, the MCP SDK).
 
 ## Consequences
 
-- The new architecture (six durable objects, capability-dispatched providers,
+- The new architecture (six durable objects, typed provider runtime ports,
   worker tier) is designed clean, not bent around run-centric assumptions.
 - Every salvaged PoC module needs an explicit port plan and a new home behind a
   plane interface; "port the PoC modules" is itself a deferred follow-up

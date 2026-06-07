@@ -25,7 +25,7 @@ kernel-tooling ecosystem (drgn, libvirt bindings, crash, the MCP SDK).
 | Identity | implicit local user | OIDC/SSO + RBAC, with on-behalf-of agent attribution |
 | Accounting | none | metering ledger + enforced budgets/quotas (admission control) |
 | Long-running ops | inline | durable job queue + worker tier |
-| Resource scope | local x86_64 libvirt only | capability-dispatched providers across many resource kinds |
+| Resource scope | local x86_64 libvirt only | typed provider runtime now; multi-provider dispatch later |
 
 ## Core decisions
 
@@ -43,7 +43,8 @@ below. Each should become an [ADR](../adr/) before implementation.
 7. **Metering + budgets/quotas** with an admission-control gate on allocation.
 8. **Async worker tier + durable job queue**; hard per-tenant sandboxing
    designed-for but deferred.
-9. **Capability-based provider dispatch** across narrow per-plane interfaces.
+9. **Typed provider runtime ports** across narrow per-plane interfaces for M0/M1; capability
+   dispatch is a future multi-provider option (ADR-0063).
 
 ## System topology
 
@@ -198,23 +199,19 @@ A sub-object of a Run, bounded by a single boot of a single kernel.
    The Investigation grouping a Run imposes no allocation constraint — it may
    group Runs across different Allocations and resource kinds.
 
-## Provider / capability model
+## Provider model
 
-Providers are the extension seam. A provider is a plugin that implements one or
-more **plane interfaces** for a resource `kind`. Capabilities advertise what is
-actually implemented — not every provider implements every plane.
+Providers are the extension seam. In M0/M1 the production seam is
+`ProviderRuntime`: startup builds typed ports for the active provider
+(`Provisioner`, `Builder`, `Installer`, `Controller`, `Retriever`, debug and
+introspection ports) and passes those ports to MCP tool registrars and worker
+handlers. The only concrete provider today is local-libvirt; composition is
+centralized in `src/kdive/providers/composition.py`.
 
-Two rules:
-
-- **Capability-based dispatch** — the core selects a provider by matching the
-  requested operation against advertised capabilities; it never hardcodes
-  provider names. Adding ppc64le/PowerVM is a new provider package with zero core
-  change.
-- **Each plane operation declares its contract** — idempotent? destructive?
-  cancelable? long-running (job) vs synchronous? **and its cancel/abandon cleanup
-  guarantee** (clean-rollback / best-effort / orphan-flagged). This drives
-  job-queue routing, the destructive-op policy gate, and the reconciler (see
-  Reconciliation & teardown).
+The capability registry from ADR-0009/ADR-0022 remains a prototype for a later
+multi-provider milestone, not the live dispatch path. It is not used for job
+routing, destructive-op gating, or reconciler behavior in M0/M1. ADR-0063 records
+this narrowing so contributors extend the runtime that actually serves requests.
 
 ## Lifecycle planes
 
@@ -358,10 +355,10 @@ grace window, then force-killed; the owning Run transitions to `failed`
 `jobs.cancel` or agent abort, so audit and SLO tracking can tell an
 infrastructure kill from a deliberate one. The accounting ledger attributes the
 partial spend to the Allocation regardless of completion. **Cancel/abandon cleanup** is
-part of every plane op's declared contract (see Provider / capability model):
-each op declares whether cancel yields clean-rollback, best-effort, or
-orphan-flagged state — `jobs.cancel` on a half-done `provision` / `install` is
-never undefined.
+part of each typed worker operation's policy: each op declares in code whether cancel yields
+clean-rollback, best-effort, or orphan-flagged state — `jobs.cancel` on a half-done
+`provision` / `install` is never undefined. ADR-0063 narrows the M0/M1 provider seam to typed
+runtime ports; the dormant capability registry does not drive this behavior today.
 
 ## Error taxonomy
 

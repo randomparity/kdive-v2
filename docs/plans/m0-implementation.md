@@ -7,7 +7,7 @@
 
 **Goal:** Build the M0 walking skeleton from [`../specs/m0-walking-skeleton.md`](../specs/m0-walking-skeleton.md) — the thinnest real path through all nine planes on local libvirt/QEMU, on the new architecture.
 
-**Architecture:** A thin async core (FastMCP/HTTP, state machines, admission, audit) over Postgres (system-of-record) + S3 object store, dispatching long-running work to a Postgres-backed job queue and a worker tier. Providers implement narrow plane interfaces behind a capability registry; M0 ships exactly one provider (local-libvirt). Salvaged v1 modules (redaction, paths, gdb-MI, drgn, crash, error taxonomy) are ported behind the new seams.
+**Architecture:** A thin async core (FastMCP/HTTP, state machines, admission, audit) over Postgres (system-of-record) + S3 object store, dispatching long-running work to a Postgres-backed job queue and a worker tier. Providers implement narrow typed runtime ports; M0 ships exactly one provider (local-libvirt). ADR-0063 supersedes the early capability-registry dispatch plan for production runtime assembly. Salvaged v1 modules (redaction, paths, gdb-MI, drgn, crash, error taxonomy) are ported behind the new seams.
 
 **Tech Stack:** Python 3.13 · `uv` · FastMCP 3.x (ADR-0010) · Postgres via `psycopg` 3 (async) · S3 via `boto3` · `libvirt-python` · `drgn` · Pydantic v2 · `ruff`/`ty`/`pytest` · `prek`.
 

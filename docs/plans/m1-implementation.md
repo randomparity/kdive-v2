@@ -7,7 +7,7 @@
 
 **Goal:** Make the allocation plane real from [`../specs/m1-allocation-accounting.md`](../specs/m1-allocation-accounting.md) — cost model + metering ledger, enforced budgets/quotas (fail-closed), real lease/reservation semantics, and operator/admin RBAC separation — plus two swept-in M0 deferrals (System reprovision-in-place, live drgn introspection over SSH). Still local-libvirt only; **no new resource kind**.
 
-**Architecture:** Unchanged from M0 — a thin async core over Postgres + S3, a Postgres-backed job queue + worker tier, providers behind capability dispatch. M1 *activates* dormant seams (`allocations.lease_expiry`, `capability_scope`, `resources.cost_class`) and *composes* a per-project admission gate onto M0's per-host capacity check; it does not restructure the core. The "new transport/op = provider change only" hypothesis ([0009](../adr/0009-capability-provider-dispatch.md)) is tested by reprovision and SSH landing entirely behind existing `Protocol`s.
+**Architecture:** Unchanged from M0 — a thin async core over Postgres + S3, a Postgres-backed job queue + worker tier, and typed provider runtime ports (ADR-0063). M1 *activates* dormant seams (`allocations.lease_expiry`, `capability_scope`, `resources.cost_class`) and *composes* a per-project admission gate onto M0's per-host capacity check; it does not restructure the core. The "new transport/op = provider change only" hypothesis is tested by reprovision and SSH landing entirely behind existing `Protocol`s.
 
 **Tech Stack:** As M0 — Python 3.13 · `uv` · FastMCP · `psycopg` 3 (async) · `boto3` · `libvirt-python` · `drgn` · Pydantic v2 · `ruff`/`ty`/`pytest` · `prek`. No new runtime dependency (SSH via the ported v1 backend).
 

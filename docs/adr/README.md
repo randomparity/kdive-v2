@@ -38,7 +38,7 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0006](0006-oidc-rbac-attribution.md) | OIDC/SSO + RBAC with (principal, agent_session) | Proposed |
 | [0007](0007-metering-budgets-admission.md) | Metering + budgets/quotas with admission control | Proposed |
 | [0008](0008-async-worker-tier-job-queue.md) | Async worker tier + durable job queue | Proposed |
-| [0009](0009-capability-provider-dispatch.md) | Capability-based provider dispatch | Proposed |
+| [0009](0009-capability-provider-dispatch.md) | Capability-based provider dispatch | Superseded for runtime assembly by 0063 |
 | [0010](0010-fastmcp-framework-auth.md) | FastMCP server framework + streamable-HTTP auth | Proposed |
 | [0011](0011-provisioning-profile-schema.md) | Provisioning-profile schema | Proposed |
 | [0012](0012-secret-backend.md) | Secret backend (file-ref for M0) | Proposed |
@@ -51,7 +51,7 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0019](0019-tool-response-envelope.md) | Uniform tool-response envelope | Proposed |
 | [0020](0020-rbac-audit-gate-implementation.md) | RBAC roles, audit record, destructive-op gate (M0 shapes) | Proposed |
 | [0021](0021-reconciler-loop-drift-repair.md) | Reconciler loop: drift-repair seam, leaked-domain reaping, lease-expiry compensation | Proposed |
-| [0022](0022-capability-registry-dispatch-impl.md) | Capability registry & dispatch implementation shapes (refines 0009) | Proposed |
+| [0022](0022-capability-registry-dispatch-impl.md) | Capability registry & dispatch implementation shapes (refines 0009) | Superseded for runtime assembly by 0063 |
 | [0023](0023-discovery-allocation-admission.md) | Discovery registration & per-host allocation admission (M0) | Proposed |
 | [0024](0024-provisioning-profile-model-shape.md) | Provisioning-profile model shape (M0, refines 0011) | Proposed |
 | [0025](0025-provisioning-plane-libvirt.md) | Provisioning plane: System creation & teardown on local libvirt (M0) | Proposed |
@@ -90,3 +90,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0060](0060-per-system-rootfs-overlay.md) | Per-System rootfs overlay: a writable qcow2 layer over the shared base (live stack, PR #134) | Proposed |
 | [0061](0061-boot-cmdline-composition.md) | Boot cmdline composition: platform-required base + appended debug args (supersedes 0056, PR #134) | Proposed |
 | [0062](0062-platform-operations.md) | Platform operations (M1.3): operator infra/control-plane tools, break-glass override, auditor reads, `require_role` denial-audit (builds on 0043) | Proposed |
+| [0063](0063-typed-provider-runtime.md) | Typed ProviderRuntime is the active M0/M1 provider seam | Accepted |

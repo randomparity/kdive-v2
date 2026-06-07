@@ -43,9 +43,9 @@ To make generation honest and drift-proof:
   `Annotated[..., Field(description=...)]` on **every parameter**, a
   **`meta={"maturity": ...}`** marker (`implemented` | `partial` | `planned`), and standard
   MCP **`annotations`** set explicitly on the wrapper as a reviewed claim.
-- The `annotations` are **not** derived from `OpContract`. A tool's contract is resolved
-  only at dispatch, keyed on a runtime `resource_kind` (`CapabilityRegistry.dispatch`), so
-  no contract exists at registration time or for the registry-reading generator. Tools span
+- The `annotations` are **not** derived from `OpContract`. ADR-0063 makes typed
+  `ProviderRuntime` ports the production M0/M1 seam, so no capability `BoundOp` exists at
+  registration time or for the registry-reading generator. Tools span
   three classes the annotation must distinguish: **read-only** queries (`*.get`/`*.list`,
   `accounting.usage`, `jobs.get`) → `readOnlyHint`; **destructive-administration** ops
   (`control.power` off/cycle/reset, `control.force_crash`, `systems.teardown`,
