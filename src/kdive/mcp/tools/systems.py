@@ -285,65 +285,7 @@ async def _provision_locked(
             return _system_job_envelope(job, existing.id)
         if profile is None:
             return _config_error(str(alloc_id), data={"reason": "profile_required"})
-        try:
-            reject_rootfs_without_upload_window(profile.provider.local_libvirt.rootfs)
-        except CategorizedError as exc:
-            return ToolResponse.failure(str(alloc_id), exc.category)
-        if alloc.state is not AllocationState.GRANTED:
-            return _config_error(str(alloc_id), data={"current_status": alloc.state.value})
-        # New System: enforce the per-project max_concurrent_systems quota under the held
-        # project lock. Fail-closed — no quota row → denied (ADR-0007 §4); a denial writes
-        # no System, no job, and leaves the allocation granted (the all-or-nothing rule).
-        if not await _within_system_quota(conn, alloc.project):
-            return ToolResponse.failure(
-                str(alloc_id),
-                ErrorCategory.QUOTA_EXCEEDED,
-                suggested_next_actions=["systems.get", "allocations.list"],
-            )
-        now = datetime.now(UTC)  # placeholder; the DB sets created_at/updated_at
-        system = await SYSTEMS.insert(
-            conn,
-            System(
-                id=uuid4(),
-                created_at=now,
-                updated_at=now,
-                principal=ctx.principal,
-                agent_session=ctx.agent_session,
-                project=alloc.project,
-                allocation_id=alloc_id,
-                state=SystemState.PROVISIONING,
-                provisioning_profile=profile.model_dump(by_alias=True),
-            ),
-        )
-        await audit.record(
-            conn,
-            ctx,
-            tool="systems.provision",
-            object_kind="systems",
-            object_id=system.id,
-            transition="->provisioning",
-            args={"allocation_id": str(alloc_id)},
-            project=alloc.project,
-        )
-        await ALLOCATIONS.update_state(conn, alloc_id, AllocationState.ACTIVE)
-        await audit.record(
-            conn,
-            ctx,
-            tool="systems.provision",
-            object_kind="allocations",
-            object_id=alloc_id,
-            transition="granted->active",
-            args={"allocation_id": str(alloc_id)},
-            project=alloc.project,
-        )
-        job = await queue.enqueue(
-            conn,
-            JobKind.PROVISION,
-            {"system_id": str(system.id)},
-            job_authorizing(ctx, alloc.project),
-            f"{alloc_id}:provision",
-        )
-        return _system_job_envelope(job, system.id)
+        return await _create_provisioning_system(conn, ctx, alloc, profile)
 
 
 async def _admit_defined(
@@ -363,6 +305,71 @@ async def _admit_defined(
         object_kind="systems",
         object_id=system.id,
         transition="defined->provisioning",
+        args={"allocation_id": str(alloc.id)},
+        project=alloc.project,
+    )
+    job = await queue.enqueue(
+        conn,
+        JobKind.PROVISION,
+        {"system_id": str(system.id)},
+        job_authorizing(ctx, alloc.project),
+        f"{alloc.id}:provision",
+    )
+    return _system_job_envelope(job, system.id)
+
+
+async def _create_provisioning_system(
+    conn: AsyncConnection, ctx: RequestContext, alloc: Allocation, profile: ProvisioningProfile
+) -> ToolResponse:
+    """Create a new provisioning System, activate its Allocation, and enqueue provision."""
+    try:
+        reject_rootfs_without_upload_window(profile.provider.local_libvirt.rootfs)
+    except CategorizedError as exc:
+        return ToolResponse.failure(str(alloc.id), exc.category)
+    if alloc.state is not AllocationState.GRANTED:
+        return _config_error(str(alloc.id), data={"current_status": alloc.state.value})
+    # New System: enforce the per-project max_concurrent_systems quota under the held
+    # project lock. Fail-closed — no quota row → denied (ADR-0007 §4); a denial writes
+    # no System, no job, and leaves the allocation granted (the all-or-nothing rule).
+    if not await _within_system_quota(conn, alloc.project):
+        return ToolResponse.failure(
+            str(alloc.id),
+            ErrorCategory.QUOTA_EXCEEDED,
+            suggested_next_actions=["systems.get", "allocations.list"],
+        )
+    now = datetime.now(UTC)  # placeholder; the DB sets created_at/updated_at
+    system = await SYSTEMS.insert(
+        conn,
+        System(
+            id=uuid4(),
+            created_at=now,
+            updated_at=now,
+            principal=ctx.principal,
+            agent_session=ctx.agent_session,
+            project=alloc.project,
+            allocation_id=alloc.id,
+            state=SystemState.PROVISIONING,
+            provisioning_profile=profile.model_dump(by_alias=True),
+        ),
+    )
+    await audit.record(
+        conn,
+        ctx,
+        tool="systems.provision",
+        object_kind="systems",
+        object_id=system.id,
+        transition="->provisioning",
+        args={"allocation_id": str(alloc.id)},
+        project=alloc.project,
+    )
+    await ALLOCATIONS.update_state(conn, alloc.id, AllocationState.ACTIVE)
+    await audit.record(
+        conn,
+        ctx,
+        tool="systems.provision",
+        object_kind="allocations",
+        object_id=alloc.id,
+        transition="granted->active",
         args={"allocation_id": str(alloc.id)},
         project=alloc.project,
     )
