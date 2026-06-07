@@ -23,7 +23,7 @@ from pydantic import Field
 
 from kdive.db.artifact_queries import raw_vmcore_key
 from kdive.db.repositories import RUNS, SYSTEMS
-from kdive.domain.capture import LOCAL_LIBVIRT_SUPPORTED, CaptureMethod
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import SystemState
@@ -46,9 +46,9 @@ from kdive.mcp.tools._common import (
     job_envelope,
 )
 from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
-from kdive.providers.local_libvirt.retrieve import crash_command_rejection_reason
 from kdive.providers.ports import CrashPostmortem
 from kdive.security.context import RequestContext
+from kdive.security.crash_commands import crash_command_rejection_reason
 from kdive.security.rbac import Role, require_role
 from kdive.security.redaction import Redactor
 
@@ -112,8 +112,14 @@ async def fetch_vmcore(
     *,
     system_id: str,
     method: str = "host_dump",
+    supported_methods: frozenset[CaptureMethod] | None = None,
 ) -> ToolResponse:
     """Admit a `capture_vmcore` job on a `crashed` System (operator); return the job handle."""
+    supported_methods = (
+        supported_methods
+        if supported_methods is not None
+        else build_default_provider_runtime().supported_capture_methods()
+    )
     uid = _as_uuid(system_id)
     if uid is None:
         return _config_error(system_id)
@@ -126,10 +132,10 @@ async def fetch_vmcore(
             system_id,
             data={"method": method, "reason": "method does not produce a vmcore"},
         )
-    if capture_method not in LOCAL_LIBVIRT_SUPPORTED:
+    if capture_method not in supported_methods:
         return _config_error(
             system_id,
-            data={"method": method, "reason": "method not supported by local-libvirt provider"},
+            data={"method": method, "reason": "method not supported by provider"},
         )
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
@@ -268,6 +274,7 @@ def register(
     """Register the `vmcore.*` / `postmortem.*` tools on ``app``, bound to ``pool``."""
     runtime = provider_runtime or build_default_provider_runtime()
     crash = runtime.crash_postmortem()
+    supported_methods = runtime.supported_capture_methods()
 
     @app.tool(
         name="vmcore.fetch",
@@ -282,7 +289,13 @@ def register(
         ] = "host_dump",
     ) -> ToolResponse:
         """Enqueue a capture_vmcore job on a crashed System. Requires operator."""
-        return await fetch_vmcore(pool, current_context(), system_id=system_id, method=method)
+        return await fetch_vmcore(
+            pool,
+            current_context(),
+            system_id=system_id,
+            method=method,
+            supported_methods=supported_methods,
+        )
 
     @app.tool(
         name="vmcore.list",

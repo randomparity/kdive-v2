@@ -63,7 +63,7 @@ from kdive.planes.runs_shared import existing_build_result as _existing_build_re
 from kdive.planes.runs_shared import install_method_for as _install_method_for
 from kdive.planes.runs_shared import system_required_cmdline
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile, ParsedBuildProfile
-from kdive.providers.local_libvirt.build import validate_external_artifacts
+from kdive.providers.build_validation import validate_external_artifacts
 from kdive.providers.ports import BuildOutput, ValidatedUpload
 from kdive.security import audit
 from kdive.security.context import RequestContext

@@ -15,8 +15,8 @@ from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import PowerPayload, SystemPayload, load_payload
 from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
-from kdive.providers.local_libvirt.provisioning import domain_name_for
 from kdive.providers.ports import Controller
+from kdive.providers.runtime_paths import domain_name_for
 from kdive.security import audit
 
 TERMINAL_SYSTEM = frozenset({SystemState.TORN_DOWN, SystemState.FAILED})

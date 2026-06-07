@@ -13,7 +13,6 @@ caller command is sanitized and allowlist-checked before any `crash` invocation.
 
 from __future__ import annotations
 
-import re
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -30,37 +29,11 @@ from kdive.providers.ports import (
     CrashResult,
     Retriever,
 )
+from kdive.security.crash_commands import crash_command_rejection_reason
 from kdive.security.redaction import Redactor
 from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact, object_store_from_env
 
-# Pipe-to-shell, redirection, command substitution, chaining, backgrounding.
-_DENY_CHARS = ("|", ">", "<", "`", "$(", ";", "&")
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
-
 _RETENTION_CLASS = "vmcore"
-
-
-def crash_command_rejection_reason(command: str, allowlist: frozenset[str]) -> str | None:
-    """Return ``None`` if the command is permitted, else a human-readable rejection reason.
-
-    Two layers: a security-critical denylist (newline/control chars, a leading ``!`` shell
-    escape, and the shell metacharacters in ``_DENY_CHARS``) and an allowlist of read-only
-    leading verbs. The denylist is the boundary the ungated postmortem path relies on.
-    """
-    stripped = command.strip()
-    if not stripped:
-        return "empty command"
-    if _CONTROL.search(command):
-        return "command contains a newline or control character"
-    if stripped[0] == "!":
-        return "shell escape ('!') is not permitted"
-    for token in _DENY_CHARS:
-        if token in command:
-            return f"disallowed metacharacter {token!r}"
-    verb = stripped.split()[0].lower()
-    if verb not in allowlist:
-        return f"verb {verb!r} is not in the crash command allowlist"
-    return None
 
 
 class _StorePort(Protocol):

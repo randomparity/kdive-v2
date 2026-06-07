@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -34,9 +35,13 @@ from pydantic import (
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
+from kdive.rootfs.catalog import load_catalog
 
 type NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 """A string that is non-empty after whitespace stripping; blank values fail validation."""
+
+SUPPORTED_DOMAIN_XML_PARAMS = frozenset({"machine"})
+_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 
 
 class BootMethod(StrEnum):
@@ -229,6 +234,34 @@ def reject_rootfs_upload_without_window(profile: ProvisioningProfile) -> None:
             "upload-kind rootfs requires systems.define upload window",
             category=ErrorCategory.CONFIGURATION_ERROR,
         )
+
+
+def validate_rootfs_reference(rootfs: RootfsSource) -> None:
+    """Validate a rootfs reference's static resolvability."""
+    if rootfs.kind == "url" and not _SHA256.match(rootfs.sha256):
+        raise CategorizedError(
+            "rootfs url sha256 must be 'sha256:<64-hex>'",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    if rootfs.kind == "catalog" and load_catalog().lookup(rootfs.name) is None:
+        raise CategorizedError(
+            f"unknown rootfs catalog name: {rootfs.name}",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"name": rootfs.name},
+        )
+
+
+def validate_profile(profile: ProvisioningProfile) -> None:
+    """Reject unsupported provider params and unresolvable rootfs references."""
+    params = profile.provider.local_libvirt.domain_xml_params
+    unknown = sorted(set(params) - SUPPORTED_DOMAIN_XML_PARAMS)
+    if unknown:
+        raise CategorizedError(
+            f"unsupported domain_xml_params: {', '.join(unknown)}",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"unsupported": unknown, "supported": sorted(SUPPORTED_DOMAIN_XML_PARAMS)},
+        )
+    validate_rootfs_reference(profile.provider.local_libvirt.rootfs)
 
 
 def destructive_opt_in(profile: ProvisioningProfile, op: str) -> bool:

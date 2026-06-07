@@ -28,9 +28,17 @@ from uuid import UUID
 import libvirt
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.profiles.provisioning import ProvisioningProfile, RootfsSource
+from kdive.profiles.provisioning import (
+    ProvisioningProfile,
+    RootfsSource,
+    validate_profile,
+)
+from kdive.profiles.provisioning import (
+    validate_rootfs_reference as validate_rootfs_reference,
+)
 from kdive.providers.local_libvirt.discovery import _KDIVE_METADATA_NS
 from kdive.providers.ports import Provisioner as Provisioner
+from kdive.providers.runtime_paths import console_log_path, domain_name_for
 from kdive.rootfs.catalog import load_catalog
 
 _log = logging.getLogger(__name__)
@@ -38,16 +46,9 @@ _log = logging.getLogger(__name__)
 _URI_ENV = "KDIVE_LIBVIRT_URI"
 _DEFAULT_URI = "qemu:///system"
 _DEFAULT_MACHINE = "q35"
-SUPPORTED_DOMAIN_XML_PARAMS = frozenset({"machine"})
 _ROOTFS_DIR = "/var/lib/kdive/rootfs"
-_CONSOLE_DIR = "/var/lib/kdive/console"
 _QEMU_IMG_TIMEOUT_S = 5 * 60
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}\Z")
-
-
-def console_log_path(system_id: UUID) -> Path:
-    """The deterministic host path libvirt tees the System's serial console to."""
-    return Path(_CONSOLE_DIR) / f"{system_id}.log"
 
 
 def overlay_path(system_id: UUID | str) -> str:
@@ -97,11 +98,6 @@ def _close(conn: _LibvirtConn) -> None:
         _log.warning("libvirt connection close failed; continuing", exc_info=True)
 
 
-def domain_name_for(system_id: UUID) -> str:
-    """The deterministic libvirt domain name for a System."""
-    return f"kdive-{system_id}"
-
-
 def resolve_rootfs_path(rootfs: RootfsSource, *, tenant: str, system_id: UUID) -> str:
     """Resolve a rootfs source to the libvirt-readable disk path (ADR-0048 §5).
 
@@ -138,34 +134,6 @@ def resolve_rootfs_path(rootfs: RootfsSource, *, tenant: str, system_id: UUID) -
     return f"{_ROOTFS_DIR}/{entry.name}.qcow2"
 
 
-def validate_rootfs_reference(rootfs: RootfsSource) -> None:
-    """Validate a rootfs reference's *static* well-formedness (a synchronous boundary check).
-
-    Mirrors :func:`resolve_rootfs_path`'s static checks (url sha256 format, catalog-name
-    existence) but needs no ``system_id`` — so the provisioning tool boundary and the worker's
-    ``render_domain_xml`` reject a syntactically broken reference as ``configuration_error``
-    instead of dead-lettering the provision job. ``path``/``upload`` carry nothing to check;
-    an ``upload`` is well-formed here so the worker can render an admitted ``DEFINED`` System's
-    upload rootfs. Lane admissibility (an ``upload`` needs a prior upload window) is a separate
-    concern — see :func:`reject_rootfs_without_upload_window`.
-
-    Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` for a malformed url checksum or unknown
-            catalog name.
-    """
-    if rootfs.kind == "url" and not _SHA256.match(rootfs.sha256):
-        raise CategorizedError(
-            "rootfs url sha256 must be 'sha256:<64-hex>'",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    if rootfs.kind == "catalog" and load_catalog().lookup(rootfs.name) is None:
-        raise CategorizedError(
-            f"unknown rootfs catalog name: {rootfs.name}",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"name": rootfs.name},
-        )
-
-
 def reject_rootfs_without_upload_window(rootfs: RootfsSource) -> None:
     """Reject an ``upload`` rootfs in a lane that has no pre-provision upload window.
 
@@ -185,28 +153,6 @@ def reject_rootfs_without_upload_window(rootfs: RootfsSource) -> None:
             "use 'path', 'url', or 'catalog' for a one-step provision",
             category=ErrorCategory.CONFIGURATION_ERROR,
         )
-
-
-def validate_profile(profile: ProvisioningProfile) -> None:
-    """Reject a profile whose libvirt ``domain_xml_params`` carry an unsupported key.
-
-    Called at the tool boundary so a bad param is a synchronous ``configuration_error``
-    response, not a dead-lettered provision job. Also validates the rootfs reference's
-    static resolvability (ADR-0048 §5).
-
-    Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` naming the unsupported key(s), or for an
-            unresolvable rootfs reference.
-    """
-    params = profile.provider.local_libvirt.domain_xml_params
-    unknown = sorted(set(params) - SUPPORTED_DOMAIN_XML_PARAMS)
-    if unknown:
-        raise CategorizedError(
-            f"unsupported domain_xml_params: {', '.join(unknown)}",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"unsupported": unknown, "supported": sorted(SUPPORTED_DOMAIN_XML_PARAMS)},
-        )
-    validate_rootfs_reference(profile.provider.local_libvirt.rootfs)
 
 
 def render_domain_xml(

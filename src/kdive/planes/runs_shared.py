@@ -16,12 +16,8 @@ from kdive.domain.models import Job, Run, System
 from kdive.domain.state import RunState
 from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.profiles.provisioning import capture_method
-from kdive.providers.local_libvirt.install import (
-    console_log_path as _console_log_path,
-)
-from kdive.providers.local_libvirt.install import (
-    read_console_log as _read_console_log,
-)
+from kdive.providers.runtime_paths import console_log_path as _console_log_path
+from kdive.providers.runtime_paths import read_console_log as _read_console_log
 from kdive.security import audit
 
 _REQUIRED_BASE_CMDLINE = "console=ttyS0 root=/dev/vda"

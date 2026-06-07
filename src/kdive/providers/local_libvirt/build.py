@@ -18,24 +18,26 @@ from __future__ import annotations
 
 import os
 import shutil
-import struct
 import subprocess  # noqa: S404 - make is invoked with a fixed argv, no shell
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
+from kdive.providers.build_validation import (
+    extract_build_id_ranged,
+    parse_gnu_build_id,
+    validate_external_artifacts,
+)
 from kdive.providers.ports import Builder, BuildOutput, ValidatedUpload
 from kdive.security.redaction import Redactor
 from kdive.store.objectstore import (
     ArtifactWriteRequest,
-    HeadResult,
     StoredArtifact,
     object_store_from_env,
 )
@@ -44,15 +46,6 @@ _WORKSPACE_ENV = "KDIVE_BUILD_WORKSPACE"
 _KERNEL_SRC_ENV = "KDIVE_KERNEL_SRC"
 _DEFAULT_WORKSPACE = "/var/lib/kdive/build"
 _RETENTION_CLASS = "build"
-_NT_GNU_BUILD_ID = 3
-_ELF_MAGIC = b"\x7fELF"
-_BZIMAGE_MAGIC = b"HdrS"
-_BZIMAGE_MAGIC_OFFSET = 0x202
-_SHT_NOTE = 7
-# Only shstrtab and the .note.gnu.build-id section are ever ranged-read (debug sections
-# never are), so a small per-section cap bounds an untrusted vmlinux's declared sh_size
-# against a multi-GB read into the worker thread.
-_MAX_SECTION_BYTES = 16 * 1024 * 1024
 # Trailing chars of a redacted rsync/git-apply stderr placed in error details (bounded so a
 # large/noisy failure log cannot bloat a persisted error record).
 _STDERR_TAIL = 2000
@@ -71,42 +64,6 @@ _REQUIRED_CONFIG: tuple[tuple[str, ...], ...] = (
 
 class _StorePort(Protocol):
     def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact: ...
-
-
-def parse_gnu_build_id(notes: bytes) -> str:
-    """Extract the GNU build-id (lowercase hex) from a little-endian ELF note blob.
-
-    Walks the ``.note.gnu.build-id`` note stream — each note is ``namesz``/``descsz``/
-    ``type`` (4-byte LE each), a 4-byte-aligned name, then a 4-byte-aligned desc — and
-    returns the desc of the first ``NT_GNU_BUILD_ID`` note whose name is ``GNU``.
-
-    Raises:
-        CategorizedError: ``BUILD_FAILURE`` if no GNU build-id note is present (a
-            ``vmlinux`` without one cannot be symbolized against — a build defect).
-    """
-    offset = 0
-    end = len(notes)
-    while offset + 12 <= end:
-        namesz = int.from_bytes(notes[offset : offset + 4], "little")
-        descsz = int.from_bytes(notes[offset + 4 : offset + 8], "little")
-        note_type = int.from_bytes(notes[offset + 8 : offset + 12], "little")
-        name_start = offset + 12
-        name_end = name_start + namesz
-        desc_start = name_end + (-namesz % 4)
-        desc_end = desc_start + descsz
-        if desc_end > end:
-            break  # truncated/corrupt note stream — treat as no build-id
-        name = notes[name_start:name_end].rstrip(b"\x00")
-        if note_type == _NT_GNU_BUILD_ID and name == b"GNU":
-            return notes[desc_start:desc_end].hex()
-        next_offset = desc_end + (-descsz % 4)
-        if next_offset <= offset:
-            break  # defensive: a note must advance the cursor (never loop on a malformed one)
-        offset = next_offset
-    raise CategorizedError(
-        "vmlinux carries no GNU build-id note",
-        category=ErrorCategory.BUILD_FAILURE,
-    )
 
 
 def _missing_config_groups(config_text: str) -> list[tuple[str, ...]]:
@@ -475,190 +432,6 @@ def _sync_tree(kernel_src: str, workspace: Path) -> None:
             category=ErrorCategory.INFRASTRUCTURE_FAILURE,
             details={"stderr": _redacted_tail(result.stderr)},
         )
-
-
-class _ValidatorStore(Protocol):
-    def head(self, key: str) -> HeadResult | None: ...
-    def get_range(self, key: str, *, start: int, length: int) -> bytes: ...
-
-
-def _build_failure(message: str, **details: object) -> CategorizedError:
-    return CategorizedError(message, category=ErrorCategory.BUILD_FAILURE, details=details)
-
-
-def validate_external_artifacts(
-    store: _ValidatorStore,
-    *,
-    manifest: Sequence[ManifestEntry],
-    keys: Mapping[str, str],
-    declared_build_id: str | None,
-) -> ValidatedUpload:
-    """Validate uploaded build artifacts; return the ``BuildOutput`` plus per-name heads.
-
-    Order (ADR-0048 §5): require ``kernel``; then per declared artifact HEAD existence +
-    size, checksum vs the manifest, and leading-byte magic; then, if a ``vmlinux`` is
-    present, verify the declared ``build_id`` against its ranged ``.note.gnu.build-id``.
-
-    ``declared_build_id`` is the GNU build-id as hex (the value ``parse_gnu_build_id``
-    yields); the comparison is case-insensitive and the returned ``BuildOutput.build_id``
-    is the normalized lowercase-hex value extracted from the file, not the raw input.
-
-    Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` (a missing/skipped upload, an artifact
-            with no upload key, or a vmlinux with no declared build_id); ``BUILD_FAILURE``
-            (checksum/size/magic/build_id defect). Store exceptions propagate as raised
-            (the production ObjectStore wraps them as ``INFRASTRUCTURE_FAILURE``).
-    """
-    by_name = {e.name: e for e in manifest}
-    if "kernel" not in by_name or "kernel" not in keys:
-        raise CategorizedError(
-            "external build is missing the required kernel artifact",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    heads: dict[str, HeadResult] = {}
-    for name, entry in by_name.items():
-        key = keys.get(name)
-        if key is None:
-            raise CategorizedError(
-                f"declared artifact {name!r} has no upload key",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"name": name},
-            )
-        heads[name] = _validate_one_artifact(store, name, entry, key)
-
-    build_id = ""
-    if "vmlinux" in by_name:
-        if not declared_build_id:
-            raise CategorizedError(
-                "a vmlinux upload requires a declared build_id",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-            )
-        # heads["vmlinux"].size_bytes is already verified equal to the manifest size and
-        # capped by artifacts.create_run_upload, so it is a safe ceiling for ranged reads.
-        actual = extract_build_id_ranged(
-            store, keys["vmlinux"], max_size=heads["vmlinux"].size_bytes
-        )  # lowercase hex
-        if actual != declared_build_id.lower():
-            raise _build_failure("declared build_id does not match the uploaded vmlinux")
-        build_id = actual
-
-    output = BuildOutput(
-        kernel_ref=keys["kernel"],
-        debuginfo_ref=keys.get("vmlinux", ""),
-        build_id=build_id,
-    )
-    return ValidatedUpload(output=output, heads=heads)
-
-
-def _validate_one_artifact(
-    store: _ValidatorStore, name: str, entry: ManifestEntry, key: str
-) -> HeadResult:
-    """HEAD existence + size/checksum vs the manifest + leading-byte magic; return the head."""
-    head = store.head(key)
-    if head is None:
-        raise CategorizedError(
-            f"declared artifact {name!r} was never uploaded",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"name": name},
-        )
-    if head.size_bytes != entry.size_bytes or head.checksum_sha256 != entry.sha256:
-        raise _build_failure("uploaded artifact disagrees with its manifest", name=name)
-    _check_magic(store, name, key)
-    return head
-
-
-def _check_magic(store: _ValidatorStore, name: str, key: str) -> None:
-    if name == "vmlinux":
-        if store.get_range(key, start=0, length=4) != _ELF_MAGIC:
-            raise _build_failure("vmlinux is not an ELF file", name=name)
-    elif name == "kernel":
-        magic = store.get_range(key, start=_BZIMAGE_MAGIC_OFFSET, length=4)
-        if magic != _BZIMAGE_MAGIC:
-            raise _build_failure("kernel is not a bzImage", name=name)
-    # initrd has no cheap universal magic; checksum + size already gate it.
-
-
-def extract_build_id_ranged(store: _ValidatorStore, key: str, *, max_size: int) -> str:
-    """Extract a vmlinux's GNU build-id via ranged ELF64-LE reads (no full download).
-
-    Reads the ELF header (``e_shoff``/``e_shentsize``/``e_shnum``/``e_shstrndx``), the
-    section header table, the section-name string table, and the ``.note.gnu.build-id``
-    section bytes — then feeds them to :func:`parse_gnu_build_id`.
-
-    ``max_size`` is the verified object size; every ranged read is bounded against it (and
-    a per-section cap) so a crafted ELF declaring an oversized section cannot force a
-    multi-GB read.
-
-    Raises:
-        CategorizedError: ``BUILD_FAILURE`` if the ELF is malformed, declares a section
-            past ``max_size``/the cap, or carries no build-id.
-    """
-    header = store.get_range(key, start=0, length=64)
-    if len(header) < 64:
-        raise _build_failure("vmlinux ELF header is truncated")
-    if header[:4] != _ELF_MAGIC or header[4] != 2 or header[5] != 1:  # ELFCLASS64, ELFDATA2LSB
-        raise _build_failure("vmlinux is not a 64-bit little-endian ELF")
-    try:
-        e_shoff = struct.unpack_from("<Q", header, 0x28)[0]
-        e_shentsize = struct.unpack_from("<H", header, 0x3A)[0]
-        e_shnum = struct.unpack_from("<H", header, 0x3C)[0]
-        e_shstrndx = struct.unpack_from("<H", header, 0x3E)[0]
-        if e_shoff == 0 or e_shnum == 0 or e_shentsize < 64:
-            raise _build_failure("vmlinux has no usable section header table")
-        # Cap the SHT read itself: e_shentsize*e_shnum is u16*u16 (~4 GiB worst case), so
-        # without an absolute bound a crafted ~object-sized vmlinux could force a multi-GB
-        # read here even though the per-object guard below passes. 16 MiB ~= 262k entries.
-        if e_shentsize * e_shnum > _MAX_SECTION_BYTES:
-            raise _build_failure(
-                "vmlinux section header table exceeds the readable cap",
-                sht_bytes=e_shentsize * e_shnum,
-            )
-        if e_shoff + e_shentsize * e_shnum > max_size:
-            raise _build_failure("vmlinux section header table extends past the object size")
-        sht = store.get_range(key, start=e_shoff, length=e_shentsize * e_shnum)
-        shstr = _read_section(store, key, sht, e_shentsize, e_shstrndx, max_size=max_size)
-        return _find_build_id_note(store, key, sht, shstr, e_shentsize, e_shnum, max_size=max_size)
-    except (struct.error, ValueError, IndexError) as exc:
-        raise _build_failure("vmlinux ELF is structurally malformed") from exc
-
-
-def _find_build_id_note(
-    store: _ValidatorStore,
-    key: str,
-    sht: bytes,
-    shstr: bytes,
-    e_shentsize: int,
-    e_shnum: int,
-    *,
-    max_size: int,
-) -> str:
-    """Walk the SHT for the ``.note.gnu.build-id`` SHT_NOTE section and parse its build-id."""
-    for i in range(e_shnum):
-        off = i * e_shentsize
-        sh_name = struct.unpack_from("<I", sht, off)[0]
-        sh_type = struct.unpack_from("<I", sht, off + 4)[0]
-        if sh_type != _SHT_NOTE:
-            continue
-        name = shstr[sh_name : shstr.index(b"\x00", sh_name)]
-        if name == b".note.gnu.build-id":
-            notes = _read_section(store, key, sht, e_shentsize, i, max_size=max_size)
-            return parse_gnu_build_id(notes)
-    raise _build_failure("vmlinux carries no .note.gnu.build-id section")
-
-
-def _read_section(
-    store: _ValidatorStore, key: str, sht: bytes, e_shentsize: int, index: int, *, max_size: int
-) -> bytes:
-    off = index * e_shentsize
-    sh_offset = struct.unpack_from("<Q", sht, off + 0x18)[0]
-    sh_size = struct.unpack_from("<Q", sht, off + 0x20)[0]
-    if sh_size > _MAX_SECTION_BYTES:
-        raise _build_failure("vmlinux section exceeds the readable-section cap", sh_size=sh_size)
-    if sh_offset + sh_size > max_size:
-        raise _build_failure(
-            "vmlinux section extends past the object size", sh_offset=sh_offset, sh_size=sh_size
-        )
-    return store.get_range(key, start=sh_offset, length=sh_size)
 
 
 __all__ = [

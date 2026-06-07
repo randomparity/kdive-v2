@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.domain.capture import CaptureMethod
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.providers.local_libvirt.connect import LocalLibvirtConnect
 from kdive.providers.local_libvirt.control import LocalLibvirtControl
@@ -65,6 +66,7 @@ class ProviderRuntime:
         crash_postmortem: CrashPostmortem,
         vmcore_introspector: VmcoreIntrospector,
         live_introspector: LiveIntrospector,
+        supported_capture_methods: frozenset[CaptureMethod] = frozenset(CaptureMethod),
         discovery_registrar: DiscoveryRegistrar | None = None,
         attach_seam: AttachSeam = default_attach_seam,
         debug_engine: GdbMiEngine | None = None,
@@ -79,6 +81,7 @@ class ProviderRuntime:
         self._crash_postmortem = crash_postmortem
         self._vmcore_introspector = vmcore_introspector
         self._live_introspector = live_introspector
+        self._supported_capture_methods = supported_capture_methods
         self._discovery_registrar = discovery_registrar
         self._attach_seam = attach_seam
         self._debug_engine = debug_engine if debug_engine is not None else LocalGdbMiEngine()
@@ -109,6 +112,9 @@ class ProviderRuntime:
 
     def live_introspector(self) -> LiveIntrospector:
         return self._live_introspector
+
+    def supported_capture_methods(self) -> frozenset[CaptureMethod]:
+        return self._supported_capture_methods
 
     def attach_seam(self) -> AttachSeam:
         return self._attach_seam
@@ -143,6 +149,9 @@ def build_default_provider_runtime() -> ProviderRuntime:
         crash_postmortem=retrieve,
         vmcore_introspector=vmcore_introspector,
         live_introspector=live_introspector,
+        supported_capture_methods=frozenset(
+            {CaptureMethod.CONSOLE, CaptureMethod.HOST_DUMP, CaptureMethod.GDBSTUB}
+        ),
         discovery_registrar=ensure_local_host_registered,
     )
 
