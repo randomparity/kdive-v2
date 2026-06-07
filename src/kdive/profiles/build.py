@@ -31,10 +31,10 @@ from pydantic import (
     ConfigDict,
     StringConstraints,
     ValidationError,
-    field_validator,
 )
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.profiles._schema import schema_version_validator
 
 type NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 """A string that is non-empty after whitespace stripping; blank values fail validation."""
@@ -47,18 +47,7 @@ class _BuildProfileBase(BaseModel):
 
     schema_version: Literal[1]
 
-    @field_validator("schema_version", mode="before")
-    @classmethod
-    def _reject_coerced_version(cls, value: object) -> object:
-        """Reject a non-``int`` version before ``Literal`` coercion accepts it.
-
-        ``Literal[1]`` otherwise matches ``True`` and ``1.0`` (``True == 1.0 == 1``),
-        which would tolerate a malformed version. The message names the constraint, not
-        the value, to preserve the redaction guarantee.
-        """
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise ValueError("schema_version must be an integer")
-        return value
+    _reject_coerced_version = schema_version_validator
 
 
 class ServerBuildProfile(_BuildProfileBase):
