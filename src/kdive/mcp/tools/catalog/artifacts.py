@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Annotated, Any, LiteralString, NamedTuple, Protocol
 from uuid import UUID
@@ -89,6 +91,16 @@ class _MaterializedUpload(NamedTuple):
     presigned: PresignedUpload
 
 
+@dataclass(frozen=True)
+class _UploadOwnerSpec:
+    owner_kind: str
+    lock_scope: LockScope
+    allowed_names: frozenset[str]
+    next_action: str
+    project: Callable[[AsyncConnection, UUID], Awaitable[str | None]]
+    accepts_upload: Callable[[AsyncConnection, UUID], Awaitable[bool]]
+
+
 def _validate_artifact_declarations(
     object_id: str, artifacts: list[dict[str, Any]], allowed: frozenset[str], cap: int
 ) -> list[ManifestEntry] | ToolResponse:
@@ -134,16 +146,29 @@ def _materialize_uploads(
     return uploads
 
 
-async def _owner_accepts_upload(conn: AsyncConnection, kind: str, owner_id: UUID) -> bool:
-    """True iff the owner is in its pre-upload state (CREATED external Run / DEFINED System)."""
-    if kind == "runs":
-        run = await RUNS.get(conn, owner_id)
-        if run is None or run.state is not RunState.CREATED:
-            return False
-        parsed = BuildProfile.parse(run.build_profile)
-        return isinstance(parsed, ExternalBuildProfile)
-    # A System opens a rootfs-upload window only in DEFINED with an upload-kind rootfs;
-    # the provisioning plane commits it at provisioning->ready (#111, ADR-0048 §5/§6).
+async def _run_project(conn: AsyncConnection, owner_id: UUID) -> str | None:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT project FROM runs WHERE id = %s", (owner_id,))
+        row = await cur.fetchone()
+    return row["project"] if row else None
+
+
+async def _system_project(conn: AsyncConnection, owner_id: UUID) -> str | None:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT project FROM systems WHERE id = %s", (owner_id,))
+        row = await cur.fetchone()
+    return row["project"] if row else None
+
+
+async def _run_accepts_upload(conn: AsyncConnection, owner_id: UUID) -> bool:
+    run = await RUNS.get(conn, owner_id)
+    if run is None or run.state is not RunState.CREATED:
+        return False
+    parsed = BuildProfile.parse(run.build_profile)
+    return isinstance(parsed, ExternalBuildProfile)
+
+
+async def _system_accepts_upload(conn: AsyncConnection, owner_id: UUID) -> bool:
     system = await SYSTEMS.get(conn, owner_id)
     if system is None or system.state is not SystemState.DEFINED:
         return False
@@ -151,12 +176,22 @@ async def _owner_accepts_upload(conn: AsyncConnection, kind: str, owner_id: UUID
     return rootfs_upload_window_allowed(parsed)
 
 
-async def _owner_project(conn: AsyncConnection, kind: str, owner_id: UUID) -> str | None:
-    table = "runs" if kind == "runs" else "systems"
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(f"SELECT project FROM {table} WHERE id = %s", (owner_id,))  # noqa: S608 - 2-value whitelist
-        row = await cur.fetchone()
-    return row["project"] if row else None
+_RUN_UPLOAD = _UploadOwnerSpec(
+    owner_kind="runs",
+    lock_scope=LockScope.RUN,
+    allowed_names=_BUILD_ARTIFACT_NAMES,
+    next_action="runs.complete_build",
+    project=_run_project,
+    accepts_upload=_run_accepts_upload,
+)
+_SYSTEM_UPLOAD = _UploadOwnerSpec(
+    owner_kind="systems",
+    lock_scope=LockScope.SYSTEM,
+    allowed_names=frozenset({_ROOTFS_NAME}),
+    next_action="systems.provision_defined",
+    project=_system_project,
+    accepts_upload=_system_accepts_upload,
+)
 
 
 _LIST_SQL: LiteralString = (
@@ -237,12 +272,9 @@ async def _create_upload(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
-    kind: str,
+    spec: _UploadOwnerSpec,
     owner_id: str,
     artifacts: list[dict[str, Any]],
-    allowed_names: frozenset[str],
-    next_action: str,
-    lock_scope: LockScope,
     store: _PresignStore | None = None,
 ) -> list[ToolResponse]:
     """Mint a presigned PUT per declared artifact and persist the owner's manifest.
@@ -257,34 +289,34 @@ async def _create_upload(
 
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
-            project = await _owner_project(conn, kind, uid)
+            project = await spec.project(conn, uid)
             if project is None or project not in ctx.projects:
                 return [_config_error(owner_id)]
             require_role(ctx, project, Role.OPERATOR)
 
             validated = _validate_artifact_declarations(
-                owner_id, artifacts, allowed_names, _max_upload_bytes()
+                owner_id, artifacts, spec.allowed_names, _max_upload_bytes()
             )
             if isinstance(validated, ToolResponse):
                 return [validated]
             entries = validated
 
-            prefix = owner_prefix(_TENANT, kind, str(uid))
+            prefix = owner_prefix(_TENANT, spec.owner_kind, str(uid))
             try:
-                async with conn.transaction(), advisory_xact_lock(conn, lock_scope, uid):
-                    if not await _owner_accepts_upload(conn, kind, uid):
+                async with conn.transaction(), advisory_xact_lock(conn, spec.lock_scope, uid):
+                    if not await spec.accepts_upload(conn, uid):
                         return [
                             _config_error(owner_id, data={"reason": "owner_not_accepting_upload"})
                         ]
                     uploads = _materialize_uploads(
                         entries,
-                        kind=kind,
+                        kind=spec.owner_kind,
                         owner_id=uid,
                         store=store,
                     )
                     await upload_manifest.replace_manifest(
                         conn,
-                        owner_kind=kind,
+                        owner_kind=spec.owner_kind,
                         owner_id=uid,
                         prefix=prefix,
                         entries=entries,
@@ -293,14 +325,14 @@ async def _create_upload(
             except CategorizedError as exc:
                 # A corrupt stored profile, presign, or manifest-write failure prevents (and
                 # rolls back) the manifest write; surface it so the cause is observable.
-                _log.warning("create_upload failed for %s %s: %s", kind, owner_id, exc)
+                _log.warning("create_upload failed for %s %s: %s", spec.owner_kind, owner_id, exc)
                 return [ToolResponse.failure(owner_id, exc.category)]
 
     return [
         ToolResponse.success(
             upload.key,
             "upload_ready",
-            suggested_next_actions=[next_action],
+            suggested_next_actions=[spec.next_action],
             refs={"upload_url": upload.presigned.url},
             data={
                 "name": upload.entry.name,
@@ -324,12 +356,9 @@ async def create_run_upload(
     return await _create_upload(
         pool,
         ctx,
-        kind="runs",
+        spec=_RUN_UPLOAD,
         owner_id=run_id,
         artifacts=artifacts,
-        allowed_names=_BUILD_ARTIFACT_NAMES,
-        next_action="runs.complete_build",
-        lock_scope=LockScope.RUN,
         store=store,
     )
 
@@ -346,12 +375,9 @@ async def create_system_upload(
     return await _create_upload(
         pool,
         ctx,
-        kind="systems",
+        spec=_SYSTEM_UPLOAD,
         owner_id=system_id,
         artifacts=artifacts,
-        allowed_names=frozenset({_ROOTFS_NAME}),
-        next_action="systems.provision_defined",
-        lock_scope=LockScope.SYSTEM,
         store=store,
     )
 
