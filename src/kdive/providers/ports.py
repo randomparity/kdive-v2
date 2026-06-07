@@ -173,15 +173,49 @@ class PowerAction(StrEnum):
 class Provisioner(Protocol):
     """Provisioning port keyed on the already-minted System id."""
 
-    def provision(self, system_id: UUID, profile: ProvisioningProfile) -> str: ...
-    def teardown(self, domain_name: str) -> None: ...
-    def reprovision(self, system_id: UUID, profile: ProvisioningProfile) -> str: ...
+    def provision(self, system_id: UUID, profile: ProvisioningProfile) -> str:
+        """Create and start a System, returning the provider domain name.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for invalid provider-specific profile
+                data, ``PROVISIONING_FAILURE`` for domain/rootfs creation failures, or
+                ``INFRASTRUCTURE_FAILURE`` for provider-control-plane faults.
+        """
+        ...
+
+    def teardown(self, domain_name: str) -> None:
+        """Destroy provider state for a domain name.
+
+        Raises:
+            CategorizedError: ``INFRASTRUCTURE_FAILURE`` when the provider cannot complete
+                or verify teardown.
+        """
+        ...
+
+    def reprovision(self, system_id: UUID, profile: ProvisioningProfile) -> str:
+        """Replace a System's provider state, returning the new provider domain name.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for invalid provider-specific profile
+                data, ``PROVISIONING_FAILURE`` for replacement-domain creation failures, or
+                ``INFRASTRUCTURE_FAILURE`` for teardown/control-plane faults.
+        """
+        ...
 
 
 class Builder(Protocol):
     """Build port returning stored kernel and debuginfo refs."""
 
-    def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput: ...
+    def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput:
+        """Build a kernel and store its boot artifact plus debuginfo.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for unresolvable refs or malformed
+                build input, ``MISSING_DEPENDENCY`` for absent build tools or source roots,
+                ``INFRASTRUCTURE_FAILURE`` for workspace/store IO failures, or
+                ``BUILD_FAILURE`` for compiler/validation failures.
+        """
+        ...
 
 
 class Installer(Protocol):
@@ -196,33 +230,92 @@ class Installer(Protocol):
         cmdline: str,
         method: CaptureMethod = CaptureMethod.HOST_DUMP,
         initrd_ref: str | None = None,
-    ) -> None: ...
+    ) -> None:
+        """Install a built kernel into a System and confirm guest readiness.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for invalid capture/install inputs,
+                ``STALE_HANDLE`` for vanished artifact refs, ``INFRASTRUCTURE_FAILURE`` for
+                store IO failures, ``INSTALL_FAILURE`` for provider install faults,
+                ``READINESS_FAILURE`` for guest readiness command failures, or
+                ``BOOT_TIMEOUT`` when the guest never becomes ready.
+        """
+        ...
 
 
 class Booter(Protocol):
     """Boot port: power-cycle the domain and confirm run-readiness."""
 
-    def boot(self, system_id: UUID) -> None: ...
+    def boot(self, system_id: UUID) -> None:
+        """Boot a System after installation and confirm run-readiness.
+
+        Raises:
+            CategorizedError: ``INSTALL_FAILURE`` for provider boot faults,
+                ``READINESS_FAILURE`` for guest readiness command failures, or
+                ``BOOT_TIMEOUT`` when the guest never becomes ready.
+        """
+        ...
 
 
 class Connector(Protocol):
     """Connect port for opening and closing debug transports."""
 
-    def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle: ...
-    def close_transport(self, handle: TransportHandle) -> None: ...
+    def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle:
+        """Open a debug transport and return an opaque handle.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for an unknown transport kind,
+                ``MISSING_DEPENDENCY`` for unavailable provider seams,
+                ``TRANSPORT_FAILURE`` for tunnel allocation faults, or
+                ``DEBUG_ATTACH_FAILURE`` when the endpoint cannot be attached.
+        """
+        ...
+
+    def close_transport(self, handle: TransportHandle) -> None:
+        """Close a previously opened transport handle.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for malformed handles,
+                ``MISSING_DEPENDENCY`` for unavailable provider seams, or
+                ``TRANSPORT_FAILURE`` when teardown of the tunnel fails.
+        """
+        ...
 
 
 class Controller(Protocol):
     """Control port keyed on provider domain name."""
 
-    def power(self, domain_name: str, action: PowerAction) -> None: ...
-    def force_crash(self, domain_name: str) -> None: ...
+    def power(self, domain_name: str, action: PowerAction) -> None:
+        """Apply a power operation to a provider domain.
+
+        Raises:
+            CategorizedError: ``CONTROL_FAILURE`` for absent domains or provider power
+                faults.
+        """
+        ...
+
+    def force_crash(self, domain_name: str) -> None:
+        """Trigger a guest crash path for vmcore capture.
+
+        Raises:
+            CategorizedError: ``CONTROL_FAILURE`` for absent domains or provider crash
+                trigger faults.
+        """
+        ...
 
 
 class Retriever(Protocol):
     """Capture port keyed on the System id."""
 
-    def capture(self, system_id: UUID, method: CaptureMethod) -> CaptureOutput: ...
+    def capture(self, system_id: UUID, method: CaptureMethod) -> CaptureOutput:
+        """Capture, store, and redact a vmcore.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for build-id provenance mismatch or
+                invalid capture input, ``MISSING_DEPENDENCY`` for unavailable provider/store
+                seams, or ``READINESS_FAILURE`` when no complete vmcore is available.
+        """
+        ...
 
 
 class CrashPostmortem(Protocol):
@@ -235,7 +328,15 @@ class CrashPostmortem(Protocol):
         debuginfo_ref: str,
         expected_build_id: str,
         commands: list[str],
-    ) -> CrashOutput: ...
+    ) -> CrashOutput:
+        """Run a bounded crash-command batch over a captured vmcore.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for malformed refs, command batches, or
+                build-id mismatch, ``MISSING_DEPENDENCY`` for unavailable object-store or
+                crash seams, or ``INFRASTRUCTURE_FAILURE`` for object-store IO failures.
+        """
+        ...
 
 
 class VmcoreIntrospector(Protocol):
@@ -243,29 +344,102 @@ class VmcoreIntrospector(Protocol):
 
     def from_vmcore(
         self, *, vmcore_ref: str, debuginfo_ref: str, expected_build_id: str
-    ) -> IntrospectOutput: ...
+    ) -> IntrospectOutput:
+        """Inspect a captured vmcore through the provider's offline helper.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for malformed refs or build-id
+                mismatch, ``MISSING_DEPENDENCY`` for unavailable object-store or helper
+                seams, or ``INFRASTRUCTURE_FAILURE`` for object-store IO failures.
+        """
+        ...
 
 
 class LiveIntrospector(Protocol):
     """Live introspection port over an existing transport handle."""
 
-    def introspect_live(self, *, transport_handle: str, helper: str) -> IntrospectOutput: ...
+    def introspect_live(self, *, transport_handle: str, helper: str) -> IntrospectOutput:
+        """Inspect a live guest through an existing debug transport.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for malformed handles or unknown
+                helpers, ``MISSING_DEPENDENCY`` for unavailable helper seams, or
+                ``DEBUG_ATTACH_FAILURE`` for live attach faults.
+        """
+        ...
 
 
 class GdbMiEngine(Protocol):
     """Debug operation engine over a live gdb/MI attachment."""
 
-    def set_breakpoint(self, attachment: GdbMiAttachment, location: str) -> GdbBreakpointRef: ...
-    def clear_breakpoint(self, attachment: GdbMiAttachment, number: str) -> None: ...
-    def list_breakpoints(self, attachment: GdbMiAttachment) -> list[GdbBreakpointRef]: ...
-    def read_memory(
-        self, attachment: GdbMiAttachment, *, address: int, byte_count: int
-    ) -> bytes: ...
+    def set_breakpoint(self, attachment: GdbMiAttachment, location: str) -> GdbBreakpointRef:
+        """Set a breakpoint through gdb/MI.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for invalid locations,
+                ``DEBUG_ATTACH_FAILURE`` for gdb/MI command failures, or
+                ``INFRASTRUCTURE_FAILURE`` for command timeouts.
+        """
+        ...
+
+    def clear_breakpoint(self, attachment: GdbMiAttachment, number: str) -> None:
+        """Clear a breakpoint through gdb/MI.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for invalid breakpoint numbers,
+                ``DEBUG_ATTACH_FAILURE`` for gdb/MI command failures, or
+                ``INFRASTRUCTURE_FAILURE`` for command timeouts.
+        """
+        ...
+
+    def list_breakpoints(self, attachment: GdbMiAttachment) -> list[GdbBreakpointRef]:
+        """List breakpoints through gdb/MI.
+
+        Raises:
+            CategorizedError: ``DEBUG_ATTACH_FAILURE`` for gdb/MI command failures or
+                ``INFRASTRUCTURE_FAILURE`` for command timeouts.
+        """
+        ...
+
+    def read_memory(self, attachment: GdbMiAttachment, *, address: int, byte_count: int) -> bytes:
+        """Read guest memory through gdb/MI.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for invalid address/count values,
+                ``DEBUG_ATTACH_FAILURE`` for gdb/MI read failures, or
+                ``INFRASTRUCTURE_FAILURE`` for command timeouts.
+        """
+        ...
+
     def read_registers(
         self, attachment: GdbMiAttachment, register_names: list[str]
-    ) -> dict[str, object]: ...
-    def continue_(self, attachment: GdbMiAttachment, *, timeout_sec: float) -> GdbStopRecord: ...
-    def interrupt(self, attachment: GdbMiAttachment) -> GdbStopRecord | None: ...
+    ) -> dict[str, object]:
+        """Read selected registers through gdb/MI.
+
+        Raises:
+            CategorizedError: ``DEBUG_ATTACH_FAILURE`` for gdb/MI read failures or
+                ``INFRASTRUCTURE_FAILURE`` for command timeouts.
+        """
+        ...
+
+    def continue_(self, attachment: GdbMiAttachment, *, timeout_sec: float) -> GdbStopRecord:
+        """Resume execution and return the next stop record, if any.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for invalid timeout values,
+                ``DEBUG_ATTACH_FAILURE`` for gdb/MI command failures, or
+                ``INFRASTRUCTURE_FAILURE`` for command timeouts.
+        """
+        ...
+
+    def interrupt(self, attachment: GdbMiAttachment) -> GdbStopRecord | None:
+        """Interrupt execution and return the stop record when one is reported.
+
+        Raises:
+            CategorizedError: ``DEBUG_ATTACH_FAILURE`` for gdb/MI command failures or
+                ``INFRASTRUCTURE_FAILURE`` for command timeouts.
+        """
+        ...
 
 
 class GdbMiSessionRegistry:
