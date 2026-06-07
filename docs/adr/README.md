@@ -86,3 +86,7 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0054](0054-object-store-unconditional-read.md) | Object-store unconditional read for system-produced keys (G2, closes #126) | Proposed |
 | [0055](0055-install-readiness-kdump-seam.md) | Install readiness console classifier + host initrd-presence kdump gate (G4, closes #127) | Proposed |
 | [0056](0056-live-demo-cmdline-wiring-dcache-driver.md) | Live demo cmdline wiring (build-ledger source, both lanes) + dcache A/B `live_vm` driver (G5, closes #128) | Proposed |
+| [0059](0059-first-run-host-registration.md) | First-run local-libvirt host registration at reconciler startup (live stack, PR #134) | Proposed |
+| [0060](0060-per-system-rootfs-overlay.md) | Per-System rootfs overlay: a writable qcow2 layer over the shared base (live stack, PR #134) | Proposed |
+| [0061](0061-boot-cmdline-composition.md) | Boot cmdline composition: platform-required base + appended debug args (supersedes 0056, PR #134) | Proposed |
+| [0062](0062-platform-operations.md) | Platform operations (M1.3): operator infra/control-plane tools, break-glass override, auditor reads, `require_role` denial-audit (builds on 0043) | Proposed |
