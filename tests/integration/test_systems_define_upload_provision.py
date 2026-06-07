@@ -1,7 +1,7 @@
 """End-to-end reachability of the rootfs-upload lane (define -> upload -> provision, #111).
 
 DB/tool-lane reachability under a fake provider: it proves the upload-kind profile flows
-through systems.define, artifacts.create_system_upload, systems.provision, and the provision
+through systems.define, artifacts.create_system_upload, systems.provision_defined, and the provision
 handler's _commit_uploaded_rootfs. It does NOT boot — staging the object to the libvirt
 disk is the install/boot spec's concern (ADR-0048 §7).
 """
@@ -62,7 +62,7 @@ def test_define_upload_provision_reaches_ready_with_committed_rootfs(
                 store=minio_store,
             )
             assert uploads[0].status == "upload_ready"
-            assert uploads[0].suggested_next_actions == ["systems.provision"]
+            assert uploads[0].suggested_next_actions == ["systems.provision_defined"]
 
             # 3. the agent PUTs the qcow2 (staged directly into the store for the test)
             minio_store.put_artifact(
@@ -77,10 +77,8 @@ def test_define_upload_provision_reaches_ready_with_committed_rootfs(
                 )
             )
 
-            # 4. provision admits the DEFINED System (no profile re-passed)
-            resp = await systems_tools.provision_system(
-                pool, _ctx(), allocation_id=alloc_id, profile=None
-            )
+            # 4. provision_defined admits the DEFINED System by System id
+            resp = await systems_tools.provision_defined_system(pool, _ctx(), system_id=sys_id)
             assert resp.status == "queued"
 
             # 5. the provision handler drives provisioning -> ready and commits the rootfs

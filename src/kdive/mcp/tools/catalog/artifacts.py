@@ -350,7 +350,7 @@ async def create_system_upload(
         owner_id=system_id,
         artifacts=artifacts,
         allowed_names=frozenset({_ROOTFS_NAME}),
-        next_action="systems.provision",
+        next_action="systems.provision_defined",
         lock_scope=LockScope.SYSTEM,
         store=store,
     )

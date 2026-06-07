@@ -351,7 +351,7 @@ def test_create_upload_for_defined_system_mints_rootfs_and_persists(migrated_url
                 store=store,
             )
             assert [r.object_id for r in responses] == [f"local/systems/{sys_id}/rootfs"]
-            assert responses[0].suggested_next_actions == ["systems.provision"]
+            assert responses[0].suggested_next_actions == ["systems.provision_defined"]
             assert {c[0] for c in store.calls} == {f"local/systems/{sys_id}/rootfs"}
             async with pool.connection() as conn:
                 manifest = await upload_manifest.get_manifest(conn, "systems", UUID(sys_id))

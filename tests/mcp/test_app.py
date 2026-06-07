@@ -30,6 +30,7 @@ def test_build_app_registers_jobs_tools() -> None:
         assert {"jobs.get", "jobs.wait", "jobs.cancel", "jobs.list"} <= names
         assert {
             "systems.provision",
+            "systems.provision_defined",
             "systems.get",
             "systems.teardown",
             "systems.reprovision",

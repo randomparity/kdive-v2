@@ -158,6 +158,10 @@ async def _provision(
     return await systems_tools.provision_system(pool, ctx, allocation_id=alloc_id, profile=profile)
 
 
+async def _provision_defined(pool: AsyncConnectionPool, ctx: RequestContext, system_id: str):
+    return await systems_tools.provision_defined_system(pool, ctx, system_id=system_id)
+
+
 # --- systems.provision tool ----------------------------------------------------------------
 
 
@@ -642,7 +646,8 @@ def test_provision_handler_concurrent_same_job_ready_does_not_tear_down(migrated
 #
 # These drive provision_handler with a directly-seeded PROVISIONING upload profile to unit-
 # test the worker-side provisioning->ready commit in isolation. The full lane is reachable
-# end-to-end via systems.define + artifacts.create_system_upload + systems.provision (#111); see
+# end-to-end via systems.define + artifacts.create_system_upload + systems.provision_defined
+# (#111); see
 # tests/integration/test_systems_define_upload_provision.py for that reachability proof.
 
 
@@ -1296,7 +1301,7 @@ def test_define_inserts_defined_system_and_activates_allocation(migrated_url: st
             assert resp.status == "defined"
             assert resp.suggested_next_actions == [
                 "artifacts.create_system_upload",
-                "systems.provision",
+                "systems.provision_defined",
             ]
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state, allocation_id FROM systems")
@@ -1397,19 +1402,17 @@ def test_define_foreign_allocation_is_not_found(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-# --- systems.provision admits a DEFINED System ---------------------------------------------
+# --- systems.provision_defined admits a DEFINED System -------------------------------------
 
 
-def test_provision_admits_defined_system_without_profile(migrated_url: str) -> None:
-    # systems.provision(allocation_id) with no profile drives an existing DEFINED System
+def test_provision_defined_admits_defined_system(migrated_url: str) -> None:
+    # systems.provision_defined(system_id) drives an existing DEFINED System
     # defined -> provisioning and enqueues its provision job (#111).
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
-            resp = await systems_tools.provision_system(
-                pool, _ctx(), allocation_id=alloc_id, profile=None
-            )
+            resp = await _provision_defined(pool, _ctx(), sys_id)
             assert resp.status == "queued"
             assert resp.data["system_id"] == sys_id
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -1428,7 +1431,7 @@ def test_provision_admits_defined_system_without_profile(migrated_url: str) -> N
     asyncio.run(_run())
 
 
-def test_provision_admit_refuses_released_allocation(migrated_url: str) -> None:
+def test_provision_defined_refuses_released_allocation(migrated_url: str) -> None:
     # A DEFINED System whose lease was released (but not yet reaped) must not be admitted to
     # provisioning — symmetric with the create lane's granted check (#111 review).
     async def _run() -> None:
@@ -1438,9 +1441,7 @@ def test_provision_admit_refuses_released_allocation(migrated_url: str) -> None:
             async with pool.connection() as conn:
                 await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.RELEASING)
                 await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.RELEASED)
-            resp = await systems_tools.provision_system(
-                pool, _ctx(), allocation_id=alloc_id, profile=None
-            )
+            resp = await _provision_defined(pool, _ctx(), sys_id)
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
                 sys_row = await cur.fetchone()
@@ -1475,15 +1476,16 @@ def test_provision_create_lane_rejects_upload(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_provision_create_lane_requires_profile(migrated_url: str) -> None:
+def test_provision_create_lane_refuses_defined_system(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
-            resp = await systems_tools.provision_system(
-                pool, _ctx(), allocation_id=alloc_id, profile=None
-            )
+            sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
+            resp = await _provision(pool, _ctx(), alloc_id, _profile())
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
+        assert resp.object_id == sys_id
+        assert resp.data["reason"] == "use_systems.provision_defined"
 
     asyncio.run(_run())
 
