@@ -10,7 +10,7 @@ envelope (ADR-0019 `data` is `dict[str, str]`).
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastmcp import FastMCP
@@ -21,7 +21,7 @@ from pydantic import Field
 
 from kdive.db.repositories import RESOURCES
 from kdive.domain.errors import ErrorCategory
-from kdive.domain.models import Resource
+from kdive.domain.models import Resource, ResourceKind
 from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
@@ -58,39 +58,54 @@ def _resource_envelope(resource: Resource, *, next_actions: list[str]) -> ToolRe
     )
 
 
-async def _fetch_resources(conn: AsyncConnection, kind: str | None) -> list[Resource]:
+async def _fetch_resource_rows(
+    conn: AsyncConnection, kind: ResourceKind | None
+) -> list[dict[str, Any]]:
     if kind is None:
         query = "SELECT * FROM resources ORDER BY created_at, id"
         params: tuple[object, ...] = ()
     else:
         query = "SELECT * FROM resources WHERE kind = %s ORDER BY created_at, id"
-        params = (kind,)
+        params = (kind.value,)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(query, params)
-        rows = await cur.fetchall()
-    return [Resource.model_validate(row) for row in rows]
+        return list(await cur.fetchall())
+
+
+def _resource_row_error(row: dict[str, Any]) -> ToolResponse:
+    object_id = row.get("id")
+    return ToolResponse.failure(
+        str(object_id) if object_id is not None else "resources.list",
+        ErrorCategory.INFRASTRUCTURE_FAILURE,
+    )
 
 
 async def list_resources_tool(
     pool: AsyncConnectionPool, ctx: RequestContext, *, kind: str | None
 ) -> list[ToolResponse]:
     """Return every resource (optionally filtered by ``kind``) as an envelope."""
+    if kind is None:
+        resource_kind = None
+    else:
+        try:
+            resource_kind = ResourceKind(kind)
+        except ValueError:
+            return [ToolResponse.failure("resources.list", ErrorCategory.CONFIGURATION_ERROR)]
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
-            resources = await _fetch_resources(conn, kind)
+            rows = await _fetch_resource_rows(conn, resource_kind)
         responses: list[ToolResponse] = []
-        for resource in resources:
+        for row in rows:
             try:
+                resource = Resource.model_validate(row)
                 responses.append(
                     _resource_envelope(
                         resource, next_actions=["resources.describe", "allocations.request"]
                     )
                 )
             except ValueError:
-                _log.warning("resource %s violates the response invariant; degraded", resource.id)
-                responses.append(
-                    ToolResponse.failure(str(resource.id), ErrorCategory.INFRASTRUCTURE_FAILURE)
-                )
+                _log.warning("resource row violates the response invariant; degraded")
+                responses.append(_resource_row_error(row))
         return responses
 
 

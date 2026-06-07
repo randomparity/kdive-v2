@@ -65,12 +65,31 @@ def test_list_returns_host_with_flat_capability_projection(migrated_url: str) ->
     asyncio.run(_run())
 
 
-def test_list_kind_filter_miss_is_empty(migrated_url: str) -> None:
+def test_list_kind_filter_miss_is_configuration_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             await _register(pool)
             responses = await resources_tools.list_resources_tool(pool, CTX, kind="nope")
-        assert responses == []
+        assert len(responses) == 1
+        assert responses[0].status == "error"
+        assert responses[0].error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_list_malformed_resource_row_degrades_to_infrastructure_failure(
+    migrated_url: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool)
+            async with pool.connection() as conn:
+                await conn.execute("UPDATE resources SET capabilities = '[]'::jsonb")
+            responses = await resources_tools.list_resources_tool(pool, CTX, kind="local-libvirt")
+        assert len(responses) == 1
+        assert responses[0].object_id == res_id
+        assert responses[0].status == "error"
+        assert responses[0].error_category == "infrastructure_failure"
 
     asyncio.run(_run())
 
