@@ -32,21 +32,33 @@ from kdive.mcp.tools import (
     systems,
     vmcore,
 )
+from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 
-# Tool seam: each plane exposes register(app, pool); build_app calls them all.
-_PLANE_REGISTRARS: tuple[Callable[[FastMCP, AsyncConnectionPool], None], ...] = (
-    jobs.register,
-    resources.register,
-    accounting.register,
-    allocations.register,
-    systems.register,
-    investigations.register,
-    runs.register,
-    control.register,
-    artifacts.register,
-    vmcore.register,
-    debug.register,
-    introspect.register,
+type PlaneRegistrar = Callable[[FastMCP, AsyncConnectionPool, ProviderRuntime], None]
+type HandlerRegistrar = Callable[[HandlerRegistry, ProviderRuntime], None]
+
+
+def _plain(register: Callable[[FastMCP, AsyncConnectionPool], None]) -> PlaneRegistrar:
+    def _register(app: FastMCP, pool: AsyncConnectionPool, _: ProviderRuntime) -> None:
+        register(app, pool)
+
+    return _register
+
+
+# Tool seam: each plane exposes register(app, pool); provider-aware planes receive the runtime.
+_PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
+    _plain(jobs.register),
+    _plain(resources.register),
+    _plain(accounting.register),
+    _plain(allocations.register),
+    _plain(systems.register),
+    _plain(investigations.register),
+    _plain(runs.register),
+    _plain(control.register),
+    _plain(artifacts.register),
+    lambda app, pool, runtime: vmcore.register(app, pool, provider_runtime=runtime),
+    lambda app, pool, runtime: debug.register(app, pool, provider_runtime=runtime),
+    lambda app, pool, runtime: introspect.register(app, pool, provider_runtime=runtime),
 )
 
 # Handler seam: each plane exposes register_handlers(registry); the worker calls them all.
@@ -56,15 +68,20 @@ _PLANE_REGISTRARS: tuple[Callable[[FastMCP, AsyncConnectionPool], None], ...] = 
 # capture_vmcore handler (each builds its provider/builder lazily from env — no libvirt/
 # toolchain connection at registration). The Connect plane (#20) registers tools only — its
 # debug.start_session/end_session are synchronous, so they have no JobKind and no handler.
-_HANDLER_REGISTRARS: tuple[Callable[[HandlerRegistry], None], ...] = (
-    systems.register_handlers,
-    runs.register_handlers,
-    control.register_handlers,
-    vmcore.register_handlers,
+_HANDLER_REGISTRARS: tuple[HandlerRegistrar, ...] = (
+    lambda registry, runtime: systems.register_handlers(registry, provider_runtime=runtime),
+    lambda registry, runtime: runs.register_handlers(registry, provider_runtime=runtime),
+    lambda registry, runtime: control.register_handlers(registry, provider_runtime=runtime),
+    lambda registry, runtime: vmcore.register_handlers(registry, provider_runtime=runtime),
 )
 
 
-def build_app(pool: AsyncConnectionPool, *, verifier: JWTVerifier | None = None) -> FastMCP:
+def build_app(
+    pool: AsyncConnectionPool,
+    *,
+    verifier: JWTVerifier | None = None,
+    provider_runtime: ProviderRuntime | None = None,
+) -> FastMCP:
     """Construct the FastMCP app and register every plane's tools.
 
     Args:
@@ -73,14 +90,16 @@ def build_app(pool: AsyncConnectionPool, *, verifier: JWTVerifier | None = None)
             ``None``, built from the OIDC env vars via :func:`build_verifier`.
     """
     app: FastMCP = FastMCP(name="kdive", auth=verifier or build_verifier())
+    runtime = provider_runtime or build_default_provider_runtime()
     for register in _PLANE_REGISTRARS:
-        register(app, pool)
+        register(app, pool, runtime)
     return app
 
 
-def build_handler_registry() -> HandlerRegistry:
+def build_handler_registry(*, provider_runtime: ProviderRuntime | None = None) -> HandlerRegistry:
     """Build the worker's `HandlerRegistry` from the handler seam (empty in M0)."""
     registry = HandlerRegistry()
+    runtime = provider_runtime or build_default_provider_runtime()
     for register in _HANDLER_REGISTRARS:
-        register(registry)
+        register(registry, runtime)
     return registry

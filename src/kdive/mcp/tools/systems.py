@@ -39,6 +39,7 @@ from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._jobs import job_envelope
 from kdive.profiles.provisioning import ProvisioningProfile, profile_digest
 from kdive.providers.composition import (
+    ProviderRuntime,
     reject_rootfs_without_upload_window,
     validate_profile,
 )
@@ -760,9 +761,14 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
 
 
 def register_handlers(
-    registry: HandlerRegistry, *, provisioning: Provisioner | None = None
+    registry: HandlerRegistry,
+    *,
+    provisioning: Provisioner | None = None,
+    provider_runtime: ProviderRuntime | None = None,
 ) -> None:
     """Bind the worker handlers while keeping the public app seam unchanged."""
     from kdive.mcp.tools import systems_handlers
 
-    systems_handlers.register_handlers(registry, provisioning=provisioning)
+    systems_handlers.register_handlers(
+        registry, provisioning=provisioning, provider_runtime=provider_runtime
+    )

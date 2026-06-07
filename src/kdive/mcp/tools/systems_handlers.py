@@ -19,7 +19,7 @@ from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import ReprovisionPayload, SystemPayload, load_payload
 from kdive.mcp.tools import systems as plane
 from kdive.profiles.provisioning import ProvisioningProfile, profile_digest
-from kdive.providers.composition import domain_name_for, provisioner_from_env
+from kdive.providers.composition import ProviderRuntime, domain_name_for, provisioner_from_env
 from kdive.providers.ports import Provisioner
 from kdive.store.objectstore import (
     StoredArtifact,
@@ -202,10 +202,15 @@ async def teardown_handler(
 
 
 def register_handlers(
-    registry: HandlerRegistry, *, provisioning: Provisioner | None = None
+    registry: HandlerRegistry,
+    *,
+    provisioning: Provisioner | None = None,
+    provider_runtime: ProviderRuntime | None = None,
 ) -> None:
     """Bind the `provision`/`teardown`/`reprovision` job handlers."""
-    prov = provisioning or provisioner_from_env()
+    prov = provisioning or (
+        provider_runtime.provisioner() if provider_runtime else provisioner_from_env()
+    )
 
     async def _provision(conn: AsyncConnection, job: Job) -> str | None:
         return await provision_handler(conn, job, prov)

@@ -41,6 +41,7 @@ from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools import artifacts as artifacts_tools
 from kdive.mcp.tools._jobs import job_envelope
 from kdive.providers.composition import (
+    ProviderRuntime,
     crash_command_rejection_reason,
     crash_postmortem_from_env,
     retriever_from_env,
@@ -392,9 +393,11 @@ async def postmortem_triage(
 # --- registration --------------------------------------------------------------------------
 
 
-def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
+def register(
+    app: FastMCP, pool: AsyncConnectionPool, *, provider_runtime: ProviderRuntime | None = None
+) -> None:
     """Register the `vmcore.*` / `postmortem.*` tools on ``app``, bound to ``pool``."""
-    crash = crash_postmortem_from_env()
+    crash = provider_runtime.crash_postmortem() if provider_runtime else crash_postmortem_from_env()
 
     @app.tool(
         name="vmcore.fetch",
@@ -454,9 +457,16 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         return await postmortem_triage(pool, current_context(), run_id=run_id, crash=crash)
 
 
-def register_handlers(registry: HandlerRegistry, *, retriever: Retriever | None = None) -> None:
+def register_handlers(
+    registry: HandlerRegistry,
+    *,
+    retriever: Retriever | None = None,
+    provider_runtime: ProviderRuntime | None = None,
+) -> None:
     """Bind the `capture_vmcore` job handler; build the retriever lazily from env."""
-    active = retriever or retriever_from_env()
+    active = retriever or (
+        provider_runtime.retriever() if provider_runtime else retriever_from_env()
+    )
 
     async def _capture(conn: AsyncConnection, job: Job) -> str | None:
         return await capture_handler(conn, job, active)

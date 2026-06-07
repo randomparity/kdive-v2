@@ -22,7 +22,11 @@ from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
 from kdive.mcp.job_context import context_from_job as job_context_from_job
 from kdive.mcp.tools import runs as plane
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
-from kdive.providers.composition import builder_from_env, install_boot_from_env
+from kdive.providers.composition import (
+    ProviderRuntime,
+    builder_from_env,
+    install_boot_from_env,
+)
 from kdive.providers.ports import Booter, Builder, BuildOutput, Installer
 from kdive.security import audit
 from kdive.security.redaction import Redactor
@@ -257,11 +261,14 @@ def register_handlers(
     builder: Builder | None = None,
     installer: Installer | None = None,
     booter: Booter | None = None,
+    provider_runtime: ProviderRuntime | None = None,
 ) -> None:
     """Bind the `build`/`install`/`boot` job handlers."""
-    build = builder or builder_from_env()
+    build = builder or (provider_runtime.builder() if provider_runtime else builder_from_env())
     if installer is None or booter is None:
-        default_installer, default_booter = install_boot_from_env()
+        default_installer, default_booter = (
+            provider_runtime.install_boot() if provider_runtime else install_boot_from_env()
+        )
         install: Installer = installer or default_installer
         boot: Booter = booter or default_booter
     else:

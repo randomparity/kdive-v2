@@ -51,13 +51,14 @@ from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._jobs import job_envelope
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
 from kdive.providers.composition import (
+    ProviderRuntime,
+    validate_external_artifacts,
+)
+from kdive.providers.composition import (
     console_log_path as _console_log_path,
 )
 from kdive.providers.composition import (
     read_console_log as _read_console_log,
-)
-from kdive.providers.composition import (
-    validate_external_artifacts,
 )
 from kdive.providers.ports import Booter, Builder, BuildOutput, Installer, ValidatedUpload
 from kdive.security import audit
@@ -883,8 +884,15 @@ def register_handlers(
     builder: Builder | None = None,
     installer: Installer | None = None,
     booter: Booter | None = None,
+    provider_runtime: ProviderRuntime | None = None,
 ) -> None:
     """Bind the worker handlers while keeping the public app seam unchanged."""
     from kdive.mcp.tools import runs_handlers
 
-    runs_handlers.register_handlers(registry, builder=builder, installer=installer, booter=booter)
+    runs_handlers.register_handlers(
+        registry,
+        builder=builder,
+        installer=installer,
+        booter=booter,
+        provider_runtime=provider_runtime,
+    )

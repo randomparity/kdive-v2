@@ -41,7 +41,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._jobs import job_envelope
 from kdive.profiles.provisioning import ProvisioningProfile
-from kdive.providers.composition import controller_from_env, domain_name_for
+from kdive.providers.composition import ProviderRuntime, controller_from_env, domain_name_for
 from kdive.providers.ports import Controller, PowerAction
 from kdive.security import audit
 from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
@@ -302,13 +302,18 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         return await force_crash_system(pool, current_context(), system_id=system_id)
 
 
-def register_handlers(registry: HandlerRegistry, *, control: Controller | None = None) -> None:
+def register_handlers(
+    registry: HandlerRegistry,
+    *,
+    control: Controller | None = None,
+    provider_runtime: ProviderRuntime | None = None,
+) -> None:
     """Bind the `power`/`force_crash` job handlers; build the provider lazily from env.
 
     Building the provider does not open a libvirt connection (the ``connect`` lambda is lazy),
     so the worker boots without a reachable host; the first job is the first connection.
     """
-    ctrl = control or controller_from_env()
+    ctrl = control or (provider_runtime.controller() if provider_runtime else controller_from_env())
 
     async def _power(conn: AsyncConnection, job: Job) -> str | None:
         return await power_handler(conn, job, ctrl)

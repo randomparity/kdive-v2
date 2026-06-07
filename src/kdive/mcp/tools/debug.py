@@ -38,7 +38,7 @@ from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.debug_ops import DebugEngineRuntime, register_debug_ops
-from kdive.providers.composition import attach_seam_from_env, connector_from_env
+from kdive.providers.composition import ProviderRuntime, attach_seam_from_env, connector_from_env
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.ports import Connector, GdbMiEngine
 from kdive.security import audit
@@ -378,18 +378,23 @@ def _detached_envelope(session_id: UUID, project: str) -> ToolResponse:
     )
 
 
-def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
+def register(
+    app: FastMCP, pool: AsyncConnectionPool, *, provider_runtime: ProviderRuntime | None = None
+) -> None:
     """Register the `debug.*` tools on ``app``, bound to ``pool``.
 
-    The `Connector` is built once via `LocalLibvirtConnect.from_env()` (no libvirt connection
-    at registration — the resolver/prober are lazy `live_vm` seams). The Debug-plane gdb-MI
-    tier (ADR-0034) shares one process-scoped :class:`DebugEngineRuntime` (registry +
-    per-session locks + the `live_vm`-gated attach seam); its seven tools register here too, so
-    `app.py` is untouched. `end_session` reaps the lazy engine via the shared runtime.
+    The `Connector` is resolved once from the provider runtime (no libvirt connection at
+    registration — the resolver/prober are lazy `live_vm` seams). The Debug-plane gdb-MI tier
+    (ADR-0034) shares one process-scoped :class:`DebugEngineRuntime` (registry + per-session
+    locks + the `live_vm`-gated attach seam); its seven tools register here too, so `app.py` is
+    untouched. `end_session` reaps the lazy engine via the shared runtime.
     """
-    connector: Connector = connector_from_env()
+    connector: Connector = (
+        provider_runtime.connector() if provider_runtime else connector_from_env()
+    )
     secret_backend: SecretBackend = secret_backend_from_env()
-    runtime = DebugEngineRuntime(engine=GdbMiEngine(), attach=attach_seam_from_env())
+    attach = provider_runtime.attach_seam() if provider_runtime else attach_seam_from_env()
+    runtime = DebugEngineRuntime(engine=GdbMiEngine(), attach=attach)
 
     @app.tool(
         name="debug.start_session",
