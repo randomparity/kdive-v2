@@ -1,0 +1,11 @@
+schema_version: 1
+provider: local-libvirt
+storage:
+  allowed_component_roots:
+    - /var/lib/kdive/rootfs
+  cache_dir: /var/lib/kdive/rootfs/cache
+  overlay_dir: /var/lib/kdive/rootfs/overlays
+rootfs:
+  - rootfs/fedora-kdive-ready-43.yaml
+profiles:
+  - profiles/console-ready_x86_64.yaml

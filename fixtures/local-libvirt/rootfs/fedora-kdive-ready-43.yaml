@@ -1,0 +1,13 @@
+provider: local-libvirt
+name: fedora-kdive-ready-43
+arch: x86_64
+format: qcow2
+root_device: /dev/vda
+source:
+  kind: local
+  path: /var/lib/kdive/rootfs/local/fedora-kdive-ready-43.qcow2
+visibility: public
+capabilities:
+  - kdive-ready-console
+  - ssh
+  - drgn
