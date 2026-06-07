@@ -16,8 +16,6 @@ ALLOC_HOSTABLE = frozenset({AllocationState.ACTIVE})
 INVESTIGATION_OPEN_FOR_RUN = frozenset({InvestigationState.OPEN, InvestigationState.ACTIVE})
 RUN_BUILD_TERMINAL = frozenset({RunState.FAILED, RunState.CANCELED})
 
-PLATFORM_OWNED_CMDLINE_TOKENS = ("root=", "console=", "crashkernel=")
-
 
 def envelope_for_run(run: Run, *, required_cmdline: str | None = None) -> ToolResponse:
     """Render a Run; `failed` becomes a failure envelope carrying its `failure_category`."""
@@ -39,10 +37,3 @@ def envelope_for_run(run: Run, *, required_cmdline: str | None = None) -> ToolRe
 def run_job_envelope(job: Job, run_id: UUID) -> ToolResponse:
     """Render a run-scoped job envelope."""
     return job_envelope(job, "run_id", run_id)
-
-
-def platform_owned_token(cmdline: str | None) -> str | None:
-    """Return the first platform-owned token carried by a Run cmdline, if present."""
-    if not cmdline:
-        return None
-    return next((tok for tok in PLATFORM_OWNED_CMDLINE_TOKENS if tok in cmdline), None)

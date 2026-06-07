@@ -28,10 +28,10 @@ from kdive.mcp.tools._common import authorizing as job_authorizing
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.lifecycle.runs_common import (
     RUN_BUILD_TERMINAL,
-    platform_owned_token,
     run_job_envelope,
 )
 from kdive.planes.runs_shared import existing_build_result as _existing_build_result
+from kdive.planes.runs_shared import platform_owned_cmdline_token
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
 from kdive.providers.build_validation import validate_external_artifacts
 from kdive.providers.ports import BuildOutput, ValidatedUpload
@@ -53,7 +53,7 @@ async def build_run(
     uid = _as_uuid(run_id)
     if uid is None:
         return _config_error(run_id)
-    owned = platform_owned_token(cmdline)
+    owned = platform_owned_cmdline_token(cmdline)
     if owned is not None:
         return _config_error(
             run_id, data={"reason": "cmdline_overrides_platform_args", "token": owned}
@@ -161,7 +161,7 @@ async def complete_build(
     uid = _as_uuid(run_id)
     if uid is None:
         return _config_error(run_id)
-    owned = platform_owned_token(cmdline)
+    owned = platform_owned_cmdline_token(cmdline)
     if owned is not None:
         return _config_error(
             run_id, data={"reason": "cmdline_overrides_platform_args", "token": owned}

@@ -19,6 +19,7 @@ from kdive.security import audit
 
 _REQUIRED_BASE_CMDLINE = "console=ttyS0 root=/dev/vda"
 _KDUMP_CRASHKERNEL = "crashkernel=256M"
+_PLATFORM_OWNED_CMDLINE_TOKENS = ("root=", "console=", "crashkernel=")
 
 
 async def existing_build_result(conn: AsyncConnection, run_id: UUID) -> dict[str, Any] | None:
@@ -80,6 +81,13 @@ def system_required_cmdline(method: CaptureMethod) -> str:
     if method is CaptureMethod.KDUMP:
         return f"{_REQUIRED_BASE_CMDLINE} {_KDUMP_CRASHKERNEL}"
     return _REQUIRED_BASE_CMDLINE
+
+
+def platform_owned_cmdline_token(cmdline: str | None) -> str | None:
+    """Return the first platform-owned token carried by a Run debug cmdline, if present."""
+    if not cmdline:
+        return None
+    return next((tok for tok in _PLATFORM_OWNED_CMDLINE_TOKENS if tok in cmdline), None)
 
 
 async def cmdline_for(conn: AsyncConnection, run: Run, method: CaptureMethod) -> str:
