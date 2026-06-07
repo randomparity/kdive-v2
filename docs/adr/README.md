@@ -90,3 +90,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0061](0061-boot-cmdline-composition.md) | Boot cmdline composition: platform-required base + appended debug args (supersedes 0056, PR #134) | Proposed |
 | [0062](0062-platform-operations.md) | Platform operations (M1.3): operator infra/control-plane tools, break-glass override, auditor reads, `require_role` denial-audit (builds on 0043) | Proposed |
 | [0063](0063-typed-provider-runtime.md) | Typed ProviderRuntime is the active M0/M1 provider seam | Accepted |
+| [0064](0064-expected-boot-failures-artifact-search.md) | Expected boot failures + bounded redacted artifact search | Proposed |
