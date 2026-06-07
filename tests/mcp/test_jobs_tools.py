@@ -132,6 +132,21 @@ def test_wait_zero_timeout_is_single_read(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+@pytest.mark.parametrize("timeout_s", [float("nan"), float("inf"), float("-inf")])
+def test_wait_non_finite_timeout_is_configuration_error(
+    migrated_url: str, timeout_s: float
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            job_id = await _enqueue(pool, "d1")
+            resp = await jobs_tools.wait_job(pool, VIEWER_CTX, job_id, timeout_s=timeout_s)
+        assert resp.object_id == job_id
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
 def test_wait_loops_until_terminal(migrated_url: str) -> None:
     """Exercise the sleep-then-re-poll branch: a concurrent task cancels the job
     after one poll interval, and wait must return the canceled envelope having

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -105,6 +106,8 @@ async def wait_job(
     """
     uid = _as_uuid(job_id)
     if uid is None:
+        return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
+    if not math.isfinite(timeout_s):
         return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + min(max(timeout_s, 0.0), MAX_WAIT_S)
