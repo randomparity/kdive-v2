@@ -18,7 +18,11 @@ from kdive.domain.state import IllegalTransition, SystemState
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import ReprovisionPayload, SystemPayload, load_payload
 from kdive.mcp.job_context import context_from_job as job_context_from_job
-from kdive.profiles.provisioning import ProvisioningProfile, profile_digest
+from kdive.profiles.provisioning import (
+    ProvisioningProfile,
+    profile_digest,
+    rootfs_upload_window_allowed,
+)
 from kdive.providers.composition import ProviderRuntime, domain_name_for, provisioner_from_env
 from kdive.providers.ports import Provisioner
 from kdive.security import audit
@@ -68,8 +72,7 @@ async def _commit_uploaded_rootfs(
     conn: AsyncConnection, system: System, profile: ProvisioningProfile
 ) -> None:
     """Commit the write-once artifacts row for an 'upload'-kind rootfs (ADR-0048 §6)."""
-    rootfs = profile.provider.local_libvirt.rootfs
-    if rootfs.kind != "upload":
+    if not rootfs_upload_window_allowed(profile):
         return
     key = artifact_key("local", "systems", str(system.id), "rootfs")
     head = await asyncio.to_thread(object_store_from_env().head, key)

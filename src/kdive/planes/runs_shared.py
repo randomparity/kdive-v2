@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -13,9 +12,10 @@ from psycopg.types.json import Jsonb
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.domain.capture import CaptureMethod
-from kdive.domain.models import Job, ResourceKind, Run, System
+from kdive.domain.models import Job, Run, System
 from kdive.domain.state import RunState
 from kdive.mcp.job_context import context_from_job as job_context_from_job
+from kdive.profiles.provisioning import capture_method
 from kdive.providers.composition import (
     console_log_path as _console_log_path,
 )
@@ -108,24 +108,6 @@ async def cmdline_for(conn: AsyncConnection, run: Run, method: CaptureMethod) ->
     return required
 
 
-def _local_libvirt_section(profile: Mapping[str, Any]) -> Mapping[str, Any]:
-    provider = profile.get("provider")
-    if not isinstance(provider, Mapping):
-        return {}
-    section = provider.get(ResourceKind.LOCAL_LIBVIRT.value)
-    return section if isinstance(section, Mapping) else {}
-
-
 def install_method_for(system: System) -> CaptureMethod:
     """Resolve the capture method the System is provisioned for."""
-    section = _local_libvirt_section(system.provisioning_profile)
-    crashkernel = section.get("crashkernel")
-    if isinstance(crashkernel, str) and crashkernel.strip():
-        return CaptureMethod.KDUMP
-    debug = section.get("debug")
-    debug = debug if isinstance(debug, Mapping) else {}
-    if debug.get("gdbstub") is True:
-        return CaptureMethod.GDBSTUB
-    if debug.get("preserve_on_crash") is True:
-        return CaptureMethod.HOST_DUMP
-    return CaptureMethod.CONSOLE
+    return capture_method(system.provisioning_profile)

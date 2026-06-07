@@ -8,6 +8,11 @@ from kdive.profiles.provisioning import (
     LibvirtProfile,
     ProviderSection,
     ProvisioningProfile,
+    capture_method,
+    destructive_opt_in,
+    profile_digest,
+    reject_rootfs_upload_without_window,
+    rootfs_upload_window_allowed,
 )
 
 __all__ = [
@@ -18,4 +23,9 @@ __all__ = [
     "ProviderSection",
     "ProvisioningProfile",
     "ServerBuildProfile",
+    "capture_method",
+    "destructive_opt_in",
+    "profile_digest",
+    "reject_rootfs_upload_without_window",
+    "rootfs_upload_window_allowed",
 ]

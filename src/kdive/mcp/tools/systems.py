@@ -46,9 +46,13 @@ from kdive.mcp.tools._common import (
     stale_handle as _stale_handle,
 )
 from kdive.planes.systems import TERMINAL_SYSTEM as _TERMINAL_SYSTEM
-from kdive.profiles.provisioning import ProvisioningProfile, profile_digest
+from kdive.profiles.provisioning import (
+    ProvisioningProfile,
+    destructive_opt_in,
+    profile_digest,
+    reject_rootfs_upload_without_window,
+)
 from kdive.providers.composition import (
-    reject_rootfs_without_upload_window,
     validate_profile,
 )
 from kdive.security import audit
@@ -277,7 +281,7 @@ async def _create_provisioning_system(
 ) -> ToolResponse:
     """Create a new provisioning System, activate its Allocation, and enqueue provision."""
     try:
-        reject_rootfs_without_upload_window(profile.provider.local_libvirt.rootfs)
+        reject_rootfs_upload_without_window(profile)
     except CategorizedError as exc:
         return ToolResponse.failure(str(alloc.id), exc.category)
     if alloc.state is not AllocationState.GRANTED:
@@ -451,7 +455,7 @@ async def _define_locked(
 
 def _reprovision_opt_in(profile: ProvisioningProfile) -> bool:
     """Resolve the gate's profile opt-in factor from the target profile (ADR-0038 §3)."""
-    return _REPROVISION in profile.provider.local_libvirt.destructive_ops
+    return destructive_opt_in(profile, _REPROVISION)
 
 
 async def _has_live_run(conn: AsyncConnection, system_id: UUID) -> bool:
@@ -481,7 +485,7 @@ async def reprovision_system(
     try:
         parsed = ProvisioningProfile.parse(profile)
         validate_profile(parsed)
-        reject_rootfs_without_upload_window(parsed.provider.local_libvirt.rootfs)
+        reject_rootfs_upload_without_window(parsed)
     except CategorizedError as exc:
         return ToolResponse.failure(system_id, exc.category)
     with bind_context(principal=ctx.principal):

@@ -31,6 +31,7 @@ from pydantic import (
     field_validator,
 )
 
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
 
@@ -200,3 +201,56 @@ def profile_digest(profile: ProvisioningProfile) -> str:
     """
     canonical = json.dumps(profile.model_dump(by_alias=True), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _parsed_profile(profile: ProvisioningProfile | Mapping[str, object]) -> ProvisioningProfile:
+    if isinstance(profile, ProvisioningProfile):
+        return profile
+    return ProvisioningProfile.parse(profile)
+
+
+def rootfs_upload_window_allowed(profile: ProvisioningProfile) -> bool:
+    """Return whether the profile's rootfs expects a System upload window."""
+    return profile.provider.local_libvirt.rootfs.kind == "upload"
+
+
+def reject_rootfs_upload_without_window(profile: ProvisioningProfile) -> None:
+    """Reject a profile whose rootfs needs a System upload window in a no-window lane.
+
+    ``systems.define`` opens the window for a System-owned rootfs upload. Direct provision and
+    reprovision do not, so accepting an upload-kind rootfs there would enqueue work that cannot
+    commit its disk artifact.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` when the profile needs an upload window.
+    """
+    if rootfs_upload_window_allowed(profile):
+        raise CategorizedError(
+            "upload-kind rootfs requires systems.define upload window",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+
+
+def destructive_opt_in(profile: ProvisioningProfile, op: str) -> bool:
+    """Return whether the profile opts into a destructive operation."""
+    return op in profile.provider.local_libvirt.destructive_ops
+
+
+def capture_method(profile: ProvisioningProfile | Mapping[str, object]) -> CaptureMethod:
+    """Resolve the crash-capture method a provisioning profile enables.
+
+    Stored legacy rows may contain malformed profile mappings. Those are treated as the
+    baseline console method, matching the previous tolerant read path.
+    """
+    try:
+        parsed = _parsed_profile(profile)
+    except CategorizedError:
+        return CaptureMethod.CONSOLE
+    section = parsed.provider.local_libvirt
+    if section.crashkernel is not None:
+        return CaptureMethod.KDUMP
+    if section.debug.gdbstub:
+        return CaptureMethod.GDBSTUB
+    if section.debug.preserve_on_crash:
+        return CaptureMethod.HOST_DUMP
+    return CaptureMethod.CONSOLE

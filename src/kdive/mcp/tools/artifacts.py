@@ -34,7 +34,7 @@ from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
-from kdive.profiles.provisioning import ProvisioningProfile
+from kdive.profiles.provisioning import ProvisioningProfile, rootfs_upload_window_allowed
 from kdive.security.rbac import Role, require_role
 from kdive.store.objectstore import (
     PresignedUpload,
@@ -147,7 +147,7 @@ async def _owner_accepts_upload(conn: AsyncConnection, kind: str, owner_id: UUID
     if system is None or system.state is not SystemState.DEFINED:
         return False
     parsed = ProvisioningProfile.parse(system.provisioning_profile)
-    return parsed.provider.local_libvirt.rootfs.kind == "upload"
+    return rootfs_upload_window_allowed(parsed)
 
 
 async def _owner_project(conn: AsyncConnection, kind: str, owner_id: UUID) -> str | None:

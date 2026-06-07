@@ -8,8 +8,17 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.profiles.provisioning import BootMethod, ProvisioningProfile, profile_digest
+from kdive.profiles.provisioning import (
+    BootMethod,
+    ProvisioningProfile,
+    capture_method,
+    destructive_opt_in,
+    profile_digest,
+    reject_rootfs_upload_without_window,
+    rootfs_upload_window_allowed,
+)
 
 _VALID: dict[str, Any] = {
     "schema_version": 1,
@@ -292,6 +301,9 @@ def test_public_names_exported_from_package() -> None:
     assert profiles.BootMethod is BootMethod
     assert hasattr(profiles, "LibvirtProfile")
     assert hasattr(profiles, "ProviderSection")
+    assert profiles.capture_method is capture_method
+    assert profiles.destructive_opt_in is destructive_opt_in
+    assert profiles.rootfs_upload_window_allowed is rootfs_upload_window_allowed
 
 
 def test_destructive_ops_defaults_empty() -> None:
@@ -304,6 +316,15 @@ def test_destructive_ops_accepts_force_crash() -> None:
     data["provider"]["local-libvirt"]["destructive_ops"] = ["force_crash"]
     profile = ProvisioningProfile.parse(data)
     assert profile.provider.local_libvirt.destructive_ops == ["force_crash"]
+
+
+def test_destructive_opt_in_reports_profile_gate() -> None:
+    data = _valid()
+    data["provider"]["local-libvirt"]["destructive_ops"] = ["force_crash"]
+    profile = ProvisioningProfile.parse(data)
+
+    assert destructive_opt_in(profile, "force_crash") is True
+    assert destructive_opt_in(profile, "reprovision") is False
 
 
 def test_destructive_ops_rejects_blank_entry() -> None:
@@ -330,6 +351,29 @@ def test_debug_flags_parse_when_present() -> None:
     assert profile.provider.local_libvirt.debug.gdbstub is True
 
 
+@pytest.mark.parametrize(
+    ("section", "expected"),
+    [
+        ({"crashkernel": "256M"}, CaptureMethod.KDUMP),
+        ({"debug": {"gdbstub": True}}, CaptureMethod.GDBSTUB),
+        ({"debug": {"preserve_on_crash": True}}, CaptureMethod.HOST_DUMP),
+        ({}, CaptureMethod.CONSOLE),
+    ],
+)
+def test_capture_method_reports_profile_capture_tier(
+    section: dict[str, Any], expected: CaptureMethod
+) -> None:
+    data = _valid()
+    data["provider"]["local-libvirt"].pop("crashkernel")
+    data["provider"]["local-libvirt"].update(section)
+
+    assert capture_method(ProvisioningProfile.parse(data)) is expected
+
+
+def test_capture_method_tolerates_malformed_stored_mapping() -> None:
+    assert capture_method({"schema_version": 1}) is CaptureMethod.CONSOLE
+
+
 def test_debug_block_rejects_unknown_key() -> None:
     data = _valid()
     data["provider"]["local-libvirt"]["debug"] = {"bogus": True}
@@ -343,3 +387,21 @@ def test_crashkernel_is_optional() -> None:
     del data["provider"]["local-libvirt"]["crashkernel"]
     profile = ProvisioningProfile.parse(data)
     assert profile.provider.local_libvirt.crashkernel is None
+
+
+def test_rootfs_upload_window_helpers_report_and_reject_upload_profiles() -> None:
+    data = _valid()
+    data["provider"]["local-libvirt"]["rootfs"] = {"kind": "upload"}
+    profile = ProvisioningProfile.parse(data)
+
+    assert rootfs_upload_window_allowed(profile) is True
+    with pytest.raises(CategorizedError) as exc:
+        reject_rootfs_upload_without_window(profile)
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_rootfs_upload_window_helpers_allow_non_upload_profiles() -> None:
+    profile = ProvisioningProfile.parse(_valid())
+
+    assert rootfs_upload_window_allowed(profile) is False
+    reject_rootfs_upload_without_window(profile)
