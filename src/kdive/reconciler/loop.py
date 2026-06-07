@@ -30,6 +30,7 @@ from kdive.db.repositories import ALLOCATIONS
 from kdive.domain.models import JobKind
 from kdive.domain.state import AllocationState
 from kdive.jobs import queue
+from kdive.jobs.payloads import PayloadValidationError, run_id_from_payload
 from kdive.security import audit
 from kdive.services import accounting
 
@@ -298,18 +299,27 @@ async def _repair_abandoned_jobs(conn: AsyncConnection) -> int:
         async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 "UPDATE jobs SET state = 'failed', error_category = 'lease_expired' "
-                "WHERE id = %s AND state = 'running' RETURNING payload",
+                "WHERE id = %s AND state = 'running' RETURNING kind, payload",
                 (job_id,),
             )
             row = await cur.fetchone()
             if row is None:  # fence missed: a worker finalized it first
                 continue
-            run_id = row["payload"].get("run_id")
+            try:
+                run_id = run_id_from_payload(JobKind(row["kind"]), row["payload"])
+            except PayloadValidationError as exc:
+                _log.warning(
+                    "reconciler: abandoned job %s has invalid payload; "
+                    "skipping Run compensation: %s",
+                    job_id,
+                    exc,
+                )
+                run_id = None
             if run_id is not None:
                 await cur.execute(
                     "UPDATE runs SET state = 'failed', failure_category = 'lease_expired' "
                     "WHERE id = %s AND state IN ('created', 'running')",
-                    (UUID(run_id),),
+                    (run_id,),
                 )
         swept += 1
         _log.info("reconciler: abandoned job %s -> failed (lease_expired)", job_id)

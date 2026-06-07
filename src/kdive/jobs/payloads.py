@@ -98,6 +98,11 @@ _PAYLOAD_MODELS: dict[JobKind, _PayloadModel] = {
     JobKind.POWER: PowerPayload,
     JobKind.CAPTURE_VMCORE: CaptureVmcorePayload,
 }
+_RUN_PAYLOAD_MODELS: dict[JobKind, type[RunPayload]] = {
+    JobKind.BUILD: BuildPayload,
+    JobKind.INSTALL: RunPayload,
+    JobKind.BOOT: RunPayload,
+}
 
 
 def _validation_error(label: str, exc: ValidationError) -> PayloadValidationError:
@@ -146,3 +151,14 @@ def load_payload[T: PayloadModel](job: Job, model_class: type[T]) -> T:
         return model_class.model_validate(job.payload)
     except ValidationError as exc:
         raise _validation_error(f"{job.kind.value} payload", exc) from exc
+
+
+def run_id_from_payload(kind: JobKind, payload: dict[str, Any]) -> UUID | None:
+    """Return the payload's Run id for run-bearing job kinds, otherwise ``None``."""
+    model_class = _RUN_PAYLOAD_MODELS.get(kind)
+    if model_class is None:
+        return None
+    try:
+        return UUID(model_class.model_validate(payload).run_id)
+    except ValidationError as exc:
+        raise _validation_error(f"{kind.value} payload", exc) from exc

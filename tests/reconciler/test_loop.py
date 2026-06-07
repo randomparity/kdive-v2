@@ -205,6 +205,37 @@ def test_zombie_without_run_id_leaves_runs_untouched(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_zombie_with_malformed_run_payload_still_dead_letters_job(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed)
+            run_id = await seed_run(seed, system_id, run_state=RunState.RUNNING)
+            job_id = await seed_running_job(
+                seed,
+                "dk-bad-run-zombie",
+                payload={"run_id": "not-a-uuid"},
+                lease_seconds=-60,
+                attempt=3,
+                max_attempts=3,
+            )
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, loop._repair_abandoned_jobs)
+        assert count == 1
+        async with await connect(migrated_url) as check:
+            cur = await check.execute(
+                "SELECT state, error_category FROM jobs WHERE id = %s", (job_id,)
+            )
+            job = await cur.fetchone()
+            assert job is not None
+            assert job[0] == "failed"
+            assert job[1] == "lease_expired"
+            cur = await check.execute("SELECT state FROM runs WHERE id = %s", (run_id,))
+            run = await cur.fetchone()
+            assert run is not None and run[0] == "running"
+
+    asyncio.run(_run())
+
+
 def test_live_lease_and_attempts_remaining_not_swept(migrated_url: str) -> None:
     async def _run() -> None:
         async with await connect(migrated_url) as seed:

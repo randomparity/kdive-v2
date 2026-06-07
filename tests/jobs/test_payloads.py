@@ -19,6 +19,7 @@ from kdive.jobs.payloads import (
     dump_authorizing,
     dump_payload,
     load_payload,
+    run_id_from_payload,
 )
 
 
@@ -48,6 +49,23 @@ def test_build_payload_round_trips_with_optional_cmdline() -> None:
 def test_payload_validation_rejects_wrong_shape_for_kind() -> None:
     with pytest.raises(PayloadValidationError, match="invalid build payload"):
         dump_payload(JobKind.BUILD, {"system_id": str(uuid4())})
+
+
+def test_run_id_from_payload_returns_uuid_for_run_jobs() -> None:
+    run_id = uuid4()
+
+    assert run_id_from_payload(JobKind.BUILD, {"run_id": str(run_id)}) == run_id
+    assert run_id_from_payload(JobKind.INSTALL, {"run_id": str(run_id)}) == run_id
+    assert run_id_from_payload(JobKind.BOOT, {"run_id": str(run_id)}) == run_id
+
+
+def test_run_id_from_payload_returns_none_for_system_jobs() -> None:
+    assert run_id_from_payload(JobKind.PROVISION, {"system_id": str(uuid4())}) is None
+
+
+def test_run_id_from_payload_rejects_malformed_run_jobs() -> None:
+    with pytest.raises(PayloadValidationError, match="invalid build payload"):
+        run_id_from_payload(JobKind.BUILD, {"run_id": "not-a-uuid"})
 
 
 def test_reprovision_payload_includes_profile_digest() -> None:
