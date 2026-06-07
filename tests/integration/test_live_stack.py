@@ -371,7 +371,7 @@ def _provision_profile() -> dict[str, object]:
         "kernel_source_ref": os.environ[_KERNEL_TREE_ENV],
         "provider": {
             "local-libvirt": {
-                "rootfs": {"kind": "path", "path": os.environ[_GUEST_IMAGE_ENV]},
+                "rootfs": {"kind": "local", "path": os.environ[_GUEST_IMAGE_ENV]},
                 "crashkernel": "256M",
                 "destructive_ops": ["force_crash"],
             }

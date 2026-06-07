@@ -61,7 +61,7 @@ def _local_component_sources() -> ComponentSourceCapabilities:
     return ComponentSourceCapabilities(
         provider=ResourceKind.LOCAL_LIBVIRT.value,
         accepted_component_sources={
-            "rootfs": frozenset({"local"}),
+            "rootfs": frozenset({"catalog", "local"}),
             "kernel": frozenset({"local"}),
             "initrd": frozenset({"local"}),
             "config": frozenset({"local"}),

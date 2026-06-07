@@ -6,8 +6,9 @@ from uuid import uuid4
 
 import pytest
 
+from kdive.components.references import ArtifactComponentRef, CatalogComponentRef, LocalComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.profiles.provisioning import _CatalogRootfs, _PathRootfs, _UploadRootfs, _UrlRootfs
+from kdive.profiles.provisioning import _UploadRootfs
 from kdive.providers.local_libvirt.provisioning import (
     reject_rootfs_without_upload_window,
     resolve_rootfs_path,
@@ -18,7 +19,7 @@ _SID = uuid4()
 
 
 def test_path_passthrough() -> None:
-    r = _PathRootfs(kind="path", path="/img/x.qcow2")
+    r = LocalComponentRef(kind="local", path="/img/x.qcow2")
     assert resolve_rootfs_path(r, tenant="local", system_id=_SID) == "/img/x.qcow2"
 
 
@@ -27,15 +28,15 @@ def test_upload_uses_system_keyed_path() -> None:
     assert str(_SID) in resolve_rootfs_path(r, tenant="local", system_id=_SID)
 
 
-def test_url_bad_checksum_rejected() -> None:
-    r = _UrlRootfs(kind="url", url="https://h/i.qcow2", sha256="deadbeef")
+def test_artifact_without_sha256_rejected() -> None:
+    r = ArtifactComponentRef(kind="artifact", artifact_id=uuid4())
     with pytest.raises(CategorizedError) as e:
         resolve_rootfs_path(r, tenant="local", system_id=_SID)
     assert e.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
 def test_unknown_catalog_rejected() -> None:
-    r = _CatalogRootfs(kind="catalog", name="no-such")
+    r = CatalogComponentRef(kind="catalog", provider="local-libvirt", name="no-such")
     with pytest.raises(CategorizedError) as e:
         resolve_rootfs_path(r, tenant="local", system_id=_SID)
     assert e.value.category is ErrorCategory.CONFIGURATION_ERROR
@@ -56,16 +57,18 @@ def test_reject_rootfs_without_upload_window_rejects_upload() -> None:
 
 
 def test_reject_rootfs_without_upload_window_allows_path() -> None:
-    reject_rootfs_without_upload_window(_PathRootfs(kind="path", path="/img/x.qcow2"))  # no raise
+    reject_rootfs_without_upload_window(
+        LocalComponentRef(kind="local", path="/img/x.qcow2")
+    )  # no raise
 
 
-def test_validate_rootfs_reference_rejects_bad_url_checksum_at_tool_boundary() -> None:
-    with pytest.raises(CategorizedError) as e:
-        validate_rootfs_reference(_UrlRootfs(kind="url", url="https://h/i.qcow2", sha256="nope"))
-    assert e.value.category is ErrorCategory.CONFIGURATION_ERROR
+def test_validate_rootfs_reference_accepts_local_at_tool_boundary() -> None:
+    validate_rootfs_reference(LocalComponentRef(kind="local", path="/img/x.qcow2"))
 
 
 def test_validate_rootfs_reference_rejects_unknown_catalog_at_tool_boundary() -> None:
     with pytest.raises(CategorizedError) as e:
-        validate_rootfs_reference(_CatalogRootfs(kind="catalog", name="no-such"))
+        validate_rootfs_reference(
+            CatalogComponentRef(kind="catalog", provider="local-libvirt", name="no-such")
+        )
     assert e.value.category is ErrorCategory.CONFIGURATION_ERROR

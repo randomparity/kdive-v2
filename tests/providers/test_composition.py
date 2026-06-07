@@ -157,7 +157,7 @@ def test_default_runtime_advertises_implemented_component_sources_only() -> None
 
     assert runtime.component_sources.provider == "local-libvirt"
     assert runtime.component_sources.accepted_component_sources == {
-        "rootfs": frozenset({"local"}),
+        "rootfs": frozenset({"catalog", "local"}),
         "kernel": frozenset({"local"}),
         "initrd": frozenset({"local"}),
         "config": frozenset({"local"}),

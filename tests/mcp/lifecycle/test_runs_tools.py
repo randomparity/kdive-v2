@@ -2033,7 +2033,7 @@ def _profile_dump(**local_libvirt: Any) -> dict[str, Any]:
     """A real ProvisioningProfile.model_dump(by_alias=True) — pins the 'local-libvirt' alias."""
     from kdive.profiles.provisioning import ProvisioningProfile
 
-    section: dict[str, Any] = {"rootfs": {"kind": "path", "path": "/img"}}
+    section: dict[str, Any] = {"rootfs": {"kind": "local", "path": "/img"}}
     section.update(local_libvirt)
     return ProvisioningProfile.model_validate(
         {

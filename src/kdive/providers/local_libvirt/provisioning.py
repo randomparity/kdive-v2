@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import subprocess  # noqa: S404 - qemu-img is invoked with a fixed argv, no shell
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
@@ -27,19 +26,22 @@ from uuid import UUID
 
 import libvirt
 
+from kdive.components.catalog import DEFAULT_FIXTURE_CATALOG_PATH, load_fixture_catalog
+from kdive.components.references import ArtifactComponentRef, LocalComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import (
     ProvisioningProfile,
     RootfsSource,
+    _UploadRootfs,
     validate_profile,
 )
 from kdive.profiles.provisioning import (
     validate_rootfs_reference as validate_rootfs_reference,
 )
 from kdive.providers.local_libvirt.discovery import _KDIVE_METADATA_NS
+from kdive.providers.local_libvirt.materialize import materialize_rootfs_base
 from kdive.providers.ports import Provisioner as Provisioner
 from kdive.providers.runtime_paths import console_log_path, domain_name_for
-from kdive.rootfs.catalog import load_catalog
 
 _log = logging.getLogger(__name__)
 
@@ -47,8 +49,8 @@ _URI_ENV = "KDIVE_LIBVIRT_URI"
 _DEFAULT_URI = "qemu:///system"
 _DEFAULT_MACHINE = "q35"
 _ROOTFS_DIR = "/var/lib/kdive/rootfs"
+_ROOTFS_CACHE_DIR = f"{_ROOTFS_DIR}/cache"
 _QEMU_IMG_TIMEOUT_S = 5 * 60
-_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 
 
 def overlay_path(system_id: UUID | str) -> str:
@@ -101,37 +103,45 @@ def _close(conn: _LibvirtConn) -> None:
 def resolve_rootfs_path(rootfs: RootfsSource, *, tenant: str, system_id: UUID) -> str:
     """Resolve a rootfs source to the libvirt-readable disk path (ADR-0048 §5).
 
-    ``path`` is the declared file; ``upload`` is the System-owned object's local staging
-    path; ``url``/``catalog`` resolve to a content-/name-addressed staging path under the
-    rootfs dir (fetch lands in the next spec). The reference is validated here; existence
-    of an unfetched image is the next spec's concern.
+    ``local`` is the declared provider-visible file; ``upload`` is the System-owned object's
+    local staging path; ``artifact`` and ``catalog`` resolve to provider-owned staging paths.
+    Full provider-root validation and artifact download happen in ``materialize_rootfs_base``.
 
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` for a malformed url checksum or unknown
             catalog name.
     """
-    if rootfs.kind == "path":
+    if isinstance(rootfs, LocalComponentRef):
         return rootfs.path
-    if rootfs.kind == "upload":
+    if isinstance(rootfs, _UploadRootfs):
         # The System-owned uploaded object's local staging path. The object is committed
         # (its artifacts row written) at provisioning->ready by _commit_uploaded_rootfs;
         # staging the bytes down to this path is the install/boot spec's concern (ADR-0048 §7).
         return f"{_ROOTFS_DIR}/{tenant}-systems-{system_id}-rootfs.qcow2"
-    if rootfs.kind == "url":
-        if not _SHA256.match(rootfs.sha256):
+    if isinstance(rootfs, ArtifactComponentRef):
+        if rootfs.sha256 is None:
             raise CategorizedError(
-                "rootfs url sha256 must be 'sha256:<64-hex>'",
+                "artifact rootfs requires sha256 for provider cache selection",
                 category=ErrorCategory.CONFIGURATION_ERROR,
             )
-        return f"{_ROOTFS_DIR}/url-{rootfs.sha256.removeprefix('sha256:')}.qcow2"
-    entry = load_catalog().lookup(rootfs.name)
+        return f"{_ROOTFS_CACHE_DIR}/sha256/{rootfs.sha256.removeprefix('sha256:')}.qcow2"
+    entry = load_fixture_catalog(DEFAULT_FIXTURE_CATALOG_PATH).rootfs_entry(
+        rootfs.provider, rootfs.name
+    )
     if entry is None:
         raise CategorizedError(
             f"unknown rootfs catalog name: {rootfs.name}",
             category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"name": rootfs.name},
+            details={"provider": rootfs.provider, "name": rootfs.name},
         )
-    return f"{_ROOTFS_DIR}/{entry.name}.qcow2"
+    if isinstance(entry.source, LocalComponentRef):
+        return entry.source.path
+    if isinstance(entry.source, ArtifactComponentRef) and entry.source.sha256 is not None:
+        return f"{_ROOTFS_CACHE_DIR}/sha256/{entry.source.sha256.removeprefix('sha256:')}.qcow2"
+    raise CategorizedError(
+        "artifact-backed rootfs materialization is not wired yet",
+        category=ErrorCategory.MISSING_DEPENDENCY,
+    )
 
 
 def reject_rootfs_without_upload_window(rootfs: RootfsSource) -> None:
@@ -147,10 +157,10 @@ def reject_rootfs_without_upload_window(rootfs: RootfsSource) -> None:
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` for an ``upload`` rootfs.
     """
-    if rootfs.kind == "upload":
+    if isinstance(rootfs, _UploadRootfs):
         raise CategorizedError(
             "rootfs 'upload' kind requires systems.define + artifacts.create_system_upload first; "
-            "use 'path', 'url', or 'catalog' for a one-step provision",
+            "use 'local', 'artifact', or 'catalog' for a one-step provision",
             category=ErrorCategory.CONFIGURATION_ERROR,
         )
 
@@ -284,6 +294,7 @@ def _real_overlay_exists(overlay: str) -> bool:
 type MakeOverlay = Callable[[str, str], None]
 type RemoveOverlay = Callable[[str], None]
 type OverlayExists = Callable[[str], bool]
+type MaterializeRootfs = Callable[[RootfsSource, UUID], str]
 
 
 class LocalLibvirtProvisioning:
@@ -296,11 +307,17 @@ class LocalLibvirtProvisioning:
         make_overlay: MakeOverlay = _real_make_overlay,
         remove_overlay: RemoveOverlay = _real_remove_overlay,
         overlay_exists: OverlayExists = _real_overlay_exists,
+        allowed_roots: list[Path] | None = None,
+        cache_dir: Path = Path(_ROOTFS_CACHE_DIR),
+        materialize_rootfs: MaterializeRootfs | None = None,
     ) -> None:
         self._connect = connect
         self._make_overlay = make_overlay
         self._remove_overlay = remove_overlay
         self._overlay_exists = overlay_exists
+        self._allowed_roots = allowed_roots or [Path(_ROOTFS_DIR)]
+        self._cache_dir = cache_dir
+        self._materialize_rootfs = materialize_rootfs or self._materialize_rootfs_base
 
     @classmethod
     def from_env(cls) -> LocalLibvirtProvisioning:
@@ -323,9 +340,7 @@ class LocalLibvirtProvisioning:
         Raises:
             CategorizedError: ``PROVISIONING_FAILURE`` on any other libvirt error.
         """
-        base = resolve_rootfs_path(
-            profile.provider.local_libvirt.rootfs, tenant="local", system_id=system_id
-        )
+        base = self._materialize_rootfs(profile.provider.local_libvirt.rootfs, system_id)
         overlay = overlay_path(system_id)
         xml = render_domain_xml(system_id, profile, disk_path=overlay)  # validates the profile
         created_overlay = not self._overlay_exists(overlay)
@@ -394,6 +409,20 @@ class LocalLibvirtProvisioning:
         """
         self._teardown_domain(domain_name)
         self._remove_overlay(overlay_path(domain_name.removeprefix("kdive-")))
+
+    def _materialize_rootfs_base(self, rootfs: RootfsSource, system_id: UUID) -> str:
+        if isinstance(rootfs, _UploadRootfs):
+            return resolve_rootfs_path(rootfs, tenant="local", system_id=system_id)
+        return str(
+            materialize_rootfs_base(
+                rootfs,
+                allowed_roots=self._allowed_roots,
+                cache_dir=self._cache_dir,
+                project="local",
+                component_store=None,
+                object_store=None,
+            )
+        )
 
     def _teardown_domain(self, domain_name: str) -> None:
         """Destroy and undefine the domain; idempotent over an already-absent domain.

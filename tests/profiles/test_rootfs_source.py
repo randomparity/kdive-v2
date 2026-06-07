@@ -1,4 +1,4 @@
-"""Discriminated rootfs source on the libvirt profile (ADR-0048 §3)."""
+"""Discriminated rootfs source on the libvirt profile (ADR-0065)."""
 
 from __future__ import annotations
 
@@ -21,25 +21,31 @@ def _profile(rootfs: dict) -> dict:
     }
 
 
-def test_path_kind_parses() -> None:
+def test_local_kind_parses() -> None:
     parsed = ProvisioningProfile.parse(
-        _profile({"kind": "path", "path": "/var/lib/kdive/rootfs/x.qcow2"})
+        _profile({"kind": "local", "path": "/var/lib/kdive/rootfs/x.qcow2"})
     )
-    assert parsed.provider.local_libvirt.rootfs.kind == "path"
+    assert parsed.provider.local_libvirt.rootfs.kind == "local"
 
 
 def test_catalog_kind_parses() -> None:
     parsed = ProvisioningProfile.parse(
-        _profile({"kind": "catalog", "name": "fedora-cloud-base-43-x86_64"})
+        _profile(
+            {
+                "kind": "catalog",
+                "provider": "local-libvirt",
+                "name": "fedora-kdive-ready-43",
+            }
+        )
     )
     rootfs = parsed.provider.local_libvirt.rootfs
     assert rootfs.kind == "catalog"
-    assert rootfs.name == "fedora-cloud-base-43-x86_64"
+    assert rootfs.name == "fedora-kdive-ready-43"
 
 
-def test_url_kind_requires_sha256() -> None:
+def test_artifact_kind_requires_uuid() -> None:
     with pytest.raises(CategorizedError) as e:
-        ProvisioningProfile.parse(_profile({"kind": "url", "url": "https://h/i.qcow2"}))
+        ProvisioningProfile.parse(_profile({"kind": "artifact", "artifact_id": "not-a-uuid"}))
     assert e.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 

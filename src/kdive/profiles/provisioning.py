@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -31,17 +30,17 @@ from pydantic import (
     ValidationError,
 )
 
+from kdive.components.catalog import load_fixture_catalog
+from kdive.components.references import ArtifactComponentRef, CatalogComponentRef, LocalComponentRef
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
 from kdive.profiles._schema import schema_version_validator
-from kdive.rootfs.catalog import load_catalog
 
 type NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 """A string that is non-empty after whitespace stripping; blank values fail validation."""
 
 SUPPORTED_DOMAIN_XML_PARAMS = frozenset({"machine"})
-_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 
 
 class BootMethod(StrEnum):
@@ -56,33 +55,17 @@ class _ProfileBase(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class _PathRootfs(_ProfileBase):
-    kind: Literal["path"]
-    path: NonEmptyStr
-
-
 class _UploadRootfs(_ProfileBase):
     # A System-owned uploaded qcow2; opened by systems.define + artifacts.create_system_upload and
     # committed at provisioning->ready (ADR-0048 §5, #111). path/url/catalog are alternatives.
     kind: Literal["upload"]
 
 
-class _UrlRootfs(_ProfileBase):
-    kind: Literal["url"]
-    url: NonEmptyStr
-    sha256: NonEmptyStr  # 'sha256:<64-hex>'; format checked at resolve
-
-
-class _CatalogRootfs(_ProfileBase):
-    kind: Literal["catalog"]
-    name: NonEmptyStr
-
-
 type RootfsSource = Annotated[
-    _PathRootfs | _UploadRootfs | _UrlRootfs | _CatalogRootfs,
+    LocalComponentRef | ArtifactComponentRef | CatalogComponentRef | _UploadRootfs,
     Field(discriminator="kind"),
 ]
-"""A discriminated rootfs source (ADR-0048 §3); ``kind`` selects the variant."""
+"""A discriminated rootfs source (ADR-0065); ``upload`` remains System-owned."""
 
 
 class LibvirtDebugOptions(_ProfileBase):
@@ -226,16 +209,13 @@ def reject_rootfs_upload_without_window(profile: ProvisioningProfile) -> None:
 
 def validate_rootfs_reference(rootfs: RootfsSource) -> None:
     """Validate a rootfs reference's static resolvability."""
-    if rootfs.kind == "url" and not _SHA256.match(rootfs.sha256):
-        raise CategorizedError(
-            "rootfs url sha256 must be 'sha256:<64-hex>'",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    if rootfs.kind == "catalog" and load_catalog().lookup(rootfs.name) is None:
+    if isinstance(rootfs, CatalogComponentRef) and (
+        load_fixture_catalog().rootfs_entry(rootfs.provider, rootfs.name) is None
+    ):
         raise CategorizedError(
             f"unknown rootfs catalog name: {rootfs.name}",
             category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"name": rootfs.name},
+            details={"provider": rootfs.provider, "name": rootfs.name},
         )
 
 

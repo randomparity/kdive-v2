@@ -32,8 +32,8 @@ _VALID: dict[str, Any] = {
         "local-libvirt": {
             "domain_xml_params": {"machine": "pc-q35-9.0"},
             "rootfs": {
-                "kind": "path",
-                "path": "oci://registry.internal/rootfs/fedora-40@sha256:abc123",
+                "kind": "local",
+                "path": "/var/lib/kdive/rootfs/fedora-40.qcow2",
             },
             "crashkernel": "256M",
         }
@@ -58,8 +58,8 @@ def test_valid_libvirt_profile_parses() -> None:
     assert profile.kernel_source_ref.startswith("git+https://")
     assert profile.provider.local_libvirt.domain_xml_params == {"machine": "pc-q35-9.0"}
     rootfs = profile.provider.local_libvirt.rootfs
-    assert rootfs.kind == "path"
-    assert rootfs.path.startswith("oci://")
+    assert rootfs.kind == "local"
+    assert rootfs.path == "/var/lib/kdive/rootfs/fedora-40.qcow2"
 
 
 def test_crashkernel_is_present() -> None:
@@ -206,9 +206,9 @@ def test_blank_crashkernel_rejected(value: str) -> None:
 
 @pytest.mark.parametrize("value", ["", "   "])
 def test_blank_rootfs_path_rejected(value: str) -> None:
-    # A path-kind rootfs with a blank file path is as malformed as a blank string field was.
+    # A local-kind rootfs with a blank file path is as malformed as a blank string field was.
     data = _valid()
-    data["provider"]["local-libvirt"]["rootfs"] = {"kind": "path", "path": value}
+    data["provider"]["local-libvirt"]["rootfs"] = {"kind": "local", "path": value}
     _expect_configuration_error(data)
 
 
