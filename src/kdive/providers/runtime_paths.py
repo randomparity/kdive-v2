@@ -9,12 +9,10 @@ _CONSOLE_DIR = "/var/lib/kdive/console"
 
 
 def domain_name_for(system_id: UUID) -> str:
-    """Return the deterministic provider domain name for a System."""
     return f"kdive-{system_id}"
 
 
 def console_log_path(system_id: UUID) -> Path:
-    """Return the deterministic host path for a System's serial console log."""
     return Path(_CONSOLE_DIR) / f"{system_id}.log"
 
 

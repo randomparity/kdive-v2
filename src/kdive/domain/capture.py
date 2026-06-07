@@ -6,8 +6,6 @@ from enum import StrEnum
 
 
 class CaptureMethod(StrEnum):
-    """A capture verb; each provider maps it to a mechanism (or rejects it)."""
-
     CONSOLE = "console"
     HOST_DUMP = "host_dump"
     GDBSTUB = "gdbstub"

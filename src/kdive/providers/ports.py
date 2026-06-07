@@ -26,47 +26,35 @@ _TRANSPORT_KINDS = frozenset({"gdbstub", "ssh"})
 
 
 class BuildOutput(NamedTuple):
-    """A build result: object-store keys plus the kernel GNU build-id."""
-
     kernel_ref: str
     debuginfo_ref: str
     build_id: str
 
 
 class ValidatedUpload(NamedTuple):
-    """External build validation result plus per-object HEAD metadata."""
-
     output: BuildOutput
     heads: dict[str, HeadResult]
 
 
 class CaptureOutput(NamedTuple):
-    """A capture result: raw/redacted artifacts plus the vmcore GNU build-id."""
-
     raw: StoredArtifact
     redacted: StoredArtifact
     vmcore_build_id: str
 
 
 class CrashResult(NamedTuple):
-    """A raw `crash` subprocess result: exit status and captured streams."""
-
     exit_status: int
     stdout: bytes
     stderr: bytes
 
 
 class CrashOutput(NamedTuple):
-    """A parsed, redacted crash batch result."""
-
     results: dict[str, object]
     transcript: str
     truncated: bool
 
 
 class IntrospectOutput(NamedTuple):
-    """A redacted, size-bounded introspection report."""
-
     tasks: dict[str, object]
     modules: dict[str, object]
     sysinfo: dict[str, object]
