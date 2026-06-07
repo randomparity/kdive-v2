@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -16,20 +15,10 @@ from kdive.domain.models import Job, Run, System
 from kdive.domain.state import RunState
 from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.profiles.provisioning import capture_method
-from kdive.providers.runtime_paths import console_log_path as _console_log_path
-from kdive.providers.runtime_paths import read_console_log as _read_console_log
 from kdive.security import audit
 
 _REQUIRED_BASE_CMDLINE = "console=ttyS0 root=/dev/vda"
 _KDUMP_CRASHKERNEL = "crashkernel=256M"
-
-
-def console_log_path(system_id: UUID) -> Path:
-    return _console_log_path(system_id)
-
-
-def read_console_log(path: Path) -> bytes:
-    return _read_console_log(path)
 
 
 async def existing_build_result(conn: AsyncConnection, run_id: UUID) -> dict[str, Any] | None:

@@ -22,16 +22,15 @@ from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
 from kdive.planes.runs_shared import (
     cmdline_for,
-    console_log_path,
     existing_build_result,
     finalize_build,
     install_method_for,
     installed_initrd_ref,
-    read_console_log,
 )
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 from kdive.providers.ports import Booter, Builder, BuildOutput, Installer
+from kdive.providers.runtime_paths import console_log_path, read_console_log
 from kdive.security import audit
 from kdive.security.redaction import Redactor
 from kdive.store.objectstore import (
