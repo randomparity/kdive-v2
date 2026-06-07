@@ -49,7 +49,7 @@ from kdive.providers.local_libvirt.discovery import (
 )
 from kdive.providers.ports import PowerAction
 from kdive.security.rbac import AuthorizationError, Role
-from tests.providers.local_libvirt.conftest import FakeLibvirtConn
+from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 

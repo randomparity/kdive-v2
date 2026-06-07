@@ -15,7 +15,7 @@ from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     register_local_libvirt_resource,
 )
-from tests.providers.local_libvirt.conftest import FakeLibvirtConn
+from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 CTX = RequestContext(principal="user-1", agent_session="s", projects=("proj",))
 

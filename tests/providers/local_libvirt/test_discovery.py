@@ -20,7 +20,7 @@ from kdive.providers.local_libvirt.discovery import (
     ensure_local_host_registered,
     register_local_libvirt_resource,
 )
-from tests.providers.local_libvirt.conftest import FakeDomain, FakeLibvirtConn
+from tests.providers.local_libvirt.fakes import FakeDomain, FakeLibvirtConn
 
 
 def _discovery(conn: FakeLibvirtConn, *, cap: int = 2) -> LocalLibvirtDiscovery:

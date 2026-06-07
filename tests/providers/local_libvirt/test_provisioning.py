@@ -27,7 +27,7 @@ from kdive.providers.local_libvirt.provisioning import (
     render_domain_xml,
     validate_profile,
 )
-from tests.providers.local_libvirt.conftest import libvirt_error
+from tests.providers.local_libvirt.fakes import libvirt_error
 
 _SYS = UUID("11111111-1111-1111-1111-111111111111")
 
