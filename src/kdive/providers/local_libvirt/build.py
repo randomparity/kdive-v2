@@ -177,8 +177,8 @@ class LocalLibvirtBuild:
             checkout=_make_checkout(kernel_src),
             read_config=_real_read_config,
             run_make=_real_run_make,
-            read_kernel_image=lambda ws: (ws / "arch/x86/boot/bzImage").read_bytes(),
-            read_vmlinux=lambda ws: (ws / "vmlinux").read_bytes(),
+            read_kernel_image=_real_read_kernel_image,
+            read_vmlinux=_real_read_vmlinux,
             read_build_id=_real_read_build_id,
         )
 
@@ -246,8 +246,50 @@ def _real_checkout(kernel_src: str, profile: ServerBuildProfile, workspace: Path
         _apply_patch(profile.patch_ref, workspace)
 
 
+def _read_text_file(path: Path, *, category: ErrorCategory, file_label: str) -> str:
+    try:
+        return path.read_text()
+    except OSError as exc:
+        raise CategorizedError(
+            f"{file_label} is missing or unreadable",
+            category=category,
+            details={"file": file_label},
+        ) from exc
+
+
+def _read_bytes_file(path: Path, *, category: ErrorCategory, output: str) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise CategorizedError(
+            f"{output} is missing or unreadable",
+            category=category,
+            details={"output": output},
+        ) from exc
+
+
 def _real_read_config(workspace: Path) -> str:  # pragma: no cover - live_vm
-    return (workspace / ".config").read_text()
+    return _read_text_file(
+        workspace / ".config",
+        category=ErrorCategory.CONFIGURATION_ERROR,
+        file_label=".config",
+    )
+
+
+def _real_read_kernel_image(workspace: Path) -> bytes:  # pragma: no cover - live_vm
+    return _read_bytes_file(
+        workspace / "arch/x86/boot/bzImage",
+        category=ErrorCategory.BUILD_FAILURE,
+        output="bzImage",
+    )
+
+
+def _real_read_vmlinux(workspace: Path) -> bytes:  # pragma: no cover - live_vm
+    return _read_bytes_file(
+        workspace / "vmlinux",
+        category=ErrorCategory.BUILD_FAILURE,
+        output="vmlinux",
+    )
 
 
 def _real_run_make(workspace: Path) -> int:  # pragma: no cover - live_vm
@@ -300,7 +342,11 @@ def _real_read_build_id(workspace: Path) -> str:  # pragma: no cover - live_vm
                 "objcopy failed to extract vmlinux notes",
                 category=ErrorCategory.BUILD_FAILURE,
             ) from exc
-        notes = Path(note_file.name).read_bytes()
+        notes = _read_bytes_file(
+            Path(note_file.name),
+            category=ErrorCategory.BUILD_FAILURE,
+            output="vmlinux notes",
+        )
     return parse_gnu_build_id(notes)
 
 

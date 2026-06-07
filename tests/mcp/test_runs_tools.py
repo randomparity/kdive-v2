@@ -709,6 +709,17 @@ class _FakeBuilder:
         )
 
 
+class _MissingBuildOutputBuilder:
+    """Raises the typed failure used when an expected build artifact is absent after make."""
+
+    def build(self, run_id: UUID, profile: Any) -> BuildOutput:
+        raise CategorizedError(
+            "bzImage is missing or unreadable",
+            category=ErrorCategory.BUILD_FAILURE,
+            details={"output": "bzImage"},
+        )
+
+
 async def _enqueue_build_job(pool: AsyncConnectionPool, run_id: str) -> Job:
     async with pool.connection() as conn:
         return await queue.enqueue(
@@ -874,6 +885,25 @@ def test_build_handler_build_failure_sets_run_failed(migrated_url: str) -> None:
         assert row is not None and row["state"] == "failed"
         assert row["failure_category"] == "build_failure"
         assert steps is not None and steps["n"] == 0  # no ledger row on failure
+
+    asyncio.run(_run())
+
+
+def test_build_handler_missing_output_records_build_failure(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_running_run(pool)
+            job = await _enqueue_build_job(pool, run_id)
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError) as caught:
+                    await runs_handlers.build_handler(conn, job, _MissingBuildOutputBuilder())
+            assert caught.value.category is ErrorCategory.BUILD_FAILURE
+            assert caught.value.details == {"output": "bzImage"}
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state, failure_category FROM runs WHERE id=%s", (run_id,))
+                row = await cur.fetchone()
+        assert row is not None and row["state"] == "failed"
+        assert row["failure_category"] == "build_failure"
 
     asyncio.run(_run())
 

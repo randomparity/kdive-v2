@@ -19,6 +19,8 @@ from kdive.providers.local_libvirt import build as build_module
 from kdive.providers.local_libvirt.build import (
     LocalLibvirtBuild,
     _apply_patch,
+    _real_read_config,
+    _real_read_kernel_image,
     _resolve_local_ref,
     _stage_config,
     _sync_tree,
@@ -222,6 +224,14 @@ def test_build_rejects_config_missing_prereq_before_make(tmp_path: Path, config_
     assert store.puts == []  # nothing stored on a config rejection
 
 
+def test_real_read_config_missing_is_configuration_error(tmp_path: Path) -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _real_read_config(tmp_path)
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert caught.value.details == {"file": ".config"}
+
+
 # --- make / store failures -----------------------------------------------------------
 
 
@@ -230,6 +240,29 @@ def test_build_nonzero_make_is_build_failure(tmp_path: Path) -> None:
     with pytest.raises(CategorizedError) as caught:
         _builder(store, seams, tmp_path).build(_RUN, _profile())
     assert caught.value.category is ErrorCategory.BUILD_FAILURE
+
+
+def test_build_missing_bzimage_after_make_is_build_failure(tmp_path: Path) -> None:
+    store, seams = _FakeStore(), _Seams()
+    builder = LocalLibvirtBuild(
+        tenant=_TENANT,
+        workspace_root=tmp_path,
+        store_factory=lambda: store,
+        checkout=seams.checkout,
+        read_config=seams.read_config,
+        run_make=seams.run_make,
+        read_kernel_image=_real_read_kernel_image,
+        read_vmlinux=seams.read_vmlinux,
+        read_build_id=seams.read_build_id,
+    )
+
+    with pytest.raises(CategorizedError) as caught:
+        builder.build(_RUN, _profile())
+
+    assert caught.value.category is ErrorCategory.BUILD_FAILURE
+    assert caught.value.details == {"output": "bzImage"}
+    assert seams.make_calls == 1
+    assert store.puts == []
 
 
 def test_build_store_failure_propagates_infrastructure(tmp_path: Path) -> None:
@@ -358,8 +391,8 @@ def test_live_vm_real_make_build_id_matches_readelf() -> None:  # pragma: no cov
             checkout=lambda _run, profile, ws: build_module._real_checkout(src, profile, ws),
             read_config=build_module._real_read_config,
             run_make=build_module._real_run_make,
-            read_kernel_image=lambda ws: (ws / "arch/x86/boot/bzImage").read_bytes(),
-            read_vmlinux=lambda ws: (ws / "vmlinux").read_bytes(),
+            read_kernel_image=build_module._real_read_kernel_image,
+            read_vmlinux=build_module._real_read_vmlinux,
             read_build_id=build_module._real_read_build_id,
         )
         profile = BuildProfile.parse(
