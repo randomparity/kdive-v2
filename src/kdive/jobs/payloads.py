@@ -7,12 +7,12 @@ sharing raw dict key conventions across modules.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-from kdive.domain.models import Job, JobKind
+from kdive.domain.models import Job, JobAuthorizing, JobKind
 
 
 class PayloadValidationError(ValueError):
@@ -103,7 +103,7 @@ def _validation_error(label: str, exc: ValidationError) -> PayloadValidationErro
     return PayloadValidationError(f"invalid {label}: {exc.errors()[0]['msg']}")
 
 
-def dump_authorizing(authorizing: Authorizing | dict[str, Any]) -> dict[str, Any]:
+def dump_authorizing(authorizing: Authorizing | JobAuthorizing | dict[str, Any]) -> JobAuthorizing:
     """Validate and serialize the authorizing tuple for JSONB persistence."""
     try:
         model = (
@@ -113,7 +113,7 @@ def dump_authorizing(authorizing: Authorizing | dict[str, Any]) -> dict[str, Any
         )
     except ValidationError as exc:
         raise _validation_error("job authorizing", exc) from exc
-    return model.model_dump(mode="json", exclude_none=True)
+    return cast(JobAuthorizing, model.model_dump(mode="json"))
 
 
 def load_authorizing(job: Job) -> Authorizing:

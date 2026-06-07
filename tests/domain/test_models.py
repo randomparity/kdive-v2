@@ -175,7 +175,7 @@ def test_job_uses_authorizing_not_attribution_and_defaults_attempt() -> None:
         payload={"allocation_id": str(_ID2)},
         state=JobState.QUEUED,
         max_attempts=3,
-        authorizing={"principal": "alice", "project": "kernel-team"},
+        authorizing={"principal": "alice", "agent_session": None, "project": "kernel-team"},
         dedup_key="provision:" + str(_ID2),
     )
     assert job.attempt == 0

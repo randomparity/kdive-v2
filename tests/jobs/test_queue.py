@@ -16,7 +16,7 @@ from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
 from kdive.jobs import queue
 
-_AUTHORIZING = {"principal": "p", "project": "a"}
+_AUTHORIZING = {"principal": "p", "agent_session": None, "project": "a"}
 
 
 def _build_payload() -> dict[str, str]:
@@ -42,7 +42,7 @@ def test_enqueue_inserts_queued_job(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
             payload = _build_payload()
-            authorizing = {"principal": "alice", "project": "kernel-team"}
+            authorizing = {"principal": "alice", "agent_session": None, "project": "kernel-team"}
             job = await queue.enqueue(conn, JobKind.BUILD, payload, authorizing, "dk-1")
             assert isinstance(job, Job)
             assert job.state is JobState.QUEUED
@@ -117,8 +117,8 @@ async def _insert_running_job(
             "INSERT INTO jobs (kind, payload, state, attempt, max_attempts, worker_id, "
             "    lease_expires_at, authorizing, dedup_key) "
             "VALUES ('build', '{}', 'running', %s, %s, %s, now() + make_interval(secs => %s), "
-            "    '{}', %s) RETURNING *",
-            (attempt, max_attempts, worker_id, lease_seconds, dedup_key),
+            "    %s, %s) RETURNING *",
+            (attempt, max_attempts, worker_id, lease_seconds, Jsonb(_AUTHORIZING), dedup_key),
         )
         row = await cur.fetchone()
     return Job.model_validate(row)

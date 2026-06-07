@@ -27,7 +27,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, TypedDict
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -69,6 +69,14 @@ class JobKind(StrEnum):
     FORCE_CRASH = "force_crash"
     POWER = "power"
     CAPTURE_VMCORE = "capture_vmcore"
+
+
+class JobAuthorizing(TypedDict):
+    """The fixed authorizing tuple persisted with every durable job."""
+
+    principal: str
+    agent_session: str | None
+    project: str
 
 
 class Sensitivity(StrEnum):
@@ -208,7 +216,7 @@ class Job(DomainModel):
     result_ref: str | None = None
     error_category: ErrorCategory | None = None
     failure_context: dict[str, str] = Field(default_factory=dict)
-    authorizing: dict[str, Any]
+    authorizing: JobAuthorizing
     dedup_key: str
 
 

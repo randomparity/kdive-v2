@@ -21,7 +21,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from kdive.domain.errors import ErrorCategory
-from kdive.domain.models import Job, JobKind
+from kdive.domain.models import Job, JobAuthorizing, JobKind
 from kdive.jobs.payloads import (
     Authorizing,
     PayloadModel,
@@ -37,7 +37,7 @@ async def enqueue(
     conn: AsyncConnection,
     kind: JobKind,
     payload: PayloadModel | dict[str, Any],
-    authorizing: Authorizing | dict[str, Any],
+    authorizing: Authorizing | JobAuthorizing | dict[str, Any],
     dedup_key: str,
     *,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,

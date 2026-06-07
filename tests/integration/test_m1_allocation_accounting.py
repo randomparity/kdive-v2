@@ -696,8 +696,18 @@ def test_c4_abandoned_job_fails_run_lease_expired(migrated_url: str) -> None:
                     "INSERT INTO jobs (kind, payload, state, attempt, max_attempts, worker_id, "
                     "    lease_expires_at, authorizing, dedup_key) "
                     "VALUES ('build', %s, 'running', 3, 3, 'w-dead', "
-                    "    now() - interval '1 minute', '{}', %s)",
-                    (Jsonb({"run_id": str(run.id)}), f"{run.id}:build"),
+                    "    now() - interval '1 minute', %s, %s)",
+                    (
+                        Jsonb({"run_id": str(run.id)}),
+                        Jsonb(
+                            {
+                                "principal": "allocation-test",
+                                "agent_session": None,
+                                "project": "proj",
+                            }
+                        ),
+                        f"{run.id}:build",
+                    ),
                 )
             await loop.reconcile_once(pool, loop.NullReaper())
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:

@@ -18,7 +18,7 @@ from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.worker import Worker
 
-_AUTHORIZING = {"principal": "p", "project": "a"}
+_AUTHORIZING = {"principal": "p", "agent_session": None, "project": "a"}
 
 
 def _build_payload() -> dict[str, str]:

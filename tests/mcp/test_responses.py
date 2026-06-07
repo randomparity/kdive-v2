@@ -33,7 +33,7 @@ def _job(
         result_ref=result_ref,
         error_category=error_category,
         failure_context=failure_context or {},
-        authorizing={"principal": "p"},
+        authorizing={"principal": "p", "agent_session": None, "project": "proj"},
         dedup_key=str(uuid4()),
     )
 

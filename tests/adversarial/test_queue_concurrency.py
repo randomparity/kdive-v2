@@ -25,7 +25,7 @@ from kdive.domain.state import JobState
 from kdive.jobs import queue
 from tests.adversarial.conftest import count_rows, open_conn, open_conns
 
-_AUTHORIZING = {"principal": "p", "project": "a"}
+_AUTHORIZING = {"principal": "p", "agent_session": None, "project": "a"}
 
 
 def _build_payload() -> dict[str, str]:

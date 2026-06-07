@@ -32,7 +32,7 @@ def test_build_payload_round_trips_with_optional_cmdline() -> None:
         payload=payload,
         state=JobState.QUEUED,
         max_attempts=3,
-        authorizing={"principal": "alice", "project": "kernel-team"},
+        authorizing={"principal": "alice", "agent_session": None, "project": "kernel-team"},
         dedup_key="build",
     )
     decoded = load_payload(job, BuildPayload)
