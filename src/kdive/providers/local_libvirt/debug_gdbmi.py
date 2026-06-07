@@ -477,7 +477,18 @@ class GdbMiEngine:
                 category=ErrorCategory.DEBUG_ATTACH_FAILURE,
                 details={"code": "bad_memory_contents"},
             ) from exc
-        return blob[:byte_count]
+        if len(blob) != byte_count:
+            raise CategorizedError(
+                "gdb/MI returned fewer memory bytes than requested",
+                category=ErrorCategory.DEBUG_ATTACH_FAILURE,
+                details={
+                    "code": "short_memory_read",
+                    "address": address,
+                    "requested": byte_count,
+                    "actual": len(blob),
+                },
+            )
+        return blob
 
     # --- interactive execution ------------------------------------------------------------
 

@@ -260,6 +260,35 @@ def test_read_memory_rejects_non_hex_contents(tmp_path: Path) -> None:
     assert exc.value.details["code"] == "bad_memory_contents"
 
 
+def test_read_memory_rejects_short_contents(tmp_path: Path) -> None:
+    controller = _memory_controller(0x6000, 4, "dead")
+    with pytest.raises(CategorizedError) as exc:
+        _engine().read_memory(_attachment(controller, tmp_path), address=0x6000, byte_count=4)
+    assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
+    assert exc.value.details == {
+        "code": "short_memory_read",
+        "address": 0x6000,
+        "requested": 4,
+        "actual": 2,
+    }
+
+
+def test_read_memory_rejects_missing_memory_payload(tmp_path: Path) -> None:
+    controller = _FakeMiController(
+        responses={
+            "-data-read-memory-bytes 0x6000 4": [
+                {"type": "result", "message": "done", "payload": {}}
+            ]
+        }
+    )
+    with pytest.raises(CategorizedError) as exc:
+        _engine().read_memory(_attachment(controller, tmp_path), address=0x6000, byte_count=4)
+    assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
+    assert exc.value.details["code"] == "short_memory_read"
+    assert exc.value.details["requested"] == 4
+    assert exc.value.details["actual"] == 0
+
+
 def test_read_memory_rejects_out_of_range_address(tmp_path: Path) -> None:
     with pytest.raises(CategorizedError) as exc:
         _engine().read_memory(
