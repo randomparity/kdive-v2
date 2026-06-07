@@ -335,13 +335,20 @@ async def build_run(
 ) -> ToolResponse:
     """Admit an idempotent build for a Run: drive `created → running` and enqueue the job.
 
-    ``cmdline`` (when given) is recorded in the build ledger and applied at boot (ADR-0056);
-    it is bound on the first build enqueue for a Run (the dedup key is ``{run_id}:build`` and
-    ``queue.enqueue`` is ``ON CONFLICT DO NOTHING``).
+    ``cmdline`` is the Run's **debug args** — recorded in the build ledger and appended to the
+    platform-required base at boot (ADR-0061). It must not carry a platform-owned token
+    (``root=``/``console=``/``crashkernel=``): those are injected, and a duplicate would override
+    the base under the kernel's last-occurrence rule, so such a cmdline is rejected here. It binds
+    on the first build enqueue for a Run (dedup key ``{run_id}:build``, ``ON CONFLICT DO NOTHING``).
     """
     uid = _as_uuid(run_id)
     if uid is None:
         return _config_error(run_id)
+    owned = _platform_owned_token(cmdline)
+    if owned is not None:
+        return _config_error(
+            run_id, data={"reason": "cmdline_overrides_platform_args", "token": owned}
+        )
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             run = await RUNS.get(conn, uid)
@@ -457,15 +464,20 @@ async def complete_build(
     success BEFORE the CREATED/source guard, so a retry after a dropped connection returns
     success, not an illegal-transition error. Requires operator.
 
-    ``cmdline`` is persisted in the build ledger for a later install step to consume; it is
-    **not yet applied at boot** (the install path still reads ``build_profile``), so a custom
-    cmdline here is recorded but inert until that wiring lands. Pass it for forward-record,
-    not to influence this build's boot.
+    ``cmdline`` is the Run's debug args, persisted in the build ledger and appended to the
+    platform-required base at boot (ADR-0061) — the same composition the server lane uses. It
+    must not carry a platform-owned token (``root=``/``console=``/``crashkernel=``); such a
+    cmdline is rejected here, mirroring ``build_run``.
     """
     validator = validator or _StoreBackedValidator()
     uid = _as_uuid(run_id)
     if uid is None:
         return _config_error(run_id)
+    owned = _platform_owned_token(cmdline)
+    if owned is not None:
+        return _config_error(
+            run_id, data={"reason": "cmdline_overrides_platform_args", "token": owned}
+        )
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             run = await RUNS.get(conn, uid)
@@ -680,6 +692,16 @@ async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> st
 # supersedes the ADR-0056 replace semantics; the device tracks provisioning's `target dev`).
 _REQUIRED_BASE_CMDLINE = "console=ttyS0 root=/dev/vda"
 _KDUMP_CRASHKERNEL = "crashkernel=256M"
+# Tokens the platform owns and injects (ADR-0061); a Run's debug cmdline must not carry them,
+# because a duplicate would win under the kernel's last-occurrence rule and override the base.
+_PLATFORM_OWNED_CMDLINE_TOKENS = ("root=", "console=", "crashkernel=")
+
+
+def _platform_owned_token(cmdline: str | None) -> str | None:
+    """The first platform-owned token a Run cmdline carries (it may not), else ``None``."""
+    if not cmdline:
+        return None
+    return next((tok for tok in _PLATFORM_OWNED_CMDLINE_TOKENS if tok in cmdline), None)
 
 
 def system_required_cmdline(method: CaptureMethod) -> str:

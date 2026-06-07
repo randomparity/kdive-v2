@@ -27,16 +27,20 @@ The boot command line is `system_required_cmdline(method)` followed by the Run's
 cmdline. The required base is `console=ttyS0 root=/dev/vda` — the serial console the
 readiness/crash classifier tails and the root device provisioning attaches as `vda` — plus
 `crashkernel=256M` for a kdump-provisioned System. The Run's ledger cmdline (`runs.build
-cmdline=` / external `complete_build`) is the agent's **debug args**, appended after the base,
-so `root=`/`console=`/`crashkernel=` are always present regardless of agent input. `DEMO_CMDLINE`
-is now just `dhash_entries=1`.
+cmdline=` / external `complete_build`) is the agent's **debug args**, appended after the base.
+`DEMO_CMDLINE` is now just `dhash_entries=1`.
 
-### 2. The required args are advertised on `runs.get`
+### 2. The required args are advertised **and enforced**
 
-`runs.get` returns `required_cmdline` (the resolved base for the Run's System method) in its
-data, so an agent reads what the platform will prepend and appends only its trigger — it cannot
-inadvertently clobber `root=`/`console=`. The device in the base tracks provisioning's `target
-dev`; if that ever stops being `vda` the two move together.
+`runs.get` returns `required_cmdline` (the resolved base for the Run's System method) so a
+cooperative agent reads what the platform will prepend and appends only its trigger. Advertising
+alone is advisory, though: because the kernel resolves a duplicate kernel parameter by
+last-occurrence, an appended `root=`/`console=`/`crashkernel=` from the agent would *override* the
+base. So `runs.build`/`complete_build` also **reject** a cmdline carrying any platform-owned token
+(`configuration_error`, `reason: cmdline_overrides_platform_args`) — the agent passes only debug
+args; changing the console, root device, or crashkernel reservation is a System/provisioning
+concern, not a boot arg. The device in the base tracks provisioning's `target dev`; if that ever
+stops being `vda` the two must move together (a consistency test guards it).
 
 ### 3. The kdump crashkernel admission check is removed
 

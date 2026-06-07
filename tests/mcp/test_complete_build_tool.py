@@ -187,7 +187,7 @@ def test_complete_build_finalizes_external_run(migrated_url: str) -> None:
                 _ctx(),
                 str(run_id),
                 build_id=None,
-                cmdline="console=ttyS0 dhash_entries=1",
+                cmdline="dhash_entries=1",
                 validator=validator,
             )
             assert resp.status == "succeeded"

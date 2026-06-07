@@ -727,7 +727,7 @@ def test_build_run_records_cmdline_in_the_build_ledger(migrated_url: str) -> Non
                 pool, state=RunState.CREATED, build_profile=copy.deepcopy(_VALID_BUILD)
             )
             env = await runs_tools.build_run(
-                pool, _ctx(Role.OPERATOR), run_id, cmdline="console=ttyS0 dhash_entries=1"
+                pool, _ctx(Role.OPERATOR), run_id, cmdline="dhash_entries=1"
             )
             assert env.status != "error"
             async with pool.connection() as conn:
@@ -738,7 +738,26 @@ def test_build_run_records_cmdline_in_the_build_ledger(migrated_url: str) -> Non
                     "SELECT result FROM run_steps WHERE run_id=%s AND step='build'", (run_id,)
                 )
                 row = await cur.fetchone()
-            assert row is not None and row["result"]["cmdline"] == "console=ttyS0 dhash_entries=1"
+            assert row is not None and row["result"]["cmdline"] == "dhash_entries=1"
+
+    asyncio.run(_run())
+
+
+def test_build_run_rejects_a_cmdline_that_overrides_platform_args(migrated_url: str) -> None:
+    # The agent's debug cmdline must not carry root=/console=/crashkernel= — the platform injects
+    # them (ADR-0061), and a duplicate would win on the kernel's last-occurrence rule.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=RunState.CREATED, build_profile=copy.deepcopy(_VALID_BUILD)
+            )
+            resp = await runs_tools.build_run(
+                pool, _ctx(Role.OPERATOR), run_id, cmdline="root=/dev/sda1 dhash_entries=1"
+            )
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs", ())
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.data["reason"] == "cmdline_overrides_platform_args"
+        assert njobs == 0
 
     asyncio.run(_run())
 
