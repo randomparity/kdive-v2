@@ -1,13 +1,11 @@
-"""The `vmcore.*` / `postmortem.*` MCP tools + the capture job handler (ADR-0031).
+"""The `vmcore.*` / `postmortem.*` MCP tools (ADR-0031).
 
 `vmcore.fetch(system_id, method)` admits a `capture_vmcore` job on a `crashed` System
-(dedup `{system_id}:capture_vmcore:{method}`); `capture_handler` dispatches to the capture seam
-under the per-System advisory lock, stores the raw `sensitive` core + a `redacted` derivative,
-and inserts both `artifacts` rows (skipping re-capture if a `vmcore` row already exists).
-`vmcore.list` is a `redacted`-only read. `postmortem.crash`/`.triage` are synchronous, ungated
-offline reads that load the Run's `debuginfo_ref`, validate caller commands against the
-allowlist, run the `CrashPostmortem` port over the captured core, and redact output before
-returning it.
+(dedup `{system_id}:capture_vmcore:{method}`). Worker-owned capture execution lives in
+``kdive.planes.vmcore``; `vmcore.list` is a `redacted`-only read.
+`postmortem.crash`/`.triage` are synchronous, ungated offline reads that load the Run's
+`debuginfo_ref`, validate caller commands against the allowlist, run the `CrashPostmortem`
+port over the captured core, and redact output before returning it.
 """
 
 from __future__ import annotations

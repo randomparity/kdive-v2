@@ -1,12 +1,9 @@
-"""The `systems.*` MCP tools and the provision/teardown job handlers (ADR-0025).
+"""The `systems.*` MCP tools (ADR-0025).
 
 `systems.provision` synchronously mints a System (state ``provisioning``) for a ``granted``
 Allocation, flips the Allocation ``granted -> active``, and enqueues a ``provision`` job — all
-atomic under a per-allocation advisory lock — then returns a job handle. The ``provision``
-handler renders+defines the tagged libvirt domain and drives ``provisioning -> ready`` (or
-``-> failed``); the ``teardown`` handler destroys+undefines and drives ``-> torn_down``. Both
-serialize their state decision on a per-System lock so a release-mid-provision cannot leak a
-domain. Handlers reconstruct a RequestContext from the job's authorizing tuple to audit.
+atomic under a per-allocation advisory lock — then returns a job handle. Worker-owned
+``provision``/``teardown``/``reprovision`` execution lives in ``kdive.planes.systems``.
 """
 
 from __future__ import annotations

@@ -1,17 +1,16 @@
-"""The `control.*` MCP tools and the power/force_crash job handlers (ADR-0028).
+"""The `control.*` MCP tools (ADR-0028).
 
 `control.power` (role-gated by action: ``on`` → operator, ``off``/``cycle``/``reset`` →
 admin, ADR-0037 §1/§2) and `control.force_crash` (three-check gated, admin) admit
-synchronously and enqueue a durable job; the handlers drive the domain via the injected
-`Controller` under the per-System advisory lock. `power` moves no System state (a domain
-restart is not a reprovision); `force_crash` drives System ``ready -> crashed`` and every
-non-terminal DebugSession of the System ``-> detached`` (joined through ``runs``).
+synchronously and enqueue a durable job. Worker-owned execution lives in
+``kdive.planes.control``; `power` moves no System state (a domain restart is not a
+reprovision), while `force_crash` drives System ``ready -> crashed`` and every non-terminal
+DebugSession of the System ``-> detached`` (joined through ``runs``).
 
 `power` uses a per-call-unique ``dedup_key`` (``{system_id}:power:{action}:{uuid4}``) so a
 repeated power op is always a fresh job; `force_crash` uses a stable
 ``{system_id}:force_crash`` key (once-per-System: one System per Allocation, no reprovision,
-``ready -> crashed`` is one-way). Handlers reconstruct a RequestContext from the job's
-authorizing tuple to audit (ADR-0025 §9).
+``ready -> crashed`` is one-way).
 """
 
 from __future__ import annotations
