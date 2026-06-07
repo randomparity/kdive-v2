@@ -11,6 +11,7 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools import _common
 
 _NOW = dt.datetime(2026, 6, 3, 12, 0, tzinfo=dt.UTC)
 
@@ -122,3 +123,35 @@ def test_failure_factory_sets_error_status_and_category() -> None:
     assert resp.error_category == "allocation_denied"
     assert resp.data == {"reason": "at_capacity"}
     assert resp.suggested_next_actions == []
+
+
+def test_common_as_uuid_parses_valid_uuid_and_rejects_bad_value() -> None:
+    uid = uuid4()
+
+    assert _common.as_uuid(str(uid)) == uid
+    assert _common.as_uuid("not-a-uuid") is None
+
+
+def test_common_failure_helpers_build_expected_error_envelopes() -> None:
+    config = _common.config_error("obj-1", data={"reason": "bad_id"})
+    stale = _common.stale_handle("obj-2", current_status="released")
+
+    assert config.status == "error"
+    assert config.error_category == "configuration_error"
+    assert config.data == {"reason": "bad_id"}
+    assert stale.status == "error"
+    assert stale.error_category == "stale_handle"
+    assert stale.data == {"current_status": "released"}
+
+
+def test_common_job_envelope_preserves_job_fields_and_adds_object_key() -> None:
+    object_id = uuid4()
+    job = _job(JobState.SUCCEEDED, result_ref="tenant/run/abc/kernel")
+
+    resp = _common.job_envelope(job, "run_id", object_id)
+
+    assert resp.object_id == str(job.id)
+    assert resp.status == "succeeded"
+    assert resp.refs == {"result": "tenant/run/abc/kernel"}
+    assert resp.suggested_next_actions == ["jobs.get"]
+    assert resp.data == {"kind": "build", "run_id": str(object_id)}
