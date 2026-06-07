@@ -1,9 +1,9 @@
 """Active provider composition boundary.
 
 This module is the only place the MCP and worker assembly path constructs local-libvirt
-providers. It bootstraps a capability registry and exposes typed runtime adapters so the
-MCP/tool and worker layers dispatch operations by provider capability rather than by concrete
-provider name.
+providers. It exposes typed runtime ports for the single local-libvirt provider shipped today;
+the capability registry remains a separate provider-selection primitive for the future
+multi-provider path.
 """
 
 from __future__ import annotations
@@ -12,15 +12,6 @@ from collections.abc import Awaitable, Callable
 
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.domain.models import ResourceKind
-from kdive.domain.state import ResourceStatus
-from kdive.providers.capability import (
-    Capability,
-    CapabilityRegistry,
-    CleanupGuarantee,
-    OpContract,
-    Plane,
-)
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.providers.local_libvirt.connect import LocalLibvirtConnect
 from kdive.providers.local_libvirt.control import LocalLibvirtControl
@@ -55,41 +46,7 @@ from kdive.providers.ports import (
     VmcoreIntrospector,
 )
 
-_LOCAL_PROVIDER_ID = "local-libvirt"
-_LOCAL_KIND = ResourceKind.LOCAL_LIBVIRT
-_LOCAL_COST_CLASS = "local"
 type DiscoveryRegistrar = Callable[[AsyncConnectionPool], Awaitable[None]]
-
-_SYNC_CONTRACT = OpContract(
-    idempotent=True,
-    destructive=False,
-    cancelable=False,
-    long_running=False,
-    cleanup=CleanupGuarantee.BEST_EFFORT,
-)
-_LONG_RUNNING_CONTRACT = OpContract(
-    idempotent=True,
-    destructive=False,
-    cancelable=False,
-    long_running=True,
-    cleanup=CleanupGuarantee.BEST_EFFORT,
-)
-_DESTRUCTIVE_LONG_RUNNING_CONTRACT = OpContract(
-    idempotent=True,
-    destructive=True,
-    cancelable=False,
-    long_running=True,
-    cleanup=CleanupGuarantee.BEST_EFFORT,
-)
-
-
-def _capability(plane: Plane, operation: str, contract: OpContract) -> Capability:
-    return Capability(
-        plane=plane,
-        operation=operation,
-        resource_kind=_LOCAL_KIND,
-        contract=contract,
-    )
 
 
 class ProviderRuntime:
@@ -165,93 +122,16 @@ class ProviderRuntime:
             await self._discovery_registrar(pool)
 
 
-def _register_provider(
-    registry: CapabilityRegistry, provider: object, capabilities: list[Capability], suffix: str
-) -> None:
-    registry.register(
-        provider,
-        capabilities,
-        provider_id=f"{_LOCAL_PROVIDER_ID}:{suffix}",
-        health=ResourceStatus.AVAILABLE,
-        cost_class=_LOCAL_COST_CLASS,
-    )
-
-
 def build_default_provider_runtime() -> ProviderRuntime:
-    """Build the default runtime provider registry without opening live provider connections."""
-    registry = CapabilityRegistry()
+    """Build typed default provider ports without opening live provider connections."""
     provisioner = LocalLibvirtProvisioning.from_env()
-    _register_provider(
-        registry,
-        provisioner,
-        [
-            _capability(Plane.PROVISIONING, "provision", _LONG_RUNNING_CONTRACT),
-            _capability(Plane.PROVISIONING, "teardown", _DESTRUCTIVE_LONG_RUNNING_CONTRACT),
-            _capability(Plane.PROVISIONING, "reprovision", _DESTRUCTIVE_LONG_RUNNING_CONTRACT),
-        ],
-        "provisioning",
-    )
     builder = LocalLibvirtBuild.from_env()
-    _register_provider(
-        registry,
-        builder,
-        [_capability(Plane.BUILD, "build", _LONG_RUNNING_CONTRACT)],
-        "build",
-    )
     install = LocalLibvirtInstall.from_env()
-    _register_provider(
-        registry,
-        install,
-        [
-            _capability(Plane.INSTALL, "install", _LONG_RUNNING_CONTRACT),
-            _capability(Plane.INSTALL, "boot", _LONG_RUNNING_CONTRACT),
-        ],
-        "install",
-    )
     connector = LocalLibvirtConnect.from_env()
-    _register_provider(
-        registry,
-        connector,
-        [
-            _capability(Plane.CONNECT, "open_transport", _SYNC_CONTRACT),
-            _capability(Plane.CONNECT, "close_transport", _SYNC_CONTRACT),
-        ],
-        "connect",
-    )
     controller = LocalLibvirtControl.from_env()
-    _register_provider(
-        registry,
-        controller,
-        [
-            _capability(Plane.CONTROL, "power", _DESTRUCTIVE_LONG_RUNNING_CONTRACT),
-            _capability(Plane.CONTROL, "force_crash", _DESTRUCTIVE_LONG_RUNNING_CONTRACT),
-        ],
-        "control",
-    )
     retrieve = LocalLibvirtRetrieve.from_env()
-    _register_provider(
-        registry,
-        retrieve,
-        [
-            _capability(Plane.RETRIEVE, "capture", _LONG_RUNNING_CONTRACT),
-            _capability(Plane.RETRIEVE, "run_crash_postmortem", _SYNC_CONTRACT),
-        ],
-        "retrieve",
-    )
     vmcore_introspector = LocalLibvirtVmcoreIntrospect.from_env()
-    _register_provider(
-        registry,
-        vmcore_introspector,
-        [_capability(Plane.DEBUG, "from_vmcore", _SYNC_CONTRACT)],
-        "vmcore-introspect",
-    )
     live_introspector = LocalLibvirtLiveIntrospect.from_env()
-    _register_provider(
-        registry,
-        live_introspector,
-        [_capability(Plane.DEBUG, "introspect_live", _SYNC_CONTRACT)],
-        "live-introspect",
-    )
     return ProviderRuntime(
         provisioner=provisioner,
         builder=builder,
