@@ -1,6 +1,6 @@
 """The `control.*` MCP tools (ADR-0028).
 
-`control.power` (role-gated by action: ``on`` → operator, ``off``/``cycle``/``reset`` →
+`control.power` (``on`` → operator; ``off``/``cycle``/``reset`` → three-check gated,
 admin, ADR-0037 §1/§2) and `control.force_crash` (three-check gated, admin) admit
 synchronously and enqueue a durable job. Worker-owned execution lives in
 ``kdive.planes.control``; `power` moves no System state (a domain restart is not a
@@ -19,6 +19,7 @@ from typing import Annotated
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
+from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
@@ -51,9 +52,11 @@ from kdive.security.rbac import Role, require_role
 # Systems that have a started libvirt domain (so a power op has something to act on).
 _STARTED_SYSTEM = frozenset({SystemState.READY, SystemState.CRASHED})
 _FORCE_CRASH = "force_crash"
+_POWER = "power"
 # Power on is a reversible lifecycle move (operator); off/cycle/reset tear into a running
 # guest and are destructive-administration ops (admin) — ADR-0037 §1/§2.
 _POWER_ON_ACTIONS = frozenset({PowerAction.ON})
+_DESTRUCTIVE_POWER_ACTIONS = frozenset({PowerAction.OFF, PowerAction.CYCLE, PowerAction.RESET})
 
 
 def _power_required_role(action: PowerAction) -> Role:
@@ -71,9 +74,10 @@ async def power_system(
     """Admit a power op on a started System and enqueue a `power` job.
 
     ``power on`` requires ``operator`` (a reversible lifecycle move); the destructive
-    actions ``off``/``cycle``/``reset`` require ``admin`` (ADR-0037 §1/§2). The role check
-    binds to the target System's project and runs after the in-project check, so it cannot
-    be evaluated against a foreign project.
+    actions ``off``/``cycle``/``reset`` pass the full destructive-operation gate with the
+    ``admin`` role factor (ADR-0037 §1/§2). The checks bind to the target System's project
+    and run after the in-project check, so they cannot be evaluated against a foreign
+    project.
     """
     uid = _as_uuid(system_id)
     if uid is None:
@@ -87,7 +91,14 @@ async def power_system(
             system = await SYSTEMS.get(conn, uid)
             if system is None or system.project not in ctx.projects:
                 return _config_error(system_id)
-            require_role(ctx, system.project, _power_required_role(power_action))
+            if power_action in _DESTRUCTIVE_POWER_ACTIONS:
+                gated = await _authorize_destructive(
+                    conn, ctx, system, uid, _POWER, tool="control.power"
+                )
+                if isinstance(gated, ToolResponse):
+                    return gated
+            else:
+                require_role(ctx, system.project, _power_required_role(power_action))
             if system.state not in _STARTED_SYSTEM:
                 return _config_error(system_id, data={"current_status": system.state.value})
             job = await queue.enqueue(
@@ -100,10 +111,43 @@ async def power_system(
         return _system_job_envelope(job, uid)
 
 
-def _opt_in(system: System) -> bool:
+async def _authorize_destructive(
+    conn: AsyncConnection,
+    ctx: RequestContext,
+    system: System,
+    system_uid: UUID,
+    op_kind: str,
+    *,
+    tool: str,
+) -> ToolResponse | None:
+    allocation = await ALLOCATIONS.get(conn, system.allocation_id)
+    if allocation is None or allocation.project not in ctx.projects:
+        return _config_error(str(system_uid))
+    op = DestructiveOp(kind=op_kind, profile_opt_in=_op_opt_in(system, op_kind))
+    try:
+        assert_destructive_allowed(ctx, allocation, op)
+    except DestructiveOpDenied as denied:
+        async with conn.transaction():
+            await audit.record(
+                conn,
+                ctx,
+                audit.AuditEvent(
+                    tool=tool,
+                    object_kind="systems",
+                    object_id=system_uid,
+                    transition=f"{op_kind}:denied",
+                    args={"system_id": str(system_uid), "missing": denied.missing},
+                    project=system.project,
+                ),
+            )
+        return ToolResponse.failure(str(system_uid), ErrorCategory.AUTHORIZATION_DENIED)
+    return None
+
+
+def _op_opt_in(system: System, op_kind: str) -> bool:
     """Resolve the gate's profile opt-in factor from the System's provisioning profile."""
     profile = ProvisioningProfile.parse(system.provisioning_profile)
-    return destructive_opt_in(profile, _FORCE_CRASH)
+    return destructive_opt_in(profile, op_kind)
 
 
 async def force_crash_system(
@@ -122,27 +166,11 @@ async def force_crash_system(
             system = await SYSTEMS.get(conn, uid)
             if system is None or system.project not in ctx.projects:
                 return _config_error(system_id)
-            allocation = await ALLOCATIONS.get(conn, system.allocation_id)
-            if allocation is None or allocation.project not in ctx.projects:
-                return _config_error(system_id)
-            op = DestructiveOp(kind=_FORCE_CRASH, profile_opt_in=_opt_in(system))
-            try:
-                assert_destructive_allowed(ctx, allocation, op)
-            except DestructiveOpDenied as denied:
-                async with conn.transaction():
-                    await audit.record(
-                        conn,
-                        ctx,
-                        audit.AuditEvent(
-                            tool="control.force_crash",
-                            object_kind="systems",
-                            object_id=uid,
-                            transition="force_crash:denied",
-                            args={"system_id": system_id, "missing": denied.missing},
-                            project=system.project,
-                        ),
-                    )
-                return ToolResponse.failure(system_id, ErrorCategory.AUTHORIZATION_DENIED)
+            gated = await _authorize_destructive(
+                conn, ctx, system, uid, _FORCE_CRASH, tool="control.force_crash"
+            )
+            if isinstance(gated, ToolResponse):
+                return gated
             if system.state is not SystemState.READY:
                 return _config_error(system_id, data={"current_status": system.state.value})
             job = await queue.enqueue(

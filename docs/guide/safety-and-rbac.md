@@ -26,15 +26,15 @@ Destructive operations are protected at two tiers
 
 ### The three-factor gate
 
-`control.force_crash` and `systems.reprovision` pass through the full
-`assert_destructive_allowed` gate, which evaluates three independent checks that
-must all pass (deny-by-default):
+`control.force_crash`, `control.power` (`off`/`cycle`/`reset`), and
+`systems.reprovision` pass through the full `assert_destructive_allowed` gate,
+which evaluates three independent checks that must all pass (deny-by-default):
 
 1. **Capability scope** — the operation kind is listed in the allocation's granted
    `capability_scope.destructive_ops`.
-2. **RBAC role** — `force_crash` requires `admin`; `reprovision` requires
-   `operator` (reprovisioning your own granted System is iterating, not
-   administering).
+2. **RBAC role** — `force_crash` and destructive `power` actions require
+   `admin`; `reprovision` requires `operator` (reprovisioning your own granted
+   System is iterating, not administering).
 3. **Provisioning-profile opt-in** — the controlling provisioning profile
    explicitly opts in to the operation (e.g. `destructive_ops: ["force_crash"]`).
    The default is an empty list; an unmodified profile cannot force-crash.
@@ -44,11 +44,9 @@ attempt is audited with `transition="<op>:denied"`, so a refusal leaves a trail.
 
 ### Admin-only destructive administration
 
-Other destructive-administration ops — `control.power` (`off`/`cycle`/`reset`) and
-`systems.teardown` — are **not** routed through the three-factor gate. They enforce
-a single direct `require_role(..., admin)` check: no capability-scope or
-profile-opt-in factor applies. The reversible `control.power on` requires only
-`operator`.
+`systems.teardown` enforces a direct `require_role(..., admin)` check: no
+capability-scope or profile-opt-in factor applies. The reversible
+`control.power on` requires only `operator`.
 
 ## Secrets by reference
 

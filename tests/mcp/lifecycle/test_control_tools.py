@@ -48,6 +48,7 @@ from kdive.providers.local_libvirt.discovery import (
     register_local_libvirt_resource,
 )
 from kdive.providers.ports import PowerAction
+from kdive.security.audit import args_digest
 from kdive.security.rbac import AuthorizationError, Role
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
@@ -217,12 +218,14 @@ class _FakeControl:
 # --- control.power tool --------------------------------------------------------------------
 
 
-def test_power_off_requires_admin_and_enqueues_job(migrated_url: str) -> None:
-    # power off/cycle/reset are destructive-administration ops: admin-only (ADR-0037 §2).
+def test_power_off_with_gate_checks_enqueues_job(migrated_url: str) -> None:
+    # power off/cycle/reset are destructive-administration ops: gate + admin (ADR-0037 §2).
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            alloc_id = await _granted_allocation(pool)
-            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
+            alloc_id = await _granted_allocation(pool, scope={"destructive_ops": ["power"]})
+            sys_id = await _seed_system(
+                pool, alloc_id, SystemState.READY, destructive_ops=["power"]
+            )
             resp = await control_tools.power_system(
                 pool, _admin_ctx(), system_id=sys_id, action="off"
             )
@@ -255,15 +258,52 @@ def test_power_on_is_operator_and_enqueues_job(migrated_url: str) -> None:
 def test_power_destructive_action_refused_for_operator(migrated_url: str, action: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            alloc_id = await _granted_allocation(pool)
-            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
-            with pytest.raises(AuthorizationError):
-                await control_tools.power_system(pool, _ctx(), system_id=sys_id, action=action)
-            # The denied op enqueued no job.
+            alloc_id = await _granted_allocation(pool, scope={"destructive_ops": ["power"]})
+            sys_id = await _seed_system(
+                pool, alloc_id, SystemState.READY, destructive_ops=["power"]
+            )
+            resp = await control_tools.power_system(pool, _ctx(), system_id=sys_id, action=action)
+            assert resp.status == "error" and resp.error_category == "authorization_denied"
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT count(*) AS n FROM jobs WHERE kind = 'power'")
-                row = await cur.fetchone()
-        assert row is not None and row["n"] == 0
+                jobs_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM audit_log "
+                    "WHERE object_id = %s AND transition = 'power:denied'",
+                    (sys_id,),
+                )
+                audit_row = await cur.fetchone()
+        assert jobs_row is not None and jobs_row["n"] == 0
+        assert audit_row is not None and audit_row["n"] == 1
+
+    asyncio.run(_run())
+
+
+def test_power_destructive_action_denied_without_scope(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(
+                pool, alloc_id, SystemState.READY, destructive_ops=["power"]
+            )
+            resp = await control_tools.power_system(
+                pool, _admin_ctx(), system_id=sys_id, action="reset"
+            )
+            assert resp.status == "error" and resp.error_category == "authorization_denied"
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM jobs WHERE kind = 'power'")
+                jobs_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT args_digest FROM audit_log "
+                    "WHERE object_id = %s AND transition = 'power:denied'",
+                    (sys_id,),
+                )
+                audit_row = await cur.fetchone()
+        assert jobs_row is not None and jobs_row["n"] == 0
+        assert audit_row is not None
+        assert audit_row["args_digest"] == args_digest(
+            {"system_id": sys_id, "missing": ["capability_scope"]}
+        )
 
     asyncio.run(_run())
 
@@ -282,8 +322,10 @@ def test_power_unknown_action_is_config_error(migrated_url: str) -> None:
 def test_power_non_started_system_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            alloc_id = await _granted_allocation(pool)
-            sys_id = await _seed_system(pool, alloc_id, SystemState.DEFINED)
+            alloc_id = await _granted_allocation(pool, scope={"destructive_ops": ["power"]})
+            sys_id = await _seed_system(
+                pool, alloc_id, SystemState.DEFINED, destructive_ops=["power"]
+            )
             resp = await control_tools.power_system(
                 pool, _admin_ctx(), system_id=sys_id, action="off"
             )
