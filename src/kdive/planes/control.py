@@ -11,9 +11,9 @@ from kdive.db.repositories import SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, System
 from kdive.domain.state import SystemState
+from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import PowerPayload, SystemPayload, load_payload
-from kdive.mcp.job_context import context_from_job as job_context_from_job
 from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 from kdive.providers.local_libvirt.provisioning import domain_name_for
 from kdive.providers.ports import Controller

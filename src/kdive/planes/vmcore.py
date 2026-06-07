@@ -14,9 +14,9 @@ from kdive.db.repositories import ARTIFACTS, SYSTEMS
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, System
+from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import CaptureVmcorePayload, load_payload
-from kdive.mcp.job_context import context_from_job as job_context_from_job
 from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 from kdive.providers.ports import Retriever
 from kdive.security import audit

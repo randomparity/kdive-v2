@@ -6,7 +6,7 @@ from uuid import UUID
 
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job
-from kdive.mcp.job_context import authorizing, context_from_job
+from kdive.jobs.context import authorizing, context_from_job
 from kdive.mcp.responses import ToolResponse
 
 

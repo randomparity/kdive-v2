@@ -15,9 +15,9 @@ from kdive.db.repositories import ARTIFACTS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, Sensitivity, System
 from kdive.domain.state import IllegalTransition, SystemState
+from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import ReprovisionPayload, SystemPayload, load_payload
-from kdive.mcp.job_context import context_from_job as job_context_from_job
 from kdive.profiles.provisioning import (
     ProvisioningProfile,
     profile_digest,
