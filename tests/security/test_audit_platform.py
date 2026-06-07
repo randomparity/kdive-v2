@@ -13,7 +13,7 @@ from uuid import UUID
 
 import psycopg
 
-from kdive.security.audit import args_digest, record_platform
+from kdive.security.audit import PlatformAuditEvent, args_digest, record_platform
 
 
 async def _connect(url: str) -> psycopg.AsyncConnection:
@@ -35,10 +35,12 @@ def test_record_platform_writes_row_for_empty_projects(migrated_url: str) -> Non
                 conn,
                 principal="platform-bot",
                 agent_session="sess-1",
-                platform_role="platform_auditor",
-                tool="accounting.report",
-                scope="all-projects",
-                args={"scope": "all-projects"},
+                event=PlatformAuditEvent(
+                    tool="accounting.report",
+                    scope="all-projects",
+                    args={"scope": "all-projects"},
+                    platform_role="platform_auditor",
+                ),
             )
             assert isinstance(audit_id, UUID)
             async with conn.cursor() as cur:
@@ -68,10 +70,12 @@ def test_record_platform_persists_null_platform_role_for_member_read(migrated_ur
                 conn,
                 principal="alice",
                 agent_session=None,
-                platform_role=None,
-                tool="accounting.report",
-                scope="granted-set:proj-a,proj-b",
-                args={},
+                event=PlatformAuditEvent(
+                    tool="accounting.report",
+                    scope="granted-set:proj-a,proj-b",
+                    args={},
+                    platform_role=None,
+                ),
             )
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -93,10 +97,12 @@ def test_record_platform_writes_denial_row(migrated_url: str) -> None:
                 conn,
                 principal="operator-bot",
                 agent_session="sess-9",
-                platform_role="platform_operator",
-                tool="accounting.report",
-                scope="all-projects",
-                args={"scope": "all-projects"},
+                event=PlatformAuditEvent(
+                    tool="accounting.report",
+                    scope="all-projects",
+                    args={"scope": "all-projects"},
+                    platform_role="platform_operator",
+                ),
             )
             assert isinstance(audit_id, UUID)
             assert await _count_platform_audit(conn) == 1
@@ -116,10 +122,12 @@ def test_record_platform_composes_in_caller_transaction(migrated_url: str) -> No
                         conn,
                         principal="platform-bot",
                         agent_session=None,
-                        platform_role="platform_auditor",
-                        tool="accounting.report",
-                        scope="all-projects",
-                        args={},
+                        event=PlatformAuditEvent(
+                            tool="accounting.report",
+                            scope="all-projects",
+                            args={},
+                            platform_role="platform_auditor",
+                        ),
                     )
                     raise _Boom
             except _Boom:

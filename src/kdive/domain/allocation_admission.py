@@ -240,12 +240,14 @@ async def _grant(
     await audit.record(
         conn,
         request.ctx,
-        tool="allocations.request",
-        object_kind="allocations",
-        object_id=allocation.id,
-        transition="->granted",
-        args={"resource_id": str(request.resource.id), "project": request.project},
-        project=request.project,
+        audit.AuditEvent(
+            tool="allocations.request",
+            object_kind="allocations",
+            object_id=allocation.id,
+            transition="->granted",
+            args={"resource_id": str(request.resource.id), "project": request.project},
+            project=request.project,
+        ),
     )
     return AdmissionOutcome(granted=True, allocation=allocation)
 

@@ -190,24 +190,28 @@ async def _create_locked(
         await audit.record(
             conn,
             ctx,
-            tool="runs.create",
-            object_kind="runs",
-            object_id=run.id,
-            transition="->created",
-            args={"investigation_id": str(inv_uid), "system_id": str(sys_uid)},
-            project=project,
+            audit.AuditEvent(
+                tool="runs.create",
+                object_kind="runs",
+                object_id=run.id,
+                transition="->created",
+                args={"investigation_id": str(inv_uid), "system_id": str(sys_uid)},
+                project=project,
+            ),
         )
         if inv.state is InvestigationState.OPEN:
             await INVESTIGATIONS.update_state(conn, inv_uid, InvestigationState.ACTIVE)
             await audit.record(
                 conn,
                 ctx,
-                tool="runs.create",
-                object_kind="investigations",
-                object_id=inv_uid,
-                transition="open->active",
-                args={"investigation_id": str(inv_uid)},
-                project=project,
+                audit.AuditEvent(
+                    tool="runs.create",
+                    object_kind="investigations",
+                    object_id=inv_uid,
+                    transition="open->active",
+                    args={"investigation_id": str(inv_uid)},
+                    project=project,
+                ),
             )
         await conn.execute(
             "UPDATE investigations SET last_run_at = now() WHERE id = %s", (inv_uid,)
@@ -301,12 +305,14 @@ async def _build_locked(
             await audit.record(
                 conn,
                 ctx,
-                tool="runs.build",
-                object_kind="runs",
-                object_id=run.id,
-                transition="created->running",
-                args={"run_id": str(run.id)},
-                project=run.project,
+                audit.AuditEvent(
+                    tool="runs.build",
+                    object_kind="runs",
+                    object_id=run.id,
+                    transition="created->running",
+                    args={"run_id": str(run.id)},
+                    project=run.project,
+                ),
             )
         job = await _enqueue_build(conn, ctx, run, cmdline)
     return _run_job_envelope(job, run.id)
@@ -396,12 +402,14 @@ async def _finalize_build(
         await audit.record(
             conn,
             job_context_from_job(job, run.project),
-            tool="runs.build",
-            object_kind="runs",
-            object_id=run.id,
-            transition="running->succeeded",
-            args={"run_id": str(run.id)},
-            project=run.project,
+            audit.AuditEvent(
+                tool="runs.build",
+                object_kind="runs",
+                object_id=run.id,
+                transition="running->succeeded",
+                args={"run_id": str(run.id)},
+                project=run.project,
+            ),
         )
 
 
@@ -575,12 +583,14 @@ async def _finalize_external_build(
         await audit.record(
             conn,
             ctx,
-            tool="runs.complete_build",
-            object_kind="runs",
-            object_id=run.id,
-            transition="created->succeeded",
-            args={"run_id": str(run.id)},
-            project=run.project,
+            audit.AuditEvent(
+                tool="runs.complete_build",
+                object_kind="runs",
+                object_id=run.id,
+                transition="created->succeeded",
+                args={"run_id": str(run.id)},
+                project=run.project,
+            ),
         )
         await upload_manifest.delete_manifest(conn, "runs", run.id)
     return _complete_envelope(run.id, result)
@@ -741,12 +751,14 @@ async def _enqueue_step(
         await audit.record(
             conn,
             ctx,
-            tool=tool,
-            object_kind="runs",
-            object_id=run.id,
-            transition=step,
-            args={"run_id": str(run.id)},
-            project=run.project,
+            audit.AuditEvent(
+                tool=tool,
+                object_kind="runs",
+                object_id=run.id,
+                transition=step,
+                args={"run_id": str(run.id)},
+                project=run.project,
+            ),
         )
     return _run_job_envelope(job, run.id)
 

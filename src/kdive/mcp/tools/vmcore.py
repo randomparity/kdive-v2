@@ -252,12 +252,14 @@ async def _finalize_capture(
         await audit.record(
             conn,
             job_context_from_job(job, system.project),
-            tool="vmcore.fetch",
-            object_kind="systems",
-            object_id=system.id,
-            transition="capture_vmcore",
-            args={"system_id": str(system.id)},
-            project=system.project,
+            audit.AuditEvent(
+                tool="vmcore.fetch",
+                object_kind="systems",
+                object_id=system.id,
+                transition="capture_vmcore",
+                args={"system_id": str(system.id)},
+                project=system.project,
+            ),
         )
     return str(output.raw.key)
 

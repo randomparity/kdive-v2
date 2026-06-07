@@ -311,10 +311,12 @@ async def _report_granted_set(
                     conn,
                     principal=ctx.principal,
                     agent_session=ctx.agent_session,
-                    platform_role=None,
-                    tool=_REPORT_TOOL,
-                    scope=scope_value,
-                    args=_report_args(_SCOPE_GRANTED_SET, named, group_by, window),
+                    event=audit.PlatformAuditEvent(
+                        tool=_REPORT_TOOL,
+                        scope=scope_value,
+                        args=_report_args(_SCOPE_GRANTED_SET, named, group_by, window),
+                        platform_role=None,
+                    ),
                 )
     return _report_response(_SCOPE_GRANTED_SET, group_by, targets, rollup)
 
@@ -365,10 +367,12 @@ async def _report_all_projects(
                 conn,
                 principal=ctx.principal,
                 agent_session=ctx.agent_session,
-                platform_role=_held_platform_roles(ctx),
-                tool=_REPORT_TOOL,
-                scope=_SCOPE_ALL_PROJECTS,
-                args=_report_args(_SCOPE_ALL_PROJECTS, None, group_by, window),
+                event=audit.PlatformAuditEvent(
+                    tool=_REPORT_TOOL,
+                    scope=_SCOPE_ALL_PROJECTS,
+                    args=_report_args(_SCOPE_ALL_PROJECTS, None, group_by, window),
+                    platform_role=_held_platform_roles(ctx),
+                ),
             )
     return _report_response(_SCOPE_ALL_PROJECTS, group_by, targets, rollup)
 
@@ -394,10 +398,12 @@ async def _audit_all_projects_denial(
             conn,
             principal=ctx.principal,
             agent_session=ctx.agent_session,
-            platform_role=held,
-            tool=_REPORT_TOOL,
-            scope=_SCOPE_ALL_PROJECTS,
-            args=_report_args(_SCOPE_ALL_PROJECTS, None, group_by, window),
+            event=audit.PlatformAuditEvent(
+                tool=_REPORT_TOOL,
+                scope=_SCOPE_ALL_PROJECTS,
+                args=_report_args(_SCOPE_ALL_PROJECTS, None, group_by, window),
+                platform_role=held,
+            ),
         )
 
 
@@ -649,12 +655,14 @@ async def _audit_set(
     await audit.record(
         conn,
         ctx,
-        tool=f"accounting.{tool}",
-        object_kind="budgets" if tool == "set_budget" else "quotas",
-        object_id=_ACCOUNTING_AUDIT_ID,
-        transition=f"{tool}:applied",
-        args={"project": project, **values},
-        project=project,
+        audit.AuditEvent(
+            tool=f"accounting.{tool}",
+            object_kind="budgets" if tool == "set_budget" else "quotas",
+            object_id=_ACCOUNTING_AUDIT_ID,
+            transition=f"{tool}:applied",
+            args={"project": project, **values},
+            project=project,
+        ),
     )
 
 

@@ -14,7 +14,7 @@ from kdive.db.repositories import ALLOCATIONS, RESOURCES
 from kdive.domain.models import Allocation, Resource, ResourceKind
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import AuthError, RequestContext
-from kdive.security.audit import args_digest, record
+from kdive.security.audit import AuditEvent, args_digest, record
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -99,12 +99,14 @@ def test_record_writes_one_row(migrated_url: str) -> None:
             audit_id = await record(
                 conn,
                 _ctx(),
-                tool="systems.teardown",
-                object_kind="systems",
-                object_id=obj_id,
-                transition="ready->torn_down",
-                args={"system_id": str(obj_id)},
-                project="proj",
+                AuditEvent(
+                    tool="systems.teardown",
+                    object_kind="systems",
+                    object_id=obj_id,
+                    transition="ready->torn_down",
+                    args={"system_id": str(obj_id)},
+                    project="proj",
+                ),
             )
             assert isinstance(audit_id, UUID)
             async with conn.cursor() as cur:
@@ -136,12 +138,14 @@ def test_record_persists_null_agent_session(migrated_url: str) -> None:
             audit_id = await record(
                 conn,
                 ctx,
-                tool="systems.teardown",
-                object_kind="systems",
-                object_id=uuid4(),
-                transition="ready->torn_down",
-                args={},
-                project="proj",
+                AuditEvent(
+                    tool="systems.teardown",
+                    object_kind="systems",
+                    object_id=uuid4(),
+                    transition="ready->torn_down",
+                    args={},
+                    project="proj",
+                ),
             )
             async with conn.cursor() as cur:
                 await cur.execute("SELECT agent_session FROM audit_log WHERE id = %s", (audit_id,))
@@ -159,12 +163,14 @@ def test_record_rejects_ungranted_project(migrated_url: str) -> None:
                 await record(
                     conn,
                     _ctx(),
-                    tool="systems.teardown",
-                    object_kind="systems",
-                    object_id=uuid4(),
-                    transition="ready->torn_down",
-                    args={},
-                    project="not-granted",
+                    AuditEvent(
+                        tool="systems.teardown",
+                        object_kind="systems",
+                        object_id=uuid4(),
+                        transition="ready->torn_down",
+                        args={},
+                        project="not-granted",
+                    ),
                 )
             assert await _count_audit(conn) == 0
 
@@ -180,12 +186,14 @@ def test_record_in_transition_transaction_is_atomic(migrated_url: str) -> None:
                 await record(
                     conn,
                     _ctx(),
-                    tool="allocations.grant",
-                    object_kind="allocations",
-                    object_id=alloc.id,
-                    transition="requested->granted",
-                    args={},
-                    project="proj",
+                    AuditEvent(
+                        tool="allocations.grant",
+                        object_kind="allocations",
+                        object_id=alloc.id,
+                        transition="requested->granted",
+                        args={},
+                        project="proj",
+                    ),
                 )
             assert await _count_audit(conn) == 1  # exactly one row per transition
             updated = await ALLOCATIONS.get(conn, alloc.id)
@@ -207,12 +215,14 @@ def test_record_rolls_back_with_failed_transition(migrated_url: str) -> None:
                     await record(
                         conn,
                         _ctx(),
-                        tool="allocations.grant",
-                        object_kind="allocations",
-                        object_id=alloc.id,
-                        transition="requested->granted",
-                        args={},
-                        project="proj",
+                        AuditEvent(
+                            tool="allocations.grant",
+                            object_kind="allocations",
+                            object_id=alloc.id,
+                            transition="requested->granted",
+                            args={},
+                            project="proj",
+                        ),
                     )
                     raise _Boom  # abort the whole transaction
             assert await _count_audit(conn) == 0  # audit row rolled back with the transition

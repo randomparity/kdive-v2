@@ -248,23 +248,27 @@ async def _insert_session_locked(
         await audit.record(
             conn,
             ctx,
-            tool="debug.start_session",
-            object_kind="debug_sessions",
-            object_id=session.id,
-            transition="->attach",
-            args={"run_id": str(run.id)},
-            project=run.project,
+            audit.AuditEvent(
+                tool="debug.start_session",
+                object_kind="debug_sessions",
+                object_id=session.id,
+                transition="->attach",
+                args={"run_id": str(run.id)},
+                project=run.project,
+            ),
         )
         await DEBUG_SESSIONS.update_state(conn, session.id, DebugSessionState.LIVE)
         await audit.record(
             conn,
             ctx,
-            tool="debug.start_session",
-            object_kind="debug_sessions",
-            object_id=session.id,
-            transition="attach->live",
-            args={"run_id": str(run.id)},
-            project=run.project,
+            audit.AuditEvent(
+                tool="debug.start_session",
+                object_kind="debug_sessions",
+                object_id=session.id,
+                transition="attach->live",
+                args={"run_id": str(run.id)},
+                project=run.project,
+            ),
         )
     return ToolResponse.success(
         str(session.id),
@@ -345,12 +349,14 @@ async def _detach_locked(
         await audit.record(
             conn,
             ctx,
-            tool="debug.end_session",
-            object_kind="debug_sessions",
-            object_id=session_id,
-            transition=f"{row['state']}->detached",
-            args={"session_id": str(session_id)},
-            project=row["project"],
+            audit.AuditEvent(
+                tool="debug.end_session",
+                object_kind="debug_sessions",
+                object_id=session_id,
+                transition=f"{row['state']}->detached",
+                args={"session_id": str(session_id)},
+                project=row["project"],
+            ),
         )
     return _detached_envelope(session_id, row["project"])
 

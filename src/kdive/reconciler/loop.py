@@ -179,12 +179,14 @@ async def _expire_one(conn: AsyncConnection, allocation_id: UUID, project: str) 
         await audit.record_system(
             conn,
             principal=SYSTEM_RECONCILER_PRINCIPAL,
-            tool="reconciler.sweep_expired",
-            object_kind="allocations",
-            object_id=allocation_id,
-            transition=f"{alloc.state.value}->expired",
-            args={"allocation_id": str(allocation_id)},
-            project=project,
+            event=audit.AuditEvent(
+                tool="reconciler.sweep_expired",
+                object_kind="allocations",
+                object_id=allocation_id,
+                transition=f"{alloc.state.value}->expired",
+                args={"allocation_id": str(allocation_id)},
+                project=project,
+            ),
         )
         await accounting.reconcile(conn, alloc)
     _log.info("reconciler: allocation %s lease expired -> expired + reconciled", allocation_id)

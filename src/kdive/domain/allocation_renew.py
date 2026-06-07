@@ -214,12 +214,14 @@ async def _apply_renew(
     await audit.record(
         conn,
         ctx,
-        tool="allocations.renew",
-        object_kind="allocations",
-        object_id=alloc.id,
-        transition=f"renew:+{extension.added_hours}h",
-        args={"allocation_id": str(alloc.id)},
-        project=alloc.project,
+        audit.AuditEvent(
+            tool="allocations.renew",
+            object_kind="allocations",
+            object_id=alloc.id,
+            transition=f"renew:+{extension.added_hours}h",
+            args={"allocation_id": str(alloc.id)},
+            project=alloc.project,
+        ),
     )
     return RenewOutcome(renewed=True, allocation=extended)
 

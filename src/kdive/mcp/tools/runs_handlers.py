@@ -51,12 +51,14 @@ async def _fail_build(conn: AsyncConnection, job: Job, run: Run, category: Error
             await audit.record(
                 conn,
                 job_context_from_job(job, run.project),
-                tool="runs.build",
-                object_kind="runs",
-                object_id=run.id,
-                transition="running->failed",
-                args={"run_id": str(run.id)},
-                project=run.project,
+                audit.AuditEvent(
+                    tool="runs.build",
+                    object_kind="runs",
+                    object_id=run.id,
+                    transition="running->failed",
+                    args={"run_id": str(run.id)},
+                    project=run.project,
+                ),
             )
     except IllegalTransition:
         _log.warning(
@@ -150,12 +152,14 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
         await audit.record(
             conn,
             job_ctx,
-            tool="runs.install",
-            object_kind="runs",
-            object_id=run_id,
-            transition="install",
-            args={"run_id": str(run_id)},
-            project=run.project,
+            audit.AuditEvent(
+                tool="runs.install",
+                object_kind="runs",
+                object_id=run_id,
+                transition="install",
+                args={"run_id": str(run_id)},
+                project=run.project,
+            ),
         )
         return {"system_id": str(run.system_id)}
 
@@ -200,12 +204,14 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
         await audit.record(
             conn,
             job_ctx,
-            tool="runs.boot",
-            object_kind="runs",
-            object_id=run_id,
-            transition="boot",
-            args={"run_id": str(run_id)},
-            project=run.project,
+            audit.AuditEvent(
+                tool="runs.boot",
+                object_kind="runs",
+                object_id=run_id,
+                transition="boot",
+                args={"run_id": str(run_id)},
+                project=run.project,
+            ),
         )
         return {"system_id": str(run.system_id)}
 

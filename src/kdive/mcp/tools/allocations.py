@@ -178,12 +178,14 @@ async def _transition_and_audit(
     await audit.record(
         conn,
         ctx,
-        tool="allocations.release",
-        object_kind="allocations",
-        object_id=alloc_id,
-        transition=f"{frm.value}->{to.value}",
-        args={"allocation_id": str(alloc_id)},
-        project=project,
+        audit.AuditEvent(
+            tool="allocations.release",
+            object_kind="allocations",
+            object_id=alloc_id,
+            transition=f"{frm.value}->{to.value}",
+            args={"allocation_id": str(alloc_id)},
+            project=project,
+        ),
     )
 
 

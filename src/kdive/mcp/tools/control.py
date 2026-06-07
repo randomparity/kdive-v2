@@ -136,12 +136,14 @@ async def power_handler(conn: AsyncConnection, job: Job, control: Controller) ->
         await audit.record(
             conn,
             job_context_from_job(job, system.project),
-            tool="control.power",
-            object_kind="systems",
-            object_id=system_id,
-            transition=f"power:{action.value}",
-            args={"system_id": str(system_id), "action": action.value},
-            project=system.project,
+            audit.AuditEvent(
+                tool="control.power",
+                object_kind="systems",
+                object_id=system_id,
+                transition=f"power:{action.value}",
+                args={"system_id": str(system_id), "action": action.value},
+                project=system.project,
+            ),
         )
     return str(system_id)
 
@@ -179,12 +181,14 @@ async def force_crash_system(
                     await audit.record(
                         conn,
                         ctx,
-                        tool="control.force_crash",
-                        object_kind="systems",
-                        object_id=uid,
-                        transition="force_crash:denied",
-                        args={"system_id": system_id, "missing": denied.missing},
-                        project=system.project,
+                        audit.AuditEvent(
+                            tool="control.force_crash",
+                            object_kind="systems",
+                            object_id=uid,
+                            transition="force_crash:denied",
+                            args={"system_id": system_id, "missing": denied.missing},
+                            project=system.project,
+                        ),
                     )
                 return ToolResponse.failure(system_id, ErrorCategory.AUTHORIZATION_DENIED)
             if system.state is not SystemState.READY:
@@ -227,12 +231,14 @@ async def force_crash_handler(conn: AsyncConnection, job: Job, control: Controll
             await audit.record(
                 conn,
                 job_context_from_job(job, system.project),
-                tool="control.force_crash",
-                object_kind="systems",
-                object_id=system_id,
-                transition="ready->crashed",
-                args={"system_id": str(system_id)},
-                project=system.project,
+                audit.AuditEvent(
+                    tool="control.force_crash",
+                    object_kind="systems",
+                    object_id=system_id,
+                    transition="ready->crashed",
+                    args={"system_id": str(system_id)},
+                    project=system.project,
+                ),
             )
         await _detach_sessions(conn, job, system)
     return str(system_id)
@@ -263,12 +269,14 @@ async def _detach_sessions(conn: AsyncConnection, job: Job, system: System) -> N
         await audit.record(
             conn,
             job_context_from_job(job, system.project),
-            tool="control.force_crash",
-            object_kind="debug_sessions",
-            object_id=session_id,
-            transition=f"{old_state}->detached",
-            args={"system_id": str(system.id)},
-            project=system.project,
+            audit.AuditEvent(
+                tool="control.force_crash",
+                object_kind="debug_sessions",
+                object_id=session_id,
+                transition=f"{old_state}->detached",
+                args={"system_id": str(system.id)},
+                project=system.project,
+            ),
         )
 
 

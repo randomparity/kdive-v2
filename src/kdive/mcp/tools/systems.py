@@ -124,12 +124,14 @@ async def _audit_transition(
     await audit.record(
         conn,
         job_context_from_job(job, project),
-        tool=tool,
-        object_kind="systems",
-        object_id=object_id,
-        transition=transition,
-        args={"system_id": str(object_id)},
-        project=project,
+        audit.AuditEvent(
+            tool=tool,
+            object_kind="systems",
+            object_id=object_id,
+            transition=transition,
+            args={"system_id": str(object_id)},
+            project=project,
+        ),
     )
 
 
@@ -296,12 +298,14 @@ async def _admit_defined(
     await audit.record(
         conn,
         ctx,
-        tool="systems.provision",
-        object_kind="systems",
-        object_id=system.id,
-        transition="defined->provisioning",
-        args={"allocation_id": str(alloc.id)},
-        project=alloc.project,
+        audit.AuditEvent(
+            tool="systems.provision",
+            object_kind="systems",
+            object_id=system.id,
+            transition="defined->provisioning",
+            args={"allocation_id": str(alloc.id)},
+            project=alloc.project,
+        ),
     )
     job = await queue.enqueue(
         conn,
@@ -350,23 +354,27 @@ async def _create_provisioning_system(
     await audit.record(
         conn,
         ctx,
-        tool="systems.provision",
-        object_kind="systems",
-        object_id=system.id,
-        transition="->provisioning",
-        args={"allocation_id": str(alloc.id)},
-        project=alloc.project,
+        audit.AuditEvent(
+            tool="systems.provision",
+            object_kind="systems",
+            object_id=system.id,
+            transition="->provisioning",
+            args={"allocation_id": str(alloc.id)},
+            project=alloc.project,
+        ),
     )
     await ALLOCATIONS.update_state(conn, alloc.id, AllocationState.ACTIVE)
     await audit.record(
         conn,
         ctx,
-        tool="systems.provision",
-        object_kind="allocations",
-        object_id=alloc.id,
-        transition="granted->active",
-        args={"allocation_id": str(alloc.id)},
-        project=alloc.project,
+        audit.AuditEvent(
+            tool="systems.provision",
+            object_kind="allocations",
+            object_id=alloc.id,
+            transition="granted->active",
+            args={"allocation_id": str(alloc.id)},
+            project=alloc.project,
+        ),
     )
     job = await queue.enqueue(
         conn,
@@ -461,23 +469,27 @@ async def _define_locked(
         await audit.record(
             conn,
             ctx,
-            tool="systems.define",
-            object_kind="systems",
-            object_id=system.id,
-            transition="->defined",
-            args={"allocation_id": str(alloc_id)},
-            project=alloc.project,
+            audit.AuditEvent(
+                tool="systems.define",
+                object_kind="systems",
+                object_id=system.id,
+                transition="->defined",
+                args={"allocation_id": str(alloc_id)},
+                project=alloc.project,
+            ),
         )
         await ALLOCATIONS.update_state(conn, alloc_id, AllocationState.ACTIVE)
         await audit.record(
             conn,
             ctx,
-            tool="systems.define",
-            object_kind="allocations",
-            object_id=alloc_id,
-            transition="granted->active",
-            args={"allocation_id": str(alloc_id)},
-            project=alloc.project,
+            audit.AuditEvent(
+                tool="systems.define",
+                object_kind="allocations",
+                object_id=alloc_id,
+                transition="granted->active",
+                args={"allocation_id": str(alloc_id)},
+                project=alloc.project,
+            ),
         )
         return _defined_envelope(system)
 
@@ -548,12 +560,14 @@ async def _reprovision_locked(
             await audit.record(
                 conn,
                 ctx,
-                tool="systems.reprovision",
-                object_kind="systems",
-                object_id=system_id,
-                transition="reprovision:denied",
-                args={"system_id": str(system_id), "missing": denied.missing},
-                project=system.project,
+                audit.AuditEvent(
+                    tool="systems.reprovision",
+                    object_kind="systems",
+                    object_id=system_id,
+                    transition="reprovision:denied",
+                    args={"system_id": str(system_id), "missing": denied.missing},
+                    project=system.project,
+                ),
             )
             return ToolResponse.failure(str(system_id), ErrorCategory.AUTHORIZATION_DENIED)
         digest = profile_digest(profile)
@@ -596,12 +610,14 @@ async def _admit_reprovision(
     await audit.record(
         conn,
         ctx,
-        tool="systems.reprovision",
-        object_kind="systems",
-        object_id=system.id,
-        transition="ready->reprovisioning",
-        args={"system_id": str(system.id), "profile_digest": digest},
-        project=system.project,
+        audit.AuditEvent(
+            tool="systems.reprovision",
+            object_kind="systems",
+            object_id=system.id,
+            transition="ready->reprovisioning",
+            args={"system_id": str(system.id), "profile_digest": digest},
+            project=system.project,
+        ),
     )
     job = await queue.enqueue(
         conn,

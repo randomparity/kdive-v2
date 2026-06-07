@@ -103,12 +103,14 @@ async def open_investigation(
             await audit.record(
                 conn,
                 ctx,
-                tool="investigations.open",
-                object_kind="investigations",
-                object_id=inv.id,
-                transition="->open",
-                args={"project": project, "title": title},
-                project=project,
+                audit.AuditEvent(
+                    tool="investigations.open",
+                    object_kind="investigations",
+                    object_id=inv.id,
+                    transition="->open",
+                    args={"project": project, "title": title},
+                    project=project,
+                ),
             )
         return ToolResponse.success(
             str(inv.id),
@@ -154,12 +156,14 @@ async def _close_locked(
         await audit.record(
             conn,
             ctx,
-            tool="investigations.close",
-            object_kind="investigations",
-            object_id=uid,
-            transition=f"{old.value}->closed",
-            args={"investigation_id": str(uid)},
-            project=project,
+            audit.AuditEvent(
+                tool="investigations.close",
+                object_kind="investigations",
+                object_id=uid,
+                transition=f"{old.value}->closed",
+                args={"investigation_id": str(uid)},
+                project=project,
+            ),
         )
     return ToolResponse.success(
         str(uid), "closed", suggested_next_actions=["investigations.get"], data={"project": project}
@@ -230,12 +234,14 @@ async def _link_locked(
         await audit.record(
             conn,
             ctx,
-            tool="investigations.link",
-            object_kind="investigations",
-            object_id=uid,
-            transition="link",
-            args={"tracker": ref.tracker, "id": ref.id},
-            project=project,
+            audit.AuditEvent(
+                tool="investigations.link",
+                object_kind="investigations",
+                object_id=uid,
+                transition="link",
+                args={"tracker": ref.tracker, "id": ref.id},
+                project=project,
+            ),
         )
         updated = current.model_copy(update={"external_refs": kept})
     return _envelope_for_investigation(updated)
@@ -264,12 +270,14 @@ async def _unlink_locked(
             await audit.record(
                 conn,
                 ctx,
-                tool="investigations.unlink",
-                object_kind="investigations",
-                object_id=uid,
-                transition="unlink",
-                args={"tracker": key[0], "id": key[1]},
-                project=project,
+                audit.AuditEvent(
+                    tool="investigations.unlink",
+                    object_kind="investigations",
+                    object_id=uid,
+                    transition="unlink",
+                    args={"tracker": key[0], "id": key[1]},
+                    project=project,
+                ),
             )
         updated = current.model_copy(update={"external_refs": kept})
     return _envelope_for_investigation(updated)
