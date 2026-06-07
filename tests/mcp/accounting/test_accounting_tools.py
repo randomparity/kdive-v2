@@ -50,6 +50,9 @@ def test_estimate_returns_rate_window_product_and_breakdown(migrated_url: str) -
         # coeff(local)=1.0; rate = 1.0*(1.0*2 + 0.25*4) = 3.0; estimate = 3.0*3 = 9.0000.
         assert resp.status == "ok"
         assert resp.error_category is None
+        assert resp.suggested_next_actions == ["allocations.request"]
+        assert resp.data["project"] == "proj"
+        assert resp.data["cost_class"] == "local"
         assert resp.data["estimate_kcu"] == "9.0000"
         assert resp.data["rate_kcu_per_hr"] == "3.0000"
         assert resp.data["breakdown_vcpu_kcu_per_hr"] == "2.0000"
@@ -91,6 +94,23 @@ def test_estimate_unknown_cost_class_is_config_error(migrated_url: str) -> None:
             )
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
+        assert resp.suggested_next_actions == ["accounting.estimate"]
+
+    asyncio.run(_run())
+
+
+def test_estimate_malformed_payload_shape_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await acct_tools.estimate(
+                pool,
+                _ctx(),
+                project="proj",
+                request={"vcpus": 1, "memory_gb": 1, "unexpected": "value"},
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.suggested_next_actions == ["accounting.estimate"]
 
     asyncio.run(_run())
 

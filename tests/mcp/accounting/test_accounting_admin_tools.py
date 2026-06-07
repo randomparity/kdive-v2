@@ -43,13 +43,22 @@ def test_set_budget_creates_row(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             resp = await acct_tools.set_budget(pool, _ctx(), project="proj", limit_kcu="250")
             assert resp.status == "ok"
+            assert resp.suggested_next_actions == [
+                "accounting.usage_project",
+                "allocations.request",
+            ]
             assert resp.data["project"] == "proj"
             assert resp.data["limit_kcu"] == "250"
             async with pool.connection() as conn:
                 budget = await BUDGETS.get(conn, "proj")
+                cur = await conn.execute(
+                    "SELECT tool, object_kind, transition, project FROM audit_log"
+                )
+                audit_row = await cur.fetchone()
             assert budget is not None
             assert budget.limit_kcu == Decimal("250")
             assert budget.spent_kcu == Decimal(0)
+            assert audit_row == ("accounting.set_budget", "budgets", "set_budget:applied", "proj")
 
     asyncio.run(_run())
 
@@ -101,6 +110,7 @@ def test_set_budget_malformed_limit_is_config_error(migrated_url: str, bad: str)
             resp = await acct_tools.set_budget(pool, _ctx(), project="proj", limit_kcu=bad)
             assert resp.status == "error"
             assert resp.error_category == "configuration_error"
+            assert resp.suggested_next_actions == ["accounting.set_budget"]
             async with pool.connection() as conn:
                 budget = await BUDGETS.get(conn, "proj")
             assert budget is None  # no row written on a malformed value
@@ -115,13 +125,20 @@ def test_set_quota_creates_row(migrated_url: str) -> None:
                 pool, _ctx(), project="proj", max_concurrent_allocations=3, max_concurrent_systems=5
             )
             assert resp.status == "ok"
+            assert resp.suggested_next_actions == [
+                "accounting.usage_project",
+                "allocations.request",
+            ]
             assert resp.data["max_concurrent_allocations"] == "3"
             assert resp.data["max_concurrent_systems"] == "5"
             async with pool.connection() as conn:
                 quota = await QUOTAS.get(conn, "proj")
+                cur = await conn.execute("SELECT tool, object_kind, transition FROM audit_log")
+                audit_row = await cur.fetchone()
             assert quota is not None
             assert quota.max_concurrent_allocations == 3
             assert quota.max_concurrent_systems == 5
+            assert audit_row == ("accounting.set_quota", "quotas", "set_quota:applied")
 
     asyncio.run(_run())
 
@@ -176,6 +193,7 @@ def test_set_quota_negative_is_config_error(migrated_url: str, allocs: int, syst
             )
             assert resp.status == "error"
             assert resp.error_category == "configuration_error"
+            assert resp.suggested_next_actions == ["accounting.set_quota"]
             async with pool.connection() as conn:
                 quota = await QUOTAS.get(conn, "proj")
             assert quota is None

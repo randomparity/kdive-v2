@@ -223,6 +223,7 @@ def test_all_projects_project_only_token_denied_unaudited(migrated_url: str) -> 
             resp = await acct_tools.report_all_projects(pool, ctx)
         assert resp.status == "error"
         assert resp.error_category == "authorization_denied"
+        assert resp.suggested_next_actions == ["accounting.report_all_projects"]
         assert await _count_platform_audit(migrated_url) == 0
 
     asyncio.run(_run())
@@ -238,6 +239,7 @@ def test_all_projects_operator_denied_but_audited(migrated_url: str) -> None:
             resp = await acct_tools.report_all_projects(pool, ctx)
         assert resp.status == "error"
         assert resp.error_category == "authorization_denied"
+        assert resp.suggested_next_actions == ["accounting.report_all_projects"]
         rows = await _platform_audit_rows(migrated_url)
         assert len(rows) == 1
         assert rows[0][1] == "platform_operator"
@@ -431,6 +433,7 @@ def test_invalid_group_by_is_config_error(migrated_url: str) -> None:
             resp = await acct_tools.report_granted_set(pool, _ctx(), group_by="project")
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
+        assert resp.suggested_next_actions == ["accounting.report_granted_set"]
 
     asyncio.run(_run())
 
@@ -441,6 +444,7 @@ def test_invalid_window_is_config_error(migrated_url: str) -> None:
             resp = await acct_tools.report_granted_set(pool, _ctx(), window=["not-a-date", None])
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
+        assert resp.suggested_next_actions == ["accounting.report_granted_set"]
 
     asyncio.run(_run())
 

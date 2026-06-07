@@ -191,6 +191,7 @@ def test_usage_by_project_reports_totals(migrated_url: str) -> None:
             resp = await acct_tools.usage_project(pool, _ctx(), project="proj")
         assert resp.status == "ok"
         assert resp.error_category is None
+        assert resp.suggested_next_actions == ["accounting.estimate", "allocations.list"]
         assert resp.data["project"] == "proj"
         assert resp.data["spent_kcu"] == "6.0000"
         assert resp.data["budget_remaining"] == "94.0000"
@@ -243,6 +244,7 @@ def test_usage_by_investigation_unknown_id_is_config_error(migrated_url: str) ->
             resp = await acct_tools.usage_investigation(pool, _ctx(), investigation_id=str(uuid4()))
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
+        assert resp.suggested_next_actions == ["accounting.usage_investigation"]
 
     asyncio.run(_run())
 
@@ -253,6 +255,7 @@ def test_usage_by_investigation_malformed_id_is_config_error(migrated_url: str) 
             resp = await acct_tools.usage_investigation(pool, _ctx(), investigation_id="not-a-uuid")
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
+        assert resp.suggested_next_actions == ["accounting.usage_investigation"]
 
     asyncio.run(_run())
 
