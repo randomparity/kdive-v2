@@ -15,7 +15,6 @@ import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated, Any, Protocol
 from uuid import UUID, uuid4
 
@@ -30,9 +29,8 @@ from kdive.db import upload_manifest
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, ARTIFACTS, INVESTIGATIONS, RUNS, SYSTEMS
 from kdive.db.upload_manifest import ManifestEntry
-from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Investigation, Job, JobKind, ResourceKind, Run, Sensitivity, System
+from kdive.domain.models import Investigation, Job, JobKind, Run, Sensitivity
 from kdive.domain.state import (
     AllocationState,
     InvestigationState,
@@ -55,21 +53,15 @@ from kdive.mcp.tools._common import (
     config_error as _config_error,
 )
 from kdive.mcp.tools._common import (
-    context_from_job as job_context_from_job,
-)
-from kdive.mcp.tools._common import (
     job_envelope,
 )
 from kdive.mcp.tools._common import (
     stale_handle as _stale_handle,
 )
+from kdive.planes.runs_shared import existing_build_result as _existing_build_result
+from kdive.planes.runs_shared import install_method_for as _install_method_for
+from kdive.planes.runs_shared import system_required_cmdline
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
-from kdive.providers.composition import (
-    console_log_path as _console_log_path,
-)
-from kdive.providers.composition import (
-    read_console_log as _read_console_log,
-)
 from kdive.providers.composition import (
     validate_external_artifacts,
 )
@@ -89,14 +81,6 @@ _RUN_HOSTABLE = frozenset({SystemState.READY})
 _SYSTEM_GONE = frozenset({SystemState.TORN_DOWN, SystemState.FAILED, SystemState.CRASHED})
 _ALLOC_HOSTABLE = frozenset({AllocationState.ACTIVE})
 _INVESTIGATION_OPEN_FOR_RUN = frozenset({InvestigationState.OPEN, InvestigationState.ACTIVE})
-
-
-def console_log_path(system_id: UUID) -> Path:
-    return _console_log_path(system_id)
-
-
-def read_console_log(path: Path) -> bytes:
-    return _read_console_log(path)
 
 
 def _envelope_for_run(run: Run, *, required_cmdline: str | None = None) -> ToolResponse:
@@ -353,67 +337,6 @@ async def build_run(
             return await _build_locked(conn, ctx, run, cmdline)
 
 
-async def _existing_build_result(conn: AsyncConnection, run_id: UUID) -> dict[str, Any] | None:
-    """Return the recorded `(run_id, "build")` ledger result, or ``None`` (short read)."""
-    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT result FROM run_steps WHERE run_id = %s AND step = 'build'", (run_id,)
-        )
-        row = await cur.fetchone()
-    if row is None:
-        return None
-    result = row["result"]
-    return result if isinstance(result, dict) else None
-
-
-async def _installed_initrd_ref(conn: AsyncConnection, run_id: UUID) -> str | None:
-    """The build ledger's recorded `initrd_ref`, or `None` (server builds record none).
-
-    The external-build lane records the uploaded initrd's object key in the `(run_id, "build")`
-    ledger result (`_finalize_external_build`); a blank/absent value means no external initrd is
-    staged (a bzImage with an embedded initramfs), so the install emits no `<initrd>`.
-    """
-    result = await _existing_build_result(conn, run_id)
-    if result is None:
-        return None
-    ref = result.get("initrd_ref")
-    return ref if isinstance(ref, str) and ref else None
-
-
-async def _finalize_build(
-    conn: AsyncConnection, job: Job, run: Run, result: dict[str, Any]
-) -> None:
-    """Record the build ledger row and drive `running → succeeded` under the per-Run lock."""
-    async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run.id):
-        await conn.execute(
-            "INSERT INTO run_steps (run_id, step, state, result) "
-            "VALUES (%s, 'build', 'succeeded', %s) ON CONFLICT (run_id, step) DO NOTHING",
-            (run.id, Jsonb(result)),
-        )
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute("SELECT state FROM runs WHERE id = %s FOR UPDATE", (run.id,))
-            row = await cur.fetchone()
-        if row is None or RunState(row["state"]) is not RunState.RUNNING:
-            return  # already finalized (succeeded) or superseded (canceled) — no-op
-        await conn.execute(
-            "UPDATE runs SET kernel_ref = %s, debuginfo_ref = %s, state = 'succeeded' "
-            "WHERE id = %s AND state = 'running'",
-            (result["kernel_ref"], result["debuginfo_ref"], run.id),
-        )
-        await audit.record(
-            conn,
-            job_context_from_job(job, run.project),
-            audit.AuditEvent(
-                tool="runs.build",
-                object_kind="runs",
-                object_id=run.id,
-                transition="running->succeeded",
-                args={"run_id": str(run.id)},
-                project=run.project,
-            ),
-        )
-
-
 class _CompleteBuildValidator(Protocol):
     def validate(
         self,
@@ -616,66 +539,6 @@ def _platform_owned_token(cmdline: str | None) -> str | None:
     if not cmdline:
         return None
     return next((tok for tok in _PLATFORM_OWNED_CMDLINE_TOKENS if tok in cmdline), None)
-
-
-def system_required_cmdline(method: CaptureMethod) -> str:
-    """The platform-required kernel args for ``method`` (advertised on the Run and always
-    injected at boot). kdump adds the `crashkernel=` reservation; the other tiers do not."""
-    if method is CaptureMethod.KDUMP:
-        return f"{_REQUIRED_BASE_CMDLINE} {_KDUMP_CRASHKERNEL}"
-    return _REQUIRED_BASE_CMDLINE
-
-
-async def _cmdline_for(conn: AsyncConnection, run: Run, method: CaptureMethod) -> str:
-    """Compose the boot cmdline: the required base, then the Run's debug args (ADR-0061).
-
-    The debug portion is the `(run_id, "build")` ledger `result["cmdline"]`, written by the
-    build handler (server lane, `runs.build cmdline=`) or `complete_build` (external lane). It
-    is appended after :func:`system_required_cmdline`, so the platform-required `root=`/`console`
-    (and the kdump `crashkernel=`) are always present regardless of agent input.
-    """
-    required = system_required_cmdline(method)
-    result = await _existing_build_result(conn, run.id)
-    if result is not None:
-        value = result.get("cmdline")
-        if isinstance(value, str) and value.strip():
-            return f"{required} {value.strip()}"
-    return required
-
-
-def _local_libvirt_section(profile: Mapping[str, Any]) -> Mapping[str, Any]:
-    """The `provider['local-libvirt']` section of a stored profile, or `{}` (loose read).
-
-    Navigates the persisted **alias** key (`ResourceKind.LOCAL_LIBVIRT.value`, `"local-libvirt"`),
-    which is what `ProvisioningProfile.model_dump(by_alias=True)` writes — not the Python
-    attribute spelling `local_libvirt`. A missing/odd-shaped profile yields `{}` rather than
-    raising, mirroring `_cmdline_for`'s loose read (ADR-0051 Decision 1).
-    """
-    provider = profile.get("provider")
-    if not isinstance(provider, Mapping):
-        return {}
-    section = provider.get(ResourceKind.LOCAL_LIBVIRT.value)
-    return section if isinstance(section, Mapping) else {}
-
-
-def _install_method_for(system: System) -> CaptureMethod:
-    """Resolve the capture method the System is provisioned for (ADR-0051 Decision 1).
-
-    A non-empty `crashkernel` reservation means the System is provisioned for kdump
-    (`crashkernel ⇔ kdump`, ADR-0049 §5); otherwise the `debug` flags select the non-kdump
-    method, defaulting to the always-on `console` baseline (ADR-0049 §4).
-    """
-    section = _local_libvirt_section(system.provisioning_profile)
-    crashkernel = section.get("crashkernel")
-    if isinstance(crashkernel, str) and crashkernel.strip():
-        return CaptureMethod.KDUMP
-    debug = section.get("debug")
-    debug = debug if isinstance(debug, Mapping) else {}
-    if debug.get("gdbstub") is True:
-        return CaptureMethod.GDBSTUB
-    if debug.get("preserve_on_crash") is True:
-        return CaptureMethod.HOST_DUMP
-    return CaptureMethod.CONSOLE
 
 
 async def install_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> ToolResponse:
