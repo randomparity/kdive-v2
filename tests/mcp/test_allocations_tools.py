@@ -17,7 +17,7 @@ from kdive.domain.models import Allocation, Budget, Quota
 from kdive.domain.state import AllocationState, IllegalTransition
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
-from kdive.mcp.tools import allocations as alloc_tools
+from kdive.mcp.tools.lifecycle import allocations as alloc_tools
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     register_local_libvirt_resource,

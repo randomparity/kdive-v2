@@ -11,7 +11,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools import artifacts as artifacts_tools
+from kdive.mcp.tools.catalog import artifacts as artifacts_tools
 from kdive.security.rbac import AuthorizationError, Role
 from tests.mcp._seed import seed_crashed_system
 

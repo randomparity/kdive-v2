@@ -32,7 +32,6 @@ from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools import artifacts as artifacts_tools
 from kdive.mcp.tools._common import (
     as_uuid as _as_uuid,
 )
@@ -45,6 +44,7 @@ from kdive.mcp.tools._common import (
 from kdive.mcp.tools._common import (
     job_envelope,
 )
+from kdive.mcp.tools.catalog import artifacts as artifacts_tools
 from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 from kdive.providers.ports import CrashPostmortem
 from kdive.security.context import RequestContext

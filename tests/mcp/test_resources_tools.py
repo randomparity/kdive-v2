@@ -10,7 +10,7 @@ from uuid import uuid4
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools import resources as resources_tools
+from kdive.mcp.tools.catalog import resources as resources_tools
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     register_local_libvirt_resource,

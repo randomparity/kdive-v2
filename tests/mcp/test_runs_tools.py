@@ -36,7 +36,7 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools import runs as runs_tools
+from kdive.mcp.tools.lifecycle import runs as runs_tools
 from kdive.planes import runs as runs_handlers
 from kdive.planes import runs_shared
 from kdive.security.rbac import AuthorizationError, Role
@@ -1720,7 +1720,7 @@ def test_boot_handler_console_is_readable_via_artifacts(
     The SQL-count tests only verify the row was inserted; this test proves the artifacts
     read surface actually returns the console artifact, closing the behavioral gap.
     """
-    from kdive.mcp.tools import artifacts as artifacts_tools
+    from kdive.mcp.tools.catalog import artifacts as artifacts_tools
 
     monkeypatch.setattr(runs_handlers, "object_store_from_env", lambda: minio_store)
     monkeypatch.setattr(runs_handlers, "console_log_path", lambda sid: tmp_path / f"{sid}.log")

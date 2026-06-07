@@ -33,9 +33,9 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools import debug as debug_tools
-from kdive.mcp.tools import debug_ops
-from kdive.mcp.tools.debug_ops import (
+from kdive.mcp.tools.debug import ops as debug_ops
+from kdive.mcp.tools.debug import sessions as debug_tools
+from kdive.mcp.tools.debug.ops import (
     DebugEngineRuntime,
     run_engine_op,
 )

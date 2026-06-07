@@ -14,8 +14,8 @@ import pytest
 from psycopg.rows import dict_row
 
 from kdive.domain.models import Sensitivity
-from kdive.mcp.tools import artifacts as artifacts_tools
-from kdive.mcp.tools import systems as systems_tools
+from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+from kdive.mcp.tools.lifecycle import systems as systems_tools
 from kdive.planes import systems as systems_handlers
 from kdive.store.objectstore import ArtifactWriteRequest, ObjectStore, artifact_key
 from tests.mcp.systems_support import (

@@ -29,7 +29,7 @@ from kdive.domain.state import AllocationState, InvestigationState, RunState, Sy
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools import systems as systems_tools
+from kdive.mcp.tools.lifecycle import systems as systems_tools
 from kdive.planes import systems as systems_handlers
 from kdive.security.rbac import AuthorizationError, Role
 from kdive.store.objectstore import ArtifactWriteRequest, ObjectStore, artifact_key

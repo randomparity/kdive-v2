@@ -17,7 +17,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import BUDGETS, QUOTAS
 from kdive.mcp.auth import AuthError, RequestContext
-from kdive.mcp.tools import accounting as acct_tools
+from kdive.mcp.tools.accounting import usage as acct_tools
 from kdive.security.rbac import AuthorizationError, Role
 
 

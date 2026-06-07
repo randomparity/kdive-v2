@@ -39,7 +39,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
-from kdive.mcp.tools.debug_ops import DebugEngineRuntime, register_debug_ops
+from kdive.mcp.tools.debug.ops import DebugEngineRuntime, register_debug_ops
 from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.ports import Connector

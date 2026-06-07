@@ -18,20 +18,15 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import build_verifier
-from kdive.mcp.tools import (
-    accounting,
-    allocations,
-    artifacts,
-    debug,
-    introspect,
-    investigations,
-    jobs,
-    resources,
-)
-from kdive.mcp.tools import control as control_tools
-from kdive.mcp.tools import runs as runs_tools
-from kdive.mcp.tools import systems as systems_tools
-from kdive.mcp.tools import vmcore as vmcore_tools
+from kdive.mcp.tools.accounting import usage as accounting_tools
+from kdive.mcp.tools.catalog import artifacts, investigations, jobs, resources
+from kdive.mcp.tools.debug import introspect
+from kdive.mcp.tools.debug import sessions as debug_tools
+from kdive.mcp.tools.lifecycle import allocations
+from kdive.mcp.tools.lifecycle import control as control_tools
+from kdive.mcp.tools.lifecycle import runs as runs_tools
+from kdive.mcp.tools.lifecycle import systems as systems_tools
+from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
 from kdive.planes import control, runs, systems, vmcore
 from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 
@@ -50,7 +45,7 @@ def _plain(register: Callable[[FastMCP, AsyncConnectionPool], None]) -> PlaneReg
 _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _plain(jobs.register),
     _plain(resources.register),
-    _plain(accounting.register),
+    _plain(accounting_tools.register),
     _plain(allocations.register),
     _plain(systems_tools.register),
     _plain(investigations.register),
@@ -58,7 +53,7 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _plain(control_tools.register),
     _plain(artifacts.register),
     lambda app, pool, runtime: vmcore_tools.register(app, pool, provider_runtime=runtime),
-    lambda app, pool, runtime: debug.register(app, pool, provider_runtime=runtime),
+    lambda app, pool, runtime: debug_tools.register(app, pool, provider_runtime=runtime),
     lambda app, pool, runtime: introspect.register(app, pool, provider_runtime=runtime),
 )
 

@@ -41,7 +41,7 @@ from kdive.domain.state import (
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools import control as control_tools
+from kdive.mcp.tools.lifecycle import control as control_tools
 from kdive.planes import control as control_plane
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,

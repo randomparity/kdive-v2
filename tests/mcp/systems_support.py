@@ -18,7 +18,7 @@ from kdive.domain.models import Allocation, Budget, Job, JobKind, Quota
 from kdive.domain.state import AllocationState
 from kdive.jobs import queue
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools import systems as systems_tools
+from kdive.mcp.tools.lifecycle import systems as systems_tools
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     register_local_libvirt_resource,

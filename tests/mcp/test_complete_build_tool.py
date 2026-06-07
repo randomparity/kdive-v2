@@ -11,7 +11,7 @@ from kdive.db.repositories import RUNS
 from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.state import RunState
-from kdive.mcp.tools import runs as runs_tools
+from kdive.mcp.tools.lifecycle import runs as runs_tools
 from kdive.providers.ports import BuildOutput
 from tests.mcp.complete_build_support import (
     FakeValidator as _FakeValidator,

@@ -43,7 +43,7 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import AuthError, RequestContext
-from kdive.mcp.tools import accounting as acct_tools
+from kdive.mcp.tools.accounting import usage as acct_tools
 from kdive.security.rbac import AuthorizationError, Role
 from tests.mcp.roles import PROJECT_A, PROJECT_B, make_role_fixture
 

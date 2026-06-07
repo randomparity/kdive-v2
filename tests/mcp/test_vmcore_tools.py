@@ -17,7 +17,7 @@ from kdive.domain.models import Job, JobKind, Sensitivity
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools import vmcore as vmcore_tools
+from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
 from kdive.planes import vmcore as vmcore_plane
 from kdive.providers.ports import CaptureOutput, CrashOutput
 from kdive.security.rbac import AuthorizationError, Role
@@ -516,7 +516,7 @@ def test_no_raw_vmcore_key_in_any_read_response(migrated_url: str) -> None:
             async with pool.connection() as conn:
                 await vmcore_plane.capture_handler(conn, job, _FakeRetriever(sys_id))
             refs: list[str] = []
-            from kdive.mcp.tools import artifacts as artifacts_tools
+            from kdive.mcp.tools.catalog import artifacts as artifacts_tools
 
             for r in await vmcore_tools.list_vmcores(pool, _ctx(), system_id=sys_id):
                 refs.extend(r.refs.values())

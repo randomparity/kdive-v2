@@ -29,9 +29,9 @@ from kdive.domain.models import Job, JobKind
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools import artifacts as artifacts_tools
-from kdive.mcp.tools import control as control_tools
-from kdive.mcp.tools import vmcore as vmcore_tools
+from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+from kdive.mcp.tools.lifecycle import control as control_tools
+from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
 from kdive.planes import runs as runs_handlers
 from kdive.planes import vmcore as vmcore_plane
 from kdive.providers.ports import BuildOutput, CaptureOutput, CrashOutput

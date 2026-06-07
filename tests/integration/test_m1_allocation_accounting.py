@@ -49,10 +49,10 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import AuthError
-from kdive.mcp.tools import accounting as acct_tools
-from kdive.mcp.tools import allocations as alloc_tools
-from kdive.mcp.tools import control as control_tools
-from kdive.mcp.tools import systems as systems_tools
+from kdive.mcp.tools.accounting import usage as acct_tools
+from kdive.mcp.tools.lifecycle import allocations as alloc_tools
+from kdive.mcp.tools.lifecycle import control as control_tools
+from kdive.mcp.tools.lifecycle import systems as systems_tools
 from kdive.planes import systems as systems_handlers
 from kdive.providers.local_libvirt.provisioning import domain_name_for
 from kdive.reconciler import loop

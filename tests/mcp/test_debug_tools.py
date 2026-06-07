@@ -38,7 +38,7 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools import debug as debug_tools
+from kdive.mcp.tools.debug import sessions as debug_tools
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,

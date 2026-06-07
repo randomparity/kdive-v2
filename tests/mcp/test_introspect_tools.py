@@ -17,7 +17,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import DebugSession
 from kdive.domain.state import DebugSessionState
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools import introspect as introspect_tools
+from kdive.mcp.tools.debug import introspect as introspect_tools
 from kdive.providers.ports import IntrospectOutput
 from kdive.security.rbac import AuthorizationError, Role
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
