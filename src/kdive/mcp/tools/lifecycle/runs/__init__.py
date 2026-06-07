@@ -52,6 +52,15 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         build_profile: Annotated[
             dict[str, Any], Field(description="Build profile for the Run's kernel.")
         ],
+        expected_boot_failure: Annotated[
+            dict[str, Any] | None,
+            Field(
+                description=(
+                    "Optional expected boot failure, e.g. "
+                    "{'kind':'console_crash','pattern':'Oops|__d_lookup'}."
+                )
+            ),
+        ] = None,
     ) -> ToolResponse:
         """Bind a Run to a ready System and Investigation in one transaction. Requires operator."""
         return await create_run(
@@ -60,6 +69,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             investigation_id=investigation_id,
             system_id=system_id,
             build_profile=build_profile,
+            expected_boot_failure=expected_boot_failure,
         )
 
     @app.tool(

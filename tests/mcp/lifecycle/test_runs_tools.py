@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -249,6 +250,24 @@ def test_get_malformed_uuid_is_config_error(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_get_run_exposes_expected_boot_failure(migrated_url: str) -> None:
+    expected = {"kind": "console_crash", "pattern": "__d_lookup|Oops"}
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(pool, state=RunState.CREATED)
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE runs SET expected_boot_failure = %s WHERE id = %s",
+                    (Jsonb(expected), run_id),
+                )
+            resp = await runs_tools.get_run(pool, _ctx(), run_id)
+        assert resp.data["expected_boot_failure"] == "console_crash"
+        assert json.loads(resp.data["expected_boot_failure_json"]) == expected
+
+    asyncio.run(_run())
+
+
 async def _create(
     pool: AsyncConnectionPool, ctx: RequestContext, inv_id: str, sys_id: str, profile=None
 ):
@@ -302,6 +321,62 @@ def test_create_rejects_empty_build_profile(migrated_url: str) -> None:
                 await cur.execute("SELECT count(*) AS n FROM runs")
                 row = await cur.fetchone()
         assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert row is not None and row["n"] == 0
+
+    asyncio.run(_run())
+
+
+def test_create_run_persists_expected_boot_failure(migrated_url: str) -> None:
+    expected = {
+        "kind": "console_crash",
+        "pattern": "__d_lookup|Oops",
+        "description": "dcache crash",
+    }
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, state=InvestigationState.OPEN)
+            sys_id = await _seed_system(pool)
+            resp = await runs_tools.create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                expected_boot_failure=expected,
+            )
+            assert resp.status == "created"
+            assert resp.data["expected_boot_failure"] == "console_crash"
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT expected_boot_failure FROM runs WHERE id = %s",
+                    (resp.object_id,),
+                )
+                row = await cur.fetchone()
+        assert row is not None
+        assert row["expected_boot_failure"] == expected
+
+    asyncio.run(_run())
+
+
+def test_create_run_rejects_bad_expected_boot_failure(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, state=InvestigationState.OPEN)
+            sys_id = await _seed_system(pool)
+            resp = await runs_tools.create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                expected_boot_failure={"kind": "console_crash", "pattern": ""},
+            )
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM runs")
+                row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
         assert row is not None and row["n"] == 0
 
     asyncio.run(_run())
