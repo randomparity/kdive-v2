@@ -277,6 +277,19 @@ def test_real_run_make_runs_parallel_jobs(monkeypatch: pytest.MonkeyPatch) -> No
     )
 
 
+def test_real_run_make_timeout_is_build_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(["make"], timeout=build_module._MAKE_TIMEOUT_S)
+
+    monkeypatch.setattr(subprocess, "run", _timeout)
+
+    with pytest.raises(CategorizedError) as caught:
+        build_module._real_run_make(Path("/ws"))
+
+    assert caught.value.category is ErrorCategory.BUILD_FAILURE
+    assert caught.value.details["timeout_s"] == build_module._MAKE_TIMEOUT_S
+
+
 def test_real_read_build_id_reads_merged_notes_section(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -297,6 +310,21 @@ def test_real_read_build_id_reads_merged_notes_section(
     assert build_module._real_read_build_id(tmp_path) == build_id.hex()
     assert "--only-section=.notes" in captured[0]
     assert "--only-section=.note.gnu.build-id" not in captured[0]
+
+
+def test_real_read_build_id_objcopy_timeout_is_build_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(["objcopy"], timeout=build_module._OBJCOPY_TIMEOUT_S)
+
+    monkeypatch.setattr(subprocess, "run", _timeout)
+
+    with pytest.raises(CategorizedError) as caught:
+        build_module._real_read_build_id(tmp_path)
+
+    assert caught.value.category is ErrorCategory.BUILD_FAILURE
+    assert caught.value.details["timeout_s"] == build_module._OBJCOPY_TIMEOUT_S
 
 
 # --- live_vm real-make build ---------------------------------------------------------
@@ -498,6 +526,26 @@ def test_apply_patch_missing_git_is_missing_dependency(
     assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
 
 
+def test_apply_patch_timeout_is_configuration_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace_with_target(tmp_path)
+    patch = tmp_path / "fix.patch"
+    patch.write_text(_GOOD_PATCH)
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: "/usr/bin/git")
+
+    def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(["git", "apply"], timeout=build_module._GIT_APPLY_TIMEOUT_S)
+
+    monkeypatch.setattr(build_module.subprocess, "run", _timeout)
+
+    with pytest.raises(CategorizedError) as caught:
+        _apply_patch(str(patch), workspace)
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert caught.value.details["timeout_s"] == build_module._GIT_APPLY_TIMEOUT_S
+
+
 # --- _sync_tree ---------------------------------------------------------------------
 
 
@@ -540,6 +588,25 @@ def test_sync_tree_missing_rsync_is_missing_dependency(
     with pytest.raises(CategorizedError) as caught:
         _sync_tree(str(src), tmp_path / "ws")
     assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
+
+
+def test_sync_tree_timeout_is_infrastructure_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "linux"
+    src.mkdir()
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: "/usr/bin/rsync")
+
+    def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(["rsync"], timeout=build_module._RSYNC_TIMEOUT_S)
+
+    monkeypatch.setattr(build_module.subprocess, "run", _timeout)
+
+    with pytest.raises(CategorizedError) as caught:
+        _sync_tree(str(src), tmp_path / "ws")
+
+    assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert caught.value.details["timeout_s"] == build_module._RSYNC_TIMEOUT_S
 
 
 def test_sync_tree_creates_workspace_and_invokes_rsync(

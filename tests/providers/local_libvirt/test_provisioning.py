@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import subprocess
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from defusedxml.ElementTree import fromstring as _safe_fromstring
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.local_libvirt import discovery
+from kdive.providers.local_libvirt import provisioning as provisioning_module
 from kdive.providers.local_libvirt.provisioning import (
     LocalLibvirtProvisioning,
     console_log_path,
@@ -294,6 +296,23 @@ def test_provision_creates_overlay_over_base_and_attaches_it() -> None:
     assert overlay == overlay_path(_SYS)
     disk = _safe_fromstring(conn.recorded_xml[0]).find("devices/disk/source")
     assert disk is not None and disk.get("file") == overlay  # the domain boots the overlay
+
+
+def test_real_make_overlay_timeout_is_provisioning_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(
+            ["qemu-img"], timeout=provisioning_module._QEMU_IMG_TIMEOUT_S
+        )
+
+    monkeypatch.setattr(provisioning_module.subprocess, "run", _timeout)
+
+    with pytest.raises(CategorizedError) as caught:
+        provisioning_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
+
+    assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE
+    assert caught.value.details["timeout_s"] == provisioning_module._QEMU_IMG_TIMEOUT_S
 
 
 def test_teardown_removes_the_overlay() -> None:

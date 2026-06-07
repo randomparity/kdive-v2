@@ -40,6 +40,7 @@ _DEFAULT_MACHINE = "q35"
 SUPPORTED_DOMAIN_XML_PARAMS = frozenset({"machine"})
 _ROOTFS_DIR = "/var/lib/kdive/rootfs"
 _CONSOLE_DIR = "/var/lib/kdive/console"
+_QEMU_IMG_TIMEOUT_S = 5 * 60
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 
 
@@ -271,12 +272,20 @@ def _real_make_overlay(base: str, overlay: str) -> None:
     format-probe the base. A non-zero exit is a ``PROVISIONING_FAILURE`` with a redacted stderr
     tail.
     """
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted paths
-        ["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", base, overlay],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted paths
+            ["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", base, overlay],
+            capture_output=True,
+            text=True,
+            timeout=_QEMU_IMG_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CategorizedError(
+            "qemu-img exceeded the overlay creation timeout",
+            category=ErrorCategory.PROVISIONING_FAILURE,
+            details={"timeout_s": _QEMU_IMG_TIMEOUT_S},
+        ) from exc
     if result.returncode != 0:
         raise CategorizedError(
             "qemu-img failed to create the per-System rootfs overlay",

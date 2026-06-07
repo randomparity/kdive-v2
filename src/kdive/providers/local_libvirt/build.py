@@ -50,6 +50,10 @@ _MAX_SECTION_BYTES = 16 * 1024 * 1024
 # Trailing chars of a redacted rsync/git-apply stderr placed in error details (bounded so a
 # large/noisy failure log cannot bloat a persisted error record).
 _STDERR_TAIL = 2000
+_MAKE_TIMEOUT_S = 2 * 60 * 60
+_OBJCOPY_TIMEOUT_S = 60
+_GIT_APPLY_TIMEOUT_S = 120
+_RSYNC_TIMEOUT_S = 10 * 60
 
 # The kdump prerequisite is satisfied by CONFIG_CRASH_DUMP; symbolization needs DWARF or
 # BTF debuginfo. Each tuple is an OR-group: the config must enable at least one of each.
@@ -264,9 +268,18 @@ def _real_read_config(workspace: Path) -> str:  # pragma: no cover - live_vm
 
 
 def _real_run_make(workspace: Path) -> int:  # pragma: no cover - live_vm
-    return subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted workspace
-        ["make", "-C", str(workspace), f"-j{os.cpu_count() or 1}"], check=False
-    ).returncode
+    try:
+        return subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted workspace
+            ["make", "-C", str(workspace), f"-j{os.cpu_count() or 1}"],
+            timeout=_MAKE_TIMEOUT_S,
+            check=False,
+        ).returncode
+    except subprocess.TimeoutExpired as exc:
+        raise CategorizedError(
+            "make exceeded the build timeout",
+            category=ErrorCategory.BUILD_FAILURE,
+            details={"timeout_s": _MAKE_TIMEOUT_S},
+        ) from exc
 
 
 def _real_read_build_id(workspace: Path) -> str:  # pragma: no cover - live_vm
@@ -280,17 +293,30 @@ def _real_read_build_id(workspace: Path) -> str:  # pragma: no cover - live_vm
     stream for the ``NT_GNU_BUILD_ID`` note regardless of the other notes present.
     """
     with tempfile.NamedTemporaryFile(suffix=".note") as note_file:
-        subprocess.run(  # noqa: S603 - fixed argv, no shell
-            [
-                "objcopy",
-                "-O",
-                "binary",
-                "--only-section=.notes",
-                str(workspace / "vmlinux"),
-                note_file.name,
-            ],
-            check=True,
-        )
+        try:
+            subprocess.run(  # noqa: S603 - fixed argv, no shell
+                [
+                    "objcopy",
+                    "-O",
+                    "binary",
+                    "--only-section=.notes",
+                    str(workspace / "vmlinux"),
+                    note_file.name,
+                ],
+                timeout=_OBJCOPY_TIMEOUT_S,
+                check=True,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CategorizedError(
+                "objcopy exceeded the build-id extraction timeout",
+                category=ErrorCategory.BUILD_FAILURE,
+                details={"timeout_s": _OBJCOPY_TIMEOUT_S},
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            raise CategorizedError(
+                "objcopy failed to extract vmlinux notes",
+                category=ErrorCategory.BUILD_FAILURE,
+            ) from exc
         notes = Path(note_file.name).read_bytes()
     return parse_gnu_build_id(notes)
 
@@ -354,13 +380,21 @@ def _apply_patch(patch_ref: str, workspace: Path) -> None:
             "git is required to apply a build patch",
             category=ErrorCategory.MISSING_DEPENDENCY,
         )
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell; -- ends option parsing
-        ["git", "apply", "-p1", "--", str(patch)],
-        cwd=workspace,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell; -- ends option parsing
+            ["git", "apply", "-p1", "--", str(patch)],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=_GIT_APPLY_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CategorizedError(
+            "patch_ref does not apply within the timeout",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"timeout_s": _GIT_APPLY_TIMEOUT_S},
+        ) from exc
     if result.returncode != 0:
         raise CategorizedError(
             "patch_ref does not apply against the kernel tree",
@@ -395,12 +429,20 @@ def _sync_tree(kernel_src: str, workspace: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     # `--` ends option parsing so a path is never mistaken for an rsync flag; the trailing
     # slash on the source copies its *contents* into the workspace, not a nested dir.
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["rsync", "-a", "--delete", "--", f"{source}/", f"{workspace}/"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["rsync", "-a", "--delete", "--", f"{source}/", f"{workspace}/"],
+            capture_output=True,
+            text=True,
+            timeout=_RSYNC_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CategorizedError(
+            "rsync exceeded the workspace sync timeout",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details={"timeout_s": _RSYNC_TIMEOUT_S},
+        ) from exc
     if result.returncode != 0:
         raise CategorizedError(
             "rsync failed to materialize the workspace tree",
