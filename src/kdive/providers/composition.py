@@ -15,6 +15,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind
+from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.providers.local_libvirt.connect import LocalLibvirtConnect
 from kdive.providers.local_libvirt.control import LocalLibvirtControl
@@ -56,6 +57,20 @@ _LOCAL_POOL = "local-libvirt"
 _LOCAL_COST_CLASS = "local"
 
 
+def _local_component_sources() -> ComponentSourceCapabilities:
+    return ComponentSourceCapabilities(
+        provider=ResourceKind.LOCAL_LIBVIRT.value,
+        accepted_component_sources={
+            "rootfs": frozenset({"local"}),
+            "kernel": frozenset({"local"}),
+            "initrd": frozenset({"local"}),
+            "config": frozenset({"local"}),
+            "patch": frozenset({"local"}),
+            "vmlinux": frozenset({"local"}),
+        },
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderRuntime:
     """Typed provider ports for the default runtime."""
@@ -76,6 +91,7 @@ class ProviderRuntime:
     discovery_registrar: DiscoveryRegistrar | None = None
     attach_seam: AttachSeam = default_attach_seam
     debug_engine: GdbMiEngine = field(default_factory=LocalGdbMiEngine)
+    component_sources: ComponentSourceCapabilities = field(default_factory=_local_component_sources)
 
     def install_boot(self) -> tuple[Installer, Booter]:
         return self.installer, self.booter
@@ -111,6 +127,7 @@ def build_default_provider_runtime() -> ProviderRuntime:
             {CaptureMethod.CONSOLE, CaptureMethod.HOST_DUMP, CaptureMethod.GDBSTUB}
         ),
         discovery_registrar=ensure_local_host_registered,
+        component_sources=_local_component_sources(),
     )
 
 

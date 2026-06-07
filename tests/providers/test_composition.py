@@ -152,6 +152,20 @@ def test_default_runtime_does_not_build_unused_capability_registry(
     assert runtime.builder is not None
 
 
+def test_default_runtime_advertises_implemented_component_sources_only() -> None:
+    runtime = composition.build_default_provider_runtime()
+
+    assert runtime.component_sources.provider == "local-libvirt"
+    assert runtime.component_sources.accepted_component_sources == {
+        "rootfs": frozenset({"local"}),
+        "kernel": frozenset({"local"}),
+        "initrd": frozenset({"local"}),
+        "config": frozenset({"local"}),
+        "patch": frozenset({"local"}),
+        "vmlinux": frozenset({"local"}),
+    }
+
+
 def test_provider_runtime_discovery_hook_is_optional() -> None:
     install = _InstallProvider()
     retrieve = _RetrieveProvider()
