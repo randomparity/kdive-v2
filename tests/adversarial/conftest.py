@@ -18,9 +18,9 @@ import psycopg
 from psycopg import sql
 
 from kdive.db.repositories import ALLOCATIONS, BUDGETS, QUOTAS, RESOURCES
-from kdive.domain.allocation_admission import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.cost import Selector
 from kdive.domain.models import Allocation, Budget, Quota, Resource, ResourceKind
+from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState, ResourceStatus
 from tests.db.conftest import migrated_url, pg_conn, postgres_url  # noqa: F401
 

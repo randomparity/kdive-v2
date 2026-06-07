@@ -11,7 +11,7 @@ connection, and all assume READ COMMITTED (psycopg's default).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from typing import Any
 from uuid import UUID
@@ -21,7 +21,13 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from kdive.domain.errors import ErrorCategory
-from kdive.domain.models import Job, JobKind
+from kdive.domain.models import Job, JobAuthorizing, JobKind
+from kdive.jobs.payloads import (
+    Authorizing,
+    PayloadModel,
+    dump_authorizing,
+    dump_payload,
+)
 
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_LEASE = timedelta(minutes=5)
@@ -30,8 +36,8 @@ DEFAULT_LEASE = timedelta(minutes=5)
 async def enqueue(
     conn: AsyncConnection,
     kind: JobKind,
-    payload: dict[str, Any],
-    authorizing: dict[str, Any],
+    payload: PayloadModel | dict[str, Any],
+    authorizing: Authorizing | JobAuthorizing | dict[str, Any],
     dedup_key: str,
     *,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
@@ -48,6 +54,8 @@ async def enqueue(
     """
     if max_attempts < 1:
         raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
+    payload = dump_payload(kind, payload)
+    authorizing = dump_authorizing(authorizing)
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "INSERT INTO jobs (kind, payload, state, max_attempts, authorizing, dedup_key) "
@@ -139,7 +147,12 @@ async def complete(
 
 
 async def fail(
-    conn: AsyncConnection, job: Job, error_category: ErrorCategory, *, terminal: bool = False
+    conn: AsyncConnection,
+    job: Job,
+    error_category: ErrorCategory,
+    *,
+    terminal: bool = False,
+    failure_context: Mapping[str, str] | None = None,
 ) -> Job:
     """Dead-letter or requeue a claimed ``job``, fenced on its ``worker_id``.
 
@@ -154,14 +167,19 @@ async def fail(
     """
     if terminal or job.attempt >= job.max_attempts:
         query = (
-            "UPDATE jobs SET state = 'failed', error_category = %s "
+            "UPDATE jobs SET state = 'failed', error_category = %s, failure_context = %s "
             "WHERE id = %s AND worker_id = %s AND state = 'running' RETURNING *"
         )
-        params: tuple[object, ...] = (error_category, job.id, job.worker_id)
+        params: tuple[object, ...] = (
+            error_category,
+            Jsonb(dict(failure_context or {})),
+            job.id,
+            job.worker_id,
+        )
     else:
         query = (
             "UPDATE jobs SET state = 'queued', worker_id = NULL, "
-            "    lease_expires_at = NULL, heartbeat_at = NULL "
+            "    lease_expires_at = NULL, heartbeat_at = NULL, failure_context = '{}'::jsonb "
             "WHERE id = %s AND worker_id = %s AND state = 'running' RETURNING *"
         )
         params = (job.id, job.worker_id)

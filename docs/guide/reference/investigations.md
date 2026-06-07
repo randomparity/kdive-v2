@@ -16,7 +16,7 @@ Close an Investigation (idempotent on closed; errors on abandoned). Requires ope
 
 `implemented` · `read-only`
 
-Render an Investigation by ID. Requires project membership.
+Render an Investigation by ID. Requires viewer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

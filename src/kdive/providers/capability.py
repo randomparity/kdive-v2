@@ -1,11 +1,9 @@
-"""Capability value types and the provider dispatch registry (ADR-0022).
+"""Prototype capability value types and dispatch registry (ADR-0022, superseded by ADR-0063).
 
-The provider seam's core: providers register capabilities keyed
-``(plane, operation, resource_kind)``; the registry dispatches a requested
-operation to a provider by capability match, never by name (ADR-0009). The value
-types here are frozen, hashable in-memory carriers — not persisted Pydantic
-models — so a :class:`Capability` can be a registry key component and an
-:class:`OpContract` rejects a malformed ``cleanup`` at construction.
+The production M0/M1 provider seam is the typed ``ProviderRuntime`` in
+``kdive.providers.composition``. This module is retained as isolated prototype
+coverage for a later multi-provider milestone; it is not used by server or worker
+runtime assembly today.
 """
 
 from __future__ import annotations
@@ -261,7 +259,6 @@ class CapabilityRegistry:
 
     @staticmethod
     def _select(candidates: list[_Candidate], pin: str | None) -> tuple[_Candidate | None, str]:
-        """Pick the winning candidate and the step that decided it."""
         if pin is not None:
             for candidate in candidates:
                 if candidate.provider_id == pin:

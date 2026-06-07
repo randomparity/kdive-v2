@@ -11,10 +11,10 @@ persisted to the per-session transcript or returned in a response. The exception
 redactor masks text/structure, and masking opaque binary memory would corrupt the requested
 dump (ADR-0034 decision 3).
 
-The ``MiController`` subprocess seam is injectable: the real :class:`PygdbmiController` drives
+The ``GdbController`` subprocess seam is injectable: the real :class:`PygdbmiController` drives
 a ``gdb`` child via pygdbmi (``live_vm``-only); tests inject a scripted fake. The live
-:class:`GdbMiAttachment` objects are held in an in-process :class:`GdbMiSessionRegistry` keyed
-on ``session_id`` — server-process-scoped and non-durable (v1 ADR-0021): a restart strands the
+:class:`GdbMiAttachment` objects are held in an in-process registry keyed on ``session_id`` —
+server-process-scoped and non-durable (v1 ADR-0021): a restart strands the
 attachment and the next op gets ``no_live_session``.
 """
 
@@ -26,19 +26,24 @@ import json
 import math
 import re
 import shutil
-import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 from pygdbmi.constants import GdbTimeoutError
 from pygdbmi.gdbmiparser import parse_response
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.providers.ports import (
+    GdbBreakpointRef,
+    GdbController,
+    GdbFrame,
+    GdbMiAttachment,
+    GdbStopRecord,
+)
 from kdive.security.redaction import Redactor
 
 MAX_MEMORY_READ_BYTES = 4096
@@ -109,40 +114,8 @@ class MiRecord(_MiModel):
         return next((record for record in records if record.type == "result"), None)
 
 
-class Frame(_MiModel):
-    """One stack frame from a gdb/MI ``frame={...}`` payload (optional fields gdb may omit)."""
-
-    level: int | None = None
-    func: str | None = None
-    addr: str | None = None
-    file: str | None = None
-    line: int | None = None
-
-
-class StopRecord(_MiModel):
-    """A parsed ``*stopped`` async record.
-
-    ``reason`` is gdb's stop reason (``breakpoint-hit``, ``end-stepping-range``, ``exited``,
-    ...); ``frame`` is the stop frame. ``timed_out`` is True when the wait expired and the
-    handler had to ``-exec-interrupt``.
-    """
-
-    reason: str | None = None
-    bkptno: str | None = None
-    stopped_thread: str | None = None
-    frame: Frame | None = None
-    timed_out: bool = False
-
-
-class BreakpointRef(_MiModel):
-    """One breakpoint from ``-break-insert``/``-break-list``; ``number`` is gdb's bp id."""
-
-    number: str
-    type: str | None = None
-    addr: str | None = None
-    func: str | None = None
-    what: str | None = None
-    enabled: bool | None = None
+def _mi_int(value: object) -> int | None:
+    return int(value) if isinstance(value, str) and value.lstrip("-").isdigit() else None
 
 
 def parse_mi_records(text: str) -> list[MiRecord]:
@@ -180,25 +153,8 @@ def _timeout_error(command: str, timeout_sec: float) -> CategorizedError:
     )
 
 
-@runtime_checkable
-class MiController(Protocol):
-    """The injectable subprocess seam.
-
-    The real impl drives a ``gdb --interpreter=mi3`` child via pygdbmi; tests inject a scripted
-    fake. ``write`` returns the raw pygdbmi record dicts for the command; ``read`` polls for
-    further out-of-band records (the async ``*stopped`` after a ``^running``); ``exit``
-    terminates the child.
-    """
-
-    def write(self, command: str, *, timeout_sec: float) -> list[dict[str, object]]: ...
-
-    def read(self, *, timeout_sec: float) -> list[dict[str, object]]: ...
-
-    def exit(self) -> None: ...
-
-
 class PygdbmiController:  # pragma: no cover - live_vm
-    """Real ``MiController``: a managed ``gdb --interpreter=mi3`` subprocess via ``pygdbmi``."""
+    """Real ``GdbController``: a managed ``gdb --interpreter=mi3`` child via ``pygdbmi``."""
 
     def __init__(self, command: list[str]) -> None:
         from pygdbmi.gdbcontroller import GdbController
@@ -214,26 +170,20 @@ class PygdbmiController:  # pragma: no cover - live_vm
             raise _timeout_error(command, timeout_sec) from exc
 
     def read(self, *, timeout_sec: float) -> list[dict[str, object]]:
+        return self.get_gdb_response(timeout_sec=timeout_sec, raise_error_on_timeout=False)
+
+    def get_gdb_response(
+        self, *, timeout_sec: float, raise_error_on_timeout: bool = True
+    ) -> list[dict[str, object]]:
         try:
             return self._controller.get_gdb_response(
-                timeout_sec=timeout_sec, raise_error_on_timeout=False
+                timeout_sec=timeout_sec, raise_error_on_timeout=raise_error_on_timeout
             )
         except GdbTimeoutError:
             return []
 
     def exit(self) -> None:
         self._controller.exit()
-
-
-@dataclass
-class GdbMiAttachment:
-    """A live attach: the controller, its RSP endpoint, transcript path, and records so far."""
-
-    controller: MiController
-    rsp_host: str
-    rsp_port: int
-    transcript_path: Path
-    records: list[MiRecord] = field(default_factory=list)
 
 
 class _ExecutionControl:
@@ -244,7 +194,7 @@ class _ExecutionControl:
 
     def wait_for_stop(
         self, attachment: GdbMiAttachment, *, timeout_sec: float
-    ) -> StopRecord | None:
+    ) -> GdbStopRecord | None:
         slices = max(1, int(timeout_sec / _STOP_POLL_SLICE_SEC) + 1)
         for _ in range(slices):
             records = self._engine.records_from(
@@ -258,7 +208,7 @@ class _ExecutionControl:
                 return self._engine.stop_record_from(stop)
         return None
 
-    def interrupt(self, attachment: GdbMiAttachment) -> StopRecord | None:
+    def interrupt(self, attachment: GdbMiAttachment) -> GdbStopRecord | None:
         raw = attachment.controller.write("-exec-interrupt", timeout_sec=_MI_COMMAND_TIMEOUT_SEC)
         records = self._engine.records_from(raw)
         attachment.records.extend(records)
@@ -266,7 +216,9 @@ class _ExecutionControl:
         stop = self.wait_for_stop(attachment, timeout_sec=_INTERRUPT_STOP_TIMEOUT_SEC)
         return self._redact_stop(stop) if stop is not None else None
 
-    def resume(self, attachment: GdbMiAttachment, verb: str, *, timeout_sec: float) -> StopRecord:
+    def resume(
+        self, attachment: GdbMiAttachment, verb: str, *, timeout_sec: float
+    ) -> GdbStopRecord:
         # Round fractional requests up: a sub-second request still waits its full span (and the
         # floor of 1s below), never truncating toward zero (5.7 -> 6, not 5).
         requested = math.ceil(timeout_sec) if timeout_sec else MAX_INTERACTIVE_WAIT_SEC
@@ -288,8 +240,8 @@ class _ExecutionControl:
             )
         return self._redact_stop(interrupted.model_copy(update={"timed_out": True}))
 
-    def _redact_stop(self, stop: StopRecord) -> StopRecord:
-        return StopRecord.model_validate(
+    def _redact_stop(self, stop: GdbStopRecord) -> GdbStopRecord:
+        return GdbStopRecord.model_validate(
             self._engine.redactor.redact_value(stop.model_dump(mode="json"))
         )
 
@@ -300,7 +252,7 @@ class GdbMiEngine:
     def __init__(
         self,
         *,
-        controller_factory: Callable[[list[str]], MiController] | None = None,
+        controller_factory: Callable[[list[str]], GdbController] | None = None,
         gdb_path_finder: Callable[[str], str | None] = shutil.which,
         redactor: Redactor | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -387,7 +339,7 @@ class GdbMiEngine:
 
     # --- breakpoints ----------------------------------------------------------------------
 
-    def set_breakpoint(self, attachment: GdbMiAttachment, location: str) -> BreakpointRef:
+    def set_breakpoint(self, attachment: GdbMiAttachment, location: str) -> GdbBreakpointRef:
         if not _BREAK_LOCATION_RE.match(location):
             raise _config_error(
                 f"breakpoint location must be a bare C identifier, got {location!r}",
@@ -409,7 +361,7 @@ class GdbMiEngine:
             )
         self.run(attachment, f"-break-delete {number}")
 
-    def list_breakpoints(self, attachment: GdbMiAttachment) -> list[BreakpointRef]:
+    def list_breakpoints(self, attachment: GdbMiAttachment) -> list[GdbBreakpointRef]:
         records = self.run(attachment, "-break-list")
         result = MiRecord.first_result(records)
         payload = result.payload if result is not None and isinstance(result.payload, dict) else {}
@@ -420,14 +372,14 @@ class GdbMiEngine:
         )
         body = table.get("body") if isinstance(table, dict) else None
         rows = body if isinstance(body, list) else []
-        refs: list[BreakpointRef] = []
+        refs: list[GdbBreakpointRef] = []
         for row in rows:
             entry = row.get("bkpt") if isinstance(row, dict) else None
             if isinstance(entry, dict):
                 refs.append(self._breakpoint_ref_from(entry))
         return refs
 
-    def _breakpoint_ref(self, records: list[MiRecord], *, key: str) -> BreakpointRef:
+    def _breakpoint_ref(self, records: list[MiRecord], *, key: str) -> GdbBreakpointRef:
         result = MiRecord.first_result(records)
         payload = result.payload if result is not None and isinstance(result.payload, dict) else {}
         entry = payload.get(key)
@@ -439,8 +391,8 @@ class GdbMiEngine:
             )
         return self._breakpoint_ref_from(entry)
 
-    def _breakpoint_ref_from(self, entry: dict[str, Any]) -> BreakpointRef:
-        return BreakpointRef.model_validate(
+    def _breakpoint_ref_from(self, entry: dict[str, Any]) -> GdbBreakpointRef:
+        return GdbBreakpointRef.model_validate(
             self.redactor.redact_value(
                 {
                     "number": str(entry.get("number")),
@@ -484,6 +436,13 @@ class GdbMiEngine:
                 ordinal = str(ordered_names.index(name))
                 if ordinal in by_number:
                     registers[name] = by_number[ordinal]
+        missing = [name for name in requested if name not in registers]
+        if missing:
+            raise CategorizedError(
+                "gdb/MI omitted requested register data",
+                category=ErrorCategory.DEBUG_ATTACH_FAILURE,
+                details={"code": "missing_registers", "requested": requested, "missing": missing},
+            )
         return self.redactor.redact_value({"registers": registers})
 
     def read_memory(self, attachment: GdbMiAttachment, *, address: int, byte_count: int) -> bytes:
@@ -525,26 +484,37 @@ class GdbMiEngine:
                 category=ErrorCategory.DEBUG_ATTACH_FAILURE,
                 details={"code": "bad_memory_contents"},
             ) from exc
-        return blob[:byte_count]
+        if len(blob) != byte_count:
+            raise CategorizedError(
+                "gdb/MI returned fewer memory bytes than requested",
+                category=ErrorCategory.DEBUG_ATTACH_FAILURE,
+                details={
+                    "code": "short_memory_read",
+                    "address": address,
+                    "requested": byte_count,
+                    "actual": len(blob),
+                },
+            )
+        return blob
 
     # --- interactive execution ------------------------------------------------------------
 
-    def continue_(self, attachment: GdbMiAttachment, *, timeout_sec: float) -> StopRecord:
-        """Resume, wait for the stop, return a redacted StopRecord (interrupt back on timeout)."""
+    def continue_(self, attachment: GdbMiAttachment, *, timeout_sec: float) -> GdbStopRecord:
+        """Resume, wait for the stop, and interrupt back on timeout."""
         return self._execution.resume(attachment, "-exec-continue", timeout_sec=timeout_sec)
 
-    def interrupt(self, attachment: GdbMiAttachment) -> StopRecord | None:
+    def interrupt(self, attachment: GdbMiAttachment) -> GdbStopRecord | None:
         """Idempotent 'ensure HALTED': -exec-interrupt then wait the short fixed bound."""
         return self._execution.interrupt(attachment)
 
     def wait_for_stop(
         self, attachment: GdbMiAttachment, *, timeout_sec: float
-    ) -> StopRecord | None:
+    ) -> GdbStopRecord | None:
         return self._execution.wait_for_stop(attachment, timeout_sec=timeout_sec)
 
     # --- record helpers (public to _ExecutionControl) -------------------------------------
 
-    def stop_record_from(self, record: MiRecord) -> StopRecord:
+    def stop_record_from(self, record: MiRecord) -> GdbStopRecord:
         payload = record.payload if isinstance(record.payload, dict) else {}
         reason = payload.get("reason")
         if isinstance(reason, str) and reason in _TERMINAL_STOP_REASONS:
@@ -556,23 +526,20 @@ class GdbMiEngine:
         frame_payload = payload.get("frame")
         frame = self._frame_from(frame_payload) if isinstance(frame_payload, dict) else None
         thread = payload.get("stopped-threads")
-        return StopRecord(
+        return GdbStopRecord(
             reason=reason if isinstance(reason, str) else None,
             bkptno=payload.get("bkptno") if isinstance(payload.get("bkptno"), str) else None,
             stopped_thread=thread if isinstance(thread, str) else None,
             frame=frame,
         )
 
-    def _frame_from(self, payload: dict[str, Any]) -> Frame:
-        def _int(value: object) -> int | None:
-            return int(value) if isinstance(value, str) and value.lstrip("-").isdigit() else None
-
-        return Frame(
-            level=_int(payload.get("level")),
+    def _frame_from(self, payload: dict[str, Any]) -> GdbFrame:
+        return GdbFrame(
+            level=_mi_int(payload.get("level")),
             func=payload.get("func") if isinstance(payload.get("func"), str) else None,
             addr=payload.get("addr") if isinstance(payload.get("addr"), str) else None,
             file=payload.get("file") if isinstance(payload.get("file"), str) else None,
-            line=_int(payload.get("line")),
+            line=_mi_int(payload.get("line")),
         )
 
     def run(self, attachment: GdbMiAttachment, command: str) -> list[MiRecord]:
@@ -625,55 +592,6 @@ class GdbMiEngine:
         with transcript_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(self.redactor.redact_value(entry), default=str))
             handle.write("\n")
-
-
-class GdbMiSessionRegistry:
-    """In-process holder of live :class:`GdbMiAttachment` objects keyed on ``session_id``.
-
-    Lock-guards the dict; the live engine is server-process-scoped, not durable, so a server
-    restart strands the attachment and the next mutating debug.* op gets ``no_live_session``.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._sessions: dict[str, GdbMiAttachment] = {}
-
-    def register(self, session_id: str, attachment: GdbMiAttachment) -> None:
-        with self._lock:
-            self._sessions[session_id] = attachment
-
-    def get(self, session_id: str) -> GdbMiAttachment | None:
-        with self._lock:
-            return self._sessions.get(session_id)
-
-    def require(self, session_id: str) -> GdbMiAttachment:
-        attachment = self.get(session_id)
-        if attachment is None:
-            raise _config_error(
-                "no live gdb/MI session; the engine is gone (server restarted or session reaped)",
-                code="no_live_session",
-                details={"debug_session_id": session_id},
-            )
-        return attachment
-
-    def reap(self, session_id: str) -> GdbMiAttachment | None:
-        with self._lock:
-            return self._sessions.pop(session_id, None)
-
-
-@runtime_checkable
-class AttachSeam(Protocol):
-    """The lazy-attach port the Debug-plane handlers inject (ADR-0034 §4c).
-
-    Opens a gdb/MI engine over the session's RSP endpoint, loads the Run's debuginfo symbols,
-    and returns the live :class:`GdbMiAttachment`. The real default is ``live_vm``-gated (the
-    debuginfo resolver raises ``MISSING_DEPENDENCY`` outside the gate); tests inject a fake that
-    returns an attachment over a scripted :class:`MiController`.
-    """
-
-    def __call__(
-        self, *, host: str, port: int, run_id: str, transcript_path: Path
-    ) -> GdbMiAttachment: ...
 
 
 def _resolve_debuginfo_ref(run_id: str) -> str:  # pragma: no cover - live_vm

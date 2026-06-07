@@ -20,10 +20,11 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, BUDGETS, RESOURCES, SYSTEMS
-from kdive.domain import accounting
 from kdive.domain.models import Allocation, Budget, Resource, ResourceKind, System
 from kdive.domain.state import AllocationState, ResourceStatus, SystemState
 from kdive.reconciler import loop
+from kdive.services import accounting
+from tests.db_waits import wait_until_any_backend_waiting
 from tests.reconciler.conftest import connect, run_repair
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -318,7 +319,7 @@ def test_concurrent_release_vs_sweep_reconciles_once(migrated_url: str) -> None:
                     advisory_xact_lock(holder, LockScope.ALLOCATION, alloc_id),
                 ):
                     task = asyncio.ensure_future(run_repair(pool, loop._sweep_expired_allocations))
-                    await asyncio.sleep(0.3)
+                    await wait_until_any_backend_waiting(holder, locktype="advisory")
                     assert not task.done()  # blocked behind the held locks
                     await ALLOCATIONS.update_state(holder, alloc_id, AllocationState.RELEASING)
                     alloc = await ALLOCATIONS.update_state(

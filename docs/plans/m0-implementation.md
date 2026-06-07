@@ -7,7 +7,7 @@
 
 **Goal:** Build the M0 walking skeleton from [`../specs/m0-walking-skeleton.md`](../specs/m0-walking-skeleton.md) — the thinnest real path through all nine planes on local libvirt/QEMU, on the new architecture.
 
-**Architecture:** A thin async core (FastMCP/HTTP, state machines, admission, audit) over Postgres (system-of-record) + S3 object store, dispatching long-running work to a Postgres-backed job queue and a worker tier. Providers implement narrow plane interfaces behind a capability registry; M0 ships exactly one provider (local-libvirt). Salvaged v1 modules (redaction, paths, gdb-MI, drgn, crash, error taxonomy) are ported behind the new seams.
+**Architecture:** A thin async core (FastMCP/HTTP, state machines, admission, audit) over Postgres (system-of-record) + S3 object store, dispatching long-running work to a Postgres-backed job queue and a worker tier. Providers implement narrow typed runtime ports; M0 ships exactly one provider (local-libvirt). ADR-0063 supersedes the early capability-registry dispatch plan for production runtime assembly. Salvaged v1 modules (redaction, paths, gdb-MI, drgn, crash, error taxonomy) are ported behind the new seams.
 
 **Tech Stack:** Python 3.13 · `uv` · FastMCP 3.x (ADR-0010) · Postgres via `psycopg` 3 (async) · S3 via `boto3` · `libvirt-python` · `drgn` · Pydantic v2 · `ruff`/`ty`/`pytest` · `prek`.
 
@@ -201,15 +201,17 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 
 ## Phase 2 — Provider framework
 
-### Issue 11 — Capability registry, dispatch, plane interfaces
+### Issue 11 — Capability registry prototype and plane interfaces
 - **Labels:** `area:providers`
 - **Depends on:** #3, #5
-- **Goal:** The provider seam — typed plane `Protocol`s, an `OpContract`, and capability-match dispatch (never by name).
+- **Goal:** The original provider-seam prototype — typed plane `Protocol`s, an `OpContract`,
+  and capability-match dispatch (never by name). ADR-0063 later superseded this for
+  production runtime assembly with typed `ProviderRuntime` ports.
 - **Files:** Create `src/kdive/providers/capability.py`, `providers/interfaces.py`; `tests/providers/`.
 - **Scope:**
   - `interfaces.py`: the **eight** provider-plane `Protocol`s (Discovery, Provisioning, Build, Install, Connect, Debug, Control, Retrieve); the ninth plane, Allocation, is handled in core, not as a provider Protocol.
   - `capability.py`: `Capability{plane,operation,resource_kind,contract}`, `OpContract{idempotent,destructive,cancelable,long_running,cleanup}`, a `register(provider, capabilities)` and `dispatch(plane, op, resource_kind) -> bound op`; multiple matches resolved by explicit pin → health → cost_class → stable tiebreak (ADR-0009); advertised-but-unhonored → typed `not_implemented`.
-- **Acceptance:** dispatch selects a registered fake provider by capability; an unregistered op raises `not_implemented`; two providers matching are resolved deterministically by the documented order (test asserts the winner).
+- **Acceptance:** prototype dispatch selects a registered fake provider by capability; an unregistered op raises `not_implemented`; two providers matching are resolved deterministically by the documented order (test asserts the winner).
 
 ---
 
@@ -351,7 +353,7 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - Job queue/worker (lease, dead-letter, dedup) → #7. ✓
 - Object store (layout, sensitivity, ordering) → #6,#22. ✓
 - MCP tool surface + FastMCP/auth → #8,#12,#14,#15,#19,#21,#22. ✓
-- Plane interfaces + capability dispatch → #11. ✓
+- Plane interfaces + historical capability-dispatch prototype → #11; active runtime seam → ADR-0063. ✓
 - Local-libvirt provider per plane → #12,#14,#16,#17,#18,#19,#20,#21,#22. ✓
 - Auth/RBAC/attribution + destructive gate → #8,#9. ✓
 - Cross-cutting redaction/secrets/audit → #9,#23. ✓

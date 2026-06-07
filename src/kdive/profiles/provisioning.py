@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -28,14 +29,19 @@ from pydantic import (
     Field,
     StringConstraints,
     ValidationError,
-    field_validator,
 )
 
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
+from kdive.profiles._schema import schema_version_validator
+from kdive.rootfs.catalog import load_catalog
 
 type NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 """A string that is non-empty after whitespace stripping; blank values fail validation."""
+
+SUPPORTED_DOMAIN_XML_PARAMS = frozenset({"machine"})
+_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 
 
 class BootMethod(StrEnum):
@@ -56,7 +62,7 @@ class _PathRootfs(_ProfileBase):
 
 
 class _UploadRootfs(_ProfileBase):
-    # A System-owned uploaded qcow2; opened by systems.define + artifacts.create_upload and
+    # A System-owned uploaded qcow2; opened by systems.define + artifacts.create_system_upload and
     # committed at provisioning->ready (ADR-0048 §5, #111). path/url/catalog are alternatives.
     kind: Literal["upload"]
 
@@ -141,19 +147,7 @@ class ProvisioningProfile(_ProfileBase):
     kernel_source_ref: NonEmptyStr
     provider: ProviderSection
 
-    @field_validator("schema_version", mode="before")
-    @classmethod
-    def _reject_coerced_version(cls, value: object) -> object:
-        """Reject a non-``int`` version before ``Literal`` coercion accepts it.
-
-        ``Literal[1]`` otherwise matches ``True`` and ``1.0`` (``True == 1.0 == 1``),
-        which would tolerate a malformed version the way lax integers tolerate
-        ``vcpu: "4"`` (ADR-0024 decision 2d). The message names the constraint, not
-        the value, to preserve the redaction guarantee (decision 3).
-        """
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise ValueError("schema_version must be an integer")
-        return value
+    _reject_coerced_version = schema_version_validator
 
     @classmethod
     def parse(cls, data: Mapping[str, object]) -> ProvisioningProfile:
@@ -200,3 +194,84 @@ def profile_digest(profile: ProvisioningProfile) -> str:
     """
     canonical = json.dumps(profile.model_dump(by_alias=True), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _parsed_profile(profile: ProvisioningProfile | Mapping[str, object]) -> ProvisioningProfile:
+    if isinstance(profile, ProvisioningProfile):
+        return profile
+    return ProvisioningProfile.parse(profile)
+
+
+def rootfs_upload_window_allowed(profile: ProvisioningProfile) -> bool:
+    """Return whether the profile's rootfs expects a System upload window."""
+    return profile.provider.local_libvirt.rootfs.kind == "upload"
+
+
+def reject_rootfs_upload_without_window(profile: ProvisioningProfile) -> None:
+    """Reject a profile whose rootfs needs a System upload window in a no-window lane.
+
+    ``systems.define`` opens the window for a System-owned rootfs upload. Direct provision and
+    reprovision do not, so accepting an upload-kind rootfs there would enqueue work that cannot
+    commit its disk artifact.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` when the profile needs an upload window.
+    """
+    if rootfs_upload_window_allowed(profile):
+        raise CategorizedError(
+            "upload-kind rootfs requires systems.define upload window",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+
+
+def validate_rootfs_reference(rootfs: RootfsSource) -> None:
+    """Validate a rootfs reference's static resolvability."""
+    if rootfs.kind == "url" and not _SHA256.match(rootfs.sha256):
+        raise CategorizedError(
+            "rootfs url sha256 must be 'sha256:<64-hex>'",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    if rootfs.kind == "catalog" and load_catalog().lookup(rootfs.name) is None:
+        raise CategorizedError(
+            f"unknown rootfs catalog name: {rootfs.name}",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"name": rootfs.name},
+        )
+
+
+def validate_profile(profile: ProvisioningProfile) -> None:
+    """Reject unsupported provider params and unresolvable rootfs references."""
+    params = profile.provider.local_libvirt.domain_xml_params
+    unknown = sorted(set(params) - SUPPORTED_DOMAIN_XML_PARAMS)
+    if unknown:
+        raise CategorizedError(
+            f"unsupported domain_xml_params: {', '.join(unknown)}",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"unsupported": unknown, "supported": sorted(SUPPORTED_DOMAIN_XML_PARAMS)},
+        )
+    validate_rootfs_reference(profile.provider.local_libvirt.rootfs)
+
+
+def destructive_opt_in(profile: ProvisioningProfile, op: str) -> bool:
+    """Return whether the profile opts into a destructive operation."""
+    return op in profile.provider.local_libvirt.destructive_ops
+
+
+def capture_method(profile: ProvisioningProfile | Mapping[str, object]) -> CaptureMethod:
+    """Resolve the crash-capture method a provisioning profile enables.
+
+    Stored legacy rows may contain malformed profile mappings. Those are treated as the
+    baseline console method, matching the previous tolerant read path.
+    """
+    try:
+        parsed = _parsed_profile(profile)
+    except CategorizedError:
+        return CaptureMethod.CONSOLE
+    section = parsed.provider.local_libvirt
+    if section.crashkernel is not None:
+        return CaptureMethod.KDUMP
+    if section.debug.gdbstub:
+        return CaptureMethod.GDBSTUB
+    if section.debug.preserve_on_crash:
+        return CaptureMethod.HOST_DUMP
+    return CaptureMethod.CONSOLE

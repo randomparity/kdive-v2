@@ -6,7 +6,7 @@
 
 `implemented`
 
-Cancel a Job cooperatively; error envelope if already terminal. Requires membership.
+Cancel a Job cooperatively; error envelope if already terminal. Requires operator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -16,7 +16,7 @@ Cancel a Job cooperatively; error envelope if already terminal. Requires members
 
 `implemented` · `read-only`
 
-Render a Job by ID. Requires project membership.
+Render a Job by ID. Requires viewer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -26,7 +26,7 @@ Render a Job by ID. Requires project membership.
 
 `implemented` · `read-only`
 
-List the newest Jobs visible to the caller's projects. Requires project membership.
+List the newest Jobs visible to the caller's readable projects. Requires viewer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -36,7 +36,7 @@ List the newest Jobs visible to the caller's projects. Requires project membersh
 
 `implemented` · `read-only`
 
-Poll a Job until terminal or the timeout elapses. Requires project membership.
+Poll a Job until terminal or the timeout elapses. Requires viewer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

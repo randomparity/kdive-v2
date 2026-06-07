@@ -228,8 +228,16 @@ async def seed_running_job(
         "INSERT INTO jobs (kind, payload, state, attempt, max_attempts, worker_id, "
         "    lease_expires_at, authorizing, dedup_key) "
         "VALUES (%s, %s, 'running', %s, %s, 'w-dead', now() + make_interval(secs => %s), "
-        "    '{}', %s) RETURNING id",
-        (kind, Jsonb(payload or {}), attempt, max_attempts, lease_seconds, dedup_key),
+        "    %s, %s) RETURNING id",
+        (
+            kind,
+            Jsonb(payload or {}),
+            attempt,
+            max_attempts,
+            lease_seconds,
+            Jsonb({"principal": "reconciler-test", "agent_session": None, "project": "test"}),
+            dedup_key,
+        ),
     )
     row = await cur.fetchone()
     assert row is not None

@@ -85,7 +85,7 @@ def test_creates_all_tables(pg_conn: psycopg.Connection) -> None:
 def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
     first = migrate.apply_migrations(pg_conn)
     second = migrate.apply_migrations(pg_conn)
-    assert first == ["0001", "0002", "0003", "0004", "0005", "0006"]
+    assert first == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
     assert second == []
 
 
@@ -390,4 +390,12 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
             migrate.apply_migrations(pg_conn)
         holder.rollback()  # release the lock
     pg_conn.execute("SET lock_timeout = '0'")
-    assert migrate.apply_migrations(pg_conn) == ["0001", "0002", "0003", "0004", "0005", "0006"]
+    assert migrate.apply_migrations(pg_conn) == [
+        "0001",
+        "0002",
+        "0003",
+        "0004",
+        "0005",
+        "0006",
+        "0007",
+    ]

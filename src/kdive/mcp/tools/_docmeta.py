@@ -26,15 +26,12 @@ DESTRUCTIVE_TOOLS = frozenset(
 
 
 def read_only() -> ToolAnnotations:
-    """A query with no side effects."""
     return ToolAnnotations(readOnlyHint=True)
 
 
 def destructive() -> ToolAnnotations:
-    """A destructive-administration op (must be in `DESTRUCTIVE_TOOLS`)."""
     return ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 
 def mutating() -> ToolAnnotations:
-    """A state-mutating op that is not destructive-administration."""
     return ToolAnnotations(readOnlyHint=False, destructiveHint=False)

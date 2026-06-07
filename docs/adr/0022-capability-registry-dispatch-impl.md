@@ -1,6 +1,7 @@
 # ADR 0022 — Capability registry & dispatch implementation shapes (M0)
 
-- **Status:** Proposed <!-- Proposed | Accepted | Rejected | Superseded by NNNN -->
+- **Status:** Superseded for runtime assembly by
+  [ADR-0063](0063-typed-provider-runtime.md)
 - **Date:** 2026-06-03
 - **Deciders:** kdive maintainers
 - **Refines:** [ADR-0009](0009-capability-provider-dispatch.md) (capability-based
@@ -22,6 +23,10 @@ Protocols is a later issue (#15); the `AllocationPlane` is core, not a provider
 Protocol (spec).
 
 Four implementation shapes the spec leaves open bound this issue:
+
+ADR-0063 supersedes this implementation shape for M0/M1 runtime assembly. The registry
+types remain prototype coverage, but production server and worker paths use typed
+`ProviderRuntime` ports instead.
 
 1. **Representation.** A `Capability` is a registry *key component* and must be
    hashable and comparable; an `OpContract` is metadata that must reject malformed

@@ -17,7 +17,7 @@ Create a System in 'defined' for a granted Allocation (upload window). Operator 
 
 `implemented` · `read-only`
 
-Render a System; failed maps to a failure envelope. Requires project membership.
+Render a System; failed maps to a failure envelope. Requires viewer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -27,12 +27,22 @@ Render a System; failed maps to a failure envelope. Requires project membership.
 
 `partial`
 
-Mint or admit a System for a granted Allocation and enqueue provision. Operator only.
+Mint a System for a granted Allocation and enqueue provision. Operator only.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `allocation_id` | `string` | yes | Granted Allocation to provision a System for. |
-| `profile` | `any` | no | Provisioning profile for the create lane (required when no System exists yet); ignored when admitting an already-defined System. |
+| `profile` | `object` | yes | Provisioning profile for the System create lane. |
+
+## `systems.provision_defined`
+
+`implemented`
+
+Admit a DEFINED System after its upload window is complete. Requires operator.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `system_id` | `string` | yes | Defined System whose stored profile should be provisioned. |
 
 ## `systems.reprovision`
 

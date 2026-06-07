@@ -13,6 +13,7 @@ __pycache__/
 .pytest_cache/
 .ty_cache/
 .hypothesis/
+.desloppify/
 
 # Node (mermaid doc checker tooling)
 node_modules/

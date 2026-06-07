@@ -893,7 +893,7 @@ A `@pytest.mark.live_vm` test (match the marker used in `tests/integration/live_
 
 1. `systems.define` with `rootfs: {kind: "path", path: "/var/lib/libvirt/images/kdive-tier0-rootfs.qcow2"}` and `debug: {}` (Tier 0 needs no debug flags); provision → ready.
 2. Create a Run; ingest the build artifact via the external-build upload path (#113): upload the **single self-contained `bzImage`** (initramfs embedded, Task 0.3) as the kernel — **no separate initrd** — with `cmdline` =
-   - **vulnerable:** `console=ttyS0 dhash_entries=1 panic_on_oops=1`
+   - **vulnerable debug args:** `dhash_entries=1 panic_on_oops=1`
    - **clean (baseline):** `console=ttyS0`
 3. `runs.install` (with `method=console`, `initrd_ref=None`) + `runs.boot`. The boot handler registers the console artifact on window close. (Validate the rendered domain XML once with `virt-xml-validate` during host setup.)
 4. Read the System's `console` artifact via `artifacts.*`.

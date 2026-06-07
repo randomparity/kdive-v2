@@ -14,9 +14,12 @@ from uuid import UUID
 
 import psycopg
 from psycopg import sql
+from psycopg.types.json import Jsonb
 
 from kdive.reconciler.loop import _repair_abandoned_jobs
 from tests.adversarial.conftest import one, open_conn, seed_run
+
+_AUTHORIZING = {"principal": "reconciler-test", "agent_session": None, "project": "test"}
 
 
 async def _make_zombie(conn: psycopg.AsyncConnection, run_id: UUID | None) -> UUID:
@@ -26,9 +29,9 @@ async def _make_zombie(conn: psycopg.AsyncConnection, run_id: UUID | None) -> UU
             "INSERT INTO jobs (kind, payload, state, attempt, max_attempts, worker_id, "
             "lease_expires_at, heartbeat_at, authorizing, dedup_key) VALUES "
             "('build', %s::jsonb, 'running', 1, 1, 'dead-worker', "
-            "now() - interval '1 hour', now() - interval '1 hour', '{}'::jsonb, %s) "
+            "now() - interval '1 hour', now() - interval '1 hour', %s, %s) "
             "RETURNING id",
-            (payload, f"dk-{run_id}"),
+            (payload, Jsonb(_AUTHORIZING), f"dk-{run_id}"),
         )
         return (await one(cur))[0]
 
@@ -93,7 +96,8 @@ def test_healthy_running_job_is_not_swept(migrated_url: str) -> None:
                     "INSERT INTO jobs (kind, payload, state, attempt, max_attempts, worker_id, "
                     "lease_expires_at, heartbeat_at, authorizing, dedup_key) VALUES "
                     "('build', '{}'::jsonb, 'running', 1, 3, 'live-worker', "
-                    "now() + interval '5 minutes', now(), '{}'::jsonb, 'dk-live') RETURNING id"
+                    "now() + interval '5 minutes', now(), %s, 'dk-live') RETURNING id",
+                    (Jsonb(_AUTHORIZING),),
                 )
                 job_id = (await one(cur))[0]
             assert await _repair_abandoned_jobs(conn) == 0

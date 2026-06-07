@@ -14,6 +14,7 @@ Invariants (ADR-0018, `jobs/queue.py`):
 from __future__ import annotations
 
 import asyncio
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -23,6 +24,12 @@ from kdive.domain.models import JobKind
 from kdive.domain.state import JobState
 from kdive.jobs import queue
 from tests.adversarial.conftest import count_rows, open_conn, open_conns
+
+_AUTHORIZING = {"principal": "p", "agent_session": None, "project": "a"}
+
+
+def _build_payload() -> dict[str, str]:
+    return {"run_id": str(uuid4())}
 
 
 async def _expire_lease(conn: psycopg.AsyncConnection, job_id: object) -> None:
@@ -40,7 +47,7 @@ def test_concurrent_dequeue_claims_each_job_once(
     async def _run() -> None:
         async with open_conn(migrated_url) as seed:
             for i in range(jobs):
-                await queue.enqueue(seed, JobKind.BUILD, {"i": i}, {"p": "a"}, f"dk-{i}")
+                await queue.enqueue(seed, JobKind.BUILD, _build_payload(), _AUTHORIZING, f"dk-{i}")
         async with open_conns(migrated_url, workers) as conns:
             claimed = await asyncio.gather(
                 *(queue.dequeue(c, f"w{i}") for i, c in enumerate(conns))
@@ -62,7 +69,7 @@ def test_attempt_charging_caps_total_claims_across_reclaim(migrated_url: str) ->
     async def _run() -> None:
         async with open_conn(migrated_url) as conn:
             job = await queue.enqueue(
-                conn, JobKind.BUILD, {}, {"p": "a"}, "dk", max_attempts=max_attempts
+                conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk", max_attempts=max_attempts
             )
             claims = 0
             for _ in range(max_attempts + 5):  # try well past the cap
@@ -82,7 +89,9 @@ def test_reclaimed_worker_cannot_finalize(migrated_url: str) -> None:
     # must all no-op against B's running job; only B may finalize it.
     async def _run() -> None:
         async with open_conn(migrated_url) as conn:
-            job = await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk", max_attempts=5)
+            job = await queue.enqueue(
+                conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk", max_attempts=5
+            )
             claimed_a = await queue.dequeue(conn, "A")
             assert claimed_a is not None and claimed_a.worker_id == "A"
             await _expire_lease(conn, job.id)
@@ -119,7 +128,7 @@ def test_concurrent_enqueue_same_dedup_key_makes_one_row(migrated_url: str, race
         async with open_conns(migrated_url, racers) as conns:
             jobs = await asyncio.gather(
                 *(
-                    queue.enqueue(c, JobKind.BUILD, {"i": i}, {"p": "a"}, "dk-shared")
+                    queue.enqueue(c, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-shared")
                     for i, c in enumerate(conns)
                 )
             )

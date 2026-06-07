@@ -13,7 +13,7 @@ Acceptance asserted over the wire / against the stack's Postgres + MinIO: protoc
 envelopes, JWKS-validated tokens), #1 (redacted vmcore in MinIO), #2 (audit per transition +
 force_crash, split by attributing principal — driver vs ``system:reconciler``), #3 (redaction
 does not leak through the wire), #5 (``torn_down`` + ``Discovery.list_owned()`` empty), the
-report phase (``accounting.report`` all-projects form under a ``platform_auditor`` token,
+report phase (``accounting.report_all_projects`` under a ``platform_auditor`` token,
 windowed to this run, asserting ``reserved``/``reconciled``/variance against the ledger and
 emitting a JSON report artifact — ADR-0046), and the RBAC negatives (viewer raised-path;
 operator force_crash ``authorization_denied`` envelope; project-only token denied the
@@ -405,7 +405,9 @@ def test_viewer_denied_operator_op_over_the_wire() -> None:
         async with viewer:
             with pytest.raises(LiveStackToolError):  # require_role raises → tool error
                 await viewer.call_tool(
-                    "allocations.request", project=_PROJECT, vcpus=1, memory_gb=1
+                    "allocations.request",
+                    project=_PROJECT,
+                    request={"vcpus": 1, "memory_gb": 1, "resource": {"mode": "kind"}},
                 )
 
     asyncio.run(_run())
@@ -413,7 +415,7 @@ def test_viewer_denied_operator_op_over_the_wire() -> None:
 
 @pytest.mark.live_stack
 def test_report_all_projects_denied_to_project_token() -> None:
-    """A project-only token is denied accounting.report's all-projects form over the wire.
+    """A project-only token is denied accounting.report_all_projects over the wire.
 
     Verified against the tool: the all-projects form catches the raised AuthorizationError and
     *returns* ToolResponse.failure(..., AUTHORIZATION_DENIED) — a well-formed error envelope,
@@ -425,7 +427,7 @@ def test_report_all_projects_denied_to_project_token() -> None:
     async def _run() -> None:
         project_only = LiveStackClient.over_http(base_url, _token(issuer, role="viewer"))
         async with project_only:
-            denied = await _scalar(project_only, "accounting.report", scope="all-projects")
+            denied = await _scalar(project_only, "accounting.report_all_projects")
         assert denied.status == "error", "project-only token was not denied (#101)"
         assert denied.error_category == "authorization_denied", "wrong denial category (#101)"
 
@@ -455,7 +457,10 @@ def test_spine_over_the_wire() -> None:
             async with phase("allocate"):
                 env = _ok(
                     await _scalar(
-                        op, "allocations.request", project=_PROJECT, vcpus=2, memory_gb=2
+                        op,
+                        "allocations.request",
+                        project=_PROJECT,
+                        request={"vcpus": 2, "memory_gb": 2, "resource": {"mode": "kind"}},
                     ),
                     "allocate",
                 )
@@ -600,7 +605,7 @@ async def _assert_teardown(db_url: str, system_id: str) -> None:
 async def _assert_report(
     base_url: str, auditor_token: str, db_url: str, window_start: datetime
 ) -> None:
-    """Drive accounting.report (all-projects) under platform_auditor; assert windowed spend.
+    """Drive accounting.report_all_projects under platform_auditor; assert windowed spend.
 
     Asserts the _PROJECT rollup row reflects this run's real spend (windowed wire rollup ==
     windowed DB ledger sums), then emits + re-asserts the JSON report artifact (ADR-0046 §2/§3).
@@ -610,8 +615,7 @@ async def _assert_report(
         env = _ok(
             await _scalar(
                 auditor,
-                "accounting.report",
-                scope="all-projects",
+                "accounting.report_all_projects",
                 window=[window_start.isoformat(), None],
             ),
             "report",

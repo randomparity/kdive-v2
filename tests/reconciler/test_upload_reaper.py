@@ -24,9 +24,17 @@ from kdive.db import upload_manifest
 from kdive.db.locks import LockScope
 from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.state import RunState
-from kdive.mcp.tools import systems as systems_tools
+from kdive.mcp.tools.lifecycle import systems as systems_tools
 from kdive.reconciler.loop import _reap_one_owner, _repair_abandoned_uploads
-from tests.mcp.test_systems_tools import _ctx, _granted_allocation, _upload_profile
+from tests.mcp.systems_support import (
+    ctx as _ctx,
+)
+from tests.mcp.systems_support import (
+    granted_allocation as _granted_allocation,
+)
+from tests.mcp.systems_support import (
+    upload_profile as _upload_profile,
+)
 from tests.reconciler.conftest import connect, run_repair, seed_run, seed_system
 
 

@@ -9,6 +9,7 @@ import psycopg
 import pytest
 
 from kdive.db.locks import LockScope, _lock_key, advisory_xact_lock
+from tests.db_waits import wait_until_backend_waiting
 
 _KEY = UUID("11111111-1111-1111-1111-111111111111")
 
@@ -58,19 +59,6 @@ def test_project_scope_keyed_by_string_is_deterministic_and_distinct() -> None:
     assert -(2**63) <= key < 2**63
 
 
-async def _wait_until_lock_waiting(observer: psycopg.AsyncConnection, waiter_pid: int) -> None:
-    """Poll pg_locks until ``waiter_pid`` is blocked on an advisory lock (not merely slow)."""
-    for _ in range(200):
-        cur = await observer.execute(
-            "SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND pid = %s AND NOT granted",
-            (waiter_pid,),
-        )
-        if await cur.fetchone() is not None:
-            return
-        await asyncio.sleep(0.02)
-    raise AssertionError("the second connection never began waiting on the advisory lock")
-
-
 def test_lock_blocks_until_holder_commits(postgres_url: str) -> None:
     async def _run() -> None:
         async with (
@@ -92,7 +80,7 @@ def test_lock_blocks_until_holder_commits(postgres_url: str) -> None:
                 advisory_xact_lock(a, LockScope.ALLOCATION, _KEY),
             ):
                 task = asyncio.create_task(acquire_b())
-                await _wait_until_lock_waiting(a, b.info.backend_pid)
+                await wait_until_backend_waiting(a, b.info.backend_pid, locktype="advisory")
                 assert not task.done()
                 assert not acquired_b.is_set()
             # a's transaction committed above, releasing the lock.
@@ -123,7 +111,7 @@ def test_project_lock_serializes_two_connections_on_one_project(postgres_url: st
                 advisory_xact_lock(a, LockScope.PROJECT, project),
             ):
                 task = asyncio.create_task(acquire_b())
-                await _wait_until_lock_waiting(a, b.info.backend_pid)
+                await wait_until_backend_waiting(a, b.info.backend_pid, locktype="advisory")
                 assert not task.done()
                 assert not acquired_b.is_set()
             # a committed, releasing the PROJECT lock; b may now proceed.

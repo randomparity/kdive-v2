@@ -20,7 +20,6 @@ _GIT_TIMEOUT = 3.0
 
 
 def package_version() -> str:
-    """Return the installed distribution version (`[project].version`), or ``0.0.0``."""
     try:
         return _dist_version("kdive")
     except PackageNotFoundError:
@@ -37,7 +36,6 @@ class VersionInfo:
 
 
 def _git(*args: str) -> str | None:
-    """Run a read-only ``git`` command; return stripped stdout, or ``None`` on any failure."""
     try:
         result = subprocess.run(
             ["git", *args],
@@ -52,7 +50,6 @@ def _git(*args: str) -> str | None:
 
 
 def _from_baked() -> VersionInfo | None:
-    """Read `(COMMIT, RELEASE)` from the baked `_buildinfo` module, if present and valid."""
     try:
         from kdive import (
             _buildinfo,  # ty: ignore[unresolved-import]  # only present in built artifacts
@@ -67,7 +64,6 @@ def _from_baked() -> VersionInfo | None:
 
 
 def _from_git() -> VersionInfo | None:
-    """Resolve from live git, or ``None`` when not in a usable checkout."""
     commit = _git("rev-parse", "--short", "HEAD")
     if commit is None:
         return None
@@ -79,12 +75,10 @@ def _from_git() -> VersionInfo | None:
 
 @lru_cache(maxsize=1)
 def version_info() -> VersionInfo:
-    """Resolve `(version, commit, is_release)` once per process: baked → git → unknown."""
     return _from_baked() or _from_git() or VersionInfo(package_version(), None, False)
 
 
 def full_version() -> str:
-    """Return the display string, e.g. ``0.2.0+g1a2b3c4`` or ``0.2.0-dev+g1a2b3c4``."""
     info = version_info()
     suffix = "" if info.is_release else "-dev"
     commit = f"+g{info.commit}" if info.commit else ""

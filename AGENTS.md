@@ -74,21 +74,23 @@ PoC's flock.
 with an explicit state machine. Lower layers outlive higher ones; a System never outlives
 its Allocation. See the design doc's "Domain model" section for the precise lifecycles.
 
-### The plane / capability provider seam
+### The provider runtime seam
 
-This is the core extension mechanism (ADR-0009/0022). A provider implements only the
-**planes** it supports (Discovery, Provisioning, Build, Install, Connect, Debug, Control,
-Retrieve — eight Protocols in `providers/interfaces.py`; Allocation is core, not a plane).
-The `CapabilityRegistry` (`providers/capability.py`) dispatches an operation to a provider
-by matching `(plane, operation, resource_kind)` against advertised capabilities — **never
-by provider name**. The registry is built once at startup and immutable.
+The active M0/M1 provider seam is `ProviderRuntime` typed ports (ADR-0063). Production
+assembly happens in `providers/composition.py`, which constructs the concrete local-libvirt
+provider ports once and injects them into MCP tools and worker handlers. A provider still
+implements narrow port protocols for the planes it supports (Discovery, Provisioning,
+Build, Install, Connect, Debug, Control, Retrieve; Allocation is core, not a provider
+plane), but runtime code calls those typed ports directly.
 
-Each operation declares an `OpContract` (`idempotent` / `destructive` / `cancelable` /
-`long_running` / `cleanup`) that drives job routing, the destructive-op gate, and the
-reconciler. The only provider today is `providers/local_libvirt/`.
+`CapabilityRegistry` (`providers/capability.py`) and the old `OpContract` dispatch model
+remain quarantined prototype coverage for future multi-provider dispatch. They are not the
+current production assembly path, and registry tests do not prove MCP or worker runtime
+behavior. The only provider today is `providers/local_libvirt/`.
 
 The falsifiable design hypothesis: adding a new provider (e.g. remote libvirt in M2)
-touches zero lines in the core and the MCP tool modules.
+is mostly a provider implementation plus `ProviderRuntime` wiring; broader registry-based
+dispatch would need a new ADR before it becomes runtime infrastructure.
 
 ### Two registrar seams keep the entrypoint stable
 

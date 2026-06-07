@@ -19,8 +19,8 @@ profile, `crashkernel` became optional (kdump-only), and at the **provider** lay
 That relaxation shipped (branch `feat/crash-capture-tiers`, commits `74406ae`, `301c1f9`) but is
 **unreachable through the MCP tool surface**: `runs.install` (`runs.py`) rejects *any* cmdline
 lacking a `crashkernel=` token, unconditionally, before the job is enqueued. The Tier-0 demo
-cmdlines (`console=ttyS0 dhash_entries=1 panic_on_oops=1` and the clean `console=ttyS0` baseline)
-carry no `crashkernel=`, so an agent cannot boot the deterministic dcache test case.
+debug args (`dhash_entries=1 panic_on_oops=1` and the empty baseline) carry no `crashkernel=`,
+so an agent cannot boot the deterministic dcache test case.
 
 Two further gaps follow from the same root:
 
@@ -92,8 +92,8 @@ made method-conditional and the param can be threaded. Where to resolve it is th
 ## Consequences
 
 - The Tier-0 demo path is reachable through the agent-facing surface: a bare System
-  (no `crashkernel`, no debug flags) resolves `method == console` and admits the
-  `crashkernel=`-free demo cmdlines.
+  (no `crashkernel`, no debug flags) resolves `method == console` and admits
+  `crashkernel=`-free debug args.
 - The gate now reads the System's provisioning profile, so `runs.install` and `install_handler`
   both fetch the System (one extra read each). A Run whose System row is gone fails fast with
   `configuration_error` rather than resolving a method against a missing profile.

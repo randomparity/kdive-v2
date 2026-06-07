@@ -3,113 +3,41 @@
 `LocalLibvirtRetrieve` realizes two seam-injected ports, mirroring `LocalLibvirtBuild`:
 `Retriever.capture(system_id, method)` dispatches to the appropriate seam, stores the raw
 `sensitive` core and a `redacted` dmesg derivative, and returns both refs plus the core's build-id;
-`CrashPostmortem.run(...)` symbolizes the core against the Run's `debuginfo_ref` over an
-injected `crash` subprocess. The slow, host-bound operations are `live_vm`-gated seams, so
-the orchestration and the full error contract are unit-tested with fakes. The crash-command
+`CrashPostmortem.run_crash_postmortem(...)` symbolizes the core against the Run's
+`debuginfo_ref` over an injected `crash` subprocess. The slow, host-bound operations are
+`live_vm`-gated seams, so the orchestration and the full error contract are unit-tested with
+fakes. The crash-command
 validator is the load-bearing security control: the postmortem path is never gated, so every
 caller command is sanitized and allowlist-checked before any `crash` invocation.
 """
 
 from __future__ import annotations
 
-import re
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
+from kdive.providers.ports import (
+    CaptureOutput,
+    CrashOutput,
+    CrashPostmortem,
+    CrashResult,
+    Retriever,
+)
+from kdive.security.crash_commands import crash_command_rejection_reason
 from kdive.security.redaction import Redactor
-from kdive.store.objectstore import StoredArtifact, object_store_from_env
-
-# Pipe-to-shell, redirection, command substitution, chaining, backgrounding.
-_DENY_CHARS = ("|", ">", "<", "`", "$(", ";", "&")
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact, object_store_from_env
 
 _RETENTION_CLASS = "vmcore"
 
 
-def crash_command_rejection_reason(command: str, allowlist: frozenset[str]) -> str | None:
-    """Return ``None`` if the command is permitted, else a human-readable rejection reason.
-
-    Two layers: a security-critical denylist (newline/control chars, a leading ``!`` shell
-    escape, and the shell metacharacters in ``_DENY_CHARS``) and an allowlist of read-only
-    leading verbs. The denylist is the boundary the ungated postmortem path relies on.
-    """
-    stripped = command.strip()
-    if not stripped:
-        return "empty command"
-    if _CONTROL.search(command):
-        return "command contains a newline or control character"
-    if stripped[0] == "!":
-        return "shell escape ('!') is not permitted"
-    for token in _DENY_CHARS:
-        if token in command:
-            return f"disallowed metacharacter {token!r}"
-    verb = stripped.split()[0].lower()
-    if verb not in allowlist:
-        return f"verb {verb!r} is not in the crash command allowlist"
-    return None
-
-
-class CaptureOutput(NamedTuple):
-    """A capture result: the raw + redacted StoredArtifacts and the core's GNU build-id."""
-
-    raw: StoredArtifact
-    redacted: StoredArtifact
-    vmcore_build_id: str
-
-
-class Retriever(Protocol):
-    """The handler-facing capture port (realized M0 contract), keyed on the System."""
-
-    def capture(self, system_id: UUID, method: CaptureMethod) -> CaptureOutput: ...
-
-
 class _StorePort(Protocol):
-    def put_artifact(
-        self,
-        tenant: str,
-        kind: str,
-        object_id: str,
-        name: str,
-        *,
-        data: bytes,
-        sensitivity: Sensitivity,
-        retention_class: str,
-    ) -> StoredArtifact: ...
-
-
-class CrashResult(NamedTuple):
-    """A raw `crash` subprocess result: exit status and captured streams."""
-
-    exit_status: int
-    stdout: bytes
-    stderr: bytes
-
-
-class CrashOutput(NamedTuple):
-    """A parsed, redacted crash batch result."""
-
-    results: dict[str, object]
-    transcript: str
-    truncated: bool
-
-
-class CrashPostmortem(Protocol):
-    """The handler-facing crash-postmortem port (realized M0 contract)."""
-
-    def run(
-        self,
-        *,
-        vmcore_ref: str,
-        debuginfo_ref: str,
-        expected_build_id: str,
-        commands: list[str],
-    ) -> CrashOutput: ...
+    def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact: ...
 
 
 type _WaitForVmcore = Callable[[UUID], bytes | None]
@@ -190,16 +118,18 @@ class LocalLibvirtRetrieve:
         if self._store is None:
             self._store = self._store_factory()
         return self._store.put_artifact(
-            self._tenant,
-            "systems",
-            str(system_id),
-            name,
-            data=data,
-            sensitivity=sens,
-            retention_class=_RETENTION_CLASS,
+            ArtifactWriteRequest(
+                tenant=self._tenant,
+                owner_kind="systems",
+                owner_id=str(system_id),
+                name=name,
+                data=data,
+                sensitivity=sens,
+                retention_class=_RETENTION_CLASS,
+            )
         )
 
-    def run(
+    def run_crash_postmortem(
         self,
         *,
         vmcore_ref: str,

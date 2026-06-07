@@ -123,9 +123,3 @@ def test_direct_construction_bypasses_configuration_error_mapping() -> None:
     # the raw ValidationError without the CONFIGURATION_ERROR mapping.
     with pytest.raises(ValidationError):
         ServerBuildProfile.model_validate({"schema_version": 1})
-
-
-def test_public_names_exported_from_package() -> None:
-    import kdive.profiles as profiles
-
-    assert profiles.BuildProfile is BuildProfile

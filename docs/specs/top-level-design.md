@@ -25,7 +25,7 @@ kernel-tooling ecosystem (drgn, libvirt bindings, crash, the MCP SDK).
 | Identity | implicit local user | OIDC/SSO + RBAC, with on-behalf-of agent attribution |
 | Accounting | none | metering ledger + enforced budgets/quotas (admission control) |
 | Long-running ops | inline | durable job queue + worker tier |
-| Resource scope | local x86_64 libvirt only | capability-dispatched providers across many resource kinds |
+| Resource scope | local x86_64 libvirt only | typed provider runtime now; multi-provider dispatch later |
 
 ## Core decisions
 
@@ -43,7 +43,8 @@ below. Each should become an [ADR](../adr/) before implementation.
 7. **Metering + budgets/quotas** with an admission-control gate on allocation.
 8. **Async worker tier + durable job queue**; hard per-tenant sandboxing
    designed-for but deferred.
-9. **Capability-based provider dispatch** across narrow per-plane interfaces.
+9. **Typed provider runtime ports** across narrow per-plane interfaces for M0/M1; capability
+   dispatch is a future multi-provider option (ADR-0063).
 
 ## System topology
 
@@ -119,7 +120,7 @@ accounting live here.
 
 - States: `requested → granted → active → releasing → released`, plus `denied`,
   `expired`, `failed`.
-- `requested → granted` passes through **admission control**: capability match,
+- `requested → granted` passes through **admission control**: selector/resource fit,
   RBAC, quota/budget check, **and a capacity check against host headroom**.
   Local-libvirt is "always-yes" only for *chargeback/reservation* — it is still
   capacity-admitted (a concurrent-System cap or resource accounting) so M0/M1 fail
@@ -198,23 +199,23 @@ A sub-object of a Run, bounded by a single boot of a single kernel.
    The Investigation grouping a Run imposes no allocation constraint — it may
    group Runs across different Allocations and resource kinds.
 
-## Provider / capability model
+## Provider model
 
-Providers are the extension seam. A provider is a plugin that implements one or
-more **plane interfaces** for a resource `kind`. Capabilities advertise what is
-actually implemented — not every provider implements every plane.
+Providers are the extension seam.
 
-Two rules:
+### Current status
 
-- **Capability-based dispatch** — the core selects a provider by matching the
-  requested operation against advertised capabilities; it never hardcodes
-  provider names. Adding ppc64le/PowerVM is a new provider package with zero core
-  change.
-- **Each plane operation declares its contract** — idempotent? destructive?
-  cancelable? long-running (job) vs synchronous? **and its cancel/abandon cleanup
-  guarantee** (clean-rollback / best-effort / orphan-flagged). This drives
-  job-queue routing, the destructive-op policy gate, and the reconciler (see
-  Reconciliation & teardown).
+In M0/M1 the production seam is
+`ProviderRuntime`: startup builds typed ports for the active provider
+(`Provisioner`, `Builder`, `Installer`, `Controller`, `Retriever`, debug and
+introspection ports) and passes those ports to MCP tool registrars and worker
+handlers. The only concrete provider today is local-libvirt; composition is
+centralized in `src/kdive/providers/composition.py`.
+
+The capability registry from ADR-0009/ADR-0022 remains a prototype for a later
+multi-provider milestone, not the live dispatch path. It is not used for job
+routing, destructive-op gating, or reconciler behavior in M0/M1. ADR-0063 records
+this narrowing so contributors extend the runtime that actually serves requests.
 
 ## Lifecycle planes
 
@@ -317,6 +318,11 @@ Applied across every plane.
   approval over budget. The budget/quota **check and the resulting ledger debit
   are atomic** under a per-project lock (see Concurrency) — otherwise two
   concurrent requests can both pass the check and overspend.
+- **Service-layer boundary** — `kdive.domain` owns pure domain models, state
+  machines, and cost/lease rules. DB-coordinating workflows that compose locks,
+  repositories, idempotency rows, audit rows, and ledger writes live in
+  `kdive.services` (for example allocation admission, renewal, and accounting
+  rollups), so persistence orchestration is not hidden inside domain modules.
 - **Destructive-op policy gate** — `control.power(off/cycle/reset)`,
   `force_crash`, `teardown`, disk delete, and PCI passthrough are gated by three
   independent, all-required checks: (a) the allocation's granted capability
@@ -345,9 +351,9 @@ periodic **reconciler loop** in the core detects and repairs that drift:
   releases on unlink — but neither cleans up *infrastructure*, only the lock.)
 - **Dead DebugSessions** — a session row in `live` whose transport is unreachable
   is moved to `detached`.
-- **Leaked provider infra** — the reconciler reconciles against a provider
-  `list-owned` / `reconcile` capability (Discovery plane) to find, e.g., a libvirt
-  domain with no owning System row.
+- **Leaked provider infra** — the reconciler reconciles against typed provider
+  inventory/reconcile operations to find, e.g., a libvirt domain with no owning
+  System row.
 - **Idle Investigations** — an Investigation in `open` / `active` whose last Run
   was created beyond the retention window is moved to `abandoned`. Closure is
   otherwise explicit, and abandoning never cascades to its Runs.
@@ -358,10 +364,10 @@ grace window, then force-killed; the owning Run transitions to `failed`
 `jobs.cancel` or agent abort, so audit and SLO tracking can tell an
 infrastructure kill from a deliberate one. The accounting ledger attributes the
 partial spend to the Allocation regardless of completion. **Cancel/abandon cleanup** is
-part of every plane op's declared contract (see Provider / capability model):
-each op declares whether cancel yields clean-rollback, best-effort, or
-orphan-flagged state — `jobs.cancel` on a half-done `provision` / `install` is
-never undefined.
+part of each typed worker operation's policy: each op declares in code whether cancel yields
+clean-rollback, best-effort, or orphan-flagged state — `jobs.cancel` on a half-done
+`provision` / `install` is never undefined. ADR-0063 narrows the M0/M1 provider seam to typed
+runtime ports; the dormant capability registry does not drive this behavior today.
 
 ## Error taxonomy
 
@@ -385,7 +391,7 @@ Each gets its own spec → plan → implementation cycle.
 1. **Core platform** — domain model, Postgres schema + repository layer, object
    store, job queue + worker tier, MCP/HTTP server skeleton, OIDC/RBAC, audit.
    (Foundation; everything depends on it.)
-2. **Resource + Allocation plane** — discovery, capability model, admission
+2. **Resource + Allocation plane** — discovery, resource capability metadata, admission
    control, accounting ledger, quotas/budgets.
 3. **Provisioning plane** — provisioning-profile model + the libvirt provisioner.
 4. **Build + Install plane** — local build, kernel install onto a System.
@@ -460,13 +466,14 @@ Milestone-based. ("Sprint" is avoided per the project doc-style guard.)
 - **M5 — PowerVM/ppc64le.** LPAR activation + HMC; second architecture.
 
 Each milestone after M0 is intended to be "add a provider package + its
-provisioning profiles," with the core and tool surface unchanged — the payoff of
-the plane/capability design. **This is a falsifiable hypothesis, not a
-guarantee**: the test is that adding the M2 remote provider touches zero lines in
-`core/*` and the MCP tool-surface modules, measured by diff scope. M0 proves the
-happy-path wiring end-to-end; it does **not** prove the seams hold under real
-leasing, secret resolution, chargeback, or hardware failure — which is exactly
-what the M1.5 fault-injection provider exists to stress first.
+provisioning profiles," with the core and tool surface unchanged — first through
+the typed `ProviderRuntime` ports, and later through a separately accepted
+multi-provider dispatch design if M2 needs one. **This is a falsifiable
+hypothesis, not a guarantee**: the test is that adding the M2 remote provider
+touches zero lines in `core/*` and the MCP tool-surface modules, measured by diff
+scope. M0 proves the happy-path wiring end-to-end; it does **not** prove the
+seams hold under real leasing, secret resolution, chargeback, or hardware failure
+— which is exactly what the M1.5 fault-injection provider exists to stress first.
 
 ## Open follow-up decisions
 

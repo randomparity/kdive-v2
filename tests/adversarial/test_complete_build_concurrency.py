@@ -15,13 +15,13 @@ import asyncio
 
 from kdive.db.repositories import RUNS
 from kdive.domain.state import RunState
-from kdive.mcp.tools import runs as runs_tools
-from kdive.providers.local_libvirt.build import BuildOutput
-from tests.mcp.test_complete_build_tool import (
-    _ctx,
-    _FakeValidator,
-    _pool,
-    _seed_external_run_with_manifest,
+from kdive.mcp.tools.lifecycle import runs as runs_tools
+from kdive.providers.ports import BuildOutput
+from tests.mcp.complete_build_support import (
+    FakeValidator,
+    ctx,
+    pool,
+    seed_external_run_with_manifest,
 )
 
 
@@ -29,7 +29,7 @@ class _CountingValidator:
     """Wraps the Task 8 fake validator; tracks total validate() invocations."""
 
     def __init__(self, output: BuildOutput) -> None:
-        self._inner = _FakeValidator(output)
+        self._inner = FakeValidator(output)
         self.calls = 0
 
     def validate(self, run_id, manifest, keys, declared_build_id):
@@ -39,15 +39,15 @@ class _CountingValidator:
 
 def test_concurrent_complete_build_yields_one_ledger_row(migrated_url: str) -> None:
     async def _run() -> None:
-        async with _pool(migrated_url) as pool:
-            run_id = await _seed_external_run_with_manifest(pool)
+        async with pool(migrated_url) as conn_pool:
+            run_id = await seed_external_run_with_manifest(conn_pool)
             validator = _CountingValidator(BuildOutput(f"local/runs/{run_id}/kernel", "", ""))
             results = await asyncio.gather(
                 runs_tools.complete_build(
-                    pool, _ctx(), str(run_id), build_id=None, cmdline="c", validator=validator
+                    conn_pool, ctx(), str(run_id), build_id=None, cmdline="c", validator=validator
                 ),
                 runs_tools.complete_build(
-                    pool, _ctx(), str(run_id), build_id=None, cmdline="c", validator=validator
+                    conn_pool, ctx(), str(run_id), build_id=None, cmdline="c", validator=validator
                 ),
             )
             assert all(r.status == "succeeded" for r in results), (
@@ -58,7 +58,7 @@ def test_concurrent_complete_build_yields_one_ledger_row(migrated_url: str) -> N
                 f"both may validate before the lock, or the second may hit the "
                 f"idempotent short-read, but got {validator.calls} calls"
             )
-            async with pool.connection() as conn, conn.cursor() as cur:
+            async with conn_pool.connection() as conn, conn.cursor() as cur:
                 await cur.execute(
                     "SELECT count(*) FROM run_steps WHERE run_id = %s AND step = 'build'",
                     (run_id,),

@@ -14,7 +14,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from datetime import timedelta
+from typing import Any
 from uuid import UUID
 
 from psycopg_pool import AsyncConnectionPool
@@ -23,8 +25,11 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry, JobHandler
+from kdive.security.redaction import Redactor
 
 _log = logging.getLogger(__name__)
+_CONTEXT_VALUE_MAX = 1000
+_CONTEXT_KEY = re.compile(r"[^a-zA-Z0-9_.-]+")
 
 
 class Worker:
@@ -114,7 +119,7 @@ class Worker:
                     else ErrorCategory.INFRASTRUCTURE_FAILURE
                 )
                 async with self._pool.connection() as conn:
-                    await queue.fail(conn, job, category)
+                    await queue.fail(conn, job, category, failure_context=_failure_context(exc))
                 _log.warning("job %s failed: %s", job.id, category)
                 return
             async with self._pool.connection() as conn:
@@ -145,3 +150,28 @@ class Worker:
                         return
         except Exception:  # noqa: BLE001 - a failing heartbeat must not crash the worker; stop beating and let the lease lapse
             _log.warning("heartbeat for job %s failed; stopping (lease will lapse)", job_id)
+
+
+def _failure_context(exc: Exception) -> dict[str, str]:
+    redactor = Redactor()
+    context = {"failure_message": _redacted(redactor, str(exc))}
+    if isinstance(exc, CategorizedError):
+        for key, value in exc.details.items():
+            if _safe_detail(value):
+                context[f"failure_detail_{_context_key(str(key))}"] = _redacted(
+                    redactor, "" if value is None else str(value)
+                )
+    return context
+
+
+def _safe_detail(value: Any) -> bool:
+    return value is None or isinstance(value, str | int | float | bool | UUID)
+
+
+def _context_key(key: str) -> str:
+    cleaned = _CONTEXT_KEY.sub("_", key).strip("_.-")
+    return cleaned or "value"
+
+
+def _redacted(redactor: Redactor, value: str) -> str:
+    return redactor.redact_text(value)[:_CONTEXT_VALUE_MAX]

@@ -230,7 +230,12 @@ INVESTIGATIONS = StatefulRepository(
 )
 RUNS = StatefulRepository(Run, "runs", RunState, json_columns=frozenset({"build_profile"}))
 DEBUG_SESSIONS = StatefulRepository(DebugSession, "debug_sessions", DebugSessionState)
-JOBS = StatefulRepository(Job, "jobs", JobState, json_columns=frozenset({"payload", "authorizing"}))
+JOBS = StatefulRepository(
+    Job,
+    "jobs",
+    JobState,
+    json_columns=frozenset({"payload", "authorizing", "failure_context"}),
+)
 ARTIFACTS = Repository(Artifact, "artifacts")
 
 # M1 accounting tables. COST_CLASS_COEFFICIENTS/QUOTAS upsert every non-key column;

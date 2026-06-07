@@ -4,15 +4,27 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from uuid import uuid4
 
 import psycopg
 import pytest
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
 from kdive.jobs import queue
+
+_AUTHORIZING = {"principal": "p", "agent_session": None, "project": "a"}
+
+
+def _build_payload() -> dict[str, str]:
+    return {"run_id": str(uuid4())}
+
+
+def _system_payload() -> dict[str, str]:
+    return {"system_id": str(uuid4())}
 
 
 async def _connect(url: str) -> psycopg.AsyncConnection:
@@ -29,12 +41,14 @@ async def _count_jobs(conn: psycopg.AsyncConnection) -> int:
 def test_enqueue_inserts_queued_job(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            job = await queue.enqueue(conn, JobKind.BUILD, {"x": 1}, {"principal": "alice"}, "dk-1")
+            payload = _build_payload()
+            authorizing = {"principal": "alice", "agent_session": None, "project": "kernel-team"}
+            job = await queue.enqueue(conn, JobKind.BUILD, payload, authorizing, "dk-1")
             assert isinstance(job, Job)
             assert job.state is JobState.QUEUED
             assert job.attempt == 0
-            assert job.payload == {"x": 1}
-            assert job.authorizing == {"principal": "alice"}
+            assert job.payload == payload
+            assert job.authorizing == authorizing
             assert job.dedup_key == "dk-1"
             assert await _count_jobs(conn) == 1
 
@@ -44,8 +58,16 @@ def test_enqueue_inserts_queued_job(migrated_url: str) -> None:
 def test_enqueue_same_dedup_key_returns_same_job(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            first = await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-dup")
-            second = await queue.enqueue(conn, JobKind.PROVISION, {"y": 2}, {"p": "b"}, "dk-dup")
+            first = await queue.enqueue(
+                conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-dup"
+            )
+            second = await queue.enqueue(
+                conn,
+                JobKind.PROVISION,
+                _system_payload(),
+                {"principal": "p", "project": "b"},
+                "dk-dup",
+            )
             assert second.id == first.id
             assert second.kind is JobKind.BUILD  # the existing row, unchanged
             assert await _count_jobs(conn) == 1
@@ -56,8 +78,8 @@ def test_enqueue_same_dedup_key_returns_same_job(migrated_url: str) -> None:
 def test_enqueue_distinct_dedup_keys_make_distinct_jobs(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            a = await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-a")
-            b = await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-b")
+            a = await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-a")
+            b = await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-b")
             assert a.id != b.id
             assert await _count_jobs(conn) == 2
 
@@ -68,7 +90,9 @@ def test_enqueue_rejects_max_attempts_below_one(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
             with pytest.raises(ValueError, match="max_attempts"):
-                await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-0", max_attempts=0)
+                await queue.enqueue(
+                    conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-0", max_attempts=0
+                )
 
     asyncio.run(_run())
 
@@ -93,8 +117,8 @@ async def _insert_running_job(
             "INSERT INTO jobs (kind, payload, state, attempt, max_attempts, worker_id, "
             "    lease_expires_at, authorizing, dedup_key) "
             "VALUES ('build', '{}', 'running', %s, %s, %s, now() + make_interval(secs => %s), "
-            "    '{}', %s) RETURNING *",
-            (attempt, max_attempts, worker_id, lease_seconds, dedup_key),
+            "    %s, %s) RETURNING *",
+            (attempt, max_attempts, worker_id, lease_seconds, Jsonb(_AUTHORIZING), dedup_key),
         )
         row = await cur.fetchone()
     return Job.model_validate(row)
@@ -103,9 +127,15 @@ async def _insert_running_job(
 def test_dequeue_claims_oldest_and_charges_attempt(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-old")
-            await asyncio.sleep(0.01)
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-new")
+            old = await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-old")
+            new = await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-new")
+            await conn.execute(
+                "UPDATE jobs SET created_at = CASE "
+                "WHEN id = %s THEN timestamp '2026-01-01 00:00:00+00' "
+                "WHEN id = %s THEN timestamp '2026-01-01 00:00:01+00' "
+                "END WHERE id IN (%s, %s)",
+                (old.id, new.id, old.id, new.id),
+            )
             claimed = await queue.dequeue(conn, "w1")
             assert claimed is not None
             assert claimed.dedup_key == "dk-old"  # FIFO by created_at
@@ -128,8 +158,8 @@ def test_dequeue_empty_returns_none(migrated_url: str) -> None:
 def test_dequeue_concurrent_claims_distinct_jobs(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as setup:
-            await queue.enqueue(setup, JobKind.BUILD, {}, {"p": "a"}, "dk-1")
-            await queue.enqueue(setup, JobKind.BUILD, {}, {"p": "a"}, "dk-2")
+            await queue.enqueue(setup, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-1")
+            await queue.enqueue(setup, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-2")
         async with await _connect(migrated_url) as a, await _connect(migrated_url) as b:
             ja, jb = await asyncio.gather(queue.dequeue(a, "wa"), queue.dequeue(b, "wb"))
         assert ja is not None and jb is not None
@@ -166,7 +196,7 @@ def test_dequeue_skips_exhausted_attempts(migrated_url: str) -> None:
 def test_heartbeat_renews_for_owner(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-hb")
+            await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-hb")
             claimed = await queue.dequeue(conn, "w1", lease=timedelta(seconds=10))
             assert claimed is not None
             assert claimed.lease_expires_at is not None
@@ -184,7 +214,7 @@ def test_heartbeat_renews_for_owner(migrated_url: str) -> None:
 def test_heartbeat_false_for_non_owner(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-hb2")
+            await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-hb2")
             claimed = await queue.dequeue(conn, "w1")
             assert claimed is not None
             assert await queue.heartbeat(conn, claimed.id, "intruder") is False
@@ -195,7 +225,7 @@ def test_heartbeat_false_for_non_owner(migrated_url: str) -> None:
 def test_complete_for_owner_and_none_for_non_owner(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-c1")
+            await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-c1")
             claimed = await queue.dequeue(conn, "w1")
             assert claimed is not None
             done = await queue.complete(conn, claimed.id, "w1", "s3://result")
@@ -203,7 +233,7 @@ def test_complete_for_owner_and_none_for_non_owner(migrated_url: str) -> None:
             assert done.state is JobState.SUCCEEDED
             assert done.result_ref == "s3://result"
 
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-c2")
+            await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-c2")
             other = await queue.dequeue(conn, "w1")
             assert other is not None
             assert await queue.complete(conn, other.id, "intruder", "s3://x") is None
@@ -214,7 +244,9 @@ def test_complete_for_owner_and_none_for_non_owner(migrated_url: str) -> None:
 def test_fail_requeues_below_max(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-f1", max_attempts=3)
+            await queue.enqueue(
+                conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-f1", max_attempts=3
+            )
             claimed = await queue.dequeue(conn, "w1")  # attempt -> 1
             assert claimed is not None
             out = await queue.fail(conn, claimed, ErrorCategory.INFRASTRUCTURE_FAILURE)
@@ -241,7 +273,9 @@ def test_fail_dead_letters_at_max(migrated_url: str) -> None:
 def test_fail_terminal_dead_letters_below_max(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-f3", max_attempts=3)
+            await queue.enqueue(
+                conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-f3", max_attempts=3
+            )
             claimed = await queue.dequeue(conn, "w1")  # attempt -> 1, below max
             assert claimed is not None
             out = await queue.fail(conn, claimed, ErrorCategory.NOT_IMPLEMENTED, terminal=True)
@@ -254,7 +288,7 @@ def test_fail_terminal_dead_letters_below_max(migrated_url: str) -> None:
 def test_fail_fence_miss_returns_input(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"p": "a"}, "dk-f4")
+            await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-f4")
             claimed = await queue.dequeue(conn, "w1")
             assert claimed is not None
             # Simulate a reclaim by another worker: change worker_id out from under it.
@@ -270,7 +304,11 @@ def test_recent_jobs_newest_first_and_capped(migrated_url: str) -> None:
         async with await _connect(migrated_url) as conn:
             for i in range(3):
                 await queue.enqueue(
-                    conn, JobKind.BUILD, {"i": i}, {"principal": "p", "project": "proj"}, f"d{i}"
+                    conn,
+                    JobKind.BUILD,
+                    _build_payload(),
+                    {"principal": "p", "project": "proj"},
+                    f"d{i}",
                 )
             recent = await queue.recent_jobs(conn, limit=2, projects=["proj"])
         assert len(recent) == 2
@@ -292,9 +330,19 @@ def test_recent_jobs_empty(migrated_url: str) -> None:
 def test_recent_jobs_filters_by_project(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"principal": "p", "project": "a"}, "ja")
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"principal": "p", "project": "b"}, "jb")
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"principal": "p"}, "jnone")  # no project
+            await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "ja")
+            await queue.enqueue(
+                conn,
+                JobKind.BUILD,
+                _build_payload(),
+                {"principal": "p", "project": "b"},
+                "jb",
+            )
+            await conn.execute(
+                "INSERT INTO jobs (kind, payload, state, max_attempts, authorizing, dedup_key) "
+                "VALUES ('build', %s, 'queued', 3, %s, 'jnone')",
+                (Jsonb(_build_payload()), Jsonb({"principal": "p"})),
+            )
             recent = await queue.recent_jobs(conn, limit=10, projects=["a"])
         assert [j.dedup_key for j in recent] == ["ja"]  # only project a; b and no-project excluded
 
@@ -304,7 +352,7 @@ def test_recent_jobs_filters_by_project(migrated_url: str) -> None:
 def test_recent_jobs_empty_projects_returns_nothing(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            await queue.enqueue(conn, JobKind.BUILD, {}, {"principal": "p", "project": "a"}, "ja")
+            await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "ja")
             assert await queue.recent_jobs(conn, limit=10, projects=[]) == []
 
     asyncio.run(_run())

@@ -22,10 +22,10 @@ DebugSession) have independent lifecycles but a fixed nesting order. Understandi
 that nesting — and knowing that a lower layer outlives its dependents — is the
 foundation for driving the tools correctly. See [concepts](concepts.md).
 
-Destructive operations are protected at two tiers: `control.force_crash` and
-`systems.reprovision` pass a three-factor gate (capability scope + RBAC role +
-provisioning-profile opt-in), while `control.power` off/cycle/reset and
-`systems.teardown` require the `admin` role directly. See
+Destructive operations are protected at two tiers: `control.force_crash`,
+`control.power` off/cycle/reset, and `systems.reprovision` pass a three-factor
+gate (capability scope + RBAC role + provisioning-profile opt-in), while
+`systems.teardown` requires the `admin` role directly. See
 [safety and RBAC](safety-and-rbac.md).
 
 When a tool reports a failure, the `error_category` field carries a stable string

@@ -22,7 +22,7 @@ Resume execution on a live DebugSession and wait for a stop event. Operator only
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `session_id` | `string` | yes | The live DebugSession to continue execution on. |
-| `timeout_sec` | `number` | no | Seconds to wait for a stop event; 0.0 waits indefinitely. |
+| `timeout_sec` | `number` | no | Seconds to wait for a stop event; 0.0 uses the provider interactive wait cap. |
 
 ## `debug.end_session`
 

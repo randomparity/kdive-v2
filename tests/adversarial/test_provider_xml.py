@@ -29,7 +29,7 @@ from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.local_libvirt.discovery import _parse_arch, _parse_system_id
 from kdive.providers.local_libvirt.install import LocalLibvirtInstall, ReadinessResult
 from kdive.providers.local_libvirt.provisioning import render_domain_xml
-from tests.providers.local_libvirt.conftest import FakeDomain, FakeLibvirtConn
+from tests.providers.local_libvirt.fakes import FakeDomain, FakeLibvirtConn
 
 _SYS = UUID("11111111-1111-1111-1111-111111111111")
 _RUN = UUID("22222222-2222-2222-2222-222222222222")

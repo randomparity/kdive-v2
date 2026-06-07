@@ -17,7 +17,7 @@ Enqueue a capture_vmcore job on a crashed System. Requires operator.
 
 `partial` · `read-only`
 
-List the redacted vmcore artifacts for a System. Requires project membership.
+List the redacted vmcore artifacts for a System. Requires viewer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

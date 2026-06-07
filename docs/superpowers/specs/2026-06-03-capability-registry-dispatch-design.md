@@ -3,9 +3,10 @@
 **Issue:** #13 (M0) · **Depends on:** #5 (domain models & error taxonomy —
 merged), #7 (repository layer — merged) · **Decisions:**
 [ADR-0022](../../adr/0022-capability-registry-dispatch-impl.md), refining
-[ADR-0009](../../adr/0009-capability-provider-dispatch.md) · **Parent spec:**
+[ADR-0009](../../adr/0009-capability-provider-dispatch.md). ADR-0063 later superseded this
+for production runtime assembly; the registry remains prototype coverage. **Parent spec:**
 [`docs/specs/m0-walking-skeleton.md`](../../specs/m0-walking-skeleton.md)
-("Plane interfaces", "Provider / capability model")
+("Plane interfaces", "Provider model")
 
 ## Goal
 

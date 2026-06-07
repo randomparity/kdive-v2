@@ -20,7 +20,7 @@ Enqueue the kernel build job for a Run; poll jobs.* for completion. Requires ope
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `cmdline` | `any` | no | Kernel command line recorded in the build ledger and applied at boot (e.g. 'console=ttyS0 dhash_entries=1'). Omit for the method default. Bound on the first build of a Run. |
+| `cmdline` | `any` | no | Kernel debug args appended to the platform-required boot args (e.g. 'dhash_entries=1'). Omit for no extra debug args. Bound on the first build of a Run. |
 | `run_id` | `string` | yes | The Run to build. |
 
 ## `runs.complete_build`
@@ -32,7 +32,7 @@ Validate an external Run's uploads and finalize it to succeeded. Operator only.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `build_id` | `any` | no | GNU build-id as hex (e.g. from `readelf -n vmlinux`); required iff a vmlinux was uploaded. Case-insensitive. |
-| `cmdline` | `string` | yes | Kernel command line (e.g. 'console=ttyS0 dhash_entries=1'). Recorded in the build ledger and applied at boot via runs.install/runs.boot (ADR-0056). |
+| `cmdline` | `string` | yes | Kernel debug args appended to the platform-required boot args (e.g. 'dhash_entries=1'). Recorded in the build ledger and applied at boot via runs.install/runs.boot (ADR-0061). |
 | `run_id` | `string` | yes | The external-build Run to finalize. |
 
 ## `runs.create`
@@ -51,7 +51,7 @@ Bind a Run to a ready System and Investigation in one transaction. Requires oper
 
 `implemented` · `read-only`
 
-Render a Run; a failed Run maps to a failure envelope. Requires project membership.
+Render a Run; a failed Run maps to a failure envelope. Requires viewer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

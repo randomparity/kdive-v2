@@ -5,16 +5,19 @@
 | Tool | Maturity |
 |---|---|
 | [`accounting.estimate`](accounting.md#accountingestimate) | `implemented` |
-| [`accounting.report`](accounting.md#accountingreport) | `implemented` |
+| [`accounting.report_all_projects`](accounting.md#accountingreport_all_projects) | `implemented` |
+| [`accounting.report_granted_set`](accounting.md#accountingreport_granted_set) | `implemented` |
 | [`accounting.set_budget`](accounting.md#accountingset_budget) | `implemented` |
 | [`accounting.set_quota`](accounting.md#accountingset_quota) | `implemented` |
-| [`accounting.usage`](accounting.md#accountingusage) | `implemented` |
+| [`accounting.usage_investigation`](accounting.md#accountingusage_investigation) | `implemented` |
+| [`accounting.usage_project`](accounting.md#accountingusage_project) | `implemented` |
 | [`allocations.get`](allocations.md#allocationsget) | `implemented` |
 | [`allocations.list`](allocations.md#allocationslist) | `implemented` |
 | [`allocations.release`](allocations.md#allocationsrelease) | `implemented` |
 | [`allocations.renew`](allocations.md#allocationsrenew) | `implemented` |
 | [`allocations.request`](allocations.md#allocationsrequest) | `implemented` |
-| [`artifacts.create_upload`](artifacts.md#artifactscreate_upload) | `implemented` |
+| [`artifacts.create_run_upload`](artifacts.md#artifactscreate_run_upload) | `implemented` |
+| [`artifacts.create_system_upload`](artifacts.md#artifactscreate_system_upload) | `implemented` |
 | [`artifacts.get`](artifacts.md#artifactsget) | `partial` |
 | [`artifacts.list`](artifacts.md#artifactslist) | `partial` |
 | [`control.force_crash`](control.md#controlforce_crash) | `partial` |
@@ -52,6 +55,7 @@
 | [`systems.define`](systems.md#systemsdefine) | `implemented` |
 | [`systems.get`](systems.md#systemsget) | `implemented` |
 | [`systems.provision`](systems.md#systemsprovision) | `partial` |
+| [`systems.provision_defined`](systems.md#systemsprovision_defined) | `implemented` |
 | [`systems.reprovision`](systems.md#systemsreprovision) | `partial` |
 | [`systems.teardown`](systems.md#systemsteardown) | `partial` |
 | [`vmcore.fetch`](vmcore.md#vmcorefetch) | `partial` |

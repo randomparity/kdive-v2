@@ -11,52 +11,30 @@ the plane tools, not `jobs.*`).
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
-from dataclasses import dataclass, field
 
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_access_token
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.security.rbac import (
-    PlatformRole,
-    Role,
-    platform_roles_from_claims,
-    roles_from_claims,
+from kdive.security.context import (
+    AuthError,
+    RequestContext,
+    context_from_claims,
+    require_project,
 )
 
 _JWKS_URI_ENV = "KDIVE_OIDC_JWKS_URI"
 _ISSUER_ENV = "KDIVE_OIDC_ISSUER"
 _AUDIENCE_ENV = "KDIVE_OIDC_AUDIENCE"
 
-
-class AuthError(Exception):
-    """A verified transport carried claims that cannot authorize the request.
-
-    Distinct from transport-level rejection (a missing/invalid/expired bearer is a
-    401 from FastMCP's middleware before any tool runs). Raised when the verified
-    token lacks a usable subject, or a requested project is not granted.
-    """
-
-
-@dataclass(frozen=True)
-class RequestContext:
-    """The `(principal, agent_session, project)` attribution tuple (ADR-0006).
-
-    ``roles`` carries the principal's per-project role (ADR-0020); ``platform_roles``
-    carries the orthogonal platform-scoped grants (ADR-0043 §1). Both are excluded from
-    ``__eq__``/``__hash__`` (``compare=False``): ``roles`` so its ``dict`` cannot make the
-    frozen dataclass unhashable, and ``platform_roles`` to keep equality keyed on the
-    attribution tuple (its default is a hashable ``frozenset``). The annotations are
-    strings at runtime (``from __future__ import annotations``), so ``Role`` /
-    ``PlatformRole`` are only typing dependencies.
-    """
-
-    principal: str
-    agent_session: str | None
-    projects: tuple[str, ...]
-    roles: Mapping[str, Role] = field(default_factory=dict, compare=False)
-    platform_roles: frozenset[PlatformRole] = field(default_factory=frozenset, compare=False)
+__all__ = [
+    "AuthError",
+    "RequestContext",
+    "build_verifier",
+    "context_from_claims",
+    "current_context",
+    "require_project",
+]
 
 
 def _require_env(name: str) -> str:
@@ -78,42 +56,6 @@ def build_verifier() -> JWTVerifier:
     )
 
 
-def context_from_claims(claims: Mapping[str, object]) -> RequestContext:
-    """Derive the request context from a verified token's claims.
-
-    Reads the principal from ``claims["sub"]`` (FastMCP leaves
-    ``AccessToken.subject`` unset). ``agent_session`` is optional in M0; ``projects``
-    defaults to an empty tuple.
-
-    Raises:
-        AuthError: The token carries no usable ``sub``, or a malformed
-            ``agent_session`` / ``projects`` claim.
-    """
-    subject = claims.get("sub")
-    if not isinstance(subject, str) or not subject:
-        raise AuthError("verified token has no usable subject (sub) claim")
-    agent_session = claims.get("agent_session")
-    if agent_session is not None and not isinstance(agent_session, str):
-        raise AuthError("agent_session claim is not a string")
-    raw_projects = claims.get("projects")
-    if raw_projects is None:
-        raw_projects = ()
-    if not isinstance(raw_projects, (list, tuple)):
-        # A non-list `projects` (e.g. `0`, `""`, a string, an object) is malformed.
-        # Reject it rather than letting a falsy value silently coerce to "no projects"
-        # — matches the `agent_session` check above and this function's documented
-        # contract (fail closed on a malformed claim, never silently grant-nothing).
-        raise AuthError("projects claim is not a list")
-    projects = tuple(str(p) for p in raw_projects)
-    return RequestContext(
-        principal=subject,
-        agent_session=agent_session,
-        projects=projects,
-        roles=roles_from_claims(claims),
-        platform_roles=platform_roles_from_claims(claims),
-    )
-
-
 def current_context() -> RequestContext:
     """Read the context from the in-flight request's verified token.
 
@@ -125,14 +67,3 @@ def current_context() -> RequestContext:
     if token is None:
         raise AuthError("no authenticated token in the request context")
     return context_from_claims(token.claims)
-
-
-def require_project(ctx: RequestContext, project: str) -> str:
-    """Validate ``project`` is granted to ``ctx``; return it, or raise.
-
-    Raises:
-        AuthError: ``project`` is not in the token's ``projects`` claim.
-    """
-    if project not in ctx.projects:
-        raise AuthError(f"project {project!r} is not granted to {ctx.principal!r}")
-    return project

@@ -1,63 +1,59 @@
-"""Tests for the plane Protocols (ADR-0009 / ADR-0022, issue #13)."""
+"""Tests for shared provider interface value types."""
 
 from __future__ import annotations
 
 import kdive.providers.interfaces as interfaces
+from kdive.domain.models import ResourceKind
+from kdive.domain.state import ResourceStatus
 from kdive.providers.capability import Plane
 from kdive.providers.interfaces import (
-    BuildPlane,
-    ConnectPlane,
-    ControlPlane,
-    DebugPlane,
-    DiscoveryPlane,
-    InstallPlane,
-    ProvisioningPlane,
-    RetrievePlane,
+    ArtifactRef,
+    KernelArtifact,
+    ResourceRecord,
+    SystemHandle,
 )
-from tests.providers.conftest import FakeProvider, PartialFakeProvider
 
 
-def _assert_static_conformance(
-    discovery: DiscoveryPlane,
-    provisioning: ProvisioningPlane,
-    build: BuildPlane,
-    install: InstallPlane,
-    connect: ConnectPlane,
-    debug: DebugPlane,
-    control: ControlPlane,
-    retrieve: RetrievePlane,
-) -> None:
-    """`ty` checks each argument satisfies its Protocol at the call site below."""
-
-
-def test_full_fake_satisfies_every_plane_protocol() -> None:
-    provider = FakeProvider()
-    # Static signature gate (checked by ty): a mismatch fails the typecheck.
-    _assert_static_conformance(
-        provider, provider, provider, provider, provider, provider, provider, provider
-    )
-    # Runtime presence smoke-test (runtime_checkable checks method names only).
-    for plane in (
-        DiscoveryPlane,
-        ProvisioningPlane,
-        BuildPlane,
-        InstallPlane,
-        ConnectPlane,
-        DebugPlane,
-        ControlPlane,
-        RetrievePlane,
-    ):
-        assert isinstance(provider, plane)
-
-
-def test_partial_fake_satisfies_only_implemented_planes() -> None:
-    provider = PartialFakeProvider()
-    assert isinstance(provider, BuildPlane)
-    assert isinstance(provider, DiscoveryPlane)
-    assert not isinstance(provider, ControlPlane)
-    assert not isinstance(provider, ProvisioningPlane)
-
-
-def test_eight_planes_present_and_allocation_absent() -> None:
+def test_capability_registry_defines_the_provider_planes() -> None:
     assert len(Plane) == 8
-    assert not hasattr(interfaces, "AllocationPlane")
+
+
+def test_stale_plane_protocols_are_not_public_interfaces() -> None:
+    for name in (
+        "DiscoveryPlane",
+        "ProvisioningPlane",
+        "BuildPlane",
+        "InstallPlane",
+        "ConnectPlane",
+        "DebugPlane",
+        "ControlPlane",
+        "RetrievePlane",
+        "AllocationPlane",
+        "ProvisioningProfile",
+        "BuildProfile",
+        "PowerAction",
+    ):
+        assert not hasattr(interfaces, name)
+
+
+def test_shared_provider_handles_are_distinct_types() -> None:
+    system = SystemHandle("system-1")
+    kernel = KernelArtifact("kernel-1")
+    artifact = ArtifactRef("artifact-1")
+
+    assert system == "system-1"
+    assert kernel == "kernel-1"
+    assert artifact == "artifact-1"
+
+
+def test_discovery_records_keep_resource_shape() -> None:
+    record: ResourceRecord = {
+        "resource_id": "host-1",
+        "kind": ResourceKind.LOCAL_LIBVIRT,
+        "capabilities": {"arch": "x86_64"},
+        "status": ResourceStatus.AVAILABLE,
+    }
+
+    assert record["resource_id"] == "host-1"
+    assert record["kind"] is ResourceKind.LOCAL_LIBVIRT
+    assert record["status"] is ResourceStatus.AVAILABLE

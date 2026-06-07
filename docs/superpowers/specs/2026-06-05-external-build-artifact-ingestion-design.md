@@ -161,7 +161,7 @@ out: ToolResponse{ uploads: [{ name, key, upload_url, expires_in }],
 ```
 in:  run_id,
      build_id?,                       # declared, from the agent's vmlinux; required iff vmlinux present
-     cmdline                          # e.g. "console=ttyS0 dhash_entries=1"
+     cmdline                          # debug args, e.g. "dhash_entries=1"
 out: ToolResponse{ run_id, status: "succeeded",
                    refs: [kernel, initrd?, vmlinux?],
                    suggested_next_actions: ["runs.get"] }

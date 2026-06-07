@@ -6,8 +6,9 @@ import libvirt
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.local_libvirt.control import LocalLibvirtControl, PowerAction
-from tests.providers.local_libvirt.conftest import FakeDomain, FakeLibvirtConn
+from kdive.domain.models import PowerAction
+from kdive.providers.local_libvirt.control import LocalLibvirtControl
+from tests.providers.local_libvirt.fakes import FakeDomain, FakeLibvirtConn
 
 
 def _control(domain: FakeDomain | None) -> tuple[LocalLibvirtControl, FakeDomain | None]:

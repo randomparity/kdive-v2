@@ -6,7 +6,7 @@
 
 `implemented` · `read-only`
 
-Render an Allocation; failed maps to a failure envelope. Requires project membership.
+Render an Allocation; failed maps to a failure envelope. Requires viewer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -16,7 +16,7 @@ Render an Allocation; failed maps to a failure envelope. Requires project member
 
 `implemented` · `read-only`
 
-List the newest Allocations for a project. Requires project membership.
+List the newest Allocations for a project. Requires viewer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -54,9 +54,5 @@ Admit an allocation against project budget, quota, and host cap. Requires operat
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `idempotency_key` | `any` | no | Replay-safe key; a repeated key returns the prior grant. |
-| `kind` | `any` | no | Resource kind filter when resource_id is omitted. |
-| `memory_gb` | `integer` | yes | Memory in GiB requested. |
 | `project` | `string` | yes | Project to admit the allocation for. |
-| `resource_id` | `any` | no | Resource UUID to target; omit to pick by kind. |
-| `vcpus` | `integer` | yes | Number of vCPUs requested. |
-| `window` | `any` | no | Lease duration in hours (number or decimal string); omit for the configured default. |
+| `request` | `object` | yes | Allocation request payload: size, lease window, resource selector. |

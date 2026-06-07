@@ -1,29 +1,26 @@
 """Fakes and helpers for the provider-seam tests (issue #13).
 
-``FakeProvider`` implements every plane method (satisfies all eight Protocols and
-can be registered for any operation). ``PartialFakeProvider`` implements only
-Build + Discovery. ``UnhonoredProvider`` has no plane methods. ``MutableProvider``
-exposes ``build`` as an instance attribute so a test can delete it after
-registration to exercise the at-dispatch honored-method re-check.
+``FakeProvider`` exposes generic plane operation names and can be registered for any
+operation. ``PartialFakeProvider`` implements only Build + Discovery.
+``UnhonoredProvider`` has no plane methods. ``MutableProvider`` exposes ``build`` as an
+instance attribute so a test can delete it after registration to exercise the
+at-dispatch honored-method re-check.
 """
 
 from __future__ import annotations
 
-from kdive.domain.models import ResourceKind
+from kdive.domain.models import Allocation, PowerAction, ResourceKind, Run
+from kdive.profiles.build import ParsedBuildProfile
+from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.capability import Capability, CleanupGuarantee, OpContract, Plane
 from kdive.providers.interfaces import (
-    Allocation,
     ArtifactRef,
     BreakLocation,
     BreakpointId,
-    BuildProfile,
     KernelArtifact,
     OwnedInfra,
-    PowerAction,
-    ProvisioningProfile,
     Registers,
     ResourceRecord,
-    Run,
     SystemHandle,
     TransportHandle,
 )
@@ -64,7 +61,7 @@ class FakeProvider:
     def teardown(self, system: SystemHandle) -> None:
         return None
 
-    def build(self, run: Run, profile: BuildProfile) -> KernelArtifact:
+    def build(self, run: Run, profile: ParsedBuildProfile) -> KernelArtifact:
         return KernelArtifact("kernel-1")
 
     def install(self, system: SystemHandle, kernel: KernelArtifact) -> None:
@@ -104,7 +101,7 @@ class PartialFakeProvider:
     def list_owned(self) -> list[OwnedInfra]:
         return []
 
-    def build(self, run: Run, profile: BuildProfile) -> KernelArtifact:
+    def build(self, run: Run, profile: ParsedBuildProfile) -> KernelArtifact:
         return KernelArtifact("kernel-1")
 
 
@@ -116,7 +113,7 @@ class MutableProvider:
     """Exposes ``build`` as a deletable instance attribute (at-dispatch re-check)."""
 
     def __init__(self) -> None:
-        def build(run: Run, profile: BuildProfile) -> KernelArtifact:
+        def build(run: Run, profile: ParsedBuildProfile) -> KernelArtifact:
             return KernelArtifact("kernel-1")
 
         self.build = build

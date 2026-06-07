@@ -12,15 +12,16 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from kdive.mcp.auth import AuthError
+from kdive.security.context import AuthError
 
 if TYPE_CHECKING:
     from psycopg import AsyncConnection
 
-    from kdive.mcp.auth import RequestContext
+    from kdive.security.context import RequestContext
 
 
 def args_digest(args: Mapping[str, object]) -> str:
@@ -34,16 +35,32 @@ def args_digest(args: Mapping[str, object]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True, slots=True)
+class AuditEvent:
+    """A project-scoped audited transition."""
+
+    tool: str
+    object_kind: str
+    object_id: UUID
+    transition: str
+    args: Mapping[str, object]
+    project: str
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformAuditEvent:
+    """A platform-scope read or denial audit event."""
+
+    tool: str
+    scope: str
+    args: Mapping[str, object]
+    platform_role: str | None
+
+
 async def record(
     conn: AsyncConnection,
     ctx: RequestContext,
-    *,
-    tool: str,
-    object_kind: str,
-    object_id: UUID,
-    transition: str,
-    args: Mapping[str, object],
-    project: str,
+    event: AuditEvent,
 ) -> UUID:
     """Append one `audit_log` row for a transition; return its id.
 
@@ -56,8 +73,10 @@ async def record(
         AuthError: ``project`` is not in ``ctx.projects`` — a misattribution guard on
             the append-only row.
     """
-    if project not in ctx.projects:
-        raise AuthError(f"cannot audit under project {project!r} not granted to {ctx.principal!r}")
+    if event.project not in ctx.projects:
+        raise AuthError(
+            f"cannot audit under project {event.project!r} not granted to {ctx.principal!r}"
+        )
     async with conn.cursor() as cur:
         await cur.execute(
             "INSERT INTO audit_log "
@@ -68,12 +87,12 @@ async def record(
             (
                 ctx.principal,
                 ctx.agent_session,
-                project,
-                tool,
-                object_kind,
-                object_id,
-                transition,
-                args_digest(args),
+                event.project,
+                event.tool,
+                event.object_kind,
+                event.object_id,
+                event.transition,
+                args_digest(event.args),
             ),
         )
         row = await cur.fetchone()
@@ -87,10 +106,7 @@ async def record_platform(
     *,
     principal: str,
     agent_session: str | None,
-    platform_role: str | None,
-    tool: str,
-    scope: str,
-    args: Mapping[str, object],
+    event: PlatformAuditEvent,
 ) -> UUID:
     """Append one `platform_audit_log` row for a platform read/denial; return its id.
 
@@ -114,10 +130,10 @@ async def record_platform(
             (
                 principal,
                 agent_session,
-                platform_role,
-                tool,
-                scope,
-                args_digest(args),
+                event.platform_role,
+                event.tool,
+                event.scope,
+                args_digest(event.args),
             ),
         )
         row = await cur.fetchone()
@@ -130,12 +146,7 @@ async def record_system(
     conn: AsyncConnection,
     *,
     principal: str,
-    tool: str,
-    object_kind: str,
-    object_id: UUID,
-    transition: str,
-    args: Mapping[str, object],
-    project: str,
+    event: AuditEvent,
 ) -> UUID:
     """Append one `audit_log` row for a system-initiated transition (no RequestContext).
 
@@ -156,12 +167,12 @@ async def record_system(
             (
                 principal,
                 None,
-                project,
-                tool,
-                object_kind,
-                object_id,
-                transition,
-                args_digest(args),
+                event.project,
+                event.tool,
+                event.object_kind,
+                event.object_id,
+                event.transition,
+                args_digest(event.args),
             ),
         )
         row = await cur.fetchone()

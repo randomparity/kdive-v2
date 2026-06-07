@@ -101,11 +101,14 @@ class ToolResponse(BaseModel):
     def from_job(cls, job: Job) -> ToolResponse:
         """Build the job-handle envelope from a :class:`Job` row."""
         refs = {"result": job.result_ref} if job.result_ref else {}
+        data = {"kind": job.kind.value}
+        if job.state is JobState.FAILED:
+            data.update(job.failure_context)
         return cls(
             object_id=str(job.id),
             status=job.state.value,
             suggested_next_actions=list(_NEXT_ACTIONS[job.state]),
             refs=refs,
             error_category=job.error_category.value if job.error_category else None,
-            data={"kind": job.kind.value},
+            data=data,
         )

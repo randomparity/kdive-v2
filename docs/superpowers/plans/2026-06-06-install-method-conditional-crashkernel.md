@@ -260,8 +260,8 @@ def test_cmdline_default_omits_crashkernel_for_non_kdump() -> None:
 
 
 def test_cmdline_explicit_overrides_default_for_any_method() -> None:
-    run = _run_with_build_profile({"cmdline": "console=ttyS0 dhash_entries=1"})
-    assert runs_tools._cmdline_for(run, CaptureMethod.KDUMP) == "console=ttyS0 dhash_entries=1"
+    run = _run_with_build_profile({"cmdline": "dhash_entries=1"})
+    assert runs_tools._cmdline_for(run, CaptureMethod.KDUMP) == "dhash_entries=1"
 
 
 def _run_with_build_profile(build_profile: dict[str, Any]) -> Run:
@@ -545,7 +545,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```python
 @pytest.mark.parametrize(
     "cmdline",
-    ["console=ttyS0 dhash_entries=1 panic_on_oops=1", "console=ttyS0"],
+    ["dhash_entries=1 panic_on_oops=1", ""],
 )
 def test_install_tier0_demo_cmdlines_pass_boundary(migrated_url: str, cmdline: str) -> None:
     # Acceptance (#116): the Tier-0 demo cmdlines carry no crashkernel=; a bare (console)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import importlib
+import subprocess
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -16,6 +18,7 @@ from defusedxml.ElementTree import fromstring as _safe_fromstring
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.local_libvirt import discovery
+from kdive.providers.local_libvirt import provisioning as provisioning_module
 from kdive.providers.local_libvirt.provisioning import (
     LocalLibvirtProvisioning,
     console_log_path,
@@ -24,7 +27,7 @@ from kdive.providers.local_libvirt.provisioning import (
     render_domain_xml,
     validate_profile,
 )
-from tests.providers.local_libvirt.conftest import libvirt_error
+from tests.providers.local_libvirt.fakes import libvirt_error
 
 _SYS = UUID("11111111-1111-1111-1111-111111111111")
 
@@ -57,6 +60,26 @@ def _profile(**overrides: Any) -> ProvisioningProfile:
 
 def test_domain_name_is_kdive_prefixed() -> None:
     assert domain_name_for(_SYS) == "kdive-11111111-1111-1111-1111-111111111111"
+
+
+def test_import_does_not_register_elementtree_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_register_namespace(prefix: str, uri: str) -> None:
+        calls.append((prefix, uri))
+
+    monkeypatch.setattr(ET, "register_namespace", fake_register_namespace)
+    reloaded = importlib.reload(provisioning_module)
+
+    assert calls == []
+
+    reloaded.render_domain_xml(_SYS, _profile())
+    reloaded.render_domain_xml(_SYS, _profile())
+
+    assert calls == [("kdive", discovery._KDIVE_METADATA_NS)]
+    reloaded.__dict__["_kdive_namespace_registered"] = False
 
 
 def test_render_carries_name_memory_vcpu_machine_and_rootfs() -> None:
@@ -95,7 +118,7 @@ def test_required_cmdline_root_matches_the_rendered_disk_target() -> None:
     # ADR-0061: the platform-injected root= must name the device provisioning attaches. These are
     # set independently in two modules; this guards them moving together.
     from kdive.domain.capture import CaptureMethod
-    from kdive.mcp.tools.runs import system_required_cmdline
+    from kdive.planes.runs_shared import system_required_cmdline
 
     target = _safe_fromstring(render_domain_xml(_SYS, _profile())).find("devices/disk/target")
     assert target is not None
@@ -296,6 +319,82 @@ def test_provision_creates_overlay_over_base_and_attaches_it() -> None:
     assert disk is not None and disk.get("file") == overlay  # the domain boots the overlay
 
 
+def test_real_make_overlay_timeout_is_provisioning_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(
+            ["qemu-img"], timeout=provisioning_module._QEMU_IMG_TIMEOUT_S
+        )
+
+    monkeypatch.setattr(provisioning_module.subprocess, "run", _timeout)
+
+    with pytest.raises(CategorizedError) as caught:
+        provisioning_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
+
+    assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE
+    assert caught.value.details["timeout_s"] == provisioning_module._QEMU_IMG_TIMEOUT_S
+
+
+def test_real_make_overlay_missing_qemu_img_is_missing_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _missing(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("qemu-img")
+
+    monkeypatch.setattr(provisioning_module.subprocess, "run", _missing)
+
+    with pytest.raises(CategorizedError) as caught:
+        provisioning_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
+
+    assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
+    assert caught.value.details == {
+        "op": "create_overlay",
+        "overlay": "overlay.qcow2",
+        "tool": "qemu-img",
+    }
+
+
+def test_real_make_overlay_launch_oserror_is_infrastructure_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fork_failed(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        raise OSError("fork failed")
+
+    monkeypatch.setattr(provisioning_module.subprocess, "run", _fork_failed)
+
+    with pytest.raises(CategorizedError) as caught:
+        provisioning_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
+
+    assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert caught.value.details == {
+        "op": "create_overlay",
+        "overlay": "overlay.qcow2",
+        "tool": "qemu-img",
+        "error": "OSError",
+    }
+
+
+def test_real_remove_overlay_oserror_is_infrastructure_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unlink_failed(self: object, *, missing_ok: bool = False) -> None:
+        del self, missing_ok
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(provisioning_module.Path, "unlink", _unlink_failed)
+
+    with pytest.raises(CategorizedError) as caught:
+        provisioning_module._real_remove_overlay("/rootfs/overlay.qcow2")
+
+    assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert caught.value.details == {
+        "op": "remove_overlay",
+        "overlay": "overlay.qcow2",
+        "error": "PermissionError",
+    }
+
+
 def test_teardown_removes_the_overlay() -> None:
     removed: list[str] = []
     name = domain_name_for(_SYS)
@@ -336,6 +435,20 @@ def test_provision_create_failure_removes_the_overlay() -> None:
     with pytest.raises(CategorizedError):
         _prov(conn, remove_overlay=removed.append).provision(_SYS, _profile())
     assert removed == [overlay_path(_SYS)]
+
+
+def test_provision_failure_keeps_preexisting_overlay() -> None:
+    # A retry can fail after finding an existing overlay. That overlay may belong to a live or
+    # recoverable previous attempt, so this call must not remove a file it did not create.
+    removed: list[str] = []
+    conn = _ProvConn(define_error=libvirt.VIR_ERR_INTERNAL_ERROR)
+    with pytest.raises(CategorizedError):
+        _prov(
+            conn,
+            remove_overlay=removed.append,
+            overlay_exists=lambda _overlay: True,
+        ).provision(_SYS, _profile())
+    assert removed == []
 
 
 def test_provision_failure_still_closes_connection() -> None:

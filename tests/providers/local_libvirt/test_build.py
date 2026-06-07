@@ -19,12 +19,14 @@ from kdive.providers.local_libvirt import build as build_module
 from kdive.providers.local_libvirt.build import (
     LocalLibvirtBuild,
     _apply_patch,
+    _real_read_config,
+    _real_read_kernel_image,
     _resolve_local_ref,
     _stage_config,
     _sync_tree,
     parse_gnu_build_id,
 )
-from kdive.store.objectstore import StoredArtifact
+from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact
 
 _RUN = UUID("22222222-2222-2222-2222-222222222222")
 _TENANT = "proj"
@@ -74,25 +76,17 @@ class _FakeStore:
     puts: list[tuple[str, str, str, Sensitivity]] = field(default_factory=list)
     fail_on: str | None = None  # raise INFRASTRUCTURE_FAILURE on this name
 
-    def put_artifact(
-        self,
-        tenant: str,
-        kind: str,
-        object_id: str,
-        name: str,
-        *,
-        data: bytes,
-        sensitivity: Sensitivity,
-        retention_class: str,
-    ) -> StoredArtifact:
-        if self.fail_on == name:
+    def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact:
+        if self.fail_on == request.name:
             raise CategorizedError(
                 "synthetic put failure",
                 category=ErrorCategory.INFRASTRUCTURE_FAILURE,
             )
-        key = f"{tenant}/{kind}/{object_id}/{name}"
-        self.puts.append((key, name, kind, sensitivity))
-        return StoredArtifact(key, "etag-" + name, sensitivity, retention_class)
+        key = request.key()
+        self.puts.append((key, request.name, request.owner_kind, request.sensitivity))
+        return StoredArtifact(
+            key, "etag-" + request.name, request.sensitivity, request.retention_class
+        )
 
 
 @dataclass
@@ -222,6 +216,14 @@ def test_build_rejects_config_missing_prereq_before_make(tmp_path: Path, config_
     assert store.puts == []  # nothing stored on a config rejection
 
 
+def test_real_read_config_missing_is_configuration_error(tmp_path: Path) -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _real_read_config(tmp_path)
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert caught.value.details == {"file": ".config"}
+
+
 # --- make / store failures -----------------------------------------------------------
 
 
@@ -230,6 +232,29 @@ def test_build_nonzero_make_is_build_failure(tmp_path: Path) -> None:
     with pytest.raises(CategorizedError) as caught:
         _builder(store, seams, tmp_path).build(_RUN, _profile())
     assert caught.value.category is ErrorCategory.BUILD_FAILURE
+
+
+def test_build_missing_bzimage_after_make_is_build_failure(tmp_path: Path) -> None:
+    store, seams = _FakeStore(), _Seams()
+    builder = LocalLibvirtBuild(
+        tenant=_TENANT,
+        workspace_root=tmp_path,
+        store_factory=lambda: store,
+        checkout=seams.checkout,
+        read_config=seams.read_config,
+        run_make=seams.run_make,
+        read_kernel_image=_real_read_kernel_image,
+        read_vmlinux=seams.read_vmlinux,
+        read_build_id=seams.read_build_id,
+    )
+
+    with pytest.raises(CategorizedError) as caught:
+        builder.build(_RUN, _profile())
+
+    assert caught.value.category is ErrorCategory.BUILD_FAILURE
+    assert caught.value.details == {"output": "bzImage"}
+    assert seams.make_calls == 1
+    assert store.puts == []
 
 
 def test_build_store_failure_propagates_infrastructure(tmp_path: Path) -> None:
@@ -277,6 +302,49 @@ def test_real_run_make_runs_parallel_jobs(monkeypatch: pytest.MonkeyPatch) -> No
     )
 
 
+def test_real_run_make_timeout_is_build_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(["make"], timeout=build_module._MAKE_TIMEOUT_S)
+
+    monkeypatch.setattr(subprocess, "run", _timeout)
+
+    with pytest.raises(CategorizedError) as caught:
+        build_module._real_run_make(Path("/ws"))
+
+    assert caught.value.category is ErrorCategory.BUILD_FAILURE
+    assert caught.value.details["timeout_s"] == build_module._MAKE_TIMEOUT_S
+
+
+def test_real_run_make_missing_binary_is_missing_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _missing(*_: object, **__: object) -> subprocess.CompletedProcess[bytes]:
+        raise FileNotFoundError("make")
+
+    monkeypatch.setattr(subprocess, "run", _missing)
+
+    with pytest.raises(CategorizedError) as caught:
+        build_module._real_run_make(Path("/ws"))
+
+    assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
+    assert caught.value.details == {"tool": "make"}
+
+
+def test_real_run_make_launch_oserror_is_infrastructure_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _launch_fault(*_: object, **__: object) -> subprocess.CompletedProcess[bytes]:
+        raise OSError("fork failed")
+
+    monkeypatch.setattr(subprocess, "run", _launch_fault)
+
+    with pytest.raises(CategorizedError) as caught:
+        build_module._real_run_make(Path("/ws"))
+
+    assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert caught.value.details == {"tool": "make", "op": "launch"}
+
+
 def test_real_read_build_id_reads_merged_notes_section(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -297,6 +365,36 @@ def test_real_read_build_id_reads_merged_notes_section(
     assert build_module._real_read_build_id(tmp_path) == build_id.hex()
     assert "--only-section=.notes" in captured[0]
     assert "--only-section=.note.gnu.build-id" not in captured[0]
+
+
+def test_real_read_build_id_objcopy_timeout_is_build_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(["objcopy"], timeout=build_module._OBJCOPY_TIMEOUT_S)
+
+    monkeypatch.setattr(subprocess, "run", _timeout)
+
+    with pytest.raises(CategorizedError) as caught:
+        build_module._real_read_build_id(tmp_path)
+
+    assert caught.value.category is ErrorCategory.BUILD_FAILURE
+    assert caught.value.details["timeout_s"] == build_module._OBJCOPY_TIMEOUT_S
+
+
+def test_real_read_build_id_missing_objcopy_is_missing_dependency(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def _missing(*_: object, **__: object) -> subprocess.CompletedProcess[bytes]:
+        raise FileNotFoundError("objcopy")
+
+    monkeypatch.setattr(subprocess, "run", _missing)
+
+    with pytest.raises(CategorizedError) as caught:
+        build_module._real_read_build_id(tmp_path)
+
+    assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
+    assert caught.value.details == {"tool": "objcopy"}
 
 
 # --- live_vm real-make build ---------------------------------------------------------
@@ -330,8 +428,8 @@ def test_live_vm_real_make_build_id_matches_readelf() -> None:  # pragma: no cov
             checkout=lambda _run, profile, ws: build_module._real_checkout(src, profile, ws),
             read_config=build_module._real_read_config,
             run_make=build_module._real_run_make,
-            read_kernel_image=lambda ws: (ws / "arch/x86/boot/bzImage").read_bytes(),
-            read_vmlinux=lambda ws: (ws / "vmlinux").read_bytes(),
+            read_kernel_image=build_module._real_read_kernel_image,
+            read_vmlinux=build_module._real_read_vmlinux,
             read_build_id=build_module._real_read_build_id,
         )
         profile = BuildProfile.parse(
@@ -441,6 +539,26 @@ def test_stage_config_missing_ref_is_configuration_error(tmp_path: Path) -> None
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
+def test_stage_config_copy_fault_is_infrastructure_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    config = tmp_path / "x.config"
+    config.write_text("CONFIG_FROM_REF=y\n")
+
+    def _copy_fault(*_: object, **__: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(build_module.shutil, "copyfile", _copy_fault)
+
+    with pytest.raises(CategorizedError) as caught:
+        _stage_config(str(config), workspace)
+
+    assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert caught.value.details == {"op": "copy_config", "path": ".config"}
+
+
 # --- _apply_patch -------------------------------------------------------------------
 
 _GOOD_PATCH = (
@@ -498,6 +616,26 @@ def test_apply_patch_missing_git_is_missing_dependency(
     assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
 
 
+def test_apply_patch_timeout_is_configuration_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace_with_target(tmp_path)
+    patch = tmp_path / "fix.patch"
+    patch.write_text(_GOOD_PATCH)
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: "/usr/bin/git")
+
+    def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(["git", "apply"], timeout=build_module._GIT_APPLY_TIMEOUT_S)
+
+    monkeypatch.setattr(build_module.subprocess, "run", _timeout)
+
+    with pytest.raises(CategorizedError) as caught:
+        _apply_patch(str(patch), workspace)
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert caught.value.details["timeout_s"] == build_module._GIT_APPLY_TIMEOUT_S
+
+
 # --- _sync_tree ---------------------------------------------------------------------
 
 
@@ -542,6 +680,25 @@ def test_sync_tree_missing_rsync_is_missing_dependency(
     assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
 
 
+def test_sync_tree_timeout_is_infrastructure_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "linux"
+    src.mkdir()
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: "/usr/bin/rsync")
+
+    def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(["rsync"], timeout=build_module._RSYNC_TIMEOUT_S)
+
+    monkeypatch.setattr(build_module.subprocess, "run", _timeout)
+
+    with pytest.raises(CategorizedError) as caught:
+        _sync_tree(str(src), tmp_path / "ws")
+
+    assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert caught.value.details["timeout_s"] == build_module._RSYNC_TIMEOUT_S
+
+
 def test_sync_tree_creates_workspace_and_invokes_rsync(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -562,6 +719,31 @@ def test_sync_tree_creates_workspace_and_invokes_rsync(
     assert workspace.is_dir()  # mkdir(parents=True) ran before rsync
     # `--` terminates option parsing so a path is never read as an rsync flag.
     assert calls == [["rsync", "-a", "--delete", "--", f"{src}/", f"{workspace}/"]]
+
+
+def test_sync_tree_workspace_mkdir_fault_is_infrastructure_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "linux"
+    src.mkdir()
+    workspace = tmp_path / "runs" / "abc" / "ws"
+    original_mkdir = Path.mkdir
+
+    def _mkdir_fault(
+        self: Path, mode: int = 0o777, parents: bool = False, exist_ok: bool = False
+    ) -> None:
+        if self == workspace:
+            raise OSError("permission denied")
+        original_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
+
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: "/usr/bin/rsync")
+    monkeypatch.setattr(Path, "mkdir", _mkdir_fault)
+
+    with pytest.raises(CategorizedError) as caught:
+        _sync_tree(str(src), workspace)
+
+    assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert caught.value.details == {"op": "mkdir", "path": "build_workspace"}
 
 
 def test_sync_tree_rsync_nonzero_is_infrastructure_failure(

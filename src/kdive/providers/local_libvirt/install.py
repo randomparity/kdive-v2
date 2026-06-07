@@ -42,7 +42,8 @@ from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.local_libvirt.provisioning import console_log_path, domain_name_for
+from kdive.providers.ports import Booter, Installer
+from kdive.providers.runtime_paths import console_log_path, domain_name_for, read_console_log
 from kdive.store.objectstore import FetchedArtifact, object_store_from_env
 
 _log = logging.getLogger(__name__)
@@ -98,32 +99,6 @@ class _LibvirtConn(Protocol):
 type Connect = Callable[[], _LibvirtConn]
 type Fetch = Callable[[str, Path], None]
 type Readiness = Callable[[UUID], ReadinessResult]
-
-
-class Installer(Protocol):
-    """The handler-facing install port (the realized M0 contract), keyed on the System.
-
-    `run_id` keys the per-Run staging path (ADR-0030 §5); `cmdline` is the gated command line
-    (the `crashkernel=` reservation is enforced at the `runs.install` tool, before this runs).
-    `method` gates the kdump preflight; `initrd_ref` is omitted for embedded-initramfs kernels.
-    """
-
-    def install(
-        self,
-        system_id: UUID,
-        run_id: UUID,
-        kernel_ref: str,
-        *,
-        cmdline: str,
-        method: CaptureMethod = CaptureMethod.HOST_DUMP,
-        initrd_ref: str | None = None,
-    ) -> None: ...
-
-
-class Booter(Protocol):
-    """The handler-facing boot port: power-cycle the domain and confirm run-readiness."""
-
-    def boot(self, system_id: UUID) -> None: ...
 
 
 def _close(conn: _LibvirtConn) -> None:
@@ -335,22 +310,6 @@ class LocalLibvirtInstall:
             category=ErrorCategory.INSTALL_FAILURE,
             details={"domain": domain_name},
         )
-
-
-def read_console_log(path: Path) -> bytes:
-    """Read the System's console log; absent → empty (boot may not have written).
-
-    A ``PermissionError`` (the worker cannot read qemu's ``0600`` log — see Task 2.4's
-    group setup) is treated as empty but **logged**, so a permission fault is never a
-    silent empty console.
-    """
-    try:
-        return path.read_bytes()
-    except FileNotFoundError:
-        return b""
-    except PermissionError:
-        _log.warning("console log %s not readable by the worker; registering empty", path)
-        return b""
 
 
 def classify_console(data: bytes, *, marker: str = _READINESS_MARKER) -> ConsoleVerdict:

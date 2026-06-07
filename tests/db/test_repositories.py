@@ -154,7 +154,7 @@ def _job(**kw: object) -> Job:
         kind=JobKind.BUILD,
         state=JobState.QUEUED,
         max_attempts=3,
-        authorizing={"principal": "alice"},
+        authorizing={"principal": "alice", "agent_session": None, "project": "kernel-team"},
         dedup_key=str(uuid4()),
     )
     base.update(kw)

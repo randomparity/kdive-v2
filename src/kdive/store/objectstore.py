@@ -11,6 +11,7 @@ returned sensitivity).
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 from uuid import UUID, uuid4
@@ -43,6 +44,22 @@ class StoredArtifact(NamedTuple):
     retention_class: str
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ArtifactWriteRequest:
+    """Object-store write identity, metadata, and bytes."""
+
+    tenant: str
+    owner_kind: str
+    owner_id: str
+    name: str
+    data: bytes
+    sensitivity: Sensitivity
+    retention_class: str
+
+    def key(self) -> str:
+        return _artifact_key(self.tenant, self.owner_kind, self.owner_id, self.name)
+
+
 class FetchedArtifact(NamedTuple):
     """A fetched object's bytes and the class read back from its metadata."""
 
@@ -67,7 +84,6 @@ class PresignedUpload(NamedTuple):
 
 
 def _normalize_etag(raw: str) -> str:
-    """Strip S3's surrounding double quotes from an ETag, leaving the bare value."""
     return raw.strip('"')
 
 
@@ -92,7 +108,6 @@ def _validate_component(label: str, value: str) -> str:
 
 
 def _artifact_key(tenant: str, kind: str, object_id: str, name: str) -> str:
-    """Build the validated ``{tenant}/{kind}/{object_id}/{name}`` object key."""
     return "/".join(
         (
             _validate_component("tenant", tenant),
@@ -145,20 +160,10 @@ class ObjectStore:
         self._client = client
         self._bucket = bucket
 
-    def put_artifact(
-        self,
-        tenant: str,
-        kind: str,
-        object_id: str,
-        name: str,
-        *,
-        data: bytes,
-        sensitivity: Sensitivity,
-        retention_class: str,
-    ) -> StoredArtifact:
+    def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact:
         """Write ``data`` under the key scheme; return its key, etag, and class.
 
-        The object carries ``sensitivity`` and ``retention_class`` as user metadata.
+        The object carries the request's ``sensitivity`` and ``retention_class`` as user metadata.
         Async callers must offload this call via ``asyncio.to_thread``.
 
         Raises:
@@ -166,20 +171,25 @@ class ObjectStore:
                 (:attr:`ErrorCategory.CONFIGURATION_ERROR`) or the put fails
                 (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
         """
-        key = _artifact_key(tenant, kind, object_id, name)
+        key = request.key()
         try:
             resp = self._client.put_object(
                 Bucket=self._bucket,
                 Key=key,
-                Body=data,
+                Body=request.data,
                 Metadata={
-                    "sensitivity": sensitivity.value,
-                    "retention-class": retention_class,
+                    "sensitivity": request.sensitivity.value,
+                    "retention-class": request.retention_class,
                 },
             )
         except (BotoCoreError, ClientError) as err:
             raise _infrastructure_error("put_object", key, err) from err
-        return StoredArtifact(key, _normalize_etag(resp["ETag"]), sensitivity, retention_class)
+        return StoredArtifact(
+            key,
+            _normalize_etag(resp["ETag"]),
+            request.sensitivity,
+            request.retention_class,
+        )
 
     def get_artifact(self, key: str, etag: str | None) -> FetchedArtifact:
         """Fetch the object at ``key``, optionally guarded by an ``If-Match`` on ``etag``.

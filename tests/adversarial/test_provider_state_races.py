@@ -25,12 +25,11 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import SYSTEMS
-from kdive.domain.models import Job, JobKind, System
+from kdive.domain.models import Job, JobKind, PowerAction, System
 from kdive.domain.state import AllocationState, SystemState
 from kdive.jobs import queue
-from kdive.mcp.tools import control as control_tools
-from kdive.mcp.tools import systems as systems_tools
-from kdive.providers.local_libvirt.control import PowerAction
+from kdive.planes import control as control_plane
+from kdive.planes import systems as systems_handlers
 from tests.adversarial.conftest import seed_allocation, seed_resource
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -162,11 +161,11 @@ async def _race_once(pool: AsyncConnectionPool, *, provision_first: bool) -> tup
 
     async def run_provision() -> None:
         async with pool.connection() as conn:
-            await systems_tools.provision_handler(conn, pjob, prov)
+            await systems_handlers.provision_handler(conn, pjob, prov)
 
     async def run_teardown() -> None:
         async with pool.connection() as conn:
-            await systems_tools.teardown_handler(conn, tjob, prov)
+            await systems_handlers.teardown_handler(conn, tjob, prov)
 
     tasks = (
         [run_provision(), run_teardown()] if provision_first else [run_teardown(), run_provision()]
@@ -205,11 +204,11 @@ def test_concurrent_force_crash_and_teardown_end_torn_down_no_stale_nmi(migrated
 
                 async def run_crash(job: Job = cjob, ctrl: _RecordingController = ctrl) -> None:
                     async with pool.connection() as conn:
-                        await control_tools.force_crash_handler(conn, job, ctrl)
+                        await control_plane.force_crash_handler(conn, job, ctrl)
 
                 async def run_teardown(job: Job = tjob, prov: _TrackingProvisioner = prov) -> None:
                     async with pool.connection() as conn:
-                        await systems_tools.teardown_handler(conn, job, prov)
+                        await systems_handlers.teardown_handler(conn, job, prov)
 
                 order = [run_crash(), run_teardown()] if i % 2 else [run_teardown(), run_crash()]
                 await asyncio.gather(*order)
@@ -234,7 +233,7 @@ def test_concurrent_double_teardown_is_idempotent(migrated_url: str) -> None:
 
                 async def run(j: Job = job, prov: _TrackingProvisioner = prov) -> str | None:
                     async with pool.connection() as conn:
-                        return await systems_tools.teardown_handler(conn, j, prov)
+                        return await systems_handlers.teardown_handler(conn, j, prov)
 
                 results = await asyncio.gather(run(), run())
                 assert all(r == system_id for r in results)

@@ -10,23 +10,30 @@ Price a hypothetical selector over a window without writing anything. Requires v
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `cost_class` | `string` | no | Cost class identifier (default: local). |
-| `memory_gb` | `integer` | yes | Memory in GiB in the hypothetical selector. |
 | `project` | `string` | yes | Project to price the estimate for. |
-| `vcpus` | `integer` | yes | Number of vCPUs in the hypothetical selector. |
-| `window` | `any` | yes | Lease duration in hours (number or decimal string). |
+| `request` | `object` | yes | Estimate request payload: size, lease window, cost class. |
 
-## `accounting.report`
+## `accounting.report_all_projects`
 
 `implemented` · `read-only`
 
-Multi-project usage rollup. granted-set: viewer role; all-projects: platform_auditor.
+Multi-project usage rollup over every project. Requires platform auditor.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `group_by` | `any` | no | Group rows by 'principal', or omit for per-project grouping. |
+| `window` | `any` | no | [start, end] ISO-8601 timestamptz pair; omit for all time. |
+
+## `accounting.report_granted_set`
+
+`implemented` · `read-only`
+
+Multi-project usage rollup over caller-authorized projects. Requires viewer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `group_by` | `any` | no | Group rows by 'principal', or omit for per-project grouping. |
 | `projects` | `any` | no | Named project subset for granted-set scope; omit for all members. |
-| `scope` | `string` | yes | Report scope: 'granted-set' (member projects) or 'all-projects' (platform_auditor only). |
 | `window` | `any` | no | [start, end] ISO-8601 timestamptz pair; omit for all time. |
 
 ## `accounting.set_budget`
@@ -52,13 +59,22 @@ Set a project's concurrency caps for allocations and systems. Requires admin.
 | `max_concurrent_systems` | `integer` | yes | Maximum concurrent Systems allowed (>= 0). |
 | `project` | `string` | yes | Project to set concurrency caps for. |
 
-## `accounting.usage`
+## `accounting.usage_investigation`
 
 `implemented` · `read-only`
 
-Return spend rollup for a project or investigation. Requires viewer.
+Return spend rollup for one investigation and its owning project. Requires viewer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `investigation_id` | `any` | no | Investigation UUID to report spend for (mutually exclusive with project). |
-| `project` | `any` | no | Project to report spend for (mutually exclusive with investigation_id). |
+| `investigation_id` | `string` | yes | Investigation UUID to report spend for. |
+
+## `accounting.usage_project`
+
+`implemented` · `read-only`
+
+Return spend rollup for one project. Requires viewer.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | `string` | yes | Project to report spend for. |

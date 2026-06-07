@@ -16,12 +16,11 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.local_libvirt import debug_gdbmi
 from kdive.providers.local_libvirt.debug_gdbmi import (
     MAX_MEMORY_READ_BYTES,
-    GdbMiAttachment,
     GdbMiEngine,
-    GdbMiSessionRegistry,
     MiRecord,
     parse_mi_records,
 )
+from kdive.providers.ports import GdbMiAttachment, GdbMiSessionRegistry
 from kdive.security.redaction import Redactor
 
 
@@ -37,6 +36,7 @@ class _FakeMiController:
         self._responses = responses or {}
         self._reads = list(reads or [])
         self.written: list[str] = []
+        self.read_timeouts: list[float] = []
         self.exited = False
 
     def write(self, command: str, *, timeout_sec: float) -> list[dict[str, object]]:
@@ -47,8 +47,14 @@ class _FakeMiController:
         )
 
     def read(self, *, timeout_sec: float) -> list[dict[str, object]]:
-        del timeout_sec
+        self.read_timeouts.append(timeout_sec)
         return self._reads.pop(0) if self._reads else []
+
+    def get_gdb_response(
+        self, *, timeout_sec: float, raise_error_on_timeout: bool = True
+    ) -> list[dict[str, object]]:
+        del timeout_sec, raise_error_on_timeout
+        return []
 
     def exit(self) -> None:
         self.exited = True
@@ -195,6 +201,59 @@ def test_read_registers_rejects_bad_name(tmp_path: Path) -> None:
     assert exc.value.details["code"] == "bad_register"
 
 
+def test_read_registers_rejects_empty_gdb_payload(tmp_path: Path) -> None:
+    controller = _FakeMiController(
+        responses={
+            "-data-list-register-names": [
+                {"type": "result", "message": "done", "payload": {"register-names": ["rax"]}}
+            ],
+            "-data-list-register-values x": [
+                {"type": "result", "message": "done", "payload": {"register-values": []}}
+            ],
+        }
+    )
+    with pytest.raises(CategorizedError) as exc:
+        _engine().read_registers(_attachment(controller, tmp_path), ["rax"])
+    assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
+    assert exc.value.details == {
+        "code": "missing_registers",
+        "requested": ["rax"],
+        "missing": ["rax"],
+    }
+
+
+def test_read_registers_rejects_partial_gdb_payload(tmp_path: Path) -> None:
+    controller = _FakeMiController(
+        responses={
+            "-data-list-register-names": [
+                {
+                    "type": "result",
+                    "message": "done",
+                    "payload": {"register-names": ["rax", "rbx", "rcx"]},
+                }
+            ],
+            "-data-list-register-values x": [
+                {
+                    "type": "result",
+                    "message": "done",
+                    "payload": {
+                        "register-values": [
+                            {"number": "0", "value": "0xdead"},
+                            {"number": "2", "value": "0xcafe"},
+                        ]
+                    },
+                }
+            ],
+        }
+    )
+    with pytest.raises(CategorizedError) as exc:
+        _engine().read_registers(_attachment(controller, tmp_path), ["rax", "rbx", "rcx"])
+    assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
+    assert exc.value.details["code"] == "missing_registers"
+    assert exc.value.details["requested"] == ["rax", "rbx", "rcx"]
+    assert exc.value.details["missing"] == ["rbx"]
+
+
 # --- read_memory: cap + bytes verbatim -----------------------------------------------------
 
 
@@ -252,6 +311,35 @@ def test_read_memory_rejects_non_hex_contents(tmp_path: Path) -> None:
         _engine().read_memory(_attachment(controller, tmp_path), address=0x6000, byte_count=4)
     assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
     assert exc.value.details["code"] == "bad_memory_contents"
+
+
+def test_read_memory_rejects_short_contents(tmp_path: Path) -> None:
+    controller = _memory_controller(0x6000, 4, "dead")
+    with pytest.raises(CategorizedError) as exc:
+        _engine().read_memory(_attachment(controller, tmp_path), address=0x6000, byte_count=4)
+    assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
+    assert exc.value.details == {
+        "code": "short_memory_read",
+        "address": 0x6000,
+        "requested": 4,
+        "actual": 2,
+    }
+
+
+def test_read_memory_rejects_missing_memory_payload(tmp_path: Path) -> None:
+    controller = _FakeMiController(
+        responses={
+            "-data-read-memory-bytes 0x6000 4": [
+                {"type": "result", "message": "done", "payload": {}}
+            ]
+        }
+    )
+    with pytest.raises(CategorizedError) as exc:
+        _engine().read_memory(_attachment(controller, tmp_path), address=0x6000, byte_count=4)
+    assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
+    assert exc.value.details["code"] == "short_memory_read"
+    assert exc.value.details["requested"] == 4
+    assert exc.value.details["actual"] == 0
 
 
 def test_read_memory_rejects_out_of_range_address(tmp_path: Path) -> None:
@@ -330,6 +418,26 @@ def test_continue_interrupts_on_timeout(tmp_path: Path) -> None:
     stop = _engine().continue_(_attachment(controller, tmp_path), timeout_sec=1)
     assert stop.timed_out is True
     assert "-exec-interrupt" in controller.written
+
+
+def test_continue_zero_timeout_uses_interactive_wait_cap(tmp_path: Path) -> None:
+    resume_reads = int(debug_gdbmi.MAX_INTERACTIVE_WAIT_SEC / debug_gdbmi._STOP_POLL_SLICE_SEC) + 1
+    controller = _FakeMiController(
+        responses={
+            "-exec-continue": [{"type": "result", "message": "running", "payload": None}],
+            "-exec-interrupt": [{"type": "result", "message": "done", "payload": None}],
+        },
+        reads=[
+            *([] for _ in range(resume_reads)),
+            [{"type": "notify", "message": "stopped", "payload": {"reason": "signal-received"}}],
+        ],
+    )
+
+    stop = _engine().continue_(_attachment(controller, tmp_path), timeout_sec=0.0)
+
+    assert stop.timed_out is True
+    assert controller.written == ["-exec-continue", "-exec-interrupt"]
+    assert len(controller.read_timeouts) == resume_reads + 1
 
 
 def test_continue_raises_transport_stall_on_silent_link(tmp_path: Path) -> None:

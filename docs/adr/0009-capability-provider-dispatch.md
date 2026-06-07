@@ -1,18 +1,23 @@
 # ADR 0009 — Capability-based provider dispatch
 
-- **Status:** Proposed
+- **Status:** Superseded for runtime assembly by
+  [ADR-0063](0063-typed-provider-runtime.md)
 - **Date:** 2026-06-03
 - **Implements core decision:** #9 in [`../specs/top-level-design.md`](../specs/top-level-design.md)
 
 ## Context
 
-Providers are the extension seam: each implements one or more narrow plane
+Providers were planned as the extension seam: each implements one or more narrow plane
 interfaces for a resource `kind` and advertises only the capabilities it actually
 implements. The core dispatches by matching an operation against advertised
 capabilities and never hardcodes provider names — the design's bet that a new
 provider needs zero core changes (a falsifiable hypothesis tested at M2). Each
 plane op also declares its cancel/abandon cleanup guarantee. See the spec's
-"Provider / capability model" and "Roadmap".
+"Provider model" and "Roadmap".
+
+ADR-0063 supersedes this for M0/M1 runtime assembly. The active production seam is
+typed `ProviderRuntime` ports; the capability registry remains quarantined prototype
+coverage until a later ADR wires it into runtime dispatch.
 
 ## Decision
 

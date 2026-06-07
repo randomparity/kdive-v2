@@ -18,38 +18,41 @@ from __future__ import annotations
 
 import os
 import shutil
-import struct
 import subprocess  # noqa: S404 - make is invoked with a fixed argv, no shell
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple, Protocol
+from typing import Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
+from kdive.providers.build_validation import (
+    extract_build_id_ranged,
+    parse_gnu_build_id,
+    validate_external_artifacts,
+)
+from kdive.providers.ports import Builder, BuildOutput, ValidatedUpload
 from kdive.security.redaction import Redactor
-from kdive.store.objectstore import HeadResult, StoredArtifact, object_store_from_env
+from kdive.store.objectstore import (
+    ArtifactWriteRequest,
+    StoredArtifact,
+    object_store_from_env,
+)
 
 _WORKSPACE_ENV = "KDIVE_BUILD_WORKSPACE"
 _KERNEL_SRC_ENV = "KDIVE_KERNEL_SRC"
 _DEFAULT_WORKSPACE = "/var/lib/kdive/build"
 _RETENTION_CLASS = "build"
-_NT_GNU_BUILD_ID = 3
-_ELF_MAGIC = b"\x7fELF"
-_BZIMAGE_MAGIC = b"HdrS"
-_BZIMAGE_MAGIC_OFFSET = 0x202
-_SHT_NOTE = 7
-# Only shstrtab and the .note.gnu.build-id section are ever ranged-read (debug sections
-# never are), so a small per-section cap bounds an untrusted vmlinux's declared sh_size
-# against a multi-GB read into the worker thread.
-_MAX_SECTION_BYTES = 16 * 1024 * 1024
 # Trailing chars of a redacted rsync/git-apply stderr placed in error details (bounded so a
 # large/noisy failure log cannot bloat a persisted error record).
 _STDERR_TAIL = 2000
+_MAKE_TIMEOUT_S = 2 * 60 * 60
+_OBJCOPY_TIMEOUT_S = 60
+_GIT_APPLY_TIMEOUT_S = 120
+_RSYNC_TIMEOUT_S = 10 * 60
 
 # The kdump prerequisite is satisfied by CONFIG_CRASH_DUMP; symbolization needs DWARF or
 # BTF debuginfo. Each tuple is an OR-group: the config must enable at least one of each.
@@ -59,73 +62,8 @@ _REQUIRED_CONFIG: tuple[tuple[str, ...], ...] = (
 )
 
 
-class BuildOutput(NamedTuple):
-    """A build result: the two object-store keys plus the kernel's GNU build-id."""
-
-    kernel_ref: str
-    debuginfo_ref: str
-    build_id: str
-
-
-class Builder(Protocol):
-    """The handler-facing build port (the realized M0 contract, ADR-0029 §4).
-
-    Distinct from :class:`kdive.providers.interfaces.BuildPlane`, the capability-dispatch
-    placeholder that returns a single artifact: the realized port stores **two** artifacts
-    and returns both refs plus the build-id the symbolization planes key on.
-    """
-
-    def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput: ...
-
-
 class _StorePort(Protocol):
-    def put_artifact(
-        self,
-        tenant: str,
-        kind: str,
-        object_id: str,
-        name: str,
-        *,
-        data: bytes,
-        sensitivity: Sensitivity,
-        retention_class: str,
-    ) -> StoredArtifact: ...
-
-
-def parse_gnu_build_id(notes: bytes) -> str:
-    """Extract the GNU build-id (lowercase hex) from a little-endian ELF note blob.
-
-    Walks the ``.note.gnu.build-id`` note stream — each note is ``namesz``/``descsz``/
-    ``type`` (4-byte LE each), a 4-byte-aligned name, then a 4-byte-aligned desc — and
-    returns the desc of the first ``NT_GNU_BUILD_ID`` note whose name is ``GNU``.
-
-    Raises:
-        CategorizedError: ``BUILD_FAILURE`` if no GNU build-id note is present (a
-            ``vmlinux`` without one cannot be symbolized against — a build defect).
-    """
-    offset = 0
-    end = len(notes)
-    while offset + 12 <= end:
-        namesz = int.from_bytes(notes[offset : offset + 4], "little")
-        descsz = int.from_bytes(notes[offset + 4 : offset + 8], "little")
-        note_type = int.from_bytes(notes[offset + 8 : offset + 12], "little")
-        name_start = offset + 12
-        name_end = name_start + namesz
-        desc_start = name_end + (-namesz % 4)
-        desc_end = desc_start + descsz
-        if desc_end > end:
-            break  # truncated/corrupt note stream — treat as no build-id
-        name = notes[name_start:name_end].rstrip(b"\x00")
-        if note_type == _NT_GNU_BUILD_ID and name == b"GNU":
-            return notes[desc_start:desc_end].hex()
-        next_offset = desc_end + (-descsz % 4)
-        if next_offset <= offset:
-            break  # defensive: a note must advance the cursor (never loop on a malformed one)
-        offset = next_offset
-    raise CategorizedError(
-        "vmlinux carries no GNU build-id note",
-        category=ErrorCategory.BUILD_FAILURE,
-    )
+    def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact: ...
 
 
 def _missing_config_groups(config_text: str) -> list[tuple[str, ...]]:
@@ -191,8 +129,8 @@ class LocalLibvirtBuild:
             checkout=_make_checkout(kernel_src),
             read_config=_real_read_config,
             run_make=_real_run_make,
-            read_kernel_image=lambda ws: (ws / "arch/x86/boot/bzImage").read_bytes(),
-            read_vmlinux=lambda ws: (ws / "vmlinux").read_bytes(),
+            read_kernel_image=_real_read_kernel_image,
+            read_vmlinux=_real_read_vmlinux,
             read_build_id=_real_read_build_id,
         )
 
@@ -229,13 +167,15 @@ class LocalLibvirtBuild:
         if self._store is None:
             self._store = self._store_factory()
         return self._store.put_artifact(
-            self._tenant,
-            "runs",
-            str(run_id),
-            name,
-            data=data,
-            sensitivity=Sensitivity.SENSITIVE,
-            retention_class=_RETENTION_CLASS,
+            ArtifactWriteRequest(
+                tenant=self._tenant,
+                owner_kind="runs",
+                owner_id=str(run_id),
+                name=name,
+                data=data,
+                sensitivity=Sensitivity.SENSITIVE,
+                retention_class=_RETENTION_CLASS,
+            )
         )
 
 
@@ -260,14 +200,89 @@ def _real_checkout(kernel_src: str, profile: ServerBuildProfile, workspace: Path
         _apply_patch(profile.patch_ref, workspace)
 
 
+def _read_text_file(path: Path, *, category: ErrorCategory, file_label: str) -> str:
+    try:
+        return path.read_text()
+    except OSError as exc:
+        raise CategorizedError(
+            f"{file_label} is missing or unreadable",
+            category=category,
+            details={"file": file_label},
+        ) from exc
+
+
+def _read_bytes_file(path: Path, *, category: ErrorCategory, output: str) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise CategorizedError(
+            f"{output} is missing or unreadable",
+            category=category,
+            details={"output": output},
+        ) from exc
+
+
+def _launch_failure(tool: str, exc: OSError, *, category: ErrorCategory) -> CategorizedError:
+    if isinstance(exc, FileNotFoundError):
+        return CategorizedError(
+            f"{tool} is required for kernel builds",
+            category=ErrorCategory.MISSING_DEPENDENCY,
+            details={"tool": tool},
+        )
+    return CategorizedError(
+        f"{tool} failed to launch",
+        category=category,
+        details={"tool": tool, "op": "launch"},
+    )
+
+
+def _workspace_failure(op: str, path_label: str, exc: OSError) -> CategorizedError:
+    return CategorizedError(
+        f"build workspace {op} failed",
+        category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+        details={"op": op, "path": path_label},
+    )
+
+
 def _real_read_config(workspace: Path) -> str:  # pragma: no cover - live_vm
-    return (workspace / ".config").read_text()
+    return _read_text_file(
+        workspace / ".config",
+        category=ErrorCategory.CONFIGURATION_ERROR,
+        file_label=".config",
+    )
+
+
+def _real_read_kernel_image(workspace: Path) -> bytes:  # pragma: no cover - live_vm
+    return _read_bytes_file(
+        workspace / "arch/x86/boot/bzImage",
+        category=ErrorCategory.BUILD_FAILURE,
+        output="bzImage",
+    )
+
+
+def _real_read_vmlinux(workspace: Path) -> bytes:  # pragma: no cover - live_vm
+    return _read_bytes_file(
+        workspace / "vmlinux",
+        category=ErrorCategory.BUILD_FAILURE,
+        output="vmlinux",
+    )
 
 
 def _real_run_make(workspace: Path) -> int:  # pragma: no cover - live_vm
-    return subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted workspace
-        ["make", "-C", str(workspace), f"-j{os.cpu_count() or 1}"], check=False
-    ).returncode
+    try:
+        return subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted workspace
+            ["make", "-C", str(workspace), f"-j{os.cpu_count() or 1}"],
+            timeout=_MAKE_TIMEOUT_S,
+            check=False,
+        ).returncode
+    except subprocess.TimeoutExpired as exc:
+        raise CategorizedError(
+            "make exceeded the build timeout",
+            category=ErrorCategory.BUILD_FAILURE,
+            details={"timeout_s": _MAKE_TIMEOUT_S},
+        ) from exc
+    except OSError as exc:
+        raise _launch_failure("make", exc, category=ErrorCategory.INFRASTRUCTURE_FAILURE) from exc
 
 
 def _real_read_build_id(workspace: Path) -> str:  # pragma: no cover - live_vm
@@ -281,18 +296,39 @@ def _real_read_build_id(workspace: Path) -> str:  # pragma: no cover - live_vm
     stream for the ``NT_GNU_BUILD_ID`` note regardless of the other notes present.
     """
     with tempfile.NamedTemporaryFile(suffix=".note") as note_file:
-        subprocess.run(  # noqa: S603 - fixed argv, no shell
-            [
-                "objcopy",
-                "-O",
-                "binary",
-                "--only-section=.notes",
-                str(workspace / "vmlinux"),
-                note_file.name,
-            ],
-            check=True,
+        try:
+            subprocess.run(  # noqa: S603 - fixed argv, no shell
+                [
+                    "objcopy",
+                    "-O",
+                    "binary",
+                    "--only-section=.notes",
+                    str(workspace / "vmlinux"),
+                    note_file.name,
+                ],
+                timeout=_OBJCOPY_TIMEOUT_S,
+                check=True,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CategorizedError(
+                "objcopy exceeded the build-id extraction timeout",
+                category=ErrorCategory.BUILD_FAILURE,
+                details={"timeout_s": _OBJCOPY_TIMEOUT_S},
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            raise CategorizedError(
+                "objcopy failed to extract vmlinux notes",
+                category=ErrorCategory.BUILD_FAILURE,
+            ) from exc
+        except OSError as exc:
+            raise _launch_failure(
+                "objcopy", exc, category=ErrorCategory.INFRASTRUCTURE_FAILURE
+            ) from exc
+        notes = _read_bytes_file(
+            Path(note_file.name),
+            category=ErrorCategory.BUILD_FAILURE,
+            output="vmlinux notes",
         )
-        notes = Path(note_file.name).read_bytes()
     return parse_gnu_build_id(notes)
 
 
@@ -333,7 +369,10 @@ def _resolve_local_ref(ref: str, *, kind: str) -> Path:
 def _stage_config(config_ref: str, workspace: Path) -> None:
     """Copy the resolved ``config_ref`` to ``workspace/.config`` (overwriting any existing one)."""
     source = _resolve_local_ref(config_ref, kind="config_ref")
-    shutil.copyfile(source, workspace / ".config")
+    try:
+        shutil.copyfile(source, workspace / ".config")
+    except OSError as exc:
+        raise _workspace_failure("copy_config", ".config", exc) from exc
 
 
 def _redacted_tail(text: str) -> str:
@@ -355,13 +394,21 @@ def _apply_patch(patch_ref: str, workspace: Path) -> None:
             "git is required to apply a build patch",
             category=ErrorCategory.MISSING_DEPENDENCY,
         )
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell; -- ends option parsing
-        ["git", "apply", "-p1", "--", str(patch)],
-        cwd=workspace,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell; -- ends option parsing
+            ["git", "apply", "-p1", "--", str(patch)],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=_GIT_APPLY_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CategorizedError(
+            "patch_ref does not apply within the timeout",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"timeout_s": _GIT_APPLY_TIMEOUT_S},
+        ) from exc
     if result.returncode != 0:
         raise CategorizedError(
             "patch_ref does not apply against the kernel tree",
@@ -393,217 +440,34 @@ def _sync_tree(kernel_src: str, workspace: Path) -> None:
             "rsync is required to materialize the warm kernel tree",
             category=ErrorCategory.MISSING_DEPENDENCY,
         )
-    workspace.mkdir(parents=True, exist_ok=True)
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise _workspace_failure("mkdir", "build_workspace", exc) from exc
     # `--` ends option parsing so a path is never mistaken for an rsync flag; the trailing
     # slash on the source copies its *contents* into the workspace, not a nested dir.
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["rsync", "-a", "--delete", "--", f"{source}/", f"{workspace}/"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["rsync", "-a", "--delete", "--", f"{source}/", f"{workspace}/"],
+            capture_output=True,
+            text=True,
+            timeout=_RSYNC_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CategorizedError(
+            "rsync exceeded the workspace sync timeout",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details={"timeout_s": _RSYNC_TIMEOUT_S},
+        ) from exc
+    except OSError as exc:
+        raise _launch_failure("rsync", exc, category=ErrorCategory.INFRASTRUCTURE_FAILURE) from exc
     if result.returncode != 0:
         raise CategorizedError(
             "rsync failed to materialize the workspace tree",
             category=ErrorCategory.INFRASTRUCTURE_FAILURE,
             details={"stderr": _redacted_tail(result.stderr)},
         )
-
-
-class _ValidatorStore(Protocol):
-    def head(self, key: str) -> HeadResult | None: ...
-    def get_range(self, key: str, *, start: int, length: int) -> bytes: ...
-
-
-class ValidatedUpload(NamedTuple):
-    """Validation result: the recorded ``BuildOutput`` plus the per-name ``HeadResult``s.
-
-    The heads (etag/size/checksum per uploaded object) are returned so the finalize step
-    writes the write-once ``artifacts`` rows from this one validation pass — no second
-    HEAD, and no second object-store handle — which keeps ``complete_build`` injectable.
-    """
-
-    output: BuildOutput
-    heads: dict[str, HeadResult]
-
-
-def _build_failure(message: str, **details: object) -> CategorizedError:
-    return CategorizedError(message, category=ErrorCategory.BUILD_FAILURE, details=details)
-
-
-def validate_external_artifacts(
-    store: _ValidatorStore,
-    *,
-    manifest: Sequence[ManifestEntry],
-    keys: Mapping[str, str],
-    declared_build_id: str | None,
-) -> ValidatedUpload:
-    """Validate uploaded build artifacts; return the ``BuildOutput`` plus per-name heads.
-
-    Order (ADR-0048 §5): require ``kernel``; then per declared artifact HEAD existence +
-    size, checksum vs the manifest, and leading-byte magic; then, if a ``vmlinux`` is
-    present, verify the declared ``build_id`` against its ranged ``.note.gnu.build-id``.
-
-    ``declared_build_id`` is the GNU build-id as hex (the value ``parse_gnu_build_id``
-    yields); the comparison is case-insensitive and the returned ``BuildOutput.build_id``
-    is the normalized lowercase-hex value extracted from the file, not the raw input.
-
-    Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` (a missing/skipped upload, an artifact
-            with no upload key, or a vmlinux with no declared build_id); ``BUILD_FAILURE``
-            (checksum/size/magic/build_id defect). Store exceptions propagate as raised
-            (the production ObjectStore wraps them as ``INFRASTRUCTURE_FAILURE``).
-    """
-    by_name = {e.name: e for e in manifest}
-    if "kernel" not in by_name or "kernel" not in keys:
-        raise CategorizedError(
-            "external build is missing the required kernel artifact",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    heads: dict[str, HeadResult] = {}
-    for name, entry in by_name.items():
-        key = keys.get(name)
-        if key is None:
-            raise CategorizedError(
-                f"declared artifact {name!r} has no upload key",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"name": name},
-            )
-        heads[name] = _validate_one_artifact(store, name, entry, key)
-
-    build_id = ""
-    if "vmlinux" in by_name:
-        if not declared_build_id:
-            raise CategorizedError(
-                "a vmlinux upload requires a declared build_id",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-            )
-        # heads["vmlinux"].size_bytes is already verified equal to the manifest size and
-        # capped (artifacts.create_upload), so it is a safe ceiling for the ranged reads.
-        actual = extract_build_id_ranged(
-            store, keys["vmlinux"], max_size=heads["vmlinux"].size_bytes
-        )  # lowercase hex
-        if actual != declared_build_id.lower():
-            raise _build_failure("declared build_id does not match the uploaded vmlinux")
-        build_id = actual
-
-    output = BuildOutput(
-        kernel_ref=keys["kernel"],
-        debuginfo_ref=keys.get("vmlinux", ""),
-        build_id=build_id,
-    )
-    return ValidatedUpload(output=output, heads=heads)
-
-
-def _validate_one_artifact(
-    store: _ValidatorStore, name: str, entry: ManifestEntry, key: str
-) -> HeadResult:
-    """HEAD existence + size/checksum vs the manifest + leading-byte magic; return the head."""
-    head = store.head(key)
-    if head is None:
-        raise CategorizedError(
-            f"declared artifact {name!r} was never uploaded",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"name": name},
-        )
-    if head.size_bytes != entry.size_bytes or head.checksum_sha256 != entry.sha256:
-        raise _build_failure("uploaded artifact disagrees with its manifest", name=name)
-    _check_magic(store, name, key)
-    return head
-
-
-def _check_magic(store: _ValidatorStore, name: str, key: str) -> None:
-    if name == "vmlinux":
-        if store.get_range(key, start=0, length=4) != _ELF_MAGIC:
-            raise _build_failure("vmlinux is not an ELF file", name=name)
-    elif name == "kernel":
-        magic = store.get_range(key, start=_BZIMAGE_MAGIC_OFFSET, length=4)
-        if magic != _BZIMAGE_MAGIC:
-            raise _build_failure("kernel is not a bzImage", name=name)
-    # initrd has no cheap universal magic; checksum + size already gate it.
-
-
-def extract_build_id_ranged(store: _ValidatorStore, key: str, *, max_size: int) -> str:
-    """Extract a vmlinux's GNU build-id via ranged ELF64-LE reads (no full download).
-
-    Reads the ELF header (``e_shoff``/``e_shentsize``/``e_shnum``/``e_shstrndx``), the
-    section header table, the section-name string table, and the ``.note.gnu.build-id``
-    section bytes — then feeds them to :func:`parse_gnu_build_id`.
-
-    ``max_size`` is the verified object size; every ranged read is bounded against it (and
-    a per-section cap) so a crafted ELF declaring an oversized section cannot force a
-    multi-GB read.
-
-    Raises:
-        CategorizedError: ``BUILD_FAILURE`` if the ELF is malformed, declares a section
-            past ``max_size``/the cap, or carries no build-id.
-    """
-    header = store.get_range(key, start=0, length=64)
-    if len(header) < 64:
-        raise _build_failure("vmlinux ELF header is truncated")
-    if header[:4] != _ELF_MAGIC or header[4] != 2 or header[5] != 1:  # ELFCLASS64, ELFDATA2LSB
-        raise _build_failure("vmlinux is not a 64-bit little-endian ELF")
-    try:
-        e_shoff = struct.unpack_from("<Q", header, 0x28)[0]
-        e_shentsize = struct.unpack_from("<H", header, 0x3A)[0]
-        e_shnum = struct.unpack_from("<H", header, 0x3C)[0]
-        e_shstrndx = struct.unpack_from("<H", header, 0x3E)[0]
-        if e_shoff == 0 or e_shnum == 0 or e_shentsize < 64:
-            raise _build_failure("vmlinux has no usable section header table")
-        # Cap the SHT read itself: e_shentsize*e_shnum is u16*u16 (~4 GiB worst case), so
-        # without an absolute bound a crafted ~object-sized vmlinux could force a multi-GB
-        # read here even though the per-object guard below passes. 16 MiB ~= 262k entries.
-        if e_shentsize * e_shnum > _MAX_SECTION_BYTES:
-            raise _build_failure(
-                "vmlinux section header table exceeds the readable cap",
-                sht_bytes=e_shentsize * e_shnum,
-            )
-        if e_shoff + e_shentsize * e_shnum > max_size:
-            raise _build_failure("vmlinux section header table extends past the object size")
-        sht = store.get_range(key, start=e_shoff, length=e_shentsize * e_shnum)
-        shstr = _read_section(store, key, sht, e_shentsize, e_shstrndx, max_size=max_size)
-        return _find_build_id_note(store, key, sht, shstr, e_shentsize, e_shnum, max_size=max_size)
-    except (struct.error, ValueError, IndexError) as exc:
-        raise _build_failure("vmlinux ELF is structurally malformed") from exc
-
-
-def _find_build_id_note(
-    store: _ValidatorStore,
-    key: str,
-    sht: bytes,
-    shstr: bytes,
-    e_shentsize: int,
-    e_shnum: int,
-    *,
-    max_size: int,
-) -> str:
-    """Walk the SHT for the ``.note.gnu.build-id`` SHT_NOTE section and parse its build-id."""
-    for i in range(e_shnum):
-        off = i * e_shentsize
-        sh_name = struct.unpack_from("<I", sht, off)[0]
-        sh_type = struct.unpack_from("<I", sht, off + 4)[0]
-        if sh_type != _SHT_NOTE:
-            continue
-        name = shstr[sh_name : shstr.index(b"\x00", sh_name)]
-        if name == b".note.gnu.build-id":
-            notes = _read_section(store, key, sht, e_shentsize, i, max_size=max_size)
-            return parse_gnu_build_id(notes)
-    raise _build_failure("vmlinux carries no .note.gnu.build-id section")
-
-
-def _read_section(
-    store: _ValidatorStore, key: str, sht: bytes, e_shentsize: int, index: int, *, max_size: int
-) -> bytes:
-    off = index * e_shentsize
-    sh_offset = struct.unpack_from("<Q", sht, off + 0x18)[0]
-    sh_size = struct.unpack_from("<Q", sht, off + 0x20)[0]
-    if sh_size > _MAX_SECTION_BYTES:
-        raise _build_failure("vmlinux section exceeds the readable-section cap", sh_size=sh_size)
-    if sh_offset + sh_size > max_size:
-        raise _build_failure(
-            "vmlinux section extends past the object size", sh_offset=sh_offset, sh_size=sh_size
-        )
-    return store.get_range(key, start=sh_offset, length=sh_size)
 
 
 __all__ = [

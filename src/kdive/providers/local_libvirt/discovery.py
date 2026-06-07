@@ -1,10 +1,9 @@
-"""Local-libvirt Discovery plane + Postgres registration bridge (ADR-0023).
+"""Local-libvirt Discovery plane (ADR-0023).
 
 `LocalLibvirtDiscovery` enumerates the local libvirt host over an **injected**
 connection factory (so unit tests never touch a real host; the real `libvirt.open`
 adapter is `live_vm`-only) and advertises arch/cpu/memory, a `gdbstub` transport, and
-the per-host concurrent-Allocation cap. `register_local_libvirt_resource` persists the
-discovered host as the one `resources` row, idempotently by `(kind, host_uri)`.
+the per-host concurrent-Allocation cap.
 """
 
 from __future__ import annotations
@@ -12,21 +11,14 @@ from __future__ import annotations
 import os
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
 from typing import Any, Protocol
-from uuid import uuid4
 
 import libvirt
 from defusedxml.ElementTree import fromstring as _safe_fromstring
-from psycopg import AsyncConnection
-from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
-from psycopg_pool import AsyncConnectionPool
 
-from kdive.db.repositories import RESOURCES
-from kdive.domain.allocation_admission import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Resource, ResourceKind
+from kdive.domain.models import ResourceKind
+from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import ResourceStatus
 from kdive.providers.interfaces import OwnedInfra, ResourceRecord
 
@@ -79,7 +71,7 @@ def _parse_system_id(meta_xml: str) -> str | None:
 
 
 class LocalLibvirtDiscovery:
-    """The `DiscoveryPlane` for the local libvirt host."""
+    """The realized discovery port for the local libvirt host."""
 
     def __init__(self, *, host_uri: str, connect: Connect, concurrent_allocation_cap: int) -> None:
         self.host_uri = host_uri
@@ -128,9 +120,9 @@ class LocalLibvirtDiscovery:
         return [
             ResourceRecord(
                 resource_id=self.host_uri,
-                kind=ResourceKind.LOCAL_LIBVIRT.value,
+                kind=ResourceKind.LOCAL_LIBVIRT,
                 capabilities=capabilities,
-                status=ResourceStatus.AVAILABLE.value,
+                status=ResourceStatus.AVAILABLE,
             )
         ]
 
@@ -154,93 +146,3 @@ class LocalLibvirtDiscovery:
                 continue
             owned.append(OwnedInfra(system_id=system_id, domain_name=domain.name()))
         return owned
-
-
-async def register_local_libvirt_resource(
-    conn: AsyncConnection,
-    discovery: LocalLibvirtDiscovery,
-    *,
-    pool: str,
-    cost_class: str,
-) -> Resource:
-    """Persist the discovered host as the one `resources` row, idempotent by host_uri.
-
-    ``pool`` is the resource pool **name** (``Resource.pool``), not a connection pool. M0
-    registers from a single startup/operator path; a ``UNIQUE(kind, host_uri)`` constraint
-    is the M1 hardening for concurrent registrars (ADR-0023).
-    """
-    record = discovery.list_resources()[0]
-    capabilities = record["capabilities"]
-    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT id FROM resources WHERE kind = %s AND host_uri = %s FOR UPDATE",
-            (ResourceKind.LOCAL_LIBVIRT.value, discovery.host_uri),
-        )
-        existing = await cur.fetchone()
-        if existing is not None:
-            await cur.execute(
-                "UPDATE resources SET capabilities = %s, status = %s, pool = %s, "
-                "cost_class = %s WHERE id = %s RETURNING *",
-                (
-                    Jsonb(capabilities),
-                    ResourceStatus.AVAILABLE.value,
-                    pool,
-                    cost_class,
-                    existing["id"],
-                ),
-            )
-            updated = await cur.fetchone()
-            if updated is None:  # Invariant: the row was held FOR UPDATE.
-                raise RuntimeError("UPDATE of resources returned no row")
-            return Resource.model_validate(updated)
-    # No existing row: insert via the repository (it wraps capabilities in Jsonb and
-    # returns the row with DB-generated timestamps). Runs after the SELECT's transaction
-    # commits — acceptable under the M0 single-registrar assumption documented above.
-    now = datetime.now(UTC)  # placeholder; the DB sets created_at/updated_at
-    return await RESOURCES.insert(
-        conn,
-        Resource(
-            id=uuid4(),
-            created_at=now,
-            updated_at=now,
-            kind=ResourceKind.LOCAL_LIBVIRT,
-            capabilities=capabilities,
-            pool=pool,
-            cost_class=cost_class,
-            status=ResourceStatus.AVAILABLE,
-            host_uri=discovery.host_uri,
-        ),
-    )
-
-
-_LOCAL_POOL = "local-libvirt"
-_LOCAL_COST_CLASS = "local"
-
-
-async def ensure_local_host_registered(
-    pool: AsyncConnectionPool, *, discovery: LocalLibvirtDiscovery | None = None
-) -> None:
-    """Register the local-libvirt host as a Resource row **iff absent** (first-run bootstrap).
-
-    Insert-only: the reconciler calls this on every startup, but it registers only when no row
-    exists for the host, so a restart never overwrites operator-tuned state — it cannot resurrect
-    a drained host to ``available`` or reset a hand-raised ``concurrent_allocation_cap`` to the
-    env default (ADR-0059). Without a registered host, ``allocations.request`` has nothing to
-    admit against and fails ``configuration_error`` until a row exists. ``discovery`` defaults to
-    :meth:`LocalLibvirtDiscovery.from_env`, which reads host capacity from libvirt; tests inject a
-    fake. (Single-registrar M0; the ``UNIQUE(kind, host_uri)`` constraint is the M1 hardening for
-    a concurrent-registrar race — ADR-0023.)
-    """
-    disc = discovery if discovery is not None else LocalLibvirtDiscovery.from_env()
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT 1 FROM resources WHERE kind = %s AND host_uri = %s",
-                (ResourceKind.LOCAL_LIBVIRT.value, disc.host_uri),
-            )
-            if await cur.fetchone() is not None:
-                return  # already registered; leave the operator's status/cap/capabilities intact
-        await register_local_libvirt_resource(
-            conn, disc, pool=_LOCAL_POOL, cost_class=_LOCAL_COST_CLASS
-        )
-        await conn.commit()

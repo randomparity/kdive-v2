@@ -17,7 +17,7 @@ from kdive.providers.local_libvirt.retrieve import (
     LocalLibvirtRetrieve,
     crash_command_rejection_reason,
 )
-from kdive.store.objectstore import StoredArtifact
+from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact
 
 _ALLOW = frozenset({"bt", "log", "ps", "p", "rd"})
 
@@ -54,24 +54,16 @@ class _FakeStore:
     puts: list[tuple[str, str, Sensitivity, bytes]] = field(default_factory=list)
     fail_on: str | None = None
 
-    def put_artifact(
-        self,
-        tenant: str,
-        kind: str,
-        object_id: str,
-        name: str,
-        *,
-        data: bytes,
-        sensitivity: Sensitivity,
-        retention_class: str,
-    ) -> StoredArtifact:
-        if self.fail_on == name:
+    def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact:
+        if self.fail_on == request.name:
             raise CategorizedError(
                 "synthetic put failure", category=ErrorCategory.INFRASTRUCTURE_FAILURE
             )
-        key = f"{tenant}/{kind}/{object_id}/{name}"
-        self.puts.append((key, name, sensitivity, data))
-        return StoredArtifact(key, "etag-" + name, sensitivity, retention_class)
+        key = request.key()
+        self.puts.append((key, request.name, request.sensitivity, request.data))
+        return StoredArtifact(
+            key, "etag-" + request.name, request.sensitivity, request.retention_class
+        )
 
 
 def _retriever(store: _FakeStore, *, core: bytes | None) -> LocalLibvirtRetrieve:
@@ -126,7 +118,7 @@ def _crash_retriever(*, observed_build_id: str, crash: CrashResult) -> LocalLibv
 
 def test_run_returns_redacted_crash_output() -> None:
     crash = CrashResult(exit_status=0, stdout=b"$ log\npassword=hunter2\nok", stderr=b"")
-    out = _crash_retriever(observed_build_id="deadbeef", crash=crash).run(
+    out = _crash_retriever(observed_build_id="deadbeef", crash=crash).run_crash_postmortem(
         vmcore_ref="k/systems/s/vmcore",
         debuginfo_ref="k/runs/r/vmlinux",
         expected_build_id="deadbeef",
@@ -139,7 +131,7 @@ def test_run_returns_redacted_crash_output() -> None:
 def test_run_build_id_mismatch_is_configuration_error() -> None:
     crash = CrashResult(exit_status=0, stdout=b"", stderr=b"")
     with pytest.raises(CategorizedError) as exc:
-        _crash_retriever(observed_build_id="aaaa", crash=crash).run(
+        _crash_retriever(observed_build_id="aaaa", crash=crash).run_crash_postmortem(
             vmcore_ref="v",
             debuginfo_ref="d",
             expected_build_id="bbbb",

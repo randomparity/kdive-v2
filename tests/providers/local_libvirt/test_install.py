@@ -22,7 +22,7 @@ from kdive.providers.local_libvirt.install import (
     classify_console,
 )
 from kdive.store.objectstore import FetchedArtifact
-from tests.providers.local_libvirt.conftest import FakeDomain, FakeLibvirtConn
+from tests.providers.local_libvirt.fakes import FakeDomain, FakeLibvirtConn
 
 _SYS = UUID("11111111-1111-1111-1111-111111111111")
 _RUN = UUID("22222222-2222-2222-2222-222222222222")

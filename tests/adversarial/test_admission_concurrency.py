@@ -1,6 +1,6 @@
 """Adversarial: concurrent allocation admission must never overshoot the cap.
 
-Invariant (ADR-0023, `domain/allocation_admission.py`): the per-resource advisory
+Invariant (ADR-0023, `services/allocation_admission.py`): the per-resource advisory
 lock serializes count-then-insert, so for a host with cap K, no number of
 *genuinely concurrent* admit() calls on *distinct* connections can leave more than
 K non-terminal allocations. The existing suite only proves this sequentially on a
@@ -14,10 +14,10 @@ import asyncio
 import psycopg
 import pytest
 
-from kdive.domain.allocation_admission import admit
 from kdive.domain.models import Resource
 from kdive.domain.state import AllocationState
 from kdive.mcp.auth import RequestContext
+from kdive.services.allocation_admission import AllocationRequest, admit
 from tests.adversarial.conftest import (
     SMALL_SELECTOR,
     count_rows,
@@ -36,11 +36,13 @@ def _admit(conn: psycopg.AsyncConnection, resource: Resource):  # type: ignore[n
     # admission's per-project checks never deny. Each racer is keyless (a distinct grant).
     return admit(
         conn,
-        CTX,
-        resource=resource,
-        project="proj",
-        selector=SMALL_SELECTOR,
-        window=1,
+        AllocationRequest(
+            ctx=CTX,
+            resource=resource,
+            project="proj",
+            selector=SMALL_SELECTOR,
+            window=1,
+        ),
     )
 
 

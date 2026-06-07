@@ -1778,7 +1778,7 @@ async def test_complete_build_finalizes_external_run(migrated_url: str) -> None:
         run_id = await _seed_external_run_with_manifest(pool)  # CREATED external Run + upload_manifests row + objects
         validator = _FakeValidator(BuildOutput("local/runs/%s/kernel" % run_id, "", ""))
         resp = await runs_tools.complete_build(
-            pool, _ctx(), str(run_id), build_id=None, cmdline="console=ttyS0 dhash_entries=1",
+            pool, _ctx(), str(run_id), build_id=None, cmdline="dhash_entries=1",
             validator=validator,
         )
     assert resp.status == "succeeded"
@@ -2009,7 +2009,7 @@ In `runs.py` `register(app, pool)`:
     )
     async def runs_complete_build(
         run_id: Annotated[str, Field(description="The external-build Run to finalize.")],
-        cmdline: Annotated[str, Field(description="Kernel command line, e.g. 'console=ttyS0 dhash_entries=1'.")],
+        cmdline: Annotated[str, Field(description="Kernel debug args, e.g. 'dhash_entries=1'.")],
         build_id: Annotated[str | None, Field(description="GNU build-id as hex (e.g. from `readelf -n vmlinux`); required iff a vmlinux was uploaded. Case-insensitive.")] = None,
     ) -> ToolResponse:
         """Validate an external Run's uploads and finalize it to succeeded. Operator only."""

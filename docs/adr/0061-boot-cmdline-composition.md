@@ -2,8 +2,8 @@
 
 - **Status:** Proposed
 - **Date:** 2026-06-06
-- **Supersedes:** [ADR-0056](0056-live-demo-cmdline-wiring-dcache-driver.md) (the build-ledger
-  cmdline source stands; its *replace* semantics are replaced by *append* here).
+- **Supersedes:** ADR-0056 (removed superseded live-demo driver notes; the build-ledger
+  cmdline source stands, and its *replace* semantics are replaced by *append* here).
 - **Depends on:** [ADR-0030](0030-install-boot-plane.md) (the direct-kernel `<cmdline>` this
   composes), [ADR-0049](0049-crash-capture-tiers.md)/[ADR-0051](0051-install-method-conditional-crashkernel.md)
   (the per-method `crashkernel=` reservation), [ADR-0060](0060-per-system-rootfs-overlay.md)

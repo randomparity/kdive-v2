@@ -24,7 +24,7 @@ from kdive.security.rbac import AuthorizationError, Role, require_role
 
 if TYPE_CHECKING:
     from kdive.domain.models import Allocation
-    from kdive.mcp.auth import RequestContext
+    from kdive.security.context import RequestContext
 
 _DESTRUCTIVE_OPS_KEY = "destructive_ops"
 

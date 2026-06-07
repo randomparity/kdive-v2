@@ -103,13 +103,11 @@ applies, so the judgement is anchored rather than arbitrary. The enum:
 
 ### Annotations are explicit, and the destructive hint is guarded
 
-Annotations are **not** derived from `OpContract`. The contract
-(`src/kdive/providers/capability.py:45`) exists only after `CapabilityRegistry.dispatch`
-resolves a `BoundOp`, keyed on a runtime `resource_kind` (`capability.py:190`). At tool
-registration — and for the registry-reading generator, which has no `resource_kind` — there
-is no contract to read. So each wrapper sets its `annotations` explicitly, as a reviewed
-claim, across **three classes** (a two-way "non-query ⇒ read-only" split would mislabel the
-third):
+Annotations are **not** derived from `OpContract`. ADR-0063 makes typed
+`ProviderRuntime` ports the active M0/M1 production seam, so there is no live
+`CapabilityRegistry.dispatch` result or `BoundOp` to read at tool registration. Each wrapper
+therefore sets its `annotations` explicitly, as a reviewed claim, across **three classes** (a
+two-way "non-query ⇒ read-only" split would mislabel the third):
 
 - **Read-only queries** — `*.get`, `*.list`, `accounting.usage`/`estimate`/`report`,
   `jobs.get`: DB reads with no side effects (`accounting.report`/`estimate` compute
