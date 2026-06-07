@@ -222,23 +222,59 @@ def _real_make_overlay(base: str, overlay: str) -> None:
             timeout=_QEMU_IMG_TIMEOUT_S,
             check=False,
         )
+    except FileNotFoundError as exc:
+        raise CategorizedError(
+            "qemu-img is not installed; cannot create the per-System rootfs overlay",
+            category=ErrorCategory.MISSING_DEPENDENCY,
+            details=_overlay_error_details("create_overlay", overlay, tool="qemu-img"),
+        ) from exc
+    except OSError as exc:
+        details = _overlay_error_details("create_overlay", overlay, tool="qemu-img")
+        details["error"] = type(exc).__name__
+        raise CategorizedError(
+            "failed to launch qemu-img to create the per-System rootfs overlay",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details=details,
+        ) from exc
     except subprocess.TimeoutExpired as exc:
         raise CategorizedError(
             "qemu-img exceeded the overlay creation timeout",
             category=ErrorCategory.PROVISIONING_FAILURE,
-            details={"timeout_s": _QEMU_IMG_TIMEOUT_S},
+            details={
+                **_overlay_error_details("create_overlay", overlay, tool="qemu-img"),
+                "timeout_s": _QEMU_IMG_TIMEOUT_S,
+            },
         ) from exc
     if result.returncode != 0:
         raise CategorizedError(
             "qemu-img failed to create the per-System rootfs overlay",
             category=ErrorCategory.PROVISIONING_FAILURE,
-            details={"stderr": result.stderr[-2000:]},
+            details={
+                **_overlay_error_details("create_overlay", overlay, tool="qemu-img"),
+                "stderr": result.stderr[-2000:],
+            },
         )
 
 
 def _real_remove_overlay(overlay: str) -> None:
     """Remove a System's overlay file; an absent file is the achieved post-state (idempotent)."""
-    Path(overlay).unlink(missing_ok=True)
+    try:
+        Path(overlay).unlink(missing_ok=True)
+    except OSError as exc:
+        details = _overlay_error_details("remove_overlay", overlay)
+        details["error"] = type(exc).__name__
+        raise CategorizedError(
+            "failed to remove the per-System rootfs overlay",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details=details,
+        ) from exc
+
+
+def _overlay_error_details(op: str, overlay: str, *, tool: str | None = None) -> dict[str, object]:
+    details: dict[str, object] = {"op": op, "overlay": Path(overlay).name}
+    if tool is not None:
+        details["tool"] = tool
+    return details
 
 
 def _real_overlay_exists(overlay: str) -> bool:

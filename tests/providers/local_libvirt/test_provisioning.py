@@ -336,6 +336,65 @@ def test_real_make_overlay_timeout_is_provisioning_failure(
     assert caught.value.details["timeout_s"] == provisioning_module._QEMU_IMG_TIMEOUT_S
 
 
+def test_real_make_overlay_missing_qemu_img_is_missing_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _missing(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("qemu-img")
+
+    monkeypatch.setattr(provisioning_module.subprocess, "run", _missing)
+
+    with pytest.raises(CategorizedError) as caught:
+        provisioning_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
+
+    assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
+    assert caught.value.details == {
+        "op": "create_overlay",
+        "overlay": "overlay.qcow2",
+        "tool": "qemu-img",
+    }
+
+
+def test_real_make_overlay_launch_oserror_is_infrastructure_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fork_failed(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        raise OSError("fork failed")
+
+    monkeypatch.setattr(provisioning_module.subprocess, "run", _fork_failed)
+
+    with pytest.raises(CategorizedError) as caught:
+        provisioning_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
+
+    assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert caught.value.details == {
+        "op": "create_overlay",
+        "overlay": "overlay.qcow2",
+        "tool": "qemu-img",
+        "error": "OSError",
+    }
+
+
+def test_real_remove_overlay_oserror_is_infrastructure_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unlink_failed(self: object, *, missing_ok: bool = False) -> None:
+        del self, missing_ok
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(provisioning_module.Path, "unlink", _unlink_failed)
+
+    with pytest.raises(CategorizedError) as caught:
+        provisioning_module._real_remove_overlay("/rootfs/overlay.qcow2")
+
+    assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert caught.value.details == {
+        "op": "remove_overlay",
+        "overlay": "overlay.qcow2",
+        "error": "PermissionError",
+    }
+
+
 def test_teardown_removes_the_overlay() -> None:
     removed: list[str] = []
     name = domain_name_for(_SYS)
