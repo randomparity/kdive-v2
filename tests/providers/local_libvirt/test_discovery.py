@@ -9,11 +9,13 @@ from contextlib import asynccontextmanager
 import libvirt
 import psycopg
 import pytest
+from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.allocation_admission import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.errors import CategorizedError
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
+    ensure_local_host_registered,
     register_local_libvirt_resource,
 )
 from tests.providers.local_libvirt.conftest import FakeDomain, FakeLibvirtConn
@@ -115,5 +117,21 @@ def test_register_is_idempotent(migrated_url: str) -> None:
                 await cur.execute("SELECT count(*) FROM resources")
                 row = await cur.fetchone()
             assert row is not None and row[0] == 1
+
+    asyncio.run(_run())
+
+
+def test_ensure_local_host_registered_bootstraps_one_idempotent_row(migrated_url: str) -> None:
+    # First-run bootstrap: the reconciler registers the host so allocations.request has a
+    # Resource to admit against, with no out-of-band seed. Re-running leaves one row.
+    async def _run() -> None:
+        disc = _discovery(FakeLibvirtConn(), cap=2)
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            await ensure_local_host_registered(pool, discovery=disc)
+            await ensure_local_host_registered(pool, discovery=disc)
+        async with _pg(migrated_url) as check, check.cursor() as cur:
+            await cur.execute("SELECT kind, host_uri FROM resources")
+            rows = await cur.fetchall()
+        assert rows == [("local-libvirt", "qemu:///system")]
 
     asyncio.run(_run())

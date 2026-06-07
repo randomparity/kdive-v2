@@ -21,6 +21,7 @@ from defusedxml.ElementTree import fromstring as _safe_fromstring
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import RESOURCES
 from kdive.domain.allocation_admission import CONCURRENT_ALLOCATION_CAP_KEY
@@ -210,3 +211,28 @@ async def register_local_libvirt_resource(
             host_uri=discovery.host_uri,
         ),
     )
+
+
+_LOCAL_POOL = "local-libvirt"
+_LOCAL_COST_CLASS = "local"
+
+
+async def ensure_local_host_registered(
+    pool: AsyncConnectionPool, *, discovery: LocalLibvirtDiscovery | None = None
+) -> None:
+    """Register the local-libvirt host as a Resource row at startup (first-run bootstrap).
+
+    Idempotent by ``host_uri`` — delegates to :func:`register_local_libvirt_resource`, which
+    upserts — so the reconciler calls it on every startup. Without a registered host,
+    ``allocations.request`` has nothing to admit against and fails ``configuration_error``
+    until a row is seeded out of band (ADR-0059). ``discovery`` defaults to
+    :meth:`LocalLibvirtDiscovery.from_env`, which reads host capacity from libvirt; tests inject
+    a fake. Resource limits beyond the concurrent-allocation cap (max VMs, vCPUs per VM) will
+    extend the advertised ``capabilities`` here later.
+    """
+    disc = discovery if discovery is not None else LocalLibvirtDiscovery.from_env()
+    async with pool.connection() as conn:
+        await register_local_libvirt_resource(
+            conn, disc, pool=_LOCAL_POOL, cost_class=_LOCAL_COST_CLASS
+        )
+        await conn.commit()

@@ -14,6 +14,8 @@ import os
 import signal
 import socket
 
+from psycopg_pool import AsyncConnectionPool
+
 from kdive.db.pool import create_pool
 from kdive.log import configure_logging
 from kdive.version import full_version
@@ -89,11 +91,26 @@ async def _run_reconciler() -> None:
         upload_store = object_store_from_env()
     except CategorizedError:
         upload_store = None  # no S3 env: the upload reaper stays off, like NullReaper
+    await _register_local_host(pool)
     try:
         reconciler = Reconciler(pool, NullReaper(), upload_store=upload_store)
         await reconciler.run(stop)
     finally:
         await pool.close()
+
+
+async def _register_local_host(pool: AsyncConnectionPool) -> None:
+    """Best-effort first-run host registration so allocations.request has a Resource (ADR-0059).
+
+    A host that can't be reached/registered must not crash the reconciler — the other repairs
+    still run, and the next startup retries; the failure is logged.
+    """
+    from kdive.providers.local_libvirt.discovery import ensure_local_host_registered
+
+    try:
+        await ensure_local_host_registered(pool)
+    except Exception:  # noqa: BLE001 - registration failure must not crash the reconciler
+        _log.warning("reconciler: local-libvirt host registration failed at startup", exc_info=True)
 
 
 def main(argv: list[str] | None = None) -> None:
