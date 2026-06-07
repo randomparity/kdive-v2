@@ -127,9 +127,15 @@ async def _insert_running_job(
 def test_dequeue_claims_oldest_and_charges_attempt(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-old")
-            await asyncio.sleep(0.01)
-            await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-new")
+            old = await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-old")
+            new = await queue.enqueue(conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-new")
+            await conn.execute(
+                "UPDATE jobs SET created_at = CASE "
+                "WHEN id = %s THEN timestamp '2026-01-01 00:00:00+00' "
+                "WHEN id = %s THEN timestamp '2026-01-01 00:00:01+00' "
+                "END WHERE id IN (%s, %s)",
+                (old.id, new.id, old.id, new.id),
+            )
             claimed = await queue.dequeue(conn, "w1")
             assert claimed is not None
             assert claimed.dedup_key == "dk-old"  # FIFO by created_at

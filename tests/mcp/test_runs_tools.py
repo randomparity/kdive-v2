@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -1388,10 +1389,12 @@ def test_install_handler_replay_does_not_restage(migrated_url: str) -> None:
 
 
 class _SlowInstaller:
-    """An installer that sleeps inside install() to widen the concurrent-dispatch window."""
+    """An installer blocked by the test while the first dispatch owns the run lock."""
 
     def __init__(self) -> None:
         self.calls: list[UUID] = []
+        self.entered = threading.Event()
+        self.release = threading.Event()
 
     def install(
         self,
@@ -1403,10 +1406,9 @@ class _SlowInstaller:
         method: CaptureMethod = CaptureMethod.HOST_DUMP,
         initrd_ref: str | None = None,
     ) -> None:
-        import time
-
         self.calls.append(run_id)
-        time.sleep(0.2)
+        self.entered.set()
+        assert self.release.wait(timeout=5), "test did not release the installer"
 
 
 def test_install_handler_concurrent_dispatch_invokes_once(migrated_url: str) -> None:
@@ -1423,7 +1425,11 @@ def test_install_handler_concurrent_dispatch_invokes_once(migrated_url: str) -> 
                 async with pool.connection() as conn:
                     await runs_tools.install_handler(conn, job, installer)
 
-            await asyncio.gather(_dispatch(), _dispatch())
+            first = asyncio.create_task(_dispatch())
+            assert await asyncio.to_thread(installer.entered.wait, 5)
+            second = asyncio.create_task(_dispatch())
+            installer.release.set()
+            await asyncio.gather(first, second)
             nsteps = await _count(
                 pool,
                 "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='install'",

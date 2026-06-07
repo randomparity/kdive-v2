@@ -234,14 +234,37 @@ def test_run_once_reclaims_lapsed_lease(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_heartbeat_renews_live_lease(migrated_url: str) -> None:
+def test_heartbeat_renews_live_lease(migrated_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
     async def _run() -> None:
         async with AsyncConnectionPool(migrated_url, min_size=3, max_size=10) as pool:
             started = asyncio.Event()
+            first_heartbeat = asyncio.Event()
+            second_heartbeat = asyncio.Event()
+            heartbeat_count = 0
+
+            original_heartbeat = queue.heartbeat
+
+            async def observed_heartbeat(
+                conn: psycopg.AsyncConnection,
+                job_id: UUID,
+                worker_id: str,
+                *,
+                lease: timedelta = queue.DEFAULT_LEASE,
+            ) -> bool:
+                nonlocal heartbeat_count
+                ok = await original_heartbeat(conn, job_id, worker_id, lease=lease)
+                heartbeat_count += 1
+                if heartbeat_count == 1:
+                    first_heartbeat.set()
+                elif heartbeat_count == 2:
+                    second_heartbeat.set()
+                return ok
+
+            monkeypatch.setattr(queue, "heartbeat", observed_heartbeat)
 
             async def slow(conn: psycopg.AsyncConnection, job: Job) -> str:
                 started.set()
-                await asyncio.sleep(2.0)  # outlives the 1 s lease
+                await asyncio.wait_for(second_heartbeat.wait(), timeout=5)
                 return "s3://out"
 
             reg = HandlerRegistry()
@@ -259,13 +282,13 @@ def test_heartbeat_renews_live_lease(migrated_url: str) -> None:
                 )
 
             task = asyncio.create_task(worker.run_once())
-            await started.wait()
+            await asyncio.wait_for(started.wait(), timeout=5)
 
-            await asyncio.sleep(0.5)
+            await asyncio.wait_for(first_heartbeat.wait(), timeout=5)
             async with pool.connection() as c:
                 cur = await c.execute("SELECT lease_expires_at FROM jobs WHERE id = %s", (job.id,))
                 r1 = await cur.fetchone()
-            await asyncio.sleep(0.6)
+            await asyncio.wait_for(second_heartbeat.wait(), timeout=5)
             async with pool.connection() as c:
                 cur = await c.execute(
                     "SELECT lease_expires_at, worker_id FROM jobs WHERE id = %s", (job.id,)
@@ -287,14 +310,16 @@ def test_heartbeat_error_does_not_crash_dispatch(
 ) -> None:
     async def _run() -> None:
         async with AsyncConnectionPool(migrated_url, min_size=3, max_size=10) as pool:
+            heartbeat_attempted = asyncio.Event()
 
             async def boom(*args: object, **kwargs: object) -> bool:
+                heartbeat_attempted.set()
                 raise RuntimeError("heartbeat db error")
 
             monkeypatch.setattr(queue, "heartbeat", boom)
 
             async def handler(conn: psycopg.AsyncConnection, job: Job) -> str:
-                await asyncio.sleep(0.5)  # long enough for a heartbeat to fire and fail
+                await asyncio.wait_for(heartbeat_attempted.wait(), timeout=5)
                 return "s3://out"
 
             reg = HandlerRegistry()
