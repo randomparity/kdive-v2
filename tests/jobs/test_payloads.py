@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from kdive.domain.capture import CaptureMethod
-from kdive.domain.models import Job, JobKind
+from kdive.domain.models import Job, JobKind, PowerAction
 from kdive.domain.state import JobState
 from kdive.jobs.payloads import (
     BuildPayload,
@@ -20,7 +20,6 @@ from kdive.jobs.payloads import (
     dump_payload,
     load_payload,
 )
-from kdive.providers.ports import PowerAction
 
 
 def test_build_payload_round_trips_with_optional_cmdline() -> None:

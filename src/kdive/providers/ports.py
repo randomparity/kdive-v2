@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
 from typing import NamedTuple, Protocol
 from uuid import UUID
@@ -17,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.models import PowerAction
 from kdive.profiles.build import ServerBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.interfaces import SystemHandle, TransportHandle
@@ -159,15 +159,6 @@ class TransportHandleData(NamedTuple):
         if port <= 0 or port > 65535:
             raise _config_error("transport handle port is outside 1..65535")
         return cls(scheme, host, port)
-
-
-class PowerAction(StrEnum):
-    """Power operations accepted by the control port."""
-
-    ON = "on"
-    OFF = "off"
-    CYCLE = "cycle"
-    RESET = "reset"
 
 
 class Provisioner(Protocol):

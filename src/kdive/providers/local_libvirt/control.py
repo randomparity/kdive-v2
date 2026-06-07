@@ -24,8 +24,8 @@ from typing import Protocol
 import libvirt
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.models import PowerAction
 from kdive.providers.ports import Controller as Controller
-from kdive.providers.ports import PowerAction
 
 _log = logging.getLogger(__name__)
 

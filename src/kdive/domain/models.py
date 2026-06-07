@@ -71,6 +71,15 @@ class JobKind(StrEnum):
     CAPTURE_VMCORE = "capture_vmcore"
 
 
+class PowerAction(StrEnum):
+    """Power operations accepted by the durable control-plane job contract."""
+
+    ON = "on"
+    OFF = "off"
+    CYCLE = "cycle"
+    RESET = "reset"
+
+
 class JobAuthorizing(TypedDict):
     """The fixed authorizing tuple persisted with every durable job."""
 

@@ -25,7 +25,7 @@ from pydantic import Field
 
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import ErrorCategory
-from kdive.domain.models import Job, JobKind, System
+from kdive.domain.models import Job, JobKind, PowerAction, System
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
 from kdive.log import bind_context
@@ -43,7 +43,6 @@ from kdive.mcp.tools._common import (
 )
 from kdive.mcp.tools._common import job_envelope
 from kdive.profiles.provisioning import ProvisioningProfile, destructive_opt_in
-from kdive.providers.ports import PowerAction
 from kdive.security import audit
 from kdive.security.context import RequestContext
 from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed

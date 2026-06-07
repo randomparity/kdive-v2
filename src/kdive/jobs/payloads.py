@@ -13,8 +13,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from kdive.domain.capture import CaptureMethod
-from kdive.domain.models import Job, JobAuthorizing, JobKind
-from kdive.providers.ports import PowerAction
+from kdive.domain.models import Job, JobAuthorizing, JobKind, PowerAction
 
 
 class PayloadValidationError(ValueError):

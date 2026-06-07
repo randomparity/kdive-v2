@@ -9,7 +9,7 @@ at-dispatch honored-method re-check.
 
 from __future__ import annotations
 
-from kdive.domain.models import Allocation, ResourceKind, Run
+from kdive.domain.models import Allocation, PowerAction, ResourceKind, Run
 from kdive.profiles.build import ParsedBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.capability import Capability, CleanupGuarantee, OpContract, Plane
@@ -24,7 +24,6 @@ from kdive.providers.interfaces import (
     SystemHandle,
     TransportHandle,
 )
-from kdive.providers.ports import PowerAction
 
 LIBVIRT = ResourceKind.LOCAL_LIBVIRT
 
