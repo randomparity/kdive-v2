@@ -96,8 +96,13 @@ def _as_uuid(value: str) -> UUID | None:
         return None
 
 
-def _envelope_for_run(run: Run) -> ToolResponse:
-    """Render a Run; `failed` becomes a failure envelope carrying its `failure_category`."""
+def _envelope_for_run(run: Run, *, required_cmdline: str | None = None) -> ToolResponse:
+    """Render a Run; `failed` becomes a failure envelope carrying its `failure_category`.
+
+    ``required_cmdline`` (the platform args the boot always injects, ADR-0061) is advertised in
+    the success envelope so an agent appends its debug args to ``runs.build`` without clobbering
+    ``root=``/``console=``.
+    """
     if run.state is RunState.FAILED:
         category = run.failure_category or ErrorCategory.INFRASTRUCTURE_FAILURE
         return ToolResponse.failure(str(run.id), category, data={"current_status": run.state.value})
@@ -105,25 +110,29 @@ def _envelope_for_run(run: Run) -> ToolResponse:
         actions = ["runs.get", "runs.build"]
     else:
         actions = ["runs.get"]
+    data = {"project": run.project}
+    if required_cmdline is not None:
+        data["required_cmdline"] = required_cmdline
     return ToolResponse.success(
-        str(run.id),
-        run.state.value,
-        suggested_next_actions=actions,
-        data={"project": run.project},
+        str(run.id), run.state.value, suggested_next_actions=actions, data=data
     )
 
 
 async def get_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> ToolResponse:
-    """Return a Run the caller's project owns, or a not-found-shaped error."""
+    """Return a Run the caller's project owns, advertising the boot's required cmdline."""
     uid = _as_uuid(run_id)
     if uid is None:
         return _config_error(run_id)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             run = await RUNS.get(conn, uid)
-        if run is None or run.project not in ctx.projects:
-            return _config_error(run_id)
-        return _envelope_for_run(run)
+            if run is None or run.project not in ctx.projects:
+                return _config_error(run_id)
+            system = await SYSTEMS.get(conn, run.system_id)
+        required = (
+            system_required_cmdline(_install_method_for(system)) if system is not None else None
+        )
+        return _envelope_for_run(run, required_cmdline=required)
 
 
 async def _investigation_for_update(conn: AsyncConnection, uid: UUID) -> Investigation | None:
@@ -664,30 +673,38 @@ async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> st
 
 # --- install + boot plane (#19, ADR-0030) --------------------------------------------
 
-# Default kernel command lines for direct-kernel boot, split by capture method. The kdump
-# default carries a `crashkernel=` reservation (the kdump prerequisite); the non-kdump default
-# does not — the non-kdump tiers (console/host_dump/gdbstub) boot without it (ADR-0049 §5,
-# ADR-0051 §3). An operator override (the Run's `cmdline`) replaces the default entirely.
-_KDUMP_DEFAULT_CMDLINE = "console=ttyS0 crashkernel=256M"
-_NONKDUMP_DEFAULT_CMDLINE = "console=ttyS0"
-_CRASHKERNEL_TOKEN = "crashkernel="
+# The platform-required kernel args the install/boot plane always injects: the serial console
+# the readiness/crash classifier tails, and the root device provisioning attaches as vda. The
+# kdump tier additionally reserves `crashkernel=`. The Run's recorded cmdline is the agent's
+# debug args, appended AFTER these so a boot can never lose `root=`/`console=` (ADR-0061
+# supersedes the ADR-0056 replace semantics; the device tracks provisioning's `target dev`).
+_REQUIRED_BASE_CMDLINE = "console=ttyS0 root=/dev/vda"
+_KDUMP_CRASHKERNEL = "crashkernel=256M"
+
+
+def system_required_cmdline(method: CaptureMethod) -> str:
+    """The platform-required kernel args for ``method`` (advertised on the Run and always
+    injected at boot). kdump adds the `crashkernel=` reservation; the other tiers do not."""
+    if method is CaptureMethod.KDUMP:
+        return f"{_REQUIRED_BASE_CMDLINE} {_KDUMP_CRASHKERNEL}"
+    return _REQUIRED_BASE_CMDLINE
 
 
 async def _cmdline_for(conn: AsyncConnection, run: Run, method: CaptureMethod) -> str:
-    """Resolve the kernel command line from the build ledger (ADR-0056 §2).
+    """Compose the boot cmdline: the required base, then the Run's debug args (ADR-0061).
 
-    The cmdline's source of record is the `(run_id, "build")` ledger `result["cmdline"]`,
-    written by the build handler (server lane, `runs.build cmdline=`) or `complete_build`
-    (external lane). A non-blank string is the cmdline; otherwise the method-appropriate
-    default applies — the kdump default reserves `crashkernel=`, the non-kdump default does
-    not (ADR-0051 §3).
+    The debug portion is the `(run_id, "build")` ledger `result["cmdline"]`, written by the
+    build handler (server lane, `runs.build cmdline=`) or `complete_build` (external lane). It
+    is appended after :func:`system_required_cmdline`, so the platform-required `root=`/`console`
+    (and the kdump `crashkernel=`) are always present regardless of agent input.
     """
+    required = system_required_cmdline(method)
     result = await _existing_build_result(conn, run.id)
     if result is not None:
         value = result.get("cmdline")
         if isinstance(value, str) and value.strip():
-            return value
-    return _KDUMP_DEFAULT_CMDLINE if method is CaptureMethod.KDUMP else _NONKDUMP_DEFAULT_CMDLINE
+            return f"{required} {value.strip()}"
+    return required
 
 
 def _local_libvirt_section(profile: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -726,11 +743,11 @@ def _install_method_for(system: System) -> CaptureMethod:
 
 
 async def install_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> ToolResponse:
-    """Admit an idempotent install for a built Run; require `crashkernel=` only for kdump.
+    """Admit an idempotent install for a built, SUCCEEDED Run.
 
-    The capture method is resolved from the System's provisioning profile (ADR-0051 §1): a
-    kdump-provisioned System (a `crashkernel` reservation) must carry a `crashkernel=` cmdline
-    token; the non-kdump tiers are admitted without it.
+    The boot cmdline is composed at boot from the System's capture method (ADR-0051 §1) plus the
+    Run's debug args (ADR-0061), with the platform injecting `crashkernel=` for a kdump System —
+    so there is no agent-supplied cmdline token to validate here.
     """
     uid = _as_uuid(run_id)
     if uid is None:
@@ -743,13 +760,6 @@ async def install_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: st
             require_role(ctx, run.project, Role.OPERATOR)
             if run.state is not RunState.SUCCEEDED:
                 return _config_error(run_id, data={"current_status": run.state.value})
-            system = await SYSTEMS.get(conn, run.system_id)
-            if system is None:  # defensive: runs.system_id is NOT NULL REFERENCES systems(id)
-                return _config_error(run_id, data={"reason": "system_gone"})
-            method = _install_method_for(system)
-            cmdline = await _cmdline_for(conn, run, method)
-            if method is CaptureMethod.KDUMP and _CRASHKERNEL_TOKEN not in cmdline:
-                return _config_error(run_id, data={"reason": "cmdline_missing_crashkernel"})
             return await _enqueue_step(conn, ctx, run, JobKind.INSTALL, "install", "runs.install")
 
 

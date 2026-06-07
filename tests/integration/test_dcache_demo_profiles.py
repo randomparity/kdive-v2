@@ -44,7 +44,8 @@ def test_provisioning_profile_is_console_only(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_demo_cmdline_carries_the_trigger() -> None:
-    assert demo.DEMO_CMDLINE == "console=ttyS0 dhash_entries=1"
+    # Only the trigger; the platform injects console/root and appends this (ADR-0061).
+    assert demo.DEMO_CMDLINE == "dhash_entries=1"
 
 
 def test_preflight_skips_when_env_absent(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,6 +1,7 @@
 # ADR 0056 — Live demo cmdline wiring + dcache A/B driver (G5)
 
-- **Status:** Proposed
+- **Status:** Superseded by [ADR-0061](0061-boot-cmdline-composition.md) (the build-ledger
+  cmdline source stands; the *replace* semantics here become *append*).
 - **Date:** 2026-06-06
 - **Issue:** [#128](https://github.com/randomparity/kdive/issues/128) (gap **G5** of
   [#123](https://github.com/randomparity/kdive/issues/123)).

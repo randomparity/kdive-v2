@@ -17,8 +17,10 @@ _CONFIG_ENV = "KDIVE_TEST_BUILD_CONFIG"
 _GUEST_IMAGE_ENV = "KDIVE_GUEST_IMAGE"
 _FIX_PATCH_ENV = "KDIVE_DEMO_FIX_PATCH"
 
-DEMO_CMDLINE = "console=ttyS0 dhash_entries=1"
-"""The pathological boot parameter that triggers the dcache OOB read (test-case 05)."""
+DEMO_CMDLINE = "dhash_entries=1"
+"""The pathological debug arg that triggers the dcache OOB read (test-case 05). The platform
+injects the required ``console=ttyS0 root=/dev/vda`` and appends this (ADR-0061), so the demo
+carries only the trigger."""
 
 
 def demo_build_profile(*, fixed: bool) -> dict[str, Any]:

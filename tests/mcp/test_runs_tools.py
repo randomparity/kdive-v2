@@ -1107,6 +1107,7 @@ def test_cmdline_default_is_kdump_reserving_for_kdump(migrated_url: str) -> None
                 assert run is not None
                 cmdline = await runs_tools._cmdline_for(conn, run, CaptureMethod.KDUMP)
             assert "crashkernel=" in cmdline
+            assert "root=/dev/vda" in cmdline  # the platform injects the root device
 
     asyncio.run(_run())
 
@@ -1120,22 +1121,24 @@ def test_cmdline_default_omits_crashkernel_for_non_kdump(migrated_url: str) -> N
                 assert run is not None
                 cmdline = await runs_tools._cmdline_for(conn, run, CaptureMethod.CONSOLE)
             assert "crashkernel=" not in cmdline
+            assert "root=/dev/vda" in cmdline
 
     asyncio.run(_run())
 
 
-def test_cmdline_from_ledger_overrides_default_for_any_method(migrated_url: str) -> None:
+def test_cmdline_appends_ledger_debug_args_after_the_required_base(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_succeeded_run(
                 pool,
-                build_profile={"schema_version": 1, "cmdline": "console=ttyS0 dhash_entries=1"},
+                build_profile={"schema_version": 1, "cmdline": "dhash_entries=1"},
             )
             async with pool.connection() as conn:
                 run = await RUNS.get(conn, UUID(run_id))
                 assert run is not None
                 cmdline = await runs_tools._cmdline_for(conn, run, CaptureMethod.KDUMP)
-            assert cmdline == "console=ttyS0 dhash_entries=1"
+            # The platform-required args lead; the agent's debug args are appended after them.
+            assert cmdline == "console=ttyS0 root=/dev/vda crashkernel=256M dhash_entries=1"
 
     asyncio.run(_run())
 
@@ -1154,19 +1157,34 @@ def test_install_nonkdump_system_admits_cmdline_without_crashkernel(migrated_url
     asyncio.run(_run())
 
 
-def test_install_kdump_system_without_crashkernel_is_config_error_no_job(migrated_url: str) -> None:
+def test_install_kdump_system_admits_without_agent_crashkernel(migrated_url: str) -> None:
+    # The platform injects crashkernel for a kdump System (ADR-0061), so the agent need not
+    # supply it — a build whose cmdline carries only debug args still admits.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_succeeded_run(
                 pool,
-                build_profile={**_VALID_BUILD, "cmdline": "console=ttyS0"},
+                build_profile={**_VALID_BUILD, "cmdline": "dhash_entries=1"},
                 provisioning_profile=_profile_dump(crashkernel="256M"),
             )
             resp = await _install(pool, _ctx(), run_id)
             njobs = await _count(pool, "SELECT count(*) AS n FROM jobs", ())
-        assert resp.status == "error" and resp.error_category == "configuration_error"
-        assert resp.data["reason"] == "cmdline_missing_crashkernel"
-        assert njobs == 0
+        assert resp.status == "queued"
+        assert njobs == 1
+
+    asyncio.run(_run())
+
+
+def test_runs_get_advertises_the_system_required_cmdline(migrated_url: str) -> None:
+    # The agent reads the platform-required args off runs.get and appends its debug args without
+    # clobbering root=/console (ADR-0061).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(
+                pool, provisioning_profile=_profile_dump(crashkernel="256M")
+            )
+            resp = await runs_tools.get_run(pool, _ctx(), run_id)
+        assert resp.data["required_cmdline"] == "console=ttyS0 root=/dev/vda crashkernel=256M"
 
     asyncio.run(_run())
 
@@ -1878,13 +1896,13 @@ def test_install_handler_forwards_ledger_cmdline_to_installer(migrated_url: str)
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_succeeded_run(
-                pool, build_profile={**_VALID_BUILD, "cmdline": "console=ttyS0 dhash_entries=1"}
-            )  # bare System => console method, cmdline migrated into the build ledger
+                pool, build_profile={**_VALID_BUILD, "cmdline": "dhash_entries=1"}
+            )  # bare System => console method; the debug arg is appended to the required base
             job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
             installer = _FakeInstaller()
             async with pool.connection() as conn:
                 await runs_tools.install_handler(conn, job, installer)
-        assert installer.calls[0][3] == "console=ttyS0 dhash_entries=1"
+        assert installer.calls[0][3] == "console=ttyS0 root=/dev/vda dhash_entries=1"
 
     asyncio.run(_run())
 
@@ -1902,7 +1920,7 @@ def test_install_handler_forwards_default_cmdline_when_ledger_has_none(migrated_
             installer = _FakeInstaller()
             async with pool.connection() as conn:
                 await runs_tools.install_handler(conn, job, installer)
-        assert installer.calls[0][3] == "console=ttyS0"  # _NONKDUMP_DEFAULT_CMDLINE
+        assert installer.calls[0][3] == "console=ttyS0 root=/dev/vda"  # required base only
 
     asyncio.run(_run())
 
