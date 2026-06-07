@@ -43,7 +43,11 @@ from kdive.security.rbac import AuthorizationError, Role
 from tests.db_waits import wait_until_any_backend_waiting
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
-_PROFILE: dict[str, Any] = {"kernel_source_ref": "git+https://git.kernel.org#v6.9"}
+_PROFILE: dict[str, Any] = {
+    "schema_version": 1,
+    "kernel_source_ref": "git+https://git.kernel.org#v6.9",
+    "config_ref": "file:///configs/kdump.config",
+}
 
 
 def _profile() -> dict[str, Any]:
@@ -261,7 +265,9 @@ def test_create_first_run_flips_investigation_active(migrated_url: str) -> None:
             resp = await _create(pool, _ctx(), inv_id, sys_id)
             assert resp.status == "created"
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute("SELECT state FROM runs WHERE id = %s", (resp.object_id,))
+                await cur.execute(
+                    "SELECT state, build_profile FROM runs WHERE id = %s", (resp.object_id,)
+                )
                 run_row = await cur.fetchone()
                 await cur.execute(
                     "SELECT state, last_run_at FROM investigations WHERE id = %s", (inv_id,)
@@ -274,6 +280,7 @@ def test_create_first_run_flips_investigation_active(migrated_url: str) -> None:
                 )
                 flip = await cur.fetchone()
         assert run_row is not None and run_row["state"] == "created"
+        assert run_row["build_profile"]["source"] == "server"
         assert inv_row is not None and inv_row["state"] == "active"
         assert inv_row["last_run_at"] is not None
         assert flip is not None and flip["n"] == 1
@@ -281,9 +288,7 @@ def test_create_first_run_flips_investigation_active(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_create_accepts_empty_build_profile(migrated_url: str) -> None:
-    # ADR-0026 §6: an empty {} build_profile is allowed in M0 (the build plane owns
-    # content validation). Pin it so a future "reject empty profile" change is caught.
+def test_create_rejects_empty_build_profile(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             inv_id = await _seed_investigation(pool, state=InvestigationState.OPEN)
@@ -293,11 +298,11 @@ def test_create_accepts_empty_build_profile(migrated_url: str) -> None:
             resp = await runs_tools.create_run(
                 pool, _ctx(), investigation_id=inv_id, system_id=sys_id, build_profile={}
             )
-            assert resp.status == "created"
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute("SELECT build_profile FROM runs WHERE id = %s", (resp.object_id,))
+                await cur.execute("SELECT count(*) AS n FROM runs")
                 row = await cur.fetchone()
-        assert row is not None and row["build_profile"] == {}
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert row is not None and row["n"] == 0
 
     asyncio.run(_run())
 

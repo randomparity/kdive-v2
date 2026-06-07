@@ -61,7 +61,7 @@ from kdive.mcp.tools._common import (
 from kdive.planes.runs_shared import existing_build_result as _existing_build_result
 from kdive.planes.runs_shared import install_method_for as _install_method_for
 from kdive.planes.runs_shared import system_required_cmdline
-from kdive.profiles.build import BuildProfile, ExternalBuildProfile
+from kdive.profiles.build import BuildProfile, ExternalBuildProfile, ParsedBuildProfile
 from kdive.providers.composition import (
     validate_external_artifacts,
 )
@@ -135,7 +135,7 @@ async def _create_locked(
     ctx: RequestContext,
     inv_uid: UUID,
     sys_uid: UUID,
-    build_profile: dict[str, Any],
+    build_profile: ParsedBuildProfile,
     *,
     project: str,
 ) -> ToolResponse:
@@ -169,7 +169,7 @@ async def _create_locked(
                 investigation_id=inv_uid,
                 system_id=sys_uid,
                 state=RunState.CREATED,
-                build_profile=build_profile,
+                build_profile=build_profile.model_dump(mode="json"),
             ),
         )
         await audit.record(
@@ -230,6 +230,10 @@ async def create_run(
         return _config_error(system_id)
     if not isinstance(build_profile, dict):
         return _config_error(system_id)
+    try:
+        parsed_build_profile = BuildProfile.parse(build_profile)
+    except CategorizedError as exc:
+        return ToolResponse.failure(system_id, exc.category)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             inv = await INVESTIGATIONS.get(conn, inv_uid)
@@ -246,7 +250,7 @@ async def create_run(
                 current = alloc.state.value if alloc is not None else "missing"
                 return _stale_handle(system_id, current_status=current)
             return await _create_locked(
-                conn, ctx, inv_uid, sys_uid, build_profile, project=inv.project
+                conn, ctx, inv_uid, sys_uid, parsed_build_profile, project=inv.project
             )
 
 
