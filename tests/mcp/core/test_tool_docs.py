@@ -26,7 +26,8 @@ from kdive.mcp.app import build_app
 from kdive.mcp.tools import _docmeta
 from tests.mcp.conftest import AUDIENCE, ISSUER, make_keypair
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_HERE = Path(__file__).resolve()
+_REPO_ROOT = next(parent for parent in _HERE.parents if (parent / "pyproject.toml").is_file())
 _TESTS_DIR = _REPO_ROOT / "tests"
 # Common callees every wrapper names; never a tool-unique anchor.
 # Includes _docmeta annotation helpers that appear in @app.tool decorator sources.
