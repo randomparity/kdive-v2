@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import importlib
 import subprocess
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
@@ -59,6 +60,26 @@ def _profile(**overrides: Any) -> ProvisioningProfile:
 
 def test_domain_name_is_kdive_prefixed() -> None:
     assert domain_name_for(_SYS) == "kdive-11111111-1111-1111-1111-111111111111"
+
+
+def test_import_does_not_register_elementtree_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_register_namespace(prefix: str, uri: str) -> None:
+        calls.append((prefix, uri))
+
+    monkeypatch.setattr(ET, "register_namespace", fake_register_namespace)
+    reloaded = importlib.reload(provisioning_module)
+
+    assert calls == []
+
+    reloaded.render_domain_xml(_SYS, _profile())
+    reloaded.render_domain_xml(_SYS, _profile())
+
+    assert calls == [("kdive", discovery._KDIVE_METADATA_NS)]
+    reloaded.__dict__["_kdive_namespace_registered"] = False
 
 
 def test_render_carries_name_memory_vcpu_machine_and_rootfs() -> None:

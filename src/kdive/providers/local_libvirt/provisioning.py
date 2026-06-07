@@ -60,9 +60,18 @@ def overlay_path(system_id: UUID | str) -> str:
     return f"{_ROOTFS_DIR}/{system_id}-overlay.qcow2"
 
 
-# Register the kdive metadata prefix once at import (global ElementTree state) so the
-# rendered tag serializes as `kdive:system` rather than an auto-generated `ns0:` prefix.
-ET.register_namespace("kdive", _KDIVE_METADATA_NS)
+_kdive_namespace_registered = False
+
+
+def _ensure_kdive_namespace_registered() -> None:
+    """Register the kdive XML prefix when rendering domain XML."""
+    global _kdive_namespace_registered
+    if _kdive_namespace_registered:
+        return
+    # ElementTree keeps namespace prefixes in process-global state. Keep that mutation out of
+    # import time and perform it at the rendering boundary that needs deterministic prefixes.
+    ET.register_namespace("kdive", _KDIVE_METADATA_NS)
+    _kdive_namespace_registered = True
 
 
 class _LibvirtDomain(Protocol):
@@ -211,6 +220,7 @@ def render_domain_xml(
     ``<kernel>`` element). ``disk_path`` overrides the disk source: ``provision`` passes the
     per-System overlay (ADR-0060); a bare render (tests) defaults to the resolved base image.
     """
+    _ensure_kdive_namespace_registered()
     validate_profile(profile)
     section = profile.provider.local_libvirt
     machine = section.domain_xml_params.get("machine", _DEFAULT_MACHINE)
