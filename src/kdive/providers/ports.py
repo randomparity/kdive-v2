@@ -187,7 +187,7 @@ class VmcoreIntrospector(Protocol):
 class LiveIntrospector(Protocol):
     """Live introspection port over an existing transport handle."""
 
-    def introspect_live(self, *, transport_handle: str) -> IntrospectOutput: ...
+    def introspect_live(self, *, transport_handle: str, helper: str) -> IntrospectOutput: ...
 
 
 class GdbMiAttachment(Protocol):

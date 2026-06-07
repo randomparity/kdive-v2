@@ -323,8 +323,9 @@ class LocalLibvirtLiveIntrospect:
     """The realized live-introspection port (ADR-0039 §3).
 
     Attaches drgn to the **running** guest kernel over the session's transport handle
-    (drgn-over-SSH), runs the same three helpers as the offline port, and returns the same
-    redacted, byte-bounded report — the port is the single redaction boundary.
+    (drgn-over-SSH), runs one selected helper from the same fixed set as the offline port,
+    and returns the same redacted, byte-bounded report. The port is the single redaction
+    boundary.
 
     The drgn seams (``open_live_program``/``run_helper``) are ``None`` off-gate; ``run`` then
     raises ``MISSING_DEPENDENCY``, mirroring the offline port's seam guard. The ``live_vm``
@@ -347,10 +348,12 @@ class LocalLibvirtLiveIntrospect:
         """Build from env; the drgn seam is left ``None`` so ``introspect_live`` raises off-gate."""
         return cls()
 
-    def introspect_live(self, *, transport_handle: str) -> IntrospectOutput:
-        """Attach drgn to the live kernel, run the helpers, return a redacted report.
+    def introspect_live(self, *, transport_handle: str, helper: str) -> IntrospectOutput:
+        """Attach drgn to the live kernel, run one helper, return a redacted report.
 
         Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` if ``helper`` is not one of the fixed
+                in-tree helper names.
             CategorizedError: ``MISSING_DEPENDENCY`` if the drgn seams were not configured
                 (off-gate); a transport-layer ``CategorizedError`` (``transport_failure`` /
                 ``debug_attach_failure``) propagated from the live seam; ``DEBUG_ATTACH_FAILURE``
@@ -367,9 +370,23 @@ class LocalLibvirtLiveIntrospect:
             raise _normalize_attach_error(
                 exc, "drgn could not attach to the live guest kernel"
             ) from exc
-        tasks = self._run_helper(program, "tasks")
-        modules = self._run_helper(program, "modules")
-        sysinfo = self._run_helper(program, "sysinfo")
+        if helper == "tasks":
+            tasks = self._run_helper(program, "tasks")
+            modules: dict[str, object] = {}
+            sysinfo: dict[str, object] = {}
+        elif helper == "modules":
+            tasks = {}
+            modules = self._run_helper(program, "modules")
+            sysinfo = {}
+        elif helper == "sysinfo":
+            tasks = {}
+            modules = {}
+            sysinfo = self._run_helper(program, "sysinfo")
+        else:
+            raise CategorizedError(
+                f"unknown live introspection helper: {helper}",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+            )
         return assemble_report(tasks, modules, sysinfo, byte_cap=self._report_byte_cap)
 
 

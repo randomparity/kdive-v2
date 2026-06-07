@@ -170,13 +170,12 @@ async def introspect_run(
         _project, transport_handle = resolved
         try:
             output = await asyncio.to_thread(
-                introspector.introspect_live, transport_handle=transport_handle
+                introspector.introspect_live, transport_handle=transport_handle, helper=helper
             )
         except CategorizedError as exc:
             return ToolResponse.failure(session_id, exc.category)
-        report = json.dumps(
-            {"tasks": output.tasks, "modules": output.modules, "sysinfo": output.sysinfo}
-        )
+        sections = {"tasks": output.tasks, "modules": output.modules, "sysinfo": output.sysinfo}
+        report = json.dumps({helper: sections[helper]})
         return ToolResponse.success(
             session_id,
             "succeeded",

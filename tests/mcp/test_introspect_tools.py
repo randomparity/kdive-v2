@@ -267,8 +267,8 @@ class _FakeLiveIntrospector:
         self._raises = raises
         self.kwargs: dict[str, object] = {}
 
-    def introspect_live(self, *, transport_handle: str) -> IntrospectOutput:
-        self.kwargs = {"transport_handle": transport_handle}
+    def introspect_live(self, *, transport_handle: str, helper: str) -> IntrospectOutput:
+        self.kwargs = {"transport_handle": transport_handle, "helper": helper}
         if self._raises is not None:
             raise self._raises
         return self._output
@@ -313,8 +313,9 @@ def test_run_live_happy_path_returns_redacted_report(migrated_url: str) -> None:
             )
         assert resp.status != "error"
         report = json.loads(resp.data["report"])
-        assert report["sysinfo"]["release"] == "6.8.0"
-        assert port.kwargs["transport_handle"] == "ssh://127.0.0.1:22"
+        assert set(report) == {"tasks"}
+        assert report["tasks"]["tasks"][0]["pid"] == 1
+        assert port.kwargs == {"transport_handle": "ssh://127.0.0.1:22", "helper": "tasks"}
 
     asyncio.run(_run())
 

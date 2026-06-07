@@ -369,32 +369,66 @@ def _live_introspector(
 
 def test_live_introspector_is_protocol() -> None:
     class _Impl:
-        def introspect_live(self, *, transport_handle: str) -> IntrospectOutput:
+        def introspect_live(self, *, transport_handle: str, helper: str) -> IntrospectOutput:
             return IntrospectOutput(tasks={}, modules={}, sysinfo={}, truncated=False)
 
     impl: LiveIntrospector = _Impl()
-    assert impl.introspect_live(transport_handle="ssh://127.0.0.1:22").truncated is False
+    assert (
+        impl.introspect_live(transport_handle="ssh://127.0.0.1:22", helper="tasks").truncated
+        is False
+    )
 
 
-def test_run_happy_path_runs_all_three_helpers() -> None:
-    out = _live_introspector().introspect_live(transport_handle="ssh://127.0.0.1:22")
-    assert out.sysinfo["release"] == "6.8.0"
+def test_run_happy_path_runs_selected_helper() -> None:
+    out = _live_introspector().introspect_live(
+        transport_handle="ssh://127.0.0.1:22", helper="tasks"
+    )
     assert cast("list[object]", out.tasks["tasks"])  # the canned blocked task is present
-    assert "modules" in out.modules
+    assert out.modules == {}
+    assert out.sysinfo == {}
     assert out.truncated is False
+
+
+def test_run_selected_helper_only_runs_that_helper() -> None:
+    calls: list[str] = []
+
+    def _run_helper(program: _Program, name: str) -> dict[str, object]:
+        calls.append(name)
+        return {
+            "tasks": helper_tasks,
+            "modules": helper_modules,
+            "sysinfo": helper_sysinfo,
+        }[name](program)
+
+    introspector = LocalLibvirtLiveIntrospect(
+        open_live_program=lambda _handle: _FakeProgram(),
+        run_helper=_run_helper,
+    )
+    out = introspector.introspect_live(
+        transport_handle="ssh://127.0.0.1:22",
+        helper="modules",
+    )
+    assert calls == ["modules"]
+    assert out.tasks == {"tasks": []}
+    assert "modules" in out.modules
+    assert out.sysinfo == {}
 
 
 def test_run_open_failure_is_debug_attach_failure() -> None:
     boom = CategorizedError("drgn cannot attach", category=ErrorCategory.DEBUG_ATTACH_FAILURE)
     with pytest.raises(CategorizedError) as exc:
-        _live_introspector(open_raises=boom).introspect_live(transport_handle="ssh://127.0.0.1:22")
+        _live_introspector(open_raises=boom).introspect_live(
+            transport_handle="ssh://127.0.0.1:22", helper="tasks"
+        )
     assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
 
 
 def test_run_transport_failure_propagates_typed() -> None:
     boom = CategorizedError("ssh dropped", category=ErrorCategory.TRANSPORT_FAILURE)
     with pytest.raises(CategorizedError) as exc:
-        _live_introspector(open_raises=boom).introspect_live(transport_handle="ssh://127.0.0.1:22")
+        _live_introspector(open_raises=boom).introspect_live(
+            transport_handle="ssh://127.0.0.1:22", helper="tasks"
+        )
     assert exc.value.category is ErrorCategory.TRANSPORT_FAILURE
 
 
@@ -407,13 +441,15 @@ def test_run_arbitrary_open_error_becomes_debug_attach_failure() -> None:
         open_live_program=_open_live, run_helper=lambda p, n: helper_tasks(p)
     )
     with pytest.raises(CategorizedError) as exc:
-        introspector.introspect_live(transport_handle="ssh://127.0.0.1:22")
+        introspector.introspect_live(transport_handle="ssh://127.0.0.1:22", helper="tasks")
     assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
 
 
 def test_run_redacts_guest_strings_at_the_port_boundary() -> None:
     prog = _FakeProgram(tasks=[_FakeTask(13, "token=hunter2", "D")])
-    out = _live_introspector(program=prog).introspect_live(transport_handle="ssh://127.0.0.1:22")
+    out = _live_introspector(program=prog).introspect_live(
+        transport_handle="ssh://127.0.0.1:22", helper="tasks"
+    )
     rows = cast("list[dict[str, object]]", out.tasks["tasks"])
     assert "hunter2" not in str(rows)
     assert "[REDACTED]" in str(rows)
@@ -421,7 +457,9 @@ def test_run_redacts_guest_strings_at_the_port_boundary() -> None:
 
 def test_run_modules_decode_skew_degrades_not_raises() -> None:
     prog = _FakeProgram(modules=[_FakeModule("a", raises=True), _FakeModule("b", raises=True)])
-    out = _live_introspector(program=prog).introspect_live(transport_handle="ssh://127.0.0.1:22")
+    out = _live_introspector(program=prog).introspect_live(
+        transport_handle="ssh://127.0.0.1:22", helper="modules"
+    )
     assert out.modules["all_failed"] is True
     assert out.modules["modules"] == []
 
@@ -429,7 +467,7 @@ def test_run_modules_decode_skew_degrades_not_raises() -> None:
 def test_live_from_env_real_seam_raises_missing_dependency() -> None:
     introspector = LocalLibvirtLiveIntrospect.from_env()
     with pytest.raises(CategorizedError) as exc:
-        introspector.introspect_live(transport_handle="ssh://127.0.0.1:22")
+        introspector.introspect_live(transport_handle="ssh://127.0.0.1:22", helper="tasks")
     assert exc.value.category is ErrorCategory.MISSING_DEPENDENCY
 
 

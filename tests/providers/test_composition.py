@@ -107,7 +107,7 @@ class _IntrospectorProvider:
     ) -> IntrospectOutput:
         return IntrospectOutput(tasks={}, modules={}, sysinfo={}, truncated=False)
 
-    def introspect_live(self, *, transport_handle: str) -> IntrospectOutput:
+    def introspect_live(self, *, transport_handle: str, helper: str) -> IntrospectOutput:
         return IntrospectOutput(tasks={}, modules={}, sysinfo={}, truncated=False)
 
 
