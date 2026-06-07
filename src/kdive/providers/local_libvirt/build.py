@@ -26,6 +26,9 @@ from typing import Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from kdive.components.catalog import load_fixture_catalog
+from kdive.components.references import ComponentRef, LocalComponentRef
+from kdive.components.requirements import ConfigRequirements, validate_config_requirements
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
@@ -145,13 +148,20 @@ class LocalLibvirtBuild:
         """
         workspace = self._workspace_root / str(run_id)
         self._checkout(run_id, profile, workspace)
-        missing = _missing_config_groups(self._read_config(workspace))
+        config_text = self._read_config(workspace)
+        missing = _missing_config_groups(config_text)
         if missing:
             raise CategorizedError(
                 "kernel .config omits a required kdump/debuginfo option",
                 category=ErrorCategory.CONFIGURATION_ERROR,
                 details={"missing_any_of": [list(group) for group in missing]},
             )
+        if profile.profile_requirements is not None:
+            requirements = _load_profile_config_requirements(
+                provider=profile.profile_requirements.provider,
+                name=profile.profile_requirements.name,
+            )
+            validate_config_requirements(config_text, requirements)
         if self._run_make(workspace) != 0:
             raise CategorizedError(
                 "make exited non-zero",
@@ -179,6 +189,17 @@ class LocalLibvirtBuild:
         )
 
 
+def _load_profile_config_requirements(provider: str, name: str) -> ConfigRequirements:
+    profile = load_fixture_catalog().profile(provider, name)
+    if profile is None:
+        raise CategorizedError(
+            "unknown build profile requirements",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"provider": provider, "name": name},
+        )
+    return profile.requires.config
+
+
 def _make_checkout(kernel_src: str) -> _Checkout:
     def _checkout(run_id: UUID, profile: ServerBuildProfile, workspace: Path) -> None:
         _real_checkout(kernel_src, profile, workspace)
@@ -195,7 +216,7 @@ def _real_checkout(kernel_src: str, profile: ServerBuildProfile, workspace: Path
     unit-tested with the steps stubbed.
     """
     _sync_tree(kernel_src, workspace)
-    _stage_config(profile.config_ref, workspace)
+    _stage_config(profile.config, workspace)
     if profile.patch_ref is not None:
         _apply_patch(profile.patch_ref, workspace)
 
@@ -366,9 +387,15 @@ def _resolve_local_ref(ref: str, *, kind: str) -> Path:
     return path
 
 
-def _stage_config(config_ref: str, workspace: Path) -> None:
-    """Copy the resolved ``config_ref`` to ``workspace/.config`` (overwriting any existing one)."""
-    source = _resolve_local_ref(config_ref, kind="config_ref")
+def _resolve_config_ref(ref: ComponentRef) -> Path:
+    if not isinstance(ref, LocalComponentRef):
+        raise _ref_error("config", "config component ref must be local for local-libvirt builds")
+    return _resolve_local_ref(ref.path, kind="config")
+
+
+def _stage_config(config: ComponentRef, workspace: Path) -> None:
+    """Copy the resolved config component to ``workspace/.config``."""
+    source = _resolve_config_ref(config)
     try:
         shutil.copyfile(source, workspace / ".config")
     except OSError as exc:

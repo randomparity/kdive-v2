@@ -44,7 +44,7 @@ _EXTERNAL_PROFILE: dict[str, Any] = {"schema_version": 1, "source": "external"}
 _SERVER_PROFILE: dict[str, Any] = {
     "schema_version": 1,
     "kernel_source_ref": "x",
-    "config_ref": "c",
+    "config": {"kind": "local", "path": "/configs/c"},
 }
 
 

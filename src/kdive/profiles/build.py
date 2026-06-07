@@ -33,6 +33,7 @@ from pydantic import (
     ValidationError,
 )
 
+from kdive.components.references import ComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles._schema import schema_version_validator
 
@@ -50,12 +51,22 @@ class _BuildProfileBase(BaseModel):
     _reject_coerced_version = schema_version_validator
 
 
+class ProfileRequirementsRef(BaseModel):
+    """A provider-scoped profile requirement selector."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: NonEmptyStr
+    name: NonEmptyStr
+
+
 class ServerBuildProfile(_BuildProfileBase):
     """Server-build lane: names a source tree, a config, and an optional patch."""
 
     source: Literal["server"] = "server"
     kernel_source_ref: NonEmptyStr
-    config_ref: NonEmptyStr
+    config: ComponentRef
+    profile_requirements: ProfileRequirementsRef | None = None
     patch_ref: NonEmptyStr | None = None
 
 
@@ -63,6 +74,7 @@ class ExternalBuildProfile(_BuildProfileBase):
     """External-build lane: the discriminator alone — no source-tree fields."""
 
     source: Literal["external"]
+    profile_requirements: ProfileRequirementsRef | None = None
 
 
 type ParsedBuildProfile = ServerBuildProfile | ExternalBuildProfile

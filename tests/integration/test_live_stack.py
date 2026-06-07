@@ -383,7 +383,7 @@ def _build_profile() -> dict[str, object]:
     return {
         "schema_version": 1,
         "kernel_source_ref": os.environ[_KERNEL_TREE_ENV],
-        "config_ref": "file:///configs/kdump.config",
+        "config": {"kind": "local", "path": "/configs/kdump.config"},
     }
 
 

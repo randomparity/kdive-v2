@@ -12,6 +12,7 @@ from uuid import UUID
 
 import pytest
 
+from kdive.components.references import LocalComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
@@ -34,7 +35,7 @@ _TENANT = "proj"
 _VALID_PROFILE: dict[str, Any] = {
     "schema_version": 1,
     "kernel_source_ref": "git+https://git.kernel.org/pub/scm/linux.git#v6.9",
-    "config_ref": "file:///configs/x86_64-kdump.config",
+    "config": {"kind": "local", "path": "/configs/x86_64-kdump.config"},
     "patch_ref": None,
 }
 
@@ -214,6 +215,36 @@ def test_build_rejects_config_missing_prereq_before_make(tmp_path: Path, config_
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert seams.make_calls == 0  # preflight is before make
     assert store.puts == []  # nothing stored on a config rejection
+
+
+def test_build_rejects_config_missing_profile_requirements_before_store(tmp_path: Path) -> None:
+    profile = BuildProfile.parse(
+        {
+            **_VALID_PROFILE,
+            "profile_requirements": {
+                "provider": "local-libvirt",
+                "name": "console-ready_x86_64",
+            },
+        }
+    )
+    assert isinstance(profile, ServerBuildProfile)
+    config_text = "\n".join(
+        [
+            "CONFIG_CRASH_DUMP=y",
+            "CONFIG_DEBUG_INFO_DWARF5=y",
+            "CONFIG_SERIAL_8250_CONSOLE=y",
+            "CONFIG_VIRTIO_BLK=n",
+            "CONFIG_VIRTIO_PCI=y",
+        ]
+    )
+    store, seams = _FakeStore(), _Seams(config_text=config_text)
+
+    with pytest.raises(CategorizedError) as caught:
+        _builder(store, seams, tmp_path).build(_RUN, profile)
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert seams.make_calls == 0
+    assert store.puts == []
 
 
 def test_real_read_config_missing_is_configuration_error(tmp_path: Path) -> None:
@@ -436,7 +467,7 @@ def test_live_vm_real_make_build_id_matches_readelf() -> None:  # pragma: no cov
             {
                 "schema_version": 1,
                 "kernel_source_ref": f"file://{src}",
-                "config_ref": config_ref,
+                "config": {"kind": "local", "path": config_ref},
                 "patch_ref": None,
             }
         )
@@ -458,13 +489,13 @@ def test_live_vm_real_make_build_id_matches_readelf() -> None:  # pragma: no cov
 def test_resolve_local_ref_file_url(tmp_path: Path) -> None:
     target = tmp_path / "x.config"
     target.write_text("CONFIG_X=y\n")
-    assert _resolve_local_ref(f"file://{target}", kind="config_ref") == target
+    assert _resolve_local_ref(f"file://{target}", kind="config") == target
 
 
 def test_resolve_local_ref_bare_absolute_path(tmp_path: Path) -> None:
     target = tmp_path / "x.config"
     target.write_text("CONFIG_X=y\n")
-    assert _resolve_local_ref(str(target), kind="config_ref") == target
+    assert _resolve_local_ref(str(target), kind="config") == target
 
 
 @pytest.mark.parametrize(
@@ -477,31 +508,31 @@ def test_resolve_local_ref_bare_absolute_path(tmp_path: Path) -> None:
 )
 def test_resolve_local_ref_rejects_non_local_scheme(ref: str) -> None:
     with pytest.raises(CategorizedError) as caught:
-        _resolve_local_ref(ref, kind="config_ref")
+        _resolve_local_ref(ref, kind="config")
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
 def test_resolve_local_ref_rejects_file_url_with_netloc() -> None:
     with pytest.raises(CategorizedError) as caught:
-        _resolve_local_ref("file://host/path/x.config", kind="config_ref")
+        _resolve_local_ref("file://host/path/x.config", kind="config")
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
 def test_resolve_local_ref_rejects_relative_path() -> None:
     with pytest.raises(CategorizedError) as caught:
-        _resolve_local_ref("configs/x.config", kind="config_ref")
+        _resolve_local_ref("configs/x.config", kind="config")
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
 def test_resolve_local_ref_rejects_missing_file(tmp_path: Path) -> None:
     with pytest.raises(CategorizedError) as caught:
-        _resolve_local_ref(str(tmp_path / "absent.config"), kind="config_ref")
+        _resolve_local_ref(str(tmp_path / "absent.config"), kind="config")
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
 def test_resolve_local_ref_rejects_directory(tmp_path: Path) -> None:
     with pytest.raises(CategorizedError) as caught:
-        _resolve_local_ref(str(tmp_path), kind="config_ref")
+        _resolve_local_ref(str(tmp_path), kind="config")
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
@@ -514,7 +545,7 @@ def test_stage_config_copies_bytes_to_workspace_dotconfig(tmp_path: Path) -> Non
     config = tmp_path / "x.config"
     config.write_text("CONFIG_FROM_REF=y\n")
 
-    _stage_config(str(config), workspace)
+    _stage_config(LocalComponentRef(kind="local", path=str(config)), workspace)
 
     assert (workspace / ".config").read_text() == "CONFIG_FROM_REF=y\n"
 
@@ -526,7 +557,7 @@ def test_stage_config_overwrites_existing_dotconfig(tmp_path: Path) -> None:
     config = tmp_path / "x.config"
     config.write_text("CONFIG_FROM_REF=y\n")
 
-    _stage_config(str(config), workspace)
+    _stage_config(LocalComponentRef(kind="local", path=str(config)), workspace)
 
     assert (workspace / ".config").read_text() == "CONFIG_FROM_REF=y\n"
 
@@ -535,7 +566,9 @@ def test_stage_config_missing_ref_is_configuration_error(tmp_path: Path) -> None
     workspace = tmp_path / "ws"
     workspace.mkdir()
     with pytest.raises(CategorizedError) as caught:
-        _stage_config(str(tmp_path / "absent.config"), workspace)
+        _stage_config(
+            LocalComponentRef(kind="local", path=str(tmp_path / "absent.config")), workspace
+        )
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
@@ -553,7 +586,7 @@ def test_stage_config_copy_fault_is_infrastructure_failure(
     monkeypatch.setattr(build_module.shutil, "copyfile", _copy_fault)
 
     with pytest.raises(CategorizedError) as caught:
-        _stage_config(str(config), workspace)
+        _stage_config(LocalComponentRef(kind="local", path=str(config)), workspace)
 
     assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
     assert caught.value.details == {"op": "copy_config", "path": ".config"}
@@ -780,7 +813,7 @@ def test_real_checkout_calls_steps_in_order_with_right_args(
         order.append("sync")
         seen["sync"] = (kernel_src, ws)
 
-    def _stage(config_ref: str, ws: Path) -> None:
+    def _stage(config_ref: object, ws: Path) -> None:
         order.append("stage")
         seen["stage"] = (config_ref, ws)
 
@@ -793,14 +826,18 @@ def test_real_checkout_calls_steps_in_order_with_right_args(
     monkeypatch.setattr(build_module, "_apply_patch", _patch)
 
     profile = BuildProfile.parse(
-        {**_VALID_PROFILE, "config_ref": "/configs/c", "patch_ref": "/patches/p"}
+        {
+            **_VALID_PROFILE,
+            "config": {"kind": "local", "path": "/configs/c"},
+            "patch_ref": "/patches/p",
+        }
     )
     assert isinstance(profile, ServerBuildProfile)
     build_module._real_checkout("/src/linux", profile, workspace)
 
     assert order == ["sync", "stage", "patch"]
     assert seen["sync"] == ("/src/linux", workspace)
-    assert seen["stage"] == ("/configs/c", workspace)
+    assert seen["stage"] == (profile.config, workspace)
     assert seen["patch"] == ("/patches/p", workspace)
 
 

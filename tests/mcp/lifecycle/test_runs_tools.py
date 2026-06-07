@@ -47,7 +47,7 @@ _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _PROFILE: dict[str, Any] = {
     "schema_version": 1,
     "kernel_source_ref": "git+https://git.kernel.org#v6.9",
-    "config_ref": "file:///configs/kdump.config",
+    "config": {"kind": "local", "path": "/configs/kdump.config"},
 }
 
 
@@ -580,7 +580,7 @@ def test_create_blocks_on_held_investigation_lock(migrated_url: str) -> None:
 _VALID_BUILD: dict[str, Any] = {
     "schema_version": 1,
     "kernel_source_ref": "git+https://git.kernel.org#v6.9",
-    "config_ref": "file:///configs/kdump.config",
+    "config": {"kind": "local", "path": "/configs/kdump.config"},
 }
 
 

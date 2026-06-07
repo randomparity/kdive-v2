@@ -12,11 +12,13 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.components.catalog import load_fixture_catalog
+from kdive.components.requirements import ConfigRequirements
 from kdive.db import upload_manifest
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, RUNS
 from kdive.db.upload_manifest import ManifestEntry
-from kdive.domain.errors import CategorizedError
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, Run, Sensitivity
 from kdive.domain.state import RunState
 from kdive.jobs import queue
@@ -128,6 +130,7 @@ class CompleteBuildValidator(Protocol):
         manifest: Sequence[ManifestEntry],
         keys: Mapping[str, str],
         declared_build_id: str | None,
+        profile_requirements: ConfigRequirements | None = None,
     ) -> ValidatedUpload: ...
 
 
@@ -140,10 +143,15 @@ class StoreBackedValidator:
         manifest: Sequence[ManifestEntry],
         keys: Mapping[str, str],
         declared_build_id: str | None,
+        profile_requirements: ConfigRequirements | None = None,
     ) -> ValidatedUpload:
         store = object_store_from_env()
         return validate_external_artifacts(
-            store, manifest=manifest, keys=keys, declared_build_id=declared_build_id
+            store,
+            manifest=manifest,
+            keys=keys,
+            declared_build_id=declared_build_id,
+            profile_requirements=profile_requirements,
         )
 
 
@@ -178,9 +186,10 @@ async def complete_build(
                 return _complete_envelope(uid, recorded)
 
             try:
-                guard = _complete_build_guard(run)
+                profile = _external_build_profile(run)
             except CategorizedError as exc:
                 return ToolResponse.failure(run_id, exc.category)
+            guard = _complete_build_guard(run, profile)
             if guard is not None:
                 return guard
 
@@ -190,8 +199,14 @@ async def complete_build(
             keys = {e.name: f"{manifest_row.prefix}{e.name}" for e in manifest_row.entries}
 
             try:
+                requirements = _external_config_requirements(profile)
                 validated = await asyncio.to_thread(
-                    validator.validate, uid, list(manifest_row.entries), keys, build_id
+                    validator.validate,
+                    uid,
+                    list(manifest_row.entries),
+                    keys,
+                    build_id,
+                    requirements,
                 )
             except CategorizedError as exc:
                 return ToolResponse.failure(run_id, exc.category)
@@ -201,14 +216,37 @@ async def complete_build(
             )
 
 
-def _complete_build_guard(run: Run) -> ToolResponse | None:
-    """Reject a non-external or non-CREATED Run; ``None`` means proceed to finalize."""
+def _external_build_profile(run: Run) -> ExternalBuildProfile:
     parsed = BuildProfile.parse(run.build_profile)
     if not isinstance(parsed, ExternalBuildProfile):
-        return _config_error(str(run.id), data={"reason": "not_external_source"})
+        raise CategorizedError(
+            "run is not an external build",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    return parsed
+
+
+def _complete_build_guard(run: Run, profile: ExternalBuildProfile) -> ToolResponse | None:
+    """Reject a non-external or non-CREATED Run; ``None`` means proceed to finalize."""
+    _ = profile
     if run.state is not RunState.CREATED:
         return _config_error(str(run.id), data={"current_status": run.state.value})
     return None
+
+
+def _external_config_requirements(profile: ExternalBuildProfile) -> ConfigRequirements | None:
+    if profile.profile_requirements is None:
+        return None
+    entry = load_fixture_catalog().profile(
+        profile.profile_requirements.provider,
+        profile.profile_requirements.name,
+    )
+    if entry is None:
+        raise CategorizedError(
+            "unknown build profile requirements",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    return entry.requires.config
 
 
 def _complete_envelope(run_id: UUID, result: dict[str, Any]) -> ToolResponse:

@@ -151,7 +151,12 @@ async def seed_external_run_with_manifest(
 async def seed_server_run(conn_pool: AsyncConnectionPool) -> UUID:
     """A CREATED Run with a server build profile."""
     return await seed_run(
-        conn_pool, {"schema_version": 1, "kernel_source_ref": "x", "config_ref": "c"}
+        conn_pool,
+        {
+            "schema_version": 1,
+            "kernel_source_ref": "x",
+            "config": {"kind": "local", "path": "/configs/c"},
+        },
     )
 
 
@@ -160,7 +165,14 @@ class FakeValidator:
         self._output = output
         self.calls = 0
 
-    def validate(self, run_id, manifest, keys, declared_build_id) -> ValidatedUpload:
+    def validate(
+        self,
+        run_id,
+        manifest,
+        keys,
+        declared_build_id,
+        profile_requirements=None,
+    ) -> ValidatedUpload:
         self.calls += 1
         if isinstance(self._output, Exception):
             raise self._output

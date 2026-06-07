@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.components.references import LocalComponentRef
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
@@ -26,7 +27,7 @@ def _build_profile() -> ServerBuildProfile:
         {
             "schema_version": 1,
             "kernel_source_ref": "file:///src/linux",
-            "config_ref": "file:///configs/kdump.config",
+            "config": {"kind": "local", "path": "/configs/kdump.config"},
             "patch_ref": None,
         }
     )
@@ -39,7 +40,8 @@ class _BuildProvider:
         self.calls: list[tuple[UUID, str]] = []
 
     def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput:
-        self.calls.append((run_id, profile.config_ref))
+        assert isinstance(profile.config, LocalComponentRef)
+        self.calls.append((run_id, profile.config.path))
         return BuildOutput(kernel_ref="k", debuginfo_ref="v", build_id="deadbeef")
 
 
@@ -134,7 +136,7 @@ def test_provider_runtime_returns_typed_provider_ports_directly() -> None:
     output = runtime.builder.build(_RUN, _build_profile())
 
     assert output.build_id == "deadbeef"
-    assert builder.calls == [(_RUN, "file:///configs/kdump.config")]
+    assert builder.calls == [(_RUN, "/configs/kdump.config")]
     assert runtime.install_boot() == (install, install)
 
 
