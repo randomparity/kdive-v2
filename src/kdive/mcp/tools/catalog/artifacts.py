@@ -8,6 +8,7 @@ System; reads require ``viewer`` on that System's project.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -37,9 +38,16 @@ from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile, rootfs_upload_window_allowed
+from kdive.security.artifact_search import (
+    ArtifactSearchInputError,
+    parse_literal_terms,
+    search_text,
+)
 from kdive.security.context import RequestContext
 from kdive.security.rbac import Role, require_role
 from kdive.store.objectstore import (
+    FetchedArtifact,
+    HeadResult,
     PresignedUpload,
     artifact_key,
     object_store_from_env,
@@ -56,6 +64,7 @@ _DEFAULT_UPLOAD_TTL_SECONDS = 86400
 # The single presigned PUT caps at 5 GiB on real S3, so a larger declared size would mint
 # a PUT the store rejects mid-upload. Uploads above this need multipart/split — see #112.
 _DEFAULT_MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024
+_MAX_SEARCHABLE_ARTIFACT_BYTES = 1024 * 1024
 
 
 def _upload_ttl() -> timedelta:
@@ -83,6 +92,11 @@ class _PresignStore(Protocol):
         retention_class: str,
         expires_in: int,
     ) -> PresignedUpload: ...
+
+
+class _SearchStore(Protocol):
+    def head(self, key: str) -> HeadResult | None: ...
+    def get_artifact(self, key: str, etag: str | None) -> FetchedArtifact: ...
 
 
 class _MaterializedUpload(NamedTuple):
@@ -268,6 +282,77 @@ async def artifacts_get(
         )
 
 
+async def artifacts_search_text(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    artifact_id: str,
+    pattern: str,
+    before_lines: int = 2,
+    after_lines: int = 4,
+    max_matches: int = 20,
+    store: _SearchStore | None = None,
+) -> ToolResponse:
+    """Search one redacted System-owned text artifact with bounded literal context."""
+    uid = _as_uuid(artifact_id)
+    if uid is None:
+        return _config_error(artifact_id)
+    try:
+        parse_literal_terms(pattern)
+    except ArtifactSearchInputError:
+        return _config_error(artifact_id, data={"reason": "bad_search_input"})
+    with bind_context(principal=ctx.principal):
+        async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(_GET_SQL, (uid,))
+            row = await cur.fetchone()
+            if row is None:
+                return _config_error(artifact_id)
+            await cur.execute(_PROJECT_SQL, (row["owner_id"],))
+            owner = await cur.fetchone()
+        if owner is None or owner["project"] not in ctx.projects:
+            return _config_error(artifact_id)
+        require_role(ctx, owner["project"], Role.VIEWER)
+    store = store or object_store_from_env()
+    key = str(row["object_key"])
+    try:
+        head = await asyncio.to_thread(store.head, key)
+    except CategorizedError as exc:
+        return ToolResponse.failure(artifact_id, exc.category)
+    if head is None:
+        return _config_error(artifact_id)
+    if head.size_bytes > _MAX_SEARCHABLE_ARTIFACT_BYTES:
+        return _config_error(
+            artifact_id,
+            data={"reason": "artifact_too_large", "size_bytes": str(head.size_bytes)},
+        )
+    try:
+        fetched = await asyncio.to_thread(store.get_artifact, key, head.etag)
+        if fetched.sensitivity is not Sensitivity.REDACTED:
+            return _config_error(artifact_id)
+        result = search_text(
+            fetched.data,
+            pattern=pattern,
+            before_lines=before_lines,
+            after_lines=after_lines,
+            max_matches=max_matches,
+        )
+    except ArtifactSearchInputError:
+        return _config_error(artifact_id, data={"reason": "bad_search_input"})
+    except CategorizedError as exc:
+        return ToolResponse.failure(artifact_id, exc.category)
+    return ToolResponse.success(
+        artifact_id,
+        "searched",
+        suggested_next_actions=["artifacts.search_text", "runs.get"],
+        refs={"artifact": key},
+        data={
+            "match_count": str(result.match_count),
+            "truncated": str(result.truncated).lower(),
+            "matches_json": result.matches_json(),
+        },
+    )
+
+
 async def _create_upload(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
@@ -411,6 +496,32 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     ) -> ToolResponse:
         """Fetch one redacted artifact by id. Requires viewer; sensitive ids are not-found."""
         return await artifacts_get(pool, current_context(), artifact_id=artifact_id)
+
+    @app.tool(
+        name="artifacts.search_text",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "partial"},
+    )
+    async def artifacts_search_text_tool(
+        artifact_id: Annotated[str, Field(description="The redacted System artifact id.")],
+        pattern: Annotated[
+            str,
+            Field(description="Literal OR search pattern, e.g. '__d_lookup' or 'panic'."),
+        ],
+        before_lines: Annotated[int, Field(description="Context lines before each match.")] = 2,
+        after_lines: Annotated[int, Field(description="Context lines after each match.")] = 4,
+        max_matches: Annotated[int, Field(description="Maximum match windows to return.")] = 20,
+    ) -> ToolResponse:
+        """Search a redacted System artifact with bounded literal line context."""
+        return await artifacts_search_text(
+            pool,
+            current_context(),
+            artifact_id=artifact_id,
+            pattern=pattern,
+            before_lines=before_lines,
+            after_lines=after_lines,
+            max_matches=max_matches,
+        )
 
     @app.tool(
         name="artifacts.create_run_upload",

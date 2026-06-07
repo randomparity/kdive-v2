@@ -27,10 +27,10 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.state import (
@@ -189,6 +189,26 @@ class Investigation(DomainModel, _Attribution):
     last_run_at: datetime | None = None
 
 
+class ExpectedBootFailure(_DomainBase):
+    """Run-scoped expected boot failure metadata (ADR-0064)."""
+
+    kind: Literal["console_crash"]
+    pattern: str = Field(min_length=1, max_length=256)
+    description: str | None = Field(default=None, max_length=256)
+
+    @field_validator("pattern")
+    @classmethod
+    def _literal_or_pattern(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("pattern must not contain NUL")
+        terms = value.split("|")
+        if any(term == "" for term in terms):
+            raise ValueError("pattern contains an empty term")
+        if len(terms) > 16:
+            raise ValueError("pattern has too many terms")
+        return value
+
+
 class Run(DomainModel, _Attribution):
     """One build/install/boot attempt — the join of a System and an Investigation."""
 
@@ -196,6 +216,7 @@ class Run(DomainModel, _Attribution):
     system_id: UUID
     state: RunState
     build_profile: dict[str, Any]
+    expected_boot_failure: dict[str, Any] | None = None
     kernel_ref: str | None = None
     debuginfo_ref: str | None = None
     failure_category: ErrorCategory | None = None

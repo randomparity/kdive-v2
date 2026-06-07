@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import contextlib
 from datetime import UTC, datetime
-from typing import Annotated, LiteralString
+from typing import Annotated, Any, LiteralString
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
@@ -72,14 +72,18 @@ async def _system_for_run(conn: AsyncConnection, run: Run) -> System | None:
     return await SYSTEMS.get(conn, run.system_id)
 
 
-async def _has_succeeded_boot(conn: AsyncConnection, run_id: UUID) -> bool:
-    """Report whether a succeeded ``boot`` step exists for ``run_id`` (the booted signal)."""
+async def _succeeded_boot_result(conn: AsyncConnection, run_id: UUID) -> dict[str, Any] | None:
+    """Return the succeeded ``boot`` step result for ``run_id`` when one exists."""
     query: LiteralString = (
-        "SELECT 1 FROM run_steps WHERE run_id = %s AND step = 'boot' AND state = 'succeeded'"
+        "SELECT result FROM run_steps WHERE run_id = %s AND step = 'boot' AND state = 'succeeded'"
     )
     async with conn.cursor() as cur:
         await cur.execute(query, (run_id,))
-        return await cur.fetchone() is not None
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    result = row[0]
+    return result if isinstance(result, dict) else {}
 
 
 async def _system_occupied(conn: AsyncConnection, system_id: UUID, transport: str) -> bool:
@@ -198,8 +202,11 @@ async def _attach_preconditions(
     """
     if run.state is not RunState.SUCCEEDED:
         return _config_error(str(run.id), data={"current_status": run.state.value})
-    if not await _has_succeeded_boot(conn, run.id):
+    boot_result = await _succeeded_boot_result(conn, run.id)
+    if boot_result is None:
         return _config_error(str(run.id), data={"reason": "boot_first"})
+    if boot_result.get("boot_outcome") == "expected_crash_observed":
+        return _config_error(str(run.id), data={"reason": "expected_crash_not_live_debuggable"})
     system = await _system_for_run(conn, run)
     if system is None:
         return _config_error(str(run.id))

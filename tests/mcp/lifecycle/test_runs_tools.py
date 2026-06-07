@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -249,6 +250,24 @@ def test_get_malformed_uuid_is_config_error(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_get_run_exposes_expected_boot_failure(migrated_url: str) -> None:
+    expected = {"kind": "console_crash", "pattern": "__d_lookup|Oops"}
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(pool, state=RunState.CREATED)
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE runs SET expected_boot_failure = %s WHERE id = %s",
+                    (Jsonb(expected), run_id),
+                )
+            resp = await runs_tools.get_run(pool, _ctx(), run_id)
+        assert resp.data["expected_boot_failure"] == "console_crash"
+        assert json.loads(resp.data["expected_boot_failure_json"]) == expected
+
+    asyncio.run(_run())
+
+
 async def _create(
     pool: AsyncConnectionPool, ctx: RequestContext, inv_id: str, sys_id: str, profile=None
 ):
@@ -302,6 +321,62 @@ def test_create_rejects_empty_build_profile(migrated_url: str) -> None:
                 await cur.execute("SELECT count(*) AS n FROM runs")
                 row = await cur.fetchone()
         assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert row is not None and row["n"] == 0
+
+    asyncio.run(_run())
+
+
+def test_create_run_persists_expected_boot_failure(migrated_url: str) -> None:
+    expected = {
+        "kind": "console_crash",
+        "pattern": "__d_lookup|Oops",
+        "description": "dcache crash",
+    }
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, state=InvestigationState.OPEN)
+            sys_id = await _seed_system(pool)
+            resp = await runs_tools.create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                expected_boot_failure=expected,
+            )
+            assert resp.status == "created"
+            assert resp.data["expected_boot_failure"] == "console_crash"
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT expected_boot_failure FROM runs WHERE id = %s",
+                    (resp.object_id,),
+                )
+                row = await cur.fetchone()
+        assert row is not None
+        assert row["expected_boot_failure"] == expected
+
+    asyncio.run(_run())
+
+
+def test_create_run_rejects_bad_expected_boot_failure(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, state=InvestigationState.OPEN)
+            sys_id = await _seed_system(pool)
+            resp = await runs_tools.create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                expected_boot_failure={"kind": "console_crash", "pattern": ""},
+            )
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM runs")
+                row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
         assert row is not None and row["n"] == 0
 
     asyncio.run(_run())
@@ -1099,6 +1174,16 @@ async def _record_install_step(pool: AsyncConnectionPool, run_id: str) -> None:
         )
 
 
+async def _set_expected_boot_failure(
+    pool: AsyncConnectionPool, run_id: str, pattern: str = "__d_lookup|Oops"
+) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE runs SET expected_boot_failure=%s WHERE id=%s",
+            (Jsonb({"kind": "console_crash", "pattern": pattern}), run_id),
+        )
+
+
 async def _seed_build_ledger(
     pool: AsyncConnectionPool, run_id: str, *, cmdline: str | None
 ) -> None:
@@ -1668,6 +1753,113 @@ def test_boot_handler_registers_console_even_on_failure(
                 ("%/console",),
             )
         assert n == 1
+
+    asyncio.run(_run())
+
+
+def test_boot_handler_records_expected_crash_observed(
+    migrated_url: str,
+    minio_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(runs_handlers, "object_store_from_env", lambda: minio_store)
+    monkeypatch.setattr(runs_handlers, "console_log_path", lambda sid: tmp_path / f"{sid}.log")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _set_expected_boot_failure(pool, run_id)
+            await _record_install_step(pool, run_id)
+            sid = await _system_id_of(pool, run_id)
+            (tmp_path / f"{sid}.log").write_bytes(b"Kernel panic\nRIP: __d_lookup+0x1\n")
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter(error=ErrorCategory.READINESS_FAILURE)
+            async with pool.connection() as conn:
+                result = await runs_handlers.boot_handler(conn, job, booter)
+            assert result == run_id
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT state, result FROM run_steps WHERE run_id=%s AND step='boot'",
+                    (run_id,),
+                )
+                step = await cur.fetchone()
+                await cur.execute("SELECT state FROM systems WHERE id=%s", (sid,))
+                system = await cur.fetchone()
+        assert step is not None
+        assert step["state"] == "succeeded"
+        assert step["result"]["boot_outcome"] == "expected_crash_observed"
+        assert step["result"]["expectation_matched"] is True
+        assert step["result"]["evidence_kind"] == "console"
+        assert step["result"]["evidence_artifact_id"]
+        assert system is not None
+        assert system["state"] == "ready"
+
+    asyncio.run(_run())
+
+
+def test_expected_crash_observed_system_can_host_next_run(
+    migrated_url: str,
+    minio_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(runs_handlers, "object_store_from_env", lambda: minio_store)
+    monkeypatch.setattr(runs_handlers, "console_log_path", lambda sid: tmp_path / f"{sid}.log")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _set_expected_boot_failure(pool, run_id)
+            await _record_install_step(pool, run_id)
+            sys_id = await _system_id_of(pool, run_id)
+            (tmp_path / f"{sys_id}.log").write_bytes(b"Kernel panic\nRIP: __d_lookup+0x1\n")
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter(error=ErrorCategory.READINESS_FAILURE)
+            async with pool.connection() as conn:
+                await runs_handlers.boot_handler(conn, job, booter)
+
+            inv_id = await _seed_investigation(pool)
+            resp = await _create(pool, _ctx(), inv_id, sys_id)
+
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id=%s", (sys_id,))
+                system = await cur.fetchone()
+        assert resp.status == "created"
+        assert system is not None
+        assert system["state"] == "ready"
+
+    asyncio.run(_run())
+
+
+def test_boot_handler_expected_crash_requires_matching_console(
+    migrated_url: str,
+    minio_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(runs_handlers, "object_store_from_env", lambda: minio_store)
+    monkeypatch.setattr(runs_handlers, "console_log_path", lambda sid: tmp_path / f"{sid}.log")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _set_expected_boot_failure(pool, run_id, pattern="__d_lookup")
+            await _record_install_step(pool, run_id)
+            sid = await _system_id_of(pool, run_id)
+            (tmp_path / f"{sid}.log").write_bytes(b"Kernel panic\nRIP: other_symbol\n")
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter(error=ErrorCategory.READINESS_FAILURE)
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError) as caught:
+                    await runs_handlers.boot_handler(conn, job, booter)
+            nsteps = await _count(
+                pool,
+                "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='boot'",
+                (run_id,),
+            )
+        assert caught.value.category is ErrorCategory.READINESS_FAILURE
+        assert nsteps == 0
 
     asyncio.run(_run())
 

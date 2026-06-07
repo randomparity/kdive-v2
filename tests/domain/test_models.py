@@ -17,6 +17,7 @@ from kdive.domain.models import (
     Budget,
     CostClassCoefficient,
     DebugSession,
+    ExpectedBootFailure,
     ExternalRef,
     Investigation,
     Job,
@@ -153,6 +154,28 @@ def test_run_join_point_and_failure_category() -> None:
     assert run.failure_category is ErrorCategory.BUILD_FAILURE
     assert run.kernel_ref is None
     assert run.debuginfo_ref is None
+
+
+def test_expected_boot_failure_model_and_run_field() -> None:
+    expected = ExpectedBootFailure(
+        kind="console_crash",
+        pattern="__d_lookup|Oops",
+        description="dcache one-bucket hash crash",
+    )
+    run = Run(
+        **_base(),
+        **_attrib(),
+        investigation_id=_ID2,
+        system_id=_ID,
+        state=RunState.CREATED,
+        build_profile={"source": "server"},
+        expected_boot_failure=expected.model_dump(mode="json"),
+    )
+    assert run.expected_boot_failure == {
+        "kind": "console_crash",
+        "pattern": "__d_lookup|Oops",
+        "description": "dcache one-bucket hash crash",
+    }
 
 
 def test_debug_session_fields() -> None:

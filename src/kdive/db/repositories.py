@@ -80,7 +80,9 @@ class Repository[M: BaseModel]:
     def _insert_params(self, obj: M) -> dict[str, Any]:
         dumped = obj.model_dump()
         return {
-            name: Jsonb(dumped[name]) if name in self._json_columns else dumped[name]
+            name: Jsonb(dumped[name])
+            if name in self._json_columns and dumped[name] is not None
+            else dumped[name]
             for name in self._insert_columns
         }
 
@@ -228,7 +230,12 @@ SYSTEMS = StatefulRepository(
 INVESTIGATIONS = StatefulRepository(
     Investigation, "investigations", InvestigationState, json_columns=frozenset({"external_refs"})
 )
-RUNS = StatefulRepository(Run, "runs", RunState, json_columns=frozenset({"build_profile"}))
+RUNS = StatefulRepository(
+    Run,
+    "runs",
+    RunState,
+    json_columns=frozenset({"build_profile", "expected_boot_failure"}),
+)
 DEBUG_SESSIONS = StatefulRepository(DebugSession, "debug_sessions", DebugSessionState)
 JOBS = StatefulRepository(
     Job,

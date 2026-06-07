@@ -9,11 +9,12 @@ from uuid import UUID, uuid4
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
+from pydantic import ValidationError
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError
-from kdive.domain.models import Investigation, Run
+from kdive.domain.models import ExpectedBootFailure, Investigation, Run
 from kdive.domain.state import InvestigationState, RunState
 from kdive.log import bind_context
 from kdive.mcp.responses import ToolResponse
@@ -39,6 +40,7 @@ async def create_run(
     investigation_id: str,
     system_id: str,
     build_profile: dict[str, Any],
+    expected_boot_failure: dict[str, Any] | None = None,
 ) -> ToolResponse:
     """Bind a Run to a `ready` System and an Investigation."""
     inv_uid = _as_uuid(investigation_id)
@@ -53,6 +55,9 @@ async def create_run(
         parsed_build_profile = BuildProfile.parse(build_profile)
     except CategorizedError as exc:
         return ToolResponse.failure(system_id, exc.category)
+    parsed_expected = _parse_expected_boot_failure(system_id, expected_boot_failure)
+    if isinstance(parsed_expected, ToolResponse):
+        return parsed_expected
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             inv = await INVESTIGATIONS.get(conn, inv_uid)
@@ -69,8 +74,28 @@ async def create_run(
                 current = alloc.state.value if alloc is not None else "missing"
                 return _stale_handle(system_id, current_status=current)
             return await _create_locked(
-                conn, ctx, inv_uid, sys_uid, parsed_build_profile, project=inv.project
+                conn,
+                ctx,
+                inv_uid,
+                sys_uid,
+                parsed_build_profile,
+                parsed_expected,
+                project=inv.project,
             )
+
+
+def _parse_expected_boot_failure(
+    object_id: str, value: dict[str, Any] | None
+) -> dict[str, Any] | ToolResponse | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return _config_error(object_id, data={"reason": "bad_expected_boot_failure"})
+    try:
+        parsed = ExpectedBootFailure.model_validate(value)
+    except ValidationError:
+        return _config_error(object_id, data={"reason": "bad_expected_boot_failure"})
+    return parsed.model_dump(mode="json", exclude_none=True)
 
 
 async def _investigation_for_update(conn: AsyncConnection, uid: UUID) -> Investigation | None:
@@ -86,6 +111,7 @@ async def _create_locked(
     inv_uid: UUID,
     sys_uid: UUID,
     build_profile: ParsedBuildProfile,
+    expected_boot_failure: dict[str, Any] | None,
     *,
     project: str,
 ) -> ToolResponse:
@@ -120,6 +146,7 @@ async def _create_locked(
                 system_id=sys_uid,
                 state=RunState.CREATED,
                 build_profile=build_profile.model_dump(mode="json"),
+                expected_boot_failure=expected_boot_failure,
             ),
         )
         await audit.record(
@@ -159,5 +186,10 @@ async def _create_locked(
             "project": project,
             "investigation_id": str(inv_uid),
             "system_id": str(sys_uid),
+            **(
+                {"expected_boot_failure": expected_boot_failure["kind"]}
+                if expected_boot_failure is not None
+                else {}
+            ),
         },
     )

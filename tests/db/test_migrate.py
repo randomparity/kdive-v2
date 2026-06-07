@@ -85,7 +85,7 @@ def test_creates_all_tables(pg_conn: psycopg.Connection) -> None:
 def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
     first = migrate.apply_migrations(pg_conn)
     second = migrate.apply_migrations(pg_conn)
-    assert first == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
+    assert first == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"]
     assert second == []
 
 
@@ -102,6 +102,12 @@ def test_dedup_key_not_null(pg_conn: psycopg.Connection) -> None:
         "WHERE table_name = 'jobs' AND column_name = 'dedup_key'"
     ).fetchone()
     assert row is not None and row[0] == "NO"
+
+
+def test_runs_expected_boot_failure_column(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    columns = _columns(pg_conn, "runs")
+    assert columns["expected_boot_failure"] == "jsonb"
 
 
 def test_state_check_rejects_unknown_value(pg_conn: psycopg.Connection) -> None:
@@ -398,4 +404,5 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
         "0005",
         "0006",
         "0007",
+        "0008",
     ]

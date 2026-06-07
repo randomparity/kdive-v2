@@ -32,6 +32,7 @@ from kdive.providers.composition import ProviderRuntime, build_default_provider_
 from kdive.providers.ports import Booter, Builder, BuildOutput, Installer
 from kdive.providers.runtime_paths import console_log_path, read_console_log
 from kdive.security import audit
+from kdive.security.artifact_search import ArtifactSearchInputError, search_text
 from kdive.security.redaction import Redactor
 from kdive.store.objectstore import (
     ArtifactWriteRequest,
@@ -187,11 +188,97 @@ class _ConsoleRow(NamedTuple):
     etag: str
 
 
+class _ConsoleArtifact(NamedTuple):
+    id: UUID
+    object_key: str
+    data: bytes
+
+
 async def _existing_console_row(conn: AsyncConnection, system_id: UUID) -> _ConsoleRow | None:
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(_CONSOLE_ROW_SQL, (system_id, "%/console"))
         row = await cur.fetchone()
     return None if row is None else _ConsoleRow(row["id"], str(row["etag"]))
+
+
+async def _capture_console_artifact(
+    conn: AsyncConnection, system_id: UUID
+) -> _ConsoleArtifact | None:
+    try:
+        raw = await asyncio.to_thread(read_console_log, console_log_path(system_id))
+        if not raw:
+            _log.warning(
+                "console log for system %s is empty or unreadable; registering no console artifact",
+                system_id,
+            )
+            return None
+        redacted = Redactor().redact_text(raw.decode("utf-8", "replace")).encode("utf-8")
+        stored = await asyncio.to_thread(
+            lambda: object_store_from_env().put_artifact(
+                ArtifactWriteRequest(
+                    tenant="local",
+                    owner_kind="systems",
+                    owner_id=str(system_id),
+                    name="console",
+                    data=redacted,
+                    sensitivity=Sensitivity.REDACTED,
+                    retention_class="console",
+                )
+            )
+        )
+        async with conn.transaction():
+            existing = await _existing_console_row(conn, system_id)
+            if existing is None:
+                inserted = await ARTIFACTS.insert(
+                    conn, register_artifact_row(stored, owner_kind="systems", owner_id=system_id)
+                )
+                return _ConsoleArtifact(inserted.id, inserted.object_key, redacted)
+            if existing.etag != stored.etag:
+                await conn.execute(_REFRESH_CONSOLE_ETAG_SQL, (stored.etag, existing.id))
+            return _ConsoleArtifact(existing.id, stored.key, redacted)
+    except Exception:
+        _log.warning(
+            "console artifact registration failed for system %s; boot outcome unaffected",
+            system_id,
+            exc_info=True,
+        )
+        return None
+
+
+def _expected_crash_matches(run: Run, redacted_console: bytes) -> bool:
+    expected = run.expected_boot_failure
+    if expected is None or expected.get("kind") != "console_crash":
+        return False
+    pattern = expected.get("pattern")
+    if not isinstance(pattern, str):
+        return False
+    try:
+        return (
+            search_text(
+                redacted_console,
+                pattern=pattern,
+                before_lines=0,
+                after_lines=0,
+                max_matches=1,
+            ).match_count
+            > 0
+        )
+    except ArtifactSearchInputError:
+        return False
+
+
+async def _boot_step_locked(
+    conn: AsyncConnection,
+    system_id: UUID,
+    run_id: UUID,
+    fn: Callable[[], Awaitable[dict[str, Any]]],
+) -> None:
+    async with (
+        conn.transaction(),
+        advisory_xact_lock(conn, LockScope.SYSTEM, system_id),
+        advisory_xact_lock(conn, LockScope.RUN, run_id),
+    ):
+        await run_step(conn, run_id, "boot", fn)
 
 
 async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str | None:
@@ -206,8 +293,7 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
         )
     job_ctx = job_context_from_job(job, run.project)
 
-    async def _do() -> dict[str, Any]:
-        await asyncio.to_thread(booter.boot, run.system_id)
+    async def _record_boot_audit() -> None:
         await audit.record(
             conn,
             job_ctx,
@@ -220,51 +306,47 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
                 project=run.project,
             ),
         )
-        return {"system_id": str(run.system_id)}
 
     try:
-        await _run_step_locked(conn, run_id, "boot", _do)
-    finally:
+
+        async def _do() -> dict[str, Any]:
+            try:
+                await asyncio.to_thread(booter.boot, run.system_id)
+            except CategorizedError as exc:
+                artifact = None
+                if (
+                    exc.category is ErrorCategory.READINESS_FAILURE
+                    and run.expected_boot_failure is not None
+                ):
+                    artifact = await _capture_console_artifact(conn, run.system_id)
+                if (
+                    artifact is not None
+                    and artifact.data
+                    and _expected_crash_matches(run, artifact.data)
+                ):
+                    await _record_boot_audit()
+                    return {
+                        "system_id": str(run.system_id),
+                        "boot_outcome": "expected_crash_observed",
+                        "expectation_matched": True,
+                        "evidence_kind": "console",
+                        "evidence_artifact_id": str(artifact.id),
+                    }
+                raise
+            artifact = await _capture_console_artifact(conn, run.system_id)
+            await _record_boot_audit()
+            return {
+                "system_id": str(run.system_id),
+                "boot_outcome": "ready",
+                **({"evidence_artifact_id": str(artifact.id)} if artifact else {}),
+            }
+
+        await _boot_step_locked(conn, run.system_id, run_id, _do)
+    except CategorizedError:
         try:
-            raw = await asyncio.to_thread(read_console_log, console_log_path(run.system_id))
-            if not raw:
-                _log.warning(
-                    "console log for system %s is empty or unreadable; "
-                    "registering no console artifact",
-                    run.system_id,
-                )
-            else:
-                redacted = Redactor().redact_text(raw.decode("utf-8", "replace")).encode("utf-8")
-                stored = await asyncio.to_thread(
-                    lambda: object_store_from_env().put_artifact(
-                        ArtifactWriteRequest(
-                            tenant="local",
-                            owner_kind="systems",
-                            owner_id=str(run.system_id),
-                            name="console",
-                            data=redacted,
-                            sensitivity=Sensitivity.REDACTED,
-                            retention_class="console",
-                        )
-                    )
-                )
-                async with conn.transaction():
-                    existing = await _existing_console_row(conn, run.system_id)
-                    if existing is None:
-                        await ARTIFACTS.insert(
-                            conn,
-                            register_artifact_row(
-                                stored, owner_kind="systems", owner_id=run.system_id
-                            ),
-                        )
-                    elif existing.etag != stored.etag:
-                        await conn.execute(_REFRESH_CONSOLE_ETAG_SQL, (stored.etag, existing.id))
-        except Exception:
-            _log.warning(
-                "console artifact registration failed for system %s; boot outcome unaffected",
-                run.system_id,
-                exc_info=True,
-            )
+            await _capture_console_artifact(conn, run.system_id)
+        finally:
+            raise
     return str(run_id)
 
 
