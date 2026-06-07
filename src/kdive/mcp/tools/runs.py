@@ -57,20 +57,14 @@ from kdive.mcp.tools._jobs import (
     job_envelope,
 )
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile, ServerBuildProfile
-from kdive.providers.local_libvirt.build import (
-    Builder,
-    BuildOutput,
-    LocalLibvirtBuild,
-    ValidatedUpload,
+from kdive.providers.composition import (
+    builder_from_env,
+    console_log_path,
+    install_boot_from_env,
+    read_console_log,
     validate_external_artifacts,
 )
-from kdive.providers.local_libvirt.install import (
-    Booter,
-    Installer,
-    LocalLibvirtInstall,
-    read_console_log,
-)
-from kdive.providers.local_libvirt.provisioning import console_log_path
+from kdive.providers.ports import Booter, Builder, BuildOutput, Installer, ValidatedUpload
 from kdive.security import audit
 from kdive.security.rbac import Role, require_role
 from kdive.security.redaction import Redactor
@@ -1156,11 +1150,11 @@ def register_handlers(
     connect to libvirt (the real ops run only when the handler is dispatched), so the worker
     boots without a toolchain or a host.
     """
-    build = builder or LocalLibvirtBuild.from_env()
+    build = builder or builder_from_env()
     if installer is None or booter is None:
-        install_boot = LocalLibvirtInstall.from_env()
-        install: Installer = installer or install_boot
-        boot: Booter = booter or install_boot
+        default_installer, default_booter = install_boot_from_env()
+        install: Installer = installer or default_installer
+        boot: Booter = booter or default_booter
     else:
         install, boot = installer, booter
 

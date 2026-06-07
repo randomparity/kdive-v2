@@ -38,9 +38,9 @@ from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.debug_ops import DebugEngineRuntime, register_debug_ops
+from kdive.providers.composition import attach_seam_from_env, connector_from_env
 from kdive.providers.interfaces import SystemHandle, TransportHandle
-from kdive.providers.local_libvirt.connect import Connector, LocalLibvirtConnect
-from kdive.providers.local_libvirt.debug_gdbmi import GdbMiEngine, default_attach_seam
+from kdive.providers.ports import Connector, GdbMiEngine
 from kdive.security import audit
 from kdive.security.paths import PathSafetyError
 from kdive.security.rbac import Role, require_role
@@ -387,9 +387,9 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     per-session locks + the `live_vm`-gated attach seam); its seven tools register here too, so
     `app.py` is untouched. `end_session` reaps the lazy engine via the shared runtime.
     """
-    connector: Connector = LocalLibvirtConnect.from_env()
+    connector: Connector = connector_from_env()
     secret_backend: SecretBackend = secret_backend_from_env()
-    runtime = DebugEngineRuntime(engine=GdbMiEngine(), attach=default_attach_seam)
+    runtime = DebugEngineRuntime(engine=GdbMiEngine(), attach=attach_seam_from_env())
 
     @app.tool(
         name="debug.start_session",

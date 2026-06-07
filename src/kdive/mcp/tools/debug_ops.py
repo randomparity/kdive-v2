@@ -38,12 +38,12 @@ from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.providers.local_libvirt.connect import TransportHandleData
-from kdive.providers.local_libvirt.debug_gdbmi import (
+from kdive.providers.ports import (
     AttachSeam,
     GdbMiAttachment,
     GdbMiEngine,
     GdbMiSessionRegistry,
+    TransportHandleData,
 )
 from kdive.security.rbac import Role, require_role
 

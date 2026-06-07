@@ -47,13 +47,13 @@ from kdive.mcp.tools._jobs import (
     job_envelope,
 )
 from kdive.profiles.provisioning import ProvisioningProfile, profile_digest
-from kdive.providers.local_libvirt.provisioning import (
-    LocalLibvirtProvisioning,
-    Provisioner,
+from kdive.providers.composition import (
     domain_name_for,
+    provisioner_from_env,
     reject_rootfs_without_upload_window,
     validate_profile,
 )
+from kdive.providers.ports import Provisioner
 from kdive.security import audit
 from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
 from kdive.security.rbac import Role, require_role
@@ -979,7 +979,7 @@ def register_handlers(
     Building the provider does not open a libvirt connection (the ``connect`` lambda is lazy),
     so the worker boots without a reachable host; the first job is the first connection.
     """
-    prov = provisioning or LocalLibvirtProvisioning.from_env()
+    prov = provisioning or provisioner_from_env()
 
     async def _provision(conn: AsyncConnection, job: Job) -> str | None:
         return await provision_handler(conn, job, prov)

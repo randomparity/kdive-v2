@@ -29,12 +29,8 @@ from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.providers.local_libvirt.introspect_drgn import (
-    LiveIntrospector,
-    LocalLibvirtLiveIntrospect,
-    LocalLibvirtVmcoreIntrospect,
-    VmcoreIntrospector,
-)
+from kdive.providers.composition import live_introspector_from_env, vmcore_introspector_from_env
+from kdive.providers.ports import LiveIntrospector, VmcoreIntrospector
 from kdive.security.rbac import Role, require_role
 
 # The fixed live-helper set (ADR-0033 §2 / ADR-0039 §3): the same three in-tree helpers as the
@@ -208,8 +204,8 @@ async def introspect_run(
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `introspect.from_vmcore` and `introspect.run` tools on ``app``."""
-    introspector = LocalLibvirtVmcoreIntrospect.from_env()
-    live_introspector = LocalLibvirtLiveIntrospect.from_env()
+    introspector = vmcore_introspector_from_env()
+    live_introspector = live_introspector_from_env()
 
     @app.tool(
         name="introspect.from_vmcore",

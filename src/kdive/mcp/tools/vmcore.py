@@ -46,12 +46,12 @@ from kdive.mcp.tools._jobs import (
 from kdive.mcp.tools._jobs import (
     job_envelope,
 )
-from kdive.providers.local_libvirt.retrieve import (
-    CrashPostmortem,
-    LocalLibvirtRetrieve,
-    Retriever,
+from kdive.providers.composition import (
     crash_command_rejection_reason,
+    crash_postmortem_from_env,
+    retriever_from_env,
 )
+from kdive.providers.ports import CrashPostmortem, Retriever
 from kdive.security import audit
 from kdive.security.rbac import Role, require_role
 from kdive.security.redaction import Redactor
@@ -400,7 +400,7 @@ async def postmortem_triage(
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `vmcore.*` / `postmortem.*` tools on ``app``, bound to ``pool``."""
-    crash = LocalLibvirtRetrieve.from_env()
+    crash = crash_postmortem_from_env()
 
     @app.tool(
         name="vmcore.fetch",
@@ -462,7 +462,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
 
 def register_handlers(registry: HandlerRegistry, *, retriever: Retriever | None = None) -> None:
     """Bind the `capture_vmcore` job handler; build the retriever lazily from env."""
-    active = retriever or LocalLibvirtRetrieve.from_env()
+    active = retriever or retriever_from_env()
 
     async def _capture(conn: AsyncConnection, job: Job) -> str | None:
         return await capture_handler(conn, job, active)
