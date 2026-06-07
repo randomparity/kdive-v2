@@ -63,7 +63,7 @@ async def _build_id_for_run(conn: AsyncConnection, run_id: UUID) -> str | None:
     return build_id if isinstance(build_id, str) and build_id else None
 
 
-async def _resolve(
+async def _resolve_vmcore_targets(
     conn: AsyncConnection, ctx: RequestContext, run_id: str
 ) -> _Targets | ToolResponse:
     """Resolve the Run's debuginfo ref, recorded build-id, and captured core key, or a failure."""
@@ -100,7 +100,7 @@ async def introspect_from_vmcore(
     """
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
-            resolved = await _resolve(conn, ctx, run_id)
+            resolved = await _resolve_vmcore_targets(conn, ctx, run_id)
         if isinstance(resolved, ToolResponse):
             return resolved
         try:

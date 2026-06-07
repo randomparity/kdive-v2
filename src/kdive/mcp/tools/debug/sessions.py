@@ -96,11 +96,15 @@ def _open_transport(
     try:
         return connector.open_transport(SystemHandle(handle_name), transport)
     except CategorizedError as exc:
-        category = exc.category if exc.category in _ATTACH_FAILURE else _mapped(exc.category)
+        category = (
+            exc.category
+            if exc.category in _ATTACH_FAILURE
+            else _map_attach_failure_category(exc.category)
+        )
         return ToolResponse.failure(str(system.id), category)
 
 
-def _mapped(category: ErrorCategory) -> ErrorCategory:
+def _map_attach_failure_category(category: ErrorCategory) -> ErrorCategory:
     """Map a non-attach provider category onto the response taxonomy (MISSING_DEPENDENCY)."""
     if category is ErrorCategory.MISSING_DEPENDENCY:
         return ErrorCategory.DEBUG_ATTACH_FAILURE
