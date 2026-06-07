@@ -346,7 +346,8 @@ class LocalLibvirtProvisioning:
         )
         overlay = overlay_path(system_id)
         xml = render_domain_xml(system_id, profile, disk_path=overlay)  # validates the profile
-        if not self._overlay_exists(overlay):
+        created_overlay = not self._overlay_exists(overlay)
+        if created_overlay:
             self._make_overlay(base, overlay)  # the domain boots this overlay, not the base
         try:
             conn = self._connect()
@@ -372,7 +373,8 @@ class LocalLibvirtProvisioning:
             finally:
                 _close(conn)
         except libvirt.libvirtError as exc:
-            self._remove_overlay(overlay)  # no started domain; reclaim the overlay we created
+            if created_overlay:
+                self._remove_overlay(overlay)  # no started domain; reclaim the overlay we created
             raise CategorizedError(
                 "libvirt failed to define/start the domain",
                 category=ErrorCategory.PROVISIONING_FAILURE,

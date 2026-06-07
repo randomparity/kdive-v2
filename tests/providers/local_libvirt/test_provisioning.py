@@ -378,6 +378,20 @@ def test_provision_create_failure_removes_the_overlay() -> None:
     assert removed == [overlay_path(_SYS)]
 
 
+def test_provision_failure_keeps_preexisting_overlay() -> None:
+    # A retry can fail after finding an existing overlay. That overlay may belong to a live or
+    # recoverable previous attempt, so this call must not remove a file it did not create.
+    removed: list[str] = []
+    conn = _ProvConn(define_error=libvirt.VIR_ERR_INTERNAL_ERROR)
+    with pytest.raises(CategorizedError):
+        _prov(
+            conn,
+            remove_overlay=removed.append,
+            overlay_exists=lambda _overlay: True,
+        ).provision(_SYS, _profile())
+    assert removed == []
+
+
 def test_provision_failure_still_closes_connection() -> None:
     conn = _ProvConn(define_error=libvirt.VIR_ERR_INTERNAL_ERROR)
     with pytest.raises(CategorizedError):
