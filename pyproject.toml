@@ -16,9 +16,13 @@ dependencies = [
   "botocore==1.43.21",
   "defusedxml==0.7.1",
   "libvirt-python==12.3.0",
-  "drgn==0.2.0",
   "pydantic==2.13.4",
   "pygdbmi==0.11.0.0",
+]
+
+[project.optional-dependencies]
+live-vm = [
+  "drgn==0.2.0",
 ]
 
 [dependency-groups]
@@ -39,8 +43,8 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ty.rules]
 # Keep ty's strict defaults for the hard-gating CI typecheck job — no project-wide
-# relaxations. The C-extension dependencies (libvirt-python, drgn) ship no type
-# stubs, so the later issues that import them suppress `unresolved-import` with a
+# relaxations. The C-extension dependencies ship no type stubs, so the later issues
+# that import them suppress `unresolved-import` with a
 # scoped per-site ignore rather than downgrading the rule for the whole tree.
 
 [tool.pyright]

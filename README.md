@@ -20,8 +20,9 @@ Requirements
   sudo apt-get install -y libvirt-dev   # provides pkg-config metadata + headers
   ```
 
-  The other native dependencies need nothing extra: `drgn` ships a manylinux wheel
-  and `psycopg[binary]` bundles libpq.
+  The other native runtime dependency needs nothing extra: `psycopg[binary]` bundles libpq.
+  The `drgn` package is installed only for live-VM introspection with
+  `uv sync --extra live-vm`; it ships a manylinux wheel.
 
 Setup
 -----

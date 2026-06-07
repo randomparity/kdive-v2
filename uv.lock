@@ -592,13 +592,17 @@ dependencies = [
     { name = "boto3" },
     { name = "botocore" },
     { name = "defusedxml" },
-    { name = "drgn" },
     { name = "fastmcp" },
     { name = "libvirt-python" },
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
     { name = "pydantic" },
     { name = "pygdbmi" },
+]
+
+[package.optional-dependencies]
+live-vm = [
+    { name = "drgn" },
 ]
 
 [package.dev-dependencies]
@@ -615,7 +619,7 @@ requires-dist = [
     { name = "boto3", specifier = "==1.43.21" },
     { name = "botocore", specifier = "==1.43.21" },
     { name = "defusedxml", specifier = "==0.7.1" },
-    { name = "drgn", specifier = "==0.2.0" },
+    { name = "drgn", marker = "extra == 'live-vm'", specifier = "==0.2.0" },
     { name = "fastmcp", specifier = "==3.4.0" },
     { name = "libvirt-python", specifier = "==12.3.0" },
     { name = "psycopg", extras = ["binary"], specifier = "==3.3.4" },
@@ -623,6 +627,7 @@ requires-dist = [
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pygdbmi", specifier = "==0.11.0.0" },
 ]
+provides-extras = ["live-vm"]
 
 [package.metadata.requires-dev]
 dev = [
