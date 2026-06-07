@@ -83,6 +83,17 @@ def test_render_declares_qcow2_disk_driver() -> None:
     assert driver.get("type") == "qcow2"
 
 
+def test_required_cmdline_root_matches_the_rendered_disk_target() -> None:
+    # ADR-0061: the platform-injected root= must name the device provisioning attaches. These are
+    # set independently in two modules; this guards them moving together.
+    from kdive.domain.capture import CaptureMethod
+    from kdive.mcp.tools.runs import system_required_cmdline
+
+    target = _safe_fromstring(render_domain_xml(_SYS, _profile())).find("devices/disk/target")
+    assert target is not None
+    assert f"root=/dev/{target.get('dev')}" in system_required_cmdline(CaptureMethod.CONSOLE)
+
+
 def test_render_uses_disk_path_override_when_given() -> None:
     # provision() attaches a per-System overlay, not the shared base, by passing disk_path.
     root = _safe_fromstring(
@@ -186,10 +197,15 @@ def _prov(
     *,
     make_overlay: Callable[[str, str], None] = lambda _base, _overlay: None,
     remove_overlay: Callable[[str], None] = lambda _overlay: None,
+    overlay_exists: Callable[[str], bool] = lambda _overlay: False,
 ) -> LocalLibvirtProvisioning:
-    # The overlay seams default to no-ops so the libvirt-only tests never spawn qemu-img.
+    # The overlay seams default to no-ops so the libvirt-only tests never spawn qemu-img; the
+    # default "overlay absent" makes provision create one, matching a fresh provision.
     return LocalLibvirtProvisioning(
-        connect=lambda: conn, make_overlay=make_overlay, remove_overlay=remove_overlay
+        connect=lambda: conn,
+        make_overlay=make_overlay,
+        remove_overlay=remove_overlay,
+        overlay_exists=overlay_exists,
     )
 
 
@@ -286,6 +302,21 @@ def test_teardown_removes_overlay_even_when_domain_already_gone() -> None:
     conn = _ProvConn(lookup_error=libvirt.VIR_ERR_NO_DOMAIN)
     _prov(conn, remove_overlay=removed.append).teardown(domain_name_for(_SYS))
     assert removed == [overlay_path(_SYS)]
+
+
+def test_provision_skips_overlay_create_when_it_already_exists() -> None:
+    # Idempotent retry of an already-running System: the overlay QEMU still holds open must NOT
+    # be recreated (qemu-img would fail the lock or truncate the live disk). provision skips the
+    # create when the overlay is present and still reaches the already-running success post-state.
+    def _boom(_base: str, _overlay: str) -> None:
+        raise AssertionError("make_overlay must not run when the overlay already exists")
+
+    name = domain_name_for(_SYS)
+    conn = _ProvConn(
+        defined={name: _ProvDomain(name, create_error=libvirt.VIR_ERR_OPERATION_INVALID)}
+    )
+    prov = _prov(conn, make_overlay=_boom, overlay_exists=lambda _overlay: True)
+    assert prov.provision(_SYS, _profile()) == name  # no raise, no overlay recreate
 
 
 def test_provision_create_failure_removes_the_overlay() -> None:

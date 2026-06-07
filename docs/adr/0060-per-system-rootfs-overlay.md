@@ -22,9 +22,12 @@ a second System against the demo rootfs could not start while the first held it.
 `provision` calls `qemu-img create -f qcow2 -F qcow2 -b <base> <overlay>` to mint a per-System
 overlay at `/var/lib/kdive/rootfs/<system_id>-overlay.qcow2`, and the domain attaches the
 overlay (not the base). The base is opened read-only through the backing chain and shared
-freely across Systems; all guest writes land in the System's private overlay. `qemu-img` and
-the overlay removal are injected seams (`make_overlay`/`remove_overlay`) so the provisioning
-unit tests never spawn a subprocess; the real implementations run on a host.
+freely across Systems; all guest writes land in the System's private overlay. The overlay is
+created **only when absent**: `provision` is idempotently retried (the already-running domain is
+a success post-state), and recreating an overlay a running QEMU holds open would fail the lock or
+truncate the live disk — so a present overlay is left in place. `qemu-img`, the overlay removal,
+and the presence check are injected seams (`make_overlay`/`remove_overlay`/`overlay_exists`) so
+the provisioning unit tests never spawn a subprocess; the real implementations run on a host.
 
 ### 2. The overlay's lifecycle is the System's
 

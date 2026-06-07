@@ -288,8 +288,14 @@ def _real_remove_overlay(overlay: str) -> None:
     Path(overlay).unlink(missing_ok=True)
 
 
+def _real_overlay_exists(overlay: str) -> bool:
+    """Whether a System's overlay file is already present (a fresh provision created it)."""
+    return Path(overlay).exists()
+
+
 type MakeOverlay = Callable[[str, str], None]
 type RemoveOverlay = Callable[[str], None]
+type OverlayExists = Callable[[str], bool]
 
 
 class LocalLibvirtProvisioning:
@@ -301,10 +307,12 @@ class LocalLibvirtProvisioning:
         connect: Connect,
         make_overlay: MakeOverlay = _real_make_overlay,
         remove_overlay: RemoveOverlay = _real_remove_overlay,
+        overlay_exists: OverlayExists = _real_overlay_exists,
     ) -> None:
         self._connect = connect
         self._make_overlay = make_overlay
         self._remove_overlay = remove_overlay
+        self._overlay_exists = overlay_exists
 
     @classmethod
     def from_env(cls) -> LocalLibvirtProvisioning:
@@ -320,7 +328,9 @@ class LocalLibvirtProvisioning:
         Idempotent: ``defineXML`` redefines an existing domain, and a ``create`` that reports
         the domain is **already running** (``VIR_ERR_OPERATION_INVALID``) is the desired
         post-state, not a failure — so a handler retry after a partial provision does not mark a
-        running System failed.
+        running System failed. The overlay is created only when **absent**: a retry must never
+        recreate the overlay a running QEMU holds open (qemu-img would fail the lock or truncate
+        the live disk), so a present overlay is left in place (ADR-0060).
 
         Raises:
             CategorizedError: ``PROVISIONING_FAILURE`` on any other libvirt error.
@@ -330,7 +340,8 @@ class LocalLibvirtProvisioning:
         )
         overlay = overlay_path(system_id)
         xml = render_domain_xml(system_id, profile, disk_path=overlay)  # validates the profile
-        self._make_overlay(base, overlay)  # the domain boots this overlay, not the shared base
+        if not self._overlay_exists(overlay):
+            self._make_overlay(base, overlay)  # the domain boots this overlay, not the base
         try:
             conn = self._connect()
             try:
