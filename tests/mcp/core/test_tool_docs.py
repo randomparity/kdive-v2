@@ -3,7 +3,7 @@
 Builds the app with a null pool + a local-keypair verifier (the service-test
 path; needs no DB and no OIDC env), then asserts every tool is fully
 documented, the destructive hint matches the reviewed set, and every
-`implemented` tool's wrapper callee is referenced by a non-live test.
+`implemented` tool is assigned to a non-live behavior test module.
 """
 
 from __future__ import annotations
@@ -11,9 +11,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
-import re
 import textwrap
-from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -28,10 +26,40 @@ from tests.mcp.conftest import AUDIENCE, ISSUER, make_keypair
 
 _HERE = Path(__file__).resolve()
 _REPO_ROOT = next(parent for parent in _HERE.parents if (parent / "pyproject.toml").is_file())
-_TESTS_DIR = _REPO_ROOT / "tests"
-# Common callees every wrapper names; never a tool-unique anchor.
-# Includes _docmeta annotation helpers that appear in @app.tool decorator sources.
-_SHARED_CALLEES = frozenset({"current_context", "read_only", "mutating", "destructive"})
+_NON_LIVE_MARKERS = ("pytest.mark.live_vm", "pytest.mark.live_stack")
+_BEHAVIOR_TESTS_BY_TOOL = {
+    "accounting.estimate": ("tests/mcp/accounting/test_accounting_tools.py",),
+    "accounting.report_all_projects": ("tests/mcp/accounting/test_accounting_report.py",),
+    "accounting.report_granted_set": ("tests/mcp/accounting/test_accounting_report.py",),
+    "accounting.set_budget": ("tests/mcp/accounting/test_accounting_admin_tools.py",),
+    "accounting.set_quota": ("tests/mcp/accounting/test_accounting_admin_tools.py",),
+    "accounting.usage_investigation": ("tests/mcp/accounting/test_accounting_usage.py",),
+    "accounting.usage_project": ("tests/mcp/accounting/test_accounting_usage.py",),
+    "allocations.get": ("tests/mcp/lifecycle/test_allocations_tools.py",),
+    "allocations.list": ("tests/mcp/lifecycle/test_allocations_tools.py",),
+    "allocations.release": ("tests/mcp/lifecycle/test_allocations_reconcile.py",),
+    "allocations.renew": ("tests/mcp/lifecycle/test_allocations_renew.py",),
+    "allocations.request": ("tests/mcp/lifecycle/test_allocations_tools.py",),
+    "artifacts.create_run_upload": ("tests/mcp/lifecycle/test_create_upload_tool.py",),
+    "artifacts.create_system_upload": ("tests/mcp/lifecycle/test_create_upload_tool.py",),
+    "investigations.close": ("tests/mcp/catalog/test_investigations_tools.py",),
+    "investigations.get": ("tests/mcp/catalog/test_investigations_tools.py",),
+    "investigations.link": ("tests/mcp/catalog/test_investigations_tools.py",),
+    "investigations.open": ("tests/mcp/catalog/test_investigations_tools.py",),
+    "investigations.unlink": ("tests/mcp/catalog/test_investigations_tools.py",),
+    "jobs.cancel": ("tests/mcp/catalog/test_jobs_tools.py",),
+    "jobs.get": ("tests/mcp/catalog/test_jobs_tools.py",),
+    "jobs.list": ("tests/mcp/catalog/test_jobs_tools.py",),
+    "jobs.wait": ("tests/mcp/catalog/test_jobs_tools.py",),
+    "resources.describe": ("tests/mcp/catalog/test_resources_tools.py",),
+    "resources.list": ("tests/mcp/catalog/test_resources_tools.py",),
+    "runs.complete_build": ("tests/mcp/lifecycle/test_complete_build_tool.py",),
+    "runs.create": ("tests/mcp/lifecycle/test_runs_tools.py",),
+    "runs.get": ("tests/mcp/lifecycle/test_runs_tools.py",),
+    "systems.define": ("tests/mcp/lifecycle/test_systems_tools.py",),
+    "systems.get": ("tests/mcp/lifecycle/test_systems_tools.py",),
+    "systems.provision_defined": ("tests/mcp/lifecycle/test_systems_tools.py",),
+}
 
 
 def _build_tools() -> list[FunctionTool]:
@@ -43,25 +71,6 @@ def _build_tools() -> list[FunctionTool]:
     # returns list[FunctionTool] — cast to the concrete type so the rest of the
     # module can access .fn / .meta / .annotations without type errors.
     return cast(list[FunctionTool], asyncio.run(app.list_tools()))
-
-
-def _callees(fn: Callable[..., Any]) -> set[str]:
-    """The set of called symbol names in a wrapper body (Name + Attribute calls).
-
-    The wrappers are closures nested inside ``register()``, so ``inspect.getsource``
-    returns them at their nesting indent (decorator included); ``textwrap.dedent`` is
-    required or ``ast.parse`` raises ``IndentationError``.
-    """
-    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            target = node.func
-            if isinstance(target, ast.Name):
-                names.add(target.id)
-            elif isinstance(target, ast.Attribute):
-                names.add(target.attr)
-    return names
 
 
 def _reaches_symbol(fn: Callable[..., Any], target: str) -> bool:
@@ -105,28 +114,7 @@ def _reaches_symbol(fn: Callable[..., Any], target: str) -> bool:
     return _walk(fn)
 
 
-def _unique_anchor(tool: FunctionTool, freq: Counter[str]) -> str:
-    """The single callee unique to this wrapper; hard-fail on zero or >1."""
-    candidates = {c for c in _callees(tool.fn) if c not in _SHARED_CALLEES and freq[c] == 1}
-    assert len(candidates) == 1, (
-        f"{tool.name}: expected exactly one tool-unique callee, got {sorted(candidates)}"
-    )
-    return next(iter(candidates))
-
-
-def _test_sources() -> str:
-    """All non-live test source concatenated (live_vm/live_stack files excluded)."""
-    blobs: list[str] = []
-    for path in _TESTS_DIR.rglob("test_*.py"):
-        text = path.read_text(encoding="utf-8")
-        if "pytest.mark.live_vm" in text or "pytest.mark.live_stack" in text:
-            continue
-        blobs.append(text)
-    return "\n".join(blobs)
-
-
 TOOLS = _build_tools()
-FREQ: Counter[str] = Counter(c for t in TOOLS for c in _callees(t.fn) if c not in _SHARED_CALLEES)
 
 
 def test_every_tool_has_a_description() -> None:
@@ -187,17 +175,23 @@ def test_backstop_actually_detects_the_known_gate_callers() -> None:
 
 
 def test_implemented_tools_have_a_covering_test() -> None:
-    sources = _test_sources()
-    offenders: list[str] = []
-    for t in TOOLS:
-        if (t.meta or {}).get("maturity") != "implemented":
-            continue
-        anchor = _unique_anchor(t, FREQ)
-        # Word-boundary, not substring: anchor `get_run` must not be satisfied by an
-        # unrelated `get_run_summary` token (the anchor is a whole symbol reference).
-        if not re.search(rf"\b{re.escape(anchor)}\b", sources):
-            offenders.append(f"{t.name} (anchor {anchor})")
-    assert not offenders, (
-        f"implemented tools with no non-live test referencing their callee: {offenders} "
-        f"— add a test or downgrade maturity to 'partial'"
+    implemented = {t.name for t in TOOLS if (t.meta or {}).get("maturity") == "implemented"}
+    mapped = set(_BEHAVIOR_TESTS_BY_TOOL)
+    assert implemented == mapped, (
+        "implemented tool behavior-test map is out of date: "
+        f"missing {sorted(implemented - mapped)}, stale {sorted(mapped - implemented)}"
     )
+
+    missing_files: list[str] = []
+    live_only_files: list[str] = []
+    for tool, rel_paths in _BEHAVIOR_TESTS_BY_TOOL.items():
+        for rel_path in rel_paths:
+            path = _REPO_ROOT / rel_path
+            if not path.is_file():
+                missing_files.append(f"{tool}: {rel_path}")
+                continue
+            text = path.read_text(encoding="utf-8")
+            if any(marker in text for marker in _NON_LIVE_MARKERS):
+                live_only_files.append(f"{tool}: {rel_path}")
+    assert not missing_files, f"mapped behavior test files do not exist: {missing_files}"
+    assert not live_only_files, f"mapped behavior tests must be non-live: {live_only_files}"
