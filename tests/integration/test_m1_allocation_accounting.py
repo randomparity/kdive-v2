@@ -844,8 +844,9 @@ def test_c6_operator_refused_admin_ops(migrated_url: str) -> None:
                 await conn.execute("UPDATE systems SET state = 'ready' WHERE id = %s", (sys_id,))
             power = await control_tools.power_system(pool, op, system_id=sys_id, action="off")
             assert power.status == "error" and power.error_category == "authorization_denied"
-            with pytest.raises(AuthorizationError):
-                await systems_tools.teardown_system(pool, op, sys_id)
+            teardown = await systems_tools.teardown_system(pool, op, sys_id)
+            assert teardown.status == "error"
+            assert teardown.error_category == "authorization_denied"
 
     asyncio.run(_run())
 
