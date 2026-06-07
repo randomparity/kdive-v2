@@ -42,6 +42,16 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # stubs, so the later issues that import them suppress `unresolved-import` with a
 # scoped per-site ignore rather than downgrading the rule for the whole tree.
 
+[tool.pyright]
+# `ty` (above) is the authoritative type checker — it runs in CI (`just type`) and resolves the
+# venv via `uv run`. This stanza is only for the editor/IDE language server (Pyright/Pylance/
+# basedpyright): point it at the uv `.venv` so third-party imports resolve, and turn type-checking
+# off so it neither duplicates ty nor disagrees on ty-only `# ty: ignore` suppressions (e.g. the
+# libvirt duck-typed seam). Editor navigation/hover only — not a second CI gate.
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "off"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
