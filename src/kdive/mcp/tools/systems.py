@@ -94,7 +94,7 @@ def _defined_envelope(system: System) -> ToolResponse:
     return ToolResponse.success(
         str(system.id),
         SystemState.DEFINED.value,
-        suggested_next_actions=["artifacts.create_upload", "systems.provision"],
+        suggested_next_actions=["artifacts.create_system_upload", "systems.provision"],
         data={"project": system.project},
     )
 

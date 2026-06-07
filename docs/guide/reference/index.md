@@ -14,7 +14,8 @@
 | [`allocations.release`](allocations.md#allocationsrelease) | `implemented` |
 | [`allocations.renew`](allocations.md#allocationsrenew) | `implemented` |
 | [`allocations.request`](allocations.md#allocationsrequest) | `implemented` |
-| [`artifacts.create_upload`](artifacts.md#artifactscreate_upload) | `implemented` |
+| [`artifacts.create_run_upload`](artifacts.md#artifactscreate_run_upload) | `implemented` |
+| [`artifacts.create_system_upload`](artifacts.md#artifactscreate_system_upload) | `implemented` |
 | [`artifacts.get`](artifacts.md#artifactsget) | `partial` |
 | [`artifacts.list`](artifacts.md#artifactslist) | `partial` |
 | [`control.force_crash`](control.md#controlforce_crash) | `partial` |

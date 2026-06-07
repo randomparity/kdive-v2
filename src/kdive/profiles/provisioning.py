@@ -56,7 +56,7 @@ class _PathRootfs(_ProfileBase):
 
 
 class _UploadRootfs(_ProfileBase):
-    # A System-owned uploaded qcow2; opened by systems.define + artifacts.create_upload and
+    # A System-owned uploaded qcow2; opened by systems.define + artifacts.create_system_upload and
     # committed at provisioning->ready (ADR-0048 §5, #111). path/url/catalog are alternatives.
     kind: Literal["upload"]
 

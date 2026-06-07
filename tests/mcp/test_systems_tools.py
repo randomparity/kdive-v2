@@ -739,7 +739,7 @@ def test_provision_handler_concurrent_same_job_ready_does_not_tear_down(migrated
 #
 # These drive provision_handler with a directly-seeded PROVISIONING upload profile to unit-
 # test the worker-side provisioning->ready commit in isolation. The full lane is reachable
-# end-to-end via systems.define + artifacts.create_upload + systems.provision (#111); see
+# end-to-end via systems.define + artifacts.create_system_upload + systems.provision (#111); see
 # tests/integration/test_systems_define_upload_provision.py for that reachability proof.
 
 
@@ -1399,7 +1399,10 @@ def test_define_inserts_defined_system_and_activates_allocation(migrated_url: st
             alloc_id = await _granted_allocation(pool)
             resp = await _define(pool, _ctx(), alloc_id, _upload_profile())
             assert resp.status == "defined"
-            assert resp.suggested_next_actions == ["artifacts.create_upload", "systems.provision"]
+            assert resp.suggested_next_actions == [
+                "artifacts.create_system_upload",
+                "systems.provision",
+            ]
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state, allocation_id FROM systems")
                 sys_row = await cur.fetchone()

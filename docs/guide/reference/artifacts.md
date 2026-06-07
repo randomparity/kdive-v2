@@ -2,17 +2,27 @@
 
 # `artifacts` tools
 
-## `artifacts.create_upload`
+## `artifacts.create_run_upload`
 
 `implemented`
 
-Mint presigned PUTs for an owner's declared artifacts. Requires operator.
+Mint presigned PUTs for an external Run's build artifacts. Requires operator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `artifacts` | `array` | yes | Declared artifacts: [{name, sha256 (base64), size_bytes}]. |
-| `owner_id` | `string` | yes | The owning Run or System id. |
-| `owner_kind` | `string` | yes | 'run' (build artifacts) or 'system' (rootfs). |
+| `artifacts` | `array` | yes | Declared build artifacts: [{name, sha256 (base64), size_bytes}]. |
+| `run_id` | `string` | yes | The external-build Run id. |
+
+## `artifacts.create_system_upload`
+
+`implemented`
+
+Mint a presigned PUT for a DEFINED System's rootfs. Requires operator.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `artifacts` | `array` | yes | Declared rootfs artifact: [{name, sha256 (base64), size_bytes}]. |
+| `system_id` | `string` | yes | The DEFINED System id. |
 
 ## `artifacts.get`
 

@@ -1,7 +1,7 @@
 """End-to-end reachability of the rootfs-upload lane (define -> upload -> provision, #111).
 
 DB/tool-lane reachability under a fake provider: it proves the upload-kind profile flows
-through systems.define, artifacts.create_upload, systems.provision, and the provision
+through systems.define, artifacts.create_system_upload, systems.provision, and the provision
 handler's _commit_uploaded_rootfs. It does NOT boot — staging the object to the libvirt
 disk is the install/boot spec's concern (ADR-0048 §7).
 """
@@ -41,12 +41,11 @@ def test_define_upload_provision_reaches_ready_with_committed_rootfs(
             # 1. define -> DEFINED, allocation granted->active
             sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
 
-            # 2. create_upload opens the window (persists the manifest, mints a PUT)
-            uploads = await artifacts_tools.create_upload(
+            # 2. create_system_upload opens the window (persists the manifest, mints a PUT)
+            uploads = await artifacts_tools.create_system_upload(
                 pool,
                 _ctx(),
-                owner_kind="system",
-                owner_id=sys_id,
+                system_id=sys_id,
                 artifacts=[{"name": "rootfs", "sha256": "sha256:x", "size_bytes": 18}],
                 store=minio_store,
             )

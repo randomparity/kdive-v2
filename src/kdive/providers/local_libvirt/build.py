@@ -520,7 +520,7 @@ def validate_external_artifacts(
                 category=ErrorCategory.CONFIGURATION_ERROR,
             )
         # heads["vmlinux"].size_bytes is already verified equal to the manifest size and
-        # capped (artifacts.create_upload), so it is a safe ceiling for the ranged reads.
+        # capped by artifacts.create_run_upload, so it is a safe ceiling for ranged reads.
         actual = extract_build_id_ranged(
             store, keys["vmlinux"], max_size=heads["vmlinux"].size_bytes
         )  # lowercase hex

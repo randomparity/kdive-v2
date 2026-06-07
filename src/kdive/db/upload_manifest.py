@@ -1,7 +1,7 @@
 """Owner-scoped upload-manifest storage for external-build ingestion (ADR-0048 §4).
 
 A manifest is the declared ``(name, sha256, size_bytes)`` set an agent commits at
-``artifacts.create_upload`` for one owner (a CREATED Run or a DEFINED System), plus the
+the artifact upload tools for one owner (a CREATED Run or a DEFINED System), plus the
 object-key ``prefix`` the reaper lists and the ``deadline`` it keys off. It is replaced
 wholesale on a re-mint (one call, full set) and deleted when the owner finalizes or is
 reaped. It is not the write-once ``artifacts`` row.

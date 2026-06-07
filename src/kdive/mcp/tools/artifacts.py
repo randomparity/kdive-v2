@@ -88,10 +88,6 @@ class _MaterializedUpload(NamedTuple):
     presigned: PresignedUpload
 
 
-def _allowed_names(owner_kind: str) -> frozenset[str]:
-    return _BUILD_ARTIFACT_NAMES if owner_kind == "run" else frozenset({_ROOTFS_NAME})
-
-
 def _validate_artifact_declarations(
     object_id: str, artifacts: list[dict[str, Any]], allowed: frozenset[str], cap: int
 ) -> list[ManifestEntry] | ToolResponse:
@@ -137,9 +133,9 @@ def _materialize_uploads(
     return uploads
 
 
-async def _owner_accepts_upload(conn: AsyncConnection, owner_kind: str, owner_id: UUID) -> bool:
+async def _owner_accepts_upload(conn: AsyncConnection, kind: str, owner_id: UUID) -> bool:
     """True iff the owner is in its pre-upload state (CREATED external Run / DEFINED System)."""
-    if owner_kind == "run":
+    if kind == "runs":
         run = await RUNS.get(conn, owner_id)
         if run is None or run.state is not RunState.CREATED:
             return False
@@ -234,13 +230,16 @@ async def artifacts_get(
         )
 
 
-async def create_upload(
+async def _create_upload(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
-    owner_kind: str,
+    kind: str,
     owner_id: str,
     artifacts: list[dict[str, Any]],
+    allowed_names: frozenset[str],
+    next_action: str,
+    lock_scope: LockScope,
     store: _PresignStore | None = None,
 ) -> list[ToolResponse]:
     """Mint a presigned PUT per declared artifact and persist the owner's manifest.
@@ -250,12 +249,8 @@ async def create_upload(
     """
     store = store or object_store_from_env()
     uid = _as_uuid(owner_id)
-    if uid is None or owner_kind not in ("run", "system"):
+    if uid is None:
         return [_config_error(owner_id)]
-    kind = "runs" if owner_kind == "run" else "systems"
-    # The 'system' arm is the DEFINED rootfs-upload lane: create the window with
-    # systems.define, upload here, then systems.provision admits it and commits the rootfs.
-    next_action = "runs.complete_build" if owner_kind == "run" else "systems.provision"
 
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
@@ -264,19 +259,17 @@ async def create_upload(
                 return [_config_error(owner_id)]
             require_role(ctx, project, Role.OPERATOR)
 
-            allowed = _allowed_names(owner_kind)
             validated = _validate_artifact_declarations(
-                owner_id, artifacts, allowed, _max_upload_bytes()
+                owner_id, artifacts, allowed_names, _max_upload_bytes()
             )
             if isinstance(validated, ToolResponse):
                 return [validated]
             entries = validated
 
             prefix = owner_prefix(_TENANT, kind, str(uid))
-            lock_scope = LockScope.RUN if owner_kind == "run" else LockScope.SYSTEM
             try:
                 async with conn.transaction(), advisory_xact_lock(conn, lock_scope, uid):
-                    if not await _owner_accepts_upload(conn, owner_kind, uid):
+                    if not await _owner_accepts_upload(conn, kind, uid):
                         return [
                             _config_error(owner_id, data={"reason": "owner_not_accepting_upload"})
                         ]
@@ -297,7 +290,7 @@ async def create_upload(
             except CategorizedError as exc:
                 # A corrupt stored profile, presign, or manifest-write failure prevents (and
                 # rolls back) the manifest write; surface it so the cause is observable.
-                _log.warning("create_upload failed for %s %s: %s", owner_kind, owner_id, exc)
+                _log.warning("create_upload failed for %s %s: %s", kind, owner_id, exc)
                 return [ToolResponse.failure(owner_id, exc.category)]
 
     return [
@@ -314,6 +307,50 @@ async def create_upload(
         )
         for upload in uploads
     ]
+
+
+async def create_run_upload(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    run_id: str,
+    artifacts: list[dict[str, Any]],
+    store: _PresignStore | None = None,
+) -> list[ToolResponse]:
+    """Mint presigned PUTs for an external Run's declared build artifacts."""
+    return await _create_upload(
+        pool,
+        ctx,
+        kind="runs",
+        owner_id=run_id,
+        artifacts=artifacts,
+        allowed_names=_BUILD_ARTIFACT_NAMES,
+        next_action="runs.complete_build",
+        lock_scope=LockScope.RUN,
+        store=store,
+    )
+
+
+async def create_system_upload(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    system_id: str,
+    artifacts: list[dict[str, Any]],
+    store: _PresignStore | None = None,
+) -> list[ToolResponse]:
+    """Mint presigned PUTs for a DEFINED System's uploaded rootfs."""
+    return await _create_upload(
+        pool,
+        ctx,
+        kind="systems",
+        owner_id=system_id,
+        artifacts=artifacts,
+        allowed_names=frozenset({_ROOTFS_NAME}),
+        next_action="systems.provision",
+        lock_scope=LockScope.SYSTEM,
+        store=store,
+    )
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
@@ -347,21 +384,33 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         return await artifacts_get(pool, current_context(), artifact_id=artifact_id)
 
     @app.tool(
-        name="artifacts.create_upload",
+        name="artifacts.create_run_upload",
         annotations=_docmeta.mutating(),
         meta={"maturity": "implemented"},
     )
-    async def artifacts_create_upload_tool(
-        owner_kind: Annotated[
-            str, Field(description="'run' (build artifacts) or 'system' (rootfs).")
-        ],
-        owner_id: Annotated[str, Field(description="The owning Run or System id.")],
+    async def artifacts_create_run_upload_tool(
+        run_id: Annotated[str, Field(description="The external-build Run id.")],
         artifacts: Annotated[
             list[dict[str, Any]],
-            Field(description="Declared artifacts: [{name, sha256 (base64), size_bytes}]."),
+            Field(description="Declared build artifacts: [{name, sha256 (base64), size_bytes}]."),
         ],
     ) -> list[ToolResponse]:
-        """Mint presigned PUTs for an owner's declared artifacts. Requires operator."""
-        return await create_upload(
-            pool, current_context(), owner_kind=owner_kind, owner_id=owner_id, artifacts=artifacts
+        """Mint presigned PUTs for an external Run's build artifacts. Requires operator."""
+        return await create_run_upload(pool, current_context(), run_id=run_id, artifacts=artifacts)
+
+    @app.tool(
+        name="artifacts.create_system_upload",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "implemented"},
+    )
+    async def artifacts_create_system_upload_tool(
+        system_id: Annotated[str, Field(description="The DEFINED System id.")],
+        artifacts: Annotated[
+            list[dict[str, Any]],
+            Field(description="Declared rootfs artifact: [{name, sha256 (base64), size_bytes}]."),
+        ],
+    ) -> list[ToolResponse]:
+        """Mint a presigned PUT for a DEFINED System's rootfs. Requires operator."""
+        return await create_system_upload(
+            pool, current_context(), system_id=system_id, artifacts=artifacts
         )
