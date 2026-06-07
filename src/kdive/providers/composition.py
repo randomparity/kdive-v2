@@ -8,8 +8,6 @@ provider name.
 
 from __future__ import annotations
 
-from typing import cast
-
 from kdive.domain.models import ResourceKind
 from kdive.domain.state import ResourceStatus
 from kdive.providers.capability import (
@@ -51,15 +49,11 @@ from kdive.providers.ports import (
     AttachSeam,
     Booter,
     Builder,
-    BuildOutput,
-    CaptureOutput,
     Connector,
     Controller,
-    CrashOutput,
     CrashPostmortem,
     GdbMiEngine,
     Installer,
-    IntrospectOutput,
     LiveIntrospector,
     Provisioner,
     Retriever,
@@ -102,146 +96,70 @@ def _capability(plane: Plane, operation: str, contract: OpContract) -> Capabilit
     )
 
 
-class _DispatchedProvisioner:
-    def __init__(self, registry: CapabilityRegistry) -> None:
-        self._registry = registry
-
-    def provision(self, *args: object, **kwargs: object) -> str:
-        call = self._registry.dispatch(Plane.PROVISIONING, "provision", _LOCAL_KIND).call
-        return cast(str, call(*args, **kwargs))
-
-    def reprovision(self, *args: object, **kwargs: object) -> str:
-        call = self._registry.dispatch(Plane.PROVISIONING, "reprovision", _LOCAL_KIND).call
-        return cast(str, call(*args, **kwargs))
-
-    def teardown(self, *args: object, **kwargs: object) -> None:
-        call = self._registry.dispatch(Plane.PROVISIONING, "teardown", _LOCAL_KIND).call
-        call(*args, **kwargs)
-
-
-class _DispatchedBuilder:
-    def __init__(self, registry: CapabilityRegistry) -> None:
-        self._registry = registry
-
-    def build(self, *args: object, **kwargs: object) -> BuildOutput:
-        call = self._registry.dispatch(Plane.BUILD, "build", _LOCAL_KIND).call
-        return cast(BuildOutput, call(*args, **kwargs))
-
-
-class _DispatchedInstallerBooter:
-    def __init__(self, registry: CapabilityRegistry) -> None:
-        self._registry = registry
-
-    def install(self, *args: object, **kwargs: object) -> None:
-        call = self._registry.dispatch(Plane.INSTALL, "install", _LOCAL_KIND).call
-        call(*args, **kwargs)
-
-    def boot(self, *args: object, **kwargs: object) -> None:
-        call = self._registry.dispatch(Plane.INSTALL, "boot", _LOCAL_KIND).call
-        call(*args, **kwargs)
-
-
-class _DispatchedConnector:
-    def __init__(self, registry: CapabilityRegistry) -> None:
-        self._registry = registry
-
-    def open_transport(self, *args: object, **kwargs: object) -> object:
-        call = self._registry.dispatch(Plane.CONNECT, "open_transport", _LOCAL_KIND).call
-        return call(*args, **kwargs)
-
-    def close_transport(self, *args: object, **kwargs: object) -> None:
-        call = self._registry.dispatch(Plane.CONNECT, "close_transport", _LOCAL_KIND).call
-        call(*args, **kwargs)
-
-
-class _DispatchedController:
-    def __init__(self, registry: CapabilityRegistry) -> None:
-        self._registry = registry
-
-    def power(self, *args: object, **kwargs: object) -> None:
-        call = self._registry.dispatch(Plane.CONTROL, "power", _LOCAL_KIND).call
-        call(*args, **kwargs)
-
-    def force_crash(self, *args: object, **kwargs: object) -> None:
-        call = self._registry.dispatch(Plane.CONTROL, "force_crash", _LOCAL_KIND).call
-        call(*args, **kwargs)
-
-
-class _DispatchedRetriever:
-    def __init__(self, registry: CapabilityRegistry) -> None:
-        self._registry = registry
-
-    def capture(self, *args: object, **kwargs: object) -> CaptureOutput:
-        call = self._registry.dispatch(Plane.RETRIEVE, "capture", _LOCAL_KIND).call
-        return cast(CaptureOutput, call(*args, **kwargs))
-
-
-class _DispatchedCrashPostmortem:
-    def __init__(self, registry: CapabilityRegistry) -> None:
-        self._registry = registry
-
-    def run_crash_postmortem(self, *args: object, **kwargs: object) -> CrashOutput:
-        call = self._registry.dispatch(Plane.RETRIEVE, "run_crash_postmortem", _LOCAL_KIND).call
-        return cast(CrashOutput, call(*args, **kwargs))
-
-
-class _DispatchedVmcoreIntrospector:
-    def __init__(self, registry: CapabilityRegistry) -> None:
-        self._registry = registry
-
-    def from_vmcore(self, *args: object, **kwargs: object) -> IntrospectOutput:
-        call = self._registry.dispatch(Plane.DEBUG, "from_vmcore", _LOCAL_KIND).call
-        return cast(IntrospectOutput, call(*args, **kwargs))
-
-
-class _DispatchedLiveIntrospector:
-    def __init__(self, registry: CapabilityRegistry) -> None:
-        self._registry = registry
-
-    def introspect_live(self, *args: object, **kwargs: object) -> IntrospectOutput:
-        call = self._registry.dispatch(Plane.DEBUG, "introspect_live", _LOCAL_KIND).call
-        return cast(IntrospectOutput, call(*args, **kwargs))
-
-
 class ProviderRuntime:
-    """Typed adapters backed by the immutable capability registry."""
+    """Typed provider ports for the default runtime."""
 
-    def __init__(self, registry: CapabilityRegistry) -> None:
-        self._registry = registry
+    def __init__(
+        self,
+        *,
+        provisioner: Provisioner,
+        builder: Builder,
+        installer: Installer,
+        booter: Booter,
+        connector: Connector,
+        controller: Controller,
+        retriever: Retriever,
+        crash_postmortem: CrashPostmortem,
+        vmcore_introspector: VmcoreIntrospector,
+        live_introspector: LiveIntrospector,
+        attach_seam: AttachSeam = default_attach_seam,
+        debug_engine: GdbMiEngine | None = None,
+    ) -> None:
+        self._provisioner = provisioner
+        self._builder = builder
+        self._installer = installer
+        self._booter = booter
+        self._connector = connector
+        self._controller = controller
+        self._retriever = retriever
+        self._crash_postmortem = crash_postmortem
+        self._vmcore_introspector = vmcore_introspector
+        self._live_introspector = live_introspector
+        self._attach_seam = attach_seam
+        self._debug_engine = debug_engine if debug_engine is not None else LocalGdbMiEngine()
 
     def provisioner(self) -> Provisioner:
-        return _DispatchedProvisioner(self._registry)
+        return self._provisioner
 
     def builder(self) -> Builder:
-        return _DispatchedBuilder(self._registry)
+        return self._builder
 
     def install_boot(self) -> tuple[Installer, Booter]:
-        install = _DispatchedInstallerBooter(self._registry)
-        return install, install
+        return self._installer, self._booter
 
     def connector(self) -> Connector:
-        return cast(Connector, _DispatchedConnector(self._registry))
+        return self._connector
 
     def controller(self) -> Controller:
-        return _DispatchedController(self._registry)
+        return self._controller
 
     def retriever(self) -> Retriever:
-        return _DispatchedRetriever(self._registry)
+        return self._retriever
 
     def crash_postmortem(self) -> CrashPostmortem:
-        return _DispatchedCrashPostmortem(self._registry)
+        return self._crash_postmortem
 
     def vmcore_introspector(self) -> VmcoreIntrospector:
-        return _DispatchedVmcoreIntrospector(self._registry)
+        return self._vmcore_introspector
 
     def live_introspector(self) -> LiveIntrospector:
-        return _DispatchedLiveIntrospector(self._registry)
+        return self._live_introspector
 
     def attach_seam(self) -> AttachSeam:
-        return default_attach_seam
+        return self._attach_seam
 
     def debug_engine(self) -> GdbMiEngine:
-        return cast(GdbMiEngine, LocalGdbMiEngine())
+        return self._debug_engine
 
 
 def _register_provider(
@@ -259,9 +177,10 @@ def _register_provider(
 def build_default_provider_runtime() -> ProviderRuntime:
     """Build the default runtime provider registry without opening live provider connections."""
     registry = CapabilityRegistry()
+    provisioner = LocalLibvirtProvisioning.from_env()
     _register_provider(
         registry,
-        LocalLibvirtProvisioning.from_env(),
+        provisioner,
         [
             _capability(Plane.PROVISIONING, "provision", _LONG_RUNNING_CONTRACT),
             _capability(Plane.PROVISIONING, "teardown", _DESTRUCTIVE_LONG_RUNNING_CONTRACT),
@@ -269,9 +188,10 @@ def build_default_provider_runtime() -> ProviderRuntime:
         ],
         "provisioning",
     )
+    builder = LocalLibvirtBuild.from_env()
     _register_provider(
         registry,
-        LocalLibvirtBuild.from_env(),
+        builder,
         [_capability(Plane.BUILD, "build", _LONG_RUNNING_CONTRACT)],
         "build",
     )
@@ -285,18 +205,20 @@ def build_default_provider_runtime() -> ProviderRuntime:
         ],
         "install",
     )
+    connector = LocalLibvirtConnect.from_env()
     _register_provider(
         registry,
-        LocalLibvirtConnect.from_env(),
+        connector,
         [
             _capability(Plane.CONNECT, "open_transport", _SYNC_CONTRACT),
             _capability(Plane.CONNECT, "close_transport", _SYNC_CONTRACT),
         ],
         "connect",
     )
+    controller = LocalLibvirtControl.from_env()
     _register_provider(
         registry,
-        LocalLibvirtControl.from_env(),
+        controller,
         [
             _capability(Plane.CONTROL, "power", _DESTRUCTIVE_LONG_RUNNING_CONTRACT),
             _capability(Plane.CONTROL, "force_crash", _DESTRUCTIVE_LONG_RUNNING_CONTRACT),
@@ -313,19 +235,32 @@ def build_default_provider_runtime() -> ProviderRuntime:
         ],
         "retrieve",
     )
+    vmcore_introspector = LocalLibvirtVmcoreIntrospect.from_env()
     _register_provider(
         registry,
-        LocalLibvirtVmcoreIntrospect.from_env(),
+        vmcore_introspector,
         [_capability(Plane.DEBUG, "from_vmcore", _SYNC_CONTRACT)],
         "vmcore-introspect",
     )
+    live_introspector = LocalLibvirtLiveIntrospect.from_env()
     _register_provider(
         registry,
-        LocalLibvirtLiveIntrospect.from_env(),
+        live_introspector,
         [_capability(Plane.DEBUG, "introspect_live", _SYNC_CONTRACT)],
         "live-introspect",
     )
-    return ProviderRuntime(registry)
+    return ProviderRuntime(
+        provisioner=provisioner,
+        builder=builder,
+        installer=install,
+        booter=install,
+        connector=connector,
+        controller=controller,
+        retriever=retrieve,
+        crash_postmortem=retrieve,
+        vmcore_introspector=vmcore_introspector,
+        live_introspector=live_introspector,
+    )
 
 
 def provisioner_from_env() -> Provisioner:

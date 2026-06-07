@@ -1,33 +1,18 @@
-"""Tests for provider runtime composition and dispatch."""
+"""Tests for provider runtime composition."""
 
 from __future__ import annotations
 
 from uuid import UUID
 
-from kdive.domain.models import ResourceKind
-from kdive.domain.state import ResourceStatus
+from kdive.domain.capture import CaptureMethod
+from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
-from kdive.providers.capability import (
-    Capability,
-    CapabilityRegistry,
-    CleanupGuarantee,
-    OpContract,
-    Plane,
-)
 from kdive.providers.composition import ProviderRuntime
-from kdive.providers.ports import BuildOutput
+from kdive.providers.interfaces import SystemHandle, TransportHandle
+from kdive.providers.ports import BuildOutput, CaptureOutput, CrashOutput, IntrospectOutput
+from kdive.store.objectstore import StoredArtifact
 
 _RUN = UUID("22222222-2222-2222-2222-222222222222")
-
-
-def _contract() -> OpContract:
-    return OpContract(
-        idempotent=True,
-        destructive=False,
-        cancelable=False,
-        long_running=True,
-        cleanup=CleanupGuarantee.BEST_EFFORT,
-    )
 
 
 def _build_profile() -> ServerBuildProfile:
@@ -52,25 +37,96 @@ class _BuildProvider:
         return BuildOutput(kernel_ref="k", debuginfo_ref="v", build_id="deadbeef")
 
 
-def test_provider_runtime_builder_dispatches_through_capability_registry() -> None:
-    provider = _BuildProvider()
-    registry = CapabilityRegistry()
-    registry.register(
-        provider,
-        [
-            Capability(
-                plane=Plane.BUILD,
-                operation="build",
-                resource_kind=ResourceKind.LOCAL_LIBVIRT,
-                contract=_contract(),
-            )
-        ],
-        provider_id="test-build",
-        health=ResourceStatus.AVAILABLE,
-        cost_class="test",
+class _ProvisionProvider:
+    def provision(self, system_id: UUID, profile: object) -> str:
+        return f"domain-{system_id}"
+
+    def teardown(self, domain_name: str) -> None:
+        self.torn_down = domain_name
+
+    def reprovision(self, system_id: UUID, profile: object) -> str:
+        return f"domain-{system_id}"
+
+
+class _InstallProvider:
+    def install(
+        self,
+        system_id: UUID,
+        run_id: UUID,
+        kernel_ref: str,
+        *,
+        cmdline: str,
+        method: CaptureMethod = CaptureMethod.HOST_DUMP,
+        initrd_ref: str | None = None,
+    ) -> None:
+        self.installed = (system_id, run_id, kernel_ref, cmdline, method, initrd_ref)
+
+    def boot(self, system_id: UUID) -> None:
+        self.booted = system_id
+
+
+class _ConnectorProvider:
+    def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle:
+        return TransportHandle(f"{kind}://{system}")
+
+    def close_transport(self, handle: TransportHandle) -> None:
+        self.closed = handle
+
+
+class _ControllerProvider:
+    def power(self, domain_name: str, action: object) -> None:
+        self.powered = (domain_name, action)
+
+    def force_crash(self, domain_name: str) -> None:
+        self.crashed = domain_name
+
+
+class _RetrieveProvider:
+    def capture(self, system_id: UUID, method: CaptureMethod) -> CaptureOutput:
+        artifact = StoredArtifact("key", "etag", Sensitivity.SENSITIVE, "vmcore")
+        return CaptureOutput(raw=artifact, redacted=artifact, vmcore_build_id="deadbeef")
+
+    def run_crash_postmortem(
+        self,
+        *,
+        vmcore_ref: str,
+        debuginfo_ref: str,
+        expected_build_id: str,
+        commands: list[str],
+    ) -> CrashOutput:
+        return CrashOutput(results={}, transcript="", truncated=False)
+
+
+class _IntrospectorProvider:
+    def from_vmcore(
+        self, *, vmcore_ref: str, debuginfo_ref: str, expected_build_id: str
+    ) -> IntrospectOutput:
+        return IntrospectOutput(tasks={}, modules={}, sysinfo={}, truncated=False)
+
+    def introspect_live(self, *, transport_handle: str) -> IntrospectOutput:
+        return IntrospectOutput(tasks={}, modules={}, sysinfo={}, truncated=False)
+
+
+def test_provider_runtime_returns_typed_provider_ports_directly() -> None:
+    builder = _BuildProvider()
+    install = _InstallProvider()
+    retrieve = _RetrieveProvider()
+    introspect = _IntrospectorProvider()
+    runtime = ProviderRuntime(
+        provisioner=_ProvisionProvider(),
+        builder=builder,
+        installer=install,
+        booter=install,
+        connector=_ConnectorProvider(),
+        controller=_ControllerProvider(),
+        retriever=retrieve,
+        crash_postmortem=retrieve,
+        vmcore_introspector=introspect,
+        live_introspector=introspect,
     )
 
-    output = ProviderRuntime(registry).builder().build(_RUN, _build_profile())
+    output = runtime.builder().build(_RUN, _build_profile())
 
     assert output.build_id == "deadbeef"
-    assert provider.calls == [(_RUN, "file:///configs/kdump.config")]
+    assert builder.calls == [(_RUN, "file:///configs/kdump.config")]
+    assert runtime.install_boot() == (install, install)
