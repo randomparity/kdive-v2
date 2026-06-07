@@ -83,6 +83,14 @@ def test_render_declares_qcow2_disk_driver() -> None:
     assert driver.get("type") == "qcow2"
 
 
+def test_render_emits_deterministic_uuid_for_idempotent_redefine() -> None:
+    # defineXML redefines an existing domain only when the XML carries its uuid; a deterministic
+    # uuid = system_id lets a provision retry redefine the running domain in place instead of
+    # failing with "domain already exists with uuid ..." on the name collision.
+    root = _safe_fromstring(render_domain_xml(_SYS, _profile()))
+    assert root.findtext("uuid") == str(_SYS)
+
+
 def test_required_cmdline_root_matches_the_rendered_disk_target() -> None:
     # ADR-0061: the platform-injected root= must name the device provisioning attaches. These are
     # set independently in two modules; this guards them moving together.

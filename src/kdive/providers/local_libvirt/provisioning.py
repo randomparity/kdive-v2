@@ -233,6 +233,11 @@ def render_domain_xml(
 
     domain = ET.Element("domain", type="kvm")
     ET.SubElement(domain, "name").text = domain_name_for(system_id)
+    # A deterministic uuid (= the System id) makes `defineXML` redefine the System's existing
+    # domain in place on a provision retry, instead of failing the name collision with a fresh
+    # libvirt-assigned uuid ("domain already exists with uuid ...") — the libvirt-level half of
+    # provision idempotency (ADR-0025; the unit test's fake defineXML cannot model this).
+    ET.SubElement(domain, "uuid").text = str(system_id)
     ET.SubElement(domain, "memory", unit="MiB").text = str(profile.memory_mb)
     ET.SubElement(domain, "vcpu").text = str(profile.vcpu)
     os_el = ET.SubElement(domain, "os")
