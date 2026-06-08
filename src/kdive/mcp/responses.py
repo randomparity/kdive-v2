@@ -124,7 +124,6 @@ class ToolResponse(BaseModel):
         suggested_next_actions: list[str] | None = None,
         data: dict[str, str] | None = None,
     ) -> ToolResponse:
-        """Build a tool-level failure envelope (``status="error"`` + ``category``)."""
         return cls(
             object_id=object_id,
             status="error",
@@ -135,7 +134,6 @@ class ToolResponse(BaseModel):
 
     @classmethod
     def from_job(cls, job: Job) -> ToolResponse:
-        """Build the job-handle envelope from a :class:`Job` row."""
         refs = {"result": job.result_ref} if job.result_ref else {}
         data = {"kind": job.kind.value}
         if job.state is JobState.FAILED:

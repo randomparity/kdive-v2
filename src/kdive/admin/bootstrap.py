@@ -21,7 +21,6 @@ from kdive.db.migrate import apply_migrations
 
 
 def local_env_defaults() -> dict[str, str]:
-    """Return repo-independent defaults for a local host-run KDIVE stack."""
     home = os.environ.get("HOME", "")
     host = os.environ.get("KDIVE_HTTP_HOST", "127.0.0.1")
     port = os.environ.get("KDIVE_HTTP_PORT", "8000")
@@ -66,7 +65,6 @@ def _refuse_existing(path: Path, *, force: bool) -> None:
 
 
 def install_fixtures(dest: Path, *, force: bool = False) -> None:
-    """Install the embedded fixture catalog under ``dest``."""
     _refuse_existing(dest, force=force)
     for relative, content in LOCAL_LIBVIRT_FIXTURES.items():
         path = dest / relative
@@ -75,14 +73,12 @@ def install_fixtures(dest: Path, *, force: bool = False) -> None:
 
 
 def install_compose(dest: Path, *, force: bool = False) -> None:
-    """Install the embedded backing-service compose file at ``dest``."""
     _refuse_existing(dest, force=force)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(LOCAL_COMPOSE, encoding="utf-8")
 
 
 def migrate(database_url: str | None = None) -> int:
-    """Apply packaged database migrations and return the number applied."""
     url = database_url or os.environ["KDIVE_DATABASE_URL"]
     conn = psycopg.connect(url, autocommit=True)
     try:
@@ -100,7 +96,6 @@ def seed_project_statements(
     max_concurrent_allocations: int,
     max_concurrent_systems: int,
 ) -> list[tuple[str, Sequence[Any]]]:
-    """Build parameterized budget/quota upserts for one demo project."""
     return [
         (
             "INSERT INTO budgets (project, limit_kcu, spent_kcu) "
@@ -161,7 +156,6 @@ def supervisor_commands(env: Mapping[str, str]) -> list[list[str]]:
 
 
 def run_stack() -> int:
-    """Run server, worker, and reconciler as child processes until one exits."""
     env = {**local_env_defaults(), **os.environ}
     children = [subprocess.Popen(cmd, env=env) for cmd in supervisor_commands(env)]  # noqa: S603
 

@@ -122,7 +122,6 @@ def register(
     async def systems_get(
         system_id: Annotated[str, Field(description="The System to render.")],
     ) -> ToolResponse:
-        """Render a System; failed maps to a failure envelope. Requires viewer."""
         return await get_system(pool, current_context(), system_id)
 
     @app.tool(
@@ -133,7 +132,6 @@ def register(
     async def systems_teardown(
         system_id: Annotated[str, Field(description="The System to tear down.")],
     ) -> ToolResponse:
-        """Enqueue an idempotent teardown for a System; destroys the domain. Requires admin."""
         return await teardown_system(pool, current_context(), system_id)
 
     @app.tool(
@@ -148,7 +146,6 @@ def register(
             Field(description="New provisioning profile; must opt in to reprovision."),
         ],
     ) -> ToolResponse:
-        """Reprovision a ready System in place under its Allocation. Requires operator + gate."""
         return await admin_handlers.reprovision_system(
             pool,
             current_context(),

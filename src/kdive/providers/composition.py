@@ -102,7 +102,6 @@ class ProviderRuntime:
         return self.installer, self.booter
 
     async def register_discovery(self, pool: AsyncConnectionPool) -> None:
-        """Run provider first-start discovery registration, if this runtime has one."""
         if self.discovery_registrar is not None:
             await self.discovery_registrar(pool)
 
@@ -139,7 +138,6 @@ def build_default_provider_runtime() -> ProviderRuntime:
 
 
 async def ensure_local_host_registered(pool: AsyncConnectionPool) -> None:
-    """Register the local-libvirt host on first start."""
     discovery = LocalLibvirtDiscovery.from_env()
     await ensure_discovered_resource_registered(
         pool,
