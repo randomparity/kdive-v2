@@ -106,6 +106,10 @@ class _MaterializedUpload(NamedTuple):
     presigned: PresignedUpload
 
 
+class _AuthorizedArtifact(NamedTuple):
+    key: str
+
+
 @dataclass(frozen=True)
 class _UploadOwnerSpec:
     owner_kind: str
@@ -222,6 +226,26 @@ _GET_SQL: LiteralString = (
 _PROJECT_SQL: LiteralString = "SELECT project FROM systems WHERE id = %s"
 
 
+async def _authorized_redacted_artifact(
+    pool: AsyncConnectionPool, ctx: RequestContext, *, artifact_id: str
+) -> _AuthorizedArtifact | ToolResponse:
+    uid = _as_uuid(artifact_id)
+    if uid is None:
+        return _config_error(artifact_id)
+    with bind_context(principal=ctx.principal):
+        async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(_GET_SQL, (uid,))
+            row = await cur.fetchone()
+            if row is None:
+                return _config_error(artifact_id)
+            await cur.execute(_PROJECT_SQL, (row["owner_id"],))
+            owner = await cur.fetchone()
+        if owner is None or owner["project"] not in ctx.projects:
+            return _config_error(artifact_id)
+        require_role(ctx, owner["project"], Role.VIEWER)
+        return _AuthorizedArtifact(key=str(row["object_key"]))
+
+
 async def artifacts_list(
     pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str
 ) -> list[ToolResponse]:
@@ -262,26 +286,15 @@ async def artifacts_get(
     A missing artifact and a `sensitive` artifact are indistinguishable (both
     `configuration_error`), so the raw vmcore cannot be fetched even when its id is known.
     """
-    uid = _as_uuid(artifact_id)
-    if uid is None:
-        return _config_error(artifact_id)
-    with bind_context(principal=ctx.principal):
-        async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(_GET_SQL, (uid,))
-            row = await cur.fetchone()
-            if row is None:
-                return _config_error(artifact_id)
-            await cur.execute(_PROJECT_SQL, (row["owner_id"],))
-            owner = await cur.fetchone()
-        if owner is None or owner["project"] not in ctx.projects:
-            return _config_error(artifact_id)
-        require_role(ctx, owner["project"], Role.VIEWER)
-        return ToolResponse.success(
-            artifact_id,
-            "available",
-            suggested_next_actions=["artifacts.get"],
-            refs={"object": row["object_key"]},
-        )
+    authorized = await _authorized_redacted_artifact(pool, ctx, artifact_id=artifact_id)
+    if isinstance(authorized, ToolResponse):
+        return authorized
+    return ToolResponse.success(
+        artifact_id,
+        "available",
+        suggested_next_actions=["artifacts.get"],
+        refs={"object": authorized.key},
+    )
 
 
 async def artifacts_search_text(
@@ -296,26 +309,15 @@ async def artifacts_search_text(
     store: _SearchStore | None = None,
 ) -> ToolResponse:
     """Search one redacted System-owned text artifact with bounded literal context."""
-    uid = _as_uuid(artifact_id)
-    if uid is None:
-        return _config_error(artifact_id)
+    authorized = await _authorized_redacted_artifact(pool, ctx, artifact_id=artifact_id)
+    if isinstance(authorized, ToolResponse):
+        return authorized
     try:
         parse_literal_terms(pattern)
     except ArtifactSearchInputError:
         return _config_error(artifact_id, data={"reason": "bad_search_input"})
-    with bind_context(principal=ctx.principal):
-        async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(_GET_SQL, (uid,))
-            row = await cur.fetchone()
-            if row is None:
-                return _config_error(artifact_id)
-            await cur.execute(_PROJECT_SQL, (row["owner_id"],))
-            owner = await cur.fetchone()
-        if owner is None or owner["project"] not in ctx.projects:
-            return _config_error(artifact_id)
-        require_role(ctx, owner["project"], Role.VIEWER)
     store = store or object_store_from_env()
-    key = str(row["object_key"])
+    key = authorized.key
     try:
         head = await asyncio.to_thread(store.head, key)
     except CategorizedError as exc:
