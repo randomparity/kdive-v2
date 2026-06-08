@@ -12,23 +12,19 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.lifecycle.systems.admin import (
-    SystemAdminHandlers,
-    teardown_system,
+    SystemAdminHandlers as _SystemAdminHandlers,
+)
+from kdive.mcp.tools.lifecycle.systems.admin import (
+    teardown_system as _teardown_system,
 )
 from kdive.mcp.tools.lifecycle.systems.provision import (
-    SystemProvisionHandlers,
-    get_system,
+    SystemProvisionHandlers as _SystemProvisionHandlers,
+)
+from kdive.mcp.tools.lifecycle.systems.provision import (
+    get_system as _get_system,
 )
 from kdive.profiles.types import ProvisioningProfileInput
 from kdive.providers.composition import ProviderRuntime
-
-__all__ = [
-    "get_system",
-    "register",
-    "SystemAdminHandlers",
-    "SystemProvisionHandlers",
-    "teardown_system",
-]
 
 
 def register(
@@ -41,11 +37,11 @@ def register(
     if runtime.rootfs_validator is None:
         raise RuntimeError("systems registrar requires an injected rootfs validator")
     rootfs_validator = runtime.rootfs_validator
-    provision_handlers = SystemProvisionHandlers(
+    provision_handlers = _SystemProvisionHandlers(
         runtime.component_sources,
         rootfs_validator,
     )
-    admin_handlers = SystemAdminHandlers(
+    admin_handlers = _SystemAdminHandlers(
         runtime.component_sources,
         rootfs_validator,
     )
@@ -124,7 +120,7 @@ def register(
         system_id: Annotated[str, Field(description="The System to render.")],
     ) -> ToolResponse:
         """Return a System the caller can view."""
-        return await get_system(pool, current_context(), system_id)
+        return await _get_system(pool, current_context(), system_id)
 
     @app.tool(
         name="systems.teardown",
@@ -135,7 +131,7 @@ def register(
         system_id: Annotated[str, Field(description="The System to tear down.")],
     ) -> ToolResponse:
         """Enqueue teardown for a System. Requires admin and destructive-op opt-in."""
-        return await teardown_system(pool, current_context(), system_id)
+        return await _teardown_system(pool, current_context(), system_id)
 
     @app.tool(
         name="systems.reprovision",

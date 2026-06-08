@@ -11,21 +11,13 @@ from pydantic import Field
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers
-from kdive.mcp.tools.lifecycle.runs.create import create_run
-from kdive.mcp.tools.lifecycle.runs.steps import boot_run, install_run
-from kdive.mcp.tools.lifecycle.runs.view import get_run
+from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers as _RunBuildHandlers
+from kdive.mcp.tools.lifecycle.runs.create import create_run as _create_run
+from kdive.mcp.tools.lifecycle.runs.steps import boot_run as _boot_run
+from kdive.mcp.tools.lifecycle.runs.steps import install_run as _install_run
+from kdive.mcp.tools.lifecycle.runs.view import get_run as _get_run
 from kdive.profiles.types import BuildProfileInput, ExpectedBootFailureInput
 from kdive.providers.composition import ProviderRuntime
-
-__all__ = [
-    "boot_run",
-    "create_run",
-    "get_run",
-    "install_run",
-    "register",
-    "RunBuildHandlers",
-]
 
 
 def register(
@@ -38,7 +30,7 @@ def register(
     if provider_runtime is None:
         raise RuntimeError("runs registrar requires an injected provider runtime")
     runtime = provider_runtime
-    build_handlers = RunBuildHandlers(
+    build_handlers = _RunBuildHandlers(
         runtime.component_sources,
         config_validator=runtime.build_config_validator,
     )
@@ -52,7 +44,7 @@ def register(
         run_id: Annotated[str, Field(description="The Run to render.")],
     ) -> ToolResponse:
         """Render a Run; a failed Run maps to a failure envelope. Requires viewer."""
-        return await get_run(pool, current_context(), run_id)
+        return await _get_run(pool, current_context(), run_id)
 
     @app.tool(
         name="runs.create",
@@ -76,7 +68,7 @@ def register(
         ] = None,
     ) -> ToolResponse:
         """Bind a Run to a ready System and Investigation in one transaction. Requires operator."""
-        return await create_run(
+        return await _create_run(
             pool,
             current_context(),
             investigation_id=investigation_id,
@@ -146,7 +138,7 @@ def register(
         run_id: Annotated[str, Field(description="The Run whose built kernel to install.")],
     ) -> ToolResponse:
         """Enqueue the install job for a built Run; poll jobs.* for completion. Operator only."""
-        return await install_run(pool, current_context(), run_id)
+        return await _install_run(pool, current_context(), run_id)
 
     @app.tool(
         name="runs.boot",
@@ -157,4 +149,4 @@ def register(
         run_id: Annotated[str, Field(description="The Run whose installed kernel to boot.")],
     ) -> ToolResponse:
         """Enqueue the boot job for an installed Run; poll jobs.* for completion. Operator only."""
-        return await boot_run(pool, current_context(), run_id)
+        return await _boot_run(pool, current_context(), run_id)
