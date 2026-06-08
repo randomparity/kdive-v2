@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Literal
 from uuid import UUID, uuid4
 
 from psycopg import AsyncConnection
@@ -115,19 +115,7 @@ _NON_TERMINAL_SYSTEM = (
 
 type RootfsValidator = Callable[[RootfsSource], None]
 type LockedAllocationSystem = tuple[AsyncConnection, Allocation, System | None]
-
-
-class _CreateSystemResponse(Protocol):
-    async def __call__(
-        self,
-        conn: AsyncConnection,
-        ctx: RequestContext,
-        alloc: Allocation,
-        existing: System | None,
-        *,
-        profile: ProvisioningProfile,
-        rootfs_validator: RootfsValidator,
-    ) -> ToolResponse: ...
+type CreateSystemMode = Literal["provision", "define"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,7 +171,7 @@ class SystemProvisionHandlers:
             ctx,
             allocation_id=allocation_id,
             profile=profile,
-            create_response=_provision_create_response,
+            mode="provision",
         )
 
     async def provision_defined_system(
@@ -220,7 +208,7 @@ class SystemProvisionHandlers:
             ctx,
             allocation_id=allocation_id,
             profile=profile,
-            create_response=_define_create_response,
+            mode="define",
         )
 
     async def _create_for_allocation(
@@ -230,7 +218,7 @@ class SystemProvisionHandlers:
         *,
         allocation_id: str,
         profile: ProvisioningProfileInput,
-        create_response: _CreateSystemResponse,
+        mode: CreateSystemMode,
     ) -> ToolResponse:
         """Parse, authorize, and lock the shared create-lane admission path."""
         uid = _as_uuid(allocation_id)
@@ -247,7 +235,16 @@ class SystemProvisionHandlers:
                     if isinstance(locked, MissingAllocation):
                         return _config_error(str(locked.allocation_id))
                     conn, alloc, existing = locked
-                    return await create_response(
+                    if mode == "provision":
+                        return await _provision_create_response(
+                            conn,
+                            ctx,
+                            alloc,
+                            existing,
+                            profile=parsed,
+                            rootfs_validator=self.rootfs_validator,
+                        )
+                    return await _define_create_response(
                         conn,
                         ctx,
                         alloc,
