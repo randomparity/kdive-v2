@@ -77,12 +77,12 @@ _REQUEST_KIND = "allocations.request"
 # and reconciler logic, which reasons about liveness, not occupancy. PCIe occupancy
 # (``pcie_claim.active_claims``) keeps using ``NON_TERMINAL_STATES``; a queued row has an
 # empty ``pcie_claim`` (resolve happens only at grant), so it contributes no device either way.
-_OCCUPYING = (
+OCCUPYING = (
     AllocationState.GRANTED,
     AllocationState.ACTIVE,
     AllocationState.RELEASING,
 )
-_OCCUPYING_VALUES = [s.value for s in _OCCUPYING]
+OCCUPYING_VALUES = [s.value for s in OCCUPYING]
 
 # A queued row rests in this state; the pending-cap count predicate is literally this one
 # state, never the occupancy predicate (ADR-0069).
@@ -433,7 +433,7 @@ async def _count_occupying(conn: AsyncConnection, resource_id: object) -> int:
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT count(*) FROM allocations WHERE resource_id = %s AND state = ANY(%s)",
-            (resource_id, _OCCUPYING_VALUES),
+            (resource_id, OCCUPYING_VALUES),
         )
         row = await cur.fetchone()
     if row is None:  # Invariant: count(*) always yields a row.
@@ -460,7 +460,7 @@ async def _within_alloc_quota(conn: AsyncConnection, project: str) -> bool:
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT count(*) FROM allocations WHERE project = %s AND state = ANY(%s)",
-            (project, _OCCUPYING_VALUES),
+            (project, OCCUPYING_VALUES),
         )
         count_row = await cur.fetchone()
     if count_row is None:  # Invariant: count(*) always yields a row.
