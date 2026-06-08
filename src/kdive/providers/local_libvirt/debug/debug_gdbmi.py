@@ -22,21 +22,37 @@ from __future__ import annotations
 
 import contextlib
 import ipaddress
-import json
-import math
 import re
 import shutil
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
-
-from pydantic import BaseModel, ConfigDict
-from pygdbmi.constants import GdbTimeoutError
-from pygdbmi.gdbmiparser import parse_response
+from typing import Any
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.providers.local_libvirt.debug import execution as mi_execution
+from kdive.providers.local_libvirt.debug import mi_controller
+from kdive.providers.local_libvirt.debug.execution import (
+    MAX_INTERACTIVE_WAIT_SEC,
+    ExecutionControl,
+)
+from kdive.providers.local_libvirt.debug.mi_controller import PygdbmiController
+from kdive.providers.local_libvirt.debug.mi_protocol import (
+    MiRecord,
+    breakpoint_rows,
+    memory_segments,
+    mi_int,
+    parse_mi_records,
+    payload_dict,
+    register_values_by_number,
+    result_payload_dict,
+)
+from kdive.providers.local_libvirt.debug.mi_protocol import (
+    register_names as parsed_register_names,
+)
+from kdive.providers.local_libvirt.debug.transcript import (
+    append_transcript as write_transcript,
+)
 from kdive.providers.ports import (
     GdbBreakpointRef,
     GdbController,
@@ -46,8 +62,20 @@ from kdive.providers.ports import (
 )
 from kdive.security.secrets.redaction import Redactor
 
+__all__ = [
+    "GdbMiEngine",
+    "MAX_INTERACTIVE_WAIT_SEC",
+    "MAX_MEMORY_READ_BYTES",
+    "MiRecord",
+    "PygdbmiController",
+    "default_attach_seam",
+    "parse_mi_records",
+]
+
 MAX_MEMORY_READ_BYTES = 4096
-MAX_INTERACTIVE_WAIT_SEC = 60
+_INTERRUPT_STOP_TIMEOUT_SEC = mi_execution.INTERRUPT_STOP_TIMEOUT_SEC
+_STOP_POLL_SLICE_SEC = mi_execution.STOP_POLL_SLICE_SEC
+_timeout_error = mi_controller.timeout_error
 
 # Per-command MI write timeout. 10s bounds a healthy localhost RSP connect/read. The resume
 # path uses ASYNC continue (mi-async on), so `-exec-continue` returns `^running` immediately
@@ -60,16 +88,6 @@ RSP_REMOTE_TIMEOUT_SEC = 30
 # `^connected`, so retrying any connect error a fixed small number of times is sound.
 _CONNECT_RETRY_COUNT = 3
 _CONNECT_RETRY_BACKOFF_SEC = 0.5
-# Fixed bound for the post-timeout `-exec-interrupt` to land its `*stopped` (SIGINT).
-_INTERRUPT_STOP_TIMEOUT_SEC = 10.0
-# Poll slice when looping read() toward the deadline.
-_STOP_POLL_SLICE_SEC = 0.5
-
-# The literal MI prompt terminator gdb emits between command results; not a record.
-_MI_PROMPT = "(gdb)"
-# Keys pygdbmi may emit on a parsed record; whitelist so an unexpected extra key is dropped
-# rather than tripping the extra="forbid" model boundary.
-_KNOWN_KEYS = ("type", "message", "payload", "token", "stream")
 
 # A bare C identifier. The name-shape gate keeps a breakpoint location an address-of-a-name,
 # never an arbitrary expression — so `-break-insert` is non-injectable.
@@ -84,223 +102,11 @@ _BREAK_ID_RE = re.compile(r"^[0-9]+$")
 _TERMINAL_STOP_REASONS = frozenset({"exited", "exited-normally", "exited-signalled"})
 
 
-class _MiModel(BaseModel):
-    """Frozen wire shape for parsed gdb/MI records (``extra="forbid"``)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class MiRecord(_MiModel):
-    """One parsed gdb/MI record (gdb manual "GDB/MI Output Syntax").
-
-    ``type`` is the MI record class (``result``/``notify``/``exec``/``console``/``log``/
-    ``output``/``target``); ``message`` is the result class (``done``/``running``/
-    ``connected``/``error``/``exit``) or async class; ``payload`` is the parsed value tree.
-    """
-
-    type: str
-    message: str | None = None
-    payload: dict[str, Any] | list[Any] | str | None = None
-    token: int | None = None
-    stream: str | None = None
-
-    @classmethod
-    def from_raw(cls, raw: dict[str, Any]) -> MiRecord:
-        return cls(**{key: raw[key] for key in _KNOWN_KEYS if key in raw})
-
-    @staticmethod
-    def first_result(records: list[MiRecord]) -> MiRecord | None:
-        """The first ``result``-class record (``^done``/``^running``/``^error``/...), or None."""
-        return next((record for record in records if record.type == "result"), None)
-
-
-def _mi_int(value: object) -> int | None:
-    return int(value) if isinstance(value, str) and value.lstrip("-").isdigit() else None
-
-
-def _payload_dict(value: object) -> dict[str, Any]:
-    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
-
-
-def _payload_list(value: object) -> list[Any]:
-    return value if isinstance(value, list) else []
-
-
-def _dict_rows(value: object) -> list[dict[str, Any]]:
-    return [row for row in _payload_list(value) if isinstance(row, dict)]
-
-
-def _result_payload_dict(records: list[MiRecord]) -> dict[str, Any]:
-    result = MiRecord.first_result(records)
-    if result is None:
-        return {}
-    return _payload_dict(result.payload)
-
-
-def _breakpoint_rows(records: list[MiRecord]) -> list[dict[str, Any]]:
-    payload = _result_payload_dict(records)
-    table = _payload_dict(payload.get("BreakpointTable"))
-    rows: list[dict[str, Any]] = []
-    for row in _dict_rows(table.get("body")):
-        entry = row.get("bkpt")
-        if isinstance(entry, dict):
-            rows.append(entry)
-    return rows
-
-
-def _register_names(records: list[MiRecord]) -> list[str]:
-    names = _result_payload_dict(records).get("register-names")
-    return [name for name in _payload_list(names) if isinstance(name, str)]
-
-
-def _register_values_by_number(records: list[MiRecord]) -> dict[str, object]:
-    rows = _dict_rows(_result_payload_dict(records).get("register-values"))
-    by_number: dict[str, object] = {}
-    for row in rows:
-        number = row.get("number")
-        if isinstance(number, str):
-            by_number[number] = row.get("value")
-    return by_number
-
-
-def _memory_segments(records: list[MiRecord]) -> list[dict[str, Any]]:
-    return _dict_rows(_result_payload_dict(records).get("memory"))
-
-
-def parse_mi_records(text: str) -> list[MiRecord]:
-    """Parse newline-delimited MI output into typed records.
-
-    Skips blank lines and the literal ``(gdb)`` prompt terminator. Used both for the
-    controller's returned dicts and for raw transcript text in tests.
-    """
-    records: list[MiRecord] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped == _MI_PROMPT:
-            continue
-        records.append(MiRecord.from_raw(parse_response(stripped)))
-    return records
-
-
 def _config_error(
     message: str, *, code: str, details: dict[str, object] | None = None
 ) -> CategorizedError:
     merged: dict[str, object] = {"code": code, **(details or {})}
     return CategorizedError(message, category=ErrorCategory.CONFIGURATION_ERROR, details=merged)
-
-
-def _timeout_error(command: str, timeout_sec: float) -> CategorizedError:
-    """The error an MI write timeout raises.
-
-    Tagged ``transport_stall`` / INFRASTRUCTURE_FAILURE: a timeout through the per-op path
-    (post-``^connected`` by construction) means the RSP link stalled.
-    """
-    return CategorizedError(
-        f"gdb/MI command timed out after {timeout_sec}s: {command}",
-        category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-        details={"code": "transport_stall", "command": command, "timeout_seconds": timeout_sec},
-    )
-
-
-class PygdbmiController:  # pragma: no cover - live_vm
-    """Real ``GdbController``: a managed ``gdb --interpreter=mi3`` child via ``pygdbmi``."""
-
-    def __init__(self, command: list[str]) -> None:
-        from pygdbmi.gdbcontroller import GdbController
-
-        self._controller = GdbController(command=command)
-
-    def write(self, command: str, *, timeout_sec: float) -> list[dict[str, object]]:
-        try:
-            return self._controller.write(
-                command, timeout_sec=timeout_sec, raise_error_on_timeout=True
-            )
-        except GdbTimeoutError as exc:
-            raise _timeout_error(command, timeout_sec) from exc
-
-    def read(self, *, timeout_sec: float) -> list[dict[str, object]]:
-        return self.get_gdb_response(timeout_sec=timeout_sec, raise_error_on_timeout=False)
-
-    def get_gdb_response(
-        self, *, timeout_sec: float, raise_error_on_timeout: bool = True
-    ) -> list[dict[str, object]]:
-        try:
-            return self._controller.get_gdb_response(
-                timeout_sec=timeout_sec, raise_error_on_timeout=raise_error_on_timeout
-            )
-        except GdbTimeoutError as exc:
-            if raise_error_on_timeout:
-                raise _timeout_error("get_gdb_response", timeout_sec) from exc
-            return []
-
-    def exit(self) -> None:
-        self._controller.exit()
-
-
-class _ExecutionControl:
-    """Resume/wait/interrupt machinery for the interactive ops."""
-
-    def __init__(self, engine: GdbMiEngine) -> None:
-        self._engine = engine
-
-    def wait_for_stop(
-        self, attachment: GdbMiAttachment, *, timeout_sec: float
-    ) -> GdbStopRecord | None:
-        slices = max(1, int(timeout_sec / _STOP_POLL_SLICE_SEC) + 1)
-        for _ in range(slices):
-            records = self._engine.records_from(
-                attachment.controller.read(timeout_sec=_STOP_POLL_SLICE_SEC)
-            )
-            attachment.records.extend(records)
-            if records:
-                self._engine.append_transcript(attachment.transcript_path, "<read>", records)
-            stop = next((record for record in records if record.message == "stopped"), None)
-            if stop is not None:
-                return self._engine.stop_record_from(stop)
-        return None
-
-    def interrupt(self, attachment: GdbMiAttachment) -> GdbStopRecord | None:
-        raw = attachment.controller.write("-exec-interrupt", timeout_sec=_MI_COMMAND_TIMEOUT_SEC)
-        records = self._engine.records_from(raw)
-        attachment.records.extend(records)
-        self._engine.append_transcript(attachment.transcript_path, "-exec-interrupt", records)
-        stop = self.wait_for_stop(attachment, timeout_sec=_INTERRUPT_STOP_TIMEOUT_SEC)
-        return self._redact_stop(stop) if stop is not None else None
-
-    def resume(
-        self, attachment: GdbMiAttachment, verb: str, *, timeout_sec: float
-    ) -> GdbStopRecord:
-        if timeout_sec < 0 or not math.isfinite(timeout_sec):
-            raise CategorizedError(
-                "gdb/MI continue timeout must be a finite non-negative number",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"code": "bad_continue_timeout", "timeout_sec": timeout_sec},
-            )
-        # Round fractional requests up: a sub-second request still waits its full span (and the
-        # floor of 1s below), never truncating toward zero (5.7 -> 6, not 5).
-        requested = math.ceil(timeout_sec) if timeout_sec else MAX_INTERACTIVE_WAIT_SEC
-        bounded = max(1, min(requested, MAX_INTERACTIVE_WAIT_SEC))
-        self._engine.execute_mi_command(attachment, verb)  # ^running under mi-async on
-        stop = self.wait_for_stop(attachment, timeout_sec=bounded)
-        if stop is not None:
-            return self._redact_stop(stop)
-        # The wait timed out. Fall back to -exec-interrupt: a reachable kernel cannot ignore a
-        # delivered SIGINT, so if the interrupt is accepted but no *stopped arrives, the link is
-        # dead (silence-path stall) — distinct from a benign no-breakpoint timeout where the
-        # SIGINT stop does arrive.
-        interrupted = self.interrupt(attachment)
-        if interrupted is None:
-            raise CategorizedError(
-                "gdb/MI RSP went silent: interrupt issued but no *stopped arrived; link stalled",
-                category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-                details={"code": "transport_stall", "verb": verb},
-            )
-        return self._redact_stop(interrupted.model_copy(update={"timed_out": True}))
-
-    def _redact_stop(self, stop: GdbStopRecord) -> GdbStopRecord:
-        return GdbStopRecord.model_validate(
-            self._engine._redactor().redact_value(stop.model_dump(mode="json"))
-        )
 
 
 class GdbMiEngine:
@@ -321,7 +127,7 @@ class GdbMiEngine:
         self._gdb_path_finder = gdb_path_finder
         self._redactor_factory = _redactor_factory(redactor, redactor_factory)
         self._sleep = sleep
-        self._execution = _ExecutionControl(self)
+        self._execution = ExecutionControl(self, command_timeout_sec=_MI_COMMAND_TIMEOUT_SEC)
 
     def _redactor(self) -> Redactor:
         return self._redactor_factory()
@@ -427,11 +233,11 @@ class GdbMiEngine:
     def list_breakpoints(self, attachment: GdbMiAttachment) -> list[GdbBreakpointRef]:
         return [
             self._breakpoint_ref_from(entry)
-            for entry in _breakpoint_rows(self.execute_mi_command(attachment, "-break-list"))
+            for entry in breakpoint_rows(self.execute_mi_command(attachment, "-break-list"))
         ]
 
     def _breakpoint_ref(self, records: list[MiRecord], *, key: str) -> GdbBreakpointRef:
-        payload = _result_payload_dict(records)
+        payload = result_payload_dict(records)
         entry = payload.get(key)
         if not isinstance(entry, dict):
             raise CategorizedError(
@@ -468,10 +274,10 @@ class GdbMiEngine:
             requested.append(name)
         # gdb keys register VALUES by ordinal number; map names->ordinals via
         # -data-list-register-names, then return only the requested names.
-        ordered_names = _register_names(
+        ordered_names = parsed_register_names(
             self.execute_mi_command(attachment, "-data-list-register-names")
         )
-        by_number = _register_values_by_number(
+        by_number = register_values_by_number(
             self.execute_mi_command(attachment, "-data-list-register-values x")
         )
         registers: dict[str, object] = {}
@@ -513,7 +319,7 @@ class GdbMiEngine:
         records = self.execute_mi_command(
             attachment, f"-data-read-memory-bytes 0x{address:x} {byte_count}"
         )
-        segments = _memory_segments(records)
+        segments = memory_segments(records)
         try:
             blob = b"".join(bytes.fromhex(str(seg.get("contents", ""))) for seg in segments)
         except ValueError as exc:
@@ -555,7 +361,7 @@ class GdbMiEngine:
     # --- record helpers (public to _ExecutionControl) -------------------------------------
 
     def stop_record_from(self, record: MiRecord) -> GdbStopRecord:
-        payload = _payload_dict(record.payload)
+        payload = payload_dict(record.payload)
         reason = payload.get("reason")
         if isinstance(reason, str) and reason in _TERMINAL_STOP_REASONS:
             raise CategorizedError(
@@ -564,7 +370,7 @@ class GdbMiEngine:
                 details={"code": "session_exited", "reason": reason},
             )
         frame_payload = payload.get("frame")
-        frame_payload = _payload_dict(frame_payload)
+        frame_payload = payload_dict(frame_payload)
         frame = self._frame_from(frame_payload) if frame_payload else None
         thread = payload.get("stopped-threads")
         return GdbStopRecord(
@@ -576,11 +382,16 @@ class GdbMiEngine:
 
     def _frame_from(self, payload: dict[str, Any]) -> GdbFrame:
         return GdbFrame(
-            level=_mi_int(payload.get("level")),
+            level=mi_int(payload.get("level")),
             func=payload.get("func") if isinstance(payload.get("func"), str) else None,
             addr=payload.get("addr") if isinstance(payload.get("addr"), str) else None,
             file=payload.get("file") if isinstance(payload.get("file"), str) else None,
-            line=_mi_int(payload.get("line")),
+            line=mi_int(payload.get("line")),
+        )
+
+    def redact_stop(self, stop: GdbStopRecord) -> GdbStopRecord:
+        return GdbStopRecord.model_validate(
+            self._redactor().redact_value(stop.model_dump(mode="json"))
         )
 
     def execute_mi_command(self, attachment: GdbMiAttachment, command: str) -> list[MiRecord]:
@@ -626,16 +437,12 @@ class GdbMiEngine:
     def append_transcript(
         self, transcript_path: Path, command: str, records: list[MiRecord]
     ) -> None:
-        """Append one redacted JSON-lines record per MI command to the session transcript."""
-        transcript_path.parent.mkdir(parents=True, exist_ok=True)
-        entry = {
-            "observed_at": datetime.now(UTC).isoformat(),
-            "command": command,
-            "records": [record.model_dump(mode="json") for record in records],
-        }
-        with transcript_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(self._redactor().redact_value(entry), default=str))
-            handle.write("\n")
+        write_transcript(
+            transcript_path=transcript_path,
+            command=command,
+            records=records,
+            redactor=self._redactor(),
+        )
 
 
 def _redactor_factory(
