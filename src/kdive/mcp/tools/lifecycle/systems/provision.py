@@ -399,45 +399,81 @@ async def _provision_defined_system(
     if uid is None:
         return _config_error(system_id)
     with bind_context(principal=ctx.principal):
-        async with pool.connection() as probe:
-            probe_system = await SYSTEMS.get(probe, uid)
-            if probe_system is None or probe_system.project not in ctx.projects:
-                return _config_error(system_id)
-            project = probe_system.project
-            allocation_id = probe_system.allocation_id
-        async with (
-            pool.connection() as conn,
-            conn.transaction(),
-            advisory_xact_lock(conn, LockScope.PROJECT, project),
-            advisory_xact_lock(conn, LockScope.ALLOCATION, allocation_id),
-        ):
-            system = await SYSTEMS.get(conn, uid)
-            if system is None or system.project not in ctx.projects:
-                return _config_error(system_id)
-            require_role(ctx, system.project, Role.OPERATOR)
-            alloc = await ALLOCATIONS.get(conn, system.allocation_id)
-            if alloc is None or alloc.project != system.project:
-                return _config_error(str(system.allocation_id))
-            if system.state in _TERMINAL_SYSTEM:
-                return _config_error(system_id, data={"current_status": system.state.value})
-            try:
-                parsed = ProvisioningProfile.parse(system.provisioning_profile)
-                _validate_profile_for_provider(parsed, component_sources)
-                _validate_rootfs_for_provider(parsed, rootfs_validator)
-            except CategorizedError as exc:
-                return ToolResponse.failure(system_id, exc.category)
-            if system.state is SystemState.DEFINED:
-                if alloc.state is not AllocationState.ACTIVE:
-                    return _config_error(str(alloc.id), data={"current_status": alloc.state.value})
-                return await _admit_defined(conn, ctx, alloc, system)
-            job = await queue.enqueue(
-                conn,
-                JobKind.PROVISION,
-                {"system_id": str(system.id)},
-                job_authorizing(ctx, system.project),
-                f"{system.allocation_id}:provision",
-            )
-            return _system_job_envelope(job, system.id)
+        return await _provision_defined_locked(
+            pool,
+            ctx,
+            uid,
+            component_sources=component_sources,
+            rootfs_validator=rootfs_validator,
+        )
+
+
+async def _provision_defined_locked(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    system_id: UUID,
+    *,
+    component_sources: ComponentSourceCapabilities,
+    rootfs_validator: RootfsValidator,
+) -> ToolResponse:
+    async with pool.connection() as probe:
+        probe_system = await SYSTEMS.get(probe, system_id)
+        if probe_system is None or probe_system.project not in ctx.projects:
+            return _config_error(str(system_id))
+        project = probe_system.project
+        allocation_id = probe_system.allocation_id
+    async with (
+        pool.connection() as conn,
+        conn.transaction(),
+        advisory_xact_lock(conn, LockScope.PROJECT, project),
+        advisory_xact_lock(conn, LockScope.ALLOCATION, allocation_id),
+    ):
+        system = await SYSTEMS.get(conn, system_id)
+        if system is None or system.project not in ctx.projects:
+            return _config_error(str(system_id))
+        require_role(ctx, system.project, Role.OPERATOR)
+        alloc = await ALLOCATIONS.get(conn, system.allocation_id)
+        if alloc is None or alloc.project != system.project:
+            return _config_error(str(system.allocation_id))
+        return await _provision_defined_response(
+            conn,
+            ctx,
+            system,
+            alloc,
+            component_sources=component_sources,
+            rootfs_validator=rootfs_validator,
+        )
+
+
+async def _provision_defined_response(
+    conn: AsyncConnection,
+    ctx: RequestContext,
+    system: System,
+    alloc: Allocation,
+    *,
+    component_sources: ComponentSourceCapabilities,
+    rootfs_validator: RootfsValidator,
+) -> ToolResponse:
+    if system.state in _TERMINAL_SYSTEM:
+        return _config_error(str(system.id), data={"current_status": system.state.value})
+    try:
+        parsed = ProvisioningProfile.parse(system.provisioning_profile)
+        _validate_profile_for_provider(parsed, component_sources)
+        _validate_rootfs_for_provider(parsed, rootfs_validator)
+    except CategorizedError as exc:
+        return ToolResponse.failure(str(system.id), exc.category)
+    if system.state is SystemState.DEFINED:
+        if alloc.state is not AllocationState.ACTIVE:
+            return _config_error(str(alloc.id), data={"current_status": alloc.state.value})
+        return await _admit_defined(conn, ctx, alloc, system)
+    job = await queue.enqueue(
+        conn,
+        JobKind.PROVISION,
+        {"system_id": str(system.id)},
+        job_authorizing(ctx, system.project),
+        f"{system.allocation_id}:provision",
+    )
+    return _system_job_envelope(job, system.id)
 
 
 async def _new_system_allowed(
