@@ -111,6 +111,30 @@ class Repository[M: BaseModel]:
             row = await cur.fetchone()
         return None if row is None else self._model.model_validate(row)
 
+    async def list_all(self, conn: AsyncConnection) -> list[M]:
+        """Return every row, ordered by ``key_column`` for a stable collection envelope."""
+        query = sql.SQL("SELECT * FROM {table} ORDER BY {col}").format(
+            table=sql.Identifier(self._table), col=sql.Identifier(self._key_column)
+        )
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(query)
+            rows = await cur.fetchall()
+        return [self._model.model_validate(row) for row in rows]
+
+    async def delete(self, conn: AsyncConnection, key: UUID | str) -> bool:
+        """Delete the row whose ``key_column`` equals ``key``; return whether one was removed.
+
+        Assumes ``key_column`` is unique (a PK or unique constraint) — the ``== 1`` check
+        reports ``True`` for the single matched row. On a non-unique column a multi-row delete
+        would report ``False`` despite removing rows, so only use this on a uniquely-keyed table.
+        """
+        query = sql.SQL("DELETE FROM {table} WHERE {col} = %s").format(
+            table=sql.Identifier(self._table), col=sql.Identifier(self._key_column)
+        )
+        async with conn.cursor() as cur:
+            await cur.execute(query, (key,))
+            return cur.rowcount == 1
+
 
 class StatefulRepository[M: DomainModel, S: StrEnum](Repository[M]):
     """A `Repository` plus `update_state`, bound to the object's state enum ``S``."""
@@ -259,9 +283,8 @@ BUDGETS = KeyedRepository(Budget, "budgets", "project", update_columns=frozenset
 QUOTAS = KeyedRepository(Quota, "quotas", "project")
 LEDGER = Repository(LedgerEntry, "ledger", server_generated=("ts",))
 
-# The shapes catalog (ADR-0067). Read-only here (the resolver calls `get` keyed by `name`);
-# the operator upsert/list path lands with the shapes.* tools. `updated_at` is the only
-# server-generated column (the trigger maintains it); there is no `created_at`.
-SYSTEM_SHAPES = Repository(
-    SystemShape, "system_shapes", server_generated=("updated_at",), key_column="name"
-)
+# The shapes catalog (ADR-0067). Keyed by `name`: the resolver calls `get`, the `shapes.*`
+# tools call `upsert` / `list_all` / `delete`. `upsert` rewrites every non-key column (a
+# re-set is a full redefinition of the preset). `updated_at` is the only server-generated
+# column (the trigger maintains it); there is no `created_at`.
+SYSTEM_SHAPES = KeyedRepository(SystemShape, "system_shapes", "name")
