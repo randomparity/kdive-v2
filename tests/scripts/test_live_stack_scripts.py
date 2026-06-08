@@ -87,3 +87,41 @@ def test_stack_start_foreground_exits_when_any_child_exits(tmp_path: Path) -> No
         "server",
         "worker",
     ]
+
+
+def test_stack_start_daemon_fails_when_child_exits_immediately(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    pid_file = tmp_path / "stack.pid"
+    (fake_bin / "uv").write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            name="${@: -1}"
+            if [[ "${name}" == "server" ]]; then
+              exit 9
+            fi
+            sleep 30
+            """
+        ),
+        encoding="utf-8",
+    )
+    (fake_bin / "uv").chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/live-stack/start.sh"), "--daemon"],
+        env={
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "HOME": str(tmp_path),
+            "KDIVE_STACK_PID_FILE": str(pid_file),
+            "KDIVE_STACK_LOG_DIR": str(tmp_path / "logs"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert not pid_file.exists()

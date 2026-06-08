@@ -29,10 +29,30 @@ start_one() {
   echo "$!" >>"${pid_file}"
 }
 
+children_running() {
+  local running
+  local pid
+  running="$(jobs -pr)"
+  while read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    if ! grep -qx -- "${pid}" <<<"${running}"; then
+      return 1
+    fi
+  done <"${pid_file}"
+}
+
 rm -f "${pid_file}"
 start_one server uv run python -m kdive server
 start_one worker uv run python -m kdive worker
 start_one reconciler uv run python -m kdive reconciler
+
+if [[ "${mode}" == "--daemon" ]]; then
+  sleep 0.2
+  if ! children_running; then
+    echo "KDIVE MCP stack failed during startup; see ${log_dir}" >&2
+    exit 1
+  fi
+fi
 
 echo "KDIVE MCP stack started"
 echo "MCP URL: ${KDIVE_STACK_BASE_URL}"
