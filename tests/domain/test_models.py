@@ -30,6 +30,7 @@ from kdive.domain.models import (
     Run,
     Sensitivity,
     System,
+    SystemShape,
 )
 from kdive.domain.state import (
     AllocationState,
@@ -362,6 +363,39 @@ def test_accounting_models_reject_unknown_fields() -> None:
                 "bogus": "nope",
             }
         )
+
+
+def test_system_shape_carries_sizing_keyed_by_name() -> None:
+    shape = SystemShape(
+        name="medium", vcpus=2, memory_mb=4096, disk_gb=20, pcie_match=None, updated_at=_NOW
+    )
+    assert shape.name == "medium"
+    assert (shape.vcpus, shape.memory_mb, shape.disk_gb) == (2, 4096, 20)
+    assert shape.pcie_match is None
+    assert "id" not in SystemShape.model_fields  # keyed by name PK
+
+
+def test_system_shape_rejects_non_whole_gb_memory() -> None:
+    with pytest.raises(ValidationError):
+        SystemShape(
+            name="odd", vcpus=1, memory_mb=1500, disk_gb=10, pcie_match=None, updated_at=_NOW
+        )
+
+
+def test_system_shape_rejects_non_positive_sizes() -> None:
+    for field in ("vcpus", "memory_mb", "disk_gb"):
+        sizes = {"vcpus": 1, "memory_mb": 1024, "disk_gb": 10}
+        sizes[field] = 0
+        with pytest.raises(ValidationError):
+            SystemShape(name="bad", **sizes, pcie_match=None, updated_at=_NOW)
+
+
+def test_system_shape_keeps_pcie_match_opaque() -> None:
+    # The matcher grammar lands later (ADR-0067); the model stores any string verbatim.
+    shape = SystemShape(
+        name="gpu", vcpus=4, memory_mb=8192, disk_gb=40, pcie_match="10de:*", updated_at=_NOW
+    )
+    assert shape.pcie_match == "10de:*"
 
 
 def test_run_round_trips_through_json() -> None:

@@ -319,6 +319,37 @@ class Quota(_DomainBase):
     updated_at: datetime
 
 
+# A shape's memory_mb maps to the cost Selector's memory_gb exactly only when it is a
+# whole-GB multiple (ADR-0067); the same factor the cost model uses (cost._MB_PER_GB).
+_MB_PER_GB = 1024
+
+
+class SystemShape(_DomainBase):
+    """One named sizing preset in the shapes catalog (ADR-0067).
+
+    Keyed by ``name`` (PK), seeded by migration 0013 with ``small`` / ``medium`` /
+    ``large`` / ``max``. A shape fixes **size only** — ``vcpus`` / ``memory_mb`` /
+    ``disk_gb`` plus an optional ``pcie_match``; ``cost_class`` is resolved host-side at
+    admission, not carried here. ``memory_mb`` is constrained to whole-GB multiples so the
+    resolver maps ``memory_mb → memory_gb`` exactly (the same constraint the migration's
+    CHECK enforces). ``pcie_match`` is stored opaquely until the matcher grammar lands.
+    """
+
+    name: str
+    vcpus: int = Field(gt=0, strict=True)
+    memory_mb: int = Field(gt=0, strict=True)
+    disk_gb: int = Field(gt=0, strict=True)
+    pcie_match: str | None = None
+    updated_at: datetime
+
+    @field_validator("memory_mb")
+    @classmethod
+    def _whole_gb(cls, value: int) -> int:
+        if value % _MB_PER_GB != 0:
+            raise ValueError(f"memory_mb {value} must be a whole-GB multiple of {_MB_PER_GB}")
+        return value
+
+
 class LedgerEntry(_DomainBase):
     """One append-only, signed metering row (ADR-0007 §3).
 

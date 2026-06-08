@@ -98,6 +98,7 @@ def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
         "0010",
         "0011",
         "0012",
+        "0013",
     ]
     assert second == []
 
@@ -480,4 +481,99 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
         "0010",
         "0011",
         "0012",
+        "0013",
     ]
+
+
+# Migration 0013 seeds these named shapes (ADR-0067); the resolver and reuse read them.
+_SEED_SHAPES = {
+    "small": (1, 1024, 10),
+    "medium": (2, 4096, 20),
+    "large": (4, 8192, 40),
+    "max": (8, 16384, 80),
+}
+
+
+def test_migration_0013_creates_system_shapes_table(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    cols = _columns(pg_conn, "system_shapes")
+    assert cols.get("name") == "text"
+    assert cols.get("vcpus") == "integer"
+    assert cols.get("memory_mb") == "integer"
+    assert cols.get("disk_gb") == "integer"
+    assert cols.get("pcie_match") == "text"
+    assert cols.get("updated_at") == "timestamp with time zone"
+
+
+def test_system_shapes_name_is_primary_key(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    rows = pg_conn.execute(
+        """
+        SELECT kcu.column_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+        WHERE tc.constraint_type = 'PRIMARY KEY'
+          AND tc.table_schema = 'public' AND tc.table_name = 'system_shapes'
+        """
+    ).fetchall()
+    assert [r[0] for r in rows] == ["name"]
+
+
+def test_system_shapes_pcie_match_is_nullable(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    nullable = _nullable(pg_conn, "system_shapes")
+    assert nullable.get("pcie_match") == "YES"
+    for col in ("name", "vcpus", "memory_mb", "disk_gb", "updated_at"):
+        assert nullable.get(col) == "NO", col
+
+
+def test_migration_0013_seeds_all_shapes(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    rows = pg_conn.execute(
+        "SELECT name, vcpus, memory_mb, disk_gb, pcie_match FROM system_shapes"
+    ).fetchall()
+    seeded = {r[0]: (r[1], r[2], r[3]) for r in rows}
+    assert seeded == _SEED_SHAPES
+    # Seeds carry no PCIe requirement (the matcher grammar lands later, ADR-0067).
+    assert all(r[4] is None for r in rows)
+
+
+def test_system_shapes_rejects_non_whole_gb_memory(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        pg_conn.execute(
+            "INSERT INTO system_shapes (name, vcpus, memory_mb, disk_gb) "
+            "VALUES ('odd', 1, 1500, 10)"
+        )
+
+
+def test_system_shapes_accepts_whole_gb_memory(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    pg_conn.execute(
+        "INSERT INTO system_shapes (name, vcpus, memory_mb, disk_gb) VALUES ('whole', 2, 2048, 16)"
+    )
+    row = pg_conn.execute("SELECT memory_mb FROM system_shapes WHERE name = 'whole'").fetchone()
+    assert row is not None and row[0] == 2048
+
+
+def test_system_shapes_rejects_non_positive_sizes(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    for col, value in (("vcpus", 0), ("memory_mb", 0), ("disk_gb", 0)):
+        sizes = {"vcpus": 1, "memory_mb": 1024, "disk_gb": 10}
+        sizes[col] = value
+        with pytest.raises(psycopg.errors.CheckViolation):
+            pg_conn.execute(
+                "INSERT INTO system_shapes (name, vcpus, memory_mb, disk_gb) "
+                "VALUES (%s, %s, %s, %s)",
+                (f"bad-{col}", sizes["vcpus"], sizes["memory_mb"], sizes["disk_gb"]),
+            )
+
+
+def test_system_shapes_updated_at_trigger_bumps_on_update(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    before = pg_conn.execute("SELECT updated_at FROM system_shapes WHERE name = 'small'").fetchone()
+    assert before is not None
+    pg_conn.execute("UPDATE system_shapes SET disk_gb = 11 WHERE name = 'small'")
+    after = pg_conn.execute("SELECT updated_at FROM system_shapes WHERE name = 'small'").fetchone()
+    assert after is not None and after[0] > before[0]

@@ -32,6 +32,7 @@ from kdive.domain.models import (
     Resource,
     Run,
     System,
+    SystemShape,
 )
 from kdive.domain.state import (
     AllocationState,
@@ -254,3 +255,10 @@ COST_CLASS_COEFFICIENTS = KeyedRepository(
 BUDGETS = KeyedRepository(Budget, "budgets", "project", update_columns=frozenset({"limit_kcu"}))
 QUOTAS = KeyedRepository(Quota, "quotas", "project")
 LEDGER = Repository(LedgerEntry, "ledger", server_generated=("ts",))
+
+# The shapes catalog (ADR-0067). Read-only here (the resolver calls `get` keyed by `name`);
+# the operator upsert/list path lands with the shapes.* tools. `updated_at` is the only
+# server-generated column (the trigger maintains it); there is no `created_at`.
+SYSTEM_SHAPES = Repository(
+    SystemShape, "system_shapes", server_generated=("updated_at",), key_column="name"
+)
