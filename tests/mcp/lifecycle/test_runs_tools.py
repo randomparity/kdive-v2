@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -237,7 +236,7 @@ def test_envelope_for_run_failed_defaults_to_infrastructure_failure() -> None:
     assert resp.error_category == "infrastructure_failure"
 
 
-def test_envelope_for_run_expected_boot_failure_json_is_deterministic() -> None:
+def test_envelope_for_run_expected_boot_failure_detail_is_structured() -> None:
     expected = {
         "pattern": "__d_lookup|Oops",
         "kind": "console_crash",
@@ -252,10 +251,7 @@ def test_envelope_for_run_expected_boot_failure_json_is_deterministic() -> None:
     assert resp.suggested_next_actions == ["runs.get", "runs.build"]
     assert resp.data["required_cmdline"] == "panic_on_oops=1"
     assert resp.data["expected_boot_failure"] == "console_crash"
-    assert (
-        resp.data["expected_boot_failure_json"]
-        == '{"description":"known crash","kind":"console_crash","pattern":"__d_lookup|Oops"}'
-    )
+    assert resp.data["expected_boot_failure_detail"] == expected
 
 
 @pytest.mark.parametrize(
@@ -375,7 +371,7 @@ def test_get_run_exposes_expected_boot_failure(migrated_url: str) -> None:
                 )
             resp = await get_run(pool, _ctx(), run_id)
         assert resp.data["expected_boot_failure"] == "console_crash"
-        assert json.loads(resp.data["expected_boot_failure_json"]) == expected
+        assert resp.data["expected_boot_failure_detail"] == expected
 
     asyncio.run(_run())
 

@@ -4,14 +4,13 @@
 the Run's `debuginfo_ref` (the build-plane `vmlinux`), the build plane's recorded `build_id`
 (provenance), and the Run's System's captured raw `vmcore` key through the shared
 `mcp.tools._vmcore_targets` helper. It then runs the `VmcoreIntrospector` port and returns the
-**already-redacted** report (the port is the single redaction boundary, ADR-0033 §6) as a JSON
-string in `data["report"]`.
+**already-redacted** report (the port is the single redaction boundary, ADR-0033 §6) as
+structured data in `data["report"]`.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -67,9 +66,7 @@ async def introspect_from_vmcore(
             )
         except CategorizedError as exc:
             return ToolResponse.failure(run_id, exc.category)
-        report = json.dumps(
-            {"tasks": output.tasks, "modules": output.modules, "sysinfo": output.sysinfo}
-        )
+        report = {"tasks": output.tasks, "modules": output.modules, "sysinfo": output.sysinfo}
         return ToolResponse.success(
             run_id,
             "succeeded",
@@ -130,7 +127,7 @@ async def introspect_run(
         except CategorizedError as exc:
             return ToolResponse.failure(session_id, exc.category)
         sections = {"tasks": output.tasks, "modules": output.modules, "sysinfo": output.sysinfo}
-        report = json.dumps({helper: sections[helper]})
+        report = {helper: sections[helper]}
         return ToolResponse.success(
             session_id,
             "succeeded",

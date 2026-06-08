@@ -10,7 +10,6 @@ context (tested directly, never through MCP).
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Annotated, LiteralString
 from uuid import UUID
@@ -136,7 +135,7 @@ def _audit_args(project: str | None, resource_id: UUID | None) -> dict[str, obje
     }
 
 
-def _alloc_json(row: dict[str, object]) -> dict[str, str | None]:
+def _alloc_data(row: dict[str, object]) -> dict[str, str | None]:
     expiry = row["lease_expiry"]
     return {
         "id": str(row["id"]),
@@ -148,7 +147,7 @@ def _alloc_json(row: dict[str, object]) -> dict[str, str | None]:
     }
 
 
-def _system_json(row: dict[str, object]) -> dict[str, str | None]:
+def _system_data(row: dict[str, object]) -> dict[str, str | None]:
     return {
         "id": str(row["id"]),
         "allocation_id": str(row["allocation_id"]),
@@ -167,9 +166,18 @@ def _as_str(value: object) -> str | None:
 def _response(
     allocations: list[dict[str, object]], systems: list[dict[str, object]]
 ) -> ToolResponse:
-    return ToolResponse.success(
+    items = [
+        ToolResponse.success(str(row["id"]), "ok", data={"kind": "allocation", **_alloc_data(row)})
+        for row in allocations
+    ]
+    items.extend(
+        ToolResponse.success(str(row["id"]), "ok", data={"kind": "system", **_system_data(row)})
+        for row in systems
+    )
+    return ToolResponse.collection(
         _OBJECT_ID,
         "ok",
+        items,
         suggested_next_actions=["audit.query"],
         data={
             "allocation_count": str(len(allocations)),
@@ -177,8 +185,6 @@ def _response(
             "truncated": "true"
             if len(allocations) >= _MAX_ROWS or len(systems) >= _MAX_ROWS
             else "false",
-            "allocations": json.dumps([_alloc_json(r) for r in allocations]),
-            "systems": json.dumps([_system_json(r) for r in systems]),
         },
     )
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from uuid import UUID
 
 from kdive.domain.errors import ErrorCategory
@@ -27,16 +26,14 @@ def envelope_for_run(run: Run, *, required_cmdline: str | None = None) -> ToolRe
         actions = ["runs.get", "runs.build"]
     else:
         actions = ["runs.get"]
-    data = {"project": run.project}
+    data: dict[str, object] = {"project": run.project}
     if required_cmdline is not None:
         data["required_cmdline"] = required_cmdline
     if run.expected_boot_failure is not None:
         kind = run.expected_boot_failure.get("kind")
         if isinstance(kind, str):
             data["expected_boot_failure"] = kind
-        data["expected_boot_failure_json"] = json.dumps(
-            run.expected_boot_failure, separators=(",", ":"), sort_keys=True
-        )
+        data["expected_boot_failure_detail"] = run.expected_boot_failure
     return ToolResponse.success(
         str(run.id), run.state.value, suggested_next_actions=actions, data=data
     )

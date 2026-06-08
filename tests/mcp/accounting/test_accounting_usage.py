@@ -196,6 +196,7 @@ def test_usage_by_project_reports_totals(migrated_url: str) -> None:
         assert resp.data["spent_kcu"] == "6.0000"
         assert resp.data["budget_remaining"] == "94.0000"
         assert resp.data["shared_kcu"] == "0.0000"
+        assert resp.data["by_cost_class"] == {"local": "6.0000"}
 
     asyncio.run(_run())
 

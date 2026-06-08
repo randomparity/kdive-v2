@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Annotated
 from uuid import UUID
 
@@ -102,7 +101,7 @@ def _usage_response(project: str, rollup: accounting_domain.ProjectUsage) -> Too
             "spent_kcu": str(rollup.spent_kcu),
             "budget_remaining": str(rollup.budget_remaining),
             "shared_kcu": str(rollup.shared_kcu),
-            "by_cost_class": json.dumps(by_cost_class, sort_keys=True),
+            "by_cost_class": by_cost_class,
         },
     )
 

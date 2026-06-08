@@ -9,7 +9,11 @@ rather than per-plane discipline.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, model_validator
+import math
+from collections.abc import Mapping
+from typing import Any
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job
@@ -31,6 +35,26 @@ _NEXT_ACTIONS: dict[JobState, list[str]] = {
 _FAILURE_STATUSES = frozenset({JobState.FAILED.value, "error"})
 
 
+def _validate_json_value(value: object, *, path: str) -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path} must be finite JSON number")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_json_value(item, path=f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{path} object keys must be strings")
+            _validate_json_value(item, path=f"{path}.{key}")
+        return
+    raise ValueError(f"{path} contains non-JSON value {type(value).__name__}")
+
+
 class ToolResponse(BaseModel):
     """The structured JSON every MCP tool returns (ADR-0019)."""
 
@@ -39,8 +63,15 @@ class ToolResponse(BaseModel):
     suggested_next_actions: list[str] = Field(default_factory=list)
     refs: dict[str, str] = Field(default_factory=dict)
     error_category: str | None = None
-    data: dict[str, str] = Field(default_factory=dict)
+    data: dict[str, Any] = Field(default_factory=dict)
     items: list[ToolResponse] = Field(default_factory=list)
+
+    @field_validator("data")
+    @classmethod
+    def _data_is_json_compatible(cls, data: dict[str, Any]) -> dict[str, Any]:
+        for key, value in data.items():
+            _validate_json_value(value, path=f"data.{key}")
+        return data
 
     @model_validator(mode="after")
     def _category_iff_failed(self) -> ToolResponse:
@@ -65,7 +96,7 @@ class ToolResponse(BaseModel):
         *,
         suggested_next_actions: list[str] | None = None,
         refs: dict[str, str] | None = None,
-        data: dict[str, str] | None = None,
+        data: Mapping[str, Any] | None = None,
     ) -> ToolResponse:
         """Build a non-failure envelope.
 
@@ -77,7 +108,7 @@ class ToolResponse(BaseModel):
             status=status,
             suggested_next_actions=suggested_next_actions or [],
             refs=refs or {},
-            data=data or {},
+            data=dict(data or {}),
         )
 
     @classmethod
@@ -89,7 +120,7 @@ class ToolResponse(BaseModel):
         *,
         suggested_next_actions: list[str] | None = None,
         refs: dict[str, str] | None = None,
-        data: dict[str, str] | None = None,
+        data: Mapping[str, Any] | None = None,
     ) -> ToolResponse:
         """Build one envelope for a collection-returning tool."""
         payload = dict(data or {})
@@ -110,20 +141,20 @@ class ToolResponse(BaseModel):
         category: ErrorCategory,
         *,
         suggested_next_actions: list[str] | None = None,
-        data: dict[str, str] | None = None,
+        data: Mapping[str, Any] | None = None,
     ) -> ToolResponse:
         return cls(
             object_id=object_id,
             status="error",
             error_category=category.value,
             suggested_next_actions=suggested_next_actions or [],
-            data=data or {},
+            data=dict(data or {}),
         )
 
     @classmethod
     def from_job(cls, job: Job) -> ToolResponse:
         refs = {"result": job.result_ref} if job.result_ref else {}
-        data = {"kind": job.kind.value}
+        data: dict[str, Any] = {"kind": job.kind.value}
         if job.state is JobState.FAILED:
             data.update(job.failure_context)
         return cls(

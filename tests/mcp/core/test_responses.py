@@ -109,6 +109,18 @@ def test_success_factory_builds_non_failure_envelope() -> None:
     assert resp.data == {"k": "v"}
 
 
+def test_data_accepts_nested_json_values_and_rejects_other_objects() -> None:
+    resp = ToolResponse.success(
+        "inventory",
+        "ok",
+        data={"rows": [{"id": "a", "count": 1, "enabled": True, "note": None}]},
+    )
+
+    assert resp.data["rows"] == [{"id": "a", "count": 1, "enabled": True, "note": None}]
+    with pytest.raises(ValueError, match="non-JSON"):
+        ToolResponse.success("bad", "ok", data={"when": _NOW})
+
+
 def test_success_factory_on_failure_status_raises() -> None:
     # "failed" is a failure status; building it via success() (no category) is misuse.
     with pytest.raises(ValueError, match="error_category"):

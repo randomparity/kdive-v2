@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -102,7 +101,8 @@ def test_from_vmcore_happy_path_returns_redacted_report(migrated_url: str) -> No
                 pool, _ctx(), run_id=run_id, introspector=port
             )
         assert resp.status != "error"
-        report = json.loads(resp.data["report"])
+        report = resp.data["report"]
+        assert isinstance(report, dict)
         assert report["sysinfo"]["release"] == "6.8.0"
         assert resp.data["truncated"] == "false"
         assert port.kwargs["expected_build_id"] == "deadbeef"
@@ -138,8 +138,9 @@ def test_from_vmcore_passes_through_port_redacted_report(migrated_url: str) -> N
                 pool, _ctx(), run_id=run_id, introspector=port
             )
         assert resp.status != "error"
-        assert "hunter2" not in resp.data["report"]
-        assert "[REDACTED]" in resp.data["report"]
+        report = resp.data["report"]
+        assert isinstance(report, dict)
+        assert report["tasks"]["tasks"][0]["comm"] == "[REDACTED]"
 
     asyncio.run(_run())
 
@@ -322,7 +323,8 @@ def test_run_live_happy_path_returns_redacted_report(migrated_url: str) -> None:
                 pool, _live_ctx(), session_id=session_id, helper="tasks", introspector=port
             )
         assert resp.status != "error"
-        report = json.loads(resp.data["report"])
+        report = resp.data["report"]
+        assert isinstance(report, dict)
         assert set(report) == {"tasks"}
         assert report["tasks"]["tasks"][0]["pid"] == 1
         assert port.kwargs == {"transport_handle": "ssh://127.0.0.1:22", "helper": "tasks"}
@@ -339,8 +341,9 @@ def test_run_live_masks_planted_secret_in_response(migrated_url: str) -> None:
             resp = await introspect_tools.introspect_run(
                 pool, _live_ctx(), session_id=session_id, helper="tasks", introspector=port
             )
-        assert "hunter2" not in resp.data["report"]
-        assert "[REDACTED]" in resp.data["report"]
+        report = resp.data["report"]
+        assert isinstance(report, dict)
+        assert report["tasks"]["tasks"][0]["comm"] == "[REDACTED]"
 
     asyncio.run(_run())
 
