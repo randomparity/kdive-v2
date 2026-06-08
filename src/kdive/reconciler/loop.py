@@ -27,8 +27,9 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS
+from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import JobKind
-from kdive.domain.state import AllocationState
+from kdive.domain.state import AllocationState, DebugSessionState, JobState, RunState, SystemState
 from kdive.jobs import queue
 from kdive.jobs.payloads import PayloadValidationError, run_id_from_payload
 from kdive.security import audit
@@ -43,7 +44,30 @@ DEFAULT_DEBUG_SESSION_STALE_AFTER = timedelta(minutes=2)
 DEFAULT_IDEMPOTENCY_RETENTION = timedelta(days=7)
 
 # Allocation states past which an allocation no longer holds a lease to expire.
-_TERMINAL_ALLOCATION_STATES = ("released", "expired", "failed")
+_TERMINAL_ALLOCATION_STATES = (
+    AllocationState.RELEASED,
+    AllocationState.EXPIRED,
+    AllocationState.FAILED,
+)
+_ORPHANED_SYSTEM_TERMINAL_STATES = (SystemState.TORN_DOWN, SystemState.FAILED)
+_TEARDOWN_JOB_IN_FLIGHT_STATES = (JobState.QUEUED, JobState.RUNNING)
+_RUN_COMPENSATION_STATES = (RunState.CREATED, RunState.RUNNING)
+_UPLOAD_PRE_FINALIZE = {
+    "runs": RunState.CREATED,
+    "systems": SystemState.DEFINED,
+}
+
+_TERMINAL_ALLOCATION_STATE_VALUES = tuple(state.value for state in _TERMINAL_ALLOCATION_STATES)
+_ORPHANED_SYSTEM_TERMINAL_STATE_VALUES = tuple(
+    state.value for state in _ORPHANED_SYSTEM_TERMINAL_STATES
+)
+_TEARDOWN_JOB_IN_FLIGHT_STATE_VALUES = tuple(
+    state.value for state in _TEARDOWN_JOB_IN_FLIGHT_STATES
+)
+_RUN_COMPENSATION_STATE_VALUES = tuple(state.value for state in _RUN_COMPENSATION_STATES)
+_UPLOAD_PRE_FINALIZE_VALUES = {
+    owner_kind: state.value for owner_kind, state in _UPLOAD_PRE_FINALIZE.items()
+}
 
 # Reserved principal for system-initiated GC teardowns (ADR-0021): a reconciler
 # teardown bypasses the interactive destructive-op gate by design, made auditable
@@ -126,7 +150,7 @@ async def _sweep_expired_allocations(conn: AsyncConnection) -> int:
         await cur.execute(
             "SELECT id, project FROM allocations "
             "WHERE state <> ALL(%s) AND lease_expiry IS NOT NULL AND lease_expiry < now()",
-            (list(_TERMINAL_ALLOCATION_STATES),),
+            (list(_TERMINAL_ALLOCATION_STATE_VALUES),),
         )
         candidates = await cur.fetchall()
     reclaimed = 0
@@ -171,7 +195,7 @@ async def _expire_one(conn: AsyncConnection, allocation_id: UUID, project: str) 
         advisory_xact_lock(conn, LockScope.ALLOCATION, allocation_id),
     ):
         alloc = await ALLOCATIONS.get(conn, allocation_id)
-        if alloc is None or alloc.state.value in _TERMINAL_ALLOCATION_STATES:
+        if alloc is None or alloc.state in _TERMINAL_ALLOCATION_STATES:
             return False
         if not await _lease_elapsed(conn, allocation_id):
             return False
@@ -184,7 +208,7 @@ async def _expire_one(conn: AsyncConnection, allocation_id: UUID, project: str) 
                 tool="reconciler.sweep_expired",
                 object_kind="allocations",
                 object_id=allocation_id,
-                transition=f"{alloc.state.value}->expired",
+                transition=f"{alloc.state.value}->{AllocationState.EXPIRED.value}",
                 args={"allocation_id": str(allocation_id)},
                 project=project,
             ),
@@ -244,8 +268,12 @@ async def _repair_orphaned_systems(conn: AsyncConnection) -> int:
         await cur.execute(
             "SELECT s.id, s.project FROM systems s "
             "JOIN allocations a ON a.id = s.allocation_id "
-            "WHERE s.state NOT IN ('torn_down', 'failed') "
-            "  AND a.state IN ('released', 'failed', 'expired')"
+            "WHERE s.state <> ALL(%s) "
+            "  AND a.state = ANY(%s)",
+            (
+                list(_ORPHANED_SYSTEM_TERMINAL_STATE_VALUES),
+                list(_TERMINAL_ALLOCATION_STATE_VALUES),
+            ),
         )
         candidates = await cur.fetchall()
     enqueued = 0
@@ -256,7 +284,7 @@ async def _repair_orphaned_systems(conn: AsyncConnection) -> int:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (system_id,))
                 fresh = await cur.fetchone()
-                if fresh is None or fresh["state"] in ("torn_down", "failed"):
+                if fresh is None or fresh["state"] in _ORPHANED_SYSTEM_TERMINAL_STATE_VALUES:
                     continue
                 await cur.execute("SELECT 1 FROM jobs WHERE dedup_key = %s", (dedup_key,))
                 already_queued = await cur.fetchone() is not None
@@ -290,17 +318,23 @@ async def _repair_abandoned_jobs(conn: AsyncConnection) -> int:
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "SELECT id FROM jobs "
-            "WHERE state = 'running' AND lease_expires_at < now() "
-            "  AND attempt >= max_attempts"
+            "WHERE state = %s AND lease_expires_at < now() "
+            "  AND attempt >= max_attempts",
+            (JobState.RUNNING.value,),
         )
         zombie_ids: list[UUID] = [row["id"] for row in await cur.fetchall()]
     swept = 0
     for job_id in zombie_ids:
         async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "UPDATE jobs SET state = 'failed', error_category = 'lease_expired' "
-                "WHERE id = %s AND state = 'running' RETURNING kind, payload",
-                (job_id,),
+                "UPDATE jobs SET state = %s, error_category = %s "
+                "WHERE id = %s AND state = %s RETURNING kind, payload",
+                (
+                    JobState.FAILED.value,
+                    ErrorCategory.LEASE_EXPIRED.value,
+                    job_id,
+                    JobState.RUNNING.value,
+                ),
             )
             row = await cur.fetchone()
             if row is None:  # fence missed: a worker finalized it first
@@ -317,9 +351,14 @@ async def _repair_abandoned_jobs(conn: AsyncConnection) -> int:
                 run_id = None
             if run_id is not None:
                 await cur.execute(
-                    "UPDATE runs SET state = 'failed', failure_category = 'lease_expired' "
-                    "WHERE id = %s AND state IN ('created', 'running')",
-                    (run_id,),
+                    "UPDATE runs SET state = %s, failure_category = %s "
+                    "WHERE id = %s AND state = ANY(%s)",
+                    (
+                        RunState.FAILED.value,
+                        ErrorCategory.LEASE_EXPIRED.value,
+                        run_id,
+                        list(_RUN_COMPENSATION_STATE_VALUES),
+                    ),
                 )
         swept += 1
         _log.info("reconciler: abandoned job %s -> failed (lease_expired)", job_id)
@@ -335,10 +374,10 @@ async def _repair_dead_sessions(conn: AsyncConnection, stale_after: timedelta) -
     """
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "UPDATE debug_sessions SET state = 'detached' "
-            "WHERE state = 'live' AND worker_heartbeat_at IS NOT NULL "
+            "UPDATE debug_sessions SET state = %s "
+            "WHERE state = %s AND worker_heartbeat_at IS NOT NULL "
             "  AND worker_heartbeat_at < now() - %s RETURNING id",
-            (stale_after,),
+            (DebugSessionState.DETACHED.value, DebugSessionState.LIVE.value, stale_after),
         )
         rows = await cur.fetchall()
     for row in rows:
@@ -368,14 +407,18 @@ async def _repair_leaked_domains(conn: AsyncConnection, reaper: InfraReaper) -> 
             conn.cursor(row_factory=dict_row) as cur,
         ):
             await cur.execute(
-                "SELECT 1 FROM systems WHERE id = %s AND state <> 'torn_down'",
-                (domain.system_id,),
+                "SELECT 1 FROM systems WHERE id = %s AND state <> %s",
+                (domain.system_id, SystemState.TORN_DOWN.value),
             )
             has_live_row = await cur.fetchone() is not None
             await cur.execute(
-                "SELECT 1 FROM jobs WHERE state IN ('queued', 'running') "
-                "  AND kind = 'teardown' AND payload->>'system_id' = %s",
-                (str(domain.system_id),),
+                "SELECT 1 FROM jobs WHERE state = ANY(%s) "
+                "  AND kind = %s AND payload->>'system_id' = %s",
+                (
+                    list(_TEARDOWN_JOB_IN_FLIGHT_STATE_VALUES),
+                    JobKind.TEARDOWN.value,
+                    str(domain.system_id),
+                ),
             )
             teardown_in_flight = await cur.fetchone() is not None
         if has_live_row or teardown_in_flight:
@@ -394,11 +437,6 @@ async def _repair_leaked_domains(conn: AsyncConnection, reaper: InfraReaper) -> 
     return reaped
 
 
-# Both arms are live: a "created" external Run (#110) and a "defined" rootfs-upload System
-# (#111). Each reaps an owner's uncommitted objects once its upload deadline lapses.
-_UPLOAD_PRE_FINALIZE = {"runs": "created", "systems": "defined"}
-
-
 async def _repair_abandoned_uploads(conn: AsyncConnection, store: UploadStore) -> int:
     """Prefix-reap uncommitted objects of pre-finalize owners past their upload deadline.
 
@@ -410,10 +448,16 @@ async def _repair_abandoned_uploads(conn: AsyncConnection, store: UploadStore) -
         await cur.execute(
             "SELECT m.owner_kind, m.owner_id FROM upload_manifests m "
             "WHERE m.deadline < now() AND ("
-            "  (m.owner_kind = 'runs' AND EXISTS ("
-            "     SELECT 1 FROM runs r WHERE r.id = m.owner_id AND r.state = 'created')) "
-            "  OR (m.owner_kind = 'systems' AND EXISTS ("
-            "     SELECT 1 FROM systems s WHERE s.id = m.owner_id AND s.state = 'defined')))"
+            "  (m.owner_kind = %s AND EXISTS ("
+            "     SELECT 1 FROM runs r WHERE r.id = m.owner_id AND r.state = %s)) "
+            "  OR (m.owner_kind = %s AND EXISTS ("
+            "     SELECT 1 FROM systems s WHERE s.id = m.owner_id AND s.state = %s)))",
+            (
+                "runs",
+                _UPLOAD_PRE_FINALIZE_VALUES["runs"],
+                "systems",
+                _UPLOAD_PRE_FINALIZE_VALUES["systems"],
+            ),
         )
         candidates = await cur.fetchall()
     reaped = 0
@@ -472,7 +516,7 @@ async def _owner_pre_finalize(conn: AsyncConnection, owner_kind: str, owner_id: 
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             f"SELECT 1 FROM {table} WHERE id = %s AND state = %s",  # noqa: S608 - 2-value whitelist
-            (owner_id, _UPLOAD_PRE_FINALIZE[owner_kind]),
+            (owner_id, _UPLOAD_PRE_FINALIZE_VALUES[owner_kind]),
         )
         return await cur.fetchone() is not None
 
