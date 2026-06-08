@@ -27,6 +27,7 @@ from kdive.mcp.tools.lifecycle import control as control_tools
 from kdive.mcp.tools.lifecycle import runs as runs_tools
 from kdive.mcp.tools.lifecycle import systems as systems_tools
 from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
+from kdive.mcp.tools.ops import queue as ops_queue_tools
 from kdive.planes import control, runs, systems, vmcore
 from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 
@@ -55,6 +56,7 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     lambda app, pool, runtime: vmcore_tools.register(app, pool, provider_runtime=runtime),
     lambda app, pool, runtime: debug_tools.register(app, pool, provider_runtime=runtime),
     lambda app, pool, runtime: introspect.register(app, pool, provider_runtime=runtime),
+    _plain(ops_queue_tools.register),
 )
 
 # Handler seam: each concrete worker module exposes register_handlers(registry).
