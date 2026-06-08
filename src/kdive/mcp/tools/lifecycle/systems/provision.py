@@ -24,7 +24,7 @@ from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.lifecycle_rules import TERMINAL_SYSTEM_STATES as _TERMINAL_SYSTEM
-from kdive.domain.models import Allocation, Job, JobKind, System
+from kdive.domain.models import Allocation, JobKind, System
 from kdive.domain.state import AllocationState, IllegalTransition, SystemState
 from kdive.jobs import queue
 from kdive.log import bind_context
@@ -98,10 +98,6 @@ async def get_system(
             return _config_error(system_id)
         require_role(ctx, system.project, Role.VIEWER)
         return _envelope_for_system(system)
-
-
-def _system_job_envelope(job: Job, system_id: UUID) -> ToolResponse:
-    return job_envelope(job, "system_id", system_id)
 
 
 # System states that occupy a per-project quota slot (terminal torn_down/failed do not).
@@ -355,7 +351,7 @@ async def _provision_create_response(
         job_authorizing(ctx, alloc.project),
         f"{alloc.id}:provision",
     )
-    return _system_job_envelope(job, existing.id)
+    return job_envelope(job, "system_id", existing.id)
 
 
 async def _define_create_response(
@@ -406,7 +402,7 @@ async def _admit_defined(
         job_authorizing(ctx, alloc.project),
         f"{alloc.id}:provision",
     )
-    return _system_job_envelope(job, system.id)
+    return job_envelope(job, "system_id", system.id)
 
 
 async def _provision_defined_locked(
@@ -474,7 +470,7 @@ async def _provision_defined_response(
         job_authorizing(ctx, system.project),
         f"{system.allocation_id}:provision",
     )
-    return _system_job_envelope(job, system.id)
+    return job_envelope(job, "system_id", system.id)
 
 
 async def _new_system_allowed(
@@ -606,4 +602,4 @@ async def _insert_provisioning_system(
         job_authorizing(ctx, alloc.project),
         f"{alloc.id}:provision",
     )
-    return _system_job_envelope(job, system.id)
+    return job_envelope(job, "system_id", system.id)

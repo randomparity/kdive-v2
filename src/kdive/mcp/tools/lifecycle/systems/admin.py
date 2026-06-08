@@ -111,7 +111,7 @@ async def _reprovision_locked(
         if system.state is SystemState.REPROVISIONING:
             existing = await _job_for_dedup_key(conn, dedup_key)
             if existing is not None:
-                return _system_job_envelope(existing, system_id)
+                return job_envelope(existing, "system_id", system_id)
             return _config_error(str(system_id), data={"current_status": system.state.value})
         if system.state is not SystemState.READY:
             return _config_error(str(system_id), data={"current_status": system.state.value})
@@ -203,7 +203,7 @@ async def _admit_reprovision(
         job_authorizing(ctx, system.project),
         dedup_key,
     )
-    return _system_job_envelope(job, system.id)
+    return job_envelope(job, "system_id", system.id)
 
 
 async def teardown_system(
@@ -249,8 +249,4 @@ async def teardown_system(
                 job_authorizing(ctx, system.project),
                 f"{uid}:teardown",
             )
-        return _system_job_envelope(job, uid)
-
-
-def _system_job_envelope(job: Job, system_id: UUID) -> ToolResponse:
-    return job_envelope(job, "system_id", system_id)
+        return job_envelope(job, "system_id", uid)

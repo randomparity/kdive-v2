@@ -25,7 +25,7 @@ from pydantic import Field
 
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import ErrorCategory
-from kdive.domain.models import Job, JobKind, PowerAction, System
+from kdive.domain.models import JobKind, PowerAction, System
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
 from kdive.log import bind_context
@@ -61,10 +61,6 @@ _DESTRUCTIVE_POWER_ACTIONS = frozenset({PowerAction.OFF, PowerAction.CYCLE, Powe
 def _power_required_role(action: PowerAction) -> Role:
     """The lowest role that may issue ``action``: ``operator`` for ``on``, else ``admin``."""
     return Role.OPERATOR if action in _POWER_ON_ACTIONS else Role.ADMIN
-
-
-def _system_job_envelope(job: Job, system_id: UUID) -> ToolResponse:
-    return job_envelope(job, "system_id", system_id)
 
 
 async def power_system(
@@ -107,7 +103,7 @@ async def power_system(
                 job_authorizing(ctx, system.project),
                 f"{system_id}:power:{power_action.value}:{uuid4()}",
             )
-        return _system_job_envelope(job, uid)
+        return job_envelope(job, "system_id", uid)
 
 
 async def _authorize_destructive(
@@ -179,7 +175,7 @@ async def force_crash_system(
                 job_authorizing(ctx, system.project),
                 f"{system_id}:force_crash",
             )
-        return _system_job_envelope(job, uid)
+        return job_envelope(job, "system_id", uid)
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:

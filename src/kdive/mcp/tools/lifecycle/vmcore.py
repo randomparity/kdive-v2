@@ -14,7 +14,6 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Annotated, Literal
-from uuid import UUID
 
 from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
@@ -23,7 +22,7 @@ from pydantic import Field
 from kdive.db.repositories import SYSTEMS
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError
-from kdive.domain.models import Job, JobKind
+from kdive.domain.models import JobKind
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
 from kdive.log import bind_context
@@ -88,10 +87,6 @@ _CRASH_ALLOWLIST: frozenset[str] = frozenset(
     }
 )
 _TRIAGE_COMMANDS: tuple[str, ...] = ("log", "bt")
-
-
-def _system_job_envelope(job: Job, system_id: UUID) -> ToolResponse:
-    return job_envelope(job, "system_id", system_id)
 
 
 # --- vmcore.fetch (admission) --------------------------------------------------------------
@@ -185,7 +180,7 @@ async def _fetch_vmcore(
                 job_authorizing(ctx, system.project),
                 f"{system_id}:capture_vmcore:{capture_method.value}",
             )
-        return _system_job_envelope(job, uid)
+        return job_envelope(job, "system_id", uid)
 
 
 # --- vmcore.list ---------------------------------------------------------------------------
