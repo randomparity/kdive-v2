@@ -12,7 +12,7 @@ from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.state import RunState
 from kdive.mcp.tools.catalog import artifacts as artifacts_tools
-from kdive.mcp.tools.lifecycle import runs as runs_tools
+from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers
 from kdive.providers.build_validation import validate_external_artifacts
 from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.providers.ports import BuildOutput
@@ -52,11 +52,11 @@ _TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
     provider="test-provider",
     accepted_component_sources={"config": frozenset({"local"})},
 )
-_DEFAULT_BUILD_HANDLERS = runs_tools.RunBuildHandlers(_TEST_COMPONENT_SOURCES)
+_DEFAULT_BUILD_HANDLERS = RunBuildHandlers(_TEST_COMPONENT_SOURCES)
 
 
-def _build_handlers(validator) -> runs_tools.RunBuildHandlers:
-    return runs_tools.RunBuildHandlers(_TEST_COMPONENT_SOURCES, complete_validator=validator)
+def _build_handlers(validator) -> RunBuildHandlers:
+    return RunBuildHandlers(_TEST_COMPONENT_SOURCES, complete_validator=validator)
 
 
 class _UploadStore:

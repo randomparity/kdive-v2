@@ -32,7 +32,8 @@ from kdive.domain.state import AllocationState, InvestigationState, RunState, Sy
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.lifecycle import systems as systems_tools
+from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers, teardown_system
+from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers, get_system
 from kdive.planes import systems as systems_handlers
 from kdive.profiles.provisioning import RootfsSource
 from kdive.providers.local_libvirt.materialize import materialize_rootfs_base
@@ -100,7 +101,7 @@ def test_get_own_system_returns_state(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
-            resp = await systems_tools.get_system(pool, _ctx(), sys_id)
+            resp = await get_system(pool, _ctx(), sys_id)
         assert resp.object_id == sys_id
         assert resp.status == "ready"
 
@@ -113,7 +114,7 @@ def test_get_system_requires_viewer_role(migrated_url: str) -> None:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             with pytest.raises(AuthorizationError):
-                await systems_tools.get_system(pool, _ctx(role=None), sys_id)
+                await get_system(pool, _ctx(role=None), sys_id)
 
     asyncio.run(_run())
 
@@ -123,7 +124,7 @@ def test_get_failed_system_renders_failure(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.FAILED)
-            resp = await systems_tools.get_system(pool, _ctx(), sys_id)
+            resp = await get_system(pool, _ctx(), sys_id)
         assert resp.status == "error"
         assert resp.error_category == "infrastructure_failure"
         assert resp.data["current_status"] == "failed"
@@ -136,7 +137,7 @@ def test_get_cross_project_is_not_found(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
-            resp = await systems_tools.get_system(pool, _ctx(projects=("other",)), sys_id)
+            resp = await get_system(pool, _ctx(projects=("other",)), sys_id)
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
 
@@ -146,7 +147,7 @@ def test_get_cross_project_is_not_found(migrated_url: str) -> None:
 def test_get_malformed_uuid_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await systems_tools.get_system(pool, _ctx(), "not-a-uuid")
+            resp = await get_system(pool, _ctx(), "not-a-uuid")
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
 
@@ -184,14 +185,14 @@ def _noop_rootfs_validator(_: RootfsSource) -> None:
 
 def _provision_handlers(
     rootfs_validator: Callable[[RootfsSource], None] = _noop_rootfs_validator,
-) -> systems_tools.SystemProvisionHandlers:
-    return systems_tools.SystemProvisionHandlers(_TEST_COMPONENT_SOURCES, rootfs_validator)
+) -> SystemProvisionHandlers:
+    return SystemProvisionHandlers(_TEST_COMPONENT_SOURCES, rootfs_validator)
 
 
 def _admin_handlers(
     rootfs_validator: Callable[[RootfsSource], None] = _noop_rootfs_validator,
-) -> systems_tools.SystemAdminHandlers:
-    return systems_tools.SystemAdminHandlers(_TEST_COMPONENT_SOURCES, rootfs_validator)
+) -> SystemAdminHandlers:
+    return SystemAdminHandlers(_TEST_COMPONENT_SOURCES, rootfs_validator)
 
 
 async def _provision_defined(pool: AsyncConnectionPool, ctx: RequestContext, system_id: str):
@@ -929,7 +930,7 @@ def test_provision_handler_absent_uploaded_rootfs_fails_config_error(
 
 
 async def _teardown(pool: AsyncConnectionPool, ctx: RequestContext, system_id: str):
-    return await systems_tools.teardown_system(pool, ctx, system_id)
+    return await teardown_system(pool, ctx, system_id)
 
 
 def _teardown_profile() -> dict[str, Any]:

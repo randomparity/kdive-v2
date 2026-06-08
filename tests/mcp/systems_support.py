@@ -18,7 +18,8 @@ from kdive.domain.models import Allocation, Budget, Job, JobKind, Quota
 from kdive.domain.state import AllocationState
 from kdive.jobs import queue
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.lifecycle import systems as systems_tools
+from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers
+from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers
 from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.rbac import Role
@@ -33,11 +34,11 @@ TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
         "config": frozenset({"local"}),
     },
 )
-SYSTEM_PROVISION_HANDLERS = systems_tools.SystemProvisionHandlers(
+SYSTEM_PROVISION_HANDLERS = SystemProvisionHandlers(
     TEST_COMPONENT_SOURCES,
     lambda _: None,
 )
-SYSTEM_ADMIN_HANDLERS = systems_tools.SystemAdminHandlers(
+SYSTEM_ADMIN_HANDLERS = SystemAdminHandlers(
     TEST_COMPONENT_SOURCES,
     lambda _: None,
 )

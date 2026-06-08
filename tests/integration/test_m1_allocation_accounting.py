@@ -51,7 +51,8 @@ from kdive.domain.state import (
 from kdive.mcp.auth import AuthError
 from kdive.mcp.tools.lifecycle import allocations as alloc_tools
 from kdive.mcp.tools.lifecycle import control as control_tools
-from kdive.mcp.tools.lifecycle import systems as systems_tools
+from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers, teardown_system
+from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers
 from kdive.planes import systems as systems_handlers
 from kdive.providers.local_libvirt.provisioning import domain_name_for
 from kdive.reconciler import loop
@@ -70,11 +71,11 @@ from tests.mcp.systems_support import (
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _COEFF_LOCAL = Decimal("1.0")
-_SYSTEM_PROVISION_HANDLERS = systems_tools.SystemProvisionHandlers(
+_SYSTEM_PROVISION_HANDLERS = SystemProvisionHandlers(
     _TEST_COMPONENT_SOURCES,
     lambda _: None,
 )
-_SYSTEM_ADMIN_HANDLERS = systems_tools.SystemAdminHandlers(
+_SYSTEM_ADMIN_HANDLERS = SystemAdminHandlers(
     _TEST_COMPONENT_SOURCES,
     lambda _: None,
 )
@@ -867,7 +868,7 @@ def test_c6_operator_refused_admin_ops(migrated_url: str) -> None:
                 await conn.execute("UPDATE systems SET state = 'ready' WHERE id = %s", (sys_id,))
             power = await control_tools.power_system(pool, op, system_id=sys_id, action="off")
             assert power.status == "error" and power.error_category == "authorization_denied"
-            teardown = await systems_tools.teardown_system(pool, op, sys_id)
+            teardown = await teardown_system(pool, op, sys_id)
             assert teardown.status == "error"
             assert teardown.error_category == "authorization_denied"
 

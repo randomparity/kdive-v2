@@ -37,7 +37,10 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.lifecycle import runs as runs_tools
+from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers
+from kdive.mcp.tools.lifecycle.runs.create import create_run
+from kdive.mcp.tools.lifecycle.runs.steps import boot_run, install_run
+from kdive.mcp.tools.lifecycle.runs.view import get_run
 from kdive.planes import runs as runs_handlers
 from kdive.planes import runs_shared
 from kdive.providers.component_validation import ComponentSourceCapabilities
@@ -182,7 +185,7 @@ def test_get_created_run(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_run(pool, state=RunState.CREATED)
-            resp = await runs_tools.get_run(pool, _ctx(), run_id)
+            resp = await get_run(pool, _ctx(), run_id)
         assert resp.status == "created"
         assert resp.suggested_next_actions == ["runs.get", "runs.build"]
 
@@ -194,7 +197,7 @@ def test_get_run_requires_viewer_role(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_run(pool, state=RunState.CREATED)
             with pytest.raises(AuthorizationError):
-                await runs_tools.get_run(pool, _ctx(role=None), run_id)
+                await get_run(pool, _ctx(role=None), run_id)
 
     asyncio.run(_run())
 
@@ -205,7 +208,7 @@ def test_get_failed_run_renders_failure_category(migrated_url: str) -> None:
             run_id = await _seed_run(
                 pool, state=RunState.FAILED, failure=ErrorCategory.BUILD_FAILURE
             )
-            resp = await runs_tools.get_run(pool, _ctx(), run_id)
+            resp = await get_run(pool, _ctx(), run_id)
         assert resp.status == "error" and resp.error_category == "build_failure"
         assert resp.data["current_status"] == "failed"
 
@@ -216,7 +219,7 @@ def test_get_failed_run_null_category_defaults_infra(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_run(pool, state=RunState.FAILED, failure=None)
-            resp = await runs_tools.get_run(pool, _ctx(), run_id)
+            resp = await get_run(pool, _ctx(), run_id)
         assert resp.status == "error" and resp.error_category == "infrastructure_failure"
 
     asyncio.run(_run())
@@ -226,7 +229,7 @@ def test_get_canceled_run_is_success(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_run(pool, state=RunState.CANCELED)
-            resp = await runs_tools.get_run(pool, _ctx(), run_id)
+            resp = await get_run(pool, _ctx(), run_id)
         assert resp.status == "canceled"
 
     asyncio.run(_run())
@@ -236,7 +239,7 @@ def test_get_cross_project_is_not_found(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_run(pool, state=RunState.CREATED)
-            resp = await runs_tools.get_run(pool, _ctx(projects=("other",)), run_id)
+            resp = await get_run(pool, _ctx(projects=("other",)), run_id)
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -245,7 +248,7 @@ def test_get_cross_project_is_not_found(migrated_url: str) -> None:
 def test_get_malformed_uuid_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await runs_tools.get_run(pool, _ctx(), "not-a-uuid")
+            resp = await get_run(pool, _ctx(), "not-a-uuid")
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -262,7 +265,7 @@ def test_get_run_exposes_expected_boot_failure(migrated_url: str) -> None:
                     "UPDATE runs SET expected_boot_failure = %s WHERE id = %s",
                     (Jsonb(expected), run_id),
                 )
-            resp = await runs_tools.get_run(pool, _ctx(), run_id)
+            resp = await get_run(pool, _ctx(), run_id)
         assert resp.data["expected_boot_failure"] == "console_crash"
         assert json.loads(resp.data["expected_boot_failure_json"]) == expected
 
@@ -272,7 +275,7 @@ def test_get_run_exposes_expected_boot_failure(migrated_url: str) -> None:
 async def _create(
     pool: AsyncConnectionPool, ctx: RequestContext, inv_id: str, sys_id: str, profile=None
 ):
-    return await runs_tools.create_run(
+    return await create_run(
         pool, ctx, investigation_id=inv_id, system_id=sys_id, build_profile=profile or _profile()
     )
 
@@ -315,7 +318,7 @@ def test_create_rejects_empty_build_profile(migrated_url: str) -> None:
             sys_id = await _seed_system(pool)
             # Call create_run directly: the _create helper's `profile or _profile()` would
             # coalesce a falsy {} away, so it cannot exercise the empty-profile path.
-            resp = await runs_tools.create_run(
+            resp = await create_run(
                 pool, _ctx(), investigation_id=inv_id, system_id=sys_id, build_profile={}
             )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -338,7 +341,7 @@ def test_create_run_persists_expected_boot_failure(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             inv_id = await _seed_investigation(pool, state=InvestigationState.OPEN)
             sys_id = await _seed_system(pool)
-            resp = await runs_tools.create_run(
+            resp = await create_run(
                 pool,
                 _ctx(),
                 investigation_id=inv_id,
@@ -365,7 +368,7 @@ def test_create_run_rejects_bad_expected_boot_failure(migrated_url: str) -> None
         async with _pool(migrated_url) as pool:
             inv_id = await _seed_investigation(pool, state=InvestigationState.OPEN)
             sys_id = await _seed_system(pool)
-            resp = await runs_tools.create_run(
+            resp = await create_run(
                 pool,
                 _ctx(),
                 investigation_id=inv_id,
@@ -478,7 +481,7 @@ def test_create_cross_project_join_is_config_error(migrated_url: str) -> None:
                 projects=("proj", "p2"),
                 roles={"proj": Role.OPERATOR, "p2": Role.OPERATOR},
             )
-            resp = await runs_tools.create_run(
+            resp = await create_run(
                 pool, ctx, investigation_id=other_inv, system_id=sys_id, build_profile=_profile()
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
@@ -492,7 +495,7 @@ def test_create_non_dict_build_profile_is_config_error(migrated_url: str) -> Non
             inv_id = await _seed_investigation(pool)
             sys_id = await _seed_system(pool)
             bad: Any = "nope"
-            resp = await runs_tools.create_run(
+            resp = await create_run(
                 pool, _ctx(), investigation_id=inv_id, system_id=sys_id, build_profile=bad
             )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -587,7 +590,7 @@ _TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
     provider="test-provider",
     accepted_component_sources={"config": frozenset({"local"})},
 )
-_BUILD_HANDLERS = runs_tools.RunBuildHandlers(_TEST_COMPONENT_SOURCES)
+_BUILD_HANDLERS = RunBuildHandlers(_TEST_COMPONENT_SOURCES)
 
 
 async def _build(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> Any:
@@ -746,7 +749,7 @@ def test_build_rejects_local_config_outside_provider_roots_before_state_change(
             }
             run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
 
-            resp = await runs_tools.RunBuildHandlers(
+            resp = await RunBuildHandlers(
                 _TEST_COMPONENT_SOURCES,
                 config_validator=_reject_config,
             ).build_run(
@@ -1313,11 +1316,11 @@ async def _seed_build_ledger(
 
 
 async def _install(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> Any:
-    return await runs_tools.install_run(pool, ctx, run_id)
+    return await install_run(pool, ctx, run_id)
 
 
 async def _boot(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> Any:
-    return await runs_tools.boot_run(pool, ctx, run_id)
+    return await boot_run(pool, ctx, run_id)
 
 
 def test_install_succeeded_run_enqueues_no_state_flip(migrated_url: str) -> None:
@@ -1445,7 +1448,7 @@ def test_runs_get_advertises_the_system_required_cmdline(migrated_url: str) -> N
             run_id = await _seed_succeeded_run(
                 pool, provisioning_profile=_profile_dump(crashkernel="256M")
             )
-            resp = await runs_tools.get_run(pool, _ctx(), run_id)
+            resp = await get_run(pool, _ctx(), run_id)
         assert resp.data["required_cmdline"] == "console=ttyS0 root=/dev/vda crashkernel=256M"
 
     asyncio.run(_run())
