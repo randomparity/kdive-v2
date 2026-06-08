@@ -14,26 +14,25 @@
 1. *Worker-deep, MCP-threaded.* Worker handlers resolve per-op (the real selection seam issues 5/6/7 exercise). MCP tool registrar modules keep their `provider_runtime` param, fed the resolved `local-libvirt` runtime by `app.py`; per-target MCP resolution (debug/introspect/connect) lands in issues 2/4.
 2. *Ship the opt-in gate now, fail closed.* `build_provider_resolver(*, enable_fault_inject=False)` exists now; default composition is `{local-libvirt}` only. Enabling it in this PR raises `configuration_error` ("fault-inject not yet registered"); issue 2 replaces the closed branch with the real registration.
 
+**Sequencing invariant (load-bearing — `just lint`, `just type`, `just test` must be green at *every* commit):** `build_default_provider_runtime` is imported at module load by `mcp/app.py`, `__main__.py`, and `admin/bootstrap.py`; and each plane's `register_handlers` is called from `app.py`. So a rename or a signature change is only green if its callers change in the **same commit**. The tasks below are therefore grouped into two atomic wiring commits (Task 3 = introduce resolver + reroute MCP/discovery while planes still take `provider_runtime`; Task 4 = migrate the whole worker-handler path at once). Do not split Task 3 or Task 4 into per-file commits.
+
 ---
 
 ## File Structure
 
 **Create:**
 - `src/kdive/providers/resolver.py` — `ProviderResolver`: the kind→runtime map, fail-closed `resolve()`, `registered_kinds()`, `runtimes()`, `register_all_discovery()`, and async `runtime_for_system()` / `runtime_for_run()` (the `system|run → allocation → resource.kind` joins).
-- `tests/providers/test_resolver.py` — unit tests for `resolve()` (hit + fail-closed), `registered_kinds()`, `register_all_discovery()` fan-out.
-- `tests/db/test_resource_kind_parity.py` — Docker-gated CHECK↔registry parity test (introspects `resources_kind_check` from a migrated DB) + the `runtime_for_system`/`runtime_for_run` join behavior against real rows.
+- `tests/providers/test_resolver.py` — unit tests for `resolve()` (hit + fail-closed), `registered_kinds()`, empty-map rejection, `register_all_discovery()` fan-out.
+- `tests/db/test_resource_kind_parity.py` — Docker-gated CHECK↔registry parity test (introspects `resources_kind_check` from a migrated DB).
 
 **Modify:**
 - `src/kdive/domain/models.py` — add `ResourceKind.FAULT_INJECT = "fault-inject"`.
 - `src/kdive/providers/composition.py` — rename `build_default_provider_runtime` → `build_local_runtime`; add `build_provider_resolver(*, enable_fault_inject=False)`; update `__all__`.
-- `src/kdive/mcp/app.py` — thread `ProviderResolver` through both registrar seams; resolve `local-libvirt` for MCP tool registrars; pass the resolver to worker handler registrars; rename the `provider_runtime=` kwargs to `provider_resolver=`.
-- `src/kdive/planes/systems.py` — `provision`/`reprovision`/`teardown` handlers: `*, resolver=None`, lazy resolve after existence check; `register_handlers(*, provisioning=None, resolver=None)`.
-- `src/kdive/planes/runs.py` — `build`/`install`/`boot` handlers + registrar, same pattern (resolve via run).
-- `src/kdive/planes/control.py` — `power`/`force_crash` handlers + registrar, same pattern.
-- `src/kdive/planes/vmcore.py` — `capture` handler + registrar, same pattern.
+- `src/kdive/mcp/app.py` — thread `ProviderResolver` through both registrar seams; resolve `local-libvirt` for MCP tool registrars; (Task 4) pass the resolver to worker handler registrars; rename the `provider_runtime=` kwarg to `provider_resolver=`.
 - `src/kdive/__main__.py` — `_run_reconciler`/`_register_provider_resources` use `build_provider_resolver().register_all_discovery(pool)`.
-- `src/kdive/admin/bootstrap.py` — discovery registration uses `build_provider_resolver().register_all_discovery(pool)`.
-- `tests/providers/test_composition.py`, `tests/providers/test_capture_capabilities.py` — `build_default_provider_runtime` → `build_local_runtime`; add a default-resolver assertion.
+- `src/kdive/admin/bootstrap.py` — `register_local_resource` uses `build_provider_resolver().register_all_discovery(pool)`.
+- `src/kdive/planes/systems.py` / `runs.py` / `control.py` / `vmcore.py` (Task 4) — handlers gain `*, resolver=None`, lazy resolve after existence check; `register_handlers(*, <port>=None, resolver=None)`; drop the now-unused `ProviderRuntime` import from `systems.py`/`control.py`/`vmcore.py` (`runs.py` keeps it — used as a return type).
+- `tests/providers/test_composition.py`, `tests/providers/test_capture_capabilities.py` — `build_default_provider_runtime` → `build_local_runtime`; add default-resolver + gate assertions.
 - `tests/reconciler/test_main.py` — monkeypatch `build_provider_resolver` returning a fake resolver whose `register_all_discovery` records the `discover` event.
 
 **Untouched on purpose:** every `providers/local_libvirt/*` file (no behavioral diff); the MCP tool registrar modules (`mcp/tools/lifecycle/systems/registrar.py`, `runs/registrar.py`, `lifecycle/vmcore.py`, `debug/sessions.py`, `debug/introspect.py`) and their tests (they still take `provider_runtime`); every handler-invocation test that calls `*_handler(conn, job, port)` positionally; `tests/db/test_migrate.py::test_rerun_is_a_noop` (no new migration — DDL is issue 2).
@@ -72,7 +71,7 @@ class ResourceKind(StrEnum):
 
     ``FAULT_INJECT`` is a forward declaration: its runtime and the
     ``resources_kind_check`` widen that admits it land with the mock provider
-    (issue 2). The default production composition does not register it.
+    (M1.5 issue 2). The default production composition does not register it.
     """
 
     LOCAL_LIBVIRT = "local-libvirt"
@@ -94,11 +93,13 @@ git commit -m "feat(providers): add fault-inject resource kind"
 
 ## Task 2: `ProviderResolver` — the kind→runtime registry
 
+Additive — no existing caller references this module yet, so the commit is green on its own.
+
 **Files:**
 - Create: `src/kdive/providers/resolver.py`
 - Test: `tests/providers/test_resolver.py`
 
-The join queries live here (they are a provider-selection concern). `runtime_for_system`/`runtime_for_run` raise `configuration_error` when no kind row resolves — but handlers only call them **after** confirming the target exists, so in practice the join always finds a granted allocation's `resource_id` (non-null post-grant, ADR-0069).
+The join queries live here (a provider-selection concern). `runtime_for_system`/`runtime_for_run` raise `configuration_error` when no kind row resolves — but handlers only call them **after** confirming the target exists, so in practice the join always finds a granted allocation's `resource_id` (non-null post-grant, ADR-0069).
 
 - [ ] **Step 1: Write the failing unit tests** (no DB — exercise `resolve` and fan-out with fakes)
 
@@ -283,15 +284,15 @@ git commit -m "feat(providers): add per-kind ProviderResolver registry"
 
 ---
 
-## Task 3: `build_provider_resolver` + rename `build_local_runtime` + fail-closed gate
+## Task 3: Introduce the resolver + reroute MCP & discovery (atomic, green)
 
-**Files:**
-- Modify: `src/kdive/providers/composition.py:66-113`
-- Modify: `tests/providers/test_composition.py:150,164` and `tests/providers/test_capture_capabilities.py:6,11`
+**One commit.** Add `build_provider_resolver`/`build_local_runtime`, route the MCP tool registrars and discovery through the resolver, and update every caller of the old name — all together, so the tree never breaks. **Worker handlers are untouched here**: they still receive a `ProviderRuntime` (the resolved `local-libvirt` one), so their per-op migration (Task 4) is a clean, separable change. This commit is behavior-identical (one kind, resolved eagerly for the MCP/handler seams as today).
 
-- [ ] **Step 1: Update the composition tests (rename + new resolver assertions) — they should now fail**
+**Files:** `src/kdive/providers/composition.py`, `src/kdive/mcp/app.py`, `src/kdive/__main__.py`, `src/kdive/admin/bootstrap.py`, `tests/providers/test_composition.py`, `tests/providers/test_capture_capabilities.py`, `tests/reconciler/test_main.py`.
 
-In `tests/providers/test_capture_capabilities.py` replace the import and call:
+- [ ] **Step 1: Update the tests first (red), then make them green with the implementation below.**
+
+`tests/providers/test_capture_capabilities.py` — rename import + call:
 
 ```python
 from kdive.providers.composition import build_local_runtime
@@ -304,7 +305,7 @@ def test_local_libvirt_supports_three_methods_now_not_kdump() -> None:
     )
 ```
 
-In `tests/providers/test_composition.py`, replace the two `composition.build_default_provider_runtime()` calls (lines 150, 164) with `composition.build_local_runtime()`, and append:
+`tests/providers/test_composition.py` — add `import pytest`; replace the two `composition.build_default_provider_runtime()` calls (lines 150, 164) with `composition.build_local_runtime()`; append:
 
 ```python
 def test_default_resolver_registers_only_local_libvirt() -> None:
@@ -323,23 +324,28 @@ def test_enabling_fault_inject_before_it_exists_fails_closed() -> None:
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 ```
 
-Add `import pytest` to the test module's imports.
+`tests/reconciler/test_main.py` — replace the runtime monkeypatch (line ~46) with a fake resolver:
 
-- [ ] **Step 2: Run it, expect failure**
+```python
+    class _FakeResolver:
+        async def register_all_discovery(self, pool: object) -> None:
+            events.append("discover")
 
-Run: `uv run python -m pytest tests/providers/test_composition.py tests/providers/test_capture_capabilities.py -q`
-Expected: FAIL — `AttributeError: build_local_runtime` / `build_provider_resolver`.
+    monkeypatch.setattr(composition, "build_provider_resolver", lambda **kw: _FakeResolver())
+```
 
-- [ ] **Step 3: Rename + add the resolver builder and gate**
+(`__main__._run_reconciler` does `from kdive.providers.composition import build_provider_resolver` at call time, so patching the attribute on `composition` is sufficient — keep the existing `from kdive.providers import composition` reference at line 28.)
 
-In `src/kdive/providers/composition.py`: rename the function and add the resolver builder. Add imports at the top:
+- [ ] **Step 2: `composition.py` — rename + resolver builder + gate**
+
+Add imports at the top:
 
 ```python
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.resolver import ProviderResolver
 ```
 
-Rename `build_default_provider_runtime` to `build_local_runtime` (body unchanged) and update its docstring to "Build the typed local-libvirt provider ports …". Then add:
+Rename `build_default_provider_runtime` → `build_local_runtime` (body unchanged; docstring → "Build the typed local-libvirt provider ports without opening live provider connections."). Add:
 
 ```python
 def build_provider_resolver(*, enable_fault_inject: bool = False) -> ProviderResolver:
@@ -361,282 +367,28 @@ def build_provider_resolver(*, enable_fault_inject: bool = False) -> ProviderRes
     return ProviderResolver(runtimes)
 ```
 
-Update `__all__` to `["build_local_runtime", "build_provider_resolver", "ensure_local_host_registered"]`.
+Update `__all__` → `["build_local_runtime", "build_provider_resolver", "ensure_local_host_registered"]`.
 
-- [ ] **Step 4: Run it, expect pass.**
+- [ ] **Step 3: `app.py` — thread the resolver; MCP registrars get the resolved local runtime; handlers still get it too (worker migration is Task 4)**
 
-Run: `uv run python -m pytest tests/providers/test_composition.py tests/providers/test_capture_capabilities.py -q` → PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/kdive/providers/composition.py tests/providers/test_composition.py tests/providers/test_capture_capabilities.py
-git commit -m "feat(providers): build a per-deployment ProviderResolver with opt-in gate"
-```
-
----
-
-## Task 4: Per-op resolution in the worker handlers
-
-Apply the **same pattern** to all four plane modules: the handler keeps its positional `port` parameter (defaulting to `None`) and gains a keyword `resolver: ProviderResolver | None = None`; after the existing existence check, resolve the port lazily if it was not injected; `register_handlers` swaps `provider_runtime=` for `resolver=` and passes it through.
-
-> Positional handler-invocation tests (`provision_handler(conn, job, prov)`) are unaffected — `prov` binds the positional `port`, `resolver` stays `None`. Production passes `resolver=`.
-
-### 4a. `systems.py`
-
-**Files:** Modify `src/kdive/planes/systems.py` (handlers + `register_handlers`).
-
-- [ ] **Step 1:** In `provision_handler`, change the signature and resolve after the `if system is None` guard:
-
-```python
-async def provision_handler(
-    conn: AsyncConnection,
-    job: Job,
-    provisioning: Provisioner | None = None,
-    *,
-    resolver: ProviderResolver | None = None,
-) -> str | None:
-    """Define+start the tagged domain and drive the System ``provisioning -> ready``."""
-    system_id = UUID(load_payload(job, SystemPayload).system_id)
-    system = await SYSTEMS.get(conn, system_id)
-    if system is None:
-        raise CategorizedError(
-            "provision target system is gone",
-            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-            details={"system_id": str(system_id)},
-        )
-    provisioning = await _provisioner(conn, system_id, provisioning, resolver)
-    ...  # rest unchanged
-```
-
-Apply the same to `reprovision_handler` (resolve after its `if system is None` guard) and `teardown_handler` (resolve inside the txn, after `if system is None: return None`, before `provisioning.teardown(...)`). Add the helper:
-
-```python
-async def _provisioner(
-    conn: AsyncConnection,
-    system_id: UUID,
-    explicit: Provisioner | None,
-    resolver: ProviderResolver | None,
-) -> Provisioner:
-    if explicit is not None:
-        return explicit
-    if resolver is None:
-        raise RuntimeError("provision handlers require an explicit provisioner or a resolver")
-    return (await resolver.runtime_for_system(conn, system_id)).provisioner
-```
-
-Add `from kdive.providers.resolver import ProviderResolver` to the imports.
-
-- [ ] **Step 2:** Rewrite `register_handlers`:
-
-```python
-def register_handlers(
-    registry: HandlerRegistry,
-    *,
-    provisioning: Provisioner | None = None,
-    resolver: ProviderResolver | None = None,
-) -> None:
-    """Bind the `provision`/`teardown`/`reprovision` job handlers."""
-    if provisioning is None and resolver is None:
-        raise RuntimeError("systems handlers require a resolver or an explicit provisioner")
-    registry.register(
-        JobKind.PROVISION,
-        lambda conn, job: provision_handler(conn, job, provisioning, resolver=resolver),
-    )
-    registry.register(
-        JobKind.TEARDOWN,
-        lambda conn, job: teardown_handler(conn, job, provisioning, resolver=resolver),
-    )
-    registry.register(
-        JobKind.REPROVISION,
-        lambda conn, job: reprovision_handler(conn, job, provisioning, resolver=resolver),
-    )
-```
-
-- [ ] **Step 3:** Run the systems handler tests, expect PASS (positional injection unchanged):
-
-Run: `uv run python -m pytest tests/adversarial/test_provider_state_races.py -q` → PASS (Docker-gated; skips cleanly if no Docker).
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/kdive/planes/systems.py
-git commit -m "feat(providers): resolve systems handler provider per System kind"
-```
-
-### 4b. `runs.py`
-
-**Files:** Modify `src/kdive/planes/runs.py`.
-
-- [ ] **Step 1:** `build_handler(conn, job, builder=None, *, resolver=None)`. Resolve after `if run is None: raise`:
-
-```python
-    builder = builder if builder is not None else (
-        await _run_runtime(conn, run_id, resolver)
-    ).builder
-```
-
-`install_handler(conn, job, installer=None, *, resolver=None)`: resolve after the `system` existence check using `run.system_id` (a `runtime_for_system`). `boot_handler(conn, job, booter=None, *, resolver=None)`: resolve after `if run is None: raise` via `runtime_for_run`. Add:
-
-```python
-async def _run_runtime(
-    conn: AsyncConnection, run_id: UUID, resolver: ProviderResolver | None
-) -> ProviderRuntime:
-    if resolver is None:
-        raise RuntimeError("runs handlers require a resolver or explicit run ports")
-    return await resolver.runtime_for_run(conn, run_id)
-```
-
-For `install_handler`, resolve via the already-loaded system:
-
-```python
-    if installer is None:
-        if resolver is None:
-            raise RuntimeError("runs handlers require a resolver or explicit run ports")
-        installer = (await resolver.runtime_for_system(conn, run.system_id)).installer
-```
-
-Add `from kdive.providers.resolver import ProviderResolver` to imports (alongside the existing `ProviderRuntime` import).
-
-- [ ] **Step 2:** Rewrite `register_handlers`:
-
-```python
-def register_handlers(
-    registry: HandlerRegistry,
-    *,
-    builder: Builder | None = None,
-    installer: Installer | None = None,
-    booter: Booter | None = None,
-    resolver: ProviderResolver | None = None,
-) -> None:
-    """Bind the `build`/`install`/`boot` job handlers."""
-    if builder is None and installer is None and booter is None and resolver is None:
-        raise RuntimeError("runs handlers require a resolver or explicit run ports")
-    registry.register(
-        JobKind.BUILD, lambda conn, job: build_handler(conn, job, builder, resolver=resolver)
-    )
-    registry.register(
-        JobKind.INSTALL, lambda conn, job: install_handler(conn, job, installer, resolver=resolver)
-    )
-    registry.register(
-        JobKind.BOOT, lambda conn, job: boot_handler(conn, job, booter, resolver=resolver)
-    )
-```
-
-- [ ] **Step 3:** Run: `uv run python -m pytest tests/integration/test_walking_skeleton.py -q` → PASS (Docker-gated). The `build_handler(conn, job, builder)` and `capture_handler(...)` positional calls there are unaffected.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/kdive/planes/runs.py
-git commit -m "feat(providers): resolve runs handler ports per Run/System kind"
-```
-
-### 4c. `control.py`
-
-**Files:** Modify `src/kdive/planes/control.py`.
-
-- [ ] **Step 1:** `power_handler(conn, job, control=None, *, resolver=None)`: resolve after `target = await _control_target(...)` (which raises if gone), before `control.power(...)`. `force_crash_handler(conn, job, control=None, *, resolver=None)`: resolve after `target = await _force_crash_target(...)` returns non-`None`, before `control.force_crash(...)`:
-
-```python
-    control = control if control is not None else await _controller(conn, system_id, resolver)
-```
-
-with:
-
-```python
-async def _controller(
-    conn: AsyncConnection, system_id: UUID, resolver: ProviderResolver | None
-) -> Controller:
-    if resolver is None:
-        raise RuntimeError("control handlers require a resolver or an explicit controller")
-    return (await resolver.runtime_for_system(conn, system_id)).controller
-```
-
-Add the `ProviderResolver` import.
-
-- [ ] **Step 2:** `register_handlers(*, control=None, resolver=None)` with the same guard + pass-through pattern as 4a, binding `POWER`/`FORCE_CRASH`.
-
-- [ ] **Step 3:** Run: `uv run python -m pytest tests/mcp/lifecycle/test_control_tools.py -q` → PASS.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/kdive/planes/control.py
-git commit -m "feat(providers): resolve control handler provider per System kind"
-```
-
-### 4d. `vmcore.py`
-
-**Files:** Modify `src/kdive/planes/vmcore.py`.
-
-- [ ] **Step 1:** `capture_handler(conn, job, retriever=None, *, resolver=None)`. `precheck_system` returns a `str` (existing same-method key → early return, port unused) or the `System`. Resolve only on the `System` branch, before `retriever.capture(...)`:
-
-```python
-    precheck = await precheck_system(conn, system_id, method)
-    if isinstance(precheck, str):
-        return precheck
-    if retriever is None:
-        if resolver is None:
-            raise RuntimeError("vmcore handlers require a resolver or an explicit retriever")
-        retriever = (await resolver.runtime_for_system(conn, system_id)).retriever
-    output = await asyncio.to_thread(retriever.capture, system_id, method)
-    return await finalize_capture(conn, job, precheck, method, output)
-```
-
-Add the `ProviderResolver` import.
-
-- [ ] **Step 2:** `register_handlers(*, retriever=None, resolver=None)` binding `CAPTURE_VMCORE`, same guard + pass-through.
-
-- [ ] **Step 3:** Run: `uv run python -m pytest tests/mcp/lifecycle/test_vmcore_tools.py tests/integration/test_walking_skeleton.py -q` → PASS.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/kdive/planes/vmcore.py
-git commit -m "feat(providers): resolve vmcore handler retriever per System kind"
-```
-
----
-
-## Task 5: Thread the resolver through `app.py`, reconciler, and bootstrap
-
-**Files:**
-- Modify: `src/kdive/mcp/app.py:48-152`
-- Modify: `src/kdive/__main__.py:105-140`
-- Modify: `src/kdive/admin/bootstrap.py:143-146`
-- Modify: `tests/reconciler/test_main.py:46`
-
-- [ ] **Step 1: Update the reconciler test (it should fail after wiring changes)**
-
-In `tests/reconciler/test_main.py`, replace the runtime monkeypatch:
-
-```python
-    class _FakeResolver:
-        async def register_all_discovery(self, pool: object) -> None:
-            events.append("discover")
-
-    monkeypatch.setattr(composition, "build_provider_resolver", lambda **kw: _FakeResolver())
-```
-
-(`__main__` imports `build_provider_resolver` from `composition` inside `_run_reconciler`, so patching the attribute on `composition` is sufficient — keep the existing `import ... as composition` reference.)
-
-- [ ] **Step 2: Rewrite `app.py` wiring**
-
-Replace the import and types:
+Replace the composition import and add the resolver/ResourceKind imports:
 
 ```python
 from kdive.domain.models import ResourceKind
 from kdive.providers.composition import build_provider_resolver
 from kdive.providers.resolver import ProviderResolver
-...
+```
+
+Change the registrar seam types to carry the resolver:
+
+```python
 type PlaneRegistrar = Callable[
     [FastMCP, AsyncConnectionPool, ProviderResolver, SecretRegistry], None
 ]
 type HandlerRegistrar = Callable[[HandlerRegistry, ProviderResolver], None]
 ```
 
-`_plain` takes `ProviderResolver` in its ignored slot. The provider-aware **tool** lambdas resolve the local runtime (MCP registrar modules are unchanged):
+`_plain`'s ignored slot becomes `ProviderResolver`. The provider-aware **tool** lambdas resolve the local runtime (MCP registrar modules unchanged):
 
 ```python
     lambda app, pool, resolver, registry: systems_tools.register(
@@ -658,18 +410,26 @@ type HandlerRegistrar = Callable[[HandlerRegistry, ProviderResolver], None]
     ),
 ```
 
-The **handler** registrars pass the resolver through (per-op resolution):
+The **handler** registrars in this task STILL pass the resolved local runtime (planes are migrated in Task 4):
 
 ```python
 _HANDLER_REGISTRARS: tuple[HandlerRegistrar, ...] = (
-    lambda registry, resolver: systems.register_handlers(registry, resolver=resolver),
-    lambda registry, resolver: runs.register_handlers(registry, resolver=resolver),
-    lambda registry, resolver: control.register_handlers(registry, resolver=resolver),
-    lambda registry, resolver: vmcore.register_handlers(registry, resolver=resolver),
+    lambda registry, resolver: systems.register_handlers(
+        registry, provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
+    ),
+    lambda registry, resolver: runs.register_handlers(
+        registry, provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
+    ),
+    lambda registry, resolver: control.register_handlers(
+        registry, provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
+    ),
+    lambda registry, resolver: vmcore.register_handlers(
+        registry, provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
+    ),
 )
 ```
 
-`build_app` / `build_handler_registry` rename the kwarg:
+`build_app` / `build_handler_registry` rename the kwarg and build the resolver:
 
 ```python
 def build_app(
@@ -695,11 +455,11 @@ def build_handler_registry(*, provider_resolver: ProviderResolver | None = None)
     return registry
 ```
 
-Update the two docstrings to say "provider resolver" instead of "provider dispatch runtime".
+Update both docstrings to say "provider resolver".
 
-- [ ] **Step 3: Rewrite `__main__` reconciler discovery**
+- [ ] **Step 4: `__main__.py` — reconciler discovery via the resolver**
 
-In `_run_reconciler`, replace the import and call:
+In `_run_reconciler` replace the import and call:
 
 ```python
     from kdive.providers.composition import build_provider_resolver
@@ -707,7 +467,7 @@ In `_run_reconciler`, replace the import and call:
     await _register_provider_resources(pool, build_provider_resolver())
 ```
 
-and change `_register_provider_resources` to take a `ProviderResolver` and call `register_all_discovery`:
+Change `_register_provider_resources` to take a `ProviderResolver`:
 
 ```python
 async def _register_provider_resources(
@@ -720,32 +480,219 @@ async def _register_provider_resources(
         _log.warning("reconciler: provider discovery registration failed at startup", exc_info=True)
 ```
 
-Update the `TYPE_CHECKING` import: `from kdive.providers.resolver import ProviderResolver` (drop the now-unused `ProviderRuntime` import if nothing else uses it).
+Update the `TYPE_CHECKING` block (line 24-25): import `ProviderResolver` instead of `ProviderRuntime`.
 
-- [ ] **Step 4: Rewrite `bootstrap.py` discovery**
+- [ ] **Step 5: `bootstrap.py` — `register_local_resource` via the resolver**
+
+Replace the body of `register_local_resource` (currently at `bootstrap.py:143-146`):
 
 ```python
+async def register_local_resource(pool: Any) -> None:
     from kdive.providers.composition import build_provider_resolver
 
     await build_provider_resolver().register_all_discovery(pool)
 ```
 
-- [ ] **Step 5: Run the affected suites, expect pass**
+- [ ] **Step 6: Run the affected suites — must be green (this is the wiring commit; verify broadly)**
 
-Run: `uv run python -m pytest tests/mcp/core/test_app.py tests/reconciler/test_main.py tests/mcp/debug/test_introspect_tools.py -q` → PASS.
+Run: `uv run python -m pytest tests/providers/test_composition.py tests/providers/test_capture_capabilities.py tests/mcp/core/test_app.py tests/reconciler/test_main.py tests/mcp/debug/test_introspect_tools.py -q`
+Expected: PASS. (`test_app.py` exercises both `build_app` import and `build_handler_registry` binding — it would catch any rename/signature breakage.)
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: lint + type, then commit**
 
 ```bash
-git add src/kdive/mcp/app.py src/kdive/__main__.py src/kdive/admin/bootstrap.py tests/reconciler/test_main.py
-git commit -m "feat(providers): thread the ProviderResolver through app, reconciler, bootstrap"
+just lint && just type
+git add src/kdive/providers/composition.py src/kdive/mcp/app.py src/kdive/__main__.py \
+        src/kdive/admin/bootstrap.py tests/providers/test_composition.py \
+        tests/providers/test_capture_capabilities.py tests/reconciler/test_main.py
+git commit -m "feat(providers): build a ProviderResolver and route MCP+discovery through it"
 ```
 
 ---
 
-## Task 6: CHECK↔registry parity test
+## Task 4: Migrate the worker-handler path to per-op resolution (atomic, green)
 
-Assert every kind the live `resources_kind_check` admits has a registered, reachable runtime, and that the resolver's join helpers map real rows to the right runtime. Docker-gated (uses the `pg_conn` fixture in `tests/db/`).
+**One commit.** All four planes' handlers + `register_handlers`, plus `app.py`'s `_HANDLER_REGISTRARS`, change together (they are coupled through `build_handler_registry`). The handler bodies keep their positional `port` parameter (so positional-injection tests are unaffected) and gain `*, resolver=None`; the port is resolved **lazily, immediately before its first use**, after the existence/precheck guard.
+
+> Positional handler-invocation tests (`provision_handler(conn, job, prov)`, `build_handler(conn, job, builder)`, `capture_handler(conn, job, retriever)`) bind the port positionally and leave `resolver=None` — unaffected. Production passes `resolver=`.
+
+- [ ] **Step 1: `systems.py`** — replace the `ProviderRuntime` import with `from kdive.providers.resolver import ProviderResolver`. Add the helper and migrate the three handlers + `register_handlers`:
+
+```python
+async def _provisioner(
+    conn: AsyncConnection,
+    system_id: UUID,
+    explicit: Provisioner | None,
+    resolver: ProviderResolver | None,
+) -> Provisioner:
+    if explicit is not None:
+        return explicit
+    if resolver is None:
+        raise RuntimeError("provision handlers require an explicit provisioner or a resolver")
+    return (await resolver.runtime_for_system(conn, system_id)).provisioner
+```
+
+- `provision_handler(conn, job, provisioning=None, *, resolver=None)`: after `if system is None: raise ...`, insert `provisioning = await _provisioner(conn, system_id, provisioning, resolver)` (before the `system.state` branch, which already uses the port in its terminal-state teardown path).
+- `reprovision_handler(conn, job, provisioning=None, *, resolver=None)`: after its `if system is None: raise ...`, insert the same resolution line.
+- `teardown_handler(conn, job, provisioning=None, *, resolver=None)`: the `domain_name` is captured inside the locked `async with` block, but `provisioning.teardown(domain_name)` is called **after** that block exits (current `systems.py:281`). Resolve **after** the `async with` block, immediately before the teardown call: `provisioning = await _provisioner(conn, system_id, provisioning, resolver)`. (Skipped naturally when `system is None` returns early inside the block.)
+
+```python
+def register_handlers(
+    registry: HandlerRegistry,
+    *,
+    provisioning: Provisioner | None = None,
+    resolver: ProviderResolver | None = None,
+) -> None:
+    """Bind the `provision`/`teardown`/`reprovision` job handlers."""
+    if provisioning is None and resolver is None:
+        raise RuntimeError("systems handlers require a resolver or an explicit provisioner")
+    registry.register(
+        JobKind.PROVISION,
+        lambda conn, job: provision_handler(conn, job, provisioning, resolver=resolver),
+    )
+    registry.register(
+        JobKind.TEARDOWN,
+        lambda conn, job: teardown_handler(conn, job, provisioning, resolver=resolver),
+    )
+    registry.register(
+        JobKind.REPROVISION,
+        lambda conn, job: reprovision_handler(conn, job, provisioning, resolver=resolver),
+    )
+```
+
+- [ ] **Step 2: `runs.py`** — add `from kdive.providers.resolver import ProviderResolver` (keep the existing `ProviderRuntime` import — used below as a return type). Add:
+
+```python
+async def _run_runtime(
+    conn: AsyncConnection, run_id: UUID, resolver: ProviderResolver | None
+) -> ProviderRuntime:
+    if resolver is None:
+        raise RuntimeError("runs handlers require a resolver or explicit run ports")
+    return await resolver.runtime_for_run(conn, run_id)
+```
+
+- `build_handler(conn, job, builder=None, *, resolver=None)`: the builder is used only inside `if result is None:` (i.e. `builder.build(...)`). Resolve there, right before the call, to avoid resolving for an idempotent re-build whose result already exists:
+
+```python
+    result = await existing_build_result(conn, run_id)
+    if result is None:
+        if builder is None:
+            builder = (await _run_runtime(conn, run_id, resolver)).builder
+        try:
+            output = await asyncio.to_thread(builder.build, run_id, parsed)
+        ...
+```
+
+- `install_handler(conn, job, installer=None, *, resolver=None)`: after the `system` existence check and before `claim_run_step`, resolve via the already-loaded system:
+
+```python
+    if installer is None:
+        installer = (await _run_runtime_for_system(conn, run.system_id, resolver)).installer
+```
+
+with a sibling helper resolving by system (or inline `runtime_for_system`); to avoid two helpers, inline it:
+
+```python
+    if installer is None:
+        if resolver is None:
+            raise RuntimeError("runs handlers require a resolver or explicit run ports")
+        installer = (await resolver.runtime_for_system(conn, run.system_id)).installer
+```
+
+- `boot_handler(conn, job, booter=None, *, resolver=None)`: after `if run is None: raise ...` and before `claim_run_step`, resolve via run:
+
+```python
+    if booter is None:
+        booter = (await _run_runtime(conn, run_id, resolver)).booter
+```
+
+`register_handlers`:
+
+```python
+def register_handlers(
+    registry: HandlerRegistry,
+    *,
+    builder: Builder | None = None,
+    installer: Installer | None = None,
+    booter: Booter | None = None,
+    resolver: ProviderResolver | None = None,
+) -> None:
+    """Bind the `build`/`install`/`boot` job handlers."""
+    if builder is None and installer is None and booter is None and resolver is None:
+        raise RuntimeError("runs handlers require a resolver or explicit run ports")
+    registry.register(
+        JobKind.BUILD, lambda conn, job: build_handler(conn, job, builder, resolver=resolver)
+    )
+    registry.register(
+        JobKind.INSTALL, lambda conn, job: install_handler(conn, job, installer, resolver=resolver)
+    )
+    registry.register(
+        JobKind.BOOT, lambda conn, job: boot_handler(conn, job, booter, resolver=resolver)
+    )
+```
+
+- [ ] **Step 3: `control.py`** — replace the `ProviderRuntime` import with `ProviderResolver`. Add:
+
+```python
+async def _controller(
+    conn: AsyncConnection, system_id: UUID, resolver: ProviderResolver | None
+) -> Controller:
+    if resolver is None:
+        raise RuntimeError("control handlers require a resolver or an explicit controller")
+    return (await resolver.runtime_for_system(conn, system_id)).controller
+```
+
+- `power_handler(conn, job, control=None, *, resolver=None)`: `target = await _control_target(...)` already raises if gone; resolve after it, before `control.power(...)`: `control = control if control is not None else await _controller(conn, system_id, resolver)`.
+- `force_crash_handler(conn, job, control=None, *, resolver=None)`: `target = await _force_crash_target(...)`; `if target is None: return str(system_id)` (port unused); after that, before `control.force_crash(...)`: `control = control if control is not None else await _controller(conn, system_id, resolver)`.
+
+`register_handlers(*, control=None, resolver=None)` — same guard + pass-through pattern as Step 1, binding `POWER`/`FORCE_CRASH`.
+
+- [ ] **Step 4: `vmcore.py`** — replace the `ProviderRuntime` import with `ProviderResolver`. `precheck_system` returns `str` (existing same-method key → early return, port unused) or the `System`. Resolve only on the `System` branch:
+
+```python
+    precheck = await precheck_system(conn, system_id, method)
+    if isinstance(precheck, str):
+        return precheck
+    if retriever is None:
+        if resolver is None:
+            raise RuntimeError("vmcore handlers require a resolver or an explicit retriever")
+        retriever = (await resolver.runtime_for_system(conn, system_id)).retriever
+    output = await asyncio.to_thread(retriever.capture, system_id, method)
+    return await finalize_capture(conn, job, precheck, method, output)
+```
+
+`register_handlers(*, retriever=None, resolver=None)` — same guard + pass-through, binding `CAPTURE_VMCORE`.
+
+- [ ] **Step 5: `app.py`** — flip every `_HANDLER_REGISTRARS` lambda to pass the resolver:
+
+```python
+_HANDLER_REGISTRARS: tuple[HandlerRegistrar, ...] = (
+    lambda registry, resolver: systems.register_handlers(registry, resolver=resolver),
+    lambda registry, resolver: runs.register_handlers(registry, resolver=resolver),
+    lambda registry, resolver: control.register_handlers(registry, resolver=resolver),
+    lambda registry, resolver: vmcore.register_handlers(registry, resolver=resolver),
+)
+```
+
+- [ ] **Step 6: Run the handler + wiring suites — must be green**
+
+Run: `uv run python -m pytest tests/mcp/core/test_app.py tests/mcp/lifecycle/test_control_tools.py tests/mcp/lifecycle/test_vmcore_tools.py tests/adversarial/test_provider_state_races.py tests/integration/test_walking_skeleton.py -q`
+Expected: PASS (Docker-gated suites skip cleanly without Docker; `test_app.py` always runs and confirms `build_handler_registry` binding).
+
+- [ ] **Step 7: lint + type (catches any orphaned `ProviderRuntime` import), then commit**
+
+```bash
+just lint && just type
+git add src/kdive/planes/systems.py src/kdive/planes/runs.py src/kdive/planes/control.py \
+        src/kdive/planes/vmcore.py src/kdive/mcp/app.py
+git commit -m "feat(providers): resolve worker handler provider per System/Run kind"
+```
+
+---
+
+## Task 5: CHECK↔registry parity test
+
+Assert every kind the live `resources_kind_check` admits has a registered, reachable runtime, and the reverse. Docker-gated (uses the `pg_conn` fixture in `tests/db/`).
 
 **Files:** Create `tests/db/test_resource_kind_parity.py`.
 
@@ -773,6 +720,8 @@ def _check_allowed_kinds(conn: psycopg.Connection) -> set[str]:
         "WHERE conname = 'resources_kind_check'"
     ).fetchone()
     assert row is not None, "resources_kind_check constraint is missing"
+    # pg renders the CHECK as ... ARRAY['local-libvirt'::text, ...]; the single-quoted
+    # literals are exactly the admitted kinds (the ::text casts sit outside the quotes).
     return set(re.findall(r"'([^']+)'", row[0]))
 
 
@@ -811,12 +760,12 @@ git commit -m "test(providers): assert CHECK<->registry parity for resource kind
 
 ---
 
-## Task 7: Full guardrails + final sweep
+## Task 6: Full guardrails + final sweep
 
 - [ ] **Step 1: Format + lint + type**
 
 Run: `just lint && just type`
-Expected: clean. Fix every warning (zero-warnings policy). Common items: an unused `ProviderRuntime` import left in `__main__.py`/a plane after the rename; `ResourceKind` import ordering (ruff will autofix with `just format`).
+Expected: clean. If any warning remains, fix it (zero-warnings policy). The `ProviderRuntime` import in `systems.py`/`control.py`/`vmcore.py` and the `TYPE_CHECKING` `ProviderRuntime` in `__main__.py` should already be gone (Tasks 3–4); confirm none lingers (ruff F401).
 
 - [ ] **Step 2: Full test suite**
 
@@ -825,13 +774,13 @@ Expected: green (Docker-gated db/integration tests run when Docker is present; o
 
 - [ ] **Step 3: Confirm no behavioral diff under the provider**
 
-Run: `git diff --stat main..HEAD -- src/kdive/providers/local_libvirt/` → **empty** (acceptance criterion: no behavioral diff under `providers/local_libvirt/*`).
+Run: `git diff --stat main..HEAD -- src/kdive/providers/local_libvirt/` → **empty** (acceptance: no behavioral diff under `providers/local_libvirt/*`).
 
 - [ ] **Step 4: Confirm no new migration**
 
 Run: `git diff --name-only main..HEAD -- src/kdive/db/schema/` → **empty** (No DDL — the CHECK widen is issue 2).
 
-- [ ] **Step 5: Commit any lint/type fixups**
+- [ ] **Step 5: Commit any lint/type fixups (if Step 1 changed anything)**
 
 ```bash
 git add -A
@@ -845,15 +794,17 @@ git commit -m "chore(providers): satisfy lint/type after resolver threading"
 **Spec coverage (issue #180 acceptance):**
 - `ResourceKind.FAULT_INJECT` enum member → Task 1. ✓
 - Composition map per deployment + opt-in gate (fault-inject absent from default prod) → Task 3. ✓
-- `kind`-keyed resolver threaded to worker handlers (per-op) + post-System MCP boundary (via `app.py` resolving the local runtime; per-target MCP resolution deferred to issues 2/4 per the confirmed decision) → Tasks 4, 5. ✓
-- Resolution scoped to post-System ops; pre-grant allocation plane and discovery do not resolve a runtime (discovery fans out over the map's own kinds via `register_all_discovery`; `allocations.*` untouched) → Tasks 2, 5. ✓
+- `kind`-keyed resolver threaded to worker handlers (per-op, Task 4) + post-System MCP boundary (via `app.py` resolving the local runtime, Task 3; per-target MCP resolution deferred to issues 2/4 per the confirmed decision). ✓
+- Resolution scoped to post-System ops; pre-grant allocation plane and discovery do not resolve a runtime (discovery fans out over the map's own kinds via `register_all_discovery`; `allocations.*` untouched) → Tasks 2–4. ✓
 - Unknown kind → `configuration_error`, fail closed → Task 2 (`resolve`). ✓
-- CHECK↔registry parity test over local-libvirt only → Task 6. ✓
-- No DDL → verified in Task 7 Step 4. ✓
-- local-libvirt behavior unchanged; only wiring changes → handler signatures preserve positional port injection; MCP registrar modules untouched; verified in Task 7 Step 3. ✓
+- CHECK↔registry parity test over local-libvirt only → Task 5. ✓
+- No DDL → verified in Task 6 Step 4. ✓
+- local-libvirt behavior unchanged; only wiring changes → handler signatures preserve positional port injection; MCP registrar modules untouched; verified in Task 6 Step 3. ✓
+
+**Green-at-every-commit:** Task 1 (enum) and Task 2 (additive module) are self-contained. Task 3 renames `build_default_provider_runtime` **and** updates all three top-level callers (`app.py`, `__main__`, `bootstrap`) **and** the three tests that referenced the old name in one commit, with verification that runs `tests/mcp/core/test_app.py` (import + binding). Task 4 changes all four planes' `register_handlers` **and** `app.py`'s `_HANDLER_REGISTRARS` in one commit, again verified against `test_app.py`, and removes the orphaned `ProviderRuntime` imports so `just lint` stays clean. No intermediate commit leaves a renamed symbol or a changed signature with an un-updated caller.
 
 **Placeholder scan:** none — every code step shows the code.
 
-**Type/name consistency:** `ProviderResolver`, `build_provider_resolver`, `build_local_runtime`, `register_all_discovery`, `runtime_for_system`, `runtime_for_run`, `resolve`, `registered_kinds`, `enable_fault_inject`, kwarg `resolver=` (handlers) / `provider_resolver=` (`build_app`/`build_handler_registry`) used consistently across tasks.
+**Type/name consistency:** `ProviderResolver`, `build_provider_resolver`, `build_local_runtime`, `register_all_discovery`, `runtime_for_system`, `runtime_for_run`, `resolve`, `registered_kinds`, `enable_fault_inject`; kwarg `resolver=` (handlers/`register_handlers`) and `provider_resolver=` (`build_app`/`build_handler_registry`) used consistently across tasks.
 
-**Risk note:** the only behavior-sensitive change is moving port acquisition inside the handlers. Each resolution is placed *after* the existing existence/precheck guard and *before* the first provider call, so gone-target idempotency (`teardown` returns `None`) and the "target is gone" `infrastructure_failure` category are preserved unchanged.
+**Risk note:** the only behavior-sensitive change is moving port acquisition inside the handlers (Task 4). Each resolution is placed *after* the existing existence/precheck guard and *immediately before* the first provider call (e.g. `build` resolves inside `if result is None`; `teardown` resolves after the locked block, before `provisioning.teardown`), so gone-target idempotency (`teardown` returns `None`), the early-return short-circuits (existing build result, existing same-method vmcore key, terminal force-crash target), and the "target is gone" `infrastructure_failure` category are all preserved unchanged.
