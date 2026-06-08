@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any, LiteralString, NamedTuple
 from uuid import UUID
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
-from kdive.db.idempotency import run_step
+from kdive.db.idempotency import abandon_run_step, claim_run_step, complete_run_step
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -114,16 +113,6 @@ async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> st
     return str(run_id)
 
 
-async def _run_step_locked(
-    conn: AsyncConnection,
-    run_id: UUID,
-    step: str,
-    fn: Callable[[], Awaitable[dict[str, Any]]],
-) -> None:
-    async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run_id):
-        await run_step(conn, run_id, step, fn)
-
-
 async def install_handler(conn: AsyncConnection, job: Job, installer: Installer) -> str | None:
     """Stage the built kernel for direct-kernel boot, recording the `install` step."""
     run_id = UUID(load_payload(job, RunPayload).run_id)
@@ -147,8 +136,10 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
     _log.info("install: run %s resolved cmdline %r (method %s)", run_id, cmdline, method.value)
     initrd_ref = await installed_initrd_ref(conn, run_id)
     job_ctx = job_context_from_job(job, run.project)
-
-    async def _do() -> dict[str, Any]:
+    claim = await claim_run_step(conn, run_id, "install")
+    if not claim.claimed:
+        return str(run_id)
+    try:
         await asyncio.to_thread(
             installer.install,
             run.system_id,
@@ -158,6 +149,11 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
             method=method,
             initrd_ref=initrd_ref,
         )
+    except Exception:
+        await abandon_run_step(conn, run_id, "install")
+        raise
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run_id):
+        await complete_run_step(conn, run_id, "install", {"system_id": str(run.system_id)})
         await audit.record(
             conn,
             job_ctx,
@@ -170,9 +166,6 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
                 project=run.project,
             ),
         )
-        return {"system_id": str(run.system_id)}
-
-    await _run_step_locked(conn, run_id, "install", _do)
     return str(run_id)
 
 
@@ -268,20 +261,6 @@ def _expected_crash_matches(run: Run, redacted_console: bytes) -> bool:
         return False
 
 
-async def _boot_step_locked(
-    conn: AsyncConnection,
-    system_id: UUID,
-    run_id: UUID,
-    fn: Callable[[], Awaitable[dict[str, Any]]],
-) -> None:
-    async with (
-        conn.transaction(),
-        advisory_xact_lock(conn, LockScope.SYSTEM, system_id),
-        advisory_xact_lock(conn, LockScope.RUN, run_id),
-    ):
-        await run_step(conn, run_id, "boot", fn)
-
-
 async def _record_boot_audit(
     conn: AsyncConnection,
     job_ctx: RequestContext,
@@ -346,19 +325,27 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
             details={"run_id": str(run_id)},
         )
     job_ctx = job_context_from_job(job, run.project)
+    claim = await claim_run_step(conn, run_id, "boot")
+    if not claim.claimed:
+        return str(run_id)
 
     try:
-        await _boot_step_locked(
-            conn,
-            run.system_id,
-            run_id,
-            lambda: _run_boot_and_capture_outcome(conn, job_ctx, run, booter),
-        )
+        result = await _run_boot_and_capture_outcome(conn, job_ctx, run, booter)
     except CategorizedError:
+        await abandon_run_step(conn, run_id, "boot")
         try:
             await _capture_console_artifact(conn, run.system_id)
         finally:
             raise
+    except Exception:
+        await abandon_run_step(conn, run_id, "boot")
+        raise
+    async with (
+        conn.transaction(),
+        advisory_xact_lock(conn, LockScope.SYSTEM, run.system_id),
+        advisory_xact_lock(conn, LockScope.RUN, run_id),
+    ):
+        await complete_run_step(conn, run_id, "boot", result)
     return str(run_id)
 
 

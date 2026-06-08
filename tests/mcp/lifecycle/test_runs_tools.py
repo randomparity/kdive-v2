@@ -1631,7 +1631,7 @@ def test_install_handler_replay_does_not_restage(migrated_url: str) -> None:
 
 
 class _SlowInstaller:
-    """An installer blocked by the test while the first dispatch owns the run lock."""
+    """An installer blocked by the test while the first dispatch owns the step claim."""
 
     def __init__(self) -> None:
         self.calls: list[UUID] = []
@@ -1655,8 +1655,8 @@ class _SlowInstaller:
 
 def test_install_handler_concurrent_dispatch_invokes_once(migrated_url: str) -> None:
     # Two concurrent dispatches of the SAME install job (the queue's at-least-once delivery)
-    # on distinct connections: the per-Run lock serializes them, so the installer runs once
-    # and exactly one ledger row is written.
+    # on distinct connections: the run_steps running claim serializes them, so the installer
+    # runs once and exactly one ledger row is written.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_succeeded_run(pool)
@@ -1677,7 +1677,7 @@ def test_install_handler_concurrent_dispatch_invokes_once(migrated_url: str) -> 
                 "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='install'",
                 (run_id,),
             )
-        assert len(installer.calls) == 1  # the per-Run lock prevents a double redefine
+        assert len(installer.calls) == 1  # the running claim prevents a double redefine
         assert nsteps == 1
 
     asyncio.run(_run())
