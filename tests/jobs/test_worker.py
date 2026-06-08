@@ -482,3 +482,51 @@ def test_run_survives_run_once_error(migrated_url: str, monkeypatch: pytest.Monk
             assert calls >= 2  # the loop survived the first iteration's error and ran again
 
     asyncio.run(_run())
+
+
+def test_run_stops_while_idle_sleep_is_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _run() -> None:
+        worker = Worker(
+            _unopened_pool(),
+            HandlerRegistry(),
+            worker_id="w1",
+            poll_interval=timedelta(seconds=30),
+        )
+        stop = asyncio.Event()
+        idle_reached = asyncio.Event()
+
+        async def fake_run_once() -> Job | None:
+            idle_reached.set()
+            return None
+
+        monkeypatch.setattr(worker, "run_once", fake_run_once)
+        task = asyncio.create_task(worker.run(stop))
+        await asyncio.wait_for(idle_reached.wait(), timeout=1)
+        stop.set()
+        await asyncio.wait_for(task, timeout=1)
+
+    asyncio.run(_run())
+
+
+def test_run_stops_while_error_sleep_is_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _run() -> None:
+        worker = Worker(
+            _unopened_pool(),
+            HandlerRegistry(),
+            worker_id="w1",
+            poll_interval=timedelta(seconds=30),
+        )
+        stop = asyncio.Event()
+        error_reached = asyncio.Event()
+
+        async def fake_run_once() -> Job | None:
+            error_reached.set()
+            raise RuntimeError("transient dequeue error")
+
+        monkeypatch.setattr(worker, "run_once", fake_run_once)
+        task = asyncio.create_task(worker.run(stop))
+        await asyncio.wait_for(error_reached.wait(), timeout=1)
+        stop.set()
+        await asyncio.wait_for(task, timeout=1)
+
+    asyncio.run(_run())

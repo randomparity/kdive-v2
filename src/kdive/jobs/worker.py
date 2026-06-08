@@ -115,10 +115,10 @@ class Worker:
                 job = await self.run_once()
             except Exception:  # noqa: BLE001 - a durable worker survives a transient per-iteration error
                 _log.exception("run_once failed; continuing after %ss", poll)
-                await asyncio.sleep(poll)
+                await _sleep_until_stop(stop, poll)
                 continue
             if job is None:
-                await asyncio.sleep(poll)
+                await _sleep_until_stop(stop, poll)
 
     async def _dispatch(self, job: Job, handler: JobHandler) -> None:
         heartbeat = asyncio.create_task(self._heartbeat_loop(job.id))
@@ -198,3 +198,8 @@ def _context_key(key: str) -> str:
 
 def _redacted(redactor: Redactor, value: str) -> str:
     return redactor.redact_text(value)[:_CONTEXT_VALUE_MAX]
+
+
+async def _sleep_until_stop(stop: asyncio.Event, timeout: float) -> None:
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(stop.wait(), timeout=timeout)
