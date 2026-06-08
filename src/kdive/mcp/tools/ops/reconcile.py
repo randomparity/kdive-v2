@@ -76,14 +76,10 @@ async def reconcile_now(
                 ErrorCategory.AUTHORIZATION_DENIED,
                 suggested_next_actions=[_RECONCILE_TOOL],
             )
-        try:
-            report = await reconcile_once(pool, reaper, upload_store=upload_store)
-        except CategorizedError as exc:
-            return ToolResponse.failure(
-                _RECONCILE_OBJECT_ID,
-                exc.category,
-                suggested_next_actions=[_RECONCILE_TOOL],
-            )
+        # reconcile_once isolates every per-repair failure into report.failures and does
+        # not re-raise it, so there is no CategorizedError to catch here; a rare whole-pass
+        # error (e.g. pool acquisition) propagates, matching the periodic loop's contract.
+        report = await reconcile_once(pool, reaper, upload_store=upload_store)
         async with pool.connection() as conn, conn.transaction():
             await audit.record_platform(
                 conn,

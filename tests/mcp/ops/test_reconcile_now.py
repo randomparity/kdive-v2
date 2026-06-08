@@ -187,11 +187,15 @@ def test_on_demand_pass_serializes_with_periodic_on_the_same_system_lock(
     asyncio.run(_run())
 
 
-def test_on_demand_and_periodic_pass_cannot_double_act(migrated_url: str) -> None:
+def test_concurrent_on_demand_and_periodic_pass_enqueue_one_teardown(migrated_url: str) -> None:
     """A concurrent on-demand + periodic pass on one orphaned System enqueue one teardown.
 
-    Both passes call the same ``reconcile_once``; the per-System advisory lock plus the
-    teardown dedup key mean two concurrent passes cannot double-enqueue the same teardown.
+    Both passes call the same ``reconcile_once``. The single-teardown outcome here is
+    carried by the ``{system_id}:teardown`` dedup key; the advisory-lock *serialization*
+    that prevents double-acting is proven separately by
+    ``test_on_demand_pass_serializes_with_periodic_on_the_same_system_lock`` (a held lock
+    actually stalls the on-demand repair). Together they show concurrent passes neither
+    double-enqueue nor run the repair lock-free.
     """
 
     async def _run() -> None:
