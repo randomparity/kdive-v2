@@ -25,7 +25,7 @@ from fastmcp import FastMCP
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.log import bind_context
@@ -47,39 +47,102 @@ from kdive.security.rbac import (
 _TOOL = "audit.query"
 _OBJECT_ID = "audit.query"
 _MAX_ROWS = 500
-type AuditQueryScope = Literal["project", "all-projects"]
-_PROJECT_SCOPE = "project"
+
+
+class _AuditQueryFilters(BaseModel):
+    """Common ``audit.query`` filters shared by both read shapes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    principal: Annotated[str | None, Field(description="Filter by acting principal.")] = None
+    object_id: Annotated[str | None, Field(description="Filter by audited object UUID.")] = None
+    transition: Annotated[
+        str | None, Field(description="Filter by transition literal (e.g. 'requested').")
+    ] = None
+    window: Annotated[
+        list[str | None] | None,
+        Field(description="[start, end] ISO-8601 timestamptz pair; omit for all time."),
+    ] = None
+
+
+class ProjectAuditQuery(_AuditQueryFilters):
+    """Project-scoped audit read request."""
+
+    scope: Literal["project"]
+    project: Annotated[str, Field(description="Project to read; requires project admin.")]
+
+
+class AllProjectsAuditQuery(_AuditQueryFilters):
+    """Cross-project audit read request."""
+
+    scope: Literal["all-projects"]
+
+
+type AuditQueryRequest = ProjectAuditQuery | AllProjectsAuditQuery
+
+
+async def query_project(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    project: str,
+    principal: str | None = None,
+    object_id: str | None = None,
+    transition: str | None = None,
+    window: object = None,
+) -> ToolResponse:
+    """Read one project's audit log; requires project admin."""
+    with bind_context(principal=ctx.principal):
+        try:
+            filters = _parse_filters(principal, object_id, transition, window)
+        except CategorizedError as exc:
+            return ToolResponse.failure(_OBJECT_ID, exc.category, suggested_next_actions=[_TOOL])
+        return await _query_project(pool, ctx, project, filters)
+
+
+async def query_all_projects(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    principal: str | None = None,
+    object_id: str | None = None,
+    transition: str | None = None,
+    window: object = None,
+) -> ToolResponse:
+    """Read every project's audit log; requires platform auditor."""
+    with bind_context(principal=ctx.principal):
+        try:
+            filters = _parse_filters(principal, object_id, transition, window)
+        except CategorizedError as exc:
+            return ToolResponse.failure(_OBJECT_ID, exc.category, suggested_next_actions=[_TOOL])
+        return await _query_cross_project(pool, ctx, filters)
 
 
 async def query(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
-    scope: AuditQueryScope | None = None,
-    project: str | None = None,
-    principal: str | None = None,
-    object_id: str | None = None,
-    transition: str | None = None,
-    window: object = None,
+    request: AuditQueryRequest,
 ) -> ToolResponse:
-    """Read ``audit_log`` with explicit project or all-projects scope."""
-    with bind_context(principal=ctx.principal):
-        try:
-            object_uuid = _parse_object_id(object_id)
-            parsed_window = _reads.parse_window(window)
-        except CategorizedError as exc:
-            return ToolResponse.failure(_OBJECT_ID, exc.category, suggested_next_actions=[_TOOL])
-        filters = _Filters(principal, object_uuid, transition, parsed_window)
-        scope_error = _scope_error(scope, project)
-        if scope_error is not None:
-            return scope_error
-        if scope == _PROJECT_SCOPE:
-            if project is None:
-                return _config_failure("project_required")
-            return await _query_project(pool, ctx, project, filters)
-        if scope == ALL_PROJECTS_SCOPE:
-            return await _query_cross_project(pool, ctx, filters)
-        return _config_failure("unknown_scope")
+    """Dispatch the typed ``audit.query`` request model to its explicit handler."""
+    if isinstance(request, ProjectAuditQuery):
+        return await query_project(
+            pool,
+            ctx,
+            project=request.project,
+            principal=request.principal,
+            object_id=request.object_id,
+            transition=request.transition,
+            window=request.window,
+        )
+    return await query_all_projects(
+        pool,
+        ctx,
+        principal=request.principal,
+        object_id=request.object_id,
+        transition=request.transition,
+        window=request.window,
+    )
 
 
 class _Filters:
@@ -100,6 +163,17 @@ class _Filters:
         self.window = window
 
 
+def _parse_filters(
+    principal: str | None,
+    object_id: str | None,
+    transition: str | None,
+    window: object,
+) -> _Filters:
+    object_uuid = _parse_object_id(object_id)
+    parsed_window = _reads.parse_window(window)
+    return _Filters(principal, object_uuid, transition, parsed_window)
+
+
 def _parse_object_id(object_id: str | None) -> UUID | None:
     if object_id is None:
         return None
@@ -110,29 +184,6 @@ def _parse_object_id(object_id: str | None) -> UUID | None:
             f"object_id {object_id!r} is not a uuid",
             category=ErrorCategory.CONFIGURATION_ERROR,
         ) from None
-
-
-def _scope_error(scope: str | None, project: str | None) -> ToolResponse | None:
-    if scope is None:
-        return _config_failure("scope_required")
-    if scope == _PROJECT_SCOPE:
-        if project is None:
-            return _config_failure("project_required")
-        return None
-    if scope == ALL_PROJECTS_SCOPE:
-        if project is not None:
-            return _config_failure("project_not_allowed")
-        return None
-    return _config_failure("unknown_scope")
-
-
-def _config_failure(reason: str) -> ToolResponse:
-    return ToolResponse.failure(
-        _OBJECT_ID,
-        ErrorCategory.CONFIGURATION_ERROR,
-        suggested_next_actions=[_TOOL],
-        data={"reason": reason},
-    )
 
 
 async def _query_project(
@@ -263,43 +314,22 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the ``audit.query`` tool on ``app``, bound to ``pool``."""
 
     @app.tool(
-        name="audit.query",
+        name=_TOOL,
         annotations=_docmeta.read_only(),
         meta={"maturity": "implemented"},
     )
     async def audit_query(
-        scope: Annotated[
-            AuditQueryScope,
-            Field(description="'project' for one project, or 'all-projects' for platform audit."),
+        request: Annotated[
+            AuditQueryRequest,
+            Field(
+                discriminator="scope",
+                description="Project or all-projects audit query request.",
+            ),
         ],
-        project: Annotated[
-            str | None,
-            Field(description="Project to read when scope is 'project'; forbidden otherwise."),
-        ] = None,
-        principal: Annotated[str | None, Field(description="Filter by acting principal.")] = None,
-        object_id: Annotated[
-            str | None, Field(description="Filter by audited object UUID.")
-        ] = None,
-        transition: Annotated[
-            str | None, Field(description="Filter by transition literal (e.g. 'requested').")
-        ] = None,
-        window: Annotated[
-            list[str | None] | None,
-            Field(description="[start, end] ISO-8601 timestamptz pair; omit for all time."),
-        ] = None,
     ) -> ToolResponse:
         """Read audit_log: project form (admin) or cross-project (platform_auditor).
 
         Returns the most recent matching rows (capped at 500, newest first);
         ``data.truncated`` is "true" when the cap is hit — narrow with filters.
         """
-        return await query(
-            pool,
-            current_context(),
-            scope=scope,
-            project=project,
-            principal=principal,
-            object_id=object_id,
-            transition=transition,
-            window=window,
-        )
+        return await query(pool, current_context(), request=request)

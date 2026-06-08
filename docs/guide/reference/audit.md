@@ -13,8 +13,4 @@ Returns the most recent matching rows (capped at 500, newest first);
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `object_id` | `any` | no | Filter by audited object UUID. |
-| `principal` | `any` | no | Filter by acting principal. |
-| `project` | `any` | no | Project to read (project form, requires admin); omit for cross. |
-| `transition` | `any` | no | Filter by transition literal (e.g. 'requested'). |
-| `window` | `any` | no | [start, end] ISO-8601 timestamptz pair; omit for all time. |
+| `request` | `any` | yes | Project or all-projects audit query request. |
