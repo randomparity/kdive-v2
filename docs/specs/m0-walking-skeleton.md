@@ -319,54 +319,28 @@ taxonomy below.
 
 ## Plane interfaces
 
-The provider seam ([0009](../adr/0009-capability-provider-dispatch.md)). A provider
-registers capabilities keyed `(plane, operation, resource_kind)`; each operation
-carries a contract descriptor. The core dispatches by capability match, never by
-provider name.
+The active M0/M1 provider seam is typed `ProviderRuntime` ports
+([0063](../adr/0063-typed-provider-runtime.md), refined by
+[0066](../adr/0066-remove-capability-registry-prototype-from-src.md)). Startup constructs
+the concrete local-libvirt ports once in `providers.composition`; MCP tools and worker
+handlers receive those typed ports directly. Capability-registry dispatch from ADR-0009 and
+ADR-0022 is historical design context for a future multi-provider milestone, not runtime
+infrastructure in this implementation.
+
+See [top-level design](top-level-design.md) for the current extension path. A new provider
+adds concrete port implementations and `ProviderRuntime` wiring; reintroducing capability
+matching requires a new ADR.
 
 ```python
-class OpContract(TypedDict):
-    idempotent: bool
-    destructive: bool
-    cancelable: bool
-    long_running: bool                  # True → routed as a job
-    cleanup: Literal["clean-rollback", "best-effort", "orphan-flagged"]
+@dataclass(frozen=True)
+class ProviderRuntime:
+    discovery: DiscoveryPort
+    provisioner: Provisioner
+    builder: Builder
+    controller: Controller
+    retriever: Retriever
 
-class Capability(TypedDict):
-    plane: str            # "provisioning", "build", …
-    operation: str        # "provision", "teardown", …
-    resource_kind: str    # "local-libvirt"
-    contract: OpContract
-
-class ProvisioningPlane(Protocol):
-    def provision(self, alloc: Allocation, profile: ProvisioningProfile) -> SystemHandle: ...
-    def teardown(self, system: SystemHandle) -> None: ...
-
-class BuildPlane(Protocol):
-    def build(self, run: Run, profile: BuildProfile) -> KernelArtifact: ...
-
-class InstallPlane(Protocol):
-    def install(self, system: SystemHandle, kernel: KernelArtifact) -> None: ...
-
-class ConnectPlane(Protocol):
-    def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle: ...
-    def close_transport(self, handle: TransportHandle) -> None: ...
-
-class DebugPlane(Protocol):
-    def set_breakpoint(self, h: TransportHandle, loc: BreakLocation) -> BreakpointId: ...
-    def read_memory(self, h: TransportHandle, addr: int, length: int) -> bytes: ...   # length ≤ 4096
-    def read_registers(self, h: TransportHandle) -> Registers: ...
-
-class ControlPlane(Protocol):
-    def power(self, system: SystemHandle, action: PowerAction) -> None: ...
-    def force_crash(self, system: SystemHandle) -> None: ...
-
-class RetrievePlane(Protocol):
-    def capture_vmcore(self, system: SystemHandle) -> ArtifactRef: ...
-
-class DiscoveryPlane(Protocol):
-    def list_resources(self) -> list[ResourceRecord]: ...
-    def list_owned(self) -> list[OwnedInfra]: ...        # for the reconciler
+    def install_boot(self) -> tuple[Installer, Booter]: ...
 ```
 
 The `AllocationPlane` in M0 is the always-yes capacity-checked path implemented in
