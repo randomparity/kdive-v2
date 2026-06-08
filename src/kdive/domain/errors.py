@@ -37,6 +37,7 @@ class ErrorCategory(StrEnum):
     ALLOCATION_DENIED = "allocation_denied"
     QUOTA_EXCEEDED = "quota_exceeded"
     LEASE_EXPIRED = "lease_expired"
+    QUEUE_TIMEOUT = "queue_timeout"
     PROVISIONING_FAILURE = "provisioning_failure"
     INSTALL_FAILURE = "install_failure"
     TRANSPORT_FAILURE = "transport_failure"
