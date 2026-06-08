@@ -34,12 +34,16 @@ from kdive.domain.state import AllocationState, DebugSessionState, JobState, Run
 from kdive.jobs import queue
 from kdive.jobs.payloads import PayloadValidationError, SystemPayload, run_id_from_payload
 from kdive.security import audit
-from kdive.services import accounting
+from kdive.services import accounting, allocation_promotion
 
 _log = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL = timedelta(seconds=30)
 DEFAULT_DEBUG_SESSION_STALE_AFTER = timedelta(minutes=2)
+# A queued ``requested`` allocation never placeable past this window is reaped to
+# ``failed(queue_timeout)`` (ADR-0069). Sized like the lease cap (24h) so a request that
+# could never place does not pin pending capacity indefinitely.
+DEFAULT_QUEUE_MAX_WAIT = timedelta(hours=24)
 # Idempotency-key rows older than this are GC'd by the reconciler (ADR-0040 §3): the
 # append-only request/renew retry-dedup store has no other reaper.
 DEFAULT_IDEMPOTENCY_RETENTION = timedelta(days=7)
@@ -147,6 +151,35 @@ class ReconcileReport:
     idempotency_keys_gc_count: int
     failures: tuple[str, ...]
     abandoned_uploads: int = 0
+    promoted_allocations: int = 0
+    queue_timeouts: int = 0
+
+
+async def _promote_pending(conn: AsyncConnection) -> int:
+    """Promote the oldest placeable queued request per resource (ADR-0069, #165).
+
+    Delegates to :func:`kdive.services.allocation_promotion.promote_pending`, which replays
+    the shared admission gate under ``PROJECT → RESOURCE → ALLOCATION`` — sharing admission's
+    RESOURCE lock and the expiry sweep's ALLOCATION fence, so the sweep never double-grants
+    against a synchronous admit nor promotes a released-while-queued row.
+    """
+    return await allocation_promotion.promote_pending(conn)
+
+
+def _reap_queue_timeouts_for(
+    queue_max_wait: timedelta,
+) -> Callable[[AsyncConnection], Awaitable[int]]:
+    """Bind the max-wait window into the queue_timeout reaper for ``_isolated``."""
+
+    async def _reap(conn: AsyncConnection) -> int:
+        return await allocation_promotion.reap_queue_timeouts(conn, queue_max_wait)
+
+    return _reap
+
+
+async def _reap_queue_timeouts(conn: AsyncConnection, queue_max_wait: timedelta) -> int:
+    """Reap queued requests never placeable past ``queue_max_wait`` (test/direct entry)."""
+    return await allocation_promotion.reap_queue_timeouts(conn, queue_max_wait)
 
 
 async def _sweep_expired_allocations(conn: AsyncConnection) -> int:
@@ -552,6 +585,7 @@ async def reconcile_once(
     upload_store: UploadStore | None = None,
     debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
     idempotency_retention: timedelta = DEFAULT_IDEMPOTENCY_RETENTION,
+    queue_max_wait: timedelta = DEFAULT_QUEUE_MAX_WAIT,
 ) -> ReconcileReport:
     """Run the repairs once, each isolated, each on a fresh pooled connection.
 
@@ -560,7 +594,10 @@ async def reconcile_once(
 
     The ``→expired`` allocation sweep runs **first** so that the allocations it moves to
     ``expired`` are seen as orphaning their System by :func:`_repair_orphaned_systems` in
-    the **same** pass (ADR-0036 §4); the idempotency-key GC runs last.
+    the **same** pass (ADR-0036 §4). The **promotion sweep runs right after the expiry
+    sweep** so a slot a lease just freed is filled in the same pass; the
+    **queue_timeout reaper runs after the promotion sweep** so every aged request already had
+    its placement chance this pass (ADR-0069). The idempotency-key GC runs last.
 
     Counts are **best-effort**: a repair that commits some work and then raises (e.g. a
     transient DB error in a later iteration) reports ``0`` for its category and appears
@@ -570,6 +607,8 @@ async def reconcile_once(
     """
     counts: dict[str, int] = {
         "expired_allocations": 0,
+        "promoted_allocations": 0,
+        "queue_timeouts": 0,
         "orphaned_systems": 0,
         "abandoned_jobs": 0,
         "dead_sessions": 0,
@@ -588,6 +627,8 @@ async def reconcile_once(
             failures.append(name)
 
     await _isolated("expired_allocations", _sweep_expired_allocations)
+    await _isolated("promoted_allocations", _promote_pending)
+    await _isolated("queue_timeouts", _reap_queue_timeouts_for(queue_max_wait))
     await _isolated("orphaned_systems", _repair_orphaned_systems)
     await _isolated("abandoned_jobs", _repair_abandoned_jobs)
     await _isolated(
@@ -612,6 +653,8 @@ async def reconcile_once(
         idempotency_keys_gc_count=counts["idempotency_keys_gc_count"],
         failures=tuple(failures),
         abandoned_uploads=counts["abandoned_uploads"],
+        promoted_allocations=counts["promoted_allocations"],
+        queue_timeouts=counts["queue_timeouts"],
     )
 
 
@@ -627,6 +670,7 @@ class Reconciler:
         interval: timedelta = DEFAULT_INTERVAL,
         debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
         idempotency_retention: timedelta = DEFAULT_IDEMPOTENCY_RETENTION,
+        queue_max_wait: timedelta = DEFAULT_QUEUE_MAX_WAIT,
     ) -> None:
         self._pool = pool
         self._reaper = reaper
@@ -634,6 +678,7 @@ class Reconciler:
         self._interval = interval
         self._debug_session_stale_after = debug_session_stale_after
         self._idempotency_retention = idempotency_retention
+        self._queue_max_wait = queue_max_wait
 
     async def run_once(self) -> ReconcileReport:
         """Run one reconciliation pass."""
@@ -643,6 +688,7 @@ class Reconciler:
             upload_store=self._upload_store,
             debug_session_stale_after=self._debug_session_stale_after,
             idempotency_retention=self._idempotency_retention,
+            queue_max_wait=self._queue_max_wait,
         )
 
     async def run(self, stop: asyncio.Event) -> None:
