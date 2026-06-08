@@ -97,18 +97,29 @@ class _Seams:
 
     config_text: str = _GOOD_CONFIG
     build_id: bytes = b"\xab\xcd\xef\x01\x23\x45\x67\x89"
+    olddefconfig_returncode: int = 0
     make_returncode: int = 0
+    olddefconfig_calls: int = 0
     make_calls: int = 0
     checkout_calls: int = 0
+    call_order: list[str] = field(default_factory=list)
 
     def checkout(self, run_id: UUID, profile: ServerBuildProfile, workspace: Path) -> None:
         self.checkout_calls += 1
+        self.call_order.append("checkout")
+
+    def run_olddefconfig(self, workspace: Path) -> int:
+        self.olddefconfig_calls += 1
+        self.call_order.append("olddefconfig")
+        return self.olddefconfig_returncode
 
     def read_config(self, workspace: Path) -> str:
+        self.call_order.append("read_config")
         return self.config_text
 
     def run_make(self, workspace: Path) -> int:
         self.make_calls += 1
+        self.call_order.append("make")
         return self.make_returncode
 
     def read_kernel_image(self, workspace: Path) -> bytes:
@@ -127,6 +138,7 @@ def _builder(store: _FakeStore, seams: _Seams, tmp_path: Path) -> LocalLibvirtBu
         workspace_root=tmp_path,
         store_factory=lambda: store,
         checkout=seams.checkout,
+        run_olddefconfig=seams.run_olddefconfig,
         read_config=seams.read_config,
         run_make=seams.run_make,
         read_kernel_image=seams.read_kernel_image,
@@ -195,6 +207,26 @@ def test_build_stores_both_artifacts_sensitive(tmp_path: Path) -> None:
     assert names == {"kernel", "vmlinux"}
     assert all(sens is Sensitivity.SENSITIVE for _, _, _, sens in store.puts)
     assert all(kind == "runs" for _, _, kind, _ in store.puts)
+
+
+def test_build_runs_olddefconfig_before_config_validation(tmp_path: Path) -> None:
+    store, seams = _FakeStore(), _Seams()
+
+    _builder(store, seams, tmp_path).build(_RUN, _profile())
+
+    assert seams.call_order[:3] == ["checkout", "olddefconfig", "read_config"]
+    assert seams.call_order[-1] == "make"
+
+
+def test_build_maps_olddefconfig_failure_to_build_failure(tmp_path: Path) -> None:
+    store, seams = _FakeStore(), _Seams(olddefconfig_returncode=2)
+
+    with pytest.raises(CategorizedError) as exc:
+        _builder(store, seams, tmp_path).build(_RUN, _profile())
+
+    assert exc.value.category is ErrorCategory.BUILD_FAILURE
+    assert seams.make_calls == 0
+    assert store.puts == []
 
 
 # --- config preflight ----------------------------------------------------------------
@@ -273,6 +305,7 @@ def test_build_missing_bzimage_after_make_is_build_failure(tmp_path: Path) -> No
         workspace_root=tmp_path,
         store_factory=lambda: store,
         checkout=seams.checkout,
+        run_olddefconfig=seams.run_olddefconfig,
         read_config=seams.read_config,
         run_make=seams.run_make,
         read_kernel_image=_real_read_kernel_image,
@@ -345,6 +378,7 @@ def test_validate_config_ref_rejects_local_file_outside_allowed_roots(tmp_path: 
         workspace_root=tmp_path / "workspace",
         store_factory=lambda: _FakeStore(),
         checkout=lambda _run, _profile, _workspace: None,
+        run_olddefconfig=lambda _workspace: 0,
         read_config=lambda _workspace: _GOOD_CONFIG,
         run_make=lambda _workspace: 0,
         read_kernel_image=lambda _workspace: b"kernel",
@@ -504,6 +538,7 @@ def test_live_vm_real_make_build_id_matches_readelf() -> None:  # pragma: no cov
             workspace_root=Path(tmp),
             store_factory=lambda: store,
             checkout=lambda _run, profile, ws: build_module._real_checkout(src, profile, ws),
+            run_olddefconfig=build_module._real_run_olddefconfig,
             read_config=build_module._real_read_config,
             run_make=build_module._real_run_make,
             read_kernel_image=build_module._real_read_kernel_image,
