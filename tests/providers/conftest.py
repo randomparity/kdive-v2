@@ -1,10 +1,7 @@
-"""Fakes and helpers for the provider-seam tests (issue #13).
+"""Fakes and helpers for the provider-seam tests.
 
-``FakeProvider`` exposes generic plane operation names and can be registered for any
-operation. ``PartialFakeProvider`` implements only Build + Discovery.
-``UnhonoredProvider`` has no plane methods. ``MutableProvider`` exposes ``build`` as an
-instance attribute so a test can delete it after registration to exercise the
-at-dispatch honored-method re-check.
+``FakeProvider`` exposes generic plane operation names. ``PartialFakeProvider`` implements
+only Build + Discovery.
 """
 
 from __future__ import annotations
@@ -13,7 +10,6 @@ from kdive.domain.discovery import ResourceRecord
 from kdive.domain.models import Allocation, PowerAction, ResourceKind, Run
 from kdive.profiles.build import ParsedBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile
-from kdive.providers.capability import Capability, CleanupGuarantee, OpContract, Plane
 from kdive.providers.interfaces import (
     ArtifactRef,
     BreakLocation,
@@ -26,24 +22,6 @@ from kdive.providers.interfaces import (
 )
 
 LIBVIRT = ResourceKind.LOCAL_LIBVIRT
-
-DEFAULT_CONTRACT = OpContract(
-    idempotent=True,
-    destructive=False,
-    cancelable=False,
-    long_running=True,
-    cleanup=CleanupGuarantee.BEST_EFFORT,
-)
-
-
-def build_capability(
-    *,
-    plane: Plane = Plane.BUILD,
-    operation: str = "build",
-    contract: OpContract = DEFAULT_CONTRACT,
-) -> Capability:
-    """Construct a Capability for the local-libvirt kind (test helper)."""
-    return Capability(plane=plane, operation=operation, resource_kind=LIBVIRT, contract=contract)
 
 
 class FakeProvider:
@@ -103,17 +81,3 @@ class PartialFakeProvider:
 
     def build(self, run: Run, profile: ParsedBuildProfile) -> KernelArtifact:
         return KernelArtifact("kernel-1")
-
-
-class UnhonoredProvider:
-    """Advertises capabilities it has no method for (no plane methods at all)."""
-
-
-class MutableProvider:
-    """Exposes ``build`` as a deletable instance attribute (at-dispatch re-check)."""
-
-    def __init__(self) -> None:
-        def build(run: Run, profile: ParsedBuildProfile) -> KernelArtifact:
-            return KernelArtifact("kernel-1")
-
-        self.build = build

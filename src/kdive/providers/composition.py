@@ -2,8 +2,7 @@
 
 This module is the only place the MCP and worker assembly path constructs local-libvirt
 providers. It exposes typed runtime ports for the single local-libvirt provider shipped today;
-the capability registry remains a separate provider-selection primitive for the future
-multi-provider path.
+ADR-0066 removed the superseded capability-registry prototype from production source.
 """
 
 from __future__ import annotations

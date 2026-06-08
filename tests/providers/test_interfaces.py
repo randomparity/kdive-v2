@@ -6,16 +6,11 @@ import kdive.providers.interfaces as interfaces
 from kdive.domain.discovery import ResourceRecord
 from kdive.domain.models import ResourceKind
 from kdive.domain.state import ResourceStatus
-from kdive.providers.capability import Plane
 from kdive.providers.interfaces import (
     ArtifactRef,
     KernelArtifact,
     SystemHandle,
 )
-
-
-def test_capability_registry_defines_the_provider_planes() -> None:
-    assert len(Plane) == 8
 
 
 def test_stale_plane_protocols_are_not_public_interfaces() -> None:

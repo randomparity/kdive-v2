@@ -201,17 +201,20 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 
 ## Phase 2 — Provider framework
 
-### Issue 11 — Capability registry prototype and plane interfaces
+### Issue 11 — Historical capability registry prototype and plane interfaces
 - **Labels:** `area:providers`
 - **Depends on:** #3, #5
 - **Goal:** The original provider-seam prototype — typed plane `Protocol`s, an `OpContract`,
   and capability-match dispatch (never by name). ADR-0063 later superseded this for
-  production runtime assembly with typed `ProviderRuntime` ports.
-- **Files:** Create `src/kdive/providers/capability.py`, `providers/interfaces.py`; `tests/providers/`.
+  production runtime assembly with typed `ProviderRuntime` ports, and ADR-0066 removed the
+  registry prototype from production source.
+- **Files:** `providers/interfaces.py`; historical registry design remains in ADR-0009,
+  ADR-0022, and dated planning docs.
 - **Scope:**
   - `interfaces.py`: the **eight** provider-plane `Protocol`s (Discovery, Provisioning, Build, Install, Connect, Debug, Control, Retrieve); the ninth plane, Allocation, is handled in core, not as a provider Protocol.
-  - `capability.py`: `Capability{plane,operation,resource_kind,contract}`, `OpContract{idempotent,destructive,cancelable,long_running,cleanup}`, a `register(provider, capabilities)` and `dispatch(plane, op, resource_kind) -> bound op`; multiple matches resolved by explicit pin → health → cost_class → stable tiebreak (ADR-0009); advertised-but-unhonored → typed `not_implemented`.
-- **Acceptance:** prototype dispatch selects a registered fake provider by capability; an unregistered op raises `not_implemented`; two providers matching are resolved deterministically by the documented order (test asserts the winner).
+  - `interfaces.py`: shared provider value aliases retained for typed runtime ports.
+- **Acceptance:** live provider tests cover typed runtime composition; no production
+  capability-registry API remains.
 
 ---
 

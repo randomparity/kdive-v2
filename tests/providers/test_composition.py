@@ -6,7 +6,6 @@ import asyncio
 from typing import cast
 from uuid import UUID
 
-import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.components.references import LocalComponentRef
@@ -138,20 +137,6 @@ def test_provider_runtime_returns_typed_provider_ports_directly() -> None:
     assert output.build_id == "deadbeef"
     assert builder.calls == [(_RUN, "/configs/kdump.config")]
     assert runtime.install_boot() == (install, install)
-
-
-def test_default_runtime_does_not_build_unused_capability_registry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _FailRegistry:
-        def __init__(self) -> None:
-            raise AssertionError("default typed runtime should not build a capability registry")
-
-    monkeypatch.setattr(composition, "CapabilityRegistry", _FailRegistry, raising=False)
-
-    runtime = composition.build_default_provider_runtime()
-
-    assert runtime.builder is not None
 
 
 def test_default_runtime_advertises_implemented_component_sources_only() -> None:
