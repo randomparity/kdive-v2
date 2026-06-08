@@ -14,7 +14,7 @@ from kdive.db.repositories import ALLOCATIONS, RESOURCES
 from kdive.domain.models import Allocation, Resource, ResourceKind
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import AuthError, RequestContext
-from kdive.security.audit import AuditEvent, args_digest, record
+from kdive.security.audit import AuditEvent, DenialEvent, args_digest, record, record_denial
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -198,6 +198,152 @@ def test_record_in_transition_transaction_is_atomic(migrated_url: str) -> None:
             assert await _count_audit(conn) == 1  # exactly one row per transition
             updated = await ALLOCATIONS.get(conn, alloc.id)
             assert updated is not None and updated.state is AllocationState.GRANTED
+
+    asyncio.run(_run_test())
+
+
+def test_record_denial_writes_one_row_with_null_object(migrated_url: str) -> None:
+    async def _run_test() -> None:
+        async with await _connect(migrated_url) as conn:
+            audit_id = await record_denial(
+                conn,
+                event=DenialEvent(
+                    principal="alice",
+                    agent_session="sess-1",
+                    project="proj",
+                    tool="allocations.release",
+                    args={"allocation_id": "abc"},
+                    reason="needs role 'operator'; holds 'viewer'",
+                ),
+            )
+            assert isinstance(audit_id, UUID)
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT principal, agent_session, project, tool, object_kind, "
+                    "object_id, transition, args_digest, reason FROM audit_log WHERE id = %s",
+                    (audit_id,),
+                )
+                row = await cur.fetchone()
+            assert row == (
+                "alice",
+                "sess-1",
+                "proj",
+                "allocations.release",
+                None,  # object_kind NULL on a denial row
+                None,  # object_id NULL on a denial row
+                "denied",  # the reserved bare transition literal (tool column carries the tool)
+                args_digest({"allocation_id": "abc"}),
+                "needs role 'operator'; holds 'viewer'",
+            )
+            assert await _count_audit(conn) == 1
+
+    asyncio.run(_run_test())
+
+
+def test_record_denial_persists_null_agent_session(migrated_url: str) -> None:
+    async def _run_test() -> None:
+        async with await _connect(migrated_url) as conn:
+            audit_id = await record_denial(
+                conn,
+                event=DenialEvent(
+                    principal="alice",
+                    agent_session=None,
+                    project="proj",
+                    tool="allocations.release",
+                    args={},
+                    reason="denied",
+                ),
+            )
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT agent_session FROM audit_log WHERE id = %s", (audit_id,))
+                row = await cur.fetchone()
+            assert row is not None and row[0] is None
+
+    asyncio.run(_run_test())
+
+
+def test_record_denial_is_not_membership_guarded(migrated_url: str) -> None:
+    # Guard-exempt writer (record_system precedent): it takes no RequestContext and so
+    # writes regardless of any granted set — the boundary already authenticated the actor.
+    async def _run_test() -> None:
+        async with await _connect(migrated_url) as conn:
+            await record_denial(
+                conn,
+                event=DenialEvent(
+                    principal="alice",
+                    agent_session=None,
+                    project="not-in-any-granted-set",
+                    tool="allocations.release",
+                    args={},
+                    reason="denied",
+                ),
+            )
+            assert await _count_audit(conn) == 1
+
+    asyncio.run(_run_test())
+
+
+def test_check_rejects_non_denied_row_with_null_object(migrated_url: str) -> None:
+    # The CHECK is keyed on transition='denied': a real-transition row must keep its
+    # object (the original invariant), so a NULL-object non-denied row is rejected.
+    async def _run_test() -> None:
+        async with await _connect(migrated_url) as conn:
+            with pytest.raises(psycopg.errors.CheckViolation):
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "INSERT INTO audit_log "
+                        "(principal, project, tool, object_kind, object_id, "
+                        " transition, args_digest) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                        ("alice", "proj", "systems.teardown", None, None, "ready->torn_down", "d"),
+                    )
+
+    asyncio.run(_run_test())
+
+
+def test_check_accepts_destructive_gate_denied_row_carrying_object(migrated_url: str) -> None:
+    # The destructive-gate denial uses transition='{op}:denied' and ALWAYS carries the
+    # object it gated — it satisfies the CHECK's object-present branch, no exemption.
+    async def _run_test() -> None:
+        async with await _connect(migrated_url) as conn:
+            obj_id = uuid4()
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO audit_log "
+                    "(principal, project, tool, object_kind, object_id, "
+                    " transition, args_digest) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    (
+                        "alice",
+                        "proj",
+                        "control.force_crash",
+                        "systems",
+                        obj_id,
+                        "force_crash:denied",
+                        "d",
+                    ),
+                )
+                row = await cur.fetchone()
+            assert row is not None
+            assert await _count_audit(conn) == 1
+
+    asyncio.run(_run_test())
+
+
+def test_check_rejects_denial_row_only_when_object_partially_null(migrated_url: str) -> None:
+    # A bare 'denied' row may omit BOTH object columns; the success path (every other
+    # transition) is unchanged. Confirm a normal full-object success row still inserts.
+    async def _run_test() -> None:
+        async with await _connect(migrated_url) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO audit_log "
+                    "(principal, project, tool, object_kind, object_id, "
+                    " transition, args_digest) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    ("alice", "proj", "allocations.grant", "allocations", uuid4(), "g", "d"),
+                )
+            assert await _count_audit(conn) == 1
 
     asyncio.run(_run_test())
 

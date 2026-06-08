@@ -63,6 +63,33 @@ class AuthorizationError(Exception):
     """
 
 
+class RoleDenied(AuthorizationError):
+    """A project **member** holds a role ranking below the required one (ADR-0062 §5).
+
+    Raised at :func:`require_role`'s **rank-below site only** — never at the non-member
+    site, which keeps the base :class:`AuthorizationError`. The dedicated subclass is the
+    discriminator the MCP dispatch boundary catches to audit a member-over-reach denial
+    (and *only* that case): a base-class catch would also sweep in `require_platform_role`
+    denials and :class:`~kdive.security.gate.DestructiveOpDenied` (both
+    ``AuthorizationError`` subclasses), double-writing them.
+
+    Carries ``project`` because the dispatch boundary cannot recover it from call args for
+    object-resolving tools (which resolve ``project`` from the row at runtime); the
+    exception is the only carrier, so the audited denial row's ``project`` comes from here.
+    """
+
+    def __init__(self, *, principal: str, project: str, held: Role | None, required: Role) -> None:
+        self.principal = principal
+        self.project = project
+        self.held = held
+        self.required = required
+        held_name = held.value if held is not None else "none"
+        super().__init__(
+            f"{principal!r} needs role {required.value!r} on project {project!r}; "
+            f"holds {held_name!r}"
+        )
+
+
 def roles_from_claims(claims: Mapping[str, object]) -> dict[str, Role]:
     """Parse the per-project role map from a verified token's ``roles`` claim.
 
@@ -101,18 +128,16 @@ def require_role(ctx: RequestContext, project: str, role: Role) -> None:
     """Enforce that ``ctx`` holds at least ``role`` on ``project``.
 
     Raises:
-        AuthorizationError: ``project`` is not granted to the principal, the principal
-            carries no role on it, or the held role ranks below ``role``.
+        AuthorizationError: ``project`` is not granted to the principal (the non-member
+            site — the base class, never audited at the dispatch boundary).
+        RoleDenied: The principal is a member whose held role (possibly none) ranks below
+            ``role`` (the member-over-reach site — audited at the dispatch boundary).
     """
     if project not in ctx.projects:
         raise AuthorizationError(f"{ctx.principal!r} is not a member of project {project!r}")
     held = ctx.roles.get(project)
     if held is None or _RANK[held] < _RANK[role]:
-        held_name = held.value if held is not None else "none"
-        raise AuthorizationError(
-            f"{ctx.principal!r} needs role {role.value!r} on project {project!r}; "
-            f"holds {held_name!r}"
-        )
+        raise RoleDenied(principal=ctx.principal, project=project, held=held, required=role)
 
 
 def platform_roles_from_claims(claims: Mapping[str, object]) -> frozenset[PlatformRole]:
