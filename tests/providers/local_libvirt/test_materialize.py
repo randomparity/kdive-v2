@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from kdive.components.references import CatalogComponentRef, LocalComponentRef
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.local_libvirt.materialize import materialize_rootfs_base
 
 
@@ -75,3 +76,55 @@ def test_materialize_local_backed_catalog_rootfs(
     )
 
     assert result == image.resolve()
+
+
+def test_materialize_host_policy_catalog_rootfs_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = tmp_path / "local-libvirt"
+    root = tmp_path / "rootfs"
+    image = root / "base.qcow2"
+    root.mkdir()
+    image.write_bytes(b"data")
+    (fixture / "rootfs").mkdir(parents=True)
+    (fixture / "profiles").mkdir()
+    (fixture / "manifest.yaml").write_text(
+        "schema_version: 1\n"
+        "provider: local-libvirt\n"
+        "storage:\n"
+        f"  allowed_component_roots: [{root}]\n"
+        f"  cache_dir: {tmp_path / 'cache'}\n"
+        f"  overlay_dir: {tmp_path / 'overlays'}\n"
+        "rootfs: [rootfs/base.yaml]\n"
+        "profiles: []\n",
+        encoding="utf-8",
+    )
+    (fixture / "rootfs" / "base.yaml").write_text(
+        "provider: local-libvirt\n"
+        "name: base\n"
+        "arch: x86_64\n"
+        "format: qcow2\n"
+        "root_device: /dev/vda\n"
+        "source:\n"
+        "  kind: local\n"
+        f"  path: {image}\n"
+        "visibility: host-policy\n"
+        "capabilities: [kdive-ready-console]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "kdive.providers.local_libvirt.materialize.DEFAULT_FIXTURE_CATALOG_PATH",
+        fixture,
+    )
+
+    with pytest.raises(CategorizedError) as error:
+        materialize_rootfs_base(
+            CatalogComponentRef(kind="catalog", provider="local-libvirt", name="base"),
+            allowed_roots=[root],
+            cache_dir=tmp_path / "cache",
+            project="proj-a",
+            component_store=None,
+            object_store=None,
+        )
+
+    assert error.value.category is ErrorCategory.CONFIGURATION_ERROR

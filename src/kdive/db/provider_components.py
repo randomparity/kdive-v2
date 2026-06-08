@@ -195,7 +195,8 @@ async def finalize_component_upload(
     async with pool.connection() as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT * FROM component_uploads WHERE id = %s FOR UPDATE",
+                "SELECT component_uploads.*, deadline < now() AS expired "
+                "FROM component_uploads WHERE id = %s FOR UPDATE",
                 (upload_id,),
             )
             upload = await cur.fetchone()
@@ -207,6 +208,11 @@ async def finalize_component_upload(
         existing = upload["artifact_id"]
         if existing is not None:
             return existing
+        if upload["state"] != "pending" or upload["expired"]:
+            raise CategorizedError(
+                "component upload is not pending or has expired",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+            )
 
         key = component_upload_object_key(
             tenant=upload["tenant"],

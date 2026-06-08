@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+from datetime import timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -287,6 +288,78 @@ def test_component_upload_finalization_is_idempotent(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_expired_component_upload_cannot_finalize(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, open=False) as pool:
+            await pool.open()
+            upload_id, key = await create_component_upload_intent(
+                pool,
+                tenant="proj-a",
+                provider="local-libvirt",
+                component_kind="rootfs",
+                sha256="sha256:" + "7" * 64,
+                size_bytes=42,
+                visibility="project",
+                project="proj-a",
+                principal="alice",
+                ttl=timedelta(seconds=-1),
+            )
+            store = _ObjectStore(
+                {key: HeadResult(size_bytes=42, checksum_sha256="sha256:" + "7" * 64, etag="e")}
+            )
+
+            try:
+                await finalize_component_upload(pool, upload_id, object_store=store)
+            except CategorizedError as exc:
+                assert exc.category is ErrorCategory.CONFIGURATION_ERROR
+            else:
+                raise AssertionError("expired upload should reject finalization")
+
+            count = await _provider_component_count(pool)
+
+        assert count == 0
+
+    asyncio.run(_run())
+
+
+def test_failed_component_upload_cannot_finalize(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, open=False) as pool:
+            await pool.open()
+            upload_id, key = await create_component_upload_intent(
+                pool,
+                tenant="proj-a",
+                provider="local-libvirt",
+                component_kind="rootfs",
+                sha256="sha256:" + "8" * 64,
+                size_bytes=42,
+                visibility="project",
+                project="proj-a",
+                principal="alice",
+            )
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE component_uploads SET state = 'failed' WHERE id = %s",
+                    (upload_id,),
+                )
+            store = _ObjectStore(
+                {key: HeadResult(size_bytes=42, checksum_sha256="sha256:" + "8" * 64, etag="e")}
+            )
+
+            try:
+                await finalize_component_upload(pool, upload_id, object_store=store)
+            except CategorizedError as exc:
+                assert exc.category is ErrorCategory.CONFIGURATION_ERROR
+            else:
+                raise AssertionError("failed upload should reject finalization")
+
+            count = await _provider_component_count(pool)
+
+        assert count == 0
+
+    asyncio.run(_run())
+
+
 def test_component_upload_finalization_uses_persisted_tenant(migrated_url: str) -> None:
     async def _run() -> None:
         async with AsyncConnectionPool(migrated_url, open=False) as pool:
@@ -397,3 +470,11 @@ def test_component_upload_finalization_rejects_s3_checksum_mismatch(
                 raise AssertionError("checksum mismatch should reject finalization")
 
     asyncio.run(_run())
+
+
+async def _provider_component_count(pool: AsyncConnectionPool) -> int:
+    async with pool.connection() as conn:
+        row = await conn.execute("SELECT count(*) FROM provider_components")
+        found = await row.fetchone()
+    assert found is not None
+    return found[0]
