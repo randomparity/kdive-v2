@@ -274,7 +274,7 @@ class _ExecutionControl:
         # floor of 1s below), never truncating toward zero (5.7 -> 6, not 5).
         requested = math.ceil(timeout_sec) if timeout_sec else MAX_INTERACTIVE_WAIT_SEC
         bounded = max(1, min(requested, MAX_INTERACTIVE_WAIT_SEC))
-        self._engine.run(attachment, verb)  # ^running under mi-async on
+        self._engine.execute_mi_command(attachment, verb)  # ^running under mi-async on
         stop = self.wait_for_stop(attachment, timeout_sec=bounded)
         if stop is not None:
             return self._redact_stop(stop)
@@ -342,11 +342,13 @@ class GdbMiEngine:
             controller=controller, rsp_host=host, rsp_port=port, transcript_path=transcript_path
         )
         try:
-            self.run(attachment, "-gdb-set confirm off")
-            self.run(attachment, "-gdb-set pagination off")
-            self.run(attachment, "-gdb-set mi-async on")
-            self.run(attachment, f"-file-exec-and-symbols {self._mi_path(resolved_vmlinux)}")
-            self.run(attachment, f"-gdb-set remotetimeout {RSP_REMOTE_TIMEOUT_SEC}")
+            self.execute_mi_command(attachment, "-gdb-set confirm off")
+            self.execute_mi_command(attachment, "-gdb-set pagination off")
+            self.execute_mi_command(attachment, "-gdb-set mi-async on")
+            self.execute_mi_command(
+                attachment, f"-file-exec-and-symbols {self._mi_path(resolved_vmlinux)}"
+            )
+            self.execute_mi_command(attachment, f"-gdb-set remotetimeout {RSP_REMOTE_TIMEOUT_SEC}")
             self._connect_with_retry(attachment, host, port)
         except CategorizedError as exc:
             with contextlib.suppress(Exception):
@@ -361,7 +363,7 @@ class GdbMiEngine:
         last_exc: CategorizedError | None = None
         for attempt in range(_CONNECT_RETRY_COUNT):
             try:
-                self.run(attachment, command)
+                self.execute_mi_command(attachment, command)
                 return
             except CategorizedError as exc:
                 last_exc = self._as_attach_failure(exc)
@@ -400,7 +402,7 @@ class GdbMiEngine:
         # Hardware breakpoint (-h): a software breakpoint's 0xCC write does not survive a frozen
         # boot's reset-vector insertion and can fail on read-only kernel .text.
         return self._breakpoint_ref(
-            self.run(attachment, f"-break-insert -h {location}"), key="bkpt"
+            self.execute_mi_command(attachment, f"-break-insert -h {location}"), key="bkpt"
         )
 
     def clear_breakpoint(self, attachment: GdbMiAttachment, number: str) -> None:
@@ -410,12 +412,12 @@ class GdbMiEngine:
                 code="bad_breakpoint_id",
                 details={"number": number},
             )
-        self.run(attachment, f"-break-delete {number}")
+        self.execute_mi_command(attachment, f"-break-delete {number}")
 
     def list_breakpoints(self, attachment: GdbMiAttachment) -> list[GdbBreakpointRef]:
         return [
             self._breakpoint_ref_from(entry)
-            for entry in _breakpoint_rows(self.run(attachment, "-break-list"))
+            for entry in _breakpoint_rows(self.execute_mi_command(attachment, "-break-list"))
         ]
 
     def _breakpoint_ref(self, records: list[MiRecord], *, key: str) -> GdbBreakpointRef:
@@ -456,8 +458,12 @@ class GdbMiEngine:
             requested.append(name)
         # gdb keys register VALUES by ordinal number; map names->ordinals via
         # -data-list-register-names, then return only the requested names.
-        ordered_names = _register_names(self.run(attachment, "-data-list-register-names"))
-        by_number = _register_values_by_number(self.run(attachment, "-data-list-register-values x"))
+        ordered_names = _register_names(
+            self.execute_mi_command(attachment, "-data-list-register-names")
+        )
+        by_number = _register_values_by_number(
+            self.execute_mi_command(attachment, "-data-list-register-values x")
+        )
         registers: dict[str, object] = {}
         for name in requested:
             if name in ordered_names:
@@ -493,7 +499,9 @@ class GdbMiEngine:
                 code="bad_read_range",
                 details={"byte_count": byte_count},
             )
-        records = self.run(attachment, f"-data-read-memory-bytes 0x{address:x} {byte_count}")
+        records = self.execute_mi_command(
+            attachment, f"-data-read-memory-bytes 0x{address:x} {byte_count}"
+        )
         segments = _memory_segments(records)
         try:
             blob = b"".join(bytes.fromhex(str(seg.get("contents", ""))) for seg in segments)
@@ -564,7 +572,7 @@ class GdbMiEngine:
             line=_mi_int(payload.get("line")),
         )
 
-    def run(self, attachment: GdbMiAttachment, command: str) -> list[MiRecord]:
+    def execute_mi_command(self, attachment: GdbMiAttachment, command: str) -> list[MiRecord]:
         """Write one MI command, accumulate + transcribe its records, raise on ``^error``."""
         records = self.records_from(
             attachment.controller.write(command, timeout_sec=_MI_COMMAND_TIMEOUT_SEC)

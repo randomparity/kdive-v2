@@ -545,9 +545,9 @@ def test_continue_raises_session_exited_on_terminal_stop(tmp_path: Path) -> None
 # --- transcript ----------------------------------------------------------------------------
 
 
-def test_run_appends_one_transcript_line_per_command(tmp_path: Path) -> None:
+def test_execute_mi_command_appends_one_transcript_line_per_command(tmp_path: Path) -> None:
     attachment = _attachment(_FakeMiController(), tmp_path)
-    _engine().run(attachment, "-break-list")
+    _engine().execute_mi_command(attachment, "-break-list")
     lines = attachment.transcript_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     entry = json.loads(lines[0])
