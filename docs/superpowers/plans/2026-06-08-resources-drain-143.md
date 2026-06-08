@@ -94,11 +94,15 @@ consistently):
    scope=f"resource:{resource_id}")` then `_denied`. (An operator calling `force_release`
    holds a platform role, so the denial is audited — AC #2.)
 3. `force_release` only: blank `reason` → `_config_error`, no cordon, no audit.
-4. Resolve `resource_id` (valid uuid + exists). Bad/missing → `_error`, unaudited.
+4. Validate `resource_id` is a uuid (`_as_uuid`); malformed → `_error`, unaudited. Host
+   *existence* is checked by step 5's `_apply_cordon` (no separate read): a missing host makes
+   the UPDATE affect zero rows → `None` → return `_error` **before** the audit write, so an
+   unknown host is unaudited and uncordoned (no row to cordon).
 5. **Cordon — its own committed step, before any release** (F3). In one
    `async with pool.connection() as conn` block: `_apply_cordon(conn, uid, cordoned=True)`
-   (missing host → `_error`) + `_audit_host_action(tool="resources.drain",
-   detail="cordoned=true")`. The audit's `conn.transaction()` commits cordon+audit together,
+   (returns `None` for a missing host → `_error`, before the audit) + `_audit_host_action(
+   tool="resources.drain", detail="cordoned=true")`. The audit's `conn.transaction()` commits
+   cordon+audit together,
    so the block exit leaves the host `cordoned` **committed and visible to concurrent
    admission** before the snapshot/release run on later connections. This is the post-condition
    both modes guarantee (AC #4), and committing it first is what actually stops new placement
@@ -113,11 +117,16 @@ consistently):
    - **force_release** → for each snapshot row, `breakglass_release_allocation(...,
      tool="resources.drain", reason=reason)`, then map the `ReleaseOutcome` through a **pure
      classifier** `_classify_drain_release(alloc_id, outcome) -> ToolResponse` (F1):
-     `released` → `success(id, "released")`; `STALE_HANDLE` → `success(id, "skipped",
-     data={current_status})`; any other category → `failure(id, category,
-     data={current_status})`. Extracting the classifier as a pure function makes `skipped`
-     (a race-only outcome unreachable by seeding) and `failed` deterministically unit-testable.
-     Tally released/failed/skipped into the envelope data.
+     `released` → `success(id, "released")`; `STALE_HANDLE` → `success(id, "skipped", …)`;
+     any other category → `failure(id, category, …)`. **`current_status` is included only when
+     truthy** — mirror the sibling envelope `breakglass.py:167`
+     (`{"current_status": outcome.current_status} if outcome.current_status else {}`). This
+     matters because the reconcile-failure outcome carries `current_status=None`
+     (`allocation_release.py:64-65` only the `IllegalTransition` branch sets it), so a `failed`
+     item from reconcile has just `error_category`, while a `skipped`/illegal-transition item
+     carries a real `current_status`. Extracting the classifier as a pure function makes
+     `skipped` (a race-only outcome unreachable by seeding) and both `failed` shapes
+     deterministically unit-testable. Tally released/failed/skipped into the envelope data.
 8. Return `collection(resource_id, "cordoned", items, data={"mode": …, counts…})`. The
    `cordoned` top-level status names the guaranteed post-condition; `object_id` is the host.
 
@@ -136,7 +145,8 @@ current_context(), resource_id=…, mode=…, reason=…)`.
   `gate_reachers <= DESTRUCTIVE_TOOLS` guard stays satisfied).
 - `tests/mcp/core/test_tool_docs.py` `_BEHAVIOR_TESTS`: map `"resources.drain"` →
   `("tests/mcp/catalog/test_resources_tools.py",)`.
-- Regenerate the tool-reference doc if `tests/scripts/test_gen_tool_reference.py` pins it.
+- Regenerate the committed tool-reference doc — a new tool **will** change it
+  (`tests/scripts/test_gen_tool_reference.py` pins generated output); review the regenerated diff.
 
 ## Tests (TDD — write failing first), in `tests/mcp/catalog/test_resources_tools.py`
 
@@ -153,11 +163,14 @@ Passive:
 - `passive_auditor_denied` — auditor (platform role, not operator) → denied **and** audited.
 
 Classifier (pure unit, no DB — F1, proves the `skipped`/`failed` arms that seeding can't reach):
-- `classify_released` — `ReleaseOutcome(released=True)` → `success(id, "released")`.
+- `classify_released` — `ReleaseOutcome(released=True)` → `success(id, "released")`, empty data.
 - `classify_stale_is_skipped` — `ReleaseOutcome(category=STALE_HANDLE, current_status="released")`
   → `success(id, "skipped")`, `data.current_status="released"`. (The race-only `skipped` arm.)
-- `classify_other_is_failed` — `ReleaseOutcome(category=CONFIGURATION_ERROR,
+- `classify_failed_with_status` — `ReleaseOutcome(category=CONFIGURATION_ERROR,
   current_status="active")` → `failure(id, "configuration_error")`, `data.current_status="active"`.
+- `classify_failed_no_status` — `ReleaseOutcome(category=CONFIGURATION_ERROR,
+  current_status=None)` (the reconcile path) → `failure(id, "configuration_error")` with **no**
+  `current_status` key (F6 — omit-when-falsy, matching `breakglass.py:167`).
 
 Force-release (DB):
 - `force_release_operator_denied` — operator → `authorization_denied`, host **not** cordoned,
@@ -170,10 +183,14 @@ Force-release (DB):
   `audit_log` = 2 guard-exempt transition rows per released allocation. (AC #3, #4)
 - `force_release_partial_failure_is_observable_and_reinvokable` — admin, one releasable + one
   that fails reconcile (`sized=False`+budget → reconcile `CONFIGURATION_ERROR`): items show one
-  `released` + one `failed`; the released allocation is now `released`, **the failed one is still
-  `active`** (F4 — proves the reconcile rollback left it re-releasable, not stranded in
-  `releasing`); the host stays `cordoned`; a **second** `drain force_release` call snapshots and
+  `released` + one `failed`. The failed item carries `error_category=configuration_error` and
+  **no `current_status` key** (F6); the failed allocation's surviving `active` state is read from
+  the **DB** (F4 — proves the reconcile rollback left it re-releasable, not stranded in
+  `releasing`). The host stays `cordoned`; a **second** `drain force_release` call snapshots and
   returns the remaining `active` one again (idempotent / re-invokable). (AC #3)
+- `force_release_empty_host_is_idempotent_noop` — admin, host with no live allocations →
+  `cordoned`, zero items, `data.released="0"`, exactly one cordon `platform_audit_log` row and
+  **no** break-glass rows (the fully-drained re-invocation terminal case). (AC #3, #4)
 - `force_release_leaves_system_untouched` — admin, host whose active allocation has a `READY`
   System; force_release releases the allocation but the `System` row is unchanged (F5 — locks
   the "no System teardown" scope boundary).
