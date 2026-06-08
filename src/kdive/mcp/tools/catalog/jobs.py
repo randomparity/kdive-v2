@@ -167,10 +167,8 @@ async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str
         return ToolResponse.from_job(job)
 
 
-async def list_jobs(
-    pool: AsyncConnectionPool, ctx: RequestContext, *, limit: int
-) -> list[ToolResponse]:
-    """Return the newest jobs (capped), each as an envelope, isolating bad rows."""
+async def list_jobs(pool: AsyncConnectionPool, ctx: RequestContext, *, limit: int) -> ToolResponse:
+    """Return the newest jobs (capped) in one collection envelope."""
     capped = max(1, min(limit, MAX_LIST_LIMIT))
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
@@ -182,7 +180,12 @@ async def list_jobs(
             except ValueError:
                 _log.warning("job %s violates the response invariant; degraded", job.id)
                 responses.append(_error(str(job.id), ErrorCategory.INFRASTRUCTURE_FAILURE))
-        return responses
+        return ToolResponse.collection(
+            "jobs",
+            "ok",
+            responses,
+            suggested_next_actions=["jobs.get", "jobs.wait", "jobs.cancel"],
+        )
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
@@ -237,6 +240,6 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         limit: Annotated[
             int, Field(description="Maximum rows returned (capped at 200).")
         ] = DEFAULT_LIST_LIMIT,
-    ) -> list[ToolResponse]:
+    ) -> ToolResponse:
         """List the newest Jobs visible to the caller's readable projects. Requires viewer."""
         return await list_jobs(pool, current_context(), limit=limit)

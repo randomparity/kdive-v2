@@ -197,33 +197,33 @@ async def _create_upload(
     owner_id: str,
     artifacts: Sequence[ArtifactDeclaration],
     store: _PresignStore | None = None,
-) -> list[ToolResponse]:
+) -> ToolResponse:
     store = store or object_store_from_env()
     uid = _as_uuid(owner_id)
     if uid is None:
-        return [_config_error(owner_id)]
+        return _config_error(owner_id)
 
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             project = await spec.project(conn, uid)
             if project is None or project not in ctx.projects:
-                return [_config_error(owner_id)]
+                return _config_error(owner_id)
             require_role(ctx, project, Role.OPERATOR)
 
             validated = _validate_artifact_declarations(
                 owner_id, artifacts, spec.allowed_names, _max_upload_bytes()
             )
             if isinstance(validated, ToolResponse):
-                return [validated]
+                return validated
             entries = validated
 
             prefix = owner_prefix(_TENANT, spec.owner_kind, str(uid))
             try:
                 async with conn.transaction(), advisory_xact_lock(conn, spec.lock_scope, uid):
                     if not await spec.accepts_upload(conn, uid):
-                        return [
-                            _config_error(owner_id, data={"reason": "owner_not_accepting_upload"})
-                        ]
+                        return _config_error(
+                            owner_id, data={"reason": "owner_not_accepting_upload"}
+                        )
                     uploads = _materialize_uploads(
                         entries,
                         kind=spec.owner_kind,
@@ -240,22 +240,30 @@ async def _create_upload(
                     )
             except CategorizedError as exc:
                 _log.warning("create_upload failed for %s %s: %s", spec.owner_kind, owner_id, exc)
-                return [ToolResponse.failure(owner_id, exc.category)]
+                return ToolResponse.failure(owner_id, exc.category)
 
-    return [
-        ToolResponse.success(
-            upload.key,
-            "upload_ready",
-            suggested_next_actions=[spec.next_action],
-            refs={"upload_url": upload.presigned.url},
-            data={
-                "name": upload.entry.name,
-                "expires_in": str(_presign_ttl_seconds()),
-                **upload.presigned.required_headers,
-            },
-        )
-        for upload in uploads
-    ]
+    items = [_upload_response(upload, next_action=spec.next_action) for upload in uploads]
+    return ToolResponse.collection(
+        owner_id,
+        "upload_ready",
+        items,
+        suggested_next_actions=[spec.next_action],
+        data={"owner_kind": spec.owner_kind},
+    )
+
+
+def _upload_response(upload: _MaterializedUpload, *, next_action: str) -> ToolResponse:
+    return ToolResponse.success(
+        upload.key,
+        "upload_ready",
+        suggested_next_actions=[next_action],
+        refs={"upload_url": upload.presigned.url},
+        data={
+            "name": upload.entry.name,
+            "expires_in": str(_presign_ttl_seconds()),
+            **upload.presigned.required_headers,
+        },
+    )
 
 
 async def create_run_upload(
@@ -265,7 +273,7 @@ async def create_run_upload(
     run_id: str,
     artifacts: Sequence[ArtifactDeclaration],
     store: _PresignStore | None = None,
-) -> list[ToolResponse]:
+) -> ToolResponse:
     """Mint presigned PUTs for an external Run's declared build artifacts."""
     return await _create_upload(
         pool,
@@ -284,7 +292,7 @@ async def create_system_upload(
     system_id: str,
     artifacts: Sequence[ArtifactDeclaration],
     store: _PresignStore | None = None,
-) -> list[ToolResponse]:
+) -> ToolResponse:
     """Mint presigned PUTs for a DEFINED System's uploaded rootfs."""
     return await _create_upload(
         pool,

@@ -211,13 +211,17 @@ def test_create_upload_mints_presigned_puts_and_persists_manifest(migrated_url: 
                 ],
                 store=store,
             )
-            assert [r.object_id for r in responses] == [
+            items = responses.collection_items()
+            assert responses.object_id == run_id
+            assert responses.status == "upload_ready"
+            assert responses.data["count"] == "2"
+            assert [r.object_id for r in items] == [
                 f"local/runs/{run_id}/kernel",
                 f"local/runs/{run_id}/vmlinux",
             ]
-            assert responses[0].refs["upload_url"].startswith("https://store/")
-            assert responses[0].suggested_next_actions == ["runs.complete_build"]
-            assert responses[0].data["name"] == "kernel"
+            assert items[0].refs["upload_url"].startswith("https://store/")
+            assert items[0].suggested_next_actions == ["runs.complete_build"]
+            assert items[0].data["name"] == "kernel"
             signed_keys = {c[0] for c in store.calls}
             assert signed_keys == {
                 f"local/runs/{run_id}/kernel",
@@ -249,7 +253,8 @@ def test_create_upload_accepts_effective_config_for_external_run(migrated_url: s
             async with pool.connection() as conn:
                 manifest = await upload_manifest.get_manifest(conn, "runs", UUID(run_id))
 
-        assert [r.object_id for r in responses] == [
+        items = responses.collection_items()
+        assert [r.object_id for r in items] == [
             f"local/runs/{run_id}/kernel",
             f"local/runs/{run_id}/effective_config",
         ]
@@ -275,8 +280,7 @@ def test_create_upload_rejects_non_external_run(migrated_url: str) -> None:
                 artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": 100}],
                 store=store,
             )
-        assert len(out) == 1
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         assert store.calls == []
 
     asyncio.run(_run())
@@ -294,7 +298,7 @@ def test_create_upload_rejects_unknown_artifact_name_for_run(migrated_url: str) 
                 artifacts=[{"name": "rootfs", "sha256": "aaa", "size_bytes": 100}],
                 store=store,
             )
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         assert store.calls == []
 
     asyncio.run(_run())
@@ -312,7 +316,7 @@ def test_create_upload_rejects_oversize_before_minting(migrated_url: str) -> Non
                 artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": 10**13}],
                 store=store,
             )
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         assert store.calls == []
 
     asyncio.run(_run())
@@ -331,8 +335,8 @@ def test_create_upload_rejects_just_over_5gib(migrated_url: str) -> None:
                 artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": five_gib + 1}],
                 store=store,
             )
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
-        assert out[0].data["reason"] == "size_out_of_range"
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.data["reason"] == "size_out_of_range"
         assert store.calls == []  # rejected before minting any presigned PUT
 
     asyncio.run(_run())
@@ -351,7 +355,7 @@ def test_create_upload_accepts_exactly_5gib(migrated_url: str) -> None:
                 artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": five_gib}],
                 store=store,
             )
-        assert responses[0].object_id == f"local/runs/{run_id}/kernel"
+        assert responses.collection_items()[0].object_id == f"local/runs/{run_id}/kernel"
         assert store.calls == [(f"local/runs/{run_id}/kernel", "aaa", five_gib)]
 
     asyncio.run(_run())
@@ -371,7 +375,7 @@ def test_create_upload_accepts_large_binary_artifacts_at_5gib(migrated_url: str,
                 artifacts=[{"name": name, "sha256": "aaa", "size_bytes": five_gib}],
                 store=store,
             )
-        assert responses[0].object_id == f"local/runs/{run_id}/{name}"
+        assert responses.collection_items()[0].object_id == f"local/runs/{run_id}/{name}"
         assert store.calls == [(f"local/runs/{run_id}/{name}", "aaa", five_gib)]
 
     asyncio.run(_run())
@@ -399,8 +403,8 @@ def test_create_upload_rejects_effective_config_over_1mib_without_manifest(
             )
             async with pool.connection() as conn:
                 manifest = await upload_manifest.get_manifest(conn, "runs", UUID(run_id))
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
-        assert out[0].data["reason"] == "size_out_of_range"
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.data["reason"] == "size_out_of_range"
         assert store.calls == []
         assert manifest is None
 
@@ -435,8 +439,9 @@ def test_create_upload_for_defined_system_mints_rootfs_and_persists(migrated_url
                 artifacts=[{"name": "rootfs", "sha256": "aaa", "size_bytes": 100}],
                 store=store,
             )
-            assert [r.object_id for r in responses] == [f"local/systems/{sys_id}/rootfs"]
-            assert responses[0].suggested_next_actions == ["systems.provision_defined"]
+            items = responses.collection_items()
+            assert [r.object_id for r in items] == [f"local/systems/{sys_id}/rootfs"]
+            assert items[0].suggested_next_actions == ["systems.provision_defined"]
             assert {c[0] for c in store.calls} == {f"local/systems/{sys_id}/rootfs"}
             async with pool.connection() as conn:
                 manifest = await upload_manifest.get_manifest(conn, "systems", UUID(sys_id))
@@ -460,9 +465,8 @@ def test_create_upload_rejects_non_upload_kind_defined_system(migrated_url: str)
                 artifacts=[{"name": "rootfs", "sha256": "aaa", "size_bytes": 100}],
                 store=store,
             )
-        assert len(responses) == 1
-        assert responses[0].error_category == "configuration_error"
-        assert responses[0].data["reason"] == "owner_not_accepting_upload"
+        assert responses.error_category == "configuration_error"
+        assert responses.data["reason"] == "owner_not_accepting_upload"
         assert store.calls == []  # no PUT minted
 
     asyncio.run(_run())
@@ -480,7 +484,7 @@ def test_create_upload_rejects_non_rootfs_name_for_system(migrated_url: str) -> 
                 artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": 100}],
                 store=store,
             )
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         assert store.calls == []
 
     asyncio.run(_run())
@@ -498,7 +502,7 @@ def test_create_upload_rejects_empty_artifacts(migrated_url: str) -> None:
                 artifacts=[],
                 store=store,
             )
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         assert store.calls == []
 
     asyncio.run(_run())

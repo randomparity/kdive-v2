@@ -203,8 +203,12 @@ def test_list_jobs_newest_first_and_capped(migrated_url: str) -> None:
             for i in range(3):
                 await _enqueue(pool, f"d{i}")
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=2)
-        assert len(resp) == 2
-        assert all(r.status == "queued" for r in resp)
+        items = resp.collection_items()
+        assert resp.object_id == "jobs"
+        assert resp.status == "ok"
+        assert resp.data["count"] == "2"
+        assert len(items) == 2
+        assert all(r.status == "queued" for r in items)
 
     asyncio.run(_run())
 
@@ -213,7 +217,8 @@ def test_list_jobs_empty(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=50)
-        assert resp == []
+        assert resp.status == "ok"
+        assert resp.collection_items() == []
 
     asyncio.run(_run())
 
@@ -233,8 +238,9 @@ def test_list_jobs_isolates_invariant_violating_row(migrated_url: str) -> None:
                     (bad_id,),
                 )
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=50)
-        by_id = {r.object_id: r for r in resp}
-        assert len(resp) == 2  # the bad row did not blank the list
+        items = resp.collection_items()
+        by_id = {r.object_id: r for r in items}
+        assert len(items) == 2  # the bad row did not blank the list
         assert by_id[good_id].status == "queued"
         assert by_id[bad_id].status == "error"
         assert by_id[bad_id].error_category == "infrastructure_failure"
@@ -335,7 +341,7 @@ def test_list_jobs_only_returns_callers_project(migrated_url: str) -> None:
             mine = await _enqueue_in(pool, "mine", "proj")
             await _enqueue_in(pool, "theirs", "other")
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=50)
-        ids = {r.object_id for r in resp}
+        ids = {r.object_id for r in resp.collection_items()}
         assert ids == {mine}  # the "other"-project job is not listed
 
     asyncio.run(_run())
@@ -346,7 +352,7 @@ def test_list_jobs_excludes_roleless_projects(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             await _enqueue(pool, "d1")
             resp = await jobs_tools.list_jobs(pool, CTX, limit=50)
-        assert resp == []
+        assert resp.collection_items() == []
 
     asyncio.run(_run())
 
@@ -362,6 +368,6 @@ def test_list_jobs_excludes_jobs_with_no_project(migrated_url: str) -> None:
                     (Jsonb(_build_payload()), Jsonb({"principal": "p"})),
                 )
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=50)
-        assert resp == []
+        assert resp.collection_items() == []
 
     asyncio.run(_run())

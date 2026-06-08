@@ -105,8 +105,20 @@ async def _authorized_redacted_artifact(
 
 async def artifacts_list(
     pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str
+) -> ToolResponse:
+    """Return the System's `redacted` artifacts in one collection envelope."""
+    return ToolResponse.collection(
+        system_id,
+        "ok",
+        await artifact_list_items(pool, ctx, system_id=system_id),
+        suggested_next_actions=["artifacts.get"],
+    )
+
+
+async def artifact_list_items(
+    pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str
 ) -> list[ToolResponse]:
-    """Return the System's `redacted` artifacts as envelopes (empty list if none/absent)."""
+    """Return redacted artifact item envelopes; absent systems produce an empty list."""
     uid = _as_uuid(system_id)
     if uid is None:
         return []

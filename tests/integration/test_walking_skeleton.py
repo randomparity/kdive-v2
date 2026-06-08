@@ -274,10 +274,11 @@ def test_raw_vmcore_is_sensitive_and_unreachable(migrated_url: str) -> None:
                 await vmcore_plane.capture_handler(conn, job, _SecretBearingRetriever(sys_id))
             ctx = request_context()
             refs: list[str] = []
-            for r in await vmcore_tools.list_vmcores(pool, ctx, system_id=sys_id):
+            vmcores = await vmcore_tools.list_vmcores(pool, ctx, system_id=sys_id)
+            for r in vmcores.collection_items():
                 refs.extend(r.refs.values())
             listed = await artifacts_tools.artifacts_list(pool, ctx, system_id=sys_id)
-            for r in listed:
+            for r in listed.collection_items():
                 refs.extend(r.refs.values())
                 got = await artifacts_tools.artifacts_get(pool, ctx, artifact_id=r.object_id)
                 refs.extend(got.refs.values())

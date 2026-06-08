@@ -96,15 +96,15 @@ def _resource_row_error(row: dict[str, Any]) -> ToolResponse:
 
 async def list_resources_tool(
     pool: AsyncConnectionPool, ctx: RequestContext, *, kind: str | None
-) -> list[ToolResponse]:
-    """Return every resource (optionally filtered by ``kind``) as an envelope."""
+) -> ToolResponse:
+    """Return every resource (optionally filtered by ``kind``) in one collection envelope."""
     if kind is None:
         resource_kind = None
     else:
         try:
             resource_kind = ResourceKind(kind)
         except ValueError:
-            return [ToolResponse.failure("resources.list", ErrorCategory.CONFIGURATION_ERROR)]
+            return ToolResponse.failure("resources.list", ErrorCategory.CONFIGURATION_ERROR)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             rows = await _fetch_resource_rows(conn, resource_kind)
@@ -120,7 +120,12 @@ async def list_resources_tool(
             except ValueError:
                 _log.warning("resource row violates the response invariant; degraded")
                 responses.append(_resource_row_error(row))
-        return responses
+        return ToolResponse.collection(
+            "resources",
+            "ok",
+            responses,
+            suggested_next_actions=["resources.describe", "allocations.request"],
+        )
 
 
 async def describe_resource(
@@ -278,7 +283,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             str | None,
             Field(description="Filter by resource kind (e.g. 'local-libvirt'); omit for all."),
         ] = None,
-    ) -> list[ToolResponse]:
+    ) -> ToolResponse:
         """List Resources, optional kind. Requires a valid token; no project membership needed."""
         return await list_resources_tool(pool, current_context(), kind=kind)
 

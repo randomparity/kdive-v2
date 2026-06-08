@@ -82,7 +82,7 @@ def test_artifacts_list_returns_redacted_only(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             sys_id, _, red_id = await _seed_system_with_artifacts(pool)
             resp = await artifacts_tools.artifacts_list(pool, _ctx(), system_id=sys_id)
-        ids = {r.object_id for r in resp}
+        ids = {r.object_id for r in resp.collection_items()}
         assert ids == {red_id}  # the sensitive row is never surfaced
 
     asyncio.run(_run())
@@ -240,6 +240,6 @@ def test_artifacts_list_cross_project_is_empty(migrated_url: str) -> None:
             resp = await artifacts_tools.artifacts_list(
                 pool, _ctx(projects=("other",)), system_id=sys_id
             )
-        assert resp == []
+        assert resp.collection_items() == []
 
     asyncio.run(_run())

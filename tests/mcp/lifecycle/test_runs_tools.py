@@ -2044,8 +2044,9 @@ def test_boot_handler_console_is_readable_via_artifacts(
             # artifacts_list must return the console as a redacted artifact envelope.
             listed = await artifacts_tools.artifacts_list(pool, _ctx(), system_id=system_id)
 
-        assert len(listed) == 1
-        console = listed[0]
+        items = listed.collection_items()
+        assert len(items) == 1
+        console = items[0]
         assert console.status == "available"
         assert console.refs is not None
         assert console.refs.get("object", "").endswith("/console")

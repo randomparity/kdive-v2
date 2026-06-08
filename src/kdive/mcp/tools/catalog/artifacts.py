@@ -13,6 +13,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.catalog.artifacts_reads import (
     ArtifactReadHandlers,
+    artifact_list_items,
     artifacts_get,
     artifacts_list,
 )
@@ -25,6 +26,7 @@ from kdive.mcp.tools.catalog.artifacts_uploads import (
 __all__ = [
     "artifacts_get",
     "artifacts_list",
+    "artifact_list_items",
     "ArtifactReadHandlers",
     "create_run_upload",
     "create_system_upload",
@@ -45,7 +47,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         system_id: Annotated[
             str, Field(description="The System whose redacted artifacts to list.")
         ],
-    ) -> list[ToolResponse]:
+    ) -> ToolResponse:
         """List the redacted artifacts for a System. Requires viewer."""
         return await artifacts_list(pool, current_context(), system_id=system_id)
 
@@ -100,7 +102,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             list[ArtifactDeclaration],
             Field(description="Declared build artifacts: [{name, sha256 (base64), size_bytes}]."),
         ],
-    ) -> list[ToolResponse]:
+    ) -> ToolResponse:
         """Mint presigned PUTs for an external Run's build artifacts. Requires operator."""
         return await create_run_upload(pool, current_context(), run_id=run_id, artifacts=artifacts)
 
@@ -115,7 +117,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             list[ArtifactDeclaration],
             Field(description="Declared rootfs artifact: [{name, sha256 (base64), size_bytes}]."),
         ],
-    ) -> list[ToolResponse]:
+    ) -> ToolResponse:
         """Mint a presigned PUT for a DEFINED System's rootfs. Requires operator."""
         return await create_system_upload(
             pool, current_context(), system_id=system_id, artifacts=artifacts

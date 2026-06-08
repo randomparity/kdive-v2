@@ -376,7 +376,7 @@ def test_list_vmcores_redacted_only(migrated_url: str) -> None:
             async with pool.connection() as conn:
                 await vmcore_plane.capture_handler(conn, job, _FakeRetriever(sys_id))
             resp = await vmcore_tools.list_vmcores(pool, _ctx(), system_id=sys_id)
-        keys = {r.refs["object"] for r in resp}
+        keys = {r.refs["object"] for r in resp.collection_items()}
         assert keys == {f"local/systems/{sys_id}/vmcore-host_dump-redacted"}
 
     asyncio.run(_run())
@@ -533,12 +533,14 @@ def test_no_raw_vmcore_key_in_any_read_response(migrated_url: str) -> None:
             refs: list[str] = []
             from kdive.mcp.tools.catalog import artifacts as artifacts_tools
 
-            for r in await vmcore_tools.list_vmcores(pool, _ctx(), system_id=sys_id):
+            vmcores = await vmcore_tools.list_vmcores(pool, _ctx(), system_id=sys_id)
+            for r in vmcores.collection_items():
                 refs.extend(r.refs.values())
             listed = await artifacts_tools.artifacts_list(pool, _ctx(), system_id=sys_id)
-            for r in listed:
+            artifact_items = listed.collection_items()
+            for r in artifact_items:
                 refs.extend(r.refs.values())
-            for r in listed:
+            for r in artifact_items:
                 got = await artifacts_tools.artifacts_get(pool, _ctx(), artifact_id=r.object_id)
                 refs.extend(got.refs.values())
         assert refs  # something was returned

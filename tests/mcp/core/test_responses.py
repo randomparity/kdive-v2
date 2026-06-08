@@ -125,6 +125,26 @@ def test_failure_factory_sets_error_status_and_category() -> None:
     assert resp.suggested_next_actions == []
 
 
+def test_collection_factory_wraps_item_envelopes() -> None:
+    first = ToolResponse.success("a", "available", refs={"object": "tenant/a"})
+    second = ToolResponse.failure("b", ErrorCategory.INFRASTRUCTURE_FAILURE)
+
+    resp = ToolResponse.collection(
+        "artifacts",
+        "ok",
+        [first, second],
+        suggested_next_actions=["artifacts.get"],
+        data={"owner": "system-1"},
+    )
+
+    assert resp.object_id == "artifacts"
+    assert resp.status == "ok"
+    assert resp.data["count"] == "2"
+    assert resp.data["owner"] == "system-1"
+    assert resp.suggested_next_actions == ["artifacts.get"]
+    assert resp.collection_items() == [first, second]
+
+
 def test_common_as_uuid_parses_valid_uuid_and_rejects_bad_value() -> None:
     uid = uuid4()
 

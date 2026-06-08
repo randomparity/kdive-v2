@@ -332,8 +332,12 @@ def test_list_returns_project_allocations(migrated_url: str) -> None:
             await _request(pool, _ctx())
             await _request(pool, _ctx())
             responses = await alloc_tools.list_allocations(pool, _ctx(), project="proj", limit=50)
-        assert len(responses) == 2
-        assert all(r.status == "granted" for r in responses)
+        items = responses.collection_items()
+        assert responses.object_id == "allocations"
+        assert responses.status == "ok"
+        assert responses.data["project"] == "proj"
+        assert len(items) == 2
+        assert all(r.status == "granted" for r in items)
 
     asyncio.run(_run())
 

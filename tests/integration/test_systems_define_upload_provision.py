@@ -63,8 +63,9 @@ def test_define_upload_provision_reaches_ready_with_committed_rootfs(
                 artifacts=[{"name": "rootfs", "sha256": "sha256:x", "size_bytes": 18}],
                 store=minio_store,
             )
-            assert uploads[0].status == "upload_ready"
-            assert uploads[0].suggested_next_actions == ["systems.provision_defined"]
+            upload_items = uploads.collection_items()
+            assert upload_items[0].status == "upload_ready"
+            assert upload_items[0].suggested_next_actions == ["systems.provision_defined"]
 
             # 3. the agent PUTs the qcow2 (staged directly into the store for the test)
             minio_store.put_artifact(

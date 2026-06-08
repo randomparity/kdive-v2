@@ -9,6 +9,8 @@ rather than per-plane discipline.
 
 from __future__ import annotations
 
+import json
+
 from pydantic import BaseModel, model_validator
 
 from kdive.domain.errors import ErrorCategory
@@ -78,6 +80,40 @@ class ToolResponse(BaseModel):
             refs=refs or {},
             data=data or {},
         )
+
+    @classmethod
+    def collection(
+        cls,
+        object_id: str,
+        status: str,
+        items: list[ToolResponse],
+        *,
+        suggested_next_actions: list[str] | None = None,
+        refs: dict[str, str] | None = None,
+        data: dict[str, str] | None = None,
+    ) -> ToolResponse:
+        """Build one envelope for a collection-returning tool."""
+        payload = dict(data or {})
+        payload["items"] = json.dumps(
+            [item.model_dump(mode="json") for item in items],
+            sort_keys=True,
+        )
+        payload["count"] = str(len(items))
+        return cls.success(
+            object_id,
+            status,
+            suggested_next_actions=suggested_next_actions,
+            refs=refs,
+            data=payload,
+        )
+
+    def collection_items(self) -> list[ToolResponse]:
+        """Parse ``data["items"]`` from a collection envelope."""
+        raw = self.data.get("items", "[]")
+        decoded = json.loads(raw)
+        if not isinstance(decoded, list):
+            raise ValueError("collection envelope data['items'] must be a JSON list")
+        return [ToolResponse.model_validate(item) for item in decoded]
 
     @classmethod
     def failure(

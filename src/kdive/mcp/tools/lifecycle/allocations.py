@@ -390,8 +390,8 @@ def _renew_response(uid: UUID, outcome: RenewOutcome) -> ToolResponse:
 
 async def list_allocations(
     pool: AsyncConnectionPool, ctx: RequestContext, *, project: str, limit: int
-) -> list[ToolResponse]:
-    """Return the newest allocations for ``project``, each as an envelope."""
+) -> ToolResponse:
+    """Return the newest allocations for ``project`` in one collection envelope."""
     require_project(ctx, project)
     require_role(ctx, project, Role.VIEWER)
     capped = max(1, min(limit, MAX_LIST_LIMIT))
@@ -414,7 +414,13 @@ async def list_allocations(
                         str(row.get("id", "?")), ErrorCategory.INFRASTRUCTURE_FAILURE
                     )
                 )
-        return responses
+        return ToolResponse.collection(
+            "allocations",
+            "ok",
+            responses,
+            suggested_next_actions=["allocations.get", "allocations.release"],
+            data={"project": project},
+        )
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
@@ -502,6 +508,6 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         limit: Annotated[
             int, Field(description="Maximum rows returned (capped at 200).")
         ] = DEFAULT_LIST_LIMIT,
-    ) -> list[ToolResponse]:
+    ) -> ToolResponse:
         """List the newest Allocations for a project. Requires viewer."""
         return await list_allocations(pool, current_context(), project=project, limit=limit)

@@ -159,10 +159,16 @@ def _is_redacted_vmcore(object_key: str) -> bool:
 
 async def list_vmcores(
     pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str
-) -> list[ToolResponse]:
-    """Return the System's `redacted` vmcore artifacts (`artifacts.list` for the vmcore rows)."""
-    listed = await artifacts_tools.artifacts_list(pool, ctx, system_id=system_id)
-    return [r for r in listed if _is_redacted_vmcore(r.refs.get("object", ""))]
+) -> ToolResponse:
+    """Return the System's `redacted` vmcore artifacts in one collection envelope."""
+    listed = await artifacts_tools.artifact_list_items(pool, ctx, system_id=system_id)
+    items = [r for r in listed if _is_redacted_vmcore(r.refs.get("object", ""))]
+    return ToolResponse.collection(
+        system_id,
+        "ok",
+        items,
+        suggested_next_actions=["artifacts.get", "postmortem.crash"],
+    )
 
 
 # --- postmortem.crash / .triage ------------------------------------------------------------
@@ -299,7 +305,7 @@ def register(
             str,
             Field(description="The System whose redacted vmcore artifacts to list."),
         ],
-    ) -> list[ToolResponse]:
+    ) -> ToolResponse:
         """List the redacted vmcore artifacts for a System. Requires viewer."""
         return await list_vmcores(pool, current_context(), system_id=system_id)
 
