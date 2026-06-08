@@ -72,7 +72,7 @@ class ProviderComponent(NamedTuple):
     component_kind: str
     source: ComponentRef
     artifact_id: UUID | None
-    visibility: str
+    visibility: Visibility
     project: str | None
     principal: str
     sha256: str | None
@@ -352,7 +352,7 @@ def _component_from_row(row: dict[str, object]) -> ProviderComponent:
         component_kind=cast(str, row["component_kind"]),
         source=source,
         artifact_id=cast(UUID | None, row["artifact_id"]),
-        visibility=cast(str, row["visibility"]),
+        visibility=cast(Visibility, row["visibility"]),
         project=cast(str | None, row["project"]),
         principal=cast(str, row["principal"]),
         sha256=cast(str | None, row["sha256"]),
