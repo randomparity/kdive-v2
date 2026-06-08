@@ -244,6 +244,39 @@ def test_set_rejects_malformed_pcie_match(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_set_normalizes_padded_name(migrated_url: str) -> None:
+    # A padded name must be stored stripped, so the resolver/list see the canonical key (no
+    # unresolvable shadow row) and the audit scope matches.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await shapes.set_shape(
+                pool, _OPERATOR, name="  gpu  ", vcpus=8, memory_mb=8192, disk_gb=100
+            )
+            assert resp.status == "ok"
+            assert resp.object_id == "gpu"
+            assert resp.data["name"] == "gpu"
+            async with pool.connection() as conn:
+                assert await SYSTEM_SHAPES.get(conn, "gpu") is not None
+                assert await SYSTEM_SHAPES.get(conn, "  gpu  ") is None
+        rows = await _platform_audit_rows(migrated_url)
+        assert rows == [("op-1", "platform_operator", "shapes.set", "gpu")]
+
+    asyncio.run(_run())
+
+
+def test_set_rejects_over_long_name(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await shapes.set_shape(
+                pool, _OPERATOR, name="x" * 65, vcpus=2, memory_mb=4096, disk_gb=20
+            )
+            assert resp.status == "error"
+            assert resp.error_category == "configuration_error"
+        assert await _count_platform_audit(migrated_url) == 0
+
+    asyncio.run(_run())
+
+
 def test_set_rejects_blank_name(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:

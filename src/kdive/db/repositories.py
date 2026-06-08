@@ -122,7 +122,12 @@ class Repository[M: BaseModel]:
         return [self._model.model_validate(row) for row in rows]
 
     async def delete(self, conn: AsyncConnection, key: UUID | str) -> bool:
-        """Delete the row whose ``key_column`` equals ``key``; return whether one was removed."""
+        """Delete the row whose ``key_column`` equals ``key``; return whether one was removed.
+
+        Assumes ``key_column`` is unique (a PK or unique constraint) — the ``== 1`` check
+        reports ``True`` for the single matched row. On a non-unique column a multi-row delete
+        would report ``False`` despite removing rows, so only use this on a uniquely-keyed table.
+        """
         query = sql.SQL("DELETE FROM {table} WHERE {col} = %s").format(
             table=sql.Identifier(self._table), col=sql.Identifier(self._key_column)
         )

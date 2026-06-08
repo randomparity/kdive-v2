@@ -53,6 +53,10 @@ _LIST_TOOL = "shapes.list"
 _SET_TOOL = "shapes.set"
 _DELETE_TOOL = "shapes.delete"
 
+# A curated preset name; bounded so an operator cannot seed an unwieldy catalog key (which is
+# also the audit scope). Generous for any sensible preset, far below the `text` column limit.
+_MAX_NAME_LEN = 64
+
 # A placeholder satisfying the model's required `updated_at`; the DB default/trigger sets the
 # real value, and the upsert excludes `updated_at` from the write (server-generated column).
 _PLACEHOLDER_TS = datetime(1970, 1, 1, tzinfo=UTC)
@@ -98,9 +102,11 @@ async def set_shape(
             shape = _build_shape(name, vcpus, memory_mb, disk_gb, pcie_match)
         except CategorizedError as exc:
             return ToolResponse.failure(name, exc.category, suggested_next_actions=[_SET_TOOL])
+        # `shape.name` is the canonical (stripped) key actually persisted; audit/scope on it,
+        # not the raw argument, so the trail matches what the resolver will look up.
         async with pool.connection() as conn, conn.transaction():
             persisted = await SYSTEM_SHAPES.upsert(conn, shape)
-            await _audit_applied(conn, ctx, _SET_TOOL, name, _shape_args(persisted))
+            await _audit_applied(conn, ctx, _SET_TOOL, shape.name, _shape_args(persisted))
         return _shape_envelope(persisted)
 
 
@@ -134,14 +140,22 @@ def _build_shape(
 ) -> SystemShape:
     """Validate inputs and build the candidate :class:`SystemShape` (fail-closed).
 
-    Rejects a blank name and (via the model) a non-positive dimension or non-whole-GB
-    ``memory_mb`` as ``configuration_error``; validates ``pcie_match`` grammar before storing
-    so a malformed spec never reaches the catalog. ``parse_match_spec`` already raises a
-    ``CONFIGURATION_ERROR`` :class:`CategorizedError` on bad grammar.
+    Normalizes ``name`` by stripping surrounding whitespace so a padded name cannot create a
+    shadow row the resolver can never look up. Rejects a blank or over-long name and (via the
+    model) a non-positive dimension or non-whole-GB ``memory_mb`` as ``configuration_error``;
+    validates ``pcie_match`` grammar before storing so a malformed spec never reaches the
+    catalog. ``parse_match_spec`` already raises a ``CONFIGURATION_ERROR``
+    :class:`CategorizedError` on bad grammar.
     """
-    if not name.strip():
+    name = name.strip()
+    if not name:
         raise CategorizedError(
             "shape name must be a non-blank string", category=ErrorCategory.CONFIGURATION_ERROR
+        )
+    if len(name) > _MAX_NAME_LEN:
+        raise CategorizedError(
+            f"shape name must be at most {_MAX_NAME_LEN} characters",
+            category=ErrorCategory.CONFIGURATION_ERROR,
         )
     if pcie_match is not None:
         parse_match_spec(pcie_match)
