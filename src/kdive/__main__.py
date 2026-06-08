@@ -22,7 +22,7 @@ from kdive.log import configure_logging
 from kdive.version import full_version
 
 if TYPE_CHECKING:
-    from kdive.providers.runtime import ProviderRuntime
+    from kdive.providers.resolver import ProviderResolver
     from kdive.security.secrets.secret_registry import SecretRegistry
 
 _DEFAULT_HOST = "127.0.0.1"
@@ -104,7 +104,7 @@ async def _run_worker(secret_registry: SecretRegistry) -> None:
 
 async def _run_reconciler(secret_registry: SecretRegistry) -> None:
     from kdive.domain.errors import CategorizedError
-    from kdive.providers.composition import build_default_provider_runtime
+    from kdive.providers.composition import build_provider_resolver
     from kdive.reconciler.loop import NullReaper, Reconciler
     from kdive.store.objectstore import object_store_from_env
 
@@ -118,7 +118,7 @@ async def _run_reconciler(secret_registry: SecretRegistry) -> None:
         upload_store = object_store_from_env()
     except CategorizedError:
         upload_store = None  # no S3 env: the upload reaper stays off, like NullReaper
-    await _register_provider_resources(pool, build_default_provider_runtime())
+    await _register_provider_resources(pool, build_provider_resolver())
     try:
         reconciler = Reconciler(pool, NullReaper(), upload_store=upload_store)
         await reconciler.run(stop)
@@ -127,14 +127,16 @@ async def _run_reconciler(secret_registry: SecretRegistry) -> None:
         await pool.close()
 
 
-async def _register_provider_resources(pool: AsyncConnectionPool, runtime: ProviderRuntime) -> None:
+async def _register_provider_resources(
+    pool: AsyncConnectionPool, resolver: ProviderResolver
+) -> None:
     """Best-effort provider discovery registration so allocations.request has a Resource.
 
     A provider that can't be reached/registered must not crash the reconciler — the other
     repairs still run, and the next startup retries; the failure is logged.
     """
     try:
-        await runtime.register_discovery(pool)
+        await resolver.register_all_discovery(pool)
     except Exception:  # noqa: BLE001 - registration failure must not crash the reconciler
         _log.warning("reconciler: provider discovery registration failed at startup", exc_info=True)
 

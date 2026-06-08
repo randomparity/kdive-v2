@@ -10,6 +10,7 @@ from __future__ import annotations
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.capture import CaptureMethod
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
 from kdive.providers.component_validation import (
     CONFIG_COMPONENT,
@@ -41,6 +42,7 @@ from kdive.providers.local_libvirt.lifecycle.provisioning import (
     LocalLibvirtProvisioning,
 )
 from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
+from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.services.resource_discovery import ensure_discovered_resource_registered
 
@@ -63,8 +65,8 @@ def _local_component_sources() -> ComponentSourceCapabilities:
     )
 
 
-def build_default_provider_runtime() -> ProviderRuntime:
-    """Build typed default provider ports without opening live provider connections."""
+def build_local_runtime() -> ProviderRuntime:
+    """Build the typed local-libvirt provider ports without opening live provider connections."""
     provisioner = LocalLibvirtProvisioning.from_env()
     builder = LocalLibvirtBuild.from_env()
     install = LocalLibvirtInstall.from_env()
@@ -96,6 +98,25 @@ def build_default_provider_runtime() -> ProviderRuntime:
     )
 
 
+def build_provider_resolver(*, enable_fault_inject: bool = False) -> ProviderResolver:
+    """Assemble the per-deployment ``ResourceKind -> ProviderRuntime`` registry.
+
+    The default production composition registers only ``local-libvirt``. The
+    ``fault-inject`` provider is opt-in (ADR-0071) and its runtime lands in M1.5
+    issue 2; enabling the gate before then is a configuration error, never a
+    silent no-op.
+    """
+    runtimes = {ResourceKind.LOCAL_LIBVIRT: build_local_runtime()}
+    if enable_fault_inject:
+        raise CategorizedError(
+            "fault-inject provider is not yet registered (M1.5 issue 2); "
+            "do not enable the gate before its runtime exists",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"enable_fault_inject": True},
+        )
+    return ProviderResolver(runtimes)
+
+
 async def ensure_local_host_registered(pool: AsyncConnectionPool) -> None:
     discovery = LocalLibvirtDiscovery.from_env()
     await ensure_discovered_resource_registered(
@@ -109,5 +130,7 @@ async def ensure_local_host_registered(pool: AsyncConnectionPool) -> None:
 
 
 __all__ = [
-    "build_default_provider_runtime",
+    "build_local_runtime",
+    "build_provider_resolver",
+    "ensure_local_host_registered",
 ]

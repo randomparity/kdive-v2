@@ -6,6 +6,7 @@ import asyncio
 from typing import cast
 from uuid import UUID
 
+import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.components.references import LocalComponentRef
@@ -147,7 +148,7 @@ def test_provider_runtime_returns_typed_provider_ports_directly() -> None:
 
 
 def test_default_runtime_advertises_implemented_component_sources_only() -> None:
-    runtime = composition.build_default_provider_runtime()
+    runtime = composition.build_local_runtime()
 
     assert runtime.component_sources.provider == "local-libvirt"
     assert runtime.component_sources.accepted_component_sources == {
@@ -161,7 +162,7 @@ def test_default_runtime_advertises_implemented_component_sources_only() -> None
 
 
 def test_default_runtime_exposes_build_config_validator() -> None:
-    runtime = composition.build_default_provider_runtime()
+    runtime = composition.build_local_runtime()
 
     assert runtime.build_config_validator is not None
 
@@ -213,3 +214,20 @@ def test_provider_runtime_discovery_hook_noops_when_absent() -> None:
     )
 
     asyncio.run(runtime.register_discovery(cast(AsyncConnectionPool, object())))
+
+
+def test_default_resolver_registers_only_local_libvirt() -> None:
+    from kdive.domain.models import ResourceKind
+
+    resolver = composition.build_provider_resolver()
+    assert resolver.registered_kinds() == frozenset({ResourceKind.LOCAL_LIBVIRT})
+    local = resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
+    assert local.component_sources.provider == "local-libvirt"
+
+
+def test_enabling_fault_inject_before_it_exists_fails_closed() -> None:
+    from kdive.domain.errors import CategorizedError, ErrorCategory
+
+    with pytest.raises(CategorizedError) as exc:
+        composition.build_provider_resolver(enable_fault_inject=True)
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR

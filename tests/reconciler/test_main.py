@@ -39,11 +39,11 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(__main__, "create_pool", lambda **kw: _FakePool())
 
-    class _FakeRuntime:
-        async def register_discovery(self, pool: object) -> None:
+    class _FakeResolver:
+        async def register_all_discovery(self, pool: object) -> None:
             events.append("discover")
 
-    monkeypatch.setattr(composition, "build_default_provider_runtime", lambda: _FakeRuntime())
+    monkeypatch.setattr(composition, "build_provider_resolver", lambda **kw: _FakeResolver())
 
     constructed: dict[str, object] = {}
 

@@ -141,9 +141,9 @@ async def seed_demo(
 
 
 async def register_local_resource(pool: Any) -> None:
-    from kdive.providers.composition import build_default_provider_runtime
+    from kdive.providers.composition import build_provider_resolver
 
-    await build_default_provider_runtime().register_discovery(pool)
+    await build_provider_resolver().register_all_discovery(pool)
 
 
 def supervisor_commands(env: Mapping[str, str]) -> list[list[str]]:
