@@ -15,7 +15,7 @@ from kdive.domain.models import JobKind
 from kdive.jobs import queue
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog import jobs as jobs_tools
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 
 CTX = RequestContext(principal="user-1", agent_session="s", projects=("proj",))
 OP_CTX = RequestContext(

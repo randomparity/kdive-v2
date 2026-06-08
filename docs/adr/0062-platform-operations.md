@@ -160,7 +160,7 @@ CHECK keyed on `transition = 'denied'`: object columns may be NULL only on a `'d
 every real-transition row retains the original invariant.
 
 The `RoleDenied` retrofit must write the **reserved bare transition literal `'denied'`** — not the
-`{op}:denied` convention the destructive gate uses (`security/gate.py` writes
+`{op}:denied` convention the destructive gate uses (`security/authz/gate.py` writes
 `transition=f"{op.kind}:denied"`, e.g. `force_crash:denied`). The two denial kinds are designed to
 coexist under the one CHECK: (a) the destructive-gate denial always carries an object (the
 allocation it gated), so its `{op}:denied` row satisfies the CHECK's *object-present* branch with

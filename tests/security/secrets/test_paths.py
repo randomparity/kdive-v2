@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from kdive.security.paths import PathSafetyError, confine_to_root
+from kdive.security.secrets.paths import PathSafetyError, confine_to_root
 
 
 def test_file_under_root_resolves(tmp_path: Path) -> None:

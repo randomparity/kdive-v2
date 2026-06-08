@@ -30,7 +30,7 @@ from kdive.mcp.tools.ops._auth import (
 from kdive.security import audit
 
 if TYPE_CHECKING:
-    from kdive.security.context import RequestContext
+    from kdive.security.authz.context import RequestContext
 
 
 def parse_window(window: object) -> tuple[datetime | None, datetime | None] | None:

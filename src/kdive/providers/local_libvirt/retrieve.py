@@ -29,8 +29,8 @@ from kdive.providers.ports import (
     CrashResult,
     Retriever,
 )
-from kdive.security.crash_commands import crash_command_rejection_reason
-from kdive.security.redaction import Redactor
+from kdive.security.artifacts.crash_commands import crash_command_rejection_reason
+from kdive.security.secrets.redaction import Redactor
 from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact, object_store_from_env
 
 _RETENTION_CLASS = "vmcore"

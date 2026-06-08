@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from kdive.security.artifact_search import (
+from kdive.security.artifacts.artifact_search import (
     ArtifactSearchInputError,
     parse_literal_terms,
     search_text,

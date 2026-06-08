@@ -18,13 +18,13 @@ from kdive.log import bind_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
-from kdive.security.artifact_search import (
+from kdive.security.artifacts.artifact_search import (
     ArtifactSearchInputError,
     parse_literal_terms,
     search_text,
 )
-from kdive.security.context import RequestContext
-from kdive.security.rbac import Role, require_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import Role, require_role
 from kdive.store.objectstore import (
     FetchedArtifact,
     HeadResult,

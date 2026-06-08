@@ -46,7 +46,7 @@ from kdive.mcp.tools.lifecycle import control as control_tools
 from kdive.planes import control as control_plane
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.audit import args_digest
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 

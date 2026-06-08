@@ -58,7 +58,7 @@ from kdive.services.allocation_idempotency import (
 )
 
 if TYPE_CHECKING:
-    from kdive.security.context import RequestContext
+    from kdive.security.authz.context import RequestContext
 
 # The idempotency-store ``kind`` discriminator for a renew (ADR-0040 §3); distinct from
 # the request grant's kind so a request key and a renew key never collide in the store.

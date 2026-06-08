@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from kdive.mcp.auth import AuthError, RequestContext
-from kdive.security.rbac import (
+from kdive.security.authz.rbac import (
     AuthorizationError,
     Role,
     RoleDenied,

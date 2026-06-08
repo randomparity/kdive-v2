@@ -42,9 +42,9 @@ from kdive.mcp.tools.debug import sessions as debug_tools
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.providers.ports import TransportHandleData
-from kdive.security.paths import PathSafetyError
-from kdive.security.rbac import AuthorizationError, Role
-from kdive.security.secret_registry import SecretRegistry
+from kdive.security.authz.rbac import AuthorizationError, Role
+from kdive.security.secrets.paths import PathSafetyError
+from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 

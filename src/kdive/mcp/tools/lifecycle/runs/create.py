@@ -31,8 +31,8 @@ from kdive.mcp.tools.lifecycle.runs.common import (
 from kdive.profiles.build import BuildProfile, ParsedBuildProfile, dump_build_profile
 from kdive.profiles.types import BuildProfileInput, ExpectedBootFailureInput
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.rbac import Role, require_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import Role, require_role
 
 
 async def create_run(

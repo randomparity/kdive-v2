@@ -43,7 +43,7 @@ from kdive.mcp.tools.lifecycle.runs.steps import boot_run, install_run
 from kdive.mcp.tools.lifecycle.runs.view import get_run
 from kdive.planes import runs as runs_handlers
 from kdive.providers.component_validation import ComponentSourceCapabilities
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.services import run_steps
 from tests.db_waits import wait_until_any_backend_waiting
 

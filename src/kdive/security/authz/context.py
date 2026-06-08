@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from kdive.security.rbac import (
+from kdive.security.authz.rbac import (
     PlatformRole,
     Role,
     platform_roles_from_claims,

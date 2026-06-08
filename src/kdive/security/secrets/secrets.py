@@ -14,8 +14,8 @@ import os
 from pathlib import Path
 from typing import Protocol
 
-from kdive.security.paths import PathSafetyError, confine_to_root
-from kdive.security.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+from kdive.security.secrets.paths import PathSafetyError, confine_to_root
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
 
 _SECRETS_ROOT_ENV = "KDIVE_SECRETS_ROOT"  # pragma: allowlist secret - env var name, not a value
 _DEFAULT_SECRETS_ROOT = "/var/lib/kdive/secrets"

@@ -15,7 +15,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.mcp.auth import AuthError, RequestContext
 from kdive.mcp.tools.accounting.estimate import estimate
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 
 
 def _ctx(

@@ -13,7 +13,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog import resources as resources_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
-from kdive.security.rbac import PlatformRole
+from kdive.security.authz.rbac import PlatformRole
 from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 

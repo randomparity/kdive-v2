@@ -16,7 +16,7 @@ from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_access_token
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.security.context import (
+from kdive.security.authz.context import (
     AuthError,
     RequestContext,
     context_from_claims,

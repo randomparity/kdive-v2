@@ -31,8 +31,8 @@ from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import LiveIntrospector, VmcoreIntrospector
-from kdive.security.context import RequestContext
-from kdive.security.rbac import Role, require_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import Role, require_role
 
 # The fixed live-helper set (ADR-0033 §2 / ADR-0039 §3): the same three in-tree helpers as the
 # offline path. There is no caller-supplied drgn script — an unknown helper is rejected.

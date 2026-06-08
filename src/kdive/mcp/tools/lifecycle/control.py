@@ -44,9 +44,9 @@ from kdive.mcp.tools._common import (
 from kdive.mcp.tools._common import job_envelope
 from kdive.profiles.provisioning import ProvisioningProfile, destructive_opt_in
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
-from kdive.security.rbac import Role, require_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
+from kdive.security.authz.rbac import Role, require_role
 
 # Systems that have a started libvirt domain (so a power op has something to act on).
 _STARTED_SYSTEM = frozenset({SystemState.READY, SystemState.CRASHED})

@@ -15,7 +15,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from kdive.mcp.auth import AuthError, RequestContext, context_from_claims, require_project
-from kdive.security.rbac import AuthorizationError, Role, require_role, roles_from_claims
+from kdive.security.authz.rbac import AuthorizationError, Role, require_role, roles_from_claims
 
 _ROLE_NAMES = [r.value for r in Role]
 _RANK = {Role.VIEWER: 0, Role.OPERATOR: 1, Role.ADMIN: 2}

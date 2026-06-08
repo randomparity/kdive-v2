@@ -35,7 +35,7 @@ from kdive.domain.models import (
 from kdive.domain.state import AllocationState, ResourceStatus, SystemState
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.ops import breakglass
-from kdive.security.rbac import AuthorizationError, PlatformRole
+from kdive.security.authz.rbac import AuthorizationError, PlatformRole
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _TARGET_PROJECT = "tenant-x"

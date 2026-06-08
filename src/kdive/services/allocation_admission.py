@@ -59,7 +59,7 @@ from kdive.services.allocation_idempotency import (
 )
 
 if TYPE_CHECKING:
-    from kdive.security.context import RequestContext
+    from kdive.security.authz.context import RequestContext
 
 _SECONDS_PER_HOUR = 3600
 

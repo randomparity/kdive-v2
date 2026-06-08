@@ -20,8 +20,8 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.mcp.middleware import DenialAuditMiddleware
 from kdive.mcp.responses import ToolResponse
-from kdive.security.gate import DestructiveOpDenied
-from kdive.security.rbac import AuthorizationError, Role, RoleDenied
+from kdive.security.authz.gate import DestructiveOpDenied
+from kdive.security.authz.rbac import AuthorizationError, Role, RoleDenied
 
 
 class _FakeMessage:

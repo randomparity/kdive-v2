@@ -25,7 +25,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry, JobHandler
-from kdive.security.redaction import Redactor
+from kdive.security.secrets.redaction import Redactor
 
 _log = logging.getLogger(__name__)
 _CONTEXT_VALUE_MAX = 1000

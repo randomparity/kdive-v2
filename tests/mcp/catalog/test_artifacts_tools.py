@@ -14,7 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.domain.models import Sensitivity
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog import artifacts as artifacts_tools
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.store.objectstore import FetchedArtifact, HeadResult
 from tests.mcp._seed import seed_crashed_system
 

@@ -58,7 +58,7 @@ from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers
 from kdive.planes import systems as systems_handlers
 from kdive.providers.local_libvirt.provisioning import domain_name_for
 from kdive.reconciler import loop
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.services import accounting
 from tests.integration._seed import (
     provisioning_profile,

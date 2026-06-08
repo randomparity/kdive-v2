@@ -34,7 +34,7 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog import artifacts as artifacts_tools
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.store.objectstore import PresignedUpload
 from tests.mcp.systems_support import SYSTEM_PROVISION_HANDLERS
 from tests.mcp.systems_support import granted_allocation as _granted_allocation

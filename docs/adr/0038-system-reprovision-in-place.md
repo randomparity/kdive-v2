@@ -65,7 +65,7 @@ destructive (it wipes the running System), it passes the destructive-op gate
 *lifecycle*, owned by `operator`: the gate's role factor for reprovision is
 `operator`, while its capability-scope and profile-opt-in factors still apply.
 (Force-crash/power/teardown remain `admin`.) The gate
-(`security/gate.py`) therefore takes the required role as a per-op parameter
+(`security/authz/gate.py`) therefore takes the required role as a per-op parameter
 (defaulting to `admin`; `operator` for reprovision) rather than hardcoding `admin`,
 preserving the three-check structure. This is the one place M1 uses a sub-`admin`
 destructive role, and it is justified: reprovisioning your own granted System is

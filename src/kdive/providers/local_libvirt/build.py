@@ -39,7 +39,7 @@ from kdive.providers.build_validation import (
     validate_external_artifacts,
 )
 from kdive.providers.ports import Builder, BuildOutput, ValidatedUpload
-from kdive.security.redaction import Redactor
+from kdive.security.secrets.redaction import Redactor
 from kdive.store.objectstore import (
     ArtifactWriteRequest,
     StoredArtifact,

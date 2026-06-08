@@ -46,10 +46,10 @@ from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.mcp.tools.catalog.artifacts_reads import _artifact_list_items
 from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import CrashPostmortem
-from kdive.security.context import RequestContext
-from kdive.security.crash_commands import crash_command_rejection_reason
-from kdive.security.rbac import Role, require_role
-from kdive.security.redaction import Redactor
+from kdive.security.artifacts.crash_commands import crash_command_rejection_reason
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import Role, require_role
+from kdive.security.secrets.redaction import Redactor
 
 _log = logging.getLogger(__name__)
 

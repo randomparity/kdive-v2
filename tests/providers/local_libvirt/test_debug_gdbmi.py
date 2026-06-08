@@ -22,8 +22,8 @@ from kdive.providers.local_libvirt.debug_gdbmi import (
     parse_mi_records,
 )
 from kdive.providers.ports import GdbMiAttachment, GdbMiSessionRegistry
-from kdive.security.redaction import Redactor
-from kdive.security.secret_registry import PROCESS_SECRET_REGISTRY
+from kdive.security.secrets.redaction import Redactor
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY
 
 
 class _FakeMiController:

@@ -47,11 +47,11 @@ from kdive.providers.composition import ProviderRuntime
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.ports import Connector
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.paths import PathSafetyError
-from kdive.security.rbac import Role, require_role
-from kdive.security.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
-from kdive.security.secrets import SecretBackend, secret_backend_from_env
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import Role, require_role
+from kdive.security.secrets.paths import PathSafetyError
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
 
 _GDBSTUB = "gdbstub"
 _SSH = "ssh"

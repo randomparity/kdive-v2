@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from kdive.security.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
 
 REDACTION = "[REDACTED]"
 

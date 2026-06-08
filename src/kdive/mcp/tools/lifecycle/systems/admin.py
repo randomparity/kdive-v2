@@ -38,9 +38,9 @@ from kdive.profiles.provisioning import (
 from kdive.profiles.types import ProvisioningProfileInput
 from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
-from kdive.security.rbac import Role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
+from kdive.security.authz.rbac import Role
 
 _NON_TERMINAL_RUN = frozenset({RunState.CREATED, RunState.RUNNING})
 _REPROVISION = "reprovision"
@@ -62,7 +62,7 @@ class SystemAdminHandlers:
         system_id: str,
         profile: ProvisioningProfileInput,
     ) -> ToolResponse:
-        return await _reprovision_system(
+        return await reprovision_system(
             pool,
             ctx,
             system_id=system_id,
@@ -72,7 +72,7 @@ class SystemAdminHandlers:
         )
 
 
-async def _reprovision_system(
+async def reprovision_system(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,

@@ -9,7 +9,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.security import audit
 
 if TYPE_CHECKING:
-    from kdive.security.context import RequestContext
+    from kdive.security.authz.context import RequestContext
 
 ALL_PROJECTS_SCOPE = "all-projects"
 

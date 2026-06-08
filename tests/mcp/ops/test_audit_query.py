@@ -31,7 +31,7 @@ from pydantic import ValidationError
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.ops import audit as audit_tools
-from kdive.security.rbac import PlatformRole, Role, RoleDenied
+from kdive.security.authz.rbac import PlatformRole, Role, RoleDenied
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 

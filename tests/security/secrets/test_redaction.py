@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import logging
 
-from kdive.security.redaction import (
+from kdive.security.secrets.redaction import (
     REDACTION,
     Redactor,
     SecretRedactionFilter,
     redact_url_credentials,
 )
-from kdive.security.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
 
 
 def test_redact_url_credentials_strips_userinfo() -> None:

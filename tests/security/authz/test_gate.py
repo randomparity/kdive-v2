@@ -11,8 +11,8 @@ import pytest
 from kdive.domain.models import Allocation
 from kdive.domain.state import AllocationState
 from kdive.mcp.auth import RequestContext
-from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
-from kdive.security.rbac import Role
+from kdive.security.authz.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
+from kdive.security.authz.rbac import Role
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 

@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from kdive.security.paths import PathSafetyError
-from kdive.security.redaction import REDACTION, Redactor
-from kdive.security.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
-from kdive.security.secrets import FileRefBackend, secret_backend_from_env
+from kdive.security.secrets.paths import PathSafetyError
+from kdive.security.secrets.redaction import REDACTION, Redactor
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+from kdive.security.secrets.secrets import FileRefBackend, secret_backend_from_env
 
 
 def _write(root: Path, name: str, content: str) -> Path:

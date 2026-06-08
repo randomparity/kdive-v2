@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kdive.security.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
 
 
 def test_register_then_snapshot_contains_value() -> None:

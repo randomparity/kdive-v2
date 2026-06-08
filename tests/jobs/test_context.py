@@ -8,7 +8,7 @@ from uuid import uuid4
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
 from kdive.jobs.context import authorizing, context_from_job
-from kdive.security.context import RequestContext
+from kdive.security.authz.context import RequestContext
 
 _NOW = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
 

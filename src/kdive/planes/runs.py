@@ -25,9 +25,9 @@ from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import Booter, Builder, BuildOutput, Installer
 from kdive.providers.runtime_paths import console_log_path, read_console_log
 from kdive.security import audit
-from kdive.security.artifact_search import ArtifactSearchInputError, search_text
-from kdive.security.context import RequestContext
-from kdive.security.redaction import Redactor
+from kdive.security.artifacts.artifact_search import ArtifactSearchInputError, search_text
+from kdive.security.authz.context import RequestContext
+from kdive.security.secrets.redaction import Redactor
 from kdive.services.run_steps import (
     BuildStepResult,
     cmdline_for,

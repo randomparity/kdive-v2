@@ -54,8 +54,8 @@ from kdive.providers.component_validation import (
     reject_unsupported_component_source,
 )
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.rbac import Role, require_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import Role, require_role
 
 
 def _envelope_for_system(system: System) -> ToolResponse:

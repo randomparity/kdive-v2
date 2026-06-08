@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kdive.security.crash_commands import crash_command_rejection_reason
+from kdive.security.artifacts.crash_commands import crash_command_rejection_reason
 
 _ALLOW = frozenset({"bt", "log", "ps", "p", "rd", "kmem", "sys"})
 

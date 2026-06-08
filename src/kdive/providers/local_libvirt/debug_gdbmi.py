@@ -44,7 +44,7 @@ from kdive.providers.ports import (
     GdbMiAttachment,
     GdbStopRecord,
 )
-from kdive.security.redaction import Redactor
+from kdive.security.secrets.redaction import Redactor
 
 MAX_MEMORY_READ_BYTES = 4096
 MAX_INTERACTIVE_WAIT_SEC = 60

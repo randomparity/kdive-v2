@@ -20,7 +20,7 @@ from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
 from kdive.planes import vmcore as vmcore_plane
 from kdive.providers.ports import CaptureOutput, CrashOutput, CrashPostmortem
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.store.objectstore import StoredArtifact
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
 

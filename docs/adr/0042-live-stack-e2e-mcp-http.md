@@ -72,7 +72,7 @@ umbrella spec but not built here.
 
 The driver obtains three bearer tokens — `viewer`, `operator`, `admin`, each carrying the
 `roles: {<project>: <role>}` and `projects` claims `roles_from_claims` expects
-(`security/rbac.py`) — **from the mock-oauth2-server**, and the server validates them through
+(`security/authz/rbac.py`) — **from the mock-oauth2-server**, and the server validates them through
 its configured `JWTVerifier` against the issuer's JWKS. This is the deliberate change from
 ADR-0035 §3, which kept the mock issuer off every test path and built `RequestContext`
 in-process: a wire-level test must prove the auth path the agent actually uses. ADR-0035 §3

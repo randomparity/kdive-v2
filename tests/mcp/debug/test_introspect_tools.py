@@ -22,7 +22,7 @@ from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.debug import introspect as introspect_tools
 from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import IntrospectOutput
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
 
 

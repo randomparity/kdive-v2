@@ -23,7 +23,7 @@ from kdive.domain.models import Allocation, Budget, Resource, ResourceKind
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import allocations as alloc_tools
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.services import accounting
 from kdive.services.allocation_renew import _RENEW_KIND
 

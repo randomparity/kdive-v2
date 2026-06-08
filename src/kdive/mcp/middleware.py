@@ -1,13 +1,13 @@
 """MCP dispatch-boundary middleware: the denial-audit retrofit (ADR-0062 §5, issue #142).
 
-`require_role`'s **member-over-reach** site raises :class:`~kdive.security.rbac.RoleDenied`
-(the dedicated discriminator, not the base :class:`~kdive.security.rbac.AuthorizationError`
+`require_role`'s **member-over-reach** site raises :class:`~kdive.security.authz.rbac.RoleDenied`
+(the dedicated discriminator, not the base :class:`~kdive.security.authz.rbac.AuthorizationError`
 the non-member site keeps). :class:`DenialAuditMiddleware` is the single tool-dispatch
 boundary that catches **`RoleDenied` specifically**, writes one guard-exempt `audit_log`
 denial row (object NULL, reserved bare ``transition='denied'``, ``project`` from the
 exception), and returns the uniform authorization-denied envelope. Catching the
 ``AuthorizationError`` base instead would double-write
-``require_platform_role`` denials and :class:`~kdive.security.gate.DestructiveOpDenied`
+``require_platform_role`` denials and :class:`~kdive.security.authz.gate.DestructiveOpDenied`
 (both already handled elsewhere); the non-member denial is also deliberately excluded to
 avoid write-amplification (ADR-0043 §4 / ADR-0062 §5).
 """
@@ -24,7 +24,7 @@ from kdive.domain.errors import ErrorCategory
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.security import audit
-from kdive.security.rbac import RoleDenied
+from kdive.security.authz.rbac import RoleDenied
 
 if TYPE_CHECKING:
     from psycopg_pool import AsyncConnectionPool
@@ -65,8 +65,8 @@ class DenialAuditMiddleware(Middleware):
         """Dispatch one tool call; audit and map a member-over-reach denial.
 
         Only :class:`RoleDenied` is caught — every other exception (including the base
-        :class:`~kdive.security.rbac.AuthorizationError` non-member denial,
-        :class:`~kdive.security.gate.DestructiveOpDenied`, and unrelated errors) propagates
+        :class:`~kdive.security.authz.rbac.AuthorizationError` non-member denial,
+        :class:`~kdive.security.authz.gate.DestructiveOpDenied`, and unrelated errors) propagates
         unaudited.
         """
         try:

@@ -16,12 +16,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from kdive.security.context import AuthError
+from kdive.security.authz.context import AuthError
 
 if TYPE_CHECKING:
     from psycopg import AsyncConnection
 
-    from kdive.security.context import RequestContext
+    from kdive.security.authz.context import RequestContext
 
 
 def args_digest(args: Mapping[str, object]) -> str:
@@ -52,7 +52,7 @@ class DenialEvent:
     """A member-over-reach `require_role` denial (ADR-0062 §5).
 
     Object-agnostic: the dispatch boundary records the actor, tool, and project (the last
-    taken from the :class:`~kdive.security.rbac.RoleDenied` exception), not the object the
+    taken from the :class:`~kdive.security.authz.rbac.RoleDenied` exception), not the object the
     handler would have resolved after the gate. ``reason`` is the human-readable denial
     text (e.g. the held-vs-required role); it carries no secret values.
     """

@@ -27,8 +27,8 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tool_payloads import EstimateRequestPayload
 from kdive.mcp.tools import _docmeta
-from kdive.security.context import RequestContext, require_project
-from kdive.security.rbac import Role, require_role
+from kdive.security.authz.context import RequestContext, require_project
+from kdive.security.authz.rbac import Role, require_role
 
 _ESTIMATE_OBJECT_ID = "estimate"
 

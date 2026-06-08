@@ -23,8 +23,8 @@ from kdive.mcp.tools.ops._auth import (
     held_platform_roles,
 )
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.rbac import (
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import (
     AuthorizationError,
     PlatformRole,
     Role,

@@ -182,11 +182,11 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:security`
 - **Depends on:** #5, #8
 - **Goal:** Project-scoped roles, append-only audit on every transition, and the three-check destructive gate.
-- **Files:** Create `src/kdive/security/rbac.py`, `security/audit.py`, `security/gate.py`; `tests/security/`.
+- **Files:** Create `src/kdive/security/authz/rbac.py`, `security/audit.py`, `security/authz/gate.py`; `tests/security/`.
 - **Scope:**
-  - `rbac.py`: `viewer`/`operator`/`admin` per project from token claims; `require_role(ctx, project, role)`.
+  - `authz/rbac.py`: `viewer`/`operator`/`admin` per project from token claims; `require_role(ctx, project, role)`.
   - `audit.py`: `record(ctx, tool, object_kind, object_id, transition, args)` → append-only `audit_log` row with `args_digest` (hash, not raw args).
-  - `gate.py`: `assert_destructive_allowed(ctx, allocation, op)` — all three of capability scope, `admin` role, explicit profile opt-in (ADR-0006).
+  - `authz/gate.py`: `assert_destructive_allowed(ctx, allocation, op)` — all three of capability scope, `admin` role, explicit profile opt-in (ADR-0006).
 - **Acceptance:** a destructive op is refused if any single check is absent (three tests); every state transition through a repository writes exactly one audit row; `args_digest` never contains secret material.
 
 ### Issue 10 — Reconciler loop (M0 subset)
@@ -204,10 +204,10 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:security`
 - **Depends on:** #1
 - **Goal:** Redaction, path-safety, and a by-reference secret backend, ported and wired. (Phase-1 foundation — the debug/retrieve planes depend on it for transcript/vmcore redaction.)
-- **Files:** Create `src/kdive/security/redaction.py`, `security/secret_registry.py`, `security/paths.py`, `security/secrets.py` (port `~/src/kdive-v1/src/kdive/safety/{redaction,secret_registry,paths}.py`); tests.
+- **Files:** Create `src/kdive/security/secrets/redaction.py`, `security/secrets/secret_registry.py`, `security/secrets/paths.py`, `security/secrets/secrets.py` (port `~/src/kdive-v1/src/kdive/safety/{redaction,secret_registry,paths}.py`); tests.
 - **Scope:**
   - Port the three safety modules behind the new package; keep `PROCESS_SECRET_REGISTRY` semantics.
-  - `secrets.py`: `SecretBackend` Protocol + `FileRefBackend` resolving only within an allowlisted root (path-safety check), registering the value into the redaction registry **before** use; pre-registration output quarantined.
+  - `secrets/secrets.py`: `SecretBackend` Protocol + `FileRefBackend` resolving only within an allowlisted root (path-safety check), registering the value into the redaction registry **before** use; pre-registration output quarantined.
 - **Acceptance:** a registered secret value is masked by exact-value replacement in sample output; a file-ref escaping the allowlisted root is rejected; resolution registers before returning the value (ordering test).
 
 ---

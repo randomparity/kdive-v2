@@ -28,8 +28,8 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.ops import _reads
 from kdive.mcp.tools.ops._auth import ALL_PROJECTS_SCOPE
-from kdive.security.context import RequestContext
-from kdive.security.rbac import (
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import (
     AuthorizationError,
     PlatformRole,
     require_platform_role,

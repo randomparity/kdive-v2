@@ -20,7 +20,7 @@ from typing import Protocol
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.ports import IntrospectOutput, LiveIntrospector, VmcoreIntrospector
-from kdive.security.redaction import Redactor
+from kdive.security.secrets.redaction import Redactor
 
 # Fixed in-tree caps (no caller args in M0; ADR-0033 §"Output bounds").
 _TASK_LIMIT = 200

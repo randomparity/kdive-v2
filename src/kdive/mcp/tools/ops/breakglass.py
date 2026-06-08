@@ -44,8 +44,8 @@ from kdive.mcp.tools._common import job_envelope
 from kdive.mcp.tools.lifecycle.allocations import AuditWriter, release_with_backstops
 from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.rbac import AuthorizationError, PlatformRole, require_platform_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_platform_role
 
 _log = logging.getLogger(__name__)
 

@@ -29,8 +29,8 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.rbac import AuthorizationError, PlatformRole, require_platform_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_platform_role
 
 _QUEUE_OBJECT_ID = "queue"
 _JOBS_OBJECT_ID = "jobs"

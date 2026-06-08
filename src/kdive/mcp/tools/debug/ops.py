@@ -45,8 +45,8 @@ from kdive.providers.ports import (
     GdbMiSessionRegistry,
     TransportHandleData,
 )
-from kdive.security.context import RequestContext
-from kdive.security.rbac import Role, require_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import Role, require_role
 
 # Base dir for per-session gdb/MI transcript files. Configurable so a deployment points it at
 # the run-artifact tree and tests at a temp dir; the default mirrors the other planes'

@@ -35,7 +35,7 @@ from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
 from kdive.planes import runs as runs_handlers
 from kdive.planes import vmcore as vmcore_plane
 from kdive.providers.ports import BuildOutput, CaptureOutput, CrashOutput
-from kdive.security.rbac import Role
+from kdive.security.authz.rbac import Role
 from tests.integration._seed import (
     seed_crashed_system_with_run,
     seed_granted_allocation,

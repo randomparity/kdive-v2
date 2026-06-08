@@ -38,7 +38,7 @@ from kdive.planes import systems as systems_handlers
 from kdive.profiles.provisioning import RootfsSource
 from kdive.providers.local_libvirt.materialize import materialize_rootfs_base
 from kdive.security.audit import args_digest
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.store.objectstore import ArtifactWriteRequest, ObjectStore, artifact_key
 from tests.mcp.systems_support import (
     SYSTEM_ADMIN_HANDLERS as _SYSTEM_ADMIN_HANDLERS,
@@ -472,7 +472,7 @@ def test_provision_rejects_local_rootfs_outside_allowed_root_before_system_and_j
 
 
 def test_provision_without_operator_raises(migrated_url: str) -> None:
-    from kdive.security.rbac import AuthorizationError
+    from kdive.security.authz.rbac import AuthorizationError
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:

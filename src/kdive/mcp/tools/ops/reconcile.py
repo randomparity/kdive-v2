@@ -31,8 +31,8 @@ from kdive.reconciler.loop import (
     reconcile_once,
 )
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.rbac import AuthorizationError, PlatformRole, require_platform_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_platform_role
 
 _RECONCILE_TOOL = "ops.reconcile_now"
 _RECONCILE_OBJECT_ID = "reconcile"

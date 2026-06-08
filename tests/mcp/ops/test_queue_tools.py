@@ -26,7 +26,7 @@ from kdive.jobs import queue
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.ops import queue as ops_queue
-from kdive.security.rbac import PlatformRole
+from kdive.security.authz.rbac import PlatformRole
 
 
 def _ctx(

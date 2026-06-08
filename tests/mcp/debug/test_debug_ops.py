@@ -42,7 +42,7 @@ from kdive.mcp.tools.debug.ops import (
 from kdive.providers.local_libvirt.debug_gdbmi import GdbMiEngine
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.providers.ports import GdbMiAttachment, TransportHandleData
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 

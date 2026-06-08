@@ -13,6 +13,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.lifecycle.systems.admin import (
     SystemAdminHandlers,
+    reprovision_system,
     teardown_system,
 )
 from kdive.mcp.tools.lifecycle.systems.provision import (
@@ -40,13 +41,10 @@ def register(
     runtime = provider_runtime
     if runtime.rootfs_validator is None:
         raise RuntimeError("systems registrar requires an injected rootfs validator")
+    rootfs_validator = runtime.rootfs_validator
     provision_handlers = SystemProvisionHandlers(
         runtime.component_sources,
-        runtime.rootfs_validator,
-    )
-    admin_handlers = SystemAdminHandlers(
-        runtime.component_sources,
-        runtime.rootfs_validator,
+        rootfs_validator,
     )
 
     @app.tool(
@@ -122,6 +120,7 @@ def register(
     async def systems_get(
         system_id: Annotated[str, Field(description="The System to render.")],
     ) -> ToolResponse:
+        """Return a System the caller can view."""
         return await get_system(pool, current_context(), system_id)
 
     @app.tool(
@@ -132,6 +131,7 @@ def register(
     async def systems_teardown(
         system_id: Annotated[str, Field(description="The System to tear down.")],
     ) -> ToolResponse:
+        """Enqueue teardown for a System. Requires admin and destructive-op opt-in."""
         return await teardown_system(pool, current_context(), system_id)
 
     @app.tool(
@@ -146,9 +146,12 @@ def register(
             Field(description="New provisioning profile; must opt in to reprovision."),
         ],
     ) -> ToolResponse:
-        return await admin_handlers.reprovision_system(
+        """Enqueue in-place reprovision for a ready System. Requires operator and opt-in."""
+        return await reprovision_system(
             pool,
             current_context(),
             system_id=system_id,
             profile=profile,
+            component_sources=runtime.component_sources,
+            rootfs_validator=rootfs_validator,
         )

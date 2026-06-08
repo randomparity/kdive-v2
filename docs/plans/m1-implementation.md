@@ -166,7 +166,7 @@ Each wave's issues are independent and dispatch in parallel; the next wave waits
 - **Labels:** `area:security`
 - **Depends on:** ④
 - **Goal:** Make the role boundary real and tested; provide the separated-principal fixtures later issues reuse.
-- **Files:** Extend `security/rbac.py` call sites across `mcp/tools/*`; extend the mock-OIDC test fixture (separated principals); tests under `tests/security/`, `tests/mcp/`.
+- **Files:** Extend `security/authz/rbac.py` call sites across `mcp/tools/*`; extend the mock-OIDC test fixture (separated principals); tests under `tests/security/`, `tests/mcp/`.
 - **Scope:**
   - Pin each tool to its **lowest** sufficient role (table in [0037](../adr/0037-rbac-hardening-role-separation.md)): `accounting.set_budget`/`set_quota` → `admin`; the destructive gate's role factor → `admin` (force_crash, power off/cycle/reset, teardown); read/usage → `viewer`; lifecycle → `operator`. Every check binds to the **target object's project**, resolved per-object — `accounting.usage(investigation_id)` resolves the investigation's project before `require_role(viewer)` (no cross-project bypass).
   - Mock-OIDC fixture mints distinct `viewer`/`operator`/`admin` tokens per test project (≥ two projects, so cross-project access can be tested).
