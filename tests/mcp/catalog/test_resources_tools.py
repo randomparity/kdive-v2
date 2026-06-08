@@ -577,6 +577,24 @@ def test_drain_passive_denied_for_auditor_is_audited(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_drain_passive_denied_for_admin_only_token(migrated_url: str) -> None:
+    # The role model is non-hierarchical (admin implies only auditor), so an admin-only token
+    # is denied passive drain, which is a platform_operator action (ADR-0062 §3, rbac.py).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool)
+            resp = await resources_tools.drain_resource(
+                pool, _ADMIN, resource_id=res_id, mode="passive"
+            )
+            row = await _row(pool, res_id)
+            audited = await _platform_audit_rows(pool)
+        assert resp.error_category == "authorization_denied"
+        assert row["cordoned"] is False
+        assert audited == [("admin-1", "platform_admin", "resources.drain", f"resource:{res_id}")]
+
+    asyncio.run(_run())
+
+
 # -- force_release --------------------------------------------------------------------
 
 
@@ -643,6 +661,33 @@ def test_drain_force_release_admin_empties_host(migrated_url: str) -> None:
         assert drain_rows == 3
         # 2 guard-exempt transition rows per released allocation.
         assert transitions == 4
+
+    asyncio.run(_run())
+
+
+def test_drain_force_release_empties_every_tenant_on_the_host(migrated_url: str) -> None:
+    # The escalation to platform_admin exists because force_release empties EVERY tenant's
+    # allocations on the host (ADR-0062 §3) — verify the snapshot is not project-scoped and
+    # each release is attributed to its own project.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool)
+            a_x = await _alloc_on(pool, res_id, state=AllocationState.ACTIVE, project="tenant-x")
+            a_y = await _alloc_on(pool, res_id, state=AllocationState.ACTIVE, project="tenant-y")
+            resp = await resources_tools.drain_resource(
+                pool, _ADMIN, resource_id=res_id, mode="force_release", reason="decommission"
+            )
+            x_state = await _alloc_state(pool, a_x)
+            y_state = await _alloc_state(pool, a_y)
+            audited = await _platform_audit_rows(pool)
+        assert _statuses(resp) == ["released", "released"]
+        assert resp.data["released"] == "2"
+        assert x_state == "released"
+        assert y_state == "released"
+        # Each cross-tenant release is attributed to its own project via the break-glass scope.
+        breakglass_scopes = {scope for _, _, tool, scope in audited if tool == "resources.drain"}
+        assert f"tenant-x:{a_x}" in breakglass_scopes
+        assert f"tenant-y:{a_y}" in breakglass_scopes
 
     asyncio.run(_run())
 
