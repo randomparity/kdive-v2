@@ -16,7 +16,11 @@ from kdive.components.references import ComponentRef
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind
 from kdive.profiles.provisioning import RootfsSource
-from kdive.providers.component_validation import ComponentSourceCapabilities
+from kdive.providers.component_validation import (
+    ComponentKind,
+    ComponentSourceCapabilities,
+    ComponentSourceKind,
+)
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.providers.local_libvirt.debug.debug_gdbmi import (
     GdbMiEngine as LocalGdbMiEngine,
@@ -61,16 +65,17 @@ _LOCAL_COST_CLASS = "local"
 
 
 def _local_component_sources() -> ComponentSourceCapabilities:
+    accepted: dict[ComponentKind, frozenset[ComponentSourceKind]] = {
+        "rootfs": frozenset({"catalog", "local"}),
+        "kernel": frozenset({"local"}),
+        "initrd": frozenset({"local"}),
+        "config": frozenset({"local"}),
+        "patch": frozenset({"local"}),
+        "vmlinux": frozenset({"local"}),
+    }
     return ComponentSourceCapabilities(
         provider=ResourceKind.LOCAL_LIBVIRT.value,
-        accepted_component_sources={
-            "rootfs": frozenset({"catalog", "local"}),
-            "kernel": frozenset({"local"}),
-            "initrd": frozenset({"local"}),
-            "config": frozenset({"local"}),
-            "patch": frozenset({"local"}),
-            "vmlinux": frozenset({"local"}),
-        },
+        accepted_component_sources=accepted,
     )
 
 

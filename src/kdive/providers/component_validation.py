@@ -16,13 +16,13 @@ type ComponentSourceKind = Literal["local", "artifact", "component-upload", "cat
 @dataclass(frozen=True, slots=True)
 class ComponentSourceCapabilities:
     provider: str
-    accepted_component_sources: Mapping[str, frozenset[str]]
+    accepted_component_sources: Mapping[ComponentKind, frozenset[ComponentSourceKind]]
 
 
 def reject_unsupported_component_source(
     caps: ComponentSourceCapabilities,
     *,
-    component_kind: str,
+    component_kind: ComponentKind,
     ref: ComponentRef,
 ) -> None:
     """Raise a configuration error when ``ref`` is not advertised for a component kind."""
