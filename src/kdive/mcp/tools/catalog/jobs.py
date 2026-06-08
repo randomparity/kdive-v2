@@ -124,9 +124,10 @@ async def wait_job(
             if job is None or not _in_scope(job, ctx):
                 return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
             require_role(ctx, _project(job), Role.VIEWER)
-            if job.state in _TERMINAL or loop.time() >= deadline:
+            now = loop.time()
+            if job.state in _TERMINAL or now >= deadline:
                 return ToolResponse.from_job(job)
-            await sleep(POLL_INTERVAL_S)
+            await sleep(min(POLL_INTERVAL_S, deadline - now))
 
 
 async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str) -> ToolResponse:

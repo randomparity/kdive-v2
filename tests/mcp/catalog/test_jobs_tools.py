@@ -132,6 +132,30 @@ def test_wait_zero_timeout_is_single_read(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_wait_caps_sleep_to_remaining_timeout(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            job_id = await _enqueue(pool, "d1")  # stays queued (no worker)
+            sleeps: list[float] = []
+
+            async def _sleep(delay: float) -> None:
+                sleeps.append(delay)
+                assert delay <= 0.05
+                await asyncio.sleep(delay)
+
+            resp = await jobs_tools.wait_job(
+                pool,
+                VIEWER_CTX,
+                job_id,
+                timeout_s=0.05,
+                sleep=_sleep,
+            )
+        assert resp.status == "queued"
+        assert len(sleeps) == 1
+
+    asyncio.run(_run())
+
+
 @pytest.mark.parametrize("timeout_s", [float("nan"), float("inf"), float("-inf")])
 def test_wait_non_finite_timeout_is_configuration_error(
     migrated_url: str, timeout_s: float
