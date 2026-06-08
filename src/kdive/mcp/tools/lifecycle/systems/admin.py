@@ -16,6 +16,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import DestructiveJobKind, Job, JobKind, System
 from kdive.domain.state import IllegalTransition, RunState, SystemState
 from kdive.jobs import queue
+from kdive.jobs.payloads import ReprovisionPayload, SystemPayload
 from kdive.log import bind_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import as_uuid as _as_uuid
@@ -199,7 +200,7 @@ async def _admit_reprovision(
     job = await queue.enqueue(
         conn,
         JobKind.REPROVISION,
-        {"system_id": str(system.id), "profile_digest": digest},
+        ReprovisionPayload(system_id=str(system.id), profile_digest=digest),
         job_authorizing(ctx, system.project),
         dedup_key,
     )
@@ -245,7 +246,7 @@ async def teardown_system(
             job = await queue.enqueue(
                 conn,
                 JobKind.TEARDOWN,
-                {"system_id": str(uid)},
+                SystemPayload(system_id=str(uid)),
                 job_authorizing(ctx, system.project),
                 f"{uid}:teardown",
             )

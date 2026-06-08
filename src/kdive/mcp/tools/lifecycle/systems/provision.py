@@ -27,6 +27,7 @@ from kdive.domain.lifecycle_rules import TERMINAL_SYSTEM_STATES as _TERMINAL_SYS
 from kdive.domain.models import Allocation, JobKind, System
 from kdive.domain.state import AllocationState, IllegalTransition, SystemState
 from kdive.jobs import queue
+from kdive.jobs.payloads import SystemPayload
 from kdive.log import bind_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import (
@@ -348,7 +349,7 @@ async def _provision_create_response(
     job = await queue.enqueue(
         conn,
         JobKind.PROVISION,
-        {"system_id": str(existing.id)},
+        SystemPayload(system_id=str(existing.id)),
         job_authorizing(ctx, alloc.project),
         f"{alloc.id}:provision",
     )
@@ -399,7 +400,7 @@ async def _admit_defined(
     job = await queue.enqueue(
         conn,
         JobKind.PROVISION,
-        {"system_id": str(system.id)},
+        SystemPayload(system_id=str(system.id)),
         job_authorizing(ctx, alloc.project),
         f"{alloc.id}:provision",
     )
@@ -467,7 +468,7 @@ async def _provision_defined_response(
     job = await queue.enqueue(
         conn,
         JobKind.PROVISION,
-        {"system_id": str(system.id)},
+        SystemPayload(system_id=str(system.id)),
         job_authorizing(ctx, system.project),
         f"{system.allocation_id}:provision",
     )
@@ -599,7 +600,7 @@ async def _insert_provisioning_system(
     job = await queue.enqueue(
         conn,
         JobKind.PROVISION,
-        {"system_id": str(system.id)},
+        SystemPayload(system_id=str(system.id)),
         job_authorizing(ctx, alloc.project),
         f"{alloc.id}:provision",
     )

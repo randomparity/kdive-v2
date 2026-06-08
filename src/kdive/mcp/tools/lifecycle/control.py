@@ -28,6 +28,7 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import DestructiveJobKind, JobKind, PowerAction, System
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
+from kdive.jobs.payloads import PowerPayload, SystemPayload
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
@@ -99,7 +100,7 @@ async def power_system(
             job = await queue.enqueue(
                 conn,
                 JobKind.POWER,
-                {"system_id": system_id, "action": power_action.value},
+                PowerPayload(system_id=system_id, action=power_action),
                 job_authorizing(ctx, system.project),
                 f"{system_id}:power:{power_action.value}:{uuid4()}",
             )
@@ -171,7 +172,7 @@ async def force_crash_system(
             job = await queue.enqueue(
                 conn,
                 JobKind.FORCE_CRASH,
-                {"system_id": system_id},
+                SystemPayload(system_id=system_id),
                 job_authorizing(ctx, system.project),
                 f"{system_id}:force_crash",
             )

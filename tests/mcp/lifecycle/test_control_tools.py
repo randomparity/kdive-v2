@@ -41,6 +41,7 @@ from kdive.domain.state import (
 )
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
+from kdive.jobs.payloads import PowerPayload, SystemPayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import control as control_tools
 from kdive.planes import control as control_plane
@@ -380,7 +381,7 @@ def test_power_handler_calls_provider_and_audits(migrated_url: str) -> None:
                 job = await queue.enqueue(
                     conn,
                     JobKind.POWER,
-                    {"system_id": sys_id, "action": "reset"},
+                    PowerPayload(system_id=sys_id, action=PowerAction.RESET),
                     {"principal": "user-1", "agent_session": "s", "project": "proj"},
                     f"{sys_id}:power:reset:{uuid4()}",
                 )
@@ -410,7 +411,7 @@ def test_power_handler_missing_system_is_infra_failure(migrated_url: str) -> Non
                 job = await queue.enqueue(
                     conn,
                     JobKind.POWER,
-                    {"system_id": str(uuid4()), "action": "off"},
+                    PowerPayload(system_id=str(uuid4()), action=PowerAction.OFF),
                     {"principal": "user-1", "agent_session": "s", "project": "proj"},
                     f"{uuid4()}:power:off:{uuid4()}",
                 )
@@ -522,7 +523,7 @@ async def _enqueue_crash(pool: AsyncConnectionPool, sys_id: str) -> Job:
         return await queue.enqueue(
             conn,
             JobKind.FORCE_CRASH,
-            {"system_id": sys_id},
+            SystemPayload(system_id=sys_id),
             {"principal": "user-1", "agent_session": "s", "project": "proj"},
             f"{sys_id}:force_crash",
         )

@@ -31,6 +31,7 @@ from kdive.domain.models import (
 from kdive.domain.state import AllocationState, InvestigationState, RunState, SystemState
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
+from kdive.jobs.payloads import ReprovisionPayload, SystemPayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers, teardown_system
 from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers, get_system
@@ -165,7 +166,7 @@ async def _enqueue_teardown(pool: AsyncConnectionPool, system_id: str) -> Job:
         return await queue.enqueue(
             conn,
             JobKind.TEARDOWN,
-            {"system_id": system_id},
+            SystemPayload(system_id=system_id),
             {"principal": "system:reconciler", "agent_session": None, "project": "proj"},
             f"{system_id}:teardown",
         )
@@ -1532,7 +1533,7 @@ async def _enqueue_reprovision(pool: AsyncConnectionPool, system_id: str) -> Job
         return await queue.enqueue(
             conn,
             JobKind.REPROVISION,
-            {"system_id": system_id, "profile_digest": "deadbeef"},
+            ReprovisionPayload(system_id=system_id, profile_digest="deadbeef"),
             {"principal": "user-1", "agent_session": "s", "project": "proj"},
             f"{system_id}:reprovision:deadbeef",
         )

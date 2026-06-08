@@ -35,6 +35,7 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
+from kdive.jobs.payloads import SystemPayload
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
@@ -269,7 +270,7 @@ async def _enqueue_teardown(
     return await queue.enqueue(
         conn,
         JobKind.TEARDOWN,
-        {"system_id": str(system_id)},
+        SystemPayload(system_id=str(system_id)),
         {"principal": ctx.principal, "agent_session": ctx.agent_session, "project": project},
         f"{system_id}:teardown",
     )

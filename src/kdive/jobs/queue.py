@@ -37,7 +37,7 @@ DEFAULT_LEASE = timedelta(minutes=5)
 async def enqueue(
     conn: AsyncConnection,
     kind: JobKind,
-    payload: PayloadModel | dict[str, Any],
+    payload: PayloadModel,
     authorizing: Authorizing | JobAuthorizing | dict[str, Any],
     dedup_key: str,
     *,
@@ -55,14 +55,14 @@ async def enqueue(
     """
     if max_attempts < 1:
         raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
-    payload = dump_payload(kind, payload)
+    payload_json = dump_payload(kind, payload)
     authorizing = dump_authorizing(authorizing)
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "INSERT INTO jobs (kind, payload, state, max_attempts, authorizing, dedup_key) "
             "VALUES (%s, %s, 'queued', %s, %s, %s) "
             "ON CONFLICT (dedup_key) DO NOTHING",
-            (kind, Jsonb(payload), max_attempts, Jsonb(authorizing), dedup_key),
+            (kind, Jsonb(payload_json), max_attempts, Jsonb(authorizing), dedup_key),
         )
         await cur.execute("SELECT * FROM jobs WHERE dedup_key = %s", (dedup_key,))
         row = await cur.fetchone()

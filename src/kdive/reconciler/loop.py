@@ -32,7 +32,7 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import JobKind
 from kdive.domain.state import AllocationState, DebugSessionState, JobState, RunState, SystemState
 from kdive.jobs import queue
-from kdive.jobs.payloads import PayloadValidationError, run_id_from_payload
+from kdive.jobs.payloads import PayloadValidationError, SystemPayload, run_id_from_payload
 from kdive.security import audit
 from kdive.services import accounting
 
@@ -312,7 +312,7 @@ async def _repair_orphaned_systems(conn: AsyncConnection) -> int:
             await queue.enqueue(
                 conn,
                 _TEARDOWN_JOB_KIND,
-                {"system_id": str(system_id)},
+                SystemPayload(system_id=str(system_id)),
                 {
                     "principal": SYSTEM_RECONCILER_PRINCIPAL,
                     "agent_session": None,

@@ -14,6 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.models import JobKind
 from kdive.jobs import queue
+from kdive.jobs.payloads import BuildPayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog import jobs as jobs_tools
 from kdive.security.authz.rbac import AuthorizationError, Role
@@ -27,8 +28,8 @@ VIEWER_CTX = RequestContext(
 )
 
 
-def _build_payload() -> dict[str, str]:
-    return {"run_id": str(uuid4())}
+def _build_payload() -> BuildPayload:
+    return BuildPayload(run_id=str(uuid4()))
 
 
 @asynccontextmanager
@@ -373,7 +374,10 @@ def test_list_jobs_excludes_jobs_with_no_project(migrated_url: str) -> None:
                 await conn.execute(
                     "INSERT INTO jobs (kind, payload, state, max_attempts, authorizing, dedup_key) "
                     "VALUES ('build', %s, 'queued', 3, %s, 'noproj')",
-                    (Jsonb(_build_payload()), Jsonb({"principal": "p"})),
+                    (
+                        Jsonb(_build_payload().model_dump(mode="json", exclude_none=True)),
+                        Jsonb({"principal": "p"}),
+                    ),
                 )
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=50)
         assert resp.items == []

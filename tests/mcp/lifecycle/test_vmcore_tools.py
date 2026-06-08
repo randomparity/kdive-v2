@@ -16,6 +16,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, Sensitivity
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
+from kdive.jobs.payloads import CaptureVmcorePayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
 from kdive.planes import vmcore as vmcore_plane
@@ -243,7 +244,7 @@ async def _enqueue_capture(
         return await queue.enqueue(
             conn,
             JobKind.CAPTURE_VMCORE,
-            {"system_id": sys_id, "method": method},
+            CaptureVmcorePayload(system_id=sys_id, method=CaptureMethod(method)),
             _AUTH,
             f"{sys_id}:capture_vmcore:{method}",
         )

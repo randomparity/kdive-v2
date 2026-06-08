@@ -962,6 +962,7 @@ def test_build_concurrent_flips_once(migrated_url: str) -> None:
 
 from kdive.jobs import queue  # noqa: E402
 from kdive.jobs.models import HandlerRegistry  # noqa: E402
+from kdive.jobs.payloads import BuildPayload, RunPayload  # noqa: E402
 from kdive.providers.ports import BuildOutput  # noqa: E402
 
 
@@ -999,7 +1000,7 @@ async def _enqueue_build_job(pool: AsyncConnectionPool, run_id: str) -> Job:
         return await queue.enqueue(
             conn,
             JobKind.BUILD,
-            {"run_id": run_id},
+            BuildPayload(run_id=run_id),
             {"principal": "user-1", "agent_session": "s", "project": "proj"},
             f"{run_id}:build",
         )
@@ -1688,7 +1689,7 @@ async def _enqueue_job(pool: AsyncConnectionPool, kind: JobKind, run_id: str, st
         return await queue.enqueue(
             conn,
             kind,
-            {"run_id": run_id},
+            RunPayload(run_id=run_id),
             {"principal": "user-1", "agent_session": "s", "project": "proj"},
             f"{run_id}:{step}",
         )

@@ -28,6 +28,7 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
+from kdive.jobs.payloads import BuildPayload, CaptureVmcorePayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog.artifacts_reads import artifacts_get, artifacts_list
 from kdive.mcp.tools.lifecycle import control as control_tools
@@ -189,7 +190,7 @@ def test_force_crash_allowed_when_all_gate_checks_present(migrated_url: str) -> 
 async def _enqueue_build(pool: AsyncConnectionPool, run_id: str) -> Job:
     async with pool.connection() as conn:
         return await queue.enqueue(
-            conn, JobKind.BUILD, {"run_id": run_id}, _AUTH, f"{run_id}:build"
+            conn, JobKind.BUILD, BuildPayload(run_id=run_id), _AUTH, f"{run_id}:build"
         )
 
 
@@ -233,7 +234,7 @@ async def _enqueue_capture(
         return await queue.enqueue(
             conn,
             JobKind.CAPTURE_VMCORE,
-            {"system_id": system_id, "method": method},
+            CaptureVmcorePayload(system_id=system_id, method=CaptureMethod(method)),
             _AUTH,
             f"{system_id}:capture_vmcore:{method}",
         )

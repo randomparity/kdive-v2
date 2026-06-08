@@ -25,6 +25,7 @@ from kdive.domain.errors import CategorizedError
 from kdive.domain.models import JobKind
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
+from kdive.jobs.payloads import CaptureVmcorePayload
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
@@ -176,7 +177,7 @@ async def _fetch_vmcore(
             job = await queue.enqueue(
                 conn,
                 JobKind.CAPTURE_VMCORE,
-                {"system_id": system_id, "method": capture_method.value},
+                CaptureVmcorePayload(system_id=system_id, method=capture_method),
                 job_authorizing(ctx, system.project),
                 f"{system_id}:capture_vmcore:{capture_method.value}",
             )

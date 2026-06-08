@@ -17,14 +17,15 @@ from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
+from kdive.jobs.payloads import BuildPayload
 from kdive.jobs.worker import Worker
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 _AUTHORIZING = {"principal": "p", "agent_session": None, "project": "a"}
 
 
-def _build_payload() -> dict[str, str]:
-    return {"run_id": str(uuid4())}
+def _build_payload() -> BuildPayload:
+    return BuildPayload(run_id=str(uuid4()))
 
 
 async def _final_state(url: str, job_id: UUID) -> Job:

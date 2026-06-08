@@ -13,6 +13,7 @@ from kdive.db.repositories import RUNS
 from kdive.domain.models import JobKind, Run
 from kdive.domain.state import RunState
 from kdive.jobs import queue
+from kdive.jobs.payloads import RunPayload
 from kdive.log import bind_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import as_uuid as _as_uuid
@@ -80,7 +81,7 @@ async def _enqueue_step(
         job = await queue.enqueue(
             conn,
             kind,
-            {"run_id": str(run.id)},
+            RunPayload(run_id=str(run.id)),
             job_authorizing(ctx, run.project),
             f"{run.id}:{step}",
         )

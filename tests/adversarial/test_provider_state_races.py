@@ -28,6 +28,7 @@ from kdive.db.repositories import SYSTEMS
 from kdive.domain.models import Job, JobKind, PowerAction, System
 from kdive.domain.state import AllocationState, SystemState
 from kdive.jobs import queue
+from kdive.jobs.payloads import SystemPayload
 from kdive.planes import control as control_plane
 from kdive.planes import systems as systems_handlers
 from tests.adversarial.conftest import seed_allocation, seed_resource
@@ -139,7 +140,7 @@ async def _enqueue(pool: AsyncConnectionPool, kind: JobKind, system_id: str, ded
         return await queue.enqueue(
             conn,
             kind,
-            {"system_id": system_id},
+            SystemPayload(system_id=system_id),
             {"principal": "alice", "agent_session": "s", "project": "proj"},
             dedup,
         )

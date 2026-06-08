@@ -15,16 +15,17 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
 from kdive.jobs import queue
+from kdive.jobs.payloads import BuildPayload, SystemPayload
 
 _AUTHORIZING = {"principal": "p", "agent_session": None, "project": "a"}
 
 
-def _build_payload() -> dict[str, str]:
-    return {"run_id": str(uuid4())}
+def _build_payload() -> BuildPayload:
+    return BuildPayload(run_id=str(uuid4()))
 
 
-def _system_payload() -> dict[str, str]:
-    return {"system_id": str(uuid4())}
+def _system_payload() -> SystemPayload:
+    return SystemPayload(system_id=str(uuid4()))
 
 
 async def _connect(url: str) -> psycopg.AsyncConnection:
@@ -47,7 +48,7 @@ def test_enqueue_inserts_queued_job(migrated_url: str) -> None:
             assert isinstance(job, Job)
             assert job.state is JobState.QUEUED
             assert job.attempt == 0
-            assert job.payload == payload
+            assert job.payload == payload.model_dump(mode="json", exclude_none=True)
             assert job.authorizing == authorizing
             assert job.dedup_key == "dk-1"
             assert await _count_jobs(conn) == 1
@@ -341,7 +342,10 @@ def test_recent_jobs_filters_by_project(migrated_url: str) -> None:
             await conn.execute(
                 "INSERT INTO jobs (kind, payload, state, max_attempts, authorizing, dedup_key) "
                 "VALUES ('build', %s, 'queued', 3, %s, 'jnone')",
-                (Jsonb(_build_payload()), Jsonb({"principal": "p"})),
+                (
+                    Jsonb(_build_payload().model_dump(mode="json", exclude_none=True)),
+                    Jsonb({"principal": "p"}),
+                ),
             )
             recent = await queue.recent_jobs(conn, limit=10, projects=["a"])
         assert [j.dedup_key for j in recent] == ["ja"]  # only project a; b and no-project excluded

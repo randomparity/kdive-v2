@@ -23,6 +23,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.models import JobKind
 from kdive.jobs import queue
+from kdive.jobs.payloads import BuildPayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.ops import queue as ops_queue
@@ -61,8 +62,8 @@ def _authorizing(project: str) -> dict[str, object]:
     return {"principal": "p", "agent_session": None, "project": project}
 
 
-def _build_payload() -> dict[str, str]:
-    return {"run_id": str(uuid4())}
+def _build_payload() -> BuildPayload:
+    return BuildPayload(run_id=str(uuid4()))
 
 
 async def _paused(url: str) -> bool:

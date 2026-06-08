@@ -17,6 +17,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Budget, Job, JobKind, Quota
 from kdive.domain.state import AllocationState
 from kdive.jobs import queue
+from kdive.jobs.payloads import SystemPayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers
 from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers
@@ -167,7 +168,7 @@ async def enqueue_provision(conn_pool: AsyncConnectionPool, system_id: str, allo
         return await queue.enqueue(
             conn,
             JobKind.PROVISION,
-            {"system_id": system_id},
+            SystemPayload(system_id=system_id),
             {"principal": "user-1", "agent_session": "s", "project": "proj"},
             f"{alloc_id}:provision",
         )
