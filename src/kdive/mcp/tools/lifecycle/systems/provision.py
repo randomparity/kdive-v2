@@ -9,10 +9,10 @@ in ``kdive.planes.systems``.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import partial
 from uuid import UUID, uuid4
 
 from psycopg import AsyncConnection
@@ -113,6 +113,7 @@ _NON_TERMINAL_SYSTEM = (
 )
 
 type RootfsValidator = Callable[[RootfsSource], None]
+type LockedAllocationSystem = tuple[AsyncConnection, Allocation, System | None]
 
 
 def _validate_profile_for_provider(
@@ -253,16 +254,18 @@ async def _provision_system(
         return ToolResponse.failure(allocation_id, exc.category)
     with bind_context(principal=ctx.principal):
         try:
-            return await _create_from_allocation_locked(
-                pool,
-                ctx,
-                uid,
-                create_response=partial(
-                    _provision_create_response,
+            async with _locked_allocation_system(pool, ctx, uid) as locked:
+                if isinstance(locked, ToolResponse):
+                    return locked
+                conn, alloc, existing = locked
+                return await _provision_create_response(
+                    conn,
+                    ctx,
+                    alloc,
+                    existing,
                     profile=parsed,
                     rootfs_validator=rootfs_validator,
-                ),
-            )
+                )
         except IllegalTransition:
             async with pool.connection() as conn:
                 latest = await ALLOCATIONS.get(conn, uid)
@@ -270,22 +273,19 @@ async def _provision_system(
             return _config_error(allocation_id, data=data)
 
 
-async def _create_from_allocation_locked(
+@asynccontextmanager
+async def _locked_allocation_system(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     alloc_id: UUID,
-    *,
-    create_response: Callable[
-        [AsyncConnection, RequestContext, Allocation, System | None],
-        Awaitable[ToolResponse],
-    ],
-) -> ToolResponse:
+) -> AsyncIterator[LockedAllocationSystem | ToolResponse]:
     # Resolve the allocation's project (immutable) before locking so the PROJECT lock key
     # is known up front; a missing/foreign allocation is a not-found-shaped config error.
     async with pool.connection() as probe:
         probe_alloc = await ALLOCATIONS.get(probe, alloc_id)
     if probe_alloc is None or probe_alloc.project not in ctx.projects:
-        return _config_error(str(alloc_id))
+        yield _config_error(str(alloc_id))
+        return
     project = probe_alloc.project
     # PROJECT → ALLOCATION (the global lock order, ADR-0040 §1): the project lock so the
     # max_concurrent_systems count-then-create is race-free against a concurrent provision,
@@ -298,10 +298,11 @@ async def _create_from_allocation_locked(
     ):
         alloc = await ALLOCATIONS.get(conn, alloc_id)
         if alloc is None or alloc.project not in ctx.projects:
-            return _config_error(str(alloc_id))
+            yield _config_error(str(alloc_id))
+            return
         require_role(ctx, alloc.project, Role.OPERATOR)
         existing = await _find_system_for_allocation(conn, alloc_id)
-        return await create_response(conn, ctx, alloc, existing)
+        yield conn, alloc, existing
 
 
 async def _provision_create_response(
@@ -635,16 +636,18 @@ async def _define_system(
         return ToolResponse.failure(allocation_id, exc.category)
     with bind_context(principal=ctx.principal):
         try:
-            return await _create_from_allocation_locked(
-                pool,
-                ctx,
-                uid,
-                create_response=partial(
-                    _define_create_response,
+            async with _locked_allocation_system(pool, ctx, uid) as locked:
+                if isinstance(locked, ToolResponse):
+                    return locked
+                conn, alloc, existing = locked
+                return await _define_create_response(
+                    conn,
+                    ctx,
+                    alloc,
+                    existing,
                     profile=parsed,
                     rootfs_validator=rootfs_validator,
-                ),
-            )
+                )
         except IllegalTransition:
             async with pool.connection() as conn:
                 latest = await ALLOCATIONS.get(conn, uid)
