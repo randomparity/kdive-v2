@@ -85,34 +85,37 @@ async def query_project(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
-    project: str,
-    principal: str | None = None,
-    object_id: str | None = None,
-    transition: str | None = None,
-    window: object = None,
+    request: ProjectAuditQuery,
 ) -> ToolResponse:
     """Read one project's audit log; requires project admin."""
     with bind_context(principal=ctx.principal):
         try:
-            filters = _parse_filters(principal, object_id, transition, window)
+            filters = _parse_filters(
+                request.principal,
+                request.object_id,
+                request.transition,
+                request.window,
+            )
         except CategorizedError as exc:
             return ToolResponse.failure(_OBJECT_ID, exc.category, suggested_next_actions=[_TOOL])
-        return await _query_project(pool, ctx, project, filters)
+        return await _query_project(pool, ctx, request.project, filters)
 
 
 async def query_all_projects(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
-    principal: str | None = None,
-    object_id: str | None = None,
-    transition: str | None = None,
-    window: object = None,
+    request: AllProjectsAuditQuery,
 ) -> ToolResponse:
     """Read every project's audit log; requires platform auditor."""
     with bind_context(principal=ctx.principal):
         try:
-            filters = _parse_filters(principal, object_id, transition, window)
+            filters = _parse_filters(
+                request.principal,
+                request.object_id,
+                request.transition,
+                request.window,
+            )
         except CategorizedError as exc:
             return ToolResponse.failure(_OBJECT_ID, exc.category, suggested_next_actions=[_TOOL])
         return await _query_cross_project(pool, ctx, filters)
@@ -126,23 +129,8 @@ async def query(
 ) -> ToolResponse:
     """Dispatch the typed ``audit.query`` request model to its explicit handler."""
     if isinstance(request, ProjectAuditQuery):
-        return await query_project(
-            pool,
-            ctx,
-            project=request.project,
-            principal=request.principal,
-            object_id=request.object_id,
-            transition=request.transition,
-            window=request.window,
-        )
-    return await query_all_projects(
-        pool,
-        ctx,
-        principal=request.principal,
-        object_id=request.object_id,
-        transition=request.transition,
-        window=request.window,
-    )
+        return await query_project(pool, ctx, request=request)
+    return await query_all_projects(pool, ctx, request=request)
 
 
 class _Filters:

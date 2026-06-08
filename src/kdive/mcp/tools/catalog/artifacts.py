@@ -13,6 +13,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.catalog.artifacts_reads import (
     ArtifactReadHandlers,
+    ArtifactSearchRequest,
     artifact_list_items,
     artifacts_get,
     artifacts_list,
@@ -27,6 +28,7 @@ __all__ = [
     "artifacts_get",
     "artifacts_list",
     "artifact_list_items",
+    "ArtifactSearchRequest",
     "ArtifactReadHandlers",
     "create_run_upload",
     "create_system_upload",
@@ -84,11 +86,13 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         return await read_handlers.artifacts_search_text(
             pool,
             current_context(),
-            artifact_id=artifact_id,
-            pattern=pattern,
-            before_lines=before_lines,
-            after_lines=after_lines,
-            max_matches=max_matches,
+            request=ArtifactSearchRequest(
+                artifact_id=artifact_id,
+                pattern=pattern,
+                before_lines=before_lines,
+                after_lines=after_lines,
+                max_matches=max_matches,
+            ),
         )
 
     @app.tool(

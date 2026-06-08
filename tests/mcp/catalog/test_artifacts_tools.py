@@ -77,6 +77,23 @@ def _artifact_read_handlers(store: _SearchStore) -> artifacts_tools.ArtifactRead
     return artifacts_tools.ArtifactReadHandlers(lambda: store)
 
 
+def _search_request(
+    artifact_id: str,
+    pattern: str,
+    *,
+    before_lines: int = 2,
+    after_lines: int = 4,
+    max_matches: int = 20,
+) -> artifacts_tools.ArtifactSearchRequest:
+    return artifacts_tools.ArtifactSearchRequest(
+        artifact_id=artifact_id,
+        pattern=pattern,
+        before_lines=before_lines,
+        after_lines=after_lines,
+        max_matches=max_matches,
+    )
+
+
 def test_artifacts_list_returns_redacted_only(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -96,10 +113,12 @@ def test_artifacts_search_text_returns_bounded_matches(migrated_url: str) -> Non
             resp = await _artifact_read_handlers(store).artifacts_search_text(
                 pool,
                 _ctx(),
-                artifact_id=red_id,
-                pattern="__d_lookup|Oops",
-                before_lines=1,
-                after_lines=1,
+                request=_search_request(
+                    red_id,
+                    "__d_lookup|Oops",
+                    before_lines=1,
+                    after_lines=1,
+                ),
             )
         assert resp.status == "searched"
         assert resp.data["match_count"] == "1"
@@ -118,8 +137,7 @@ def test_artifacts_search_text_sensitive_is_not_found(migrated_url: str) -> None
             resp = await _artifact_read_handlers(_SearchStore(b"panic")).artifacts_search_text(
                 pool,
                 _ctx(),
-                artifact_id=sens_id,
-                pattern="panic",
+                request=_search_request(sens_id, "panic"),
             )
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
@@ -133,7 +151,7 @@ def test_artifacts_search_text_requires_viewer(migrated_url: str) -> None:
             _, _, red_id = await _seed_system_with_artifacts(pool)
             with pytest.raises(AuthorizationError):
                 await _artifact_read_handlers(_SearchStore(b"panic")).artifacts_search_text(
-                    pool, _ctx(role=None), artifact_id=red_id, pattern="panic"
+                    pool, _ctx(role=None), request=_search_request(red_id, "panic")
                 )
 
     asyncio.run(_run())
@@ -145,7 +163,7 @@ def test_artifacts_search_text_rejects_oversized_before_get(migrated_url: str) -
             _, _, red_id = await _seed_system_with_artifacts(pool)
             store = _SearchStore(b"", size=1024 * 1024 + 1)
             resp = await _artifact_read_handlers(store).artifacts_search_text(
-                pool, _ctx(), artifact_id=red_id, pattern="panic"
+                pool, _ctx(), request=_search_request(red_id, "panic")
             )
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
@@ -161,7 +179,7 @@ def test_artifacts_search_text_rejects_bad_pattern_before_head(migrated_url: str
             _, _, red_id = await _seed_system_with_artifacts(pool)
             store = _SearchStore(b"panic")
             resp = await _artifact_read_handlers(store).artifacts_search_text(
-                pool, _ctx(), artifact_id=red_id, pattern="a||b"
+                pool, _ctx(), request=_search_request(red_id, "a||b")
             )
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"

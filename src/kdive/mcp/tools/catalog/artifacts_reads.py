@@ -6,10 +6,11 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import LiteralString, NamedTuple, Protocol
+from typing import Annotated, LiteralString, NamedTuple, Protocol
 
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
+from pydantic import BaseModel, ConfigDict, Field
 
 from kdive.domain.errors import CategorizedError
 from kdive.domain.models import Sensitivity
@@ -54,6 +55,21 @@ class _AuthorizedArtifact(NamedTuple):
     key: str
 
 
+class ArtifactSearchRequest(BaseModel):
+    """Request fields for bounded literal search in one redacted artifact."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: Annotated[str, Field(description="The redacted System artifact id.")]
+    pattern: Annotated[
+        str,
+        Field(description="Literal OR search pattern, e.g. '__d_lookup' or 'panic'."),
+    ]
+    before_lines: Annotated[int, Field(description="Context lines before each match.")] = 2
+    after_lines: Annotated[int, Field(description="Context lines after each match.")] = 4
+    max_matches: Annotated[int, Field(description="Maximum match windows to return.")] = 20
+
+
 @dataclass(frozen=True, slots=True)
 class ArtifactReadHandlers:
     """Artifact read handlers with the object-store search seam bound at construction."""
@@ -65,20 +81,12 @@ class ArtifactReadHandlers:
         pool: AsyncConnectionPool,
         ctx: RequestContext,
         *,
-        artifact_id: str,
-        pattern: str,
-        before_lines: int = 2,
-        after_lines: int = 4,
-        max_matches: int = 20,
+        request: ArtifactSearchRequest,
     ) -> ToolResponse:
         return await _artifacts_search_text(
             pool,
             ctx,
-            artifact_id=artifact_id,
-            pattern=pattern,
-            before_lines=before_lines,
-            after_lines=after_lines,
-            max_matches=max_matches,
+            request=request,
             store=self.search_store_factory(),
         )
 
@@ -166,19 +174,16 @@ async def _artifacts_search_text(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
-    artifact_id: str,
-    pattern: str,
-    before_lines: int = 2,
-    after_lines: int = 4,
-    max_matches: int = 20,
+    request: ArtifactSearchRequest,
     store: _SearchStore,
 ) -> ToolResponse:
     """Search one redacted System-owned text artifact with bounded literal context."""
+    artifact_id = request.artifact_id
     authorized = await _authorized_redacted_artifact(pool, ctx, artifact_id=artifact_id)
     if isinstance(authorized, ToolResponse):
         return authorized
     try:
-        parse_literal_terms(pattern)
+        parse_literal_terms(request.pattern)
     except ArtifactSearchInputError:
         return _config_error(artifact_id, data={"reason": "bad_search_input"})
     key = authorized.key
@@ -199,10 +204,10 @@ async def _artifacts_search_text(
             return _config_error(artifact_id)
         result = search_text(
             fetched.data,
-            pattern=pattern,
-            before_lines=before_lines,
-            after_lines=after_lines,
-            max_matches=max_matches,
+            pattern=request.pattern,
+            before_lines=request.before_lines,
+            after_lines=request.after_lines,
+            max_matches=request.max_matches,
         )
     except ArtifactSearchInputError:
         return _config_error(artifact_id, data={"reason": "bad_search_input"})
