@@ -21,10 +21,15 @@ reports or force-releases the host's live allocations:
   failure does **not** roll back already-released ones; the host is left partially drained
   and still `cordoned`, so the action is idempotent over the remaining set and re-invokable.
 
-"Live on a host" = the **`_NON_TERMINAL`** set already defined in
-`services/allocation_admission.py` ({REQUESTED, GRANTED, ACTIVE, RELEASING}) — the exact set
-that occupies a host capacity slot. Reusing it keeps drain's occupancy notion identical to
-the admission cap's.
+"Live on a host" = the **releasable** set `_DRAINABLE = {GRANTED, ACTIVE, RELEASING}` —
+allocations *actually holding a slot* on the host. This is deliberately **not** the broader
+`_NON_TERMINAL` capacity set ({REQUESTED, GRANTED, ACTIVE, RELEASING}): a `REQUESTED`
+allocation is *waiting* for placement, not holding the host, and `release_with_backstops`
+cannot act on it (it returns `CONFIGURATION_ERROR`, `allocation_release.py:108-113`). Snapshotting
+only releasable states keeps every snapshot member releasable, so force_release never reports a
+spurious `failed` for a not-yet-granted allocation. (Today admission inserts `GRANTED` directly so
+`REQUESTED` never occurs on a host anyway; M1.4's pending queue must revisit drain's `REQUESTED`
+disposition explicitly rather than inherit a silent `failed` — see Out of scope.)
 
 ## Acceptance criteria (from the issue)
 
@@ -90,19 +95,29 @@ consistently):
    holds a platform role, so the denial is audited — AC #2.)
 3. `force_release` only: blank `reason` → `_config_error`, no cordon, no audit.
 4. Resolve `resource_id` (valid uuid + exists). Bad/missing → `_error`, unaudited.
-5. **Cordon**: `_apply_cordon(conn, uid, cordoned=True)` + `_audit_host_action(
-   tool="resources.drain", detail="cordoned=true")` — one host-action `platform_audit_log`
-   row. This is the post-condition both modes guarantee (AC #4).
-6. Snapshot live allocations: `SELECT … FROM allocations WHERE resource_id=%s AND
-   state = ANY(_NON_TERMINAL) ORDER BY created_at, id`.
+5. **Cordon — its own committed step, before any release** (F3). In one
+   `async with pool.connection() as conn` block: `_apply_cordon(conn, uid, cordoned=True)`
+   (missing host → `_error`) + `_audit_host_action(tool="resources.drain",
+   detail="cordoned=true")`. The audit's `conn.transaction()` commits cordon+audit together,
+   so the block exit leaves the host `cordoned` **committed and visible to concurrent
+   admission** before the snapshot/release run on later connections. This is the post-condition
+   both modes guarantee (AC #4), and committing it first is what actually stops new placement
+   mid-drain (admission's `_resolve_resource` rejects a cordoned host, `allocations.py:87`).
+6. Snapshot live allocations on a **fresh** connection (cordon already committed):
+   `SELECT … FROM allocations WHERE resource_id=%s AND state = ANY(_DRAINABLE)
+   ORDER BY created_at, id`, where `_DRAINABLE = (GRANTED, ACTIVE, RELEASING)`.
 7. Branch:
    - **passive** → build a collection of the snapshot: each item
-     `success(str(alloc.id), alloc.state.value, data={project, resource_id})`.
+     `success(str(alloc.id), alloc.state.value, data={project, resource_id})`. No release, no
+     break-glass rows.
    - **force_release** → for each snapshot row, `breakglass_release_allocation(...,
-     tool="resources.drain", reason=reason)`, classify the `ReleaseOutcome`:
-     `released` → `success(id, "released")`; `STALE_HANDLE` (already terminal) →
-     `success(id, "skipped", data={current_status})`; any other category → `failure(id,
-     category, data={current_status})`. Tally released/failed/skipped into the envelope data.
+     tool="resources.drain", reason=reason)`, then map the `ReleaseOutcome` through a **pure
+     classifier** `_classify_drain_release(alloc_id, outcome) -> ToolResponse` (F1):
+     `released` → `success(id, "released")`; `STALE_HANDLE` → `success(id, "skipped",
+     data={current_status})`; any other category → `failure(id, category,
+     data={current_status})`. Extracting the classifier as a pure function makes `skipped`
+     (a race-only outcome unreachable by seeding) and `failed` deterministically unit-testable.
+     Tally released/failed/skipped into the envelope data.
 8. Return `collection(resource_id, "cordoned", items, data={"mode": …, counts…})`. The
    `cordoned` top-level status names the guaranteed post-condition; `object_id` is the host.
 
@@ -137,23 +152,31 @@ Passive:
   host **not** cordoned, unaudited (project-only denial isn't recorded).
 - `passive_auditor_denied` — auditor (platform role, not operator) → denied **and** audited.
 
-Force-release:
+Classifier (pure unit, no DB — F1, proves the `skipped`/`failed` arms that seeding can't reach):
+- `classify_released` — `ReleaseOutcome(released=True)` → `success(id, "released")`.
+- `classify_stale_is_skipped` — `ReleaseOutcome(category=STALE_HANDLE, current_status="released")`
+  → `success(id, "skipped")`, `data.current_status="released"`. (The race-only `skipped` arm.)
+- `classify_other_is_failed` — `ReleaseOutcome(category=CONFIGURATION_ERROR,
+  current_status="active")` → `failure(id, "configuration_error")`, `data.current_status="active"`.
+
+Force-release (DB):
 - `force_release_operator_denied` — operator → `authorization_denied`, host **not** cordoned,
   one audited denial row (`scope=resource:{id}`). (AC #2)
 - `force_release_blank_reason_rejected` — admin, blank reason → config error, not cordoned,
   no audit, allocations unchanged.
 - `force_release_admin_empties_host` — admin, 2 active allocs → status `cordoned`, both items
-  `released`, both allocations now `released`, host `cordoned=true`, `data.released=2`. One
-  cordon `platform_audit_log` row + one break-glass row per allocation. (AC #3, #4)
-- `force_release_terminal_allocation_skipped` — admin, host with an already-`released` alloc
-  in the snapshot race window: assert a `STALE_HANDLE` outcome maps to `skipped` (drive via
-  the classification — seed a RELEASING + a RELEASED, confirm RELEASED→skipped path). Keep the
-  snapshot to `_NON_TERMINAL`, so cover `skipped` via a release that loses the race (use the
-  `sized=False`+budget config-error fixture for a `failed` item too).
+  `released`, both allocations now `released`, host `cordoned=true`, `data.released="2"`. Pin
+  table-by-table: `platform_audit_log` = 1 cordon row + 1 break-glass row per allocation (3);
+  `audit_log` = 2 guard-exempt transition rows per released allocation. (AC #3, #4)
 - `force_release_partial_failure_is_observable_and_reinvokable` — admin, one releasable + one
-  that fails reconcile (NULL size + budget): items show one `released` + one `failed`; the
-  released allocation is gone, the host stays `cordoned`; a **second** `drain force_release`
-  call returns the remaining failed one again (idempotent / re-invokable). (AC #3)
+  that fails reconcile (`sized=False`+budget → reconcile `CONFIGURATION_ERROR`): items show one
+  `released` + one `failed`; the released allocation is now `released`, **the failed one is still
+  `active`** (F4 — proves the reconcile rollback left it re-releasable, not stranded in
+  `releasing`); the host stays `cordoned`; a **second** `drain force_release` call snapshots and
+  returns the remaining `active` one again (idempotent / re-invokable). (AC #3)
+- `force_release_leaves_system_untouched` — admin, host whose active allocation has a `READY`
+  System; force_release releases the allocation but the `System` row is unchanged (F5 — locks
+  the "no System teardown" scope boundary).
 - `force_release_bad_uuid` / `unknown_host` — admin, malformed/missing id → config error,
   unaudited, no cordon.
 - `unknown_mode_rejected` — `mode="migrate"` → config error, unaudited, host not cordoned.
@@ -167,5 +190,9 @@ every commit; zero warnings. Regenerate any invalidated golden (tool-reference d
 
 - No `draining` persisted state (ADR-0062 decision 1a).
 - No System teardown — drain releases *allocations*; Systems on them are untouched
-  (force_teardown's job).
+  (force_teardown's job). Locked by the `force_release_leaves_system_untouched` test.
 - No `mode=migrate` (M2).
+- **`REQUESTED` allocations** are out of the live set (`_DRAINABLE`) — they are waiting for
+  placement, not holding the host, and don't occur on a host in today's admission flow.
+  When M1.4's pending queue (#157-166) lands `requested`-on-a-host, drain's disposition for
+  them must be designed explicitly, not inherited as a silent `failed`.
