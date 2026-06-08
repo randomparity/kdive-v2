@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
@@ -16,7 +16,11 @@ from kdive.mcp.tools.catalog.artifacts_reads import (
     artifacts_get,
     artifacts_list,
 )
-from kdive.mcp.tools.catalog.artifacts_uploads import create_run_upload, create_system_upload
+from kdive.mcp.tools.catalog.artifacts_uploads import (
+    ArtifactDeclaration,
+    create_run_upload,
+    create_system_upload,
+)
 
 __all__ = [
     "artifacts_get",
@@ -93,7 +97,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     async def artifacts_create_run_upload_tool(
         run_id: Annotated[str, Field(description="The external-build Run id.")],
         artifacts: Annotated[
-            list[dict[str, Any]],
+            list[ArtifactDeclaration],
             Field(description="Declared build artifacts: [{name, sha256 (base64), size_bytes}]."),
         ],
     ) -> list[ToolResponse]:
@@ -108,7 +112,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     async def artifacts_create_system_upload_tool(
         system_id: Annotated[str, Field(description="The DEFINED System id.")],
         artifacts: Annotated[
-            list[dict[str, Any]],
+            list[ArtifactDeclaration],
             Field(description="Declared rootfs artifact: [{name, sha256 (base64), size_bytes}]."),
         ],
     ) -> list[ToolResponse]:

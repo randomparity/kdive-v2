@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, NamedTuple, Protocol
+from typing import NamedTuple, Protocol, TypedDict
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -80,6 +80,14 @@ class _MaterializedUpload(NamedTuple):
     presigned: PresignedUpload
 
 
+class ArtifactDeclaration(TypedDict):
+    """Raw MCP declaration for one artifact upload before value validation."""
+
+    name: str
+    sha256: str
+    size_bytes: int
+
+
 @dataclass(frozen=True)
 class _UploadOwnerSpec:
     owner_kind: str
@@ -91,11 +99,14 @@ class _UploadOwnerSpec:
 
 
 def _validate_artifact_declarations(
-    object_id: str, artifacts: list[dict[str, Any]], allowed: frozenset[str], cap: int
+    object_id: str, artifacts: Sequence[ArtifactDeclaration], allowed: frozenset[str], cap: int
 ) -> list[ManifestEntry] | ToolResponse:
     entries: list[ManifestEntry] = []
     for art in artifacts:
-        name, sha256, size = art.get("name"), art.get("sha256"), art.get("size_bytes")
+        try:
+            name, sha256, size = art["name"], art["sha256"], art["size_bytes"]
+        except KeyError:
+            return _config_error(object_id, data={"reason": "bad_artifact_declaration"})
         if name not in allowed or not isinstance(sha256, str) or not isinstance(size, int):
             return _config_error(object_id, data={"reason": "bad_artifact_declaration"})
         artifact_cap = _EFFECTIVE_CONFIG_MAX_UPLOAD_BYTES if name == "effective_config" else cap
@@ -184,7 +195,7 @@ async def _create_upload(
     *,
     spec: _UploadOwnerSpec,
     owner_id: str,
-    artifacts: list[dict[str, Any]],
+    artifacts: Sequence[ArtifactDeclaration],
     store: _PresignStore | None = None,
 ) -> list[ToolResponse]:
     store = store or object_store_from_env()
@@ -252,7 +263,7 @@ async def create_run_upload(
     ctx: RequestContext,
     *,
     run_id: str,
-    artifacts: list[dict[str, Any]],
+    artifacts: Sequence[ArtifactDeclaration],
     store: _PresignStore | None = None,
 ) -> list[ToolResponse]:
     """Mint presigned PUTs for an external Run's declared build artifacts."""
@@ -271,7 +282,7 @@ async def create_system_upload(
     ctx: RequestContext,
     *,
     system_id: str,
-    artifacts: list[dict[str, Any]],
+    artifacts: Sequence[ArtifactDeclaration],
     store: _PresignStore | None = None,
 ) -> list[ToolResponse]:
     """Mint presigned PUTs for a DEFINED System's uploaded rootfs."""
