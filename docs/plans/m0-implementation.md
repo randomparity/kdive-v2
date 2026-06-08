@@ -221,12 +221,12 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
   and capability-match dispatch (never by name). ADR-0063 later superseded this for
   production runtime assembly with typed `ProviderRuntime` ports, and ADR-0066 removed the
   registry prototype from production source.
-- **Files:** `providers/ports.py`; historical registry design remains in ADR-0009,
+- **Files:** `providers/ports/`; historical registry design remains in ADR-0009,
   ADR-0022, and dated planning docs.
 - **Scope:**
-  - `ports.py`: the provider-plane `Protocol`s and value aliases used by
-    `ProviderRuntime` typed ports. Allocation is handled in core, not as a provider
-    Protocol.
+  - `ports/`: provider-plane `Protocol`s and value aliases used by `ProviderRuntime`
+    typed ports, with the package facade as the stable import surface. Allocation is
+    handled in core, not as a provider Protocol.
 - **Acceptance:** live provider tests cover typed runtime composition; no production
   capability-registry API remains.
 

@@ -38,11 +38,11 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
+from kdive.mcp.tools.debug.session_registry import GdbMiSessionRegistry
 from kdive.providers.ports import (
     AttachSeam,
     GdbMiAttachment,
     GdbMiEngine,
-    GdbMiSessionRegistry,
     TransportHandleData,
 )
 from kdive.security.authz.context import RequestContext
