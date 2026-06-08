@@ -29,8 +29,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, Literal
+from uuid import UUID, uuid4
 
 from psycopg import AsyncConnection
 
@@ -58,7 +58,6 @@ from kdive.services.allocation_idempotency import (
     resolve_replay,
     within_budget,
 )
-from kdive.services.pcie_claim import NON_TERMINAL_STATES
 
 if TYPE_CHECKING:
     from kdive.security.authz.context import RequestContext
@@ -69,10 +68,25 @@ _SECONDS_PER_HOUR = 3600
 # renewal path (#67) reuses the store under its own kind.
 _REQUEST_KIND = "allocations.request"
 
-# States that occupy a capacity slot (terminal released/expired/failed do not). Shared
-# with the PCIe occupancy predicate so the host-cap count and the device-claim count can
-# never disagree about which allocations are live (ADR-0068).
-_NON_TERMINAL = NON_TERMINAL_STATES
+# States that occupy a host-cap / grant-quota slot (ADR-0069, the load-bearing change). A
+# DEDICATED occupancy predicate that EXCLUDES ``requested``: a queued row holds only a queue
+# position, so it must occupy neither a host slot nor a grant-quota slot — otherwise it would
+# block other grants and self-block its own promotion (the promotion's capacity replay would
+# count the candidate against itself). This is NOT a redefinition of ``NON_TERMINAL_STATES``
+# (the shared liveness constant): ``requested`` stays non-terminal/live for the lease-expiry
+# and reconciler logic, which reasons about liveness, not occupancy. PCIe occupancy
+# (``pcie_claim.active_claims``) keeps using ``NON_TERMINAL_STATES``; a queued row has an
+# empty ``pcie_claim`` (resolve happens only at grant), so it contributes no device either way.
+_OCCUPYING = (
+    AllocationState.GRANTED,
+    AllocationState.ACTIVE,
+    AllocationState.RELEASING,
+)
+_OCCUPYING_VALUES = [s.value for s in _OCCUPYING]
+
+# A queued row rests in this state; the pending-cap count predicate is literally this one
+# state, never the occupancy predicate (ADR-0069).
+_REQUESTED_VALUE = AllocationState.REQUESTED.value
 
 
 @dataclass(frozen=True)
@@ -89,6 +103,12 @@ class AllocationRequest:
     plus a shape's ``pcie_match``) — already composed by the caller. An empty union is a
     non-PCIe request. The specs are resolved to distinct free devices and claimed inside the
     per-Resource lock (ADR-0068), never pre-lock.
+
+    ``on_capacity`` selects what a **capacity** denial does (ADR-0069): ``"deny"`` (default,
+    today's behavior) returns the denial; ``"queue"`` instead enqueues a ``requested``
+    allocation holding only a queue position. ``requested_kind`` / ``requested_resource_id``
+    are the original target descriptor persisted on the queued row so the promotion sweep
+    (#165) can re-resolve a host — exactly one is set, mirroring the by-kind / by-id selector.
     """
 
     ctx: RequestContext
@@ -100,6 +120,9 @@ class AllocationRequest:
     disk_gb: int | None = None
     shape: str | None = None
     pcie_specs: tuple[str, ...] = ()
+    on_capacity: Literal["deny", "queue"] = "deny"
+    requested_kind: str | None = None
+    requested_resource_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +135,13 @@ class AdmissionOutcome:
     (validation), ``quota_exceeded`` (over the concurrency cap / no quota row), or
     ``allocation_denied`` (over budget / no budget row / over the host cap). ``cap`` /
     ``in_use`` carry the host-cap counters for the denial diagnostic.
+
+    ``queueable`` marks a denial that ``on_capacity=queue`` may enqueue (ADR-0069): the
+    grant-quota (``quota_exceeded``) and host-cap (``allocation_denied`` /
+    ``reason="at_capacity"``) denials. A **budget** denial shares the ``allocation_denied``
+    category with the host-cap denial but is NOT queueable (waiting frees no budget), so the
+    enqueue decision branches on this explicit flag, never on the category. Configuration and
+    PCIe denials are likewise not queueable.
     """
 
     granted: bool
@@ -120,6 +150,7 @@ class AdmissionOutcome:
     reason: str | None = None
     cap: int | None = None
     in_use: int | None = None
+    queueable: bool = False
 
 
 async def admit(
@@ -200,20 +231,32 @@ async def _admit_under_project_lock(
             return AdmissionOutcome(granted=True, allocation=replay)
     quota_ok = await _within_alloc_quota(conn, request.project)
     if not quota_ok:
-        return AdmissionOutcome(
-            granted=False, allocation=None, category=ErrorCategory.QUOTA_EXCEEDED
+        # The grant quota is a CAPACITY denial — waiting frees a slot, so it is queueable.
+        return await _deny_or_enqueue(
+            conn,
+            request,
+            AdmissionOutcome(
+                granted=False,
+                allocation=None,
+                category=ErrorCategory.QUOTA_EXCEEDED,
+                queueable=True,
+            ),
         )
     budget_ok = await within_budget(conn, request.project, estimate)
     if not budget_ok:
+        # A budget denial shares ``allocation_denied`` with the host-cap denial but is NOT
+        # queueable — waiting will not free budget (ADR-0069). It hard-denies.
         return AdmissionOutcome(
             granted=False, allocation=None, category=ErrorCategory.ALLOCATION_DENIED
         )
     async with advisory_xact_lock(conn, LockScope.RESOURCE, request.resource.id):
         host = await _host_cap_check(conn, request.resource)
         if host is not None:
-            return host
+            return await _deny_or_enqueue(conn, request, host)
         claim = await _resolve_pcie_claim(conn, request)
         if claim.denial is not None:
+            # A PCIe denial (config or busy) is not queueable in #164 (PCIe-blind first);
+            # queued PCIe re-resolution at promotion is #165.
             return claim.denial
         return await _grant(
             conn,
@@ -222,6 +265,21 @@ async def _admit_under_project_lock(
             estimate=estimate,
             claimed_devices=claim.devices,
         )
+
+
+async def _deny_or_enqueue(
+    conn: AsyncConnection, request: AllocationRequest, denial: AdmissionOutcome
+) -> AdmissionOutcome:
+    """Return the denial, or enqueue a queued row when the caller opted into the queue.
+
+    Enqueue only when ``on_capacity="queue"`` AND the denial is ``queueable`` (a capacity
+    denial — the grant quota or the host cap). All durable writes run inside the PROJECT-
+    locked transaction ``admit`` already opened, so the pending-cap check and the insert are
+    atomic (ADR-0069).
+    """
+    if request.on_capacity != "queue" or not denial.queueable:
+        return denial
+    return await _enqueue(conn, request)
 
 
 @dataclass(frozen=True)
@@ -336,8 +394,11 @@ async def _host_cap_check(conn: AsyncConnection, resource: Resource) -> Admissio
         CategorizedError: ``CONFIGURATION_ERROR`` if the resource has no valid cap.
     """
     cap = _resolve_cap(resource)
-    in_use = await _count_non_terminal(conn, resource.id)
+    in_use = await _count_occupying(conn, resource.id)
     if in_use >= cap:
+        # A host-cap denial is a CAPACITY denial — a freed slot admits it — so it is
+        # queueable. It shares ``allocation_denied`` with the budget denial; the
+        # ``queueable`` flag (not the category) is what routes the enqueue (ADR-0069).
         return AdmissionOutcome(
             granted=False,
             allocation=None,
@@ -345,6 +406,7 @@ async def _host_cap_check(conn: AsyncConnection, resource: Resource) -> Admissio
             reason="at_capacity",
             cap=cap,
             in_use=in_use,
+            queueable=True,
         )
     return None
 
@@ -362,12 +424,16 @@ def _resolve_cap(resource: Resource) -> int:
     return cap
 
 
-async def _count_non_terminal(conn: AsyncConnection, resource_id: object) -> int:
-    """Count the host's allocations occupying a capacity slot."""
+async def _count_occupying(conn: AsyncConnection, resource_id: object) -> int:
+    """Count the host's allocations occupying a host-cap slot (GRANTED/ACTIVE/RELEASING).
+
+    Uses the dedicated occupancy predicate (ADR-0069): a queued ``requested`` row holds only
+    a queue position and is excluded, so it never consumes the host cap it is waiting for.
+    """
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT count(*) FROM allocations WHERE resource_id = %s AND state = ANY(%s)",
-            (resource_id, [s.value for s in _NON_TERMINAL]),
+            (resource_id, _OCCUPYING_VALUES),
         )
         row = await cur.fetchone()
     if row is None:  # Invariant: count(*) always yields a row.
@@ -379,7 +445,9 @@ async def _within_alloc_quota(conn: AsyncConnection, project: str) -> bool:
     """Report whether the project is under ``max_concurrent_allocations``.
 
     Fail-closed: a project with **no quota row** is over quota (ADR-0007 §4 — no silent
-    default). Counts the project's non-terminal allocations under the held PROJECT lock.
+    default). Counts the project's **occupying** allocations (GRANTED/ACTIVE/RELEASING) under
+    the held PROJECT lock — a queued ``requested`` row does not count against the grant quota
+    (ADR-0069); the pending cap bounds the backlog separately.
     """
     async with conn.cursor() as cur:
         await cur.execute(
@@ -392,7 +460,99 @@ async def _within_alloc_quota(conn: AsyncConnection, project: str) -> bool:
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT count(*) FROM allocations WHERE project = %s AND state = ANY(%s)",
-            (project, [s.value for s in _NON_TERMINAL]),
+            (project, _OCCUPYING_VALUES),
+        )
+        count_row = await cur.fetchone()
+    if count_row is None:  # Invariant: count(*) always yields a row.
+        raise RuntimeError("count(*) returned no row")
+    return int(count_row[0]) < cap
+
+
+async def _enqueue(conn: AsyncConnection, request: AllocationRequest) -> AdmissionOutcome:
+    """Insert a queued ``requested`` allocation under the held PROJECT lock (ADR-0069).
+
+    Holds only a queue position: ``resource_id`` NULL, no reserve, no lease, empty
+    ``pcie_claim``; persists the original request inputs (size snapshot, shape, the requested
+    PCIe union, and the target descriptor) so the promotion sweep (#165) can re-admit. The
+    pending-cap check, the insert, the idempotency-key record, and the audit all run inside
+    the one PROJECT-locked transaction ``admit`` opened, so two concurrent enqueues cannot
+    both pass the cap. Over the cap → ``quota_exceeded`` with no write.
+
+    Returns:
+        A success outcome carrying the queued ``requested`` allocation, or a
+        ``quota_exceeded`` denial when the pending cap is full.
+    """
+    if not await _within_pending_quota(conn, request.project):
+        return AdmissionOutcome(
+            granted=False, allocation=None, category=ErrorCategory.QUOTA_EXCEEDED
+        )
+    now = datetime.now(UTC)
+    allocation = await ALLOCATIONS.insert(
+        conn,
+        Allocation(
+            id=uuid4(),
+            created_at=now,
+            updated_at=now,
+            principal=request.ctx.principal,
+            agent_session=request.ctx.agent_session,
+            project=request.project,
+            resource_id=None,
+            state=AllocationState.REQUESTED,
+            lease_expiry=None,
+            requested_vcpus=request.selector.vcpus,
+            requested_memory_gb=request.selector.memory_gb,
+            requested_disk_gb=request.disk_gb,
+            shape=request.shape,
+            capability_scope={},
+            pcie_claim=[],
+            requested_pcie_specs=list(request.pcie_specs),
+            requested_kind=request.requested_kind,
+            requested_resource_id=request.requested_resource_id,
+        ),
+    )
+    if request.idempotency_key is not None:
+        await record_key(
+            conn,
+            principal=request.ctx.principal,
+            key=request.idempotency_key,
+            project=request.project,
+            kind=_REQUEST_KIND,
+            allocation_id=allocation.id,
+        )
+    await audit.record(
+        conn,
+        request.ctx,
+        audit.AuditEvent(
+            tool="allocations.request",
+            object_kind="allocations",
+            object_id=allocation.id,
+            transition="->requested",
+            args={"project": request.project, "on_capacity": "queue"},
+            project=request.project,
+        ),
+    )
+    return AdmissionOutcome(granted=True, allocation=allocation)
+
+
+async def _within_pending_quota(conn: AsyncConnection, project: str) -> bool:
+    """Report whether the project is under ``max_pending_allocations``.
+
+    Fail-closed: a project with **no quota row** has no pending depth (0 cap). Counts only
+    rows literally in ``requested`` (the backlog), never the occupancy predicate, under the
+    held PROJECT lock so the count-then-insert is atomic (ADR-0069).
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT max_pending_allocations FROM quotas WHERE project = %s", (project,)
+        )
+        row = await cur.fetchone()
+    if row is None:
+        return False
+    cap = int(row[0])
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT count(*) FROM allocations WHERE project = %s AND state = %s",
+            (project, _REQUESTED_VALUE),
         )
         count_row = await cur.fetchone()
     if count_row is None:  # Invariant: count(*) always yields a row.

@@ -60,6 +60,15 @@ class AllocationRequestPayload(SelectorPayload):
         default_factory=list,
         description="PCIe match specs ('vendor:device' or 'class=NN') to resolve + claim.",
     )
+    on_capacity: Literal["deny", "queue"] = Field(
+        default="deny",
+        description=(
+            "On a capacity denial (host cap / concurrency quota): 'deny' (default) returns "
+            "the denial; 'queue' enqueues a durable 'requested' allocation holding a queue "
+            "position (no budget/lease/occupancy). Budget and configuration denials always "
+            "hard-deny."
+        ),
+    )
 
     @model_validator(mode="after")
     def _shape_xor_custom_triple(self) -> AllocationRequestPayload:

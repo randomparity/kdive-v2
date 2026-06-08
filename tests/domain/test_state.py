@@ -34,7 +34,11 @@ LEGAL: dict[type[StrEnum], dict[StrEnum, set[StrEnum]]] = {
         ResourceStatus.OFFLINE: {ResourceStatus.AVAILABLE, ResourceStatus.DEGRADED},
     },
     AllocationState: {
-        AllocationState.REQUESTED: {AllocationState.GRANTED, AllocationState.FAILED},
+        AllocationState.REQUESTED: {
+            AllocationState.GRANTED,
+            AllocationState.RELEASED,
+            AllocationState.FAILED,
+        },
         AllocationState.GRANTED: {
             AllocationState.ACTIVE,
             AllocationState.RELEASING,
@@ -174,6 +178,13 @@ def test_allocation_expiry_edges_are_legal_from_granted_and_active() -> None:
     assert can_transition(AllocationState.RELEASING, AllocationState.EXPIRED) is False
     with pytest.raises(IllegalTransition, match="expired"):
         ensure_transition(AllocationState.EXPIRED, AllocationState.RELEASED)
+
+
+def test_queued_request_cancellation_edge_is_legal() -> None:
+    # M1.4 (ADR-0069): a queued `requested` row cancels directly to `released` — never
+    # through `releasing` (that hop is reserved for a reserved/leased allocation).
+    assert can_transition(AllocationState.REQUESTED, AllocationState.RELEASED) is True
+    assert can_transition(AllocationState.REQUESTED, AllocationState.RELEASING) is False
 
 
 def test_system_reprovision_cycle_edges_are_legal() -> None:

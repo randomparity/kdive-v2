@@ -253,8 +253,10 @@ def test_update_state_illegal_raises(migrated_url: str) -> None:
         async with await _connect(migrated_url) as conn:
             res = await RESOURCES.insert(conn, _resource())
             alloc = await ALLOCATIONS.insert(conn, _allocation(res.id))
+            # requested → expired is not a legal edge (requested may go to granted, released,
+            # or failed only — ADR-0069 added the released cancellation edge).
             with pytest.raises(IllegalTransition):
-                await ALLOCATIONS.update_state(conn, alloc.id, AllocationState.RELEASED)
+                await ALLOCATIONS.update_state(conn, alloc.id, AllocationState.EXPIRED)
 
     asyncio.run(_run_test())
 

@@ -44,6 +44,9 @@ class AllocationState(StrEnum):
     ``granted/active → expired`` is the M1 reconciler ``→expired`` sweep reclaiming a
     lease past its window (ADR-0036, ADR-0040); ``expired`` is terminal and distinct
     from ``failed`` (a reclaimed lease is not an operation failure).
+    ``requested → released`` is the M1.4 cancellation edge for a queued request (ADR-0069):
+    a queued row was never reserved, so it releases directly to ``released`` without the
+    ``releasing`` hop and writes no ledger credit.
     """
 
     REQUESTED = "requested"
@@ -131,7 +134,9 @@ _TRANSITIONS: dict[type[StrEnum], dict[StrEnum, frozenset[StrEnum]]] = {
         ResourceStatus.OFFLINE: frozenset({ResourceStatus.AVAILABLE, ResourceStatus.DEGRADED}),
     },
     AllocationState: {
-        AllocationState.REQUESTED: frozenset({AllocationState.GRANTED, AllocationState.FAILED}),
+        AllocationState.REQUESTED: frozenset(
+            {AllocationState.GRANTED, AllocationState.RELEASED, AllocationState.FAILED}
+        ),
         AllocationState.GRANTED: frozenset(
             {
                 AllocationState.ACTIVE,

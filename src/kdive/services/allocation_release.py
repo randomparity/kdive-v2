@@ -105,6 +105,16 @@ async def _release_locked(
                 category=ErrorCategory.STALE_HANDLE,
                 current_status=current.state.value,
             )
+        if current.state is AllocationState.REQUESTED:
+            # Cancelling a queued row (ADR-0069): a ``requested`` allocation was never
+            # reserved and never held a lease, so it releases DIRECTLY to ``released`` —
+            # NOT through the ``releasing`` hop (``requested → releasing`` is illegal) — and
+            # writes NO ledger credit and NO ``active_ended_at`` stamp. Writing a credit
+            # would mint a spurious negative delta (the ADR-0007 §2 budget-minting hazard).
+            await _transition_and_audit(
+                conn, audit_writer, uid, current.state, AllocationState.RELEASED, project=project
+            )
+            return ReleaseOutcome(released=True)
         if current.state not in (*_RELEASABLE, AllocationState.RELEASING):
             return ReleaseOutcome(
                 released=False,

@@ -51,12 +51,13 @@ Set a project's spend budget limit_kcu; preserves spent_kcu. Requires admin.
 
 `implemented`
 
-Set a project's concurrency caps for allocations and systems. Requires admin.
+Set a project's concurrency caps and pending-queue cap. Requires admin.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `max_concurrent_allocations` | `integer` | yes | Maximum concurrent allocations allowed (>= 0). |
 | `max_concurrent_systems` | `integer` | yes | Maximum concurrent Systems allowed (>= 0). |
+| `max_pending_allocations` | `integer` | no | Maximum queued (requested) allocations (>= 0); 0 = no queue. |
 | `project` | `string` | yes | Project to set concurrency caps for. |
 
 ## `accounting.usage_investigation`

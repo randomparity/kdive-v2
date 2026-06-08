@@ -104,6 +104,23 @@ async def _seed_allocation(
     )
 
 
+async def _seed_queued(conn: psycopg.AsyncConnection, resource_id: UUID) -> Allocation:
+    """Seed a queued `requested` row holding only a queue position (resource_id NULL)."""
+    return await ALLOCATIONS.insert(
+        conn,
+        Allocation(
+            id=uuid4(),
+            created_at=_DT,
+            updated_at=_DT,
+            principal="alice",
+            project="proj",
+            resource_id=None,
+            state=AllocationState.REQUESTED,
+            requested_kind=ResourceKind.LOCAL_LIBVIRT.value,
+        ),
+    )
+
+
 async def _count_allocs(conn: psycopg.AsyncConnection) -> int:
     async with conn.cursor() as cur:
         await cur.execute("SELECT count(*) FROM allocations")
@@ -166,15 +183,16 @@ def test_admit_ignores_terminal_allocations(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_admit_counts_only_non_terminal(migrated_url: str) -> None:
-    # Four non-terminal + two terminal allocations exist; with cap=4 the host is exactly
-    # full, so admit denies and the denial's in_use counts only the four non-terminal.
+def test_admit_counts_only_occupying(migrated_url: str) -> None:
+    # The host-cap occupancy predicate is GRANTED/ACTIVE/RELEASING (ADR-0069): a queued
+    # `requested` row and the terminal rows do NOT occupy. With three occupying rows and
+    # cap=3 the host is exactly full, so admit denies and in_use counts only those three.
     async def _run() -> None:
         async with _conn(migrated_url) as conn:
-            res = await _seed_resource(conn, cap=4)
+            res = await _seed_resource(conn, cap=3)
             await _seed_budget_quota(conn)
             for state in (
-                AllocationState.REQUESTED,
+                AllocationState.REQUESTED,  # queued — excluded from occupancy
                 AllocationState.GRANTED,
                 AllocationState.ACTIVE,
                 AllocationState.RELEASING,
@@ -184,8 +202,22 @@ def test_admit_counts_only_non_terminal(migrated_url: str) -> None:
                 await _seed_allocation(conn, res.id, state)
             outcome = await _admit(conn, res)
             assert outcome.granted is False
-            assert outcome.in_use == 4  # requested/granted/active/releasing only
-            assert outcome.cap == 4
+            assert outcome.in_use == 3  # granted/active/releasing only — requested excluded
+            assert outcome.cap == 3
+
+    asyncio.run(_run())
+
+
+def test_queued_row_does_not_block_a_grant(migrated_url: str) -> None:
+    # A queued `requested` row holds no host slot: with cap=1 and one queued row present, a
+    # concurrent fresh request still grants (the queued row is excluded from occupancy).
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            res = await _seed_resource(conn, cap=1)
+            await _seed_budget_quota(conn)
+            await _seed_queued(conn, res.id)
+            outcome = await _admit(conn, res)
+            assert outcome.granted is True
 
     asyncio.run(_run())
 

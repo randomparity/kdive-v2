@@ -141,6 +141,8 @@ async def _set_resource_flags(
 
 
 async def _seed_alloc(pool: AsyncConnectionPool, resource_id: str, state: AllocationState) -> str:
+    # A queued `requested` row holds no host: resource_id must be NULL (the 0016 CHECK).
+    placed = state is not AllocationState.REQUESTED
     async with pool.connection() as conn:
         alloc = await ALLOCATIONS.insert(
             conn,
@@ -150,7 +152,7 @@ async def _seed_alloc(pool: AsyncConnectionPool, resource_id: str, state: Alloca
                 updated_at=_DT,
                 principal="user-1",
                 project="proj",
-                resource_id=UUID(resource_id),
+                resource_id=UUID(resource_id) if placed else None,
                 state=state,
             ),
         )
@@ -299,14 +301,32 @@ def test_release_terminal_allocation_is_stale_handle(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_release_requested_allocation_is_error(migrated_url: str) -> None:
+def test_release_requested_allocation_cancels_with_no_credit(migrated_url: str) -> None:
+    # A queued `requested` row was never reserved (ADR-0069): release cancels it directly to
+    # `released` — no `releasing` hop, no ledger credit, no active_ended_at stamp.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             res_id = await _register(pool, cap=2)
             alloc_id = await _seed_alloc(pool, res_id, AllocationState.REQUESTED)
             resp = await alloc_tools.release_allocation(pool, _ctx(), alloc_id)
-        assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
+            assert resp.status == "released"
+            async with pool.connection() as conn, conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT state, active_ended_at FROM allocations WHERE id = %s", (alloc_id,)
+                )
+                row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) FROM ledger WHERE allocation_id = %s", (alloc_id,)
+                )
+                ledger = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) FROM audit_log WHERE object_id = %s", (alloc_id,)
+                )
+                audit = await cur.fetchone()
+            assert row is not None and row[0] == "released" and row[1] is None
+            assert ledger is not None and ledger[0] == 0  # never reserved → no credit
+            # Exactly one audit row: requested->released (no releasing hop).
+            assert audit is not None and audit[0] == 1
 
     asyncio.run(_run())
 

@@ -64,12 +64,22 @@ async def set_quota(
     project: str,
     max_concurrent_allocations: int,
     max_concurrent_systems: int,
+    max_pending_allocations: int = 0,
 ) -> ToolResponse:
-    """Set a project's two concurrency caps (admin; ADR-0007 §4,6)."""
+    """Set a project's concurrency caps and the pending-queue cap (admin; ADR-0007 §4,6).
+
+    ``max_pending_allocations`` (ADR-0069) bounds how many ``requested`` rows
+    ``on_capacity=queue`` can backlog; it defaults to 0 (queue opt-out) and is distinct from
+    ``max_concurrent_allocations`` (the grant cap, which no longer counts ``requested``).
+    """
     require_project(ctx, project)
     require_role(ctx, project, Role.ADMIN)
     with bind_context(principal=ctx.principal):
-        if max_concurrent_allocations < 0 or max_concurrent_systems < 0:
+        if (
+            max_concurrent_allocations < 0
+            or max_concurrent_systems < 0
+            or max_pending_allocations < 0
+        ):
             return ToolResponse.failure(
                 _QUOTA_OBJECT_ID,
                 ErrorCategory.CONFIGURATION_ERROR,
@@ -83,28 +93,21 @@ async def set_quota(
                     project=project,
                     max_concurrent_allocations=max_concurrent_allocations,
                     max_concurrent_systems=max_concurrent_systems,
+                    max_pending_allocations=max_pending_allocations,
                     updated_at=now,
                 ),
             )
-            await _audit_set(
-                conn,
-                ctx,
-                project,
-                "set_quota",
-                {
-                    "max_concurrent_allocations": str(max_concurrent_allocations),
-                    "max_concurrent_systems": str(max_concurrent_systems),
-                },
-            )
+            values = {
+                "max_concurrent_allocations": str(max_concurrent_allocations),
+                "max_concurrent_systems": str(max_concurrent_systems),
+                "max_pending_allocations": str(max_pending_allocations),
+            }
+            await _audit_set(conn, ctx, project, "set_quota", values)
             return ToolResponse.success(
                 _QUOTA_OBJECT_ID,
                 "ok",
                 suggested_next_actions=["accounting.usage_project", "allocations.request"],
-                data={
-                    "project": project,
-                    "max_concurrent_allocations": str(max_concurrent_allocations),
-                    "max_concurrent_systems": str(max_concurrent_systems),
-                },
+                data={"project": project, **values},
             )
 
 
@@ -173,12 +176,17 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         max_concurrent_systems: Annotated[
             int, Field(description="Maximum concurrent Systems allowed (>= 0).")
         ],
+        max_pending_allocations: Annotated[
+            int,
+            Field(description="Maximum queued (requested) allocations (>= 0); 0 = no queue."),
+        ] = 0,
     ) -> ToolResponse:
-        """Set a project's concurrency caps for allocations and systems. Requires admin."""
+        """Set a project's concurrency caps and pending-queue cap. Requires admin."""
         return await set_quota(
             pool,
             current_context(),
             project=project,
             max_concurrent_allocations=max_concurrent_allocations,
             max_concurrent_systems=max_concurrent_systems,
+            max_pending_allocations=max_pending_allocations,
         )

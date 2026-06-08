@@ -101,6 +101,7 @@ def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
         "0013",
         "0014",
         "0015",
+        "0016",
     ]
     assert second == []
 
@@ -505,6 +506,7 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
         "0013",
         "0014",
         "0015",
+        "0016",
     ]
 
 
@@ -660,3 +662,79 @@ def _seed_resource_row(conn: psycopg.Connection) -> str:
     ).fetchone()
     assert row is not None
     return str(row[0])
+
+
+# Migration 0016 adds the pending-queue surface (ADR-0069, #164): the distinct
+# max_pending_allocations quota column, a nullable resource_id guarded by a CHECK, the
+# persisted request-input columns a queued row re-admits from, and the backlog partial index.
+
+
+def test_migration_0016_adds_max_pending_allocations(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    cols = _columns(pg_conn, "quotas")
+    assert cols.get("max_pending_allocations") == "integer"
+    assert _nullable(pg_conn, "quotas").get("max_pending_allocations") == "NO"
+    # Backfills existing rows to 0 — the queue is opt-out by default.
+    pg_conn.execute(
+        "INSERT INTO quotas (project, max_concurrent_allocations, max_concurrent_systems) "
+        "VALUES ('p', 1, 1)"
+    )
+    row = pg_conn.execute(
+        "SELECT max_pending_allocations FROM quotas WHERE project = 'p'"
+    ).fetchone()
+    assert row is not None and row[0] == 0
+
+
+def test_migration_0016_makes_resource_id_nullable(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    assert _nullable(pg_conn, "allocations").get("resource_id") == "YES"
+
+
+def test_migration_0016_allows_null_resource_id_only_for_unplaced_states(
+    pg_conn: psycopg.Connection,
+) -> None:
+    migrate.apply_migrations(pg_conn)
+    # A queued `requested` row, and a cancelled-queue `released` row, may carry NULL — both
+    # are queued rows that never held a host (ADR-0069).
+    for never_placed in ("requested", "released"):
+        pg_conn.execute(
+            "INSERT INTO allocations (id, principal, project, resource_id, state) "
+            "VALUES (gen_random_uuid(), 'p', 'proj', NULL, %s)",
+            (never_placed,),
+        )
+    # An ever-placed state with a NULL resource_id is rejected by the CHECK.
+    for placed in ("granted", "active", "releasing", "expired", "failed"):
+        with pytest.raises(psycopg.errors.CheckViolation):
+            pg_conn.execute(
+                "INSERT INTO allocations (id, principal, project, resource_id, state) "
+                "VALUES (gen_random_uuid(), 'p', 'proj', NULL, %s)",
+                (placed,),
+            )
+
+
+def test_migration_0016_adds_request_input_columns(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    cols = _columns(pg_conn, "allocations")
+    assert cols.get("requested_pcie_specs") == "jsonb"
+    assert cols.get("requested_kind") == "text"
+    assert cols.get("requested_resource_id") == "uuid"
+    # requested_pcie_specs is NOT NULL defaulting to '[]' so a non-queued row reads as empty.
+    assert _nullable(pg_conn, "allocations").get("requested_pcie_specs") == "NO"
+    resource_id = _seed_resource_row(pg_conn)
+    row = pg_conn.execute(
+        "INSERT INTO allocations (id, principal, project, resource_id, state) "
+        "VALUES (gen_random_uuid(), 'p', 'proj', %s, 'granted') RETURNING requested_pcie_specs",
+        (resource_id,),
+    ).fetchone()
+    assert row is not None and row[0] == []
+
+
+def test_migration_0016_adds_requested_backlog_index(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    row = pg_conn.execute(
+        "SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_allocations_requested_created_at'"
+    ).fetchone()
+    assert row is not None
+    definition = row[0]
+    assert "created_at" in definition
+    assert "requested" in definition  # partial index over the backlog only

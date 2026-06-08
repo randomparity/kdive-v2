@@ -180,6 +180,10 @@ async def request_allocation(
     most specific category — ``quota_exceeded`` (over the concurrency cap),
     ``allocation_denied`` (over budget or host cap), or ``configuration_error`` (a
     malformed selector/window or an over-caps size). Requires ``operator`` on ``project``.
+
+    With ``on_capacity=queue`` a **capacity** denial (host cap or concurrency quota) instead
+    enqueues a durable ``requested`` allocation holding only a queue position (ADR-0069), and
+    the response reports ``requested``. Budget and configuration denials always hard-deny.
     """
     require_project(ctx, project)
     require_role(ctx, project, Role.OPERATOR)
@@ -239,16 +243,34 @@ async def request_allocation(
                     disk_gb=sizing.disk_gb,
                     shape=sizing.shape,
                     pcie_specs=specs,
+                    on_capacity=payload.on_capacity,
+                    requested_kind=None if resolved_id is not None else kind,
+                    requested_resource_id=resolved_id,
                 ),
             )
         if outcome.granted and outcome.allocation is not None:
-            return ToolResponse.success(
-                str(outcome.allocation.id),
-                "granted",
-                suggested_next_actions=["allocations.get", "allocations.release"],
-                data={"resource_id": str(resource.id), "project": project},
-            )
+            return _grant_or_enqueue_response(resource, project, outcome.allocation)
         return _denial_response(resource.id, project, outcome)
+
+
+def _grant_or_enqueue_response(
+    resource: Resource, project: str, allocation: Allocation
+) -> ToolResponse:
+    """Render a grant or a queued-enqueue success (ADR-0069).
+
+    A grant carries the chosen host's ``resource_id`` and reports ``granted``; a queued
+    ``requested`` allocation reports ``requested`` and carries no ``resource_id`` (it holds
+    only a queue position, not a host).
+    """
+    data = {"project": project}
+    if allocation.state is not AllocationState.REQUESTED:
+        data["resource_id"] = str(resource.id)
+    return ToolResponse.success(
+        str(allocation.id),
+        allocation.state.value,
+        suggested_next_actions=["allocations.get", "allocations.release"],
+        data=data,
+    )
 
 
 def _denial_response(resource_id: UUID, project: str, outcome: AdmissionOutcome) -> ToolResponse:

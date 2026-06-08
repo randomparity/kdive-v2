@@ -186,9 +186,17 @@ class Allocation(DomainModel, _Attribution):
     from this column on non-terminal allocations, so the claim frees on every terminal
     transition simply by the allocation leaving the non-terminal set; the row persists as
     a historical snapshot.
+
+    M1.4 also makes ``requested`` a durable queue state for a capacity-denied request
+    (ADR-0069): a queued row holds only a queue position — ``resource_id`` is ``None`` (the
+    DB CHECK permits NULL only in ``requested``), no reserve, no lease, empty ``pcie_claim``
+    — and persists the *original request inputs* to re-admit at promotion (#165):
+    ``requested_pcie_specs`` (the requested match-spec **union**, distinct from the resolved
+    ``pcie_claim``) and the target descriptor (``requested_kind`` for by-kind,
+    ``requested_resource_id`` for by-id). Size is the existing ``requested_*`` snapshot.
     """
 
-    resource_id: UUID
+    resource_id: UUID | None = None
     state: AllocationState
     lease_expiry: datetime | None = None
     capability_scope: dict[str, Any] = Field(default_factory=dict)
@@ -199,6 +207,9 @@ class Allocation(DomainModel, _Attribution):
     active_started_at: datetime | None = None
     active_ended_at: datetime | None = None
     pcie_claim: list[PCIeClaim] = Field(default_factory=list)
+    requested_pcie_specs: list[str] = Field(default_factory=list)
+    requested_kind: str | None = None
+    requested_resource_id: UUID | None = None
 
 
 class System(DomainModel, _Attribution):
@@ -334,11 +345,18 @@ class Quota(_DomainBase):
     ``allocations.request``; ``max_concurrent_systems`` at ``systems.provision``. No
     quota row → the project is denied (``quota_exceeded``); a deployment seeds it
     explicitly.
+
+    M1.4 adds ``max_pending_allocations`` (ADR-0069): a **distinct** per-project cap on
+    queued ``requested`` rows, bounding how deep one project can fill the backlog with
+    ``on_capacity=queue``. It is separate from ``max_concurrent_allocations`` (which no
+    longer counts ``requested``); the migration backfills it to 0 so the queue is opt-in
+    and fail-closed until an operator raises it.
     """
 
     project: str
     max_concurrent_allocations: int
     max_concurrent_systems: int
+    max_pending_allocations: int = 0
     updated_at: datetime
 
 
