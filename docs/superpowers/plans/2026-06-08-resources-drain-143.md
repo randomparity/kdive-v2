@@ -92,7 +92,11 @@ consistently):
    - `force_release` → `require_platform_role(PLATFORM_ADMIN)`.
    On `AuthorizationError`: `audit_platform_denial(tool="resources.drain",
    scope=f"resource:{resource_id}")` then `_denied`. (An operator calling `force_release`
-   holds a platform role, so the denial is audited — AC #2.)
+   holds a platform role, so the denial is audited — AC #2.) **Do not** add a hierarchy here:
+   the role model is non-hierarchical except `admin→auditor` (`rbac.py:55-57`,
+   ADR-0043 §2). An admin-only token being denied `passive` (it requires `operator`) is
+   intentional — passive drain is an `operator` action (ADR-0062 §3); a real platform admin
+   carries both IdP claims. Faithfully require the per-mode role; do not "fix" the inversion.
 3. `force_release` only: blank `reason` → `_config_error`, no cordon, no audit.
 4. Validate `resource_id` is a uuid (`_as_uuid`); malformed → `_error`, unaudited. Host
    *existence* is checked by step 5's `_apply_cordon` (no separate read): a missing host makes
