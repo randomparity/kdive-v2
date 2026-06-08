@@ -115,7 +115,7 @@ def _reconcile_response(report: ReconcileReport) -> ToolResponse:
             "abandoned_jobs": str(report.abandoned_jobs),
             "dead_sessions": str(report.dead_sessions),
             "leaked_domains": str(report.leaked_domains),
-            "idempotency_keys_gcd": str(report.idempotency_keys_gcd),
+            "idempotency_keys_gc_count": str(report.idempotency_keys_gc_count),
             "abandoned_uploads": str(report.abandoned_uploads),
             "failures": ",".join(report.failures),
         },

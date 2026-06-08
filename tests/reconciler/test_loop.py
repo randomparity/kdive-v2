@@ -51,12 +51,12 @@ def test_reconcile_report_holds_counts_and_failures() -> None:
         abandoned_jobs=2,
         dead_sessions=3,
         leaked_domains=4,
-        idempotency_keys_gcd=6,
+        idempotency_keys_gc_count=6,
         failures=("abandoned_jobs",),
     )
     assert report.expired_allocations == 5
     assert report.orphaned_systems == 1
-    assert report.idempotency_keys_gcd == 6
+    assert report.idempotency_keys_gc_count == 6
     assert report.failures == ("abandoned_jobs",)
 
 
@@ -451,7 +451,7 @@ def test_reconcile_once_counts_a_mixed_pass(migrated_url: str) -> None:
             abandoned_jobs=1,
             dead_sessions=1,
             leaked_domains=1,
-            idempotency_keys_gcd=0,
+            idempotency_keys_gc_count=0,
             failures=(),
         )
         assert reaper.destroyed == ["vm-leak"]

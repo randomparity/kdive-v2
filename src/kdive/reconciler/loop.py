@@ -99,7 +99,7 @@ class ReconcileReport:
     abandoned_jobs: int
     dead_sessions: int
     leaked_domains: int
-    idempotency_keys_gcd: int
+    idempotency_keys_gc_count: int
     failures: tuple[str, ...]
     abandoned_uploads: int = 0
 
@@ -506,7 +506,7 @@ async def reconcile_once(
         "abandoned_jobs": 0,
         "dead_sessions": 0,
         "leaked_domains": 0,
-        "idempotency_keys_gcd": 0,
+        "idempotency_keys_gc_count": 0,
         "abandoned_uploads": 0,
     }
     failures: list[str] = []
@@ -527,7 +527,8 @@ async def reconcile_once(
     )
     await _isolated("leaked_domains", lambda conn: _repair_leaked_domains(conn, reaper))
     await _isolated(
-        "idempotency_keys_gcd", lambda conn: _gc_idempotency_keys(conn, idempotency_retention)
+        "idempotency_keys_gc_count",
+        lambda conn: _gc_idempotency_keys(conn, idempotency_retention),
     )
     if upload_store is not None:
         await _isolated(
@@ -540,7 +541,7 @@ async def reconcile_once(
         abandoned_jobs=counts["abandoned_jobs"],
         dead_sessions=counts["dead_sessions"],
         leaked_domains=counts["leaked_domains"],
-        idempotency_keys_gcd=counts["idempotency_keys_gcd"],
+        idempotency_keys_gc_count=counts["idempotency_keys_gc_count"],
         failures=tuple(failures),
         abandoned_uploads=counts["abandoned_uploads"],
     )
