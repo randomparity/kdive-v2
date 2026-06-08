@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
@@ -289,7 +289,11 @@ def test_link_then_unlink_round_trip(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             inv_id = (await _open(pool, _ctx(), project="proj", title="t")).object_id
-            ref = {"tracker": "bz", "id": "7", "url": "https://bz/7"}
+            ref: inv_tools.ExternalRefInput = {
+                "tracker": "bz",
+                "id": "7",
+                "url": "https://bz/7",
+            }
             await inv_tools.link_external_ref(pool, _ctx(), inv_id, ref)
             after_link = await _refs_of(pool, inv_id)()
             await inv_tools.unlink_external_ref(pool, _ctx(), inv_id, ref)
@@ -368,7 +372,12 @@ def test_link_malformed_ref_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             inv_id = (await _open(pool, _ctx(), project="proj", title="t")).object_id
-            resp = await inv_tools.link_external_ref(pool, _ctx(), inv_id, {"tracker": "bz"})
+            resp = await inv_tools.link_external_ref(
+                pool,
+                _ctx(),
+                inv_id,
+                cast(inv_tools.ExternalRefInput, {"tracker": "bz"}),
+            )
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
