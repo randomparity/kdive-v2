@@ -51,6 +51,8 @@ _BEHAVIOR_TESTS_BY_TOOL = {
     "jobs.get": ("tests/mcp/catalog/test_jobs_tools.py",),
     "jobs.list": ("tests/mcp/catalog/test_jobs_tools.py",),
     "jobs.wait": ("tests/mcp/catalog/test_jobs_tools.py",),
+    "ops.force_release": ("tests/mcp/ops/test_breakglass.py",),
+    "ops.force_teardown": ("tests/mcp/ops/test_breakglass.py",),
     "ops.jobs_list": ("tests/mcp/ops/test_queue_tools.py",),
     "ops.queue_pause": ("tests/mcp/ops/test_queue_tools.py",),
     "ops.queue_resume": ("tests/mcp/ops/test_queue_tools.py",),

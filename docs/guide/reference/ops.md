@@ -2,6 +2,28 @@
 
 # `ops` tools
 
+## `ops.force_release`
+
+`implemented` · `destructive`
+
+Break-glass release of a stuck cross-project Allocation. Requires platform_admin.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `allocation_id` | `string` | yes | The cross-project Allocation to release. |
+| `reason` | `string` | yes | Mandatory non-blank break-glass justification (audited). |
+
+## `ops.force_teardown`
+
+`implemented` · `destructive`
+
+Break-glass teardown of a stuck cross-project System. Requires platform_admin.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `reason` | `string` | yes | Mandatory non-blank break-glass justification (audited). |
+| `system_id` | `string` | yes | The cross-project System to tear down. |
+
 ## `ops.jobs_list`
 
 `implemented` · `read-only`

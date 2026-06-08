@@ -43,6 +43,8 @@
 | [`jobs.get`](jobs.md#jobsget) | `implemented` |
 | [`jobs.list`](jobs.md#jobslist) | `implemented` |
 | [`jobs.wait`](jobs.md#jobswait) | `implemented` |
+| [`ops.force_release`](ops.md#opsforce_release) | `implemented` |
+| [`ops.force_teardown`](ops.md#opsforce_teardown) | `implemented` |
 | [`ops.jobs_list`](ops.md#opsjobs_list) | `implemented` |
 | [`ops.queue_pause`](ops.md#opsqueue_pause) | `implemented` |
 | [`ops.queue_resume`](ops.md#opsqueue_resume) | `implemented` |

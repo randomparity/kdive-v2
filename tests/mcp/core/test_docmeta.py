@@ -23,7 +23,7 @@ def test_mutating_is_not_readonly_not_destructive() -> None:
     assert a.destructiveHint is not True
 
 
-def test_destructive_tools_set_is_exactly_the_four() -> None:
+def test_destructive_tools_set_is_the_reviewed_set() -> None:
     assert (
         frozenset(
             {
@@ -31,6 +31,8 @@ def test_destructive_tools_set_is_exactly_the_four() -> None:
                 "control.force_crash",
                 "systems.teardown",
                 "systems.reprovision",
+                "ops.force_teardown",
+                "ops.force_release",
             }
         )
         == _docmeta.DESTRUCTIVE_TOOLS

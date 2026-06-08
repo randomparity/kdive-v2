@@ -12,6 +12,7 @@ envelope's failure-status set). RBAC: `request`/`release` require `operator`; re
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
@@ -54,6 +55,22 @@ DEFAULT_LIST_LIMIT = 50
 MAX_LIST_LIMIT = 200
 _RELEASABLE = (AllocationState.GRANTED, AllocationState.ACTIVE)
 _TERMINAL = (AllocationState.RELEASED, AllocationState.EXPIRED, AllocationState.FAILED)
+
+# The release transition helper writes its audit row through an injected writer so the
+# break-glass path (a platform_admin who is not a member of the target project) can use a
+# guard-exempt writer, while the per-project release keeps the membership-guarded one. The
+# writer composes one INSERT on ``conn`` inside the release transaction; it does not open
+# its own transaction (ADR-0062 §4).
+AuditWriter = Callable[[AsyncConnection, audit.AuditEvent], Awaitable[None]]
+
+
+def ctx_audit_writer(ctx: RequestContext) -> AuditWriter:
+    """The per-project writer: the membership-guarded ``audit.record`` (default release path)."""
+
+    async def _write(conn: AsyncConnection, event: audit.AuditEvent) -> None:
+        await audit.record(conn, ctx, event)
+
+    return _write
 
 
 def _envelope_for_allocation(alloc: Allocation) -> ToolResponse:
@@ -198,7 +215,7 @@ async def get_allocation(
 
 async def _transition_and_audit(
     conn: AsyncConnection,
-    ctx: RequestContext,
+    audit_writer: AuditWriter,
     alloc_id: UUID,
     frm: AllocationState,
     to: AllocationState,
@@ -206,9 +223,8 @@ async def _transition_and_audit(
     project: str,
 ) -> None:
     await ALLOCATIONS.update_state(conn, alloc_id, to)
-    await audit.record(
+    await audit_writer(
         conn,
-        ctx,
         audit.AuditEvent(
             tool="allocations.release",
             object_kind="allocations",
@@ -233,26 +249,45 @@ async def release_allocation(
             if alloc is None or alloc.project not in ctx.projects:
                 return _config_error(allocation_id)
             require_role(ctx, alloc.project, Role.OPERATOR)
-            try:
-                return await _release_locked(conn, ctx, uid, project=alloc.project)
-            except IllegalTransition:
-                # Backstop for an interleaving the lock did not cover (e.g. a future
-                # provision path). Caught OUTSIDE the rolled-back transaction; re-read.
-                async with pool.connection() as conn2:
-                    latest = await ALLOCATIONS.get(conn2, uid)
-                data = {"current_status": latest.state.value} if latest else {}
-                return ToolResponse.failure(
-                    allocation_id, ErrorCategory.CONFIGURATION_ERROR, data=data
-                )
-            except CategorizedError as exc:
-                # Reconciliation cannot price the allocation (e.g. an active allocation
-                # with no persisted size). The transaction rolled back, so no terminal
-                # transition or ledger row was committed; surface the typed failure.
-                return ToolResponse.failure(allocation_id, exc.category)
+        return await release_with_backstops(
+            pool, uid, project=alloc.project, audit_writer=ctx_audit_writer(ctx)
+        )
+
+
+async def release_with_backstops(
+    pool: AsyncConnectionPool,
+    uid: UUID,
+    *,
+    project: str,
+    audit_writer: AuditWriter,
+) -> ToolResponse:
+    """Run ``_release_locked`` with the ``IllegalTransition`` / ``CategorizedError`` backstops.
+
+    Shared by the per-project ``allocations.release`` and the break-glass
+    ``ops.force_release`` (ADR-0062 §4) so the two callers cannot drift: ``_release_locked``
+    is unguarded, and both its failure modes must surface as a typed envelope rather than
+    leak the raw exception. ``audit_writer`` selects the membership-guarded
+    (:func:`ctx_audit_writer`) or guard-exempt break-glass attribution.
+    """
+    async with pool.connection() as conn:
+        try:
+            return await _release_locked(conn, audit_writer, uid, project=project)
+        except IllegalTransition:
+            # Backstop for an interleaving the lock did not cover (e.g. a future provision
+            # path). Caught OUTSIDE the rolled-back transaction; re-read.
+            async with pool.connection() as conn2:
+                latest = await ALLOCATIONS.get(conn2, uid)
+            data = {"current_status": latest.state.value} if latest else {}
+            return ToolResponse.failure(str(uid), ErrorCategory.CONFIGURATION_ERROR, data=data)
+        except CategorizedError as exc:
+            # Reconciliation cannot price the allocation (e.g. an active allocation with no
+            # persisted size). The transaction rolled back, so no terminal transition or
+            # ledger row was committed; surface the typed failure.
+            return ToolResponse.failure(str(uid), exc.category)
 
 
 async def _release_locked(
-    conn: AsyncConnection, ctx: RequestContext, uid: UUID, *, project: str
+    conn: AsyncConnection, audit_writer: AuditWriter, uid: UUID, *, project: str
 ) -> ToolResponse:
     """Drive an allocation to ``released`` and reconcile its spend in one transaction.
 
@@ -286,11 +321,16 @@ async def _release_locked(
             )
         if current.state in _RELEASABLE:
             await _transition_and_audit(
-                conn, ctx, uid, current.state, AllocationState.RELEASING, project=project
+                conn, audit_writer, uid, current.state, AllocationState.RELEASING, project=project
             )
             current = await accounting.stamp_active_ended(conn, current, datetime.now(UTC))
         await _transition_and_audit(
-            conn, ctx, uid, AllocationState.RELEASING, AllocationState.RELEASED, project=project
+            conn,
+            audit_writer,
+            uid,
+            AllocationState.RELEASING,
+            AllocationState.RELEASED,
+            project=project,
         )
         await accounting.reconcile(conn, current)
     return ToolResponse.success(str(uid), "released")

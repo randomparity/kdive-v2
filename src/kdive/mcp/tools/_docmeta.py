@@ -21,6 +21,8 @@ DESTRUCTIVE_TOOLS = frozenset(
         "control.force_crash",
         "systems.teardown",
         "systems.reprovision",
+        "ops.force_teardown",
+        "ops.force_release",
     }
 )
 
