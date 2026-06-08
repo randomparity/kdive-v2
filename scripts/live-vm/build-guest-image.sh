@@ -26,7 +26,7 @@
 # unprivileged. The chmod 0644 lets the separate qemu user read the image under qemu:///system.
 set -euo pipefail
 
-ROOTFS_PATH="${KDIVE_ROOTFS:-/var/lib/kdive/rootfs/minimal.qcow2}"
+ROOTFS_PATH="${KDIVE_ROOTFS:-/var/lib/kdive/rootfs/local/fedora-kdive-ready-43.qcow2}"
 RELEASEVER="${KDIVE_ROOTFS_RELEASEVER:-43}"
 # The Stage-1 `virt-builder --size` must be >= the template's virtual size, or Stage 1 fails
 # with "images cannot be shrunk". 6G is the Fedora-43 floor; raise KDIVE_ROOTFS_SIZE for a

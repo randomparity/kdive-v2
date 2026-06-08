@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -13,6 +14,7 @@ from kdive.components.requirements import CmdlineRequirements, ConfigRequirement
 from kdive.domain.errors import CategorizedError, ErrorCategory
 
 DEFAULT_FIXTURE_CATALOG_PATH = Path(__file__).parents[3] / "fixtures" / "local-libvirt"
+_FIXTURE_CATALOG_ENV = "KDIVE_FIXTURE_CATALOG_PATH"
 
 
 class FixtureStorage(BaseModel):
@@ -101,8 +103,17 @@ class FixtureCatalog(BaseModel):
         return None
 
 
-def load_fixture_catalog(path: Path = DEFAULT_FIXTURE_CATALOG_PATH) -> FixtureCatalog:
+def fixture_catalog_path_from_env() -> Path:
+    """Return the operator-provided fixture catalog path, or the source-tree default."""
+    raw = os.environ.get(_FIXTURE_CATALOG_ENV)
+    if raw is None or raw == "":
+        return DEFAULT_FIXTURE_CATALOG_PATH
+    return Path(raw)
+
+
+def load_fixture_catalog(path: Path | None = None) -> FixtureCatalog:
     """Read and validate one provider fixture catalog bundle."""
+    path = path or fixture_catalog_path_from_env()
     try:
         manifest = FixtureManifest.model_validate(_load_yaml(path / "manifest.yaml"))
         rootfs = [
