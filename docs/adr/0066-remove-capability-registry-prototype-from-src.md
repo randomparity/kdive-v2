@@ -1,6 +1,6 @@
 # ADR 0066 — Remove capability-registry prototype from production source
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-08
 - **Deciders:** kdive maintainers
 - **Supersedes:** [ADR-0063](0063-typed-provider-runtime.md) where it retained

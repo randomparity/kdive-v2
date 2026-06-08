@@ -31,7 +31,7 @@ src/kdive/
   mcp/         app.py · auth.py · tools/{resources,allocations,systems,investigations,runs,debug,control,vmcore,artifacts,jobs}.py
   security/    rbac.py · audit.py · gate.py · redaction.py · secret_registry.py · paths.py · secrets.py
   reconciler/  loop.py
-  providers/   capability.py · interfaces.py · local_libvirt/{discovery,provisioning,build,install,connect,debug_gdbmi,introspect_drgn,control,retrieve}.py
+  providers/   composition.py · ports.py · interfaces.py · local_libvirt/{discovery,provisioning,build,install,connect,debug_gdbmi,introspect_drgn,control,retrieve}.py
   profiles/    provisioning.py · build.py
   log.py       structured-logging config (JSON, stdlib logging)
   __main__.py  (server | worker | reconciler entrypoints)
