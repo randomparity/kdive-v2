@@ -51,9 +51,15 @@ from kdive.domain.state import (
 
 
 class ResourceKind(StrEnum):
-    """The provider resource kinds; M0 ships one."""
+    """The provider resource kinds; M1.5 adds the fault-injection mock kind.
+
+    ``FAULT_INJECT`` is a forward declaration: its runtime and the
+    ``resources_kind_check`` widen that admits it land with the mock provider
+    (M1.5 issue 2). The default production composition does not register it.
+    """
 
     LOCAL_LIBVIRT = "local-libvirt"
+    FAULT_INJECT = "fault-inject"
 
 
 class JobKind(StrEnum):
