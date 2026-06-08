@@ -19,7 +19,7 @@ from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
 from kdive.planes import vmcore as vmcore_plane
-from kdive.providers.ports import CaptureOutput, CrashOutput
+from kdive.providers.ports import CaptureOutput, CrashOutput, CrashPostmortem
 from kdive.security.rbac import AuthorizationError, Role
 from kdive.store.objectstore import StoredArtifact
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
@@ -52,12 +52,11 @@ async def _fetch_vmcore(
     system_id: str,
     method: str = "host_dump",
 ):
-    return await vmcore_tools.fetch_vmcore(
+    return await _vmcore_handlers().fetch_vmcore(
         pool,
         ctx,
         system_id=system_id,
         method=method,
-        supported_methods=_TEST_CAPTURE_METHODS,
     )
 
 
@@ -118,6 +117,13 @@ class _FakeCrash:
             transcript="$ log\npassword=hunter2\nok",
             truncated=False,
         )
+
+
+def _vmcore_handlers(crash: CrashPostmortem | None = None) -> vmcore_tools.VmcoreHandlers:
+    return vmcore_tools.VmcoreHandlers(
+        supported_methods=_TEST_CAPTURE_METHODS,
+        crash=crash or _FakeCrash(),
+    )
 
 
 class _RaisingCrash:
@@ -414,8 +420,8 @@ def test_postmortem_crash_bad_command_is_config_error(migrated_url: str) -> None
         async with _pool(migrated_url) as pool:
             run_id = await _crashed_with_built_run(pool)
             crash = _FakeCrash()
-            resp = await vmcore_tools.postmortem_crash(
-                pool, _ctx(), run_id=run_id, commands=["bt | sh"], crash=crash
+            resp = await _vmcore_handlers(crash).postmortem_crash(
+                pool, _ctx(), run_id=run_id, commands=["bt | sh"]
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
         assert crash.kwargs == {}  # the port was never called
@@ -428,8 +434,8 @@ def test_postmortem_crash_runs_and_redacts(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _crashed_with_built_run(pool)
             crash = _FakeCrash()
-            resp = await vmcore_tools.postmortem_crash(
-                pool, _ctx(), run_id=run_id, commands=["log"], crash=crash
+            resp = await _vmcore_handlers(crash).postmortem_crash(
+                pool, _ctx(), run_id=run_id, commands=["log"]
             )
         assert resp.status != "error"
         assert "hunter2" not in resp.data["transcript"]
@@ -444,8 +450,8 @@ def test_postmortem_crash_requires_viewer_role(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _crashed_with_built_run(pool)
             with pytest.raises(AuthorizationError):
-                await vmcore_tools.postmortem_crash(
-                    pool, _ctx(role=None), run_id=run_id, commands=["log"], crash=_FakeCrash()
+                await _vmcore_handlers().postmortem_crash(
+                    pool, _ctx(role=None), run_id=run_id, commands=["log"]
                 )
 
     asyncio.run(_run())
@@ -456,8 +462,8 @@ def test_postmortem_crash_unbuilt_run_is_config_error(migrated_url: str) -> None
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
             run_id = await seed_run_on_system(pool, sys_id, debuginfo_ref=None, build_id=None)
-            resp = await vmcore_tools.postmortem_crash(
-                pool, _ctx(), run_id=run_id, commands=["log"], crash=_FakeCrash()
+            resp = await _vmcore_handlers().postmortem_crash(
+                pool, _ctx(), run_id=run_id, commands=["log"]
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
@@ -469,8 +475,8 @@ def test_postmortem_crash_provenance_mismatch_is_config_error(migrated_url: str)
         async with _pool(migrated_url) as pool:
             run_id = await _crashed_with_built_run(pool)
             crash = _RaisingCrash(ErrorCategory.CONFIGURATION_ERROR)
-            resp = await vmcore_tools.postmortem_crash(
-                pool, _ctx(), run_id=run_id, commands=["log"], crash=crash
+            resp = await _vmcore_handlers(crash).postmortem_crash(
+                pool, _ctx(), run_id=run_id, commands=["log"]
             )
         # The provider raises CategorizedError; the tool returns a typed failure, never a 500.
         assert resp.status == "error" and resp.error_category == "configuration_error"
@@ -483,7 +489,7 @@ def test_postmortem_triage_runs_and_relabels_actions(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _crashed_with_built_run(pool)
             crash = _FakeCrash()
-            resp = await vmcore_tools.postmortem_triage(pool, _ctx(), run_id=run_id, crash=crash)
+            resp = await _vmcore_handlers(crash).postmortem_triage(pool, _ctx(), run_id=run_id)
         assert resp.status != "error"
         assert "hunter2" not in resp.data["transcript"]
         assert resp.suggested_next_actions == ["postmortem.triage", "artifacts.list"]
@@ -497,9 +503,7 @@ def test_postmortem_triage_propagates_failure(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
             run_id = await seed_run_on_system(pool, sys_id, debuginfo_ref=None, build_id=None)
-            resp = await vmcore_tools.postmortem_triage(
-                pool, _ctx(), run_id=run_id, crash=_FakeCrash()
-            )
+            resp = await _vmcore_handlers().postmortem_triage(pool, _ctx(), run_id=run_id)
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -512,8 +516,8 @@ def test_postmortem_crash_no_core_is_config_error(migrated_url: str) -> None:
             run_id = await seed_run_on_system(
                 pool, sys_id, debuginfo_ref="k/runs/r/vmlinux", build_id="deadbeef"
             )
-            resp = await vmcore_tools.postmortem_crash(
-                pool, _ctx(), run_id=run_id, commands=["log"], crash=_FakeCrash()
+            resp = await _vmcore_handlers().postmortem_crash(
+                pool, _ctx(), run_id=run_id, commands=["log"]
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
 

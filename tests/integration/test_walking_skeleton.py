@@ -248,12 +248,15 @@ def test_planted_secret_is_redacted(migrated_url: str) -> None:
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
                 await vmcore_plane.capture_handler(conn, job, _SecretBearingRetriever(sys_id))
-            resp = await vmcore_tools.postmortem_crash(
+            handlers = vmcore_tools.VmcoreHandlers(
+                supported_methods=frozenset({CaptureMethod.HOST_DUMP}),
+                crash=_SecretBearingCrash(),
+            )
+            resp = await handlers.postmortem_crash(
                 pool,
                 request_context(),
                 run_id=run_id,
                 commands=["log"],
-                crash=_SecretBearingCrash(),
             )
             assert resp.status != "error"
             transcript = resp.data["transcript"]

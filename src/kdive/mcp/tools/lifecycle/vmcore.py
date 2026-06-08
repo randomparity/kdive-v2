@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Annotated, Literal, NamedTuple
 from uuid import UUID
 
@@ -104,17 +105,56 @@ _VMCORE_METHODS: frozenset[CaptureMethod] = frozenset(
 )
 
 
-async def fetch_vmcore(
+@dataclass(frozen=True, slots=True)
+class VmcoreHandlers:
+    """vmcore/postmortem MCP handlers with provider seams bound at construction."""
+
+    supported_methods: frozenset[CaptureMethod]
+    crash: CrashPostmortem
+
+    async def fetch_vmcore(
+        self,
+        pool: AsyncConnectionPool,
+        ctx: RequestContext,
+        *,
+        system_id: str,
+        method: str = "host_dump",
+    ) -> ToolResponse:
+        return await _fetch_vmcore(
+            pool,
+            ctx,
+            system_id=system_id,
+            method=method,
+            supported_methods=self.supported_methods,
+        )
+
+    async def postmortem_crash(
+        self,
+        pool: AsyncConnectionPool,
+        ctx: RequestContext,
+        *,
+        run_id: str,
+        commands: list[str],
+    ) -> ToolResponse:
+        return await _postmortem_crash(
+            pool, ctx, run_id=run_id, commands=commands, crash=self.crash
+        )
+
+    async def postmortem_triage(
+        self, pool: AsyncConnectionPool, ctx: RequestContext, *, run_id: str
+    ) -> ToolResponse:
+        return await _postmortem_triage(pool, ctx, run_id=run_id, crash=self.crash)
+
+
+async def _fetch_vmcore(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
     system_id: str,
     method: str = "host_dump",
-    supported_methods: frozenset[CaptureMethod] | None = None,
+    supported_methods: frozenset[CaptureMethod],
 ) -> ToolResponse:
     """Admit a `capture_vmcore` job on a `crashed` System (operator); return the job handle."""
-    if supported_methods is None:
-        raise RuntimeError("supported capture methods must be injected by the registrar")
     uid = _as_uuid(system_id)
     if uid is None:
         return _config_error(system_id)
@@ -212,7 +252,7 @@ async def _resolve_postmortem(
     return _PostmortemTargets(run.debuginfo_ref, build_id, vmcore_ref)
 
 
-async def postmortem_crash(
+async def _postmortem_crash(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
@@ -247,11 +287,11 @@ async def postmortem_crash(
         )
 
 
-async def postmortem_triage(
+async def _postmortem_triage(
     pool: AsyncConnectionPool, ctx: RequestContext, *, run_id: str, crash: CrashPostmortem
 ) -> ToolResponse:
     """Run the fixed triage command batch and return the redacted report."""
-    resp = await postmortem_crash(
+    resp = await _postmortem_crash(
         pool, ctx, run_id=run_id, commands=list(_TRIAGE_COMMANDS), crash=crash
     )
     if resp.status == "error":
@@ -271,8 +311,10 @@ def register(
     if provider_runtime is None:
         raise RuntimeError("vmcore registrar requires an injected provider runtime")
     runtime = provider_runtime
-    crash = runtime.crash_postmortem
-    supported_methods = runtime.supported_capture_methods
+    handlers = VmcoreHandlers(
+        supported_methods=runtime.supported_capture_methods,
+        crash=runtime.crash_postmortem,
+    )
 
     @app.tool(
         name="vmcore.fetch",
@@ -287,12 +329,11 @@ def register(
         ] = "host_dump",
     ) -> ToolResponse:
         """Enqueue a capture_vmcore job on a crashed System. Requires operator."""
-        return await fetch_vmcore(
+        return await handlers.fetch_vmcore(
             pool,
             current_context(),
             system_id=system_id,
             method=method,
-            supported_methods=supported_methods,
         )
 
     @app.tool(
@@ -322,8 +363,8 @@ def register(
         ],
     ) -> ToolResponse:
         """Run a crash command batch over a Run's captured core; returns redacted output."""
-        return await postmortem_crash(
-            pool, current_context(), run_id=run_id, commands=commands, crash=crash
+        return await handlers.postmortem_crash(
+            pool, current_context(), run_id=run_id, commands=commands
         )
 
     @app.tool(
@@ -335,4 +376,4 @@ def register(
         run_id: Annotated[str, Field(description="The Run whose captured core to triage.")],
     ) -> ToolResponse:
         """Run the fixed triage commands (log+bt) over a Run's captured core; redacted report."""
-        return await postmortem_triage(pool, current_context(), run_id=run_id, crash=crash)
+        return await handlers.postmortem_triage(pool, current_context(), run_id=run_id)
