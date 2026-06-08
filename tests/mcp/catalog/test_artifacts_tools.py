@@ -11,6 +11,7 @@ import pytest
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog.artifacts_reads import (
@@ -62,20 +63,39 @@ async def _seed_system_with_artifacts(pool: AsyncConnectionPool) -> tuple[str, s
 
 
 class _SearchStore:
-    def __init__(self, data: bytes, *, size: int | None = None) -> None:
+    def __init__(
+        self,
+        data: bytes,
+        *,
+        size: int | None = None,
+        sensitivity: Sensitivity = Sensitivity.REDACTED,
+        head_error: CategorizedError | None = None,
+        get_error: CategorizedError | None = None,
+        missing_head: bool = False,
+    ) -> None:
         self.data = data
         self.size = len(data) if size is None else size
+        self.sensitivity = sensitivity
+        self.head_error = head_error
+        self.get_error = get_error
+        self.missing_head = missing_head
         self.headed = False
         self.got = False
 
     def head(self, key: str) -> HeadResult | None:
         self.headed = True
+        if self.head_error is not None:
+            raise self.head_error
+        if self.missing_head:
+            return None
         return HeadResult(size_bytes=self.size, checksum_sha256=None, etag="e")
 
     def get_artifact(self, key: str, etag: str | None) -> FetchedArtifact:
         self.got = True
+        if self.get_error is not None:
+            raise self.get_error
         assert etag == "e"
-        return FetchedArtifact(self.data, Sensitivity.REDACTED, "console")
+        return FetchedArtifact(self.data, self.sensitivity, "console")
 
 
 def _artifact_read_handlers(store: _SearchStore) -> ArtifactReadHandlers:
@@ -178,6 +198,73 @@ def test_artifacts_search_text_rejects_oversized_before_get(migrated_url: str) -
     asyncio.run(_run())
 
 
+def test_artifacts_search_text_missing_store_head_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            _, _, red_id = await _seed_system_with_artifacts(pool)
+            store = _SearchStore(b"panic", missing_head=True)
+            resp = await _artifact_read_handlers(store).artifacts_search_text(
+                pool, _ctx(), request=_search_request(red_id, "panic")
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert store.got is False
+
+    asyncio.run(_run())
+
+
+def test_artifacts_search_text_maps_store_head_failure(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            _, _, red_id = await _seed_system_with_artifacts(pool)
+            store = _SearchStore(
+                b"panic",
+                head_error=CategorizedError(
+                    "store down", category=ErrorCategory.INFRASTRUCTURE_FAILURE
+                ),
+            )
+            resp = await _artifact_read_handlers(store).artifacts_search_text(
+                pool, _ctx(), request=_search_request(red_id, "panic")
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "infrastructure_failure"
+        assert store.got is False
+
+    asyncio.run(_run())
+
+
+def test_artifacts_search_text_rejects_non_redacted_fetch(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            _, _, red_id = await _seed_system_with_artifacts(pool)
+            store = _SearchStore(b"panic", sensitivity=Sensitivity.SENSITIVE)
+            resp = await _artifact_read_handlers(store).artifacts_search_text(
+                pool, _ctx(), request=_search_request(red_id, "panic")
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert store.got is True
+
+    asyncio.run(_run())
+
+
+def test_artifacts_search_text_maps_store_get_failure(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            _, _, red_id = await _seed_system_with_artifacts(pool)
+            store = _SearchStore(
+                b"panic",
+                get_error=CategorizedError("stale", category=ErrorCategory.STALE_HANDLE),
+            )
+            resp = await _artifact_read_handlers(store).artifacts_search_text(
+                pool, _ctx(), request=_search_request(red_id, "panic")
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "stale_handle"
+
+    asyncio.run(_run())
+
+
 def test_artifacts_search_text_rejects_bad_pattern_before_head(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -259,6 +346,15 @@ def test_artifacts_list_cross_project_is_empty(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             sys_id, _, _ = await _seed_system_with_artifacts(pool)
             resp = await artifacts_list(pool, _ctx(projects=("other",)), system_id=sys_id)
+        assert resp.collection_items() == []
+
+    asyncio.run(_run())
+
+
+def test_artifacts_list_malformed_system_id_is_empty(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await artifacts_list(pool, _ctx(), system_id="not-a-uuid")
         assert resp.collection_items() == []
 
     asyncio.run(_run())

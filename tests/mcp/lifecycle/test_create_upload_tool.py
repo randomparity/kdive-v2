@@ -15,7 +15,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.db import upload_manifest
 from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RESOURCES, RUNS, SYSTEMS
-from kdive.domain.errors import ErrorCategory
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import (
     Allocation,
     Investigation,
@@ -60,6 +60,11 @@ class _FakeStore:
         return PresignedUpload(
             url=f"https://store/{key}", required_headers={"x-amz-checksum-sha256": sha256}
         )
+
+
+class _FailingStore:
+    def presign_put(self, key, *, sha256, size_bytes, sensitivity, retention_class, expires_in):
+        raise CategorizedError("presign failed", category=ErrorCategory.INFRASTRUCTURE_FAILURE)
 
 
 def _ctx(
@@ -196,6 +201,11 @@ async def _seed_created_run(
     return str(run.id)
 
 
+def _raw_artifacts(value: object) -> Any:
+    """Represent malformed JSON-shaped tool input at the typed handler boundary."""
+    return value
+
+
 def test_create_upload_mints_presigned_puts_and_persists_manifest(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -304,6 +314,44 @@ def test_create_upload_rejects_unknown_artifact_name_for_run(migrated_url: str) 
     asyncio.run(_run())
 
 
+def test_create_upload_rejects_missing_artifact_key_before_minting(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
+            store = _FakeStore()
+            out = await create_run_upload(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                artifacts=_raw_artifacts([{"name": "kernel", "sha256": "aaa"}]),
+                store=store,
+            )
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.data["reason"] == "bad_artifact_declaration"
+        assert store.calls == []
+
+    asyncio.run(_run())
+
+
+def test_create_upload_rejects_bad_artifact_types_before_minting(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
+            store = _FakeStore()
+            out = await create_run_upload(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                artifacts=_raw_artifacts([{"name": "kernel", "sha256": b"aaa", "size_bytes": 100}]),
+                store=store,
+            )
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.data["reason"] == "bad_artifact_declaration"
+        assert store.calls == []
+
+    asyncio.run(_run())
+
+
 def test_create_upload_rejects_oversize_before_minting(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -318,6 +366,25 @@ def test_create_upload_rejects_oversize_before_minting(migrated_url: str) -> Non
             )
         assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         assert store.calls == []
+
+    asyncio.run(_run())
+
+
+def test_create_upload_maps_presign_failure_without_manifest(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
+            out = await create_run_upload(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": 100}],
+                store=_FailingStore(),
+            )
+            async with pool.connection() as conn:
+                manifest = await upload_manifest.get_manifest(conn, "runs", UUID(run_id))
+        assert out.error_category == ErrorCategory.INFRASTRUCTURE_FAILURE.value
+        assert manifest is None
 
     asyncio.run(_run())
 
