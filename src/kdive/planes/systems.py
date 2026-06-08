@@ -256,15 +256,10 @@ def register_handlers(
             raise RuntimeError("systems handlers require provider runtime or provisioning")
         provisioning = provider_runtime.provisioner
 
-    async def _provision(conn: AsyncConnection, job: Job) -> str | None:
-        return await provision_handler(conn, job, provisioning)
-
-    async def _teardown(conn: AsyncConnection, job: Job) -> str | None:
-        return await teardown_handler(conn, job, provisioning)
-
-    async def _reprovision(conn: AsyncConnection, job: Job) -> str | None:
-        return await reprovision_handler(conn, job, provisioning)
-
-    registry.register(JobKind.PROVISION, _provision)
-    registry.register(JobKind.TEARDOWN, _teardown)
-    registry.register(JobKind.REPROVISION, _reprovision)
+    registry.register(
+        JobKind.PROVISION, lambda conn, job: provision_handler(conn, job, provisioning)
+    )
+    registry.register(JobKind.TEARDOWN, lambda conn, job: teardown_handler(conn, job, provisioning))
+    registry.register(
+        JobKind.REPROVISION, lambda conn, job: reprovision_handler(conn, job, provisioning)
+    )

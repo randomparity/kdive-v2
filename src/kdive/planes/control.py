@@ -173,11 +173,7 @@ def register_handlers(
             raise RuntimeError("control handlers require provider runtime or control")
         control = provider_runtime.controller
 
-    async def _power(conn: AsyncConnection, job: Job) -> str | None:
-        return await power_handler(conn, job, control)
-
-    async def _force_crash(conn: AsyncConnection, job: Job) -> str | None:
-        return await force_crash_handler(conn, job, control)
-
-    registry.register(JobKind.POWER, _power)
-    registry.register(JobKind.FORCE_CRASH, _force_crash)
+    registry.register(JobKind.POWER, lambda conn, job: power_handler(conn, job, control))
+    registry.register(
+        JobKind.FORCE_CRASH, lambda conn, job: force_crash_handler(conn, job, control)
+    )

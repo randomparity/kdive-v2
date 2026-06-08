@@ -123,7 +123,6 @@ def register_handlers(
             raise RuntimeError("vmcore handlers require provider runtime or retriever")
         retriever = provider_runtime.retriever
 
-    async def _capture(conn: AsyncConnection, job: Job) -> str | None:
-        return await capture_handler(conn, job, retriever)
-
-    registry.register(JobKind.CAPTURE_VMCORE, _capture)
+    registry.register(
+        JobKind.CAPTURE_VMCORE, lambda conn, job: capture_handler(conn, job, retriever)
+    )

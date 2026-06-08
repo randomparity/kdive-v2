@@ -369,15 +369,6 @@ def register_handlers(
         installer = installer or default_installer
         booter = booter or default_booter
 
-    async def _build(conn: AsyncConnection, job: Job) -> str | None:
-        return await build_handler(conn, job, builder)
-
-    async def _install(conn: AsyncConnection, job: Job) -> str | None:
-        return await install_handler(conn, job, installer)
-
-    async def _boot(conn: AsyncConnection, job: Job) -> str | None:
-        return await boot_handler(conn, job, booter)
-
-    registry.register(JobKind.BUILD, _build)
-    registry.register(JobKind.INSTALL, _install)
-    registry.register(JobKind.BOOT, _boot)
+    registry.register(JobKind.BUILD, lambda conn, job: build_handler(conn, job, builder))
+    registry.register(JobKind.INSTALL, lambda conn, job: install_handler(conn, job, installer))
+    registry.register(JobKind.BOOT, lambda conn, job: boot_handler(conn, job, booter))
