@@ -315,15 +315,18 @@ object id, `status`, `suggested_next_actions`, references — never dumps.
 
 ## Provider / plane delta (local-libvirt)
 
-| Plane | M1 addition |
-|-------|-------------|
-| Provisioning | `reprovision` op (`ready → reprovisioning → ready`); `dedup_key=(system_id,"reprovision",profile_digest)`; destructive/best-effort contract |
-| Connect | second transport `kind="ssh"` (port v1 SSH backend); credential by `ssh_credential_ref` resolved + registry-registered at the worker boundary |
-| Debug | live `introspect.run` — drgn over SSH, same helper set as offline, output redacted |
+M1 stays on the typed `ProviderRuntime` seam accepted in
+[0063](../adr/0063-typed-provider-runtime.md). Startup wires concrete local-libvirt ports in
+`src/kdive/providers/composition.py`; MCP tools and worker handlers consume those typed ports
+directly. Capability-dispatch language from [0009](../adr/0009-capability-provider-dispatch.md)
+is historical ADR context, not the active M1 extension path.
 
-The `ProvisioningPlane`/`ConnectPlane`/`DebugPlane` `Protocol`s are **unchanged**;
-M1 additions are new capabilities + backends behind them — a concrete test of the
-"new transport/op = provider change only" seam ([0009](../adr/0009-capability-provider-dispatch.md)).
+| Runtime port | M1 addition |
+|--------------|-------------|
+| `Provisioner` | `reprovision(system_id, profile)` for `ready → reprovisioning → ready`; jobs dedup by `(system_id, "reprovision", profile_digest)` and keep the destructive-op gate |
+| `Connector` | second transport kind, `open_transport(system, "ssh")`; the guest credential comes from `ssh_credential_ref` and is registered for redaction before opening the transport |
+| Debug runtime | `ProviderRuntime.debug_engine` and `attach_seam` continue to serve the gdb-MI tools over a live `DebugSession` |
+| Introspection ports | `LiveIntrospector.run(...)` powers `introspect.run` over SSH; `VmcoreIntrospector` remains the offline vmcore path, with the same helper set and redacted output |
 
 ## Error taxonomy (M1)
 
