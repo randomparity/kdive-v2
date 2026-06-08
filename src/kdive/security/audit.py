@@ -209,15 +209,21 @@ async def record_system(
     *,
     principal: str,
     event: AuditEvent,
+    agent_session: str | None = None,
 ) -> UUID:
     """Append one `audit_log` row for a system-initiated transition (no RequestContext).
 
     The reconciler acts cross-project on the platform's behalf (ADR-0021), so it has no
     principal-scoped :class:`RequestContext` and the membership guard :func:`record`
     applies does not fit. This writes the row under an explicit system ``principal`` (e.g.
-    ``system:reconciler``) and ``project`` (the audited object's), with no
-    ``agent_session``. Runs on ``conn`` without opening a transaction, so the caller
-    composes it with the audited transition in one ``conn.transaction()``.
+    ``system:reconciler``) and ``project`` (the audited object's). Runs on ``conn`` without
+    opening a transaction, so the caller composes it with the audited transition in one
+    ``conn.transaction()``.
+
+    ``agent_session`` defaults to ``None`` (a reconciler teardown carries no session). The
+    promotion sweep (ADR-0069 §4) passes the queued allocation's **original**
+    ``(principal, agent_session)`` so a backlog grant is indistinguishable in audit from a
+    synchronous one, even though the sweep itself runs under the service identity.
     """
     async with conn.cursor() as cur:
         await cur.execute(
@@ -228,7 +234,7 @@ async def record_system(
             "RETURNING id",
             (
                 principal,
-                None,
+                agent_session,
                 event.project,
                 event.tool,
                 event.object_kind,

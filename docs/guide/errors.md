@@ -32,6 +32,7 @@ errors.
 | `allocation_denied` | Admission control denied the allocation (capability mismatch, capacity, or policy). |
 | `quota_exceeded` | The principal or project has exhausted their quota or budget. |
 | `lease_expired` | The allocation's lease expired while a job was in flight; the run was terminated. Distinct from `canceled` (an explicit abort). |
+| `queue_timeout` | A queued (`requested`) allocation was reaped after exceeding the max-wait window without ever being placeable. Distinct from `lease_expired` (a *granted* lease window elapsing) — a queued request never held a lease. |
 | `provisioning_failure` | The provisioning step failed to produce a ready System. |
 | `install_failure` | The kernel install step failed. |
 | `transport_failure` | A console or debug transport failed during an active session. |
@@ -49,6 +50,9 @@ errors.
   `debug.start_session`.
 - **`lease_expired`** — the allocation has expired; request a new allocation and
   provision a new System.
+- **`queue_timeout`** — the queued request never became placeable within the max-wait
+  window; re-request once capacity frees, or relax the target (kind/PCIe) to widen the
+  candidate hosts.
 - **`authorization_denied`** — the caller needs a higher role or the provisioning
   profile needs an opt-in. See [safety and RBAC](safety-and-rbac.md).
 - **`infrastructure_failure`** or **`provisioning_failure`** — retry if the job has

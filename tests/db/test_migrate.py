@@ -102,6 +102,7 @@ def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
         "0014",
         "0015",
         "0016",
+        "0017",
     ]
     assert second == []
 
@@ -507,6 +508,7 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
         "0014",
         "0015",
         "0016",
+        "0017",
     ]
 
 
@@ -690,20 +692,21 @@ def test_migration_0016_makes_resource_id_nullable(pg_conn: psycopg.Connection) 
     assert _nullable(pg_conn, "allocations").get("resource_id") == "YES"
 
 
-def test_migration_0016_allows_null_resource_id_only_for_unplaced_states(
+def test_allocations_null_resource_id_only_for_unplaced_states(
     pg_conn: psycopg.Connection,
 ) -> None:
     migrate.apply_migrations(pg_conn)
-    # A queued `requested` row, and a cancelled-queue `released` row, may carry NULL — both
-    # are queued rows that never held a host (ADR-0069).
-    for never_placed in ("requested", "released"):
+    # A queued `requested` row, a cancelled-queue `released` row, and a never-placed `failed`
+    # row (a budget recheck terminate / queue_timeout, #165) may carry NULL — all are queued
+    # rows that never held a host (ADR-0069).
+    for never_placed in ("requested", "released", "failed"):
         pg_conn.execute(
             "INSERT INTO allocations (id, principal, project, resource_id, state) "
             "VALUES (gen_random_uuid(), 'p', 'proj', NULL, %s)",
             (never_placed,),
         )
     # An ever-placed state with a NULL resource_id is rejected by the CHECK.
-    for placed in ("granted", "active", "releasing", "expired", "failed"):
+    for placed in ("granted", "active", "releasing", "expired"):
         with pytest.raises(psycopg.errors.CheckViolation):
             pg_conn.execute(
                 "INSERT INTO allocations (id, principal, project, resource_id, state) "

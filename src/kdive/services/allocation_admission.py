@@ -172,22 +172,7 @@ async def admit(
         An :class:`AdmissionOutcome`: a grant, or a typed denial with no durable write.
     """
     try:
-        window_hours = resolve_window_hours(request.window)
-        validate_size(request.selector)
-        validate_against_resource(request.selector, request.resource)
-        coeff = await resolve_coeff(conn, request.resource.cost_class)
-        # quantize_kcu can fail closed (value-too-large) on an extreme window×size; keep
-        # it inside the guard so it returns a typed denial, never an uncaught exception.
-        estimate = quantize_kcu(
-            cost(
-                rate(
-                    coeff,
-                    vcpus=request.selector.vcpus,
-                    memory_gb=request.selector.memory_gb,
-                ),
-                window_hours,
-            )
-        )
+        window_hours, estimate = await price_window_and_estimate(conn, request)
     except CategorizedError as exc:
         return AdmissionOutcome(granted=False, allocation=None, category=exc.category)
     try:
@@ -204,6 +189,96 @@ async def admit(
         return AdmissionOutcome(granted=False, allocation=None, category=exc.category)
 
 
+async def price_window_and_estimate(
+    conn: AsyncConnection, request: AllocationRequest
+) -> tuple[Decimal, Decimal]:
+    """Validate the request and price the lease estimate (no lock, no write).
+
+    Resolves and clamps the lease window, validates the selector size against the resource
+    caps, and prices the ``reserved`` estimate. Shared by synchronous admission and the
+    promotion sweep so both price a request identically (ADR-0069). ``quantize_kcu`` is kept
+    inside the same guard so an extreme window×size fails closed as a typed denial rather
+    than an uncaught exception.
+
+    Returns:
+        ``(window_hours, estimate)`` — the clamped window and the quantized kcu reserve.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` for a bad window/size/over-caps request,
+            or a value-too-large estimate.
+    """
+    window_hours = resolve_window_hours(request.window)
+    validate_size(request.selector)
+    validate_against_resource(request.selector, request.resource)
+    coeff = await resolve_coeff(conn, request.resource.cost_class)
+    estimate = quantize_kcu(
+        cost(
+            rate(coeff, vcpus=request.selector.vcpus, memory_gb=request.selector.memory_gb),
+            window_hours,
+        )
+    )
+    return window_hours, estimate
+
+
+@dataclass(frozen=True)
+class _GateResult:
+    """The shared gate's outcome: the devices to grant, or the typed denial to route."""
+
+    denial: AdmissionOutcome | None
+    devices: list[PCIeClaim]
+
+
+async def capacity_gate(
+    conn: AsyncConnection, request: AllocationRequest, *, estimate: Decimal
+) -> _GateResult:
+    """Replay the check-then-debit gate against the project + the chosen host.
+
+    The single, shared admission gate (no fork): the grant-quota and budget checks, then the
+    host cap and PCIe resolution. **The caller must already hold the ``PROJECT`` and per-
+    ``RESOURCE`` locks** (the global order ``PROJECT → RESOURCE → ALLOCATION``); this function
+    acquires no lock itself, so synchronous admit (``PROJECT → RESOURCE``) and the promotion
+    sweep (``PROJECT → RESOURCE → ALLOCATION``) both keep the documented order and never
+    invert against each other.
+
+    Returns a structured result carrying either the claimed PCIe devices to grant, or the
+    typed denial. The denial's ``queueable`` flag (NOT its category) is what routes
+    terminate-vs-wait at promotion: a **budget** denial is ``ALLOCATION_DENIED`` with
+    ``queueable=False`` (terminate); a host-cap / quota / PCIe-busy denial is queueable
+    (wait). A PCIe-config denial (``CONFIGURATION_ERROR``) and the budget denial are the
+    non-queueable cases.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` if the host cap is invalid or a PCIe spec
+            is malformed grammar (the caller's transaction rolls back — no durable write).
+    """
+    if not await _within_alloc_quota(conn, request.project):
+        return _GateResult(
+            denial=AdmissionOutcome(
+                granted=False,
+                allocation=None,
+                category=ErrorCategory.QUOTA_EXCEEDED,
+                queueable=True,
+            ),
+            devices=[],
+        )
+    if not await within_budget(conn, request.project, estimate):
+        # A budget denial shares ``allocation_denied`` with the host-cap denial but is NOT
+        # queueable — waiting will not free budget (ADR-0069). It hard-denies / terminates.
+        return _GateResult(
+            denial=AdmissionOutcome(
+                granted=False, allocation=None, category=ErrorCategory.ALLOCATION_DENIED
+            ),
+            devices=[],
+        )
+    host = await _host_cap_check(conn, request.resource)
+    if host is not None:
+        return _GateResult(denial=host, devices=[])
+    claim = await _resolve_pcie_claim(conn, request)
+    if claim.denial is not None:
+        return _GateResult(denial=claim.denial, devices=[])
+    return _GateResult(denial=None, devices=claim.devices)
+
+
 async def _admit_under_project_lock(
     conn: AsyncConnection,
     request: AllocationRequest,
@@ -211,7 +286,12 @@ async def _admit_under_project_lock(
     window_hours: Decimal,
     estimate: Decimal,
 ) -> AdmissionOutcome:
-    """Run idempotency + the check-then-debit holding the PROJECT lock (RESOURCE nested)."""
+    """Run idempotency + the shared check-then-debit holding the PROJECT lock.
+
+    Reuses :func:`capacity_gate` (the same gate the promotion sweep replays). On a queueable
+    capacity denial with ``on_capacity=queue`` it enqueues; a budget denial hard-denies; on
+    success it grants. The gate acquires the nested ``RESOURCE`` lock.
+    """
     if request.idempotency_key is not None:
         replay = await resolve_replay(
             conn,
@@ -229,41 +309,20 @@ async def _admit_under_project_lock(
                     granted=False, allocation=None, category=ErrorCategory.CONFIGURATION_ERROR
                 )
             return AdmissionOutcome(granted=True, allocation=replay)
-    quota_ok = await _within_alloc_quota(conn, request.project)
-    if not quota_ok:
-        # The grant quota is a CAPACITY denial — waiting frees a slot, so it is queueable.
-        return await _deny_or_enqueue(
-            conn,
-            request,
-            AdmissionOutcome(
-                granted=False,
-                allocation=None,
-                category=ErrorCategory.QUOTA_EXCEEDED,
-                queueable=True,
-            ),
-        )
-    budget_ok = await within_budget(conn, request.project, estimate)
-    if not budget_ok:
-        # A budget denial shares ``allocation_denied`` with the host-cap denial but is NOT
-        # queueable — waiting will not free budget (ADR-0069). It hard-denies.
-        return AdmissionOutcome(
-            granted=False, allocation=None, category=ErrorCategory.ALLOCATION_DENIED
-        )
+    # Acquire RESOURCE before the gate (the global order PROJECT → RESOURCE); the gate itself
+    # takes no lock so the promotion sweep can keep the same order with ALLOCATION nested
+    # innermost. A queue-position enqueue holds no host, but running it under the already-held
+    # RESOURCE lock is harmless and keeps the check-then-debit + insert in one locked scope.
     async with advisory_xact_lock(conn, LockScope.RESOURCE, request.resource.id):
-        host = await _host_cap_check(conn, request.resource)
-        if host is not None:
-            return await _deny_or_enqueue(conn, request, host)
-        claim = await _resolve_pcie_claim(conn, request)
-        if claim.denial is not None:
-            # A PCIe denial (config or busy) is not queueable in #164 (PCIe-blind first);
-            # queued PCIe re-resolution at promotion is #165.
-            return claim.denial
+        gate = await capacity_gate(conn, request, estimate=estimate)
+        if gate.denial is not None:
+            return await _deny_or_enqueue(conn, request, gate.denial)
         return await _grant(
             conn,
             request,
             window_hours=window_hours,
             estimate=estimate,
-            claimed_devices=claim.devices,
+            claimed_devices=gate.devices,
         )
 
 

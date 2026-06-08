@@ -14,7 +14,14 @@ from kdive.db.repositories import ALLOCATIONS, RESOURCES
 from kdive.domain.models import Allocation, Resource, ResourceKind
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import AuthError, RequestContext
-from kdive.security.audit import AuditEvent, DenialEvent, args_digest, record, record_denial
+from kdive.security.audit import (
+    AuditEvent,
+    DenialEvent,
+    args_digest,
+    record,
+    record_denial,
+    record_system,
+)
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -152,6 +159,61 @@ def test_record_persists_null_agent_session(migrated_url: str) -> None:
                 row = await cur.fetchone()
             assert row is not None
             assert row[0] is None  # principal-only attribution persists as SQL NULL
+
+    asyncio.run(_run_test())
+
+
+def test_record_system_attributes_original_agent_session(migrated_url: str) -> None:
+    # The promotion sweep (#165) acts under the service identity but attributes the grant to
+    # the queued allocation's ORIGINAL (principal, agent_session) so the backlog grant is
+    # indistinguishable in audit from a synchronous one (ADR-0069 §4). record_system carries
+    # the agent_session, unlike a reconciler teardown (which leaves it NULL).
+    async def _run_test() -> None:
+        async with await _connect(migrated_url) as conn:
+            obj_id = uuid4()
+            audit_id = await record_system(
+                conn,
+                principal="alice",
+                agent_session="orig-sess",
+                event=AuditEvent(
+                    tool="allocations.request",
+                    object_kind="allocations",
+                    object_id=obj_id,
+                    transition="requested->granted",
+                    args={"project": "proj"},
+                    project="proj",
+                ),
+            )
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT principal, agent_session FROM audit_log WHERE id = %s", (audit_id,)
+                )
+                row = await cur.fetchone()
+            assert row == ("alice", "orig-sess")
+
+    asyncio.run(_run_test())
+
+
+def test_record_system_defaults_agent_session_to_null(migrated_url: str) -> None:
+    # A reconciler teardown carries no agent_session — the default preserves NULL.
+    async def _run_test() -> None:
+        async with await _connect(migrated_url) as conn:
+            audit_id = await record_system(
+                conn,
+                principal="system:reconciler",
+                event=AuditEvent(
+                    tool="reconciler.sweep_expired",
+                    object_kind="allocations",
+                    object_id=uuid4(),
+                    transition="active->expired",
+                    args={},
+                    project="proj",
+                ),
+            )
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT agent_session FROM audit_log WHERE id = %s", (audit_id,))
+                row = await cur.fetchone()
+            assert row is not None and row[0] is None
 
     asyncio.run(_run_test())
 

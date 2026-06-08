@@ -31,8 +31,13 @@ M0_DISTRIBUTED = {
 }
 # M1 first-use categories (ADR-0007 §4): the per-project concurrency-cap denial,
 # distinct from the over-budget `allocation_denied` so audit/SLO tell count from spend.
+# M1.4 (ADR-0069) adds `queue_timeout`: a queued `requested` allocation reaped after the
+# max-wait window without ever being placeable — distinct from `lease_expired` (a *granted*
+# lease window elapsing), so audit/SLO never conflate a never-placeable backlog request
+# with a reclaimed lease.
 M1_ADDED = {
     "quota_exceeded",
+    "queue_timeout",
 }
 M0_ALL = M0_PORTED | M0_DISTRIBUTED | M1_ADDED
 
