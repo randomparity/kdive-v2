@@ -119,7 +119,7 @@ def test_required_cmdline_root_matches_the_rendered_disk_target() -> None:
     # ADR-0061: the platform-injected root= must name the device provisioning attaches. These are
     # set independently in two modules; this guards them moving together.
     from kdive.domain.capture import CaptureMethod
-    from kdive.planes.runs_shared import system_required_cmdline
+    from kdive.services.run_steps import system_required_cmdline
 
     target = _safe_fromstring(render_domain_xml(_SYS, _profile())).find("devices/disk/target")
     assert target is not None

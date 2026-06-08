@@ -34,8 +34,6 @@ from kdive.mcp.tools.lifecycle.runs.common import (
     RUN_BUILD_TERMINAL,
     run_job_envelope,
 )
-from kdive.planes.runs_shared import BuildStepResult, platform_owned_cmdline_token
-from kdive.planes.runs_shared import existing_build_result as _existing_build_result
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
 from kdive.providers.build_validation import validate_external_artifacts
 from kdive.providers.component_validation import (
@@ -46,6 +44,8 @@ from kdive.providers.ports import BuildOutput, ValidatedUpload
 from kdive.security import audit
 from kdive.security.context import RequestContext
 from kdive.security.rbac import Role, require_role
+from kdive.services.run_steps import BuildStepResult, platform_owned_cmdline_token
+from kdive.services.run_steps import existing_build_result as _existing_build_result
 from kdive.store.objectstore import (
     HeadResult,
     StoredArtifact,

@@ -42,9 +42,9 @@ from kdive.mcp.tools.lifecycle.runs.create import create_run
 from kdive.mcp.tools.lifecycle.runs.steps import boot_run, install_run
 from kdive.mcp.tools.lifecycle.runs.view import get_run
 from kdive.planes import runs as runs_handlers
-from kdive.planes import runs_shared
 from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.security.rbac import AuthorizationError, Role
+from kdive.services import run_steps
 from tests.db_waits import wait_until_any_backend_waiting
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -1370,7 +1370,7 @@ def test_cmdline_default_is_kdump_reserving_for_kdump(migrated_url: str) -> None
             async with pool.connection() as conn:
                 run = await RUNS.get(conn, UUID(run_id))
                 assert run is not None
-                cmdline = await runs_shared.cmdline_for(conn, run, CaptureMethod.KDUMP)
+                cmdline = await run_steps.cmdline_for(conn, run, CaptureMethod.KDUMP)
             assert "crashkernel=" in cmdline
             assert "root=/dev/vda" in cmdline  # the platform injects the root device
 
@@ -1384,7 +1384,7 @@ def test_cmdline_default_omits_crashkernel_for_non_kdump(migrated_url: str) -> N
             async with pool.connection() as conn:
                 run = await RUNS.get(conn, UUID(run_id))
                 assert run is not None
-                cmdline = await runs_shared.cmdline_for(conn, run, CaptureMethod.CONSOLE)
+                cmdline = await run_steps.cmdline_for(conn, run, CaptureMethod.CONSOLE)
             assert "crashkernel=" not in cmdline
             assert "root=/dev/vda" in cmdline
 
@@ -1401,7 +1401,7 @@ def test_cmdline_appends_ledger_debug_args_after_the_required_base(migrated_url:
             async with pool.connection() as conn:
                 run = await RUNS.get(conn, UUID(run_id))
                 assert run is not None
-                cmdline = await runs_shared.cmdline_for(conn, run, CaptureMethod.KDUMP)
+                cmdline = await run_steps.cmdline_for(conn, run, CaptureMethod.KDUMP)
             # The platform-required args lead; the agent's debug args are appended after them.
             assert cmdline == "console=ttyS0 root=/dev/vda crashkernel=256M dhash_entries=1"
 
@@ -2164,35 +2164,35 @@ def _profile_dump(**local_libvirt: Any) -> dict[str, Any]:
 
 def test_install_method_kdump_when_crashkernel_set() -> None:
     system = _system_with_profile(_profile_dump(crashkernel="256M"))
-    assert runs_shared.install_method_for(system) is CaptureMethod.KDUMP
+    assert run_steps.install_method_for(system) is CaptureMethod.KDUMP
 
 
 def test_install_method_gdbstub_when_flag_set() -> None:
     system = _system_with_profile(_profile_dump(debug={"gdbstub": True}))
-    assert runs_shared.install_method_for(system) is CaptureMethod.GDBSTUB
+    assert run_steps.install_method_for(system) is CaptureMethod.GDBSTUB
 
 
 def test_install_method_host_dump_when_preserve_on_crash() -> None:
     system = _system_with_profile(_profile_dump(debug={"preserve_on_crash": True}))
-    assert runs_shared.install_method_for(system) is CaptureMethod.HOST_DUMP
+    assert run_steps.install_method_for(system) is CaptureMethod.HOST_DUMP
 
 
 def test_install_method_console_for_bare_system() -> None:
     system = _system_with_profile(_profile_dump())
-    assert runs_shared.install_method_for(system) is CaptureMethod.CONSOLE
+    assert run_steps.install_method_for(system) is CaptureMethod.CONSOLE
 
 
 def test_install_method_console_for_partial_profile_does_not_raise() -> None:
     # The minimal seed profile (no provider section) must resolve, not raise.
     system = _system_with_profile({"schema_version": 1})
-    assert runs_shared.install_method_for(system) is CaptureMethod.CONSOLE
+    assert run_steps.install_method_for(system) is CaptureMethod.CONSOLE
 
 
 def test_install_method_reads_alias_not_attribute_spelling() -> None:
     # A crashkernel under the WRONG key 'local_libvirt' must NOT resolve kdump:
     # the resolver reads the persisted alias 'local-libvirt' (ADR-0051 Decision 1).
     system = _system_with_profile({"provider": {"local_libvirt": {"crashkernel": "256M"}}})
-    assert runs_shared.install_method_for(system) is CaptureMethod.CONSOLE
+    assert run_steps.install_method_for(system) is CaptureMethod.CONSOLE
 
 
 async def _record_build_ledger(

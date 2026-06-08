@@ -22,6 +22,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.lifecycle_rules import TERMINAL_SYSTEM_STATES as _TERMINAL_SYSTEM
 from kdive.domain.models import Allocation, Job, JobKind, System
 from kdive.domain.state import AllocationState, IllegalTransition, SystemState
 from kdive.jobs import queue
@@ -39,7 +40,6 @@ from kdive.mcp.tools._common import (
 from kdive.mcp.tools._common import (
     job_envelope,
 )
-from kdive.planes.systems import TERMINAL_SYSTEM as _TERMINAL_SYSTEM
 from kdive.profiles.provisioning import (
     ProvisioningProfile,
     RootfsSource,

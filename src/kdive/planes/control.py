@@ -11,6 +11,7 @@ from psycopg import AsyncConnection
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.lifecycle_rules import TERMINAL_SYSTEM_STATES
 from kdive.domain.models import Job, JobKind, System
 from kdive.domain.state import SystemState
 from kdive.jobs.context import context_from_job as job_context_from_job
@@ -20,8 +21,6 @@ from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import Controller
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security import audit
-
-TERMINAL_SYSTEM = frozenset({SystemState.TORN_DOWN, SystemState.FAILED})
 
 
 class _ControlTarget(NamedTuple):
@@ -95,7 +94,7 @@ async def _force_crash_target(conn: AsyncConnection, system_id: UUID) -> _Contro
                 category=ErrorCategory.INFRASTRUCTURE_FAILURE,
                 details={"system_id": str(system_id)},
             )
-        if system.state in TERMINAL_SYSTEM:
+        if system.state in TERMINAL_SYSTEM_STATES:
             return None
         return _ControlTarget(domain_name(system), system.project)
 
@@ -111,7 +110,7 @@ async def _finalize_force_crash(
                 category=ErrorCategory.INFRASTRUCTURE_FAILURE,
                 details={"system_id": str(system_id)},
             )
-        if system.state in TERMINAL_SYSTEM:
+        if system.state in TERMINAL_SYSTEM_STATES:
             return
         if system.state is SystemState.READY:
             await SYSTEMS.update_state(conn, system_id, SystemState.CRASHED)

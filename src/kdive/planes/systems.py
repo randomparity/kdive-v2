@@ -13,6 +13,7 @@ from kdive.db import upload_manifest
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.lifecycle_rules import TERMINAL_SYSTEM_STATES
 from kdive.domain.models import Job, JobKind, Sensitivity, System
 from kdive.domain.state import IllegalTransition, SystemState
 from kdive.jobs.context import context_from_job as job_context_from_job
@@ -35,8 +36,6 @@ from kdive.store.objectstore import (
 )
 
 _log = logging.getLogger(__name__)
-
-TERMINAL_SYSTEM = frozenset({SystemState.TORN_DOWN, SystemState.FAILED})
 
 
 def object_store_from_env() -> _objectstore.ObjectStore:
@@ -161,7 +160,7 @@ async def provision_handler(
             details={"system_id": str(system_id)},
         )
     if system.state is not SystemState.PROVISIONING:
-        if system.state in TERMINAL_SYSTEM:
+        if system.state in TERMINAL_SYSTEM_STATES:
             await asyncio.to_thread(
                 provisioning.teardown, system.domain_name or domain_name_for(system_id)
             )
@@ -173,7 +172,7 @@ async def provision_handler(
         await _record_provision_failure(conn, job, system_id=system_id, project=system.project)
         raise
     current = await _commit_provision_result(conn, job, system, profile, domain_name)
-    if current in TERMINAL_SYSTEM:
+    if current in TERMINAL_SYSTEM_STATES:
         await asyncio.to_thread(provisioning.teardown, domain_name)
         _log.info("provision of system %s superseded by teardown; domain reaped", system_id)
     return str(system_id)
@@ -233,7 +232,7 @@ async def reprovision_handler(
                 transition="reprovisioning->ready",
                 tool="systems.reprovision",
             )
-    if current in TERMINAL_SYSTEM:
+    if current in TERMINAL_SYSTEM_STATES:
         await asyncio.to_thread(provisioning.teardown, domain_name)
         _log.info("reprovision of system %s superseded by teardown; domain reaped", system_id)
     return str(system_id)

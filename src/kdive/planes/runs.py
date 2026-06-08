@@ -19,14 +19,7 @@ from kdive.domain.state import IllegalTransition, RunState
 from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
-from kdive.planes.runs_shared import (
-    BuildStepResult,
-    cmdline_for,
-    existing_build_result,
-    finalize_build,
-    install_method_for,
-    installed_initrd_ref,
-)
+from kdive.planes.runs_shared import finalize_build
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import Booter, Builder, BuildOutput, Installer
@@ -35,6 +28,13 @@ from kdive.security import audit
 from kdive.security.artifact_search import ArtifactSearchInputError, search_text
 from kdive.security.context import RequestContext
 from kdive.security.redaction import Redactor
+from kdive.services.run_steps import (
+    BuildStepResult,
+    cmdline_for,
+    existing_build_result,
+    install_method_for,
+    installed_initrd_ref,
+)
 from kdive.store.objectstore import (
     ArtifactWriteRequest,
     object_store_from_env,
