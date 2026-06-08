@@ -396,8 +396,9 @@ class GdbMiEngine(Protocol):
         """Read selected registers through gdb/MI.
 
         Raises:
-            CategorizedError: ``DEBUG_ATTACH_FAILURE`` for gdb/MI read failures or
-                ``INFRASTRUCTURE_FAILURE`` for command timeouts.
+            CategorizedError: ``CONFIGURATION_ERROR`` for empty or invalid register names,
+                ``DEBUG_ATTACH_FAILURE`` for gdb/MI read failures, or ``INFRASTRUCTURE_FAILURE``
+                for command timeouts.
         """
         ...
 
