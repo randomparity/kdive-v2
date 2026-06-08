@@ -57,6 +57,7 @@ from kdive.services.allocation_idempotency import (
     resolve_replay,
     within_budget,
 )
+from kdive.services.pcie_claim import NON_TERMINAL_STATES
 
 if TYPE_CHECKING:
     from kdive.security.authz.context import RequestContext
@@ -67,13 +68,10 @@ _SECONDS_PER_HOUR = 3600
 # renewal path (#67) reuses the store under its own kind.
 _REQUEST_KIND = "allocations.request"
 
-# States that occupy a capacity slot (terminal released/expired/failed do not).
-_NON_TERMINAL = (
-    AllocationState.REQUESTED,
-    AllocationState.GRANTED,
-    AllocationState.ACTIVE,
-    AllocationState.RELEASING,
-)
+# States that occupy a capacity slot (terminal released/expired/failed do not). Shared
+# with the PCIe occupancy predicate so the host-cap count and the device-claim count can
+# never disagree about which allocations are live (ADR-0068).
+_NON_TERMINAL = NON_TERMINAL_STATES
 
 
 @dataclass(frozen=True)
