@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Any, LiteralString
 from uuid import UUID, uuid4
@@ -69,6 +70,14 @@ _OCCUPIED_SQL: LiteralString = (
     "JOIN runs r ON r.id = s.run_id "
     "WHERE r.system_id = %s AND s.transport = %s AND s.state IN ('attach', 'live') LIMIT 1"
 )
+
+
+@dataclass(frozen=True)
+class _AttachRequest:
+    run: Run
+    system: System
+    session_id: UUID
+    transport: str
 
 
 def _secret_scope(session_id: UUID) -> str:
@@ -124,6 +133,13 @@ def _map_attach_failure_category(category: ErrorCategory) -> ErrorCategory:
     return category
 
 
+def _release_failed_attach_secret(
+    registry: SecretRegistry, secret_scope: str, result: ToolResponse | TransportHandle
+) -> None:
+    if isinstance(result, ToolResponse) and result.status != "live":
+        registry.release(secret_scope)
+
+
 class DebugSessionHandlers:
     """Bound debug session lifecycle handlers.
 
@@ -170,35 +186,47 @@ class DebugSessionHandlers:
         secret_scope = _secret_scope(session_id)
         with bind_context(principal=ctx.principal):
             async with pool.connection() as conn:
-                run = await RUNS.get(conn, uid)
-                if run is None or run.project not in ctx.projects:
-                    return _config_error(run_id)
-                require_role(ctx, run.project, Role.OPERATOR)
-                guard = await _attach_preconditions(conn, run, transport)
-                if isinstance(guard, ToolResponse):
-                    return guard
-                system = guard
-                backend = self._credential_backend(session_id, transport)
-                resolved = _resolve_credential(system, transport, backend)
-                if isinstance(resolved, ToolResponse):
-                    return resolved
-                opened = await _open_transport(self._connector, system, transport)
-                if isinstance(opened, ToolResponse):
-                    self._secret_registry.release(secret_scope)
-                    return opened
+                request = await self._prepare_attach_request(conn, ctx, uid, transport, session_id)
+            if isinstance(request, ToolResponse):
+                return request
+            opened = await _open_transport(self._connector, request.system, request.transport)
+            _release_failed_attach_secret(self._secret_registry, secret_scope, opened)
+            if isinstance(opened, ToolResponse):
+                return opened
+            async with pool.connection() as conn:
                 response = await _insert_session_locked(
                     conn,
                     ctx,
-                    run,
-                    system,
+                    request.run,
+                    request.system,
                     opened,
                     self._connector,
-                    transport,
-                    session_id,
+                    request.transport,
+                    request.session_id,
                 )
-                if response.status != "live":
-                    self._secret_registry.release(secret_scope)
-                return response
+            _release_failed_attach_secret(self._secret_registry, secret_scope, response)
+            return response
+
+    async def _prepare_attach_request(
+        self,
+        conn: AsyncConnection,
+        ctx: RequestContext,
+        run_id: UUID,
+        transport: str,
+        session_id: UUID,
+    ) -> _AttachRequest | ToolResponse:
+        run = await RUNS.get(conn, run_id)
+        if run is None or run.project not in ctx.projects:
+            return _config_error(str(run_id))
+        require_role(ctx, run.project, Role.OPERATOR)
+        guard = await _attach_preconditions(conn, run, transport)
+        if isinstance(guard, ToolResponse):
+            return guard
+        backend = self._credential_backend(session_id, transport)
+        resolved = _resolve_credential(guard, transport, backend)
+        if isinstance(resolved, ToolResponse):
+            return resolved
+        return _AttachRequest(run=run, system=guard, session_id=session_id, transport=transport)
 
     def _credential_backend(self, session_id: UUID, transport: str) -> SecretBackend | None:
         if transport != _SSH or self._secret_backend_factory is None:

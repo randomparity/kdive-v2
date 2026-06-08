@@ -627,6 +627,29 @@ class _OrderRecordingConnector(_FakeConnector):
         return super().open_transport(system, kind)
 
 
+class _ConnectionRecordingContext:
+    def __init__(self, context: Any, log: list[str]) -> None:
+        self._context = context
+        self._log = log
+
+    async def __aenter__(self) -> Any:
+        self._log.append("connection:enter")
+        return await self._context.__aenter__()
+
+    async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> Any:
+        self._log.append("connection:exit")
+        return await self._context.__aexit__(exc_type, exc, traceback)
+
+
+class _ConnectionRecordingPool:
+    def __init__(self, pool: AsyncConnectionPool, log: list[str]) -> None:
+        self._pool = pool
+        self._log = log
+
+    def connection(self) -> _ConnectionRecordingContext:
+        return _ConnectionRecordingContext(self._pool.connection(), self._log)
+
+
 def _ssh_profile() -> dict[str, Any]:
     profile = copy.deepcopy(_PROFILE)
     profile["provider"]["local-libvirt"]["ssh_credential_ref"] = "ssh/guest-key"
@@ -713,6 +736,35 @@ def test_start_session_ssh_resolves_credential_before_opening_transport(migrated
             assert backend.refs == ["ssh/guest-key"]
             # The credential is in the registry before the transport was used.
             assert "guest-ssh-secret" in registry.snapshot()
+
+    asyncio.run(_run())
+
+
+def test_start_session_opens_transport_between_db_connections(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
+            run_id = await _seed_run(pool, sys_id)
+            log: list[str] = []
+            recording_pool: Any = _ConnectionRecordingPool(pool, log)
+            connector = _OrderRecordingConnector(log)
+
+            resp = await _handlers(connector).start_session(
+                recording_pool,
+                _ctx(),
+                run_id=run_id,
+                transport="gdbstub",
+            )
+
+        assert resp.status == "live"
+        assert log == [
+            "connection:enter",
+            "connection:exit",
+            "open:gdbstub",
+            "connection:enter",
+            "connection:exit",
+        ]
 
     asyncio.run(_run())
 
