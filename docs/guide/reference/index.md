@@ -21,6 +21,7 @@
 | [`artifacts.get`](artifacts.md#artifactsget) | `partial` |
 | [`artifacts.list`](artifacts.md#artifactslist) | `partial` |
 | [`artifacts.search_text`](artifacts.md#artifactssearch_text) | `partial` |
+| [`audit.query`](audit.md#auditquery) | `implemented` |
 | [`control.force_crash`](control.md#controlforce_crash) | `partial` |
 | [`control.power`](control.md#controlpower) | `partial` |
 | [`debug.clear_breakpoint`](debug.md#debugclear_breakpoint) | `partial` |
@@ -34,6 +35,7 @@
 | [`debug.start_session`](debug.md#debugstart_session) | `partial` |
 | [`introspect.from_vmcore`](introspect.md#introspectfrom_vmcore) | `partial` |
 | [`introspect.run`](introspect.md#introspectrun) | `partial` |
+| [`inventory.list`](inventory.md#inventorylist) | `implemented` |
 | [`investigations.close`](investigations.md#investigationsclose) | `implemented` |
 | [`investigations.get`](investigations.md#investigationsget) | `implemented` |
 | [`investigations.link`](investigations.md#investigationslink) | `implemented` |

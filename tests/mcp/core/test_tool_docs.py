@@ -42,6 +42,8 @@ _BEHAVIOR_TESTS_BY_TOOL = {
     "allocations.request": ("tests/mcp/lifecycle/test_allocations_tools.py",),
     "artifacts.create_run_upload": ("tests/mcp/lifecycle/test_create_upload_tool.py",),
     "artifacts.create_system_upload": ("tests/mcp/lifecycle/test_create_upload_tool.py",),
+    "audit.query": ("tests/mcp/ops/test_audit_query.py",),
+    "inventory.list": ("tests/mcp/ops/test_inventory_list.py",),
     "investigations.close": ("tests/mcp/catalog/test_investigations_tools.py",),
     "investigations.get": ("tests/mcp/catalog/test_investigations_tools.py",),
     "investigations.link": ("tests/mcp/catalog/test_investigations_tools.py",),
