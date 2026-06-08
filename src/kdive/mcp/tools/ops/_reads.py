@@ -22,12 +22,11 @@ from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.mcp.tools.ops._auth import ALL_PROJECTS_SCOPE, held_platform_roles
 from kdive.security import audit
 
 if TYPE_CHECKING:
     from kdive.security.context import RequestContext
-
-_SCOPE_ALL_PROJECTS = "all-projects"
 
 
 def parse_window(window: object) -> tuple[datetime | None, datetime | None] | None:
@@ -80,13 +79,6 @@ def _parse_instant(value: object) -> datetime | None:
     return parsed
 
 
-def held_platform_roles(ctx: RequestContext) -> str | None:
-    """Return the caller's platform roles as a sorted comma string, or None if it holds none."""
-    if not ctx.platform_roles:
-        return None
-    return ",".join(sorted(r.value for r in ctx.platform_roles))
-
-
 async def record_read(
     conn: AsyncConnection,
     ctx: RequestContext,
@@ -108,7 +100,7 @@ async def record_read(
             agent_session=ctx.agent_session,
             event=audit.PlatformAuditEvent(
                 tool=tool,
-                scope=_SCOPE_ALL_PROJECTS,
+                scope=ALL_PROJECTS_SCOPE,
                 args=args,
                 platform_role=held_platform_roles(ctx),
             ),
@@ -139,7 +131,7 @@ async def audit_denial(
             agent_session=ctx.agent_session,
             event=audit.PlatformAuditEvent(
                 tool=tool,
-                scope=_SCOPE_ALL_PROJECTS,
+                scope=ALL_PROJECTS_SCOPE,
                 args=args,
                 platform_role=held,
             ),

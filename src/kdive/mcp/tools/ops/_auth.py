@@ -11,6 +11,8 @@ from kdive.security import audit
 if TYPE_CHECKING:
     from kdive.security.context import RequestContext
 
+ALL_PROJECTS_SCOPE = "all-projects"
+
 
 def held_platform_roles(ctx: RequestContext) -> str | None:
     """Return the caller's platform roles as a sorted comma string, or None if absent."""

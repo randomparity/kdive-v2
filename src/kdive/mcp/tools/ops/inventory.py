@@ -27,6 +27,7 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.ops import _reads
+from kdive.mcp.tools.ops._auth import ALL_PROJECTS_SCOPE
 from kdive.security.context import RequestContext
 from kdive.security.rbac import (
     AuthorizationError,
@@ -129,7 +130,7 @@ async def _fetch_systems(
 
 def _audit_args(project: str | None, resource_id: UUID | None) -> dict[str, object]:
     return {
-        "scope": "all-projects",
+        "scope": ALL_PROJECTS_SCOPE,
         "project": project,
         "resource_id": str(resource_id) if resource_id is not None else None,
     }

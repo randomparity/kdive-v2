@@ -33,6 +33,7 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.ops import _reads
+from kdive.mcp.tools.ops._auth import ALL_PROJECTS_SCOPE
 from kdive.security.context import RequestContext
 from kdive.security.rbac import (
     AuthorizationError,
@@ -48,7 +49,6 @@ _OBJECT_ID = "audit.query"
 _MAX_ROWS = 500
 type AuditQueryScope = Literal["project", "all-projects"]
 _PROJECT_SCOPE = "project"
-_ALL_PROJECTS_SCOPE = "all-projects"
 
 
 async def query(
@@ -76,7 +76,7 @@ async def query(
         if scope == _PROJECT_SCOPE:
             assert project is not None
             return await _query_project(pool, ctx, project, filters)
-        assert scope == _ALL_PROJECTS_SCOPE
+        assert scope == ALL_PROJECTS_SCOPE
         return await _query_cross_project(pool, ctx, filters)
 
 
@@ -117,7 +117,7 @@ def _scope_error(scope: str | None, project: str | None) -> ToolResponse | None:
         if project is None:
             return _config_failure("project_required")
         return None
-    if scope == _ALL_PROJECTS_SCOPE:
+    if scope == ALL_PROJECTS_SCOPE:
         if project is not None:
             return _config_failure("project_not_allowed")
         return None
@@ -217,7 +217,7 @@ def _audit_args(filters: _Filters) -> dict[str, object]:
     """The public filter args for the audit ``args_digest`` (no secret values)."""
     window = filters.window
     return {
-        "scope": "all-projects",
+        "scope": ALL_PROJECTS_SCOPE,
         "principal": filters.principal,
         "object_id": str(filters.object_id) if filters.object_id is not None else None,
         "transition": filters.transition,
