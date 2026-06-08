@@ -71,6 +71,15 @@ async def _platform_audit_count(url: str) -> int:
     return int(row[0])
 
 
+async def _platform_audit_rows(url: str) -> list[tuple[object, ...]]:
+    async with await connect(url) as check:
+        cur = await check.execute(
+            "SELECT principal, platform_role, scope FROM platform_audit_log "
+            "WHERE tool = 'ops.reconcile_now'"
+        )
+        return await cur.fetchall()
+
+
 def test_reconcile_now_resolves_orphaned_system_and_returns_summary(migrated_url: str) -> None:
     async def _run() -> None:
         async with await connect(migrated_url) as seed:
@@ -86,8 +95,31 @@ def test_reconcile_now_resolves_orphaned_system_and_returns_summary(migrated_url
         assert resp.data["failures"] == ""
         # The pending repair was actually performed, not just counted.
         assert await _teardown_job_count(migrated_url) == 1
-        # The action was audited to platform_audit_log.
-        assert await _platform_audit_count(migrated_url) == 1
+        # The action was audited to platform_audit_log with the caller's held roles.
+        rows = await _platform_audit_rows(migrated_url)
+        assert rows == [("op-1", "platform_operator", "all-projects")]
+
+    asyncio.run(_run())
+
+
+def test_audit_records_all_held_platform_roles(migrated_url: str) -> None:
+    # The audit row reflects the roles the caller actually holds, not the gate literal —
+    # an operator who also holds auditor records both (sorted, comma-joined).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await ops_reconcile.reconcile_now(
+                pool,
+                _ctx(
+                    platform_roles=frozenset(
+                        {PlatformRole.PLATFORM_OPERATOR, PlatformRole.PLATFORM_AUDITOR}
+                    )
+                ),
+                reaper=NullReaper(),
+                upload_store=None,
+            )
+        assert resp.status == "ok"
+        rows = await _platform_audit_rows(migrated_url)
+        assert rows == [("op-1", "platform_auditor,platform_operator", "all-projects")]
 
     asyncio.run(_run())
 
