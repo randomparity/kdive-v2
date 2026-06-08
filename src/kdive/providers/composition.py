@@ -18,21 +18,21 @@ from kdive.domain.models import ResourceKind
 from kdive.profiles.provisioning import RootfsSource
 from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
-from kdive.providers.local_libvirt.connect import LocalLibvirtConnect
-from kdive.providers.local_libvirt.control import LocalLibvirtControl
-from kdive.providers.local_libvirt.debug_gdbmi import (
+from kdive.providers.local_libvirt.debug.debug_gdbmi import (
     GdbMiEngine as LocalGdbMiEngine,
 )
-from kdive.providers.local_libvirt.debug_gdbmi import (
+from kdive.providers.local_libvirt.debug.debug_gdbmi import (
     default_attach_seam,
 )
-from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
-from kdive.providers.local_libvirt.install import LocalLibvirtInstall
-from kdive.providers.local_libvirt.introspect_drgn import (
+from kdive.providers.local_libvirt.debug.introspect_drgn import (
     LocalLibvirtLiveIntrospect,
     LocalLibvirtVmcoreIntrospect,
 )
-from kdive.providers.local_libvirt.provisioning import (
+from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
+from kdive.providers.local_libvirt.lifecycle.connect import LocalLibvirtConnect
+from kdive.providers.local_libvirt.lifecycle.control import LocalLibvirtControl
+from kdive.providers.local_libvirt.lifecycle.install import LocalLibvirtInstall
+from kdive.providers.local_libvirt.lifecycle.provisioning import (
     LocalLibvirtProvisioning,
 )
 from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve

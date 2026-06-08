@@ -8,7 +8,7 @@ import pytest
 from kdive.components.references import CatalogComponentRef, LocalComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import _UploadRootfs
-from kdive.providers.local_libvirt.materialize import materialize_rootfs_base
+from kdive.providers.local_libvirt.lifecycle.materialize import materialize_rootfs_base
 
 
 def test_materialize_local_rootfs_validates_allowed_root(tmp_path: Path) -> None:

@@ -36,7 +36,7 @@ from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers, teardow
 from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers, get_system
 from kdive.planes import systems as systems_handlers
 from kdive.profiles.provisioning import RootfsSource
-from kdive.providers.local_libvirt.materialize import materialize_rootfs_base
+from kdive.providers.local_libvirt.lifecycle.materialize import materialize_rootfs_base
 from kdive.security.audit import args_digest
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.store.objectstore import ArtifactWriteRequest, ObjectStore, artifact_key

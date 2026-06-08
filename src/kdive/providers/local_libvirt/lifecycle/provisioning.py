@@ -36,7 +36,7 @@ from kdive.profiles.provisioning import (
     validate_profile as _validate_profile,
 )
 from kdive.providers.local_libvirt.discovery import _KDIVE_METADATA_NS
-from kdive.providers.local_libvirt.materialize import materialize_rootfs_base
+from kdive.providers.local_libvirt.lifecycle.materialize import materialize_rootfs_base
 from kdive.providers.runtime_paths import console_log_path, domain_name_for
 
 _log = logging.getLogger(__name__)

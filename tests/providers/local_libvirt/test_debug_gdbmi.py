@@ -15,8 +15,8 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.mcp.tools.debug.session_registry import GdbMiSessionRegistry
-from kdive.providers.local_libvirt import debug_gdbmi
-from kdive.providers.local_libvirt.debug_gdbmi import (
+from kdive.providers.local_libvirt.debug import debug_gdbmi
+from kdive.providers.local_libvirt.debug.debug_gdbmi import (
     MAX_MEMORY_READ_BYTES,
     GdbMiEngine,
     MiRecord,

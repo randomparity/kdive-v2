@@ -27,8 +27,8 @@ from hypothesis import strategies as st
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.local_libvirt.discovery import _parse_arch, _parse_system_id
-from kdive.providers.local_libvirt.install import LocalLibvirtInstall, ReadinessResult
-from kdive.providers.local_libvirt.provisioning import render_domain_xml
+from kdive.providers.local_libvirt.lifecycle.install import LocalLibvirtInstall, ReadinessResult
+from kdive.providers.local_libvirt.lifecycle.provisioning import render_domain_xml
 from tests.providers.local_libvirt.fakes import FakeDomain, FakeLibvirtConn
 
 _SYS = UUID("11111111-1111-1111-1111-111111111111")
