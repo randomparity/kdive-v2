@@ -25,9 +25,9 @@ from kdive.mcp.tools.debug import introspect
 from kdive.mcp.tools.debug import sessions as debug_tools
 from kdive.mcp.tools.lifecycle import allocations
 from kdive.mcp.tools.lifecycle import control as control_tools
-from kdive.mcp.tools.lifecycle import runs as runs_tools
-from kdive.mcp.tools.lifecycle import systems as systems_tools
 from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
+from kdive.mcp.tools.lifecycle.runs import registrar as runs_tools
+from kdive.mcp.tools.lifecycle.systems import registrar as systems_tools
 from kdive.mcp.tools.ops import audit as audit_tools
 from kdive.mcp.tools.ops import breakglass as ops_breakglass_tools
 from kdive.mcp.tools.ops import inventory as inventory_tools

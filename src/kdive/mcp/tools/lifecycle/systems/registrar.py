@@ -1,0 +1,160 @@
+"""Registrar for the `systems.*` MCP tools."""
+
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastmcp import FastMCP
+from psycopg_pool import AsyncConnectionPool
+from pydantic import Field
+
+from kdive.mcp.auth import current_context
+from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools import _docmeta
+from kdive.mcp.tools.lifecycle.systems.admin import (
+    SystemAdminHandlers,
+    _reprovision_system,
+    teardown_system,
+)
+from kdive.mcp.tools.lifecycle.systems.provision import (
+    SystemProvisionHandlers,
+    get_system,
+)
+from kdive.profiles.types import ProvisioningProfileInput
+from kdive.providers.composition import ProviderRuntime
+
+__all__ = [
+    "get_system",
+    "register",
+    "SystemAdminHandlers",
+    "SystemProvisionHandlers",
+    "teardown_system",
+]
+
+
+def register(
+    app: FastMCP, pool: AsyncConnectionPool, *, provider_runtime: ProviderRuntime | None = None
+) -> None:
+    """Register the `systems.*` tools on ``app``, bound to ``pool``."""
+    if provider_runtime is None:
+        raise RuntimeError("systems registrar requires an injected provider runtime")
+    runtime = provider_runtime
+    if runtime.rootfs_validator is None:
+        raise RuntimeError("systems registrar requires an injected rootfs validator")
+    provision_handlers = SystemProvisionHandlers(
+        runtime.component_sources,
+        runtime.rootfs_validator,
+    )
+    admin_handlers = SystemAdminHandlers(
+        runtime.component_sources,
+        runtime.rootfs_validator,
+    )
+
+    @app.tool(
+        name="systems.define",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "implemented"},
+    )
+    async def systems_define(
+        allocation_id: Annotated[
+            str, Field(description="Granted Allocation to create a DEFINED System for.")
+        ],
+        profile: Annotated[
+            ProvisioningProfileInput,
+            Field(
+                description="Provisioning profile for the System; an 'upload' rootfs opens a "
+                "pre-provision rootfs-upload window."
+            ),
+        ],
+    ) -> ToolResponse:
+        """Create a System in 'defined' for a granted Allocation (upload window). Operator only."""
+        return await provision_handlers.define_system(
+            pool,
+            current_context(),
+            allocation_id=allocation_id,
+            profile=profile,
+        )
+
+    @app.tool(
+        name="systems.provision",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "partial"},
+    )
+    async def systems_provision(
+        allocation_id: Annotated[
+            str, Field(description="Granted Allocation to provision a System for.")
+        ],
+        profile: Annotated[
+            ProvisioningProfileInput,
+            Field(description="Provisioning profile for the System create lane."),
+        ],
+    ) -> ToolResponse:
+        """Mint a System for a granted Allocation and enqueue provision. Operator only."""
+        return await provision_handlers.provision_system(
+            pool,
+            current_context(),
+            allocation_id=allocation_id,
+            profile=profile,
+        )
+
+    @app.tool(
+        name="systems.provision_defined",
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "implemented"},
+    )
+    async def systems_provision_defined(
+        system_id: Annotated[
+            str,
+            Field(description="Defined System whose stored profile should be provisioned."),
+        ],
+    ) -> ToolResponse:
+        """Admit a DEFINED System after its upload window is complete. Requires operator."""
+        return await provision_handlers.provision_defined_system(
+            pool,
+            current_context(),
+            system_id=system_id,
+        )
+
+    @app.tool(
+        name="systems.get",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "implemented"},
+    )
+    async def systems_get(
+        system_id: Annotated[str, Field(description="The System to render.")],
+    ) -> ToolResponse:
+        """Render a System; failed maps to a failure envelope. Requires viewer."""
+        return await get_system(pool, current_context(), system_id)
+
+    @app.tool(
+        name="systems.teardown",
+        annotations=_docmeta.destructive(),
+        meta={"maturity": "partial"},
+    )
+    async def systems_teardown(
+        system_id: Annotated[str, Field(description="The System to tear down.")],
+    ) -> ToolResponse:
+        """Enqueue an idempotent teardown for a System; destroys the domain. Requires admin."""
+        return await teardown_system(pool, current_context(), system_id)
+
+    @app.tool(
+        name="systems.reprovision",
+        annotations=_docmeta.destructive(),
+        meta={"maturity": "partial"},
+    )
+    async def systems_reprovision(
+        system_id: Annotated[str, Field(description="The ready System to reprovision in place.")],
+        profile: Annotated[
+            ProvisioningProfileInput,
+            Field(description="New provisioning profile; must opt in to reprovision."),
+        ],
+    ) -> ToolResponse:
+        """Reprovision a ready System in place under its Allocation. Requires operator + gate."""
+        return await _reprovision_system(
+            pool,
+            current_context(),
+            system_id=system_id,
+            profile=profile,
+            component_sources=admin_handlers.component_sources,
+            rootfs_validator=admin_handlers.rootfs_validator,
+        )

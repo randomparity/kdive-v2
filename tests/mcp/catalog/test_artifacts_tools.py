@@ -74,7 +74,7 @@ class _SearchStore:
 
 
 def _artifact_read_handlers(store: _SearchStore) -> artifacts_tools.ArtifactReadHandlers:
-    return artifacts_tools.ArtifactReadHandlers(store)
+    return artifacts_tools.ArtifactReadHandlers(lambda: store)
 
 
 def test_artifacts_list_returns_redacted_only(migrated_url: str) -> None:
@@ -132,9 +132,9 @@ def test_artifacts_search_text_requires_viewer(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             _, _, red_id = await _seed_system_with_artifacts(pool)
             with pytest.raises(AuthorizationError):
-                await artifacts_tools.ArtifactReadHandlers(
-                    _SearchStore(b"panic")
-                ).artifacts_search_text(pool, _ctx(role=None), artifact_id=red_id, pattern="panic")
+                await _artifact_read_handlers(_SearchStore(b"panic")).artifacts_search_text(
+                    pool, _ctx(role=None), artifact_id=red_id, pattern="panic"
+                )
 
     asyncio.run(_run())
 

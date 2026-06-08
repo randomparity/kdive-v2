@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import LiteralString, NamedTuple, Protocol
 
 from psycopg.rows import dict_row
@@ -53,15 +54,11 @@ class _AuthorizedArtifact(NamedTuple):
     key: str
 
 
-def _default_search_store() -> _SearchStore:
-    return object_store_from_env()
-
-
 @dataclass(frozen=True, slots=True)
 class ArtifactReadHandlers:
     """Artifact read handlers with the object-store search seam bound at construction."""
 
-    search_store: _SearchStore = field(default_factory=_default_search_store)
+    search_store_factory: Callable[[], _SearchStore] = object_store_from_env
 
     async def artifacts_search_text(
         self,
@@ -82,7 +79,7 @@ class ArtifactReadHandlers:
             before_lines=before_lines,
             after_lines=after_lines,
             max_matches=max_matches,
-            store=self.search_store,
+            store=self.search_store_factory(),
         )
 
 
