@@ -34,7 +34,13 @@ from pydantic import Field
 from kdive.db.repositories import SYSTEM_SHAPES
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Resource, SystemShape
-from kdive.domain.pcie import MatchOutcome, PCIeDescriptor, parse_match_spec, resolve_spec
+from kdive.domain.pcie import (
+    MatchOutcome,
+    PCIeClaim,
+    PCIeDescriptor,
+    parse_match_spec,
+    resolve_spec,
+)
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.log import bind_context
@@ -45,7 +51,6 @@ from kdive.services import pcie_claim
 from kdive.services.allocation_admission import OCCUPYING_VALUES
 
 if TYPE_CHECKING:
-    from kdive.domain.pcie import PCIeClaim
     from kdive.security.authz.context import RequestContext
 
 _log = logging.getLogger(__name__)
@@ -114,6 +119,31 @@ async def _queue_depth(conn: AsyncConnection) -> dict[str, Any]:
         else:
             by_kind[str(kind)] = int(count)
     return {"total": total, "by_kind": by_kind, "by_id": by_id}
+
+
+async def _claims_by_resource(conn: AsyncConnection) -> dict[Any, list[PCIeClaim]]:
+    """Fleet-wide active PCIe claims grouped by host (one query, no per-host N+1).
+
+    Unions the ``pcie_claim`` snapshots of every allocation in the shared non-terminal
+    occupancy set (the same set :func:`pcie_claim.active_claims` reads per host), keyed by
+    ``resource_id``. Availability is an unlocked read — unlike the in-lock claim path, it
+    needs the whole fleet's occupancy in one round-trip, not one host under a held lock.
+    """
+    by_resource: dict[Any, list[PCIeClaim]] = {}
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT resource_id, pcie_claim FROM allocations "
+            "WHERE resource_id IS NOT NULL AND state = ANY(%s) AND pcie_claim <> '[]'::jsonb",
+            (list(pcie_claim.NON_TERMINAL_STATES_VALUES),),
+        )
+        rows = await cur.fetchall()
+    for resource_id, held_list in rows:
+        bucket = by_resource.setdefault(resource_id, [])
+        for held in held_list:
+            bucket.append(
+                PCIeClaim(bdf=held["bdf"], vendor_id=held["vendor_id"], device_id=held["device_id"])
+            )
+    return by_resource
 
 
 def _free_descriptors(resource: Resource, claims: list[PCIeClaim]) -> list[PCIeDescriptor]:
@@ -237,27 +267,32 @@ async def availability_tool(
             parse_match_spec(pcie)
         except CategorizedError as exc:
             return ToolResponse.failure(_TOOL, exc.category, suggested_next_actions=[_TOOL])
+    # One REPEATABLE READ transaction so the whole aggregate reflects a single snapshot:
+    # without it a grant committing mid-read could be counted in occupancy but its device
+    # still read as free (or vice-versa). The view is a point-in-time hint either way, but a
+    # self-consistent hint is the cheap, correct one.
     with bind_context(principal=ctx.principal):
-        async with pool.connection() as conn:
+        async with pool.connection() as conn, conn.transaction():
+            await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             try:
                 shapes = await _resolve_shapes(conn, shape)
             except CategorizedError as exc:
                 return ToolResponse.failure(_TOOL, exc.category, suggested_next_actions=[_TOOL])
             resources = await _fetch_resources(conn)
             occupancy = await _occupancy_by_resource(conn)
+            claims = await _claims_by_resource(conn)
             queue = await _queue_depth(conn)
-            items: list[ToolResponse] = []
-            global_fits: set[str] = set()
-            for resource in resources:
-                claims = await pcie_claim.active_claims(conn, resource.id)
-                free = _free_descriptors(resource, claims)
-                if not _passes_pcie_filter(free, pcie):
-                    continue
-                item = _host_item(
-                    resource, occupancy=occupancy.get(resource.id, 0), free=free, shapes=shapes
-                )
-                items.append(item)
-                global_fits.update(item.data["fits"])
+        items: list[ToolResponse] = []
+        global_fits: set[str] = set()
+        for resource in resources:
+            free = _free_descriptors(resource, claims.get(resource.id, []))
+            if not _passes_pcie_filter(free, pcie):
+                continue
+            item = _host_item(
+                resource, occupancy=occupancy.get(resource.id, 0), free=free, shapes=shapes
+            )
+            items.append(item)
+            global_fits.update(item.data["fits"])
         return ToolResponse.collection(
             "resources",
             "ok",

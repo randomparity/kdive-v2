@@ -49,7 +49,7 @@ NON_TERMINAL_STATES = (
     AllocationState.ACTIVE,
     AllocationState.RELEASING,
 )
-_NON_TERMINAL_VALUES = tuple(state.value for state in NON_TERMINAL_STATES)
+NON_TERMINAL_STATES_VALUES = tuple(state.value for state in NON_TERMINAL_STATES)
 
 _DESCRIPTOR_FIELDS = ("bdf", "vendor_id", "device_id", "class_code", "label")
 
@@ -98,7 +98,7 @@ async def active_claims(conn: AsyncConnection, resource_id: UUID) -> list[PCIeCl
         await cur.execute(
             "SELECT pcie_claim FROM allocations "
             "WHERE resource_id = %s AND state = ANY(%s) AND pcie_claim <> '[]'::jsonb",
-            (resource_id, list(_NON_TERMINAL_VALUES)),
+            (resource_id, list(NON_TERMINAL_STATES_VALUES)),
         )
         rows = await cur.fetchall()
     for row in rows:
