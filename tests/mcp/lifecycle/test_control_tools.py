@@ -630,3 +630,9 @@ def test_register_handlers_binds_power_and_force_crash() -> None:
     control_plane.register_handlers(registry, control=_FakeControl())
     assert registry.get(JobKind.POWER) is not None
     assert registry.get(JobKind.FORCE_CRASH) is not None
+
+
+def test_register_handlers_requires_provider_runtime_or_control() -> None:
+    registry = HandlerRegistry()
+    with pytest.raises(RuntimeError, match="provider runtime or control"):
+        control_plane.register_handlers(registry)

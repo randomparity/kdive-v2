@@ -17,7 +17,7 @@ from kdive.domain.models import Job, JobKind, System
 from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import CaptureVmcorePayload, load_payload
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
+from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import Retriever
 from kdive.security import audit
 from kdive.store.objectstore import register_artifact_row
@@ -117,11 +117,13 @@ def register_handlers(
     retriever: Retriever | None = None,
     provider_runtime: ProviderRuntime | None = None,
 ) -> None:
-    """Bind the `capture_vmcore` job handler; build the retriever lazily from env."""
-    runtime = provider_runtime or build_default_provider_runtime()
-    active = retriever or runtime.retriever
+    """Bind the `capture_vmcore` job handler."""
+    if retriever is None:
+        if provider_runtime is None:
+            raise RuntimeError("vmcore handlers require provider runtime or retriever")
+        retriever = provider_runtime.retriever
 
     async def _capture(conn: AsyncConnection, job: Job) -> str | None:
-        return await capture_handler(conn, job, active)
+        return await capture_handler(conn, job, retriever)
 
     registry.register(JobKind.CAPTURE_VMCORE, _capture)

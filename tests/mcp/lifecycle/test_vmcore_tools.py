@@ -555,3 +555,9 @@ def test_register_handlers_binds_capture_vmcore() -> None:
     registry = HandlerRegistry()
     vmcore_plane.register_handlers(registry, retriever=_FakeRetriever("x"))
     assert registry.get(JobKind.CAPTURE_VMCORE) is not None
+
+
+def test_register_handlers_requires_provider_runtime_or_retriever() -> None:
+    registry = HandlerRegistry()
+    with pytest.raises(RuntimeError, match="provider runtime or retriever"):
+        vmcore_plane.register_handlers(registry)

@@ -1603,6 +1603,12 @@ def test_register_handlers_binds_provision_teardown_and_reprovision() -> None:
     assert registry.get(JobKind.REPROVISION) is not None
 
 
+def test_register_handlers_requires_provider_runtime_or_provisioning() -> None:
+    registry = HandlerRegistry()
+    with pytest.raises(RuntimeError, match="provider runtime or provisioning"):
+        systems_handlers.register_handlers(registry)
+
+
 def test_reprovision_rejects_upload_rootfs(migrated_url: str) -> None:
     # A ready System has no upload window; an upload-kind reprovision is a fail-fast
     # configuration_error (#111).

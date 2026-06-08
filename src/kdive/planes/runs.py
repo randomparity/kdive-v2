@@ -28,7 +28,7 @@ from kdive.planes.runs_shared import (
     installed_initrd_ref,
 )
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
+from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import Booter, Builder, BuildOutput, Installer
 from kdive.providers.runtime_paths import console_log_path, read_console_log
 from kdive.security import audit
@@ -359,23 +359,25 @@ def register_handlers(
     provider_runtime: ProviderRuntime | None = None,
 ) -> None:
     """Bind the `build`/`install`/`boot` job handlers."""
-    runtime = provider_runtime or build_default_provider_runtime()
-    build = builder or runtime.builder
+    if builder is None:
+        if provider_runtime is None:
+            raise RuntimeError("runs handlers require provider runtime or run ports")
+        builder = provider_runtime.builder
     if installer is None or booter is None:
-        default_installer, default_booter = runtime.install_boot()
-        install: Installer = installer or default_installer
-        boot: Booter = booter or default_booter
-    else:
-        install, boot = installer, booter
+        if provider_runtime is None:
+            raise RuntimeError("runs handlers require provider runtime or run ports")
+        default_installer, default_booter = provider_runtime.install_boot()
+        installer = installer or default_installer
+        booter = booter or default_booter
 
     async def _build(conn: AsyncConnection, job: Job) -> str | None:
-        return await build_handler(conn, job, build)
+        return await build_handler(conn, job, builder)
 
     async def _install(conn: AsyncConnection, job: Job) -> str | None:
-        return await install_handler(conn, job, install)
+        return await install_handler(conn, job, installer)
 
     async def _boot(conn: AsyncConnection, job: Job) -> str | None:
-        return await boot_handler(conn, job, boot)
+        return await boot_handler(conn, job, booter)
 
     registry.register(JobKind.BUILD, _build)
     registry.register(JobKind.INSTALL, _install)

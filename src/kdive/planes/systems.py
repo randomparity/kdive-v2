@@ -23,7 +23,7 @@ from kdive.profiles.provisioning import (
     profile_digest,
     rootfs_upload_window_allowed,
 )
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
+from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import Provisioner
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security import audit
@@ -246,17 +246,19 @@ def register_handlers(
     provider_runtime: ProviderRuntime | None = None,
 ) -> None:
     """Bind the `provision`/`teardown`/`reprovision` job handlers."""
-    runtime = provider_runtime or build_default_provider_runtime()
-    prov = provisioning or runtime.provisioner
+    if provisioning is None:
+        if provider_runtime is None:
+            raise RuntimeError("systems handlers require provider runtime or provisioning")
+        provisioning = provider_runtime.provisioner
 
     async def _provision(conn: AsyncConnection, job: Job) -> str | None:
-        return await provision_handler(conn, job, prov)
+        return await provision_handler(conn, job, provisioning)
 
     async def _teardown(conn: AsyncConnection, job: Job) -> str | None:
-        return await teardown_handler(conn, job, prov)
+        return await teardown_handler(conn, job, provisioning)
 
     async def _reprovision(conn: AsyncConnection, job: Job) -> str | None:
-        return await reprovision_handler(conn, job, prov)
+        return await reprovision_handler(conn, job, provisioning)
 
     registry.register(JobKind.PROVISION, _provision)
     registry.register(JobKind.TEARDOWN, _teardown)

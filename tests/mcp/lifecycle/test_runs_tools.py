@@ -1175,6 +1175,12 @@ def test_register_handlers_binds_build() -> None:
     assert registry.get(JobKind.BUILD) is not None
 
 
+def test_register_handlers_requires_provider_runtime_or_run_ports() -> None:
+    registry = HandlerRegistry()
+    with pytest.raises(RuntimeError, match="provider runtime or run ports"):
+        runs_handlers.register_handlers(registry)
+
+
 # --- runs.install / runs.boot (install + boot plane, #19) ----------------------------
 
 from kdive.domain.capture import CaptureMethod  # noqa: E402
