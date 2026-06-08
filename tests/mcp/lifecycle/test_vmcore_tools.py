@@ -25,6 +25,7 @@ from kdive.store.objectstore import StoredArtifact
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
 
 _AUTH = {"principal": "u", "agent_session": "s", "project": "proj"}
+_TEST_CAPTURE_METHODS = frozenset({CaptureMethod.HOST_DUMP})
 
 
 def _ctx(
@@ -42,6 +43,22 @@ async def _pool(url: str) -> AsyncIterator[AsyncConnectionPool]:
         yield pool
     finally:
         await pool.close()
+
+
+async def _fetch_vmcore(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    system_id: str,
+    method: str = "host_dump",
+):
+    return await vmcore_tools.fetch_vmcore(
+        pool,
+        ctx,
+        system_id=system_id,
+        method=method,
+        supported_methods=_TEST_CAPTURE_METHODS,
+    )
 
 
 def _capture_output(sys_id: str, method: CaptureMethod = CaptureMethod.HOST_DUMP) -> CaptureOutput:
@@ -122,7 +139,7 @@ def test_fetch_vmcore_crashed_enqueues_job(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
-            resp = await vmcore_tools.fetch_vmcore(pool, _ctx(), system_id=sys_id)
+            resp = await _fetch_vmcore(pool, _ctx(), system_id=sys_id)
             assert resp.status == "queued"
             assert resp.data["system_id"] == sys_id
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -145,7 +162,7 @@ def test_fetch_vmcore_non_crashed_is_config_error(migrated_url: str) -> None:
                 await conn.execute(
                     "UPDATE systems SET state = 'torn_down' WHERE id = %s", (sys_id,)
                 )
-            resp = await vmcore_tools.fetch_vmcore(pool, _ctx(), system_id=sys_id)
+            resp = await _fetch_vmcore(pool, _ctx(), system_id=sys_id)
         assert resp.status == "error" and resp.error_category == "configuration_error"
         assert resp.data["current_status"] == "torn_down"
 
@@ -157,7 +174,7 @@ def test_fetch_vmcore_without_operator_raises(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
             with pytest.raises(AuthorizationError):
-                await vmcore_tools.fetch_vmcore(pool, _ctx(Role.VIEWER), system_id=sys_id)
+                await _fetch_vmcore(pool, _ctx(Role.VIEWER), system_id=sys_id)
 
     asyncio.run(_run())
 
@@ -165,7 +182,7 @@ def test_fetch_vmcore_without_operator_raises(migrated_url: str) -> None:
 def test_fetch_vmcore_malformed_uuid_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await vmcore_tools.fetch_vmcore(pool, _ctx(), system_id="nope")
+            resp = await _fetch_vmcore(pool, _ctx(), system_id="nope")
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -175,7 +192,7 @@ def test_fetch_rejects_unsupported_method(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
-            resp = await vmcore_tools.fetch_vmcore(pool, _ctx(), system_id=sys_id, method="kdump")
+            resp = await _fetch_vmcore(pool, _ctx(), system_id=sys_id, method="kdump")
             assert resp.status == "error"
             assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
@@ -186,7 +203,7 @@ def test_fetch_rejects_non_core_method(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
-            resp = await vmcore_tools.fetch_vmcore(pool, _ctx(), system_id=sys_id, method="console")
+            resp = await _fetch_vmcore(pool, _ctx(), system_id=sys_id, method="console")
             assert resp.status == "error"
             assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
@@ -197,9 +214,7 @@ def test_fetch_records_method_in_dedup_key(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
-            resp = await vmcore_tools.fetch_vmcore(
-                pool, _ctx(), system_id=sys_id, method="host_dump"
-            )
+            resp = await _fetch_vmcore(pool, _ctx(), system_id=sys_id, method="host_dump")
             assert resp.status == "queued"
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(

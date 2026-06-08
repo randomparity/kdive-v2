@@ -51,7 +51,6 @@ from kdive.providers.component_validation import (
     ComponentSourceCapabilities,
     reject_unsupported_component_source,
 )
-from kdive.providers.composition import build_default_provider_runtime
 from kdive.security import audit
 from kdive.security.context import RequestContext
 from kdive.security.rbac import Role, require_role
@@ -119,16 +118,13 @@ def _component_sources(
 ) -> ComponentSourceCapabilities:
     if capabilities is not None:
         return capabilities
-    return build_default_provider_runtime().component_sources
+    raise RuntimeError("component source capabilities must be injected by the registrar")
 
 
 def _rootfs_validator(rootfs_validator: RootfsValidator | None) -> RootfsValidator:
     if rootfs_validator is not None:
         return rootfs_validator
-    validator = build_default_provider_runtime().rootfs_validator
-    if validator is None:
-        raise RuntimeError("default provider runtime has no rootfs validator")
-    return validator
+    raise RuntimeError("rootfs validator must be injected by the registrar")
 
 
 def _validate_profile_for_provider(

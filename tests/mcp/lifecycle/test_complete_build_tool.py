@@ -14,6 +14,7 @@ from kdive.domain.state import RunState
 from kdive.mcp.tools.catalog import artifacts as artifacts_tools
 from kdive.mcp.tools.lifecycle import runs as runs_tools
 from kdive.providers.build_validation import validate_external_artifacts
+from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.providers.ports import BuildOutput
 from kdive.store.objectstore import HeadResult, PresignedUpload
 from tests.mcp.complete_build_support import (
@@ -47,6 +48,10 @@ _EXTERNAL_PROFILE_WITH_REQUIREMENTS = {
         "name": "console-ready_x86_64",
     },
 }
+_TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
+    provider="test-provider",
+    accepted_component_sources={"config": frozenset({"local"})},
+)
 
 
 class _UploadStore:
@@ -163,7 +168,12 @@ def test_build_run_rejects_external_source(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_external_run(pool)
-            resp = await runs_tools.build_run(pool, _ctx(), str(run_id))
+            resp = await runs_tools.build_run(
+                pool,
+                _ctx(),
+                str(run_id),
+                component_sources=_TEST_COMPONENT_SOURCES,
+            )
         assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
     asyncio.run(_run())

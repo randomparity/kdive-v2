@@ -32,7 +32,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
+from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import LiveIntrospector, VmcoreIntrospector
 from kdive.security.context import RequestContext
 from kdive.security.rbac import Role, require_role
@@ -192,7 +192,9 @@ def register(
     app: FastMCP, pool: AsyncConnectionPool, *, provider_runtime: ProviderRuntime | None = None
 ) -> None:
     """Register the `introspect.from_vmcore` and `introspect.run` tools on ``app``."""
-    runtime = provider_runtime or build_default_provider_runtime()
+    if provider_runtime is None:
+        raise RuntimeError("introspect registrar requires an injected provider runtime")
+    runtime = provider_runtime
     introspector = runtime.vmcore_introspector
     live_introspector = runtime.live_introspector
 

@@ -7,6 +7,8 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -18,6 +20,7 @@ from kdive.domain.models import DebugSession
 from kdive.domain.state import DebugSessionState
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.debug import introspect as introspect_tools
+from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import IntrospectOutput
 from kdive.security.rbac import AuthorizationError, Role
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
@@ -240,7 +243,14 @@ def test_register_adds_the_tool() -> None:
     async def _check() -> None:
         app: FastMCP = FastMCP(name="t")
         pool = AsyncConnectionPool("postgresql://unused", open=False)
-        introspect_tools.register(app, pool)
+        runtime = cast(
+            ProviderRuntime,
+            SimpleNamespace(
+                vmcore_introspector=_FakeIntrospector(),
+                live_introspector=_FakeLiveIntrospector(),
+            ),
+        )
+        introspect_tools.register(app, pool, provider_runtime=runtime)
         tools = await app.list_tools()
         names = {t.name for t in tools}
         assert "introspect.from_vmcore" in names

@@ -41,7 +41,6 @@ from kdive.providers.component_validation import (
     ComponentSourceCapabilities,
     reject_unsupported_component_source,
 )
-from kdive.providers.composition import build_default_provider_runtime
 from kdive.providers.ports import BuildOutput, ValidatedUpload
 from kdive.security import audit
 from kdive.security.context import RequestContext
@@ -107,7 +106,7 @@ def _component_sources(
 ) -> ComponentSourceCapabilities:
     if capabilities is not None:
         return capabilities
-    return build_default_provider_runtime().component_sources
+    raise RuntimeError("component source capabilities must be injected by the registrar")
 
 
 async def _build_locked(

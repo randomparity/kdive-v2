@@ -35,6 +35,9 @@ def register(
     provider_runtime: ProviderRuntime | None = None,
 ) -> None:
     """Register the `runs.*` tools on ``app``, bound to ``pool``."""
+    if provider_runtime is None:
+        raise RuntimeError("runs registrar requires an injected provider runtime")
+    runtime = provider_runtime
 
     @app.tool(
         name="runs.get",
@@ -95,17 +98,13 @@ def register(
         ] = None,
     ) -> ToolResponse:
         """Enqueue the kernel build job for a Run; poll jobs.* for completion. Requires operator."""
-        component_sources = None if provider_runtime is None else provider_runtime.component_sources
-        config_validator = (
-            None if provider_runtime is None else provider_runtime.build_config_validator
-        )
         return await build_run(
             pool,
             current_context(),
             run_id,
             cmdline=cmdline,
-            component_sources=component_sources,
-            config_validator=config_validator,
+            component_sources=runtime.component_sources,
+            config_validator=runtime.build_config_validator,
         )
 
     @app.tool(

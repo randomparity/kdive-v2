@@ -45,7 +45,7 @@ from kdive.mcp.tools._common import (
     job_envelope,
 )
 from kdive.mcp.tools.catalog import artifacts as artifacts_tools
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
+from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import CrashPostmortem
 from kdive.security.context import RequestContext
 from kdive.security.crash_commands import crash_command_rejection_reason
@@ -115,11 +115,8 @@ async def fetch_vmcore(
     supported_methods: frozenset[CaptureMethod] | None = None,
 ) -> ToolResponse:
     """Admit a `capture_vmcore` job on a `crashed` System (operator); return the job handle."""
-    supported_methods = (
-        supported_methods
-        if supported_methods is not None
-        else build_default_provider_runtime().supported_capture_methods
-    )
+    if supported_methods is None:
+        raise RuntimeError("supported capture methods must be injected by the registrar")
     uid = _as_uuid(system_id)
     if uid is None:
         return _config_error(system_id)
@@ -272,7 +269,9 @@ def register(
     app: FastMCP, pool: AsyncConnectionPool, *, provider_runtime: ProviderRuntime | None = None
 ) -> None:
     """Register the `vmcore.*` / `postmortem.*` tools on ``app``, bound to ``pool``."""
-    runtime = provider_runtime or build_default_provider_runtime()
+    if provider_runtime is None:
+        raise RuntimeError("vmcore registrar requires an injected provider runtime")
+    runtime = provider_runtime
     crash = runtime.crash_postmortem
     supported_methods = runtime.supported_capture_methods
 

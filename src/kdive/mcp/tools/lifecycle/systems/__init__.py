@@ -18,7 +18,7 @@ from kdive.mcp.tools.lifecycle.systems.provision import (
     provision_defined_system,
     provision_system,
 )
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
+from kdive.providers.composition import ProviderRuntime
 
 __all__ = [
     "define_system",
@@ -35,7 +35,9 @@ def register(
     app: FastMCP, pool: AsyncConnectionPool, *, provider_runtime: ProviderRuntime | None = None
 ) -> None:
     """Register the `systems.*` tools on ``app``, bound to ``pool``."""
-    runtime = provider_runtime or build_default_provider_runtime()
+    if provider_runtime is None:
+        raise RuntimeError("systems registrar requires an injected provider runtime")
+    runtime = provider_runtime
 
     @app.tool(
         name="systems.define",

@@ -38,6 +38,9 @@ from kdive.security.audit import args_digest
 from kdive.security.rbac import AuthorizationError, Role
 from kdive.store.objectstore import ArtifactWriteRequest, ObjectStore, artifact_key
 from tests.mcp.systems_support import (
+    TEST_COMPONENT_SOURCES as _TEST_COMPONENT_SOURCES,
+)
+from tests.mcp.systems_support import (
     TEST_DT as _DT,
 )
 from tests.mcp.systems_support import (
@@ -164,12 +167,19 @@ async def _provision(
         ctx,
         allocation_id=alloc_id,
         profile=profile,
+        component_sources=_TEST_COMPONENT_SOURCES,
         rootfs_validator=lambda _: None,
     )
 
 
 async def _provision_defined(pool: AsyncConnectionPool, ctx: RequestContext, system_id: str):
-    return await systems_tools.provision_defined_system(pool, ctx, system_id=system_id)
+    return await systems_tools.provision_defined_system(
+        pool,
+        ctx,
+        system_id=system_id,
+        component_sources=_TEST_COMPONENT_SOURCES,
+        rootfs_validator=lambda _: None,
+    )
 
 
 def _artifact_rootfs_profile() -> dict[str, Any]:
@@ -423,6 +433,7 @@ def test_provision_rejects_local_rootfs_outside_allowed_root_before_system_and_j
                 _ctx(),
                 allocation_id=alloc_id,
                 profile=_local_rootfs_profile(outside),
+                component_sources=_TEST_COMPONENT_SOURCES,
                 rootfs_validator=_rootfs_validator(allowed_root),
             )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -469,6 +480,7 @@ def test_provision_viewer_denied_before_provider_rootfs_validation(
                     _ctx(Role.VIEWER),
                     allocation_id=alloc_id,
                     profile=_local_rootfs_profile(outside),
+                    component_sources=_TEST_COMPONENT_SOURCES,
                     rootfs_validator=_failing_rootfs_validator(calls),
                 )
 
@@ -1176,6 +1188,7 @@ async def _reprovision(
         ctx,
         system_id=system_id,
         profile=profile,
+        component_sources=_TEST_COMPONENT_SOURCES,
         rootfs_validator=lambda _: None,
     )
 
@@ -1349,6 +1362,7 @@ def test_reprovision_viewer_denied_before_provider_rootfs_validation(
                 _ctx(Role.VIEWER),
                 system_id=sys_id,
                 profile=profile,
+                component_sources=_TEST_COMPONENT_SOURCES,
                 rootfs_validator=_failing_rootfs_validator(calls),
             )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -1483,6 +1497,7 @@ def test_reprovision_rejects_local_rootfs_outside_allowed_root_before_mutating_r
                 _ctx(),
                 system_id=sys_id,
                 profile=profile,
+                component_sources=_TEST_COMPONENT_SOURCES,
                 rootfs_validator=_rootfs_validator(allowed_root),
             )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -1598,7 +1613,12 @@ def test_reprovision_rejects_upload_rootfs(migrated_url: str) -> None:
             profile = _upload_profile()
             profile["provider"]["local-libvirt"]["destructive_ops"] = ["reprovision"]
             resp = await systems_tools.reprovision_system(
-                pool, _ctx(), system_id=sys_id, profile=profile
+                pool,
+                _ctx(),
+                system_id=sys_id,
+                profile=profile,
+                component_sources=_TEST_COMPONENT_SOURCES,
+                rootfs_validator=lambda _: None,
             )
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
@@ -1723,6 +1743,7 @@ def test_define_viewer_denied_before_provider_rootfs_validation(
                     _ctx(Role.VIEWER),
                     allocation_id=alloc_id,
                     profile=_local_rootfs_profile(outside),
+                    component_sources=_TEST_COMPONENT_SOURCES,
                     rootfs_validator=_failing_rootfs_validator(calls),
                 )
 
@@ -1777,6 +1798,7 @@ def test_define_rejects_local_rootfs_outside_allowed_root_without_opening_upload
                 _ctx(),
                 allocation_id=alloc_id,
                 profile=_local_rootfs_profile(outside),
+                component_sources=_TEST_COMPONENT_SOURCES,
                 rootfs_validator=_rootfs_validator(allowed_root),
             )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -1903,6 +1925,7 @@ def test_provision_defined_revalidates_stored_local_rootfs_against_provider_root
                 pool,
                 _ctx(),
                 system_id=sys_id,
+                component_sources=_TEST_COMPONENT_SOURCES,
                 rootfs_validator=_rootfs_validator(allowed_root),
             )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -1944,6 +1967,7 @@ def test_provision_defined_viewer_denied_before_provider_rootfs_validation(
                     pool,
                     _ctx(Role.VIEWER),
                     system_id=sys_id,
+                    component_sources=_TEST_COMPONENT_SOURCES,
                     rootfs_validator=_failing_rootfs_validator(calls),
                 )
 

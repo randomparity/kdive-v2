@@ -19,12 +19,20 @@ from kdive.domain.state import AllocationState
 from kdive.jobs import queue
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import systems as systems_tools
+from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.rbac import Role
 from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 TEST_DT = datetime(2026, 1, 1, tzinfo=UTC)
+TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
+    provider="test-provider",
+    accepted_component_sources={
+        "rootfs": frozenset({"catalog", "local"}),
+        "config": frozenset({"local"}),
+    },
+)
 
 PROVISIONING_PROFILE: dict[str, Any] = {
     "schema_version": 1,
@@ -163,5 +171,10 @@ async def define_system(
     profile: dict[str, Any],
 ):
     return await systems_tools.define_system(
-        conn_pool, request_ctx, allocation_id=alloc_id, profile=profile
+        conn_pool,
+        request_ctx,
+        allocation_id=alloc_id,
+        profile=profile,
+        component_sources=TEST_COMPONENT_SOURCES,
+        rootfs_validator=lambda _: None,
     )

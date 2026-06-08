@@ -41,7 +41,7 @@ from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.debug.ops import DebugEngineRuntime, register_debug_ops
 from kdive.profiles.provisioning import ProvisioningProfile
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
+from kdive.providers.composition import ProviderRuntime
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.ports import Connector
 from kdive.security import audit
@@ -399,7 +399,9 @@ def register(
     locks + the `live_vm`-gated attach seam); its seven tools register here too, so `app.py` is
     untouched. `end_session` reaps the lazy engine via the shared runtime.
     """
-    provider = provider_runtime or build_default_provider_runtime()
+    if provider_runtime is None:
+        raise RuntimeError("debug registrar requires an injected provider runtime")
+    provider = provider_runtime
     connector: Connector = provider.connector
     secret_backend: SecretBackend = secret_backend_from_env()
     attach = provider.attach_seam
