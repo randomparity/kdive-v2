@@ -232,7 +232,8 @@ def _prov(
     overlay_exists: Callable[[str], bool] = lambda _overlay: False,
 ) -> LocalLibvirtProvisioning:
     # The overlay seams default to no-ops so the libvirt-only tests never spawn qemu-img; the
-    # default "overlay absent" makes provision create one, matching a fresh provision.
+    # console-log seam is also a no-op so they never depend on host /var/lib/kdive permissions.
+    # The default "overlay absent" makes provision create one, matching a fresh provision.
     return LocalLibvirtProvisioning(
         connect=lambda: conn,
         make_overlay=make_overlay,
@@ -241,7 +242,20 @@ def _prov(
         materialize_rootfs=lambda rootfs, _system_id: (
             rootfs.path if rootfs.kind == "local" else "/var/lib/kdive/rootfs/upload.qcow2"
         ),
+        prepare_console_log=lambda _path: None,
     )
+
+
+def test_prov_helper_does_not_prepare_host_console_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_mkdir(self: object, *args: object, **kwargs: object) -> None:
+        del self, args, kwargs
+        raise AssertionError("unit helper must not touch host console log paths")
+
+    monkeypatch.setattr(provisioning_module.Path, "mkdir", fail_mkdir)
+
+    _prov(_ProvConn()).provision(_SYS, _profile())
 
 
 def test_provision_defines_and_starts_returns_name() -> None:
