@@ -16,6 +16,12 @@ from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
+from kdive.mcp.tools._time_window import parse_timestamptz_window
+from kdive.mcp.tools.ops._auth import (
+    ALL_PROJECTS_SCOPE,
+    audit_platform_denial,
+    held_platform_roles,
+)
 from kdive.security import audit
 from kdive.security.context import RequestContext
 from kdive.security.rbac import (
@@ -31,7 +37,6 @@ _REPORT_OBJECT_ID = "report"
 _REPORT_GRANTED_SET_TOOL = "accounting.report_granted_set"
 _REPORT_ALL_PROJECTS_TOOL = "accounting.report_all_projects"
 _SCOPE_GRANTED_SET = "granted-set"
-_SCOPE_ALL_PROJECTS = "all-projects"
 _GROUP_BY_PRINCIPAL = "principal"
 
 
@@ -156,12 +161,12 @@ async def _report_all_projects(
                 agent_session=ctx.agent_session,
                 event=audit.PlatformAuditEvent(
                     tool=_REPORT_ALL_PROJECTS_TOOL,
-                    scope=_SCOPE_ALL_PROJECTS,
-                    args=_report_args(_SCOPE_ALL_PROJECTS, None, group_by, window),
-                    platform_role=_held_platform_roles(ctx),
+                    scope=ALL_PROJECTS_SCOPE,
+                    args=_report_args(ALL_PROJECTS_SCOPE, None, group_by, window),
+                    platform_role=held_platform_roles(ctx),
                 ),
             )
-    return _report_response(_SCOPE_ALL_PROJECTS, group_by, targets, rollup)
+    return _report_response(ALL_PROJECTS_SCOPE, group_by, targets, rollup)
 
 
 async def _audit_all_projects_denial(
@@ -177,28 +182,13 @@ async def _audit_all_projects_denial(
     on this openly-callable read. The role check runs before any pool connection is open, so
     the denial-audit opens its own connection and transaction here.
     """
-    held = _held_platform_roles(ctx)
-    if held is None:
-        return
-    async with pool.connection() as conn, conn.transaction():
-        await audit.record_platform(
-            conn,
-            principal=ctx.principal,
-            agent_session=ctx.agent_session,
-            event=audit.PlatformAuditEvent(
-                tool=_REPORT_ALL_PROJECTS_TOOL,
-                scope=_SCOPE_ALL_PROJECTS,
-                args=_report_args(_SCOPE_ALL_PROJECTS, None, group_by, window),
-                platform_role=held,
-            ),
-        )
-
-
-def _held_platform_roles(ctx: RequestContext) -> str | None:
-    """Return the caller's platform roles as a sorted comma string, or None if it holds none."""
-    if not ctx.platform_roles:
-        return None
-    return ",".join(sorted(r.value for r in ctx.platform_roles))
+    await audit_platform_denial(
+        pool,
+        ctx,
+        tool=_REPORT_ALL_PROJECTS_TOOL,
+        scope=ALL_PROJECTS_SCOPE,
+        args=_report_args(ALL_PROJECTS_SCOPE, None, group_by, window),
+    )
 
 
 async def _all_projects(conn: AsyncConnection) -> list[str]:
@@ -238,44 +228,7 @@ def _parse_window(window: object) -> tuple[datetime | None, datetime | None] | N
     so a malformed window surfaces an error rather than a silently-empty rollup. ``ledger.ts``
     is ``timestamptz``; a tz-naive bound would compare in an unintended zone.
     """
-    if window is None:
-        return None
-    if not isinstance(window, (list, tuple)) or len(window) != 2:
-        raise CategorizedError(
-            "window must be a [start, end] pair", category=ErrorCategory.CONFIGURATION_ERROR
-        )
-    start, end = (_parse_instant(window[0]), _parse_instant(window[1]))
-    if start is None and end is None:
-        return None
-    if start is not None and end is not None and start >= end:
-        raise CategorizedError(
-            f"window start {start.isoformat()} must precede end {end.isoformat()}",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    return (start, end)
-
-
-def _parse_instant(value: object) -> datetime | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise CategorizedError(
-            f"window bound {value!r} is not an ISO-8601 string",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        raise CategorizedError(
-            f"window bound {value!r} is not a valid ISO-8601 timestamp",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        ) from None
-    if parsed.tzinfo is None:
-        raise CategorizedError(
-            f"window bound {value!r} must be timezone-aware (ledger.ts is timestamptz)",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    return parsed
+    return parse_timestamptz_window(window, timestamp_column="ledger.ts")
 
 
 def _report_args(
