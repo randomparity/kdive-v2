@@ -76,6 +76,14 @@ class JobKind(StrEnum):
     CAPTURE_VMCORE = "capture_vmcore"
 
 
+type DestructiveJobKind = Literal[
+    JobKind.REPROVISION,
+    JobKind.TEARDOWN,
+    JobKind.FORCE_CRASH,
+    JobKind.POWER,
+]
+
+
 class PowerAction(StrEnum):
     """Power operations accepted by the durable control-plane job contract."""
 

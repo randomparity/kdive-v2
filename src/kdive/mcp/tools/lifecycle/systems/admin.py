@@ -13,7 +13,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Job, JobKind, System
+from kdive.domain.models import DestructiveJobKind, Job, JobKind, System
 from kdive.domain.state import IllegalTransition, RunState, SystemState
 from kdive.jobs import queue
 from kdive.log import bind_context
@@ -43,8 +43,8 @@ from kdive.security.authz.gate import DestructiveOp, DestructiveOpDenied, assert
 from kdive.security.authz.rbac import Role
 
 _NON_TERMINAL_RUN = frozenset({RunState.CREATED, RunState.RUNNING})
-_REPROVISION = "reprovision"
-_TEARDOWN = "teardown"
+_REPROVISION = JobKind.REPROVISION
+_TEARDOWN = JobKind.TEARDOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,17 +137,17 @@ async def _audit_destructive_denied(
     conn: AsyncConnection,
     ctx: RequestContext,
     system: System,
-    op_kind: str,
+    op_kind: DestructiveJobKind,
     missing: list[str],
 ) -> None:
     await audit.record(
         conn,
         ctx,
         audit.AuditEvent(
-            tool=f"systems.{op_kind}",
+            tool=f"systems.{op_kind.value}",
             object_kind="systems",
             object_id=system.id,
-            transition=f"{op_kind}:denied",
+            transition=f"{op_kind.value}:denied",
             args={"system_id": str(system.id), "missing": missing},
             project=system.project,
         ),

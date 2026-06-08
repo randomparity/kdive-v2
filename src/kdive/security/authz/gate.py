@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from kdive.domain.models import DestructiveJobKind
 from kdive.security.authz.rbac import AuthorizationError, Role, require_role
 
 if TYPE_CHECKING:
@@ -37,7 +38,7 @@ class DestructiveOp:
     opt-in is denied (deny-by-default).
     """
 
-    kind: str
+    kind: DestructiveJobKind
     profile_opt_in: bool = False
 
 
@@ -51,7 +52,7 @@ class DestructiveOpDenied(AuthorizationError):
 
 def _scope_permits(allocation: Allocation, op: DestructiveOp) -> bool:
     granted = allocation.capability_scope.get(_DESTRUCTIVE_OPS_KEY)
-    return isinstance(granted, (list, tuple)) and op.kind in granted
+    return isinstance(granted, (list, tuple)) and op.kind.value in granted
 
 
 def assert_destructive_allowed(

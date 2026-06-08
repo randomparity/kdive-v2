@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 
-from kdive.domain.models import Allocation
+from kdive.domain.models import Allocation, JobKind
 from kdive.domain.state import AllocationState
 from kdive.mcp.auth import RequestContext
 from kdive.security.authz.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
@@ -39,7 +39,7 @@ def _allocation(scope: dict[str, Any]) -> Allocation:
 
 
 def _op(opt_in: bool = True) -> DestructiveOp:
-    return DestructiveOp(kind="force_crash", profile_opt_in=opt_in)
+    return DestructiveOp(kind=JobKind.FORCE_CRASH, profile_opt_in=opt_in)
 
 
 def test_all_three_present_is_allowed() -> None:
@@ -78,7 +78,7 @@ def test_opt_in_defaults_false() -> None:
         assert_destructive_allowed(
             _ctx(Role.ADMIN),
             _allocation({"destructive_ops": ["force_crash"]}),
-            DestructiveOp(kind="force_crash"),
+            DestructiveOp(kind=JobKind.FORCE_CRASH),
         )
     assert exc.value.missing == ["profile_opt_in"]
 
@@ -103,7 +103,7 @@ def test_operator_required_role_allows_operator() -> None:
         assert_destructive_allowed(
             _ctx(Role.OPERATOR),
             _allocation({"destructive_ops": ["reprovision"]}),
-            DestructiveOp(kind="reprovision", profile_opt_in=True),
+            DestructiveOp(kind=JobKind.REPROVISION, profile_opt_in=True),
             required_role=Role.OPERATOR,
         )
         is None
@@ -115,7 +115,7 @@ def test_operator_required_role_still_denies_viewer() -> None:
         assert_destructive_allowed(
             _ctx(Role.VIEWER),
             _allocation({"destructive_ops": ["reprovision"]}),
-            DestructiveOp(kind="reprovision", profile_opt_in=True),
+            DestructiveOp(kind=JobKind.REPROVISION, profile_opt_in=True),
             required_role=Role.OPERATOR,
         )
     assert exc.value.missing == ["operator_role"]

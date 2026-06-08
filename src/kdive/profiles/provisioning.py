@@ -34,7 +34,7 @@ from kdive.components.catalog import load_fixture_catalog
 from kdive.components.references import ArtifactComponentRef, CatalogComponentRef, LocalComponentRef
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import ResourceKind
+from kdive.domain.models import DestructiveJobKind, ResourceKind
 from kdive.domain.profile_documents import SerializedProvisioningProfile
 from kdive.profiles._schema import schema_version_validator
 from kdive.profiles.types import ProvisioningProfileInput
@@ -242,9 +242,9 @@ def validate_profile(profile: ProvisioningProfile) -> None:
     validate_rootfs_reference(profile.provider.local_libvirt.rootfs)
 
 
-def destructive_opt_in(profile: ProvisioningProfile, op: str) -> bool:
+def destructive_opt_in(profile: ProvisioningProfile, op: DestructiveJobKind) -> bool:
     """Return whether the profile opts into a destructive operation."""
-    return op in profile.provider.local_libvirt.destructive_ops
+    return op.value in profile.provider.local_libvirt.destructive_ops
 
 
 def capture_method(profile: ProvisioningProfile | Mapping[str, object]) -> CaptureMethod:

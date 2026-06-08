@@ -25,7 +25,7 @@ from pydantic import Field
 
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import ErrorCategory
-from kdive.domain.models import JobKind, PowerAction, System
+from kdive.domain.models import DestructiveJobKind, JobKind, PowerAction, System
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
 from kdive.log import bind_context
@@ -50,8 +50,8 @@ from kdive.security.authz.rbac import Role, require_role
 
 # Systems that have a started libvirt domain (so a power op has something to act on).
 _STARTED_SYSTEM = frozenset({SystemState.READY, SystemState.CRASHED})
-_FORCE_CRASH = "force_crash"
-_POWER = "power"
+_FORCE_CRASH = JobKind.FORCE_CRASH
+_POWER = JobKind.POWER
 # Power on is a reversible lifecycle move (operator); off/cycle/reset tear into a running
 # guest and are destructive-administration ops (admin) — ADR-0037 §1/§2.
 _POWER_ON_ACTIONS = frozenset({PowerAction.ON})
@@ -111,7 +111,7 @@ async def _authorize_destructive(
     ctx: RequestContext,
     system: System,
     system_uid: UUID,
-    op_kind: str,
+    op_kind: DestructiveJobKind,
     *,
     tool: str,
 ) -> ToolResponse | None:
@@ -130,7 +130,7 @@ async def _authorize_destructive(
                     tool=tool,
                     object_kind="systems",
                     object_id=system_uid,
-                    transition=f"{op_kind}:denied",
+                    transition=f"{op_kind.value}:denied",
                     args={"system_id": str(system_uid), "missing": denied.missing},
                     project=system.project,
                 ),
@@ -139,7 +139,7 @@ async def _authorize_destructive(
     return None
 
 
-def _op_opt_in(system: System, op_kind: str) -> bool:
+def _op_opt_in(system: System, op_kind: DestructiveJobKind) -> bool:
     """Resolve the gate's profile opt-in factor from the System's provisioning profile."""
     profile = ProvisioningProfile.parse(system.provisioning_profile)
     return destructive_opt_in(profile, op_kind)
