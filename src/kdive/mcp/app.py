@@ -23,7 +23,7 @@ from kdive.mcp.tools.accounting.admin import register as register_accounting_adm
 from kdive.mcp.tools.accounting.estimate import register as register_accounting_estimate
 from kdive.mcp.tools.accounting.reports import register as register_accounting_reports
 from kdive.mcp.tools.accounting.usage import register as register_accounting_usage
-from kdive.mcp.tools.catalog import artifacts, investigations, jobs, resources
+from kdive.mcp.tools.catalog import artifacts, investigations, jobs, resources, shapes
 from kdive.mcp.tools.debug import introspect
 from kdive.mcp.tools.debug import sessions as debug_tools
 from kdive.mcp.tools.lifecycle import allocations
@@ -61,6 +61,7 @@ def _plain(register: Callable[[FastMCP, AsyncConnectionPool], None]) -> PlaneReg
 _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _plain(jobs.register),
     _plain(resources.register),
+    _plain(shapes.register),
     _plain(register_accounting_estimate),
     _plain(register_accounting_usage),
     _plain(register_accounting_reports),

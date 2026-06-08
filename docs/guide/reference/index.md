@@ -67,6 +67,9 @@
 | [`runs.create`](runs.md#runscreate) | `implemented` |
 | [`runs.get`](runs.md#runsget) | `implemented` |
 | [`runs.install`](runs.md#runsinstall) | `partial` |
+| [`shapes.delete`](shapes.md#shapesdelete) | `implemented` |
+| [`shapes.list`](shapes.md#shapeslist) | `implemented` |
+| [`shapes.set`](shapes.md#shapesset) | `implemented` |
 | [`systems.define`](systems.md#systemsdefine) | `implemented` |
 | [`systems.get`](systems.md#systemsget) | `implemented` |
 | [`systems.provision`](systems.md#systemsprovision) | `partial` |
