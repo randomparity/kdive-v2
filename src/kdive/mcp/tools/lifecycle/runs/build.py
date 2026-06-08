@@ -37,6 +37,7 @@ from kdive.mcp.tools.lifecycle.runs.common import (
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
 from kdive.providers.build_validation import validate_external_artifacts
 from kdive.providers.component_validation import (
+    CONFIG_COMPONENT,
     ComponentSourceCapabilities,
     reject_unsupported_component_source,
 )
@@ -178,7 +179,7 @@ class RunBuildHandlers:
                 try:
                     reject_unsupported_component_source(
                         self.component_sources,
-                        component_kind="config",
+                        component_kind=CONFIG_COMPONENT,
                         ref=parsed.config,
                     )
                 except CategorizedError as exc:

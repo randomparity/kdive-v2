@@ -18,6 +18,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.components.local_paths import validate_local_component_path
 from kdive.components.references import ComponentRef, parse_component_ref
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.providers.component_validation import ComponentKind
 from kdive.store.objectstore import HeadResult
 
 type Visibility = Literal["public", "project", "host-policy"]
@@ -27,7 +28,7 @@ type UploadVisibility = Literal["public", "project"]
 @dataclass(frozen=True, slots=True)
 class ComponentRegistration:
     provider: str
-    component_kind: str
+    component_kind: ComponentKind
     visibility: Visibility
     project: str | None
     principal: str
@@ -52,7 +53,7 @@ class ArtifactComponentRequest:
 class ComponentUploadRegistration:
     tenant: str
     provider: str
-    component_kind: str
+    component_kind: ComponentKind
     visibility: UploadVisibility
     project: str
     principal: str
@@ -69,7 +70,7 @@ class ComponentUploadIntentRequest:
 class ProviderComponent(NamedTuple):
     id: UUID
     provider: str
-    component_kind: str
+    component_kind: ComponentKind
     source: ComponentRef
     artifact_id: UUID | None
     visibility: Visibility
@@ -172,7 +173,7 @@ async def list_visible_components(
     pool: AsyncConnectionPool,
     *,
     provider: str,
-    component_kind: str,
+    component_kind: ComponentKind,
     project: str,
 ) -> list[ProviderComponent]:
     async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -306,7 +307,7 @@ def component_upload_object_key(
     *,
     tenant: str,
     provider: str,
-    component_kind: str,
+    component_kind: ComponentKind,
     upload_id: UUID,
 ) -> str:
     return f"{tenant}/provider-components/{provider}/{component_kind}/{upload_id}"
@@ -349,7 +350,7 @@ def _component_from_row(row: dict[str, object]) -> ProviderComponent:
     return ProviderComponent(
         id=cast(UUID, row["id"]),
         provider=cast(str, row["provider"]),
-        component_kind=cast(str, row["component_kind"]),
+        component_kind=cast(ComponentKind, row["component_kind"]),
         source=source,
         artifact_id=cast(UUID | None, row["artifact_id"]),
         visibility=cast(Visibility, row["visibility"]),

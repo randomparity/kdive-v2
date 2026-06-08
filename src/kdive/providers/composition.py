@@ -12,6 +12,12 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind
 from kdive.providers.component_validation import (
+    CONFIG_COMPONENT,
+    INITRD_COMPONENT,
+    KERNEL_COMPONENT,
+    PATCH_COMPONENT,
+    ROOTFS_COMPONENT,
+    VMLINUX_COMPONENT,
     ComponentKind,
     ComponentSourceCapabilities,
     ComponentSourceKind,
@@ -44,12 +50,12 @@ _LOCAL_COST_CLASS = "local"
 
 def _local_component_sources() -> ComponentSourceCapabilities:
     accepted: dict[ComponentKind, frozenset[ComponentSourceKind]] = {
-        "rootfs": frozenset({"catalog", "local"}),
-        "kernel": frozenset({"local"}),
-        "initrd": frozenset({"local"}),
-        "config": frozenset({"local"}),
-        "patch": frozenset({"local"}),
-        "vmlinux": frozenset({"local"}),
+        ROOTFS_COMPONENT: frozenset({"catalog", "local"}),
+        KERNEL_COMPONENT: frozenset({"local"}),
+        INITRD_COMPONENT: frozenset({"local"}),
+        CONFIG_COMPONENT: frozenset({"local"}),
+        PATCH_COMPONENT: frozenset({"local"}),
+        VMLINUX_COMPONENT: frozenset({"local"}),
     }
     return ComponentSourceCapabilities(
         provider=ResourceKind.LOCAL_LIBVIRT.value,

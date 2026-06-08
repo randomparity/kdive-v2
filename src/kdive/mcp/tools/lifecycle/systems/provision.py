@@ -51,6 +51,7 @@ from kdive.profiles.provisioning import (
 )
 from kdive.profiles.types import ProvisioningProfileInput
 from kdive.providers.component_validation import (
+    ROOTFS_COMPONENT,
     ComponentSourceCapabilities,
     reject_unsupported_component_source,
 )
@@ -131,7 +132,7 @@ def _validate_profile_for_provider(
         return
     reject_unsupported_component_source(
         capabilities,
-        component_kind="rootfs",
+        component_kind=ROOTFS_COMPONENT,
         ref=rootfs,
     )
 
