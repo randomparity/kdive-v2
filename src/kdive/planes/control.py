@@ -18,7 +18,7 @@ from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import PowerPayload, SystemPayload, load_payload
 from kdive.providers.ports import Controller
-from kdive.providers.runtime import ProviderRuntime
+from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security import audit
 
@@ -44,12 +44,29 @@ async def _control_target(conn: AsyncConnection, system_id: UUID, *, op: str) ->
         return _ControlTarget(domain_name(system), system.project)
 
 
-async def power_handler(conn: AsyncConnection, job: Job, control: Controller) -> str | None:
+async def _controller(
+    conn: AsyncConnection, system_id: UUID, resolver: ProviderResolver | None
+) -> Controller:
+    """Resolve the System's controller port, preferring an explicitly injected one."""
+    if resolver is None:
+        raise RuntimeError("control handlers require a resolver or an explicit controller")
+    return (await resolver.runtime_for_system(conn, system_id)).controller
+
+
+async def power_handler(
+    conn: AsyncConnection,
+    job: Job,
+    control: Controller | None = None,
+    *,
+    resolver: ProviderResolver | None = None,
+) -> str | None:
     """Drive the domain's power; audit `power:{action}`; move no System state."""
     payload = load_payload(job, PowerPayload)
     system_id = UUID(payload.system_id)
     action = payload.action
     target = await _control_target(conn, system_id, op="power")
+    if control is None:
+        control = await _controller(conn, system_id, resolver)
     await asyncio.to_thread(control.power, target.domain_name, action)
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
         system = await SYSTEMS.get(conn, system_id)
@@ -74,12 +91,20 @@ async def power_handler(conn: AsyncConnection, job: Job, control: Controller) ->
     return str(system_id)
 
 
-async def force_crash_handler(conn: AsyncConnection, job: Job, control: Controller) -> str | None:
+async def force_crash_handler(
+    conn: AsyncConnection,
+    job: Job,
+    control: Controller | None = None,
+    *,
+    resolver: ProviderResolver | None = None,
+) -> str | None:
     """Crash the guest and drive System ready->crashed + DebugSession live->detached."""
     system_id = UUID(load_payload(job, SystemPayload).system_id)
     target = await _force_crash_target(conn, system_id)
     if target is None:
         return str(system_id)
+    if control is None:
+        control = await _controller(conn, system_id, resolver)
     await asyncio.to_thread(control.force_crash, target.domain_name)
     await _finalize_force_crash(conn, job, system_id, target.project)
     return str(system_id)
@@ -164,15 +189,16 @@ def register_handlers(
     registry: HandlerRegistry,
     *,
     control: Controller | None = None,
-    provider_runtime: ProviderRuntime | None = None,
+    resolver: ProviderResolver | None = None,
 ) -> None:
     """Bind the `power`/`force_crash` job handlers."""
-    if control is None:
-        if provider_runtime is None:
-            raise RuntimeError("control handlers require provider runtime or control")
-        control = provider_runtime.controller
+    if control is None and resolver is None:
+        raise RuntimeError("control handlers require a resolver or an explicit controller")
 
-    registry.register(JobKind.POWER, lambda conn, job: power_handler(conn, job, control))
     registry.register(
-        JobKind.FORCE_CRASH, lambda conn, job: force_crash_handler(conn, job, control)
+        JobKind.POWER, lambda conn, job: power_handler(conn, job, control, resolver=resolver)
+    )
+    registry.register(
+        JobKind.FORCE_CRASH,
+        lambda conn, job: force_crash_handler(conn, job, control, resolver=resolver),
     )

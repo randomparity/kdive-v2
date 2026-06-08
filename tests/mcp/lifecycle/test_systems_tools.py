@@ -1678,9 +1678,9 @@ def test_register_handlers_binds_provision_teardown_and_reprovision() -> None:
     assert registry.get(JobKind.REPROVISION) is not None
 
 
-def test_register_handlers_requires_provider_runtime_or_provisioning() -> None:
+def test_register_handlers_requires_resolver_or_provisioning() -> None:
     registry = HandlerRegistry()
-    with pytest.raises(RuntimeError, match="provider runtime or provisioning"):
+    with pytest.raises(RuntimeError, match="resolver or an explicit provisioner"):
         systems_handlers.register_handlers(registry)
 
 

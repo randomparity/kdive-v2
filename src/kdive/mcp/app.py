@@ -115,18 +115,10 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
 # toolchain connection at registration). The Connect plane (#20) registers tools only — its
 # debug.start_session/end_session are synchronous, so they have no JobKind and no handler.
 _HANDLER_REGISTRARS: tuple[HandlerRegistrar, ...] = (
-    lambda registry, resolver: systems.register_handlers(
-        registry, provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
-    ),
-    lambda registry, resolver: runs.register_handlers(
-        registry, provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
-    ),
-    lambda registry, resolver: control.register_handlers(
-        registry, provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
-    ),
-    lambda registry, resolver: vmcore.register_handlers(
-        registry, provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
-    ),
+    lambda registry, resolver: systems.register_handlers(registry, resolver=resolver),
+    lambda registry, resolver: runs.register_handlers(registry, resolver=resolver),
+    lambda registry, resolver: control.register_handlers(registry, resolver=resolver),
+    lambda registry, resolver: vmcore.register_handlers(registry, resolver=resolver),
 )
 
 

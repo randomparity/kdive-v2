@@ -1638,9 +1638,9 @@ def test_register_handlers_binds_build() -> None:
     assert registry.get(JobKind.BUILD) is not None
 
 
-def test_register_handlers_requires_provider_runtime_or_run_ports() -> None:
+def test_register_handlers_requires_resolver_or_run_ports() -> None:
     registry = HandlerRegistry()
-    with pytest.raises(RuntimeError, match="provider runtime or run ports"):
+    with pytest.raises(RuntimeError, match="resolver or explicit run ports"):
         runs_handlers.register_handlers(registry)
 
 
