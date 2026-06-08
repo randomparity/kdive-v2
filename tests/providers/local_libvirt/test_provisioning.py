@@ -30,6 +30,7 @@ from kdive.providers.local_libvirt.provisioning import (
 from tests.providers.local_libvirt.fakes import libvirt_error
 
 _SYS = UUID("11111111-1111-1111-1111-111111111111")
+_DISK = "/var/lib/kdive/rootfs/fedora-40.qcow2"
 
 _VALID: dict[str, Any] = {
     "schema_version": 1,
@@ -58,6 +59,15 @@ def _profile(**overrides: Any) -> ProvisioningProfile:
     return ProvisioningProfile.parse(data)
 
 
+def _render(
+    system_id: UUID = _SYS,
+    profile: ProvisioningProfile | None = None,
+    *,
+    disk_path: str = _DISK,
+) -> str:
+    return render_domain_xml(system_id, profile or _profile(), disk_path=disk_path)
+
+
 def test_domain_name_is_kdive_prefixed() -> None:
     assert domain_name_for(_SYS) == "kdive-11111111-1111-1111-1111-111111111111"
 
@@ -75,15 +85,15 @@ def test_import_does_not_register_elementtree_namespace(
 
     assert calls == []
 
-    reloaded.render_domain_xml(_SYS, _profile())
-    reloaded.render_domain_xml(_SYS, _profile())
+    reloaded.render_domain_xml(_SYS, _profile(), disk_path=_DISK)
+    reloaded.render_domain_xml(_SYS, _profile(), disk_path=_DISK)
 
     assert calls == [("kdive", discovery._KDIVE_METADATA_NS)]
     reloaded.__dict__["_kdive_namespace_registered"] = False
 
 
 def test_render_carries_name_memory_vcpu_machine_and_rootfs() -> None:
-    root = _safe_fromstring(render_domain_xml(_SYS, _profile()))
+    root = _safe_fromstring(_render())
     assert root.findtext("name") == "kdive-11111111-1111-1111-1111-111111111111"
     assert root.findtext("memory") == "4096"
     assert root.findtext("vcpu") == "4"
@@ -99,7 +109,7 @@ def test_render_carries_name_memory_vcpu_machine_and_rootfs() -> None:
 def test_render_declares_qcow2_disk_driver() -> None:
     # The rootfs images are qcow2; a driver-less disk makes libvirt default to raw, so the guest
     # reads the qcow2 header instead of the ext4 filesystem and panics unable to mount root.
-    root = _safe_fromstring(render_domain_xml(_SYS, _profile()))
+    root = _safe_fromstring(_render())
     driver = root.find("devices/disk/driver")
     assert driver is not None
     assert driver.get("name") == "qemu"
@@ -110,7 +120,7 @@ def test_render_emits_deterministic_uuid_for_idempotent_redefine() -> None:
     # defineXML redefines an existing domain only when the XML carries its uuid; a deterministic
     # uuid = system_id lets a provision retry redefine the running domain in place instead of
     # failing with "domain already exists with uuid ..." on the name collision.
-    root = _safe_fromstring(render_domain_xml(_SYS, _profile()))
+    root = _safe_fromstring(_render())
     assert root.findtext("uuid") == str(_SYS)
 
 
@@ -120,36 +130,34 @@ def test_required_cmdline_root_matches_the_rendered_disk_target() -> None:
     from kdive.domain.capture import CaptureMethod
     from kdive.services.run_steps import system_required_cmdline
 
-    target = _safe_fromstring(render_domain_xml(_SYS, _profile())).find("devices/disk/target")
+    target = _safe_fromstring(_render()).find("devices/disk/target")
     assert target is not None
     assert f"root=/dev/{target.get('dev')}" in system_required_cmdline(CaptureMethod.CONSOLE)
 
 
 def test_render_uses_disk_path_override_when_given() -> None:
     # provision() attaches a per-System overlay, not the shared base, by passing disk_path.
-    root = _safe_fromstring(
-        render_domain_xml(_SYS, _profile(), disk_path="/var/lib/kdive/rootfs/ov.qcow2")
-    )
+    root = _safe_fromstring(_render(disk_path="/var/lib/kdive/rootfs/ov.qcow2"))
     source = root.find("devices/disk/source")
     assert source is not None and source.get("file") == "/var/lib/kdive/rootfs/ov.qcow2"
 
 
 def test_render_has_no_kernel_or_cmdline() -> None:
     # The kdump crashkernel reservation is the install/boot plane's job (#17), not provision's.
-    root = _safe_fromstring(render_domain_xml(_SYS, _profile()))
+    root = _safe_fromstring(_render())
     assert root.find("os/kernel") is None
     assert root.find("os/cmdline") is None
 
 
 def test_render_metadata_tag_round_trips_through_discovery() -> None:
-    root = _safe_fromstring(render_domain_xml(_SYS, _profile()))
+    root = _safe_fromstring(_render())
     tag = root.find(f"metadata/{{{discovery._KDIVE_METADATA_NS}}}system")
     assert tag is not None
     assert discovery._parse_system_id(ET.tostring(tag, encoding="unicode")) == str(_SYS)
 
 
 def test_render_defaults_machine_when_absent() -> None:
-    root = _safe_fromstring(render_domain_xml(_SYS, _profile(domain_xml_params={})))
+    root = _safe_fromstring(_render(profile=_profile(domain_xml_params={})))
     os_type = root.find("os/type")
     assert os_type is not None and os_type.get("machine") == "q35"
 
@@ -163,7 +171,7 @@ def test_validate_profile_rejects_unknown_domain_xml_param() -> None:
 def test_render_rejects_unknown_domain_xml_param() -> None:
     # render re-checks at the worker boundary (a hand-built jsonb that bypassed the tool).
     with pytest.raises(CategorizedError):
-        render_domain_xml(_SYS, _profile(domain_xml_params={"nope": "x"}))
+        _render(profile=_profile(domain_xml_params={"nope": "x"}))
 
 
 @dataclass
@@ -602,7 +610,7 @@ def test_domain_xml_has_serial_console_with_log() -> None:
     # Parse with defusedxml (XXE-safe), matching install.py's _safe_fromstring; stdlib ET
     # parsing is vulnerable to XXE/billion-laughs even on self-rendered strings in tests.
     sid = UUID("00000000-0000-0000-0000-0000000000aa")
-    root = _safe_fromstring(render_domain_xml(sid, _profile()))
+    root = _safe_fromstring(_render(system_id=sid))
     serial = root.find("./devices/serial[@type='pty']")
     assert serial is not None
     log = serial.find("log")

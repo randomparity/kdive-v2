@@ -16,6 +16,7 @@ from kdive.components.references import (
     LocalComponentRef,
 )
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.profiles.provisioning import RootfsSource, _UploadRootfs
 
 
 class ProviderComponent(Protocol):
@@ -45,16 +46,25 @@ class ObjectStore(Protocol):
 
 
 def materialize_rootfs_base(
-    ref: ComponentRef,
+    ref: RootfsSource | ComponentRef,
     *,
     allowed_roots: list[Path],
     cache_dir: Path,
     project: str,
+    system_id: UUID | None = None,
+    upload_dir: Path | None = None,
     component_store: ComponentStore | None,
     object_store: ObjectStore | None,
 ) -> Path:
     """Return a provider-readable rootfs base image path."""
     _ = (cache_dir, project)
+    if isinstance(ref, _UploadRootfs):
+        if system_id is None or upload_dir is None:
+            raise CategorizedError(
+                "uploaded rootfs materialization requires a system id and upload directory",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+            )
+        return upload_rootfs_path("local", system_id, upload_dir=upload_dir)
     if isinstance(ref, LocalComponentRef):
         return validate_local_component_path(
             ref.path,
@@ -76,6 +86,11 @@ def materialize_rootfs_base(
         "unsupported rootfs component reference",
         category=ErrorCategory.CONFIGURATION_ERROR,
     )
+
+
+def upload_rootfs_path(tenant: str, system_id: UUID, *, upload_dir: Path) -> Path:
+    """Return the local staging path for a System-owned uploaded rootfs object."""
+    return upload_dir / f"{tenant}-systems-{system_id}-rootfs.qcow2"
 
 
 def _materialize_catalog_rootfs(ref: CatalogComponentRef, *, allowed_roots: list[Path]) -> Path:

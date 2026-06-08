@@ -26,8 +26,6 @@ from uuid import UUID
 
 import libvirt
 
-from kdive.components.catalog import load_fixture_catalog
-from kdive.components.references import ArtifactComponentRef, LocalComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import (
     ProvisioningProfile,
@@ -98,48 +96,6 @@ def _close(conn: _LibvirtConn) -> None:
         _log.warning("libvirt connection close failed; continuing", exc_info=True)
 
 
-def resolve_rootfs_path(rootfs: RootfsSource, *, tenant: str, system_id: UUID) -> str:
-    """Resolve a rootfs source to the libvirt-readable disk path (ADR-0048 §5).
-
-    ``local`` is the declared provider-visible file; ``upload`` is the System-owned object's
-    local staging path; ``artifact`` and ``catalog`` resolve to provider-owned staging paths.
-    Full provider-root validation and artifact download happen in ``materialize_rootfs_base``.
-
-    Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` for a malformed url checksum or unknown
-            catalog name.
-    """
-    if isinstance(rootfs, LocalComponentRef):
-        return rootfs.path
-    if isinstance(rootfs, _UploadRootfs):
-        # The System-owned uploaded object's local staging path. The object is committed
-        # (its artifacts row written) at provisioning->ready by _commit_uploaded_rootfs;
-        # staging the bytes down to this path is the install/boot spec's concern (ADR-0048 §7).
-        return f"{_ROOTFS_DIR}/{tenant}-systems-{system_id}-rootfs.qcow2"
-    if isinstance(rootfs, ArtifactComponentRef):
-        if rootfs.sha256 is None:
-            raise CategorizedError(
-                "artifact rootfs requires sha256 for provider cache selection",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-            )
-        return f"{_ROOTFS_CACHE_DIR}/sha256/{rootfs.sha256.removeprefix('sha256:')}.qcow2"
-    entry = load_fixture_catalog().rootfs_entry(rootfs.provider, rootfs.name)
-    if entry is None:
-        raise CategorizedError(
-            f"unknown rootfs catalog name: {rootfs.name}",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"provider": rootfs.provider, "name": rootfs.name},
-        )
-    if isinstance(entry.source, LocalComponentRef):
-        return entry.source.path
-    if isinstance(entry.source, ArtifactComponentRef) and entry.source.sha256 is not None:
-        return f"{_ROOTFS_CACHE_DIR}/sha256/{entry.source.sha256.removeprefix('sha256:')}.qcow2"
-    raise CategorizedError(
-        "artifact-backed rootfs materialization is not wired yet",
-        category=ErrorCategory.MISSING_DEPENDENCY,
-    )
-
-
 def reject_rootfs_without_upload_window(rootfs: RootfsSource) -> None:
     """Reject an ``upload`` rootfs in a lane that has no pre-provision upload window.
 
@@ -161,16 +117,14 @@ def reject_rootfs_without_upload_window(rootfs: RootfsSource) -> None:
         )
 
 
-def render_domain_xml(
-    system_id: UUID, profile: ProvisioningProfile, *, disk_path: str | None = None
-) -> str:
+def render_domain_xml(system_id: UUID, profile: ProvisioningProfile, *, disk_path: str) -> str:
     """Render the tagged libvirt domain XML for a System (ADR-0025 §3).
 
     Renders the domain shell, the rootfs disk, the always-on serial console with a ``<log>``
     tee to ``_CONSOLE_DIR``, and the kdive metadata tag — no ``<kernel>``/``<cmdline>`` (the
     kdump ``crashkernel=`` reservation is the install/boot plane's, #17, and is inert without a
-    ``<kernel>`` element). ``disk_path`` overrides the disk source: ``provision`` passes the
-    per-System overlay (ADR-0060); a bare render (tests) defaults to the resolved base image.
+    ``<kernel>`` element). ``disk_path`` is explicit so rootfs materialization policy stays in
+    the materialization plane; production passes the per-System overlay (ADR-0060).
     """
     _ensure_kdive_namespace_registered()
     _validate_profile(profile)
@@ -195,12 +149,7 @@ def render_domain_xml(
     # start of the disk and fail to mount root; declare the format so /dev/vda is the ext4
     # filesystem, not the container metadata.
     ET.SubElement(disk, "driver", name="qemu", type="qcow2")
-    rootfs_path = (
-        disk_path
-        if disk_path is not None
-        else resolve_rootfs_path(section.rootfs, tenant="local", system_id=system_id)
-    )
-    ET.SubElement(disk, "source", file=rootfs_path)
+    ET.SubElement(disk, "source", file=disk_path)
     ET.SubElement(disk, "target", dev="vda", bus="virtio")
     serial = ET.SubElement(devices, "serial", type="pty")
     ET.SubElement(serial, "log", file=str(console_log_path(system_id)))
@@ -449,14 +398,14 @@ class LocalLibvirtProvisioning:
         self._remove_overlay(overlay_path(domain_name.removeprefix("kdive-")))
 
     def _materialize_rootfs_base(self, rootfs: RootfsSource, system_id: UUID) -> str:
-        if isinstance(rootfs, _UploadRootfs):
-            return resolve_rootfs_path(rootfs, tenant="local", system_id=system_id)
         return str(
             materialize_rootfs_base(
                 rootfs,
                 allowed_roots=self._allowed_roots,
                 cache_dir=self._cache_dir,
                 project="local",
+                system_id=system_id,
+                upload_dir=Path(_ROOTFS_DIR),
                 component_store=None,
                 object_store=None,
             )
