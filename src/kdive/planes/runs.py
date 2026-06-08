@@ -78,6 +78,18 @@ async def _fail_build(conn: AsyncConnection, job: Job, run: Run, category: Error
         )
 
 
+async def _abandon_run_step_best_effort(conn: AsyncConnection, run_id: UUID, step: str) -> None:
+    try:
+        await abandon_run_step(conn, run_id, step)
+    except Exception:
+        _log.warning(
+            "failed to abandon %s step claim for run %s; preserving original failure",
+            step,
+            run_id,
+            exc_info=True,
+        )
+
+
 async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> str | None:
     """Build the Run's kernel and drive it `running -> succeeded` or failed."""
     payload = load_payload(job, BuildPayload)
@@ -150,7 +162,7 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
             initrd_ref=initrd_ref,
         )
     except Exception:
-        await abandon_run_step(conn, run_id, "install")
+        await _abandon_run_step_best_effort(conn, run_id, "install")
         raise
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run_id):
         await complete_run_step(conn, run_id, "install", {"system_id": str(run.system_id)})
@@ -332,13 +344,13 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
     try:
         result = await _run_boot_and_capture_outcome(conn, job_ctx, run, booter)
     except CategorizedError:
-        await abandon_run_step(conn, run_id, "boot")
+        await _abandon_run_step_best_effort(conn, run_id, "boot")
         try:
             await _capture_console_artifact(conn, run.system_id)
         finally:
             raise
     except Exception:
-        await abandon_run_step(conn, run_id, "boot")
+        await _abandon_run_step_best_effort(conn, run_id, "boot")
         raise
     async with (
         conn.transaction(),

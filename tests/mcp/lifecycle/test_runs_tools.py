@@ -1710,6 +1710,27 @@ def test_install_handler_failure_records_no_step(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_install_handler_cleanup_failure_preserves_provider_category(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _fail_cleanup(*_args: object) -> None:
+        raise RuntimeError("cleanup failed")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            job = await _enqueue_job(pool, JobKind.INSTALL, run_id, "install")
+            installer = _FakeInstaller(error=ErrorCategory.INSTALL_FAILURE)
+            monkeypatch.setattr(runs_handlers, "abandon_run_step", _fail_cleanup)
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError) as caught:
+                    await runs_handlers.install_handler(conn, job, installer)
+
+        assert caught.value.category is ErrorCategory.INSTALL_FAILURE
+
+    asyncio.run(_run())
+
+
 def test_install_handler_missing_kernel_ref_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -1785,6 +1806,28 @@ def test_boot_handler_failure_records_no_step(migrated_url: str, category: Error
                 (run_id,),
             )
         assert nsteps == 0  # no ledger row on failure
+
+    asyncio.run(_run())
+
+
+def test_boot_handler_cleanup_failure_preserves_provider_category(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _fail_cleanup(*_args: object) -> None:
+        raise RuntimeError("cleanup failed")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_install_step(pool, run_id)
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter(error=ErrorCategory.BOOT_TIMEOUT)
+            monkeypatch.setattr(runs_handlers, "abandon_run_step", _fail_cleanup)
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError) as caught:
+                    await runs_handlers.boot_handler(conn, job, booter)
+
+        assert caught.value.category is ErrorCategory.BOOT_TIMEOUT
 
     asyncio.run(_run())
 
