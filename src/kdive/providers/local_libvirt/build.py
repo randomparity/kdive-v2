@@ -84,6 +84,7 @@ def _missing_config_groups(config_text: str) -> list[tuple[str, ...]]:
 
 type _Checkout = Callable[[UUID, ServerBuildProfile, Path], None]
 type _ReadConfig = Callable[[Path], str]
+type _RunOlddefconfig = Callable[[Path], int]
 type _RunMake = Callable[[Path], int]
 type _ReadBytes = Callable[[Path], bytes]
 type _ReadBuildId = Callable[[Path], str]
@@ -99,6 +100,7 @@ class LocalLibvirtBuild:
         workspace_root: Path,
         store_factory: Callable[[], _StorePort],
         checkout: _Checkout,
+        run_olddefconfig: _RunOlddefconfig,
         read_config: _ReadConfig,
         run_make: _RunMake,
         read_kernel_image: _ReadBytes,
@@ -114,6 +116,7 @@ class LocalLibvirtBuild:
         self._store_factory = store_factory
         self._store: _StorePort | None = None
         self._checkout = checkout
+        self._run_olddefconfig = run_olddefconfig
         self._read_config = read_config
         self._run_make = run_make
         self._read_kernel_image = read_kernel_image
@@ -138,6 +141,7 @@ class LocalLibvirtBuild:
             workspace_root=workspace_root,
             store_factory=object_store_from_env,
             checkout=_make_checkout(kernel_src, allowed_component_roots),
+            run_olddefconfig=_real_run_olddefconfig,
             read_config=_real_read_config,
             run_make=_real_run_make,
             read_kernel_image=_real_read_kernel_image,
@@ -157,6 +161,12 @@ class LocalLibvirtBuild:
         """
         workspace = self._workspace_root / str(run_id)
         self._checkout(run_id, profile, workspace)
+        if self._run_olddefconfig(workspace) != 0:
+            raise CategorizedError(
+                "make olddefconfig exited non-zero",
+                category=ErrorCategory.BUILD_FAILURE,
+                details={"run_id": str(run_id)},
+            )
         config_text = self._read_config(workspace)
         missing = _missing_config_groups(config_text)
         if missing:
@@ -334,6 +344,23 @@ def _real_run_make(workspace: Path) -> int:  # pragma: no cover - live_vm
     except subprocess.TimeoutExpired as exc:
         raise CategorizedError(
             "make exceeded the build timeout",
+            category=ErrorCategory.BUILD_FAILURE,
+            details={"timeout_s": _MAKE_TIMEOUT_S},
+        ) from exc
+    except OSError as exc:
+        raise _launch_failure("make", exc, category=ErrorCategory.INFRASTRUCTURE_FAILURE) from exc
+
+
+def _real_run_olddefconfig(workspace: Path) -> int:  # pragma: no cover - live_vm
+    try:
+        return subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted workspace
+            ["make", "-C", str(workspace), "olddefconfig"],
+            timeout=_MAKE_TIMEOUT_S,
+            check=False,
+        ).returncode
+    except subprocess.TimeoutExpired as exc:
+        raise CategorizedError(
+            "make olddefconfig exceeded the build timeout",
             category=ErrorCategory.BUILD_FAILURE,
             details={"timeout_s": _MAKE_TIMEOUT_S},
         ) from exc

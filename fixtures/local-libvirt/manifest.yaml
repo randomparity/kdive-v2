@@ -7,5 +7,7 @@ storage:
   overlay_dir: /var/lib/kdive/rootfs/overlays
 rootfs:
   - rootfs/fedora-kdive-ready-43.yaml
+  - rootfs/fedora-cloud-43.yaml
+  - rootfs/busybox-bare.yaml
 profiles:
   - profiles/console-ready_x86_64.yaml

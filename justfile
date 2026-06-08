@@ -49,9 +49,12 @@ test:
 test-live:
     uv run python -m pytest -m live_vm -q
 
-# Bring up the live-stack backing services healthy, then print the host-process env + steps.
-# Reuses the compose backends; the operator starts server/worker/reconciler (see the runbook
-# docs/runbooks/live-stack.md). Idempotent and re-runnable.
+# Apply database migrations using the live-stack default environment.
+stack-migrate:
+    ./scripts/live-stack/apply-migrations.sh
+
+# Bring up the live-stack backing services healthy, then migrate the schema and print the
+# host-process startup step. Reuses the compose backends; host processes stay outside compose.
 #
 # `--wait` is scoped to the three long-running backends: it treats ANY container exit as a wait
 # failure, so the one-shot `minio-init` (creates the bucket, then exits 0) would make a healthy
@@ -60,16 +63,20 @@ test-live:
 stack-up:
     docker compose up -d --wait postgres minio oidc
     docker compose run --rm minio-init
-    @echo "Backends healthy. Export this env, then start the host processes:"
-    @echo "  export KDIVE_DATABASE_URL=postgresql://kdive:kdive@localhost:5432/kdive" # pragma: allowlist secret — local dev only
-    @echo "  export KDIVE_OIDC_ISSUER=http://localhost:8090/default"
-    @echo "  export KDIVE_OIDC_JWKS_URI=http://localhost:8090/default/jwks"
-    @echo "  export KDIVE_OIDC_AUDIENCE=kdive"
-    @echo "  export KDIVE_S3_ENDPOINT_URL=http://localhost:9000"
-    @echo "  export KDIVE_S3_BUCKET=kdive-artifacts KDIVE_S3_REGION=us-east-1"
-    @echo "  export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin"
-    @echo "Then in three terminals: python -m kdive server | worker | reconciler"
+    ./scripts/live-stack/apply-migrations.sh
+    @echo "Backends healthy and schema migrated."
+    @echo "Start host processes with: python -m kdive stack"
+    @echo "MCP URL: http://127.0.0.1:8000/mcp"
     @echo "Full runbook: docs/runbooks/live-stack.md"
+
+stack-start:
+    ./scripts/live-stack/start.sh
+
+stack-start-daemon:
+    ./scripts/live-stack/start.sh --daemon
+
+stack-stop:
+    ./scripts/live-stack/stop.sh
 
 # Run the live_stack suite (needs `just stack-up` + VM fixtures). --strict-markers fails a
 # mis-marked test instead of silently deselecting; pytest exit 5 ("no tests collected", e.g.

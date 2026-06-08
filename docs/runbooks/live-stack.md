@@ -10,6 +10,10 @@ The `server`, `worker`, and `reconciler` run **on the host** (not in containers)
 the `docker-compose.yml` backends, so qemu disk-image and kernel-tree paths resolve where
 `libvirtd` runs. Containerizing them is a deferred follow-on (ADR-0042 §2).
 
+The `just` recipes below are source-tree conveniences. Installed-package deployments use
+`python -m kdive migrate`, `python -m kdive seed-demo`, and `python -m kdive stack`; see
+[`docs/admin/local-stack.md`](../admin/local-stack.md).
+
 ## Prerequisites
 
 - A KVM / nested-virt host with `libvirt` and a running `libvirtd`.
@@ -26,29 +30,21 @@ just stack-up
 ```
 
 This waits for the three long-running backends — Postgres, MinIO, and the mock OIDC issuer
-— to be **healthy**, then runs the one-shot `minio-init` to completion (creating the
-`kdive-artifacts` bucket) and prints the host-process env block and next steps.
+— to be **healthy**, runs the one-shot `minio-init` to completion (creating the
+`kdive-artifacts` bucket), and applies database migrations.
 
 > The recipe scopes `docker compose up --wait` to the long-running backends and runs
 > `minio-init` separately, because `--wait` treats a run-to-completion service's exit as a
 > wait failure. `minio-init`'s exit code still propagates, so a genuine bucket-creation
 > failure fails `just stack-up`.
 
-## 2. Export the host-process env
+## 2. Review the host-process env
 
-The three host processes read `KDIVE_*` env pointed at the compose host ports. `stack-up`
-prints this block; export it in the shell that will start the processes:
+The source-tree wrappers source `scripts/live-stack/env.sh`, which exports the local
+defaults before starting KDIVE:
 
 ```bash
-export KDIVE_DATABASE_URL=postgresql://kdive:kdive@localhost:5432/kdive # pragma: allowlist secret — local dev only
-export KDIVE_OIDC_ISSUER=http://localhost:8090/default
-export KDIVE_OIDC_JWKS_URI=http://localhost:8090/default/jwks
-export KDIVE_OIDC_AUDIENCE=kdive
-export KDIVE_S3_ENDPOINT_URL=http://localhost:9000
-export KDIVE_S3_BUCKET=kdive-artifacts
-export KDIVE_S3_REGION=us-east-1
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=minioadmin
+python -m kdive print-local-env
 ```
 
 **The most error-prone step:** the object store reads S3 **credentials from boto3's
@@ -69,6 +65,17 @@ code bug. The `KDIVE_S3_*` vars carry only the endpoint, bucket, and region.
 | `AWS_ACCESS_KEY_ID` | `minioadmin` | boto3 default chain |
 | `AWS_SECRET_ACCESS_KEY` | `minioadmin` | boto3 default chain |
 
+Installed-package deployments usually write these defaults to `/etc/kdive/local.env` and
+source that file before running commands:
+
+```bash
+set -a
+. /etc/kdive/local.env
+set +a
+python -m kdive migrate
+python -m kdive seed-demo --project demo
+```
+
 ## 3. Build the VM fixtures
 
 The spine boots a real guest and builds a real kernel, so the suite needs an
@@ -82,8 +89,8 @@ export KDIVE_KERNEL_SRC=/path/to/kernel-tree
 ```
 
 The builder runs unprivileged and writes the rootfs to `KDIVE_ROOTFS` (default
-`/var/lib/kdive/rootfs/minimal.qcow2`). For the default root-owned path, an OS admin
-pre-prepares the output directory once and makes it writable by the build user; the
+`/var/lib/kdive/rootfs/local/fedora-kdive-ready-43.qcow2`). For the default root-owned path,
+an OS admin pre-prepares the output directory once and makes it writable by the build user; the
 per-build write and the final `chmod 0644` are unprivileged. The image is left `0644` so
 the separate `qemu` user can read it under `qemu:///system`. Under SELinux the file also
 needs the `virt_image_t` label (the standard label for libvirt-managed images); this is the
@@ -95,24 +102,32 @@ changing any build input (`KDIVE_ROOTFS_DEBUG`, `KDIVE_ROOTFS_VMLINUX`,
 Point `KDIVE_GUEST_IMAGE` and `KDIVE_KERNEL_SRC` at the scripts' output. The `live_stack`
 preflight skips with the exact script to run when either is missing.
 
-## 4. Start the three host processes
+## 4. Start the host processes
 
-In **three separate terminals** (each with the env from step 2 exported), foreground:
-
-```bash
-python -m kdive server       # MCP streamable-HTTP server (default 127.0.0.1:8000)
-python -m kdive worker       # job-queue worker — drains provision/build/install/boot/capture
-python -m kdive reconciler   # drift-repair loop
-```
-
-Then point the test driver at the running server:
+From a source checkout, run the convenience wrapper:
 
 ```bash
-export KDIVE_STACK_BASE_URL=http://127.0.0.1:8000/mcp/
+just stack-start
 ```
 
-Override the bind address with `KDIVE_HTTP_HOST` / `KDIVE_HTTP_PORT` if `127.0.0.1:8000`
-is taken; keep `KDIVE_STACK_BASE_URL` in sync.
+Or start it in the background and stop it by pid file:
+
+```bash
+just stack-start-daemon
+just stack-stop
+```
+
+Installed package:
+
+```bash
+python -m kdive migrate
+python -m kdive seed-demo --project demo
+python -m kdive stack
+```
+
+The default MCP URL is `http://127.0.0.1:8000/mcp`. Override the bind address with
+`KDIVE_HTTP_HOST` / `KDIVE_HTTP_PORT` if `127.0.0.1:8000` is taken; keep
+`KDIVE_STACK_BASE_URL` in sync.
 
 ## 5. Run the suite
 
@@ -126,9 +141,54 @@ on any host. When **no** `live_stack` test is collected yet (the marked spine dr
 in a later sub-issue), the recipe reports `no live_stack tests collected — skipping
 cleanly` and exits 0.
 
-## 6. Teardown
+## 6. Kernel debugging demo smoke check
 
-Stop the three host processes (Ctrl-C each), then remove the backends and their volumes:
+The default installed-package flow is:
+
+```bash
+set -a
+. /etc/kdive/local.env
+set +a
+python -m kdive migrate
+python -m kdive seed-demo --project demo
+python -m kdive stack
+```
+
+Expected defaults:
+
+- MCP URL: `http://127.0.0.1:8000/mcp`
+- Kernel source: `~/src/linux` unless `KDIVE_KERNEL_SRC` is set
+- Build workspace: `/var/lib/kdive/build`
+- Component roots: `/var/lib/kdive/build/components:/etc/kdive/fixtures`
+- Fixture catalog: `/etc/kdive/fixtures/local-libvirt`
+- Fedora kdive-ready rootfs: `/var/lib/kdive/rootfs/local/fedora-kdive-ready-43.qcow2`
+- Busybox rootfs: `/var/lib/kdive/rootfs/local/busybox-bare.qcow2`
+
+After the stack is up, use the live-stack harness to call MCP tools for:
+
+- `accounting.set_budget`
+- `accounting.set_quota`
+- `resources.list`
+- `allocations.request`
+- `systems.provision` with
+  `rootfs: {"kind": "catalog", "provider": "local-libvirt", "name": "fedora-kdive-ready-43"}`
+- `runs.build` with a staged `.config`
+- `runs.install`
+- `runs.boot`
+- `artifacts.list(system_id=...)`
+
+Vulnerable kernels should produce a console artifact instead of an empty `boot_timeout`.
+Patched kernels can boot and reach the readiness marker.
+
+## 7. Teardown
+
+Stop the foreground stack with Ctrl-C, or stop a daemonized source-tree stack with:
+
+```bash
+just stack-stop
+```
+
+Then remove the backends and their volumes:
 
 ```bash
 docker compose down -v

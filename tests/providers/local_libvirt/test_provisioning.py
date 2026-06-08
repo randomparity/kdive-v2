@@ -8,6 +8,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -231,7 +232,8 @@ def _prov(
     overlay_exists: Callable[[str], bool] = lambda _overlay: False,
 ) -> LocalLibvirtProvisioning:
     # The overlay seams default to no-ops so the libvirt-only tests never spawn qemu-img; the
-    # default "overlay absent" makes provision create one, matching a fresh provision.
+    # console-log seam is also a no-op so they never depend on host /var/lib/kdive permissions.
+    # The default "overlay absent" makes provision create one, matching a fresh provision.
     return LocalLibvirtProvisioning(
         connect=lambda: conn,
         make_overlay=make_overlay,
@@ -240,7 +242,20 @@ def _prov(
         materialize_rootfs=lambda rootfs, _system_id: (
             rootfs.path if rootfs.kind == "local" else "/var/lib/kdive/rootfs/upload.qcow2"
         ),
+        prepare_console_log=lambda _path: None,
     )
+
+
+def test_prov_helper_does_not_prepare_host_console_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_mkdir(self: object, *args: object, **kwargs: object) -> None:
+        del self, args, kwargs
+        raise AssertionError("unit helper must not touch host console log paths")
+
+    monkeypatch.setattr(provisioning_module.Path, "mkdir", fail_mkdir)
+
+    _prov(_ProvConn()).provision(_SYS, _profile())
 
 
 def test_provision_defines_and_starts_returns_name() -> None:
@@ -320,6 +335,29 @@ def test_provision_creates_overlay_over_base_and_attaches_it() -> None:
     assert overlay == overlay_path(_SYS)
     disk = _safe_fromstring(conn.recorded_xml[0]).find("devices/disk/source")
     assert disk is not None and disk.get("file") == overlay  # the domain boots the overlay
+
+
+def test_provision_prepares_console_log_before_define() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def prepare(path: Path) -> None:
+        calls.append(("prepare", path.name))
+
+    class RecordingConn(_ProvConn):
+        def defineXML(self, xml: str) -> _ProvDomain:  # noqa: N802 - mirrors libvirt binding
+            calls.append(("define", "xml"))
+            return super().defineXML(xml)
+
+    conn = RecordingConn()
+    LocalLibvirtProvisioning(
+        connect=lambda: conn,
+        make_overlay=lambda _base, _overlay: None,
+        overlay_exists=lambda _overlay: False,
+        materialize_rootfs=lambda _rootfs, _system_id: "/var/lib/kdive/rootfs/base.qcow2",
+        prepare_console_log=prepare,
+    ).provision(_SYS, _profile())
+
+    assert calls == [("prepare", f"{_SYS}.log"), ("define", "xml")]
 
 
 def test_real_make_overlay_timeout_is_provisioning_failure(
@@ -438,6 +476,31 @@ def test_provision_create_failure_removes_the_overlay() -> None:
     with pytest.raises(CategorizedError):
         _prov(conn, remove_overlay=removed.append).provision(_SYS, _profile())
     assert removed == [overlay_path(_SYS)]
+
+
+def test_provision_console_log_failure_removes_the_overlay() -> None:
+    removed: list[str] = []
+    conn = _ProvConn()
+
+    def fail_prepare(_path: Path) -> None:
+        raise CategorizedError(
+            "synthetic console log failure",
+            category=ErrorCategory.PROVISIONING_FAILURE,
+        )
+
+    with pytest.raises(CategorizedError) as caught:
+        LocalLibvirtProvisioning(
+            connect=lambda: conn,
+            make_overlay=lambda _base, _overlay: None,
+            remove_overlay=removed.append,
+            overlay_exists=lambda _overlay: False,
+            materialize_rootfs=lambda _rootfs, _system_id: "/var/lib/kdive/rootfs/base.qcow2",
+            prepare_console_log=fail_prepare,
+        ).provision(_SYS, _profile())
+
+    assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE
+    assert removed == [overlay_path(_SYS)]
+    assert conn.recorded_xml == []
 
 
 def test_provision_failure_keeps_preexisting_overlay() -> None:

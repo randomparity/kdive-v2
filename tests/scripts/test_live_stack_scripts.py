@@ -1,0 +1,127 @@
+import subprocess
+import textwrap
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_live_stack_env_exports_required_defaults() -> None:
+    env = (ROOT / "scripts/live-stack/env.sh").read_text()
+    required = [
+        "KDIVE_DATABASE_URL",
+        "KDIVE_OIDC_ISSUER",
+        "KDIVE_OIDC_JWKS_URI",
+        "KDIVE_OIDC_AUDIENCE",
+        "KDIVE_S3_ENDPOINT_URL",
+        "KDIVE_S3_BUCKET",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "KDIVE_BUILD_WORKSPACE",
+        "KDIVE_BUILD_COMPONENT_ROOTS",
+        "KDIVE_INSTALL_STAGING",
+        "KDIVE_STACK_BASE_URL",
+    ]
+    for name in required:
+        assert f"export {name}=" in env
+
+
+def test_live_stack_scripts_are_strict_bash() -> None:
+    for name in ("env.sh", "apply-migrations.sh", "start.sh", "stop.sh"):
+        text = (ROOT / "scripts/live-stack" / name).read_text()
+        assert text.startswith("#!/usr/bin/env bash\nset -euo pipefail\n")
+
+
+def test_stack_start_runs_all_three_kdive_processes() -> None:
+    text = (ROOT / "scripts/live-stack/start.sh").read_text()
+    assert "python -m kdive server" in text
+    assert "python -m kdive worker" in text
+    assert "python -m kdive reconciler" in text
+    assert "trap cleanup EXIT INT TERM" in text
+
+
+def test_stack_stop_uses_pid_file_not_process_name_patterns() -> None:
+    text = (ROOT / "scripts/live-stack/stop.sh").read_text()
+    assert "KDIVE_STACK_PID_FILE" in text
+    assert "pkill" not in text
+
+
+def test_stack_start_foreground_exits_when_any_child_exits(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "calls.log"
+    (fake_bin / "uv").write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            name="${{@: -1}}"
+            echo "${{name}}" >>{log}
+            if [[ "${{name}}" == "server" ]]; then
+              sleep 0.1
+              exit 7
+            fi
+            sleep 30
+            """
+        ),
+        encoding="utf-8",
+    )
+    (fake_bin / "uv").chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/live-stack/start.sh")],
+        env={
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "HOME": str(tmp_path),
+            "KDIVE_STACK_PID_FILE": str(tmp_path / "stack.pid"),
+            "KDIVE_STACK_LOG_DIR": str(tmp_path / "logs"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 7
+    assert sorted(log.read_text(encoding="utf-8").splitlines()) == [
+        "reconciler",
+        "server",
+        "worker",
+    ]
+
+
+def test_stack_start_daemon_fails_when_child_exits_immediately(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    pid_file = tmp_path / "stack.pid"
+    (fake_bin / "uv").write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            name="${@: -1}"
+            if [[ "${name}" == "server" ]]; then
+              exit 9
+            fi
+            sleep 30
+            """
+        ),
+        encoding="utf-8",
+    )
+    (fake_bin / "uv").chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/live-stack/start.sh"), "--daemon"],
+        env={
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "HOME": str(tmp_path),
+            "KDIVE_STACK_PID_FILE": str(pid_file),
+            "KDIVE_STACK_LOG_DIR": str(tmp_path / "logs"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert not pid_file.exists()

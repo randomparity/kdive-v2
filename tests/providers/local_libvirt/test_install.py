@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import xml.etree.ElementTree as ET  # noqa: S405 - parses only self-rendered, trusted test XML
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
+from kdive.providers.local_libvirt import install
 from kdive.providers.local_libvirt.install import (
     LocalLibvirtInstall,
     ReadinessResult,
@@ -496,6 +498,34 @@ def test_verdict_to_result_pending_running_keeps_polling() -> None:
 def test_verdict_to_result_pending_exited_is_answered_failure() -> None:
     # A guest that exited without reaching the marker is answered-but-failed (v1's `exited`).
     assert _verdict_to_result("pending", exited=True) == ReadinessResult(answered=True, ok=False)
+
+
+def test_real_readiness_treats_missing_domain_as_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(install, "read_console_log", lambda path: b"")
+    monkeypatch.setattr(install, "_domain_exited", lambda name: True)
+
+    result = install._real_readiness(UUID("22222222-2222-2222-2222-222222222222"))
+
+    assert result.answered is True
+    assert result.ok is False
+
+
+def test_domain_exited_treats_missing_kdive_domain_as_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def domstate_missing(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["virsh"],
+            returncode=1,
+            stdout="",
+            stderr="error: failed to get domain 'kdive-22222222-2222-2222-2222-222222222222'",
+        )
+
+    monkeypatch.setattr(install.subprocess, "run", domstate_missing)
+
+    assert install._domain_exited("kdive-22222222-2222-2222-2222-222222222222") is True
 
 
 def test_crash_fixture_classifies_crashed() -> None:

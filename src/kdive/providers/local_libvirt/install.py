@@ -403,7 +403,14 @@ def _domain_exited(domain_name: str) -> bool:  # pragma: no cover - live_vm
         )
     except (subprocess.SubprocessError, OSError):
         return False
-    return proc.stdout.strip().lower() in _TERMINAL_DOMSTATES
+    if proc.stdout.strip().lower() in _TERMINAL_DOMSTATES:
+        return True
+    stderr = proc.stderr.strip().lower()
+    return (
+        proc.returncode != 0
+        and domain_name.startswith("kdive-")
+        and "failed to get domain" in stderr
+    )
 
 
 def _verdict_to_result(verdict: ConsoleVerdict, *, exited: bool) -> ReadinessResult | None:
