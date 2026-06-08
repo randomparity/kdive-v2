@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -87,14 +88,20 @@ def held_platform_roles(ctx: RequestContext) -> str | None:
 
 
 async def record_read(
-    pool: AsyncConnectionPool,
+    conn: AsyncConnection,
     ctx: RequestContext,
     *,
     tool: str,
     args: dict[str, object],
 ) -> None:
-    """Write one ``platform_audit_log`` row for a served cross-project read."""
-    async with pool.connection() as conn, conn.transaction():
+    """Write one ``platform_audit_log`` row for a served cross-project read.
+
+    Runs on the **same** connection that performed the read, in a nested transaction, so
+    the read-access row commits atomically with serving the read (mirrors
+    ``accounting.reports._report_all_projects``): an auditor cannot see cross-tenant data
+    without leaving the audit row behind.
+    """
+    async with conn.transaction():
         await audit.record_platform(
             conn,
             principal=ctx.principal,

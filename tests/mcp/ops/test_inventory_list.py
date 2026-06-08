@@ -190,6 +190,7 @@ def test_auditor_lists_all_projects_and_audits(migrated_url: str) -> None:
         assert sys_by_project["proj-b"]["state"] == "crashed"
         alloc_projects = {a["project"] for a in _allocations(resp)}
         assert alloc_projects == {"proj-a", "proj-b"}
+        assert resp.data["truncated"] == "false"
         # Exactly one platform_audit_log row, zero audit_log writes.
         rows = await _platform_audit_rows(migrated_url)
         assert rows == [("user-1", "platform_auditor", "inventory.list", "all-projects")]

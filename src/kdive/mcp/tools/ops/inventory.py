@@ -63,7 +63,7 @@ async def list_inventory(
         async with pool.connection() as conn:
             allocations = await _fetch_allocations(conn, project, resource_uuid)
             systems = await _fetch_systems(conn, project, resource_uuid)
-        await _reads.record_read(pool, ctx, tool=_TOOL, args=args)
+            await _reads.record_read(conn, ctx, tool=_TOOL, args=args)
         return _response(allocations, systems)
 
 
@@ -173,6 +173,9 @@ def _response(
         data={
             "allocation_count": str(len(allocations)),
             "system_count": str(len(systems)),
+            "truncated": "true"
+            if len(allocations) >= _MAX_ROWS or len(systems) >= _MAX_ROWS
+            else "false",
             "allocations": json.dumps([_alloc_json(r) for r in allocations]),
             "systems": json.dumps([_system_json(r) for r in systems]),
         },
@@ -195,7 +198,11 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             str | None, Field(description="Filter to allocations/systems on one host UUID.")
         ] = None,
     ) -> ToolResponse:
-        """Cross-project systems/allocations summary. Requires platform auditor."""
+        """Cross-project systems/allocations summary. Requires platform auditor.
+
+        Each list is capped at 500 rows (newest first); ``data.truncated`` is "true"
+        when either cap is hit — narrow with the project/resource filters.
+        """
         return await list_inventory(
             pool, current_context(), project=project, resource_id=resource_id
         )

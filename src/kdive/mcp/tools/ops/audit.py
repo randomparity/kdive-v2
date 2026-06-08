@@ -129,7 +129,7 @@ async def _query_cross_project(
         )
     async with pool.connection() as conn:
         rows = await _fetch_rows(conn, project=None, filters=filters)
-    await _reads.record_read(pool, ctx, tool=_TOOL, args=args)
+        await _reads.record_read(conn, ctx, tool=_TOOL, args=args)
     return _response(rows)
 
 
@@ -212,6 +212,7 @@ def _response(rows: list[dict[str, object]]) -> ToolResponse:
         suggested_next_actions=["inventory.list"],
         data={
             "count": str(len(rows)),
+            "truncated": "true" if len(rows) >= _MAX_ROWS else "false",
             "rows": json.dumps([_row_json(r) for r in rows]),
         },
     )
@@ -242,7 +243,11 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             Field(description="[start, end] ISO-8601 timestamptz pair; omit for all time."),
         ] = None,
     ) -> ToolResponse:
-        """Read audit_log: project form (admin) or cross-project (platform_auditor)."""
+        """Read audit_log: project form (admin) or cross-project (platform_auditor).
+
+        Returns the most recent matching rows (capped at 500, newest first);
+        ``data.truncated`` is "true" when the cap is hit — narrow with filters.
+        """
         return await query(
             pool,
             current_context(),

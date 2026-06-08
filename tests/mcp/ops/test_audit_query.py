@@ -234,6 +234,8 @@ def test_cross_project_auditor_reads_all_and_audits(migrated_url: str) -> None:
         assert resp.status == "ok"
         assert {r["project"] for r in _rows(resp)} == {"proj-a", "proj-b"}
         assert len(_rows(resp)) == 3
+        assert resp.data["count"] == "3"
+        assert resp.data["truncated"] == "false"
         # Exactly one platform_audit_log row (role recorded), zero audit_log writes.
         rows = await _platform_audit_rows(migrated_url)
         assert rows == [("user-1", "platform_auditor", "audit.query", "all-projects")]

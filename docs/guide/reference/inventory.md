@@ -8,6 +8,9 @@
 
 Cross-project systems/allocations summary. Requires platform auditor.
 
+Each list is capped at 500 rows (newest first); ``data.truncated`` is "true"
+when either cap is hit — narrow with the project/resource filters.
+
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `project` | `any` | no | Filter the summary to one project; omit for all. |

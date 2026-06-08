@@ -8,6 +8,9 @@
 
 Read audit_log: project form (admin) or cross-project (platform_auditor).
 
+Returns the most recent matching rows (capped at 500, newest first);
+``data.truncated`` is "true" when the cap is hit — narrow with filters.
+
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `object_id` | `any` | no | Filter by audited object UUID. |
