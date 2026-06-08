@@ -54,6 +54,7 @@ _BEHAVIOR_TESTS_BY_TOOL = {
     "ops.jobs_list": ("tests/mcp/ops/test_queue_tools.py",),
     "ops.queue_pause": ("tests/mcp/ops/test_queue_tools.py",),
     "ops.queue_resume": ("tests/mcp/ops/test_queue_tools.py",),
+    "ops.reconcile_now": ("tests/mcp/ops/test_reconcile_now.py",),
     "resources.cordon": ("tests/mcp/catalog/test_resources_tools.py",),
     "resources.describe": ("tests/mcp/catalog/test_resources_tools.py",),
     "resources.list": ("tests/mcp/catalog/test_resources_tools.py",),

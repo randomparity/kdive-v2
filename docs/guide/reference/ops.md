@@ -2,25 +2,8 @@
 
 # `ops` tools
 
-## `ops.jobs_list`
-
-`implemented` · `read-only`
-
-Cross-project queue depth and per-job state. Requires platform operator.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `limit` | `integer` | no | Maximum per-job rows returned (capped at 200). |
-| `states` | `any` | no | Filter per-job rows to these job states; omit for all. |
-
-## `ops.queue_pause`
+## `ops.reconcile_now`
 
 `implemented`
 
-Pause the worker's claim loop (jobs in flight finish). Requires platform operator.
-
-## `ops.queue_resume`
-
-`implemented`
-
-Resume the worker's claim loop. Requires platform operator.
+Run one reconcile pass on demand; return the repair summary. Platform operator.
