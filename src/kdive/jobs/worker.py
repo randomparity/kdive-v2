@@ -73,8 +73,17 @@ class Worker:
         self._poll_interval = poll_interval
 
     async def run_once(self) -> Job | None:
-        """Claim and dispatch one job; return it, or ``None`` if the queue is empty."""
+        """Claim and dispatch one job; return it, or ``None`` if idle.
+
+        Reads ``queue_paused`` at the top of the claim loop (ADR-0062): while the queue is
+        paused the worker skips ``dequeue`` and returns ``None`` (idle), so it claims no
+        new job — but a job already in flight in :meth:`_dispatch` is untouched and keeps
+        heart-beating. Pause freezes the worker's claim loop only; the reconciler keeps
+        enqueuing, and those jobs simply wait for resume.
+        """
         async with self._pool.connection() as conn:
+            if await queue.is_queue_paused(conn):
+                return None
             job = await queue.dequeue(conn, self._worker_id, lease=self._lease)
         if job is None:
             return None
