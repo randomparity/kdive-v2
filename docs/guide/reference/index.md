@@ -47,6 +47,8 @@
 | [`ops.queue_pause`](ops.md#opsqueue_pause) | `implemented` |
 | [`ops.queue_resume`](ops.md#opsqueue_resume) | `implemented` |
 | [`ops.reconcile_now`](ops.md#opsreconcile_now) | `implemented` |
+| [`ops.set_cost_class_coeff`](ops.md#opsset_cost_class_coeff) | `implemented` |
+| [`ops.set_host_capacity`](ops.md#opsset_host_capacity) | `implemented` |
 | [`postmortem.crash`](postmortem.md#postmortemcrash) | `partial` |
 | [`postmortem.triage`](postmortem.md#postmortemtriage) | `partial` |
 | [`resources.cordon`](resources.md#resourcescordon) | `implemented` |
