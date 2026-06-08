@@ -4,7 +4,7 @@ The three M0 roles form a total rank, so a higher role satisfies a lower require
 `roles_from_claims` turns a verified token's `roles` claim into the per-project role
 map carried on `RequestContext`; `require_role` is the enforcement point every plane
 tool calls before a privileged operation. A denial raises `AuthorizationError`
-(distinct from `kdive.security.authz.context.AuthError`, which covers authentication/membership), so
+(distinct from `kdive.security.authz.errors.AuthError`, which covers authentication/membership), so
 a handler maps "you may not do this" separately from "who are you".
 """
 
@@ -13,6 +13,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import TYPE_CHECKING
+
+from kdive.security.authz.errors import AuthError
 
 if TYPE_CHECKING:
     from kdive.security.authz.context import RequestContext
@@ -58,7 +60,7 @@ _PLATFORM_IMPLIES: dict[PlatformRole, frozenset[PlatformRole]] = {
 class AuthorizationError(Exception):
     """A verified, authenticated principal may not perform the requested operation.
 
-    Distinct from `kdive.security.authz.context.AuthError` (no subject / project not granted): the
+    Distinct from `kdive.security.authz.errors.AuthError` (no subject / project not granted): the
     caller is known and a project member, but lacks the role the operation needs.
     """
 
@@ -104,9 +106,6 @@ def roles_from_claims(claims: Mapping[str, object]) -> dict[str, Role]:
     raw = claims.get(_ROLES_CLAIM)
     if raw is None:
         return {}
-    # Function-level import: the only runtime rbac->context edge, kept here so rbac's
-    # module-level dependency on context stays type-only and the import cycle is broken.
-    from kdive.security.authz.context import AuthError
 
     if not isinstance(raw, Mapping):
         raise AuthError("roles claim is not an object")
@@ -156,9 +155,6 @@ def platform_roles_from_claims(claims: Mapping[str, object]) -> frozenset[Platfo
     raw = claims.get(_PLATFORM_ROLES_CLAIM)
     if raw is None:
         return frozenset()
-    # Function-level import: the only runtime rbac->context edge, kept here so rbac's
-    # module-level dependency on context stays type-only and the import cycle is broken.
-    from kdive.security.authz.context import AuthError
 
     # A str is a Sequence too; exclude it so a bare role string is not iterated as
     # characters (fail closed on the wrong claim shape).

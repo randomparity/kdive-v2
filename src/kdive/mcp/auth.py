@@ -16,12 +16,8 @@ from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_access_token
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.security.authz.context import (
-    AuthError,
-    RequestContext,
-    context_from_claims,
-    require_project,
-)
+from kdive.security.authz.context import RequestContext, context_from_claims, require_project
+from kdive.security.authz.errors import AuthError
 
 _JWKS_URI_ENV = "KDIVE_OIDC_JWKS_URI"
 _ISSUER_ENV = "KDIVE_OIDC_ISSUER"

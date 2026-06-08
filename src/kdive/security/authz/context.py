@@ -5,16 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from kdive.security.authz.errors import AuthError
 from kdive.security.authz.rbac import (
     PlatformRole,
     Role,
     platform_roles_from_claims,
     roles_from_claims,
 )
-
-
-class AuthError(Exception):
-    """A verified transport carried claims that cannot authorize the request."""
 
 
 @dataclass(frozen=True)

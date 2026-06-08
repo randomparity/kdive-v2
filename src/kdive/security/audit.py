@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from kdive.security.authz.context import AuthError
+from kdive.security.authz.errors import AuthError
 
 if TYPE_CHECKING:
     from psycopg import AsyncConnection
