@@ -13,7 +13,6 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.lifecycle.systems.admin import (
     SystemAdminHandlers,
-    _reprovision_system,
     teardown_system,
 )
 from kdive.mcp.tools.lifecycle.systems.provision import (
@@ -150,11 +149,9 @@ def register(
         ],
     ) -> ToolResponse:
         """Reprovision a ready System in place under its Allocation. Requires operator + gate."""
-        return await _reprovision_system(
+        return await admin_handlers.reprovision_system(
             pool,
             current_context(),
             system_id=system_id,
             profile=profile,
-            component_sources=admin_handlers.component_sources,
-            rootfs_validator=admin_handlers.rootfs_validator,
         )
