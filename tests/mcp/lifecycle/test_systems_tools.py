@@ -1602,6 +1602,44 @@ def test_reprovision_handler_retry_on_ready_is_noop(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_reprovision_handler_superseded_midflight_tears_down_domain(
+    migrated_url: str,
+) -> None:
+    class _RacingProvisioning(_FakeProvisioning):
+        """Drives the System torn_down before returning — a deterministic mid-flight race."""
+
+        def __init__(self, url: str) -> None:
+            super().__init__()
+            self._url = url
+
+        def reprovision(self, system_id: UUID, profile: Any) -> str:
+            name = super().reprovision(system_id, profile)
+            with psycopg.connect(self._url, autocommit=True) as c:
+                c.execute("UPDATE systems SET state = 'torn_down' WHERE id = %s", (system_id,))
+            return name
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE systems SET state = 'reprovisioning' WHERE id = %s", (sys_id,)
+                )
+            job = await _enqueue_reprovision(pool, sys_id)
+            prov = _RacingProvisioning(migrated_url)
+            async with pool.connection() as conn:
+                result = await systems_handlers.reprovision_handler(conn, job, prov)
+            assert result == sys_id
+            assert prov.torn_down == [f"kdive-{sys_id}"]
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                row = await cur.fetchone()
+        assert row is not None and row["state"] == "torn_down"
+
+    asyncio.run(_run())
+
+
 # --- registration --------------------------------------------------------------------------
 
 

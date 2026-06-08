@@ -211,6 +211,9 @@ async def reprovision_handler(
                 transition="reprovisioning->ready",
                 tool="systems.reprovision",
             )
+    if current in TERMINAL_SYSTEM:
+        provisioning.teardown(domain_name)
+        _log.info("reprovision of system %s superseded by teardown; domain reaped", system_id)
     return str(system_id)
 
 
