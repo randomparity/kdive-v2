@@ -30,3 +30,25 @@ Resume the worker's claim loop. Requires platform operator.
 `implemented`
 
 Run one reconcile pass on demand; return the repair summary. Platform operator.
+
+## `ops.set_cost_class_coeff`
+
+`implemented`
+
+Upsert a cost class's pricing coefficient. Applies from the next charge. Operator.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `coeff` | `any` | yes | Pricing multiplier (number or decimal string, > 0). |
+| `cost_class` | `string` | yes | Cost class whose pricing coefficient to set. |
+
+## `ops.set_host_capacity`
+
+`implemented`
+
+Set a host's concurrent allocation cap. Blocks new placement; no eviction. Operator.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `concurrent_allocation_cap` | `integer` | yes | Maximum concurrent allocations on the host (>= 0). |
+| `resource_id` | `string` | yes | Host (resource) id to set the cap for. |
