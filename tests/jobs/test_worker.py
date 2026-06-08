@@ -344,6 +344,108 @@ def test_heartbeat_error_does_not_crash_dispatch(
     asyncio.run(_run())
 
 
+def test_run_once_claims_nothing_while_paused(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:
+            calls = 0
+
+            async def handler(conn: psycopg.AsyncConnection, job: Job) -> str:
+                nonlocal calls
+                calls += 1
+                return "s3://out"
+
+            reg = HandlerRegistry()
+            reg.register(JobKind.BUILD, handler)
+            worker = Worker(pool, reg, worker_id="w1")
+            async with pool.connection() as conn:
+                job = await queue.enqueue(
+                    conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-paused"
+                )
+                await queue.set_queue_paused(conn, True)
+
+            assert await worker.run_once() is None  # paused: no claim
+            assert calls == 0
+            still_queued = await _final_state(migrated_url, job.id)
+            assert still_queued.state is JobState.QUEUED
+            assert still_queued.attempt == 0  # never charged a claim while paused
+
+    asyncio.run(_run())
+
+
+def test_resume_restores_claiming(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:
+
+            async def handler(conn: psycopg.AsyncConnection, job: Job) -> str:
+                return "s3://out"
+
+            reg = HandlerRegistry()
+            reg.register(JobKind.BUILD, handler)
+            worker = Worker(pool, reg, worker_id="w1")
+            async with pool.connection() as conn:
+                job = await queue.enqueue(
+                    conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-resume"
+                )
+                await queue.set_queue_paused(conn, True)
+            assert await worker.run_once() is None  # paused
+
+            async with pool.connection() as conn:
+                await queue.set_queue_paused(conn, False)
+            processed = await worker.run_once()  # resume restores claiming
+            assert processed is not None and processed.id == job.id
+            final = await _final_state(migrated_url, job.id)
+            assert final.state is JobState.SUCCEEDED
+
+    asyncio.run(_run())
+
+
+def test_paused_worker_completes_job_already_in_flight(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, min_size=3, max_size=10) as pool:
+            started = asyncio.Event()
+            may_finish = asyncio.Event()
+
+            async def slow(conn: psycopg.AsyncConnection, job: Job) -> str:
+                started.set()
+                await asyncio.wait_for(may_finish.wait(), timeout=5)
+                return "s3://out"
+
+            reg = HandlerRegistry()
+            reg.register(JobKind.BUILD, slow)
+            worker = Worker(
+                pool,
+                reg,
+                worker_id="w1",
+                lease=timedelta(seconds=2),
+                heartbeat_interval=timedelta(milliseconds=200),
+            )
+            async with pool.connection() as conn:
+                in_flight = await queue.enqueue(
+                    conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-inflight"
+                )
+                later = await queue.enqueue(
+                    conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-later"
+                )
+
+            task = asyncio.create_task(worker.run_once())  # claims in_flight, blocks in handler
+            await asyncio.wait_for(started.wait(), timeout=5)
+
+            # Pause mid-flight, then let the in-flight handler finish.
+            async with pool.connection() as conn:
+                await queue.set_queue_paused(conn, True)
+            may_finish.set()
+            processed = await task
+            assert processed is not None and processed.id == in_flight.id
+            completed = await _final_state(migrated_url, in_flight.id)
+            assert completed.state is JobState.SUCCEEDED  # in-flight job completed despite pause
+
+            # The second, still-queued job is not claimed while paused.
+            assert await worker.run_once() is None
+            assert (await _final_state(migrated_url, later.id)).state is JobState.QUEUED
+
+    asyncio.run(_run())
+
+
 def test_run_survives_run_once_error(migrated_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
     async def _run() -> None:
         async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:

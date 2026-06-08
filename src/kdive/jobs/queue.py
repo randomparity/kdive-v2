@@ -189,6 +189,68 @@ async def fail(
     return job if row is None else Job.model_validate(row)
 
 
+async def is_queue_paused(conn: AsyncConnection) -> bool:
+    """Return the worker's ``queue_paused`` flag from the single-row ``ops_control``.
+
+    Read before each ``dequeue`` (``Worker.run_once``): while paused the worker claims
+    no new job but keeps heart-beating any job already in flight. ``ops_control`` is
+    seeded with one row at migration time, so the read always finds it; a missing row is
+    an unexpected schema state and **fails closed** (treated as paused) rather than
+    silently claiming while the control row is absent.
+    """
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT queue_paused FROM ops_control WHERE singleton = true")
+        row = await cur.fetchone()
+    return True if row is None else bool(row[0])
+
+
+async def set_queue_paused(conn: AsyncConnection, paused: bool) -> None:
+    """Set the worker's ``queue_paused`` flag on the single-row ``ops_control``.
+
+    ``ops.queue_pause``/``ops.queue_resume`` call this. Wraps the ``UPDATE`` in
+    ``conn.transaction()`` so it self-commits on any connection.
+    """
+    async with conn.transaction(), conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE ops_control SET queue_paused = %s WHERE singleton = true",
+            (paused,),
+        )
+
+
+async def all_recent_jobs(
+    conn: AsyncConnection, limit: int, *, states: Sequence[str] | None = None
+) -> list[Job]:
+    """Return the most recent jobs across **every** project, newest first, capped.
+
+    The platform view (``ops.jobs_list``, ADR-0062): unlike :func:`recent_jobs` this is
+    **not** project-scoped — it spans all tenants for an operator's cross-project queue
+    inspection, so its only caller must already hold ``platform_operator``. ``states``,
+    when given, filters to those job states (e.g. ``["queued", "running"]``); an empty
+    sequence yields no rows. The ``id`` tiebreaker totals the order on a shared
+    ``created_at`` so the cap never drops an arbitrary one of a tied pair.
+    """
+    where = "" if states is None else " WHERE state = ANY(%(states)s::text[])"
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT * FROM jobs" + where + " ORDER BY created_at DESC, id DESC LIMIT %(limit)s",
+            {"limit": limit, "states": list(states) if states is not None else None},
+        )
+        rows = await cur.fetchall()
+    return [Job.model_validate(row) for row in rows]
+
+
+async def queue_depth(conn: AsyncConnection) -> dict[str, int]:
+    """Return the cross-project job count per state (the platform queue depth).
+
+    Spans every project (the platform view); states with no jobs are omitted. Used by
+    ``ops.jobs_list`` to report queue depth alongside the per-job rows.
+    """
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT state, count(*) FROM jobs GROUP BY state")
+        rows = await cur.fetchall()
+    return {str(state): int(count) for state, count in rows}
+
+
 async def recent_jobs(conn: AsyncConnection, limit: int, projects: Sequence[str]) -> list[Job]:
     """Return the caller's most recent jobs, newest first, capped at ``limit``.
 

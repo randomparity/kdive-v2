@@ -356,3 +356,36 @@ def test_recent_jobs_empty_projects_returns_nothing(migrated_url: str) -> None:
             assert await queue.recent_jobs(conn, limit=10, projects=[]) == []
 
     asyncio.run(_run())
+
+
+def test_queue_paused_defaults_false_and_toggles(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            assert await queue.is_queue_paused(conn) is False  # seeded row, default false
+            await queue.set_queue_paused(conn, True)
+            assert await queue.is_queue_paused(conn) is True
+            await queue.set_queue_paused(conn, False)
+            assert await queue.is_queue_paused(conn) is False
+
+    asyncio.run(_run())
+
+
+def test_ops_control_is_single_row(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            cur = await conn.execute("SELECT count(*) FROM ops_control")
+            row = await cur.fetchone()
+            assert row is not None and row[0] == 1  # seeded exactly once
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                await conn.execute("INSERT INTO ops_control (singleton) VALUES (true)")
+
+    asyncio.run(_run())
+
+
+def test_is_queue_paused_fails_closed_when_row_missing(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await conn.execute("DELETE FROM ops_control")
+            assert await queue.is_queue_paused(conn) is True  # missing row → fail closed (paused)
+
+    asyncio.run(_run())
