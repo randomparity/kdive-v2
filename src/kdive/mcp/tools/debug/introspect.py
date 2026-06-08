@@ -2,9 +2,8 @@
 
 `introspect.from_vmcore(run_id)` is a synchronous offline viewer read (ADR-0033). It resolves
 the Run's `debuginfo_ref` (the build-plane `vmlinux`), the build plane's recorded `build_id`
-(provenance), and the Run's System's captured raw `vmcore` key — the same resolution shape
-`vmcore.py`'s postmortem path uses, replicated here so this plane stays off `vmcore.py`. It
-then runs the `VmcoreIntrospector` port over the captured core and returns the
+(provenance), and the Run's System's captured raw `vmcore` key through the shared
+`mcp.tools._vmcore_targets` helper. It then runs the `VmcoreIntrospector` port and returns the
 **already-redacted** report (the port is the single redaction boundary, ADR-0033 §6) as a JSON
 string in `data["report"]`.
 """
@@ -13,16 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Annotated, NamedTuple
-from uuid import UUID
+from typing import Annotated
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
-from kdive.db.artifact_queries import raw_vmcore_key
-from kdive.db.repositories import DEBUG_SESSIONS, RUNS
+from kdive.db.repositories import DEBUG_SESSIONS
 from kdive.domain.errors import CategorizedError
 from kdive.domain.state import DebugSessionState
 from kdive.log import bind_context
@@ -31,7 +28,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
-from kdive.planes.runs_shared import existing_build_result
+from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import LiveIntrospector, VmcoreIntrospector
 from kdive.security.context import RequestContext
@@ -41,41 +38,6 @@ from kdive.security.rbac import Role, require_role
 # offline path. There is no caller-supplied drgn script — an unknown helper is rejected.
 _LIVE_HELPERS = frozenset({"tasks", "modules", "sysinfo"})
 _SSH = "ssh"
-
-
-class _Targets(NamedTuple):
-    """The resolved (non-null) inputs the introspection port needs to open the core."""
-
-    debuginfo_ref: str
-    build_id: str
-    vmcore_ref: str
-
-
-async def _build_id_for_run(conn: AsyncConnection, run_id: UUID) -> str | None:
-    result = await existing_build_result(conn, run_id)
-    return None if result is None else result.build_id
-
-
-async def _resolve_vmcore_targets(
-    conn: AsyncConnection, ctx: RequestContext, run_id: str
-) -> _Targets | ToolResponse:
-    """Resolve the Run's debuginfo ref, recorded build-id, and captured core key, or a failure."""
-    uid = _as_uuid(run_id)
-    if uid is None:
-        return _config_error(run_id)
-    run = await RUNS.get(conn, uid)
-    if run is None or run.project not in ctx.projects:
-        return _config_error(run_id)
-    require_role(ctx, run.project, Role.VIEWER)
-    if run.debuginfo_ref is None:
-        return _config_error(run_id)
-    build_id = await _build_id_for_run(conn, uid)
-    if build_id is None:
-        return _config_error(run_id)
-    vmcore_ref = await raw_vmcore_key(conn, run.system_id)
-    if vmcore_ref is None:
-        return _config_error(run_id)
-    return _Targets(run.debuginfo_ref, build_id, vmcore_ref)
 
 
 async def introspect_from_vmcore(
@@ -93,7 +55,7 @@ async def introspect_from_vmcore(
     """
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
-            resolved = await _resolve_vmcore_targets(conn, ctx, run_id)
+            resolved = await resolve_run_vmcore_target(conn, ctx, run_id)
         if isinstance(resolved, ToolResponse):
             return resolved
         try:

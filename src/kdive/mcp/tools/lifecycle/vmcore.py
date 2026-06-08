@@ -13,16 +13,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Annotated, Literal, NamedTuple
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastmcp import FastMCP
-from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
-from kdive.db.artifact_queries import raw_vmcore_key
-from kdive.db.repositories import RUNS, SYSTEMS
+from kdive.db.repositories import SYSTEMS
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError
 from kdive.domain.models import Job, JobKind
@@ -44,8 +42,8 @@ from kdive.mcp.tools._common import (
 from kdive.mcp.tools._common import (
     job_envelope,
 )
+from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.mcp.tools.catalog import artifacts as artifacts_tools
-from kdive.planes.runs_shared import existing_build_result
 from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import CrashPostmortem
 from kdive.security.context import RequestContext
@@ -214,44 +212,6 @@ async def list_vmcores(
 # --- postmortem.crash / .triage ------------------------------------------------------------
 
 
-async def _build_id_for_run(conn: AsyncConnection, run_id: UUID) -> str | None:
-    result = await existing_build_result(conn, run_id)
-    return None if result is None else result.build_id
-
-
-class _PostmortemTargets(NamedTuple):
-    """The resolved (non-null) inputs the crash port needs to symbolize a Run's core."""
-
-    debuginfo_ref: str
-    build_id: str
-    vmcore_ref: str
-
-
-async def _resolve_postmortem(
-    conn: AsyncConnection, ctx: RequestContext, run_id: str, commands: list[str]
-) -> _PostmortemTargets | ToolResponse:
-    """Resolve the debuginfo ref, build-id, and raw core key (all non-null), or a failure."""
-    uid = _as_uuid(run_id)
-    if uid is None:
-        return _config_error(run_id)
-    run = await RUNS.get(conn, uid)
-    if run is None or run.project not in ctx.projects:
-        return _config_error(run_id)
-    require_role(ctx, run.project, Role.VIEWER)
-    if run.debuginfo_ref is None:
-        return _config_error(run_id)
-    build_id = await _build_id_for_run(conn, uid)
-    if build_id is None:
-        return _config_error(run_id)
-    for command in commands:
-        if crash_command_rejection_reason(command, _CRASH_ALLOWLIST) is not None:
-            return _config_error(run_id)
-    vmcore_ref = await raw_vmcore_key(conn, run.system_id)
-    if vmcore_ref is None:
-        return _config_error(run_id)
-    return _PostmortemTargets(run.debuginfo_ref, build_id, vmcore_ref)
-
-
 async def _postmortem_crash(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
@@ -262,8 +222,11 @@ async def _postmortem_crash(
 ) -> ToolResponse:
     """Run the crash command batch over the Run's captured core; redact and return (ungated)."""
     with bind_context(principal=ctx.principal):
+        for command in commands:
+            if crash_command_rejection_reason(command, _CRASH_ALLOWLIST) is not None:
+                return _config_error(run_id)
         async with pool.connection() as conn:
-            resolved = await _resolve_postmortem(conn, ctx, run_id, commands)
+            resolved = await resolve_run_vmcore_target(conn, ctx, run_id)
         if isinstance(resolved, ToolResponse):
             return resolved
         try:
