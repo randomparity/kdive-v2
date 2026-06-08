@@ -30,6 +30,7 @@ from kdive.domain.models import (
     Run,
     System,
 )
+from kdive.domain.pcie import PCIeClaim
 from kdive.domain.state import (
     AllocationState,
     InvestigationState,
@@ -121,6 +122,11 @@ async def _seed_system(
     alloc_state: AllocationState = AllocationState.ACTIVE,
     project: str = "proj",
     provisioning_profile: dict[str, Any] | None = None,
+    requested_vcpus: int | None = None,
+    requested_memory_gb: int | None = None,
+    requested_disk_gb: int | None = None,
+    pcie_claim: list[PCIeClaim] | None = None,
+    lease_expiry: datetime | None = None,
 ) -> str:
     """Insert a Resource + Allocation + System directly and return the system id."""
     async with pool.connection() as conn:
@@ -147,6 +153,11 @@ async def _seed_system(
                 project=project,
                 resource_id=res.id,
                 state=alloc_state,
+                requested_vcpus=requested_vcpus,
+                requested_memory_gb=requested_memory_gb,
+                requested_disk_gb=requested_disk_gb,
+                pcie_claim=pcie_claim or [],
+                lease_expiry=lease_expiry,
             ),
         )
         system = await SYSTEMS.insert(
@@ -677,6 +688,358 @@ def test_create_blocks_on_held_investigation_lock(migrated_url: str) -> None:
                     task = asyncio.create_task(_create(pool, _ctx(), inv_id, sys_id))
                     await wait_until_any_backend_waiting(holder, locktype="advisory")
                     assert not task.done()  # blocked on the held INVESTIGATION lock
+                resp = await task
+            assert resp.status == "created"
+
+    asyncio.run(_run())
+
+
+# --- runs.create: system reuse (#166, ADR-0070) --------------------------------------
+
+
+async def _provision_job_count(pool: AsyncConnectionPool) -> int:
+    return await _count(
+        pool, "SELECT count(*) AS n FROM jobs WHERE kind = %s", (JobKind.PROVISION.value,)
+    )
+
+
+async def _non_terminal_run_count(pool: AsyncConnectionPool, sys_id: str) -> int:
+    return await _count(
+        pool,
+        "SELECT count(*) AS n FROM runs WHERE system_id = %s AND state = ANY(%s)",
+        (sys_id, [RunState.CREATED.value, RunState.RUNNING.value]),
+    )
+
+
+def test_reuse_attach_runs_without_a_provision_job(migrated_url: str) -> None:
+    # Attaching a Run to a matching ready System enqueues NO provision job (provisioning
+    # was always separate); the Run is created and can proceed to build/install/boot.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, state=InvestigationState.OPEN)
+            sys_id = await _seed_system(
+                pool, requested_vcpus=8, requested_memory_gb=16, requested_disk_gb=100
+            )
+            resp = await _create(pool, _ctx(), inv_id, sys_id)
+            assert resp.status == "created"
+            provision_jobs = await _provision_job_count(pool)
+        assert provision_jobs == 0
+
+    asyncio.run(_run())
+
+
+def test_reuse_optional_assertion_satisfied_creates(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(
+                pool, requested_vcpus=8, requested_memory_gb=16, requested_disk_gb=100
+            )
+            resp = await create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                require_vcpus=4,
+                require_memory_gb=8,
+                require_disk_gb=40,
+            )
+        assert resp.status == "created"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    ("req_vcpus", "req_memory_gb", "req_disk_gb", "label"),
+    [
+        (16, None, None, "vcpu_short"),
+        (None, 64, None, "memory_short"),
+        (None, None, 500, "disk_short"),
+    ],
+)
+def test_reuse_assertion_miss_is_config_error_no_run(
+    migrated_url: str,
+    req_vcpus: int | None,
+    req_memory_gb: int | None,
+    req_disk_gb: int | None,
+    label: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(
+                pool, requested_vcpus=8, requested_memory_gb=16, requested_disk_gb=100
+            )
+            resp = await create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                require_vcpus=req_vcpus,
+                require_memory_gb=req_memory_gb,
+                require_disk_gb=req_disk_gb,
+            )
+            n = await _count(pool, "SELECT count(*) AS n FROM runs", ())
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert n == 0  # the Run is not created on an assertion miss
+
+    asyncio.run(_run())
+
+
+def test_reuse_pcie_assertion_contained_creates(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(
+                pool,
+                pcie_claim=[{"bdf": "0000:01:00.0", "vendor_id": "8086", "device_id": "1572"}],
+            )
+            resp = await create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                require_pcie=["8086:1572"],
+            )
+        assert resp.status == "created"
+
+    asyncio.run(_run())
+
+
+def test_reuse_pcie_assertion_missing_device_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(
+                pool,
+                pcie_claim=[{"bdf": "0000:01:00.0", "vendor_id": "8086", "device_id": "1572"}],
+            )
+            resp = await create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                require_pcie=["10de:1eb8"],
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_reuse_pcie_class_spec_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(
+                pool,
+                pcie_claim=[{"bdf": "0000:01:00.0", "vendor_id": "8086", "device_id": "1572"}],
+            )
+            resp = await create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                require_pcie=["class=02"],
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_reuse_empty_pcie_list_is_a_no_op(migrated_url: str) -> None:
+    # require_pcie=[] is "provided but asserts nothing" — must not force a failing match.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(pool)  # no pcie_claim at all
+            resp = await create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                require_pcie=[],
+            )
+        assert resp.status == "created"
+
+    asyncio.run(_run())
+
+
+def test_reuse_omitted_assertion_creates_with_only_preconditions(migrated_url: str) -> None:
+    # No require_* at all (self-provisioned attach) — only the 3 preconditions apply.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(pool)
+            resp = await _create(pool, _ctx(), inv_id, sys_id)
+        assert resp.status == "created"
+
+    asyncio.run(_run())
+
+
+def test_reuse_full_custom_profile_only_sizing_assertion(migrated_url: str) -> None:
+    # Full-custom System: allocation requested_* NULL, size lives only in the profile.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(
+                pool, provisioning_profile=_profile_dump_sized(vcpu=8, memory_mb=16384, disk_gb=100)
+            )
+            ok = await create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                require_vcpus=4,
+                require_memory_gb=8,
+                require_disk_gb=40,
+            )
+        assert ok.status == "created"
+
+    asyncio.run(_run())
+
+
+def test_reuse_full_custom_profile_only_sizing_miss_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(
+                pool, provisioning_profile=_profile_dump_sized(vcpu=2, memory_mb=2048, disk_gb=10)
+            )
+            resp = await create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                require_vcpus=8,
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_reuse_terminal_allocation_is_stale_handle(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(pool, alloc_state=AllocationState.EXPIRED)
+            resp = await _create(pool, _ctx(), inv_id, sys_id)
+        assert resp.status == "error" and resp.error_category == "stale_handle"
+        assert resp.data["current_status"] == "expired"
+
+    asyncio.run(_run())
+
+
+def test_reuse_lapsed_lease_active_allocation_is_stale_handle(migrated_url: str) -> None:
+    # ACTIVE allocation whose lease window already elapsed (the orphan-reaping window,
+    # ADR-0070): seed a PAST lease_expiry deterministically — do not sleep.
+    async def _run() -> None:
+        past = datetime(2020, 1, 1, tzinfo=UTC)
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(pool, alloc_state=AllocationState.ACTIVE, lease_expiry=past)
+            resp = await _create(pool, _ctx(), inv_id, sys_id)
+        assert resp.status == "error" and resp.error_category == "stale_handle"
+
+    asyncio.run(_run())
+
+
+def test_reuse_precondition_beats_assertion_miss(migrated_url: str) -> None:
+    # A System that BOTH fails an assertion (too small) AND has a terminal alloc returns
+    # the precondition error (stale_handle), not the sizing error — no sizing leak.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(
+                pool,
+                alloc_state=AllocationState.EXPIRED,
+                requested_vcpus=2,
+                requested_memory_gb=2,
+                requested_disk_gb=10,
+            )
+            resp = await create_run(
+                pool,
+                _ctx(),
+                investigation_id=inv_id,
+                system_id=sys_id,
+                build_profile=_profile(),
+                require_vcpus=99,
+            )
+        assert resp.status == "error" and resp.error_category == "stale_handle"
+
+    asyncio.run(_run())
+
+
+def test_reuse_system_with_live_run_is_transport_conflict(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, state=InvestigationState.OPEN)
+            sys_id = await _seed_system(pool)
+            first = await _create(pool, _ctx(), inv_id, sys_id)
+            assert first.status == "created"  # holds the System (non-terminal Run)
+            second = await _create(pool, _ctx(), inv_id, sys_id)
+        assert second.status == "error" and second.error_category == "transport_conflict"
+
+    asyncio.run(_run())
+
+
+def test_reuse_concurrent_creates_one_wins_other_transport_conflict(migrated_url: str) -> None:
+    # Two concurrent runs.create on ONE System: the per-System/per-Allocation lock
+    # serializes them, so exactly one is created and the other is transport_conflict.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, state=InvestigationState.OPEN)
+            sys_id = await _seed_system(pool)
+            r1, r2 = await asyncio.gather(
+                _create(pool, _ctx(), inv_id, sys_id),
+                _create(pool, _ctx(), inv_id, sys_id),
+            )
+            statuses = sorted([r1.status, r2.status])
+            categories = {r.error_category for r in (r1, r2) if r.status == "error"}
+            n_runs = await _count(
+                pool, "SELECT count(*) AS n FROM runs WHERE system_id = %s", (sys_id,)
+            )
+        assert statuses == ["created", "error"]
+        assert categories == {"transport_conflict"}
+        assert n_runs == 1
+
+    asyncio.run(_run())
+
+
+def test_reuse_does_not_deadlock_against_release_under_lock_order(migrated_url: str) -> None:
+    # The corrected lock order is ALLOCATION -> SYSTEM -> INVESTIGATION (ALLOCATION first,
+    # per the global PROJECT<RESOURCE<ALLOCATION<SYSTEM order). allocations.release holds
+    # PROJECT->ALLOCATION; an external holder of the ALLOCATION lock must block create_run
+    # at its FIRST lock (ALLOCATION) — proving create_run takes ALLOCATION before SYSTEM,
+    # so it cannot form a SYSTEM<->ALLOCATION cycle with release / the reconciler sweep.
+    import psycopg
+
+    from kdive.db.locks import LockScope, advisory_xact_lock
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool, state=InvestigationState.OPEN)
+            sys_id = await _seed_system(pool)
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT allocation_id FROM systems WHERE id = %s", (sys_id,))
+                row = await cur.fetchone()
+            assert row is not None
+            alloc_id = row["allocation_id"]
+            async with await psycopg.AsyncConnection.connect(migrated_url) as holder:
+                async with (
+                    holder.transaction(),
+                    advisory_xact_lock(holder, LockScope.ALLOCATION, alloc_id),
+                ):
+                    task = asyncio.create_task(_create(pool, _ctx(), inv_id, sys_id))
+                    await wait_until_any_backend_waiting(holder, locktype="advisory")
+                    assert not task.done()  # blocked on the held ALLOCATION lock (acquired first)
                 resp = await task
             assert resp.status == "created"
 
@@ -2302,6 +2665,24 @@ def _profile_dump(**local_libvirt: Any) -> dict[str, Any]:
             "boot_method": "direct-kernel",
             "kernel_source_ref": "git+https://git.kernel.org#v6.9",
             "provider": {"local-libvirt": section},
+        }
+    ).model_dump(by_alias=True)
+
+
+def _profile_dump_sized(*, vcpu: int, memory_mb: int, disk_gb: int) -> dict[str, Any]:
+    """A real provisioning-profile dump with explicit sizing (the full-custom reuse case)."""
+    from kdive.profiles.provisioning import ProvisioningProfile
+
+    return ProvisioningProfile.model_validate(
+        {
+            "schema_version": 1,
+            "arch": "x86_64",
+            "vcpu": vcpu,
+            "memory_mb": memory_mb,
+            "disk_gb": disk_gb,
+            "boot_method": "direct-kernel",
+            "kernel_source_ref": "git+https://git.kernel.org#v6.9",
+            "provider": {"local-libvirt": {"rootfs": {"kind": "local", "path": "/img"}}},
         }
     ).model_dump(by_alias=True)
 

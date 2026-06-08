@@ -66,6 +66,34 @@ def register(
                 )
             ),
         ] = None,
+        require_vcpus: Annotated[
+            int | None,
+            Field(
+                description="Optional reuse assertion: the System's persisted snapshot must have "
+                "at least this many vcpus, re-checked under the lock. Omit to skip."
+            ),
+        ] = None,
+        require_memory_gb: Annotated[
+            int | None,
+            Field(
+                description="Optional reuse assertion: the System's snapshot must have at least "
+                "this much memory in GB. Omit to skip."
+            ),
+        ] = None,
+        require_disk_gb: Annotated[
+            int | None,
+            Field(
+                description="Optional reuse assertion: the System's snapshot must have at least "
+                "this much disk in GB. Omit to skip."
+            ),
+        ] = None,
+        require_pcie: Annotated[
+            list[str] | None,
+            Field(
+                description="Optional reuse assertion: the System's allocation pcie_claim must "
+                "contain each 'vendor:device' spec (e.g. ['8086:1572']). Omit or [] to skip."
+            ),
+        ] = None,
     ) -> ToolResponse:
         """Bind a Run to a ready System and Investigation in one transaction. Requires operator."""
         return await _create_run(
@@ -75,6 +103,10 @@ def register(
             system_id=system_id,
             build_profile=build_profile,
             expected_boot_failure=expected_boot_failure,
+            require_vcpus=require_vcpus,
+            require_memory_gb=require_memory_gb,
+            require_disk_gb=require_disk_gb,
+            require_pcie=require_pcie,
         )
 
     @app.tool(

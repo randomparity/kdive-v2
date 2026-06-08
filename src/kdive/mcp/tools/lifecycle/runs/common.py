@@ -15,6 +15,8 @@ SYSTEM_GONE = frozenset({SystemState.TORN_DOWN, SystemState.FAILED, SystemState.
 ALLOC_HOSTABLE = frozenset({AllocationState.ACTIVE})
 INVESTIGATION_OPEN_FOR_RUN = frozenset({InvestigationState.OPEN, InvestigationState.ACTIVE})
 RUN_BUILD_TERMINAL = frozenset({RunState.FAILED, RunState.CANCELED})
+RUN_NON_TERMINAL = frozenset({RunState.CREATED, RunState.RUNNING})
+"""A Run holds its System until terminal; at most one non-terminal Run per System (#166)."""
 
 
 def envelope_for_run(run: Run, *, required_cmdline: str | None = None) -> ToolResponse:

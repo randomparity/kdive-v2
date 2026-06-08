@@ -46,6 +46,10 @@ Bind a Run to a ready System and Investigation in one transaction. Requires oper
 | `build_profile` | `object` | yes | Build profile for the Run's kernel. |
 | `expected_boot_failure` | `any` | no | Optional expected boot failure, e.g. {'kind':'console_crash','pattern':'Oops'}. |
 | `investigation_id` | `string` | yes | Investigation to attach the Run to. |
+| `require_disk_gb` | `any` | no | Optional reuse assertion: the System's snapshot must have at least this much disk in GB. Omit to skip. |
+| `require_memory_gb` | `any` | no | Optional reuse assertion: the System's snapshot must have at least this much memory in GB. Omit to skip. |
+| `require_pcie` | `any` | no | Optional reuse assertion: the System's allocation pcie_claim must contain each 'vendor:device' spec (e.g. ['8086:1572']). Omit or [] to skip. |
+| `require_vcpus` | `any` | no | Optional reuse assertion: the System's persisted snapshot must have at least this many vcpus, re-checked under the lock. Omit to skip. |
 | `system_id` | `string` | yes | Ready System (active Allocation) to bind. |
 
 ## `runs.get`
