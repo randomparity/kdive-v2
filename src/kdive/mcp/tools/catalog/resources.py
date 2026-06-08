@@ -118,7 +118,11 @@ async def list_resources_tool(
                     )
                 )
             except ValueError:
-                _log.warning("resource row violates the response invariant; degraded")
+                _log.warning(
+                    "resource %s violates the response invariant; degraded",
+                    row.get("id", "<missing>"),
+                    exc_info=True,
+                )
                 responses.append(_resource_row_error(row))
         return ToolResponse.collection(
             "resources",

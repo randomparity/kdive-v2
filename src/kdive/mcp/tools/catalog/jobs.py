@@ -178,7 +178,11 @@ async def list_jobs(pool: AsyncConnectionPool, ctx: RequestContext, *, limit: in
             try:
                 responses.append(ToolResponse.from_job(job))
             except ValueError:
-                _log.warning("job %s violates the response invariant; degraded", job.id)
+                _log.warning(
+                    "job %s violates the response invariant; degraded",
+                    job.id,
+                    exc_info=True,
+                )
                 responses.append(_error(str(job.id), ErrorCategory.INFRASTRUCTURE_FAILURE))
         return ToolResponse.collection(
             "jobs",

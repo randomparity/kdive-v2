@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import uuid4
@@ -223,7 +224,9 @@ def test_list_jobs_empty(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_list_jobs_isolates_invariant_violating_row(migrated_url: str) -> None:
+def test_list_jobs_isolates_invariant_violating_row(
+    migrated_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
     """A single producer-bug row (failed with no category) degrades to an error
     envelope without blanking the rest of the list."""
 
@@ -237,6 +240,7 @@ def test_list_jobs_isolates_invariant_violating_row(migrated_url: str) -> None:
                     "UPDATE jobs SET state = 'failed', error_category = NULL WHERE id = %s",
                     (bad_id,),
                 )
+            caplog.set_level(logging.WARNING, logger=jobs_tools.__name__)
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=50)
         items = resp.items
         by_id = {r.object_id: r for r in items}
@@ -244,6 +248,10 @@ def test_list_jobs_isolates_invariant_violating_row(migrated_url: str) -> None:
         assert by_id[good_id].status == "queued"
         assert by_id[bad_id].status == "error"
         assert by_id[bad_id].error_category == "infrastructure_failure"
+        assert any(
+            record.exc_info is not None and f"job {bad_id}" in record.message
+            for record in caplog.records
+        )
 
     asyncio.run(_run())
 

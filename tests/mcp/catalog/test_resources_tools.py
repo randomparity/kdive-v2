@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID, uuid4
 
+import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.mcp.auth import RequestContext
@@ -81,18 +83,24 @@ def test_list_kind_filter_miss_is_configuration_error(migrated_url: str) -> None
 
 def test_list_malformed_resource_row_degrades_to_infrastructure_failure(
     migrated_url: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             res_id = await _register(pool)
             async with pool.connection() as conn:
                 await conn.execute("UPDATE resources SET capabilities = '[]'::jsonb")
+            caplog.set_level(logging.WARNING, logger=resources_tools.__name__)
             responses = await resources_tools.list_resources_tool(pool, CTX, kind="local-libvirt")
         items = responses.items
         assert len(items) == 1
         assert items[0].object_id == res_id
         assert items[0].status == "error"
         assert items[0].error_category == "infrastructure_failure"
+        assert any(
+            record.exc_info is not None and f"resource {res_id}" in record.message
+            for record in caplog.records
+        )
 
     asyncio.run(_run())
 
