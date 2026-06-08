@@ -5,20 +5,12 @@ control, capacity/cost tuning) and platform-admin break-glass. Each tool gates o
 ``require_platform_role`` seam and audits cross-tenant actions. Distinct from
 ``kdive.mcp.tools.debug.ops`` (gdb-MI debug tooling).
 
-:func:`register` wires the break-glass tools; the queue-control tools register through their
-own module (`kdive.mcp.tools.ops.queue`) in :mod:`kdive.mcp.app`.
+Break-glass, queue-control, tuning, audit, inventory, and reconcile tools register through
+their concrete modules in :mod:`kdive.mcp.app`.
 """
 
 from __future__ import annotations
 
-from fastmcp import FastMCP
-from psycopg_pool import AsyncConnectionPool
-
 from kdive.mcp.tools.ops import breakglass
 
-__all__ = ["breakglass", "register"]
-
-
-def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
-    """Register the break-glass `ops.*` tools on ``app``, bound to ``pool``."""
-    breakglass.register(app, pool)
+__all__ = ["breakglass"]
