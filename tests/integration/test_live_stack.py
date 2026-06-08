@@ -460,7 +460,12 @@ def test_spine_over_the_wire() -> None:
                         op,
                         "allocations.request",
                         project=_PROJECT,
-                        request={"vcpus": 2, "memory_gb": 2, "resource": {"mode": "kind"}},
+                        request={
+                            "vcpus": 2,
+                            "memory_gb": 2,
+                            "disk_gb": 10,
+                            "resource": {"mode": "kind"},
+                        },
                     ),
                     "allocate",
                 )

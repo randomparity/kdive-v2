@@ -100,6 +100,7 @@ def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
         "0012",
         "0013",
         "0014",
+        "0015",
     ]
     assert second == []
 
@@ -503,6 +504,7 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
         "0012",
         "0013",
         "0014",
+        "0015",
     ]
 
 
@@ -598,3 +600,63 @@ def test_system_shapes_updated_at_trigger_bumps_on_update(pg_conn: psycopg.Conne
     pg_conn.execute("UPDATE system_shapes SET disk_gb = 11 WHERE name = 'small'")
     after = pg_conn.execute("SELECT updated_at FROM system_shapes WHERE name = 'small'").fetchone()
     assert after is not None and after[0] > before[0]
+
+
+# Migration 0015 records the resolved-sizing snapshot identity (ADR-0067, #161): the nullable
+# `shape` name label on allocations + systems, and `requested_disk_gb` on allocations.
+
+
+def test_migration_0015_adds_shape_and_disk_columns(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    alloc_cols = _columns(pg_conn, "allocations")
+    assert alloc_cols.get("shape") == "text"
+    assert alloc_cols.get("requested_disk_gb") == "integer"
+    assert _columns(pg_conn, "systems").get("shape") == "text"
+
+
+def test_migration_0015_columns_are_nullable(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    assert _nullable(pg_conn, "allocations").get("shape") == "YES"
+    assert _nullable(pg_conn, "allocations").get("requested_disk_gb") == "YES"
+    assert _nullable(pg_conn, "systems").get("shape") == "YES"
+
+
+def test_allocations_requested_disk_gb_rejects_non_positive(pg_conn: psycopg.Connection) -> None:
+    # requested_disk_gb is a size snapshot; a present value must be > 0 (the snapshot can never
+    # denote a zero-disk allocation, matching the selector's disk_gb gate).
+    migrate.apply_migrations(pg_conn)
+    resource_id = _seed_resource_row(pg_conn)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        pg_conn.execute(
+            "INSERT INTO allocations (id, principal, project, resource_id, state, "
+            "requested_disk_gb) VALUES (gen_random_uuid(), 'p', 'proj', %s, 'granted', 0)",
+            (resource_id,),
+        )
+
+
+def test_allocations_requested_disk_gb_accepts_null_and_positive(
+    pg_conn: psycopg.Connection,
+) -> None:
+    # NULL is the legacy / no-snapshot value; a positive value is the new snapshot.
+    migrate.apply_migrations(pg_conn)
+    resource_id = _seed_resource_row(pg_conn)
+    pg_conn.execute(
+        "INSERT INTO allocations (id, principal, project, resource_id, state) "
+        "VALUES (gen_random_uuid(), 'p', 'proj', %s, 'granted')",
+        (resource_id,),
+    )
+    pg_conn.execute(
+        "INSERT INTO allocations (id, principal, project, resource_id, state, requested_disk_gb) "
+        "VALUES (gen_random_uuid(), 'p', 'proj', %s, 'granted', 20)",
+        (resource_id,),
+    )
+
+
+def _seed_resource_row(conn: psycopg.Connection) -> str:
+    row = conn.execute(
+        "INSERT INTO resources (id, kind, capabilities, pool, cost_class, status, host_uri) "
+        "VALUES (gen_random_uuid(), 'local-libvirt', '{}'::jsonb, 'local-libvirt', 'local', "
+        "'available', 'qemu:///system') RETURNING id"
+    ).fetchone()
+    assert row is not None
+    return str(row[0])

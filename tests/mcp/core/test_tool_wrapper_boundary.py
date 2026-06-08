@@ -145,6 +145,7 @@ def test_lifecycle_allocation_wrappers_roundtrip_through_fastmcp(
                         "request": {
                             "vcpus": 1,
                             "memory_gb": 1,
+                            "disk_gb": 10,
                             "resource": {"mode": "kind", "kind": "local-libvirt"},
                         },
                     },

@@ -174,11 +174,18 @@ class Allocation(DomainModel, _Attribution):
     derived from ``updated_at`` (ADR-0007 §3). All four are null on an M0/just-granted
     allocation.
 
-    M1.4 adds ``pcie_claim`` (ADR-0068): the snapshot list of ``(vendor_id, device_id,
-    bdf)`` devices this allocation holds, resolved inside the per-Resource lock at
-    admission. Empty for a non-PCIe allocation. Occupancy is derived from this column on
-    non-terminal allocations, so the claim frees on every terminal transition simply by
-    the allocation leaving the non-terminal set; the row persists as a historical snapshot.
+    M1.4 adds the resolved-sizing snapshot identity (ADR-0067): ``requested_disk_gb``
+    completes the at-grant size snapshot the existing ``requested_*`` columns leave
+    short, and ``shape`` records the named preset a shape-sized request resolved from
+    (``None`` for full-custom). ``shape`` is a recorded label, not a foreign key — a
+    later ``shapes.set``/``shapes.delete`` cannot retroactively re-size a stamped row,
+    because availability and reuse read sizing from this persisted snapshot, never the
+    catalog. M1.4 also adds ``pcie_claim`` (ADR-0068): the snapshot list of
+    ``(vendor_id, device_id, bdf)`` devices this allocation holds, resolved inside the
+    per-Resource lock at admission. Empty for a non-PCIe allocation. Occupancy is derived
+    from this column on non-terminal allocations, so the claim frees on every terminal
+    transition simply by the allocation leaving the non-terminal set; the row persists as
+    a historical snapshot.
     """
 
     resource_id: UUID
@@ -187,19 +194,27 @@ class Allocation(DomainModel, _Attribution):
     capability_scope: dict[str, Any] = Field(default_factory=dict)
     requested_vcpus: int | None = None
     requested_memory_gb: int | None = None
+    requested_disk_gb: int | None = None
+    shape: str | None = None
     active_started_at: datetime | None = None
     active_ended_at: datetime | None = None
     pcie_claim: list[PCIeClaim] = Field(default_factory=list)
 
 
 class System(DomainModel, _Attribution):
-    """A provisioned target; one per Allocation in M0."""
+    """A provisioned target; one per Allocation in M0.
+
+    M1.4 adds the nullable ``shape`` name label (``None`` for full-custom, ADR-0067); the
+    System's sizing snapshot lives in ``provisioning_profile`` (vcpu/memory_mb/disk_gb),
+    so ``shape`` is a label, not the size of record — a catalog change never re-sizes it.
+    """
 
     allocation_id: UUID
     state: SystemState
     provisioning_profile: SerializedProvisioningProfile
     target_fingerprint: str | None = None
     domain_name: str | None = None
+    shape: str | None = None
 
 
 class Investigation(DomainModel, _Attribution):

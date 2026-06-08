@@ -99,6 +99,7 @@ async def _request_allocation(
     project: str = "proj",
     vcpus: int,
     memory_gb: int,
+    disk_gb: int = 10,
     window: object | None = None,
     resource_id: str | None = None,
     kind: str | None = None,
@@ -113,7 +114,13 @@ async def _request_allocation(
         pool,
         ctx,
         project=project,
-        request={"vcpus": vcpus, "memory_gb": memory_gb, "window": window, "resource": resource},
+        request={
+            "vcpus": vcpus,
+            "memory_gb": memory_gb,
+            "disk_gb": disk_gb,
+            "window": window,
+            "resource": resource,
+        },
         idempotency_key=idempotency_key,
     )
 
@@ -369,7 +376,7 @@ def test_c2_system_quota_denied(migrated_url: str) -> None:
                 pool,
                 ctx,
                 allocation_id=first.object_id,
-                profile=provisioning_profile(),
+                profile=provisioning_profile(vcpu=2, memory_mb=4096, disk_gb=10),
             )
             assert prov_one.status == "queued"
             # Second provision is on a DISTINCT allocation -> reaches the new-System quota branch.
@@ -377,7 +384,7 @@ def test_c2_system_quota_denied(migrated_url: str) -> None:
                 pool,
                 ctx,
                 allocation_id=second.object_id,
-                profile=provisioning_profile(),
+                profile=provisioning_profile(vcpu=2, memory_mb=4096, disk_gb=10),
             )
             assert prov_two.status == "error"
             assert prov_two.error_category == "quota_exceeded"
@@ -502,7 +509,7 @@ def test_c3_reconciliation_nets_to_actual_and_usage_matches(migrated_url: str) -
                 pool,
                 op,
                 allocation_id=grant.object_id,
-                profile=provisioning_profile(),
+                profile=provisioning_profile(vcpu=2, memory_mb=4096, disk_gb=10),
             )
             assert prov.status == "queued"
             job = await _provision_job_for_system(pool, prov.data["system_id"])
@@ -583,7 +590,7 @@ async def _seed_run_for_investigation(
                 project=project,
                 allocation_id=allocation_id,
                 state=SystemState.READY,
-                provisioning_profile=provisioning_profile(),
+                provisioning_profile=provisioning_profile(vcpu=2, memory_mb=4096, disk_gb=10),
             ),
         )
         await RUNS.insert(
@@ -672,7 +679,7 @@ async def _seed_expired_active_alloc_with_system(
                 project=project,
                 allocation_id=alloc.id,
                 state=SystemState.READY,
-                provisioning_profile=provisioning_profile(),
+                provisioning_profile=provisioning_profile(vcpu=2, memory_mb=4096, disk_gb=10),
             ),
         )
     return alloc.id, system.id
@@ -863,7 +870,7 @@ def test_c6_operator_refused_admin_ops(migrated_url: str) -> None:
                 pool,
                 op,
                 allocation_id=grant.object_id,
-                profile=provisioning_profile(),
+                profile=provisioning_profile(vcpu=2, memory_mb=4096, disk_gb=10),
             )
             sys_id = prov.data["system_id"]
             async with pool.connection() as conn:
@@ -892,7 +899,9 @@ def test_c6_operator_force_crash_returns_authorization_denied_envelope(migrated_
                 pool,
                 op,
                 allocation_id=grant.object_id,
-                profile=provisioning_profile(destructive_ops=["force_crash"]),
+                profile=provisioning_profile(
+                    destructive_ops=["force_crash"], vcpu=2, memory_mb=4096, disk_gb=10
+                ),
             )
             sys_id = prov.data["system_id"]
             async with pool.connection() as conn:
@@ -935,7 +944,9 @@ def test_c6_admin_and_operator_succeed_on_their_surfaces(migrated_url: str) -> N
                 pool,
                 op,
                 allocation_id=grant.object_id,
-                profile=provisioning_profile(destructive_ops=["reprovision"]),
+                profile=provisioning_profile(
+                    destructive_ops=["reprovision"], vcpu=2, memory_mb=4096, disk_gb=10
+                ),
             )
             sys_id = prov.data["system_id"]
             async with pool.connection() as conn:
@@ -950,7 +961,9 @@ def test_c6_admin_and_operator_succeed_on_their_surfaces(migrated_url: str) -> N
                 pool,
                 op,
                 system_id=sys_id,
-                profile=provisioning_profile(destructive_ops=["reprovision"]),
+                profile=provisioning_profile(
+                    destructive_ops=["reprovision"], vcpu=2, memory_mb=4096, disk_gb=10
+                ),
             )
             assert reprov.status == "queued"
 
@@ -1016,7 +1029,9 @@ def test_c7_reprovision_in_place_cycle(migrated_url: str) -> None:
                 pool,
                 op,
                 allocation_id=grant.object_id,
-                profile=provisioning_profile(destructive_ops=["reprovision"]),
+                profile=provisioning_profile(
+                    destructive_ops=["reprovision"], vcpu=2, memory_mb=4096, disk_gb=10
+                ),
             )
             sys_id = prov.data["system_id"]
             async with pool.connection() as conn:

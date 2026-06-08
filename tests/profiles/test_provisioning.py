@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -12,12 +12,15 @@ from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import JobKind
 from kdive.profiles.provisioning import (
+    AllocationSizing,
     BootMethod,
     ProvisioningProfile,
     capture_method,
     destructive_opt_in,
     profile_digest,
+    reconcile_profile_sizing,
     reject_rootfs_upload_without_window,
+    require_concrete_sizing,
     rootfs_upload_window_allowed,
 )
 
@@ -129,9 +132,6 @@ def _expect_configuration_error(data: dict[str, Any]) -> None:
     [
         "schema_version",
         "arch",
-        "vcpu",
-        "memory_mb",
-        "disk_gb",
         "boot_method",
         "kernel_source_ref",
         "provider",
@@ -140,6 +140,24 @@ def _expect_configuration_error(data: dict[str, Any]) -> None:
 def test_missing_core_field_raises_configuration_error(field: str) -> None:
     data = _valid()
     del data[field]
+    _expect_configuration_error(data)
+
+
+@pytest.mark.parametrize("field", ["vcpu", "memory_mb", "disk_gb"])
+def test_sizing_fields_are_optional_at_parse(field: str) -> None:
+    # ADR-0024 delta (ADR-0067): a shape-sized allocation omits profile sizing;
+    # systems.provision constructs it from the resolved snapshot. Parsing is structural,
+    # so an omitted sizing field is None, not an error.
+    data = _valid()
+    del data[field]
+    parsed = ProvisioningProfile.parse(data)
+    assert getattr(parsed, field) is None
+
+
+@pytest.mark.parametrize("field", ["vcpu", "memory_mb", "disk_gb"])
+def test_present_sizing_must_be_positive(field: str) -> None:
+    data = _valid()
+    data[field] = 0
     _expect_configuration_error(data)
 
 
@@ -397,3 +415,60 @@ def test_rootfs_upload_window_helpers_allow_non_upload_profiles() -> None:
 
     assert rootfs_upload_window_allowed(profile) is False
     reject_rootfs_upload_without_window(profile)
+
+
+# --- ADR-0024 sizing reconciliation (#161) --------------------------------------------
+
+_SNAPSHOT = AllocationSizing(vcpu=2, memory_mb=4096, disk_gb=20)
+
+
+def test_reconcile_fills_omitted_sizing_from_snapshot() -> None:
+    data = _valid()
+    for field in ("vcpu", "memory_mb", "disk_gb"):
+        del data[field]
+    reconciled = reconcile_profile_sizing(data, _SNAPSHOT)
+    parsed = ProvisioningProfile.parse(reconciled)
+    assert (parsed.vcpu, parsed.memory_mb, parsed.disk_gb) == (2, 4096, 20)
+
+
+def test_reconcile_accepts_matching_restatement() -> None:
+    data = _valid()
+    data["vcpu"], data["memory_mb"], data["disk_gb"] = 2, 4096, 20
+    reconciled = reconcile_profile_sizing(data, _SNAPSHOT)
+    assert (reconciled["vcpu"], reconciled["memory_mb"], reconciled["disk_gb"]) == (2, 4096, 20)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [("vcpu", 99), ("memory_mb", 8192), ("disk_gb", 40)],
+)
+def test_reconcile_rejects_conflicting_restatement(field: str, bad: int) -> None:
+    data = _valid()
+    data["vcpu"], data["memory_mb"], data["disk_gb"] = 2, 4096, 20
+    data[field] = bad
+    with pytest.raises(CategorizedError) as caught:
+        reconcile_profile_sizing(data, _SNAPSHOT)
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_reconcile_does_not_mutate_input() -> None:
+    data = _valid()
+    del data["vcpu"]
+    snapshot_before = copy.deepcopy(data)
+    reconcile_profile_sizing(data, _SNAPSHOT)
+    assert data == snapshot_before
+
+
+def test_require_concrete_sizing_rejects_missing() -> None:
+    data = _valid()
+    del data["disk_gb"]
+    parsed = ProvisioningProfile.parse(data)
+    with pytest.raises(CategorizedError) as caught:
+        require_concrete_sizing(parsed)
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    missing = cast(list[str], caught.value.details["missing"])
+    assert "disk_gb" in missing
+
+
+def test_require_concrete_sizing_accepts_full() -> None:
+    require_concrete_sizing(ProvisioningProfile.parse(_valid()))

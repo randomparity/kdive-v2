@@ -93,8 +93,17 @@ async def pool(url: str) -> AsyncIterator[AsyncConnectionPool]:
 
 
 async def granted_allocation(
-    conn_pool: AsyncConnectionPool, *, cap: int = 2, systems_quota: int = 1_000_000
+    conn_pool: AsyncConnectionPool,
+    *,
+    cap: int = 2,
+    systems_quota: int = 1_000_000,
+    requested_vcpus: int | None = None,
+    requested_memory_gb: int | None = None,
+    requested_disk_gb: int | None = None,
+    shape: str | None = None,
 ) -> str:
+    """Seed a granted Allocation; pass the ``requested_*``/``shape`` snapshot for a shape-sized
+    allocation, or leave them ``None`` for the no-snapshot (full-custom/legacy) lane."""
     disc = LocalLibvirtDiscovery(
         host_uri="qemu:///system",
         connect=lambda: FakeLibvirtConn(),
@@ -132,6 +141,10 @@ async def granted_allocation(
                 project="proj",
                 resource_id=res.id,
                 state=AllocationState.GRANTED,
+                requested_vcpus=requested_vcpus,
+                requested_memory_gb=requested_memory_gb,
+                requested_disk_gb=requested_disk_gb,
+                shape=shape,
             ),
         )
     return str(alloc.id)

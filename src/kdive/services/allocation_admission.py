@@ -79,10 +79,16 @@ _NON_TERMINAL = NON_TERMINAL_STATES
 class AllocationRequest:
     """Inputs for one allocation admission attempt.
 
+    ``selector`` carries the priced size (vcpus / memory_gb) — for a shape-sized request
+    the caller resolves the shape to this selector before admission (ADR-0067). ``disk_gb``
+    is the resolved disk size persisted as the at-grant snapshot (``requested_disk_gb``);
+    ``shape`` is the named preset the size resolved from (``None`` for full-custom), recorded
+    as a label, not re-resolved later.
+
     ``pcie_specs`` is the resolved PCIe device-spec **union** (explicit ``pcie_devices``
-    plus, when #161 lands, a shape's ``pcie_match``) — already composed by the caller. An
-    empty union is a non-PCIe request. The specs are resolved to distinct free devices and
-    claimed inside the per-Resource lock (ADR-0068), never pre-lock.
+    plus a shape's ``pcie_match``) — already composed by the caller. An empty union is a
+    non-PCIe request. The specs are resolved to distinct free devices and claimed inside the
+    per-Resource lock (ADR-0068), never pre-lock.
     """
 
     ctx: RequestContext
@@ -91,6 +97,8 @@ class AllocationRequest:
     selector: Selector
     window: object | None = None
     idempotency_key: str | None = None
+    disk_gb: int | None = None
+    shape: str | None = None
     pcie_specs: tuple[str, ...] = ()
 
 
@@ -290,6 +298,8 @@ async def _grant(
             lease_expiry=lease_expiry,
             requested_vcpus=request.selector.vcpus,
             requested_memory_gb=request.selector.memory_gb,
+            requested_disk_gb=request.disk_gb,
+            shape=request.shape,
             capability_scope={},
             pcie_claim=claimed_devices,
         ),

@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -78,21 +79,28 @@ async def _request(
     ctx: RequestContext,
     *,
     project: str = "proj",
-    vcpus: int = 1,
-    memory_gb: int = 0,
+    vcpus: int | None = 1,
+    memory_gb: int | None = 0,
+    disk_gb: int | None = 10,
+    shape: str | None = None,
     window: object | None = None,
     idempotency_key: str | None = None,
 ) -> ToolResponse:
+    request: dict[str, Any] = {
+        "window": window,
+        "resource": {"mode": "kind", "kind": "local-libvirt"},
+    }
+    if shape is not None:
+        request["shape"] = shape
+    else:
+        request["vcpus"] = vcpus
+        request["memory_gb"] = memory_gb
+        request["disk_gb"] = disk_gb
     return await alloc_tools.request_allocation(
         pool,
         ctx,
         project=project,
-        request={
-            "vcpus": vcpus,
-            "memory_gb": memory_gb,
-            "window": window,
-            "resource": {"mode": "kind", "kind": "local-libvirt"},
-        },
+        request=request,
         idempotency_key=idempotency_key,
     )
 
@@ -107,6 +115,7 @@ async def _request_by_id(
         request={
             "vcpus": 1,
             "memory_gb": 0,
+            "disk_gb": 10,
             "window": None,
             "resource": {"mode": "id", "resource_id": resource_id},
         },
@@ -439,5 +448,110 @@ def test_uncordon_restores_both_placement_paths(migrated_url: str) -> None:
             by_id = await _request_by_id(pool, _ctx(), res_id)
         assert by_kind.status == "granted"
         assert by_id.status == "granted"
+
+    asyncio.run(_run())
+
+
+# --- M1.4 shape selector (#161) -------------------------------------------------------
+
+# The seed shapes (migration 0013): name -> (vcpus, memory_mb, disk_gb).
+_SEED_SHAPES = {
+    "small": (1, 1024, 10),
+    "medium": (2, 4096, 20),
+    "large": (4, 8192, 40),
+    "max": (8, 16384, 80),
+}
+
+
+async def _fetch_alloc(pool: AsyncConnectionPool, alloc_id: str) -> Allocation:
+    async with pool.connection() as conn:
+        alloc = await ALLOCATIONS.get(conn, UUID(alloc_id))
+    assert alloc is not None
+    return alloc
+
+
+def test_shape_request_persists_resolved_tuple_and_shape_label(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _register(pool, cap=4)
+            resp = await _request(pool, _ctx(), shape="medium", window=1)
+            assert resp.status == "granted"
+            alloc = await _fetch_alloc(pool, resp.object_id)
+        # medium = 2 vcpu / 4096 MB / 20 GB; memory_mb -> memory_gb is lossless.
+        assert alloc.requested_vcpus == 2
+        assert alloc.requested_memory_gb == 4
+        assert alloc.requested_disk_gb == 20
+        assert alloc.shape == "medium"
+
+    asyncio.run(_run())
+
+
+def test_custom_request_records_null_shape(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _register(pool, cap=4)
+            resp = await _request(pool, _ctx(), vcpus=2, memory_gb=4, disk_gb=20, window=1)
+            assert resp.status == "granted"
+            alloc = await _fetch_alloc(pool, resp.object_id)
+        assert alloc.shape is None
+        assert alloc.requested_disk_gb == 20
+
+    asyncio.run(_run())
+
+
+def test_unknown_shape_fails_closed_with_no_write(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _register(pool, cap=4)
+            resp = await _request(pool, _ctx(), shape="gpu-xl", window=1)
+            assert resp.status == "error"
+            assert resp.error_category == "configuration_error"
+            async with pool.connection() as conn:
+                count = await conn.execute("SELECT count(*) FROM allocations")
+                row = await count.fetchone()
+        assert row is not None and row[0] == 0
+
+    asyncio.run(_run())
+
+
+def test_over_host_shape_fails_closed_with_no_durable_write(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _register(pool, cap=4)
+            # Add a shape larger than the fake host (8 vcpu / 16384 MB).
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "INSERT INTO system_shapes (name, vcpus, memory_mb, disk_gb) "
+                    "VALUES ('huge', 64, 131072, 500)"
+                )
+            resp = await _request(pool, _ctx(), shape="huge", window=1)
+            assert resp.status == "error"
+            assert resp.error_category == "configuration_error"
+            async with pool.connection() as conn:
+                for table in ("allocations", "ledger", "audit_log"):
+                    row = await (await conn.execute(f"SELECT count(*) FROM {table}")).fetchone()
+                    assert row is not None and row[0] == 0, table
+
+    asyncio.run(_run())
+
+
+def test_shapes_set_after_stamping_does_not_resize_allocation(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _register(pool, cap=4)
+            resp = await _request(pool, _ctx(), shape="medium", window=1)
+            assert resp.status == "granted"
+            # Redefine `medium` in the catalog AFTER the allocation is stamped.
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE system_shapes SET vcpus = 8, memory_mb = 16384, disk_gb = 80 "
+                    "WHERE name = 'medium'"
+                )
+            alloc = await _fetch_alloc(pool, resp.object_id)
+        # The stamped snapshot is unchanged — the catalog edit is not retroactive.
+        assert alloc.requested_vcpus == 2
+        assert alloc.requested_memory_gb == 4
+        assert alloc.requested_disk_gb == 20
+        assert alloc.shape == "medium"
 
     asyncio.run(_run())

@@ -90,6 +90,7 @@ async def _request(
     request: dict[str, Any] = {
         "vcpus": 1,
         "memory_gb": 0,
+        "disk_gb": 10,
         "window": None,
         "resource": {"mode": "kind", "kind": "local-libvirt"},
         "pcie_devices": pcie_devices,

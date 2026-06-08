@@ -72,11 +72,28 @@ BUILD_PROFILE: dict[str, Any] = {
 }
 
 
-def provisioning_profile(*, destructive_ops: list[str] | None = None) -> dict[str, Any]:
-    """A provisioning profile, optionally opting the named destructive ops in (the gate factor)."""
+def provisioning_profile(
+    *,
+    destructive_ops: list[str] | None = None,
+    vcpu: int | None = None,
+    memory_mb: int | None = None,
+    disk_gb: int | None = None,
+) -> dict[str, Any]:
+    """A provisioning profile, optionally opting the named destructive ops in (the gate factor).
+
+    ``vcpu`` / ``memory_mb`` / ``disk_gb`` override the default sizing so a test can align the
+    profile with a shape-sized allocation's resolved snapshot (ADR-0067 reconciliation: a
+    restated size must equal the resolved tuple, else it is a conflict).
+    """
     data = copy.deepcopy(PROVISIONING_PROFILE)
     if destructive_ops is not None:
         data["provider"]["local-libvirt"]["destructive_ops"] = destructive_ops
+    if vcpu is not None:
+        data["vcpu"] = vcpu
+    if memory_mb is not None:
+        data["memory_mb"] = memory_mb
+    if disk_gb is not None:
+        data["disk_gb"] = disk_gb
     return data
 
 

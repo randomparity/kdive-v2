@@ -32,6 +32,7 @@ from kdive.profiles.provisioning import (
     ProvisioningProfile,
     RootfsSource,
     _UploadRootfs,
+    require_concrete_sizing,
 )
 from kdive.profiles.provisioning import (
     validate_profile as _validate_profile,
@@ -133,6 +134,9 @@ def render_domain_xml(system_id: UUID, profile: ProvisioningProfile, *, disk_pat
     """
     _ensure_kdive_namespace_registered()
     _validate_profile(profile)
+    # Sizing is optional in the schema (ADR-0024 delta); a stored profile is always concrete,
+    # but fail closed here rather than render a "None" memory/vcpu if a NULL ever slips through.
+    require_concrete_sizing(profile)
     section = profile.provider.local_libvirt
     machine = section.domain_xml_params.get("machine", _DEFAULT_MACHINE)
 
