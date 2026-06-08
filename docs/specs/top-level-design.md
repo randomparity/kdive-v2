@@ -259,25 +259,28 @@ Allocation                            (admission control + accounting)
 
 Provisioning
   systems.provision(allocation_id, provisioning_profile)   → job → system_id
-  systems.list / .get / .reprovision / .teardown
+  systems.define / .provision_defined
+  systems.get / .reprovision / .teardown
 
 Investigation + Run
   investigations.open(project, title)         → investigation_id
   runs.create(investigation_id, system_id, build_profile, …)
-  runs.build(run_id)    → job        runs.install(run_id) → job
-  runs.boot(run_id)     → job        runs.get(run_id)
+  runs.build(run_id)    → job        runs.complete_build(run_id)
+  runs.install(run_id)  → job        runs.boot(run_id) → job
+  runs.get(run_id)
 
 Connect + Debug
   debug.start_session(run_id, transport)   debug.end_session
   debug.set_breakpoint / .clear / .list
   debug.continue / .interrupt
-  debug.read_registers / .read_symbol / .read_memory(≤4096) / .evaluate(constrained)
+  debug.read_registers / .read_memory(≤4096)
   introspect.run / .from_vmcore         postmortem.crash / .triage
 
 Control + Retrieve                    (destructive → policy gate)
   control.power(system_id, on|off|cycle|reset)
   control.force_crash(system_id)
-  artifacts.list(run_id) / .get(ref)
+  artifacts.list(system_id) / .get(artifact_id) / .search_text(artifact_id, pattern)
+  artifacts.create_run_upload / .create_system_upload
   vmcore.list(system_id) / .fetch(system_id) → job
 
 Jobs (long-running spine)
@@ -444,7 +447,8 @@ Milestone-based. ("Sprint" is avoided per the project doc-style guard.)
   (small … max) over the provisioning profile plus **full custom** configuration
   (CPU/memory/PCIe passthrough); a **fleet availability** view (which hosts/shapes
   are free now); a **reservation/backlog scheduler** so scarce hardware is used
-  efficiently ("always work queued"); and **system reuse** + `systems.list`.
+  efficiently ("always work queued"); and **system reuse** plus a future system
+  list view.
   Realizes latent domain-model concepts already named above — Resource
   `capabilities` (PCIe), `cost_class`, the `draining` status, and reservations.
 - **M1.5 — Fault-injection provider.** A mock provider behind the real plane
