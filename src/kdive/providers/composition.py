@@ -16,6 +16,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.components.references import ComponentRef
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind
+from kdive.profiles.provisioning import RootfsSource
 from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.providers.local_libvirt.connect import LocalLibvirtConnect
@@ -54,6 +55,7 @@ from kdive.services.resource_discovery import ensure_discovered_resource_registe
 
 type DiscoveryRegistrar = Callable[[AsyncConnectionPool], Awaitable[None]]
 type BuildConfigValidator = Callable[[ComponentRef], None]
+type RootfsValidator = Callable[[RootfsSource], None]
 
 _LOCAL_POOL = "local-libvirt"
 _LOCAL_COST_CLASS = "local"
@@ -95,6 +97,7 @@ class ProviderRuntime:
     debug_engine: GdbMiEngine = field(default_factory=LocalGdbMiEngine)
     component_sources: ComponentSourceCapabilities = field(default_factory=_local_component_sources)
     build_config_validator: BuildConfigValidator | None = None
+    rootfs_validator: RootfsValidator | None = None
 
     def install_boot(self) -> tuple[Installer, Booter]:
         return self.installer, self.booter
@@ -132,6 +135,7 @@ def build_default_provider_runtime() -> ProviderRuntime:
         discovery_registrar=ensure_local_host_registered,
         component_sources=_local_component_sources(),
         build_config_validator=builder.validate_config_ref,
+        rootfs_validator=provisioner.validate_rootfs_ref,
     )
 
 

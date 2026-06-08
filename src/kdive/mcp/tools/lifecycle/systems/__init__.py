@@ -61,6 +61,7 @@ def register(
             allocation_id=allocation_id,
             profile=profile,
             component_sources=runtime.component_sources,
+            rootfs_validator=runtime.rootfs_validator,
         )
 
     @app.tool(
@@ -84,6 +85,7 @@ def register(
             allocation_id=allocation_id,
             profile=profile,
             component_sources=runtime.component_sources,
+            rootfs_validator=runtime.rootfs_validator,
         )
 
     @app.tool(
@@ -103,6 +105,7 @@ def register(
             current_context(),
             system_id=system_id,
             component_sources=runtime.component_sources,
+            rootfs_validator=runtime.rootfs_validator,
         )
 
     @app.tool(
@@ -146,4 +149,5 @@ def register(
             system_id=system_id,
             profile=profile,
             component_sources=runtime.component_sources,
+            rootfs_validator=runtime.rootfs_validator,
         )

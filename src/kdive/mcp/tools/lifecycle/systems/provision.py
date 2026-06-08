@@ -12,7 +12,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import Enum
-from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -20,7 +19,6 @@ from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.components.references import ComponentRef
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -44,6 +42,7 @@ from kdive.mcp.tools._common import (
 from kdive.planes.systems import TERMINAL_SYSTEM as _TERMINAL_SYSTEM
 from kdive.profiles.provisioning import (
     ProvisioningProfile,
+    RootfsSource,
     _UploadRootfs,
     reject_rootfs_upload_without_window,
     validate_profile,
@@ -53,7 +52,6 @@ from kdive.providers.component_validation import (
     reject_unsupported_component_source,
 )
 from kdive.providers.composition import build_default_provider_runtime
-from kdive.providers.local_libvirt.materialize import materialize_rootfs_base
 from kdive.security import audit
 from kdive.security.context import RequestContext
 from kdive.security.rbac import Role, require_role
@@ -113,7 +111,7 @@ _NON_TERMINAL_SYSTEM = (
     SystemState.CRASHED,
 )
 
-type RootfsValidator = Callable[[ComponentRef], None]
+type RootfsValidator = Callable[[RootfsSource], None]
 
 
 class _CreateLane(Enum):
@@ -132,21 +130,10 @@ def _component_sources(
 def _rootfs_validator(rootfs_validator: RootfsValidator | None) -> RootfsValidator:
     if rootfs_validator is not None:
         return rootfs_validator
-    provisioner = build_default_provider_runtime().provisioner
-    allowed_roots = getattr(provisioner, "_allowed_roots", [Path("/var/lib/kdive/rootfs")])
-    cache_dir = getattr(provisioner, "_cache_dir", Path("/var/lib/kdive/rootfs/cache"))
-
-    def _validate(rootfs: ComponentRef) -> None:
-        materialize_rootfs_base(
-            rootfs,
-            allowed_roots=allowed_roots,
-            cache_dir=cache_dir,
-            project="local",
-            component_store=None,
-            object_store=None,
-        )
-
-    return _validate
+    validator = build_default_provider_runtime().rootfs_validator
+    if validator is None:
+        raise RuntimeError("default provider runtime has no rootfs validator")
+    return validator
 
 
 def _validate_profile_for_provider(

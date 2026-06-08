@@ -379,6 +379,10 @@ class LocalLibvirtProvisioning:
             ) from exc
         return domain_name_for(system_id)
 
+    def validate_rootfs_ref(self, rootfs: RootfsSource) -> None:
+        """Validate that a rootfs ref can materialize within provider roots."""
+        self._materialize_rootfs_base(rootfs, UUID(int=0))
+
     def reprovision(self, system_id: UUID, profile: ProvisioningProfile) -> str:
         """Wipe the System's current install and define+start the new profile in place.
 
