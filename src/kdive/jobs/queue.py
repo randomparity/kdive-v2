@@ -22,6 +22,7 @@ from psycopg.types.json import Jsonb
 
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobAuthorizing, JobKind
+from kdive.domain.state import JobState
 from kdive.jobs.payloads import (
     Authorizing,
     PayloadModel,
@@ -218,14 +219,14 @@ async def set_queue_paused(conn: AsyncConnection, paused: bool) -> None:
 
 
 async def all_recent_jobs(
-    conn: AsyncConnection, limit: int, *, states: Sequence[str] | None = None
+    conn: AsyncConnection, limit: int, *, states: Sequence[JobState] | None = None
 ) -> list[Job]:
     """Return the most recent jobs across **every** project, newest first, capped.
 
     The platform view (``ops.jobs_list``, ADR-0062): unlike :func:`recent_jobs` this is
     **not** project-scoped — it spans all tenants for an operator's cross-project queue
     inspection, so its only caller must already hold ``platform_operator``. ``states``,
-    when given, filters to those job states (e.g. ``["queued", "running"]``); an empty
+    when given, filters to those job states (e.g. ``[JobState.QUEUED]``); an empty
     sequence yields no rows. The ``id`` tiebreaker totals the order on a shared
     ``created_at`` so the cap never drops an arbitrary one of a tied pair.
     """
@@ -239,7 +240,7 @@ async def all_recent_jobs(
             await cur.execute(
                 "SELECT * FROM jobs WHERE state = ANY(%(states)s::text[]) "
                 "ORDER BY created_at DESC, id DESC LIMIT %(limit)s",
-                {"limit": limit, "states": list(states)},
+                {"limit": limit, "states": [state.value for state in states]},
             )
         rows = await cur.fetchall()
     return [Job.model_validate(row) for row in rows]

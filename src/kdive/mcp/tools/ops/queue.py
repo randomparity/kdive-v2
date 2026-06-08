@@ -39,7 +39,6 @@ _RESUME_TOOL = "ops.queue_resume"
 _JOBS_LIST_TOOL = "ops.jobs_list"
 _DEFAULT_LIST_LIMIT = 50
 _MAX_LIST_LIMIT = 200
-_VALID_STATES = frozenset(s.value for s in JobState)
 
 
 async def queue_pause(pool: AsyncConnectionPool, ctx: RequestContext) -> ToolResponse:
@@ -137,14 +136,19 @@ async def jobs_list(
                     event=audit.PlatformAuditEvent(
                         tool=_JOBS_LIST_TOOL,
                         scope="all-projects",
-                        args={"states": parsed_states, "limit": capped},
+                        args={
+                            "states": None
+                            if parsed_states is None
+                            else [state.value for state in parsed_states],
+                            "limit": capped,
+                        },
                         platform_role=held_platform_roles(ctx),
                     ),
                 )
         return _jobs_response(depth, jobs)
 
 
-def _parse_states(states: list[str] | None) -> list[str] | None:
+def _parse_states(states: list[str] | None) -> list[JobState] | None:
     """Return the validated state list, or ``None`` for all states.
 
     An unknown state string is a caller error (``configuration_error``) rather than a
@@ -155,13 +159,16 @@ def _parse_states(states: list[str] | None) -> list[str] | None:
     """
     if states is None:
         return None
+    parsed: list[JobState] = []
     for state in states:
-        if state not in _VALID_STATES:
+        try:
+            parsed.append(JobState(state))
+        except ValueError:
             raise CategorizedError(
-                f"unknown job state {state!r}; expected one of {sorted(_VALID_STATES)}",
+                f"unknown job state {state!r}; expected one of {sorted(s.value for s in JobState)}",
                 category=ErrorCategory.CONFIGURATION_ERROR,
-            )
-    return states
+            ) from None
+    return parsed
 
 
 def _jobs_response(depth: dict[str, int], jobs: list[Job]) -> ToolResponse:
