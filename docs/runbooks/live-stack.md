@@ -141,7 +141,46 @@ on any host. When **no** `live_stack` test is collected yet (the marked spine dr
 in a later sub-issue), the recipe reports `no live_stack tests collected — skipping
 cleanly` and exits 0.
 
-## 6. Teardown
+## 6. Kernel debugging demo smoke check
+
+The default installed-package flow is:
+
+```bash
+set -a
+. /etc/kdive/local.env
+set +a
+python -m kdive migrate
+python -m kdive seed-demo --project demo
+python -m kdive stack
+```
+
+Expected defaults:
+
+- MCP URL: `http://127.0.0.1:8000/mcp`
+- Kernel source: `~/src/linux` unless `KDIVE_KERNEL_SRC` is set
+- Build workspace: `/var/lib/kdive/build`
+- Component roots: `/var/lib/kdive/build/components:/etc/kdive/fixtures`
+- Fixture catalog: `/etc/kdive/fixtures/local-libvirt`
+- Fedora kdive-ready rootfs: `/var/lib/kdive/rootfs/local/fedora-kdive-ready-43.qcow2`
+- Busybox rootfs: `/var/lib/kdive/rootfs/local/busybox-bare.qcow2`
+
+After the stack is up, use the live-stack harness to call MCP tools for:
+
+- `accounting.set_budget`
+- `accounting.set_quota`
+- `resources.list`
+- `allocations.request`
+- `systems.provision` with
+  `rootfs: {"kind": "catalog", "provider": "local-libvirt", "name": "fedora-kdive-ready-43"}`
+- `runs.build` with a staged `.config`
+- `runs.install`
+- `runs.boot`
+- `artifacts.list(system_id=...)`
+
+Vulnerable kernels should produce a console artifact instead of an empty `boot_timeout`.
+Patched kernels can boot and reach the readiness marker.
+
+## 7. Teardown
 
 Stop the foreground stack with Ctrl-C, or stop a daemonized source-tree stack with:
 
