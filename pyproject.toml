@@ -9,7 +9,7 @@ description = "Kernel Debug, Inspect, Validate, Explore — MCP platform for ker
 readme = "README.md"
 requires-python = "==3.13.*"
 dependencies = [
-  "fastmcp==3.4.0",
+  "fastmcp-slim[server]==3.4.0",
   "psycopg[binary]==3.3.4",
   "psycopg-pool==3.3.1",
   "boto3==1.43.21",
@@ -29,6 +29,7 @@ live-vm = [
 
 [dependency-groups]
 dev = [
+  "fastmcp-slim[client]==3.4.0",
   "ruff==0.15.15",
   "ty==0.0.42",
   "pytest==9.0.3",

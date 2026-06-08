@@ -324,18 +324,6 @@ wheels = [
 ]
 
 [[package]]
-name = "fastmcp"
-version = "3.4.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "fastmcp-slim", extra = ["client", "server"] },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/64/24/519739e98daf92ebc64580e9d3320649bf9a1612c029a913dd88c3474d73/fastmcp-3.4.0.tar.gz", hash = "sha256:29055fb6816f4862c615aabaf0112ae8feb8b469740db13403a0ce5b799ec1dc", size = 28754939, upload-time = "2026-06-03T02:32:40.206Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e9/72/9f9bbfc3a8d26870dbdbbd633cd1c6f42b8d3bec379426c760676d936e86/fastmcp-3.4.0-py3-none-any.whl", hash = "sha256:34523083d6149400a0655a8aa769eb34f85b1ce6dac6d66efb07503ebbe5f44b", size = 8017, upload-time = "2026-06-03T02:32:38.05Z" },
-]
-
-[[package]]
 name = "fastmcp-slim"
 version = "3.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -592,7 +580,7 @@ dependencies = [
     { name = "boto3" },
     { name = "botocore" },
     { name = "defusedxml" },
-    { name = "fastmcp" },
+    { name = "fastmcp-slim", extra = ["server"] },
     { name = "libvirt-python" },
     { name = "mcp" },
     { name = "psycopg", extra = ["binary"] },
@@ -609,6 +597,7 @@ live-vm = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "fastmcp-slim", extra = ["client"] },
     { name = "hypothesis" },
     { name = "pytest" },
     { name = "ruff" },
@@ -622,7 +611,7 @@ requires-dist = [
     { name = "botocore", specifier = "==1.43.21" },
     { name = "defusedxml", specifier = "==0.7.1" },
     { name = "drgn", marker = "extra == 'live-vm'", specifier = "==0.2.0" },
-    { name = "fastmcp", specifier = "==3.4.0" },
+    { name = "fastmcp-slim", extras = ["server"], specifier = "==3.4.0" },
     { name = "libvirt-python", specifier = "==12.3.0" },
     { name = "mcp", specifier = "==1.27.2" },
     { name = "psycopg", extras = ["binary"], specifier = "==3.3.4" },
@@ -635,6 +624,7 @@ provides-extras = ["live-vm"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fastmcp-slim", extras = ["client"], specifier = "==3.4.0" },
     { name = "hypothesis", specifier = "==6.142.4" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "ruff", specifier = "==0.15.15" },
