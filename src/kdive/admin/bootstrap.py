@@ -48,18 +48,15 @@ def local_env_defaults() -> dict[str, str]:
 
 
 def print_local_env() -> None:
-    """Print shell exports for :func:`local_env_defaults`."""
     for key, value in local_env_defaults().items():
         print(f"export {key}={shlex.quote(value)}")
 
 
 def default_fixture_files() -> Mapping[str, str]:
-    """Return the embedded local-libvirt fixture files keyed by relative path."""
     return LOCAL_LIBVIRT_FIXTURES
 
 
 def default_compose_text() -> str:
-    """Return the embedded backing-service compose file."""
     return LOCAL_COMPOSE
 
 
@@ -149,14 +146,12 @@ async def seed_demo(
 
 
 async def register_local_resource(pool: Any) -> None:
-    """Register the local-libvirt resource using the default provider runtime."""
     from kdive.providers.composition import build_default_provider_runtime
 
     await build_default_provider_runtime().register_discovery(pool)
 
 
 def supervisor_commands(env: Mapping[str, str]) -> list[list[str]]:
-    """Return the three host process commands for the local stack supervisor."""
     del env
     return [
         [sys.executable, "-m", "kdive", "server"],
