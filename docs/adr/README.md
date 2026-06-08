@@ -91,4 +91,9 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0062](0062-platform-operations.md) | Platform operations (M1.3): operator infra/control-plane tools, break-glass override, auditor reads, `require_role` denial-audit (builds on 0043) | Proposed |
 | [0063](0063-typed-provider-runtime.md) | Typed ProviderRuntime is the active M0/M1 provider seam | Accepted |
 | [0064](0064-expected-boot-failures-artifact-search.md) | Expected boot failures + bounded redacted artifact search | Proposed |
+| [0065](0065-provider-component-references.md) | Provider component references and profile requirements | Proposed |
 | [0066](0066-remove-capability-registry-prototype-from-src.md) | Remove capability-registry prototype from production source | Accepted |
+| [0067](0067-system-shapes-catalog.md) | System shapes catalog + selector unification (M1.4) | Proposed |
+| [0068](0068-custom-config-pcie-modeling.md) | Custom config + PCIe capability modeling (M1.4) | Proposed |
+| [0069](0069-reservation-pending-queue-scheduler.md) | Reservation / FIFO pending-queue scheduler (M1.4) | Proposed |
+| [0070](0070-fleet-availability-system-reuse.md) | Fleet availability + system reuse (M1.4) | Proposed |
