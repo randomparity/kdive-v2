@@ -2,6 +2,16 @@
 
 # `resources` tools
 
+## `resources.cordon`
+
+`implemented`
+
+Mark a host unschedulable; placement skips/rejects it. Requires platform operator.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `resource_id` | `string` | yes | The host Resource UUID to cordon. |
+
 ## `resources.describe`
 
 `implemented` · `read-only`
@@ -21,3 +31,24 @@ List Resources, optional kind. Requires a valid token; no project membership nee
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `kind` | `any` | no | Filter by resource kind (e.g. 'local-libvirt'); omit for all. |
+
+## `resources.set_status`
+
+`implemented`
+
+Set a host's health status; leaves cordoned unchanged. Requires platform operator.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `resource_id` | `string` | yes | The host Resource UUID. |
+| `status` | `string` | yes | Health: 'available', 'degraded', or 'offline'. |
+
+## `resources.uncordon`
+
+`implemented`
+
+Restore a host to schedulable; leaves status unchanged. Requires platform operator.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `resource_id` | `string` | yes | The host Resource UUID to uncordon. |

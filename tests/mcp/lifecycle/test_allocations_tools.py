@@ -97,6 +97,40 @@ async def _request(
     )
 
 
+async def _request_by_id(
+    pool: AsyncConnectionPool, ctx: RequestContext, resource_id: str, *, project: str = "proj"
+) -> ToolResponse:
+    return await alloc_tools.request_allocation(
+        pool,
+        ctx,
+        project=project,
+        request={
+            "vcpus": 1,
+            "memory_gb": 0,
+            "window": None,
+            "resource": {"mode": "id", "resource_id": resource_id},
+        },
+    )
+
+
+async def _set_resource_flags(
+    pool: AsyncConnectionPool,
+    resource_id: str,
+    *,
+    cordoned: bool | None = None,
+    status: str | None = None,
+) -> None:
+    async with pool.connection() as conn:
+        if cordoned is not None:
+            await conn.execute(
+                "UPDATE resources SET cordoned = %s WHERE id = %s", (cordoned, UUID(resource_id))
+            )
+        if status is not None:
+            await conn.execute(
+                "UPDATE resources SET status = %s WHERE id = %s", (status, UUID(resource_id))
+            )
+
+
 async def _seed_alloc(pool: AsyncConnectionPool, resource_id: str, state: AllocationState) -> str:
     async with pool.connection() as conn:
         alloc = await ALLOCATIONS.insert(
@@ -311,5 +345,95 @@ def test_list_allocations_requires_viewer_role(migrated_url: str) -> None:
             await _request(pool, _ctx())
             with pytest.raises(AuthorizationError):
                 await alloc_tools.list_allocations(pool, _ctx(role=None), project="proj", limit=50)
+
+    asyncio.run(_run())
+
+
+def test_pick_by_kind_skips_cordoned_host(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool, cap=2)
+            await _set_resource_flags(pool, res_id, cordoned=True)
+            resp = await _request(pool, _ctx())
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_pick_by_kind_skips_non_available_host(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool, cap=2)
+            await _set_resource_flags(pool, res_id, status="degraded")
+            resp = await _request(pool, _ctx())
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_explicit_id_naming_cordoned_host_is_rejected(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool, cap=2)
+            await _set_resource_flags(pool, res_id, cordoned=True)
+            resp = await _request_by_id(pool, _ctx(), res_id)
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_explicit_id_naming_non_available_host_is_rejected(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool, cap=2)
+            await _set_resource_flags(pool, res_id, status="offline")
+            resp = await _request_by_id(pool, _ctx(), res_id)
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_explicit_id_naming_schedulable_host_grants(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool, cap=2)
+            resp = await _request_by_id(pool, _ctx(), res_id)
+        assert resp.status == "granted"
+        assert resp.data["resource_id"] == res_id
+
+    asyncio.run(_run())
+
+
+def test_existing_allocations_untouched_when_host_cordoned(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool, cap=2)
+            granted = await _request(pool, _ctx())
+            await _set_resource_flags(pool, res_id, cordoned=True)
+            # The existing allocation is still readable and unchanged; cordon only gates
+            # new placement, never live allocations.
+            existing = await alloc_tools.get_allocation(pool, _ctx(), granted.object_id)
+        assert existing.object_id == granted.object_id
+        assert existing.status == "granted"
+
+    asyncio.run(_run())
+
+
+def test_uncordon_restores_both_placement_paths(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool, cap=4)
+            await _set_resource_flags(pool, res_id, cordoned=True)
+            assert (await _request(pool, _ctx())).status == "error"
+            assert (await _request_by_id(pool, _ctx(), res_id)).status == "error"
+            await _set_resource_flags(pool, res_id, cordoned=False)
+            by_kind = await _request(pool, _ctx())
+            by_id = await _request_by_id(pool, _ctx(), res_id)
+        assert by_kind.status == "granted"
+        assert by_id.status == "granted"
 
     asyncio.run(_run())

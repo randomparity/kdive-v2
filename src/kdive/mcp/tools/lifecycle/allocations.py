@@ -27,7 +27,7 @@ from kdive.db.repositories import ALLOCATIONS, RESOURCES
 from kdive.domain.cost import Selector
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Resource
-from kdive.domain.state import AllocationState, IllegalTransition
+from kdive.domain.state import AllocationState, IllegalTransition, ResourceStatus
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
@@ -75,11 +75,24 @@ def _envelope_for_allocation(alloc: Allocation) -> ToolResponse:
 async def _resolve_resource(
     conn: AsyncConnection, resource_id: UUID | None, kind: str
 ) -> Resource | None:
+    """Resolve the placement target, schedulability-aware on both paths (ADR-0062 §3).
+
+    Pick-by-kind selects only a schedulable host (``status='available' AND NOT cordoned``).
+    An explicit ``resource_id`` is also held to the same schedulability bar: a cordoned or
+    non-``available`` host named by id is **rejected** (returns ``None``) — naming the host
+    by id is not a cordon escape hatch. A non-schedulable target is indistinguishable from a
+    missing one, so the caller surfaces the same ``configuration_error``.
+    """
     if resource_id is not None:
-        return await RESOURCES.get(conn, resource_id)
+        resource = await RESOURCES.get(conn, resource_id)
+        if resource is None or resource.cordoned or resource.status is not ResourceStatus.AVAILABLE:
+            return None
+        return resource
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "SELECT * FROM resources WHERE kind = %s ORDER BY created_at, id LIMIT 1", (kind,)
+            "SELECT * FROM resources WHERE kind = %s AND status = 'available' AND NOT cordoned "
+            "ORDER BY created_at, id LIMIT 1",
+            (kind,),
         )
         row = await cur.fetchone()
     return Resource.model_validate(row) if row else None

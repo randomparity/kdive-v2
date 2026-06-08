@@ -147,6 +147,7 @@ class Resource(DomainModel):
     cost_class: str
     status: ResourceStatus
     host_uri: str
+    cordoned: bool = False
 
 
 class Allocation(DomainModel, _Attribution):

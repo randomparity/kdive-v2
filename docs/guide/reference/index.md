@@ -45,8 +45,11 @@
 | [`jobs.wait`](jobs.md#jobswait) | `implemented` |
 | [`postmortem.crash`](postmortem.md#postmortemcrash) | `partial` |
 | [`postmortem.triage`](postmortem.md#postmortemtriage) | `partial` |
+| [`resources.cordon`](resources.md#resourcescordon) | `implemented` |
 | [`resources.describe`](resources.md#resourcesdescribe) | `implemented` |
 | [`resources.list`](resources.md#resourceslist) | `implemented` |
+| [`resources.set_status`](resources.md#resourcesset_status) | `implemented` |
+| [`resources.uncordon`](resources.md#resourcesuncordon) | `implemented` |
 | [`runs.boot`](runs.md#runsboot) | `partial` |
 | [`runs.build`](runs.md#runsbuild) | `partial` |
 | [`runs.complete_build`](runs.md#runscomplete_build) | `implemented` |

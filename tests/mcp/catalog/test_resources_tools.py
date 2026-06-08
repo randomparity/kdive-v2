@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog import resources as resources_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
+from kdive.security.rbac import PlatformRole
 from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
@@ -121,5 +123,164 @@ def test_describe_malformed_id_is_error(migrated_url: str) -> None:
             resp = await resources_tools.describe_resource(pool, CTX, "not-a-uuid")
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+_OPERATOR = RequestContext(
+    principal="op-1",
+    agent_session="s",
+    projects=(),
+    platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}),
+)
+_NON_OPERATOR = RequestContext(principal="user-1", agent_session="s", projects=("proj",))
+
+
+async def _row(pool: AsyncConnectionPool, res_id: str) -> dict[str, Any]:
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT status, cordoned FROM resources WHERE id = %s", (UUID(res_id),))
+        fetched = await cur.fetchone()
+    assert fetched is not None
+    status, cordoned = fetched
+    return {"status": status, "cordoned": cordoned}
+
+
+async def _platform_audit_count(pool: AsyncConnectionPool, tool: str) -> int:
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT count(*) FROM platform_audit_log WHERE tool = %s", (tool,))
+        fetched = await cur.fetchone()
+    assert fetched is not None
+    return int(fetched[0])
+
+
+def test_set_status_changes_health_only(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool)
+            resp = await resources_tools.set_resource_status(
+                pool, _OPERATOR, resource_id=res_id, status="degraded"
+            )
+            row = await _row(pool, res_id)
+            audited = await _platform_audit_count(pool, "resources.set_status")
+        assert resp.status == "degraded"
+        assert row == {"status": "degraded", "cordoned": False}
+        assert audited == 1
+
+    asyncio.run(_run())
+
+
+def test_set_status_same_value_is_noop_success(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool)
+            resp = await resources_tools.set_resource_status(
+                pool, _OPERATOR, resource_id=res_id, status="available"
+            )
+            row = await _row(pool, res_id)
+        assert resp.status == "available"
+        assert row["status"] == "available"
+
+    asyncio.run(_run())
+
+
+def test_set_status_invalid_value_is_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool)
+            resp = await resources_tools.set_resource_status(
+                pool, _OPERATOR, resource_id=res_id, status="nope"
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_set_status_unknown_host_is_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await resources_tools.set_resource_status(
+                pool, _OPERATOR, resource_id=str(uuid4()), status="offline"
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_set_status_does_not_clear_cordoned(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool)
+            await resources_tools.cordon_resource(pool, _OPERATOR, resource_id=res_id)
+            await resources_tools.set_resource_status(
+                pool, _OPERATOR, resource_id=res_id, status="offline"
+            )
+            row = await _row(pool, res_id)
+        # set_status offline must not clear an operator's cordon (orthogonal axes).
+        assert row == {"status": "offline", "cordoned": True}
+
+    asyncio.run(_run())
+
+
+def test_cordon_then_uncordon_toggles_only_cordoned(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool)
+            # Make the host degraded first; cordon/uncordon must not touch status.
+            await resources_tools.set_resource_status(
+                pool, _OPERATOR, resource_id=res_id, status="degraded"
+            )
+            cordoned = await resources_tools.cordon_resource(pool, _OPERATOR, resource_id=res_id)
+            after_cordon = await _row(pool, res_id)
+            await resources_tools.uncordon_resource(pool, _OPERATOR, resource_id=res_id)
+            after_uncordon = await _row(pool, res_id)
+            cordon_audited = await _platform_audit_count(pool, "resources.cordon")
+            uncordon_audited = await _platform_audit_count(pool, "resources.uncordon")
+        assert cordoned.status == "degraded"
+        assert after_cordon == {"status": "degraded", "cordoned": True}
+        # uncordon does not change status: still degraded.
+        assert after_uncordon == {"status": "degraded", "cordoned": False}
+        assert cordon_audited == 1
+        assert uncordon_audited == 1
+
+    asyncio.run(_run())
+
+
+def test_cordon_unknown_host_is_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await resources_tools.cordon_resource(pool, _OPERATOR, resource_id=str(uuid4()))
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_set_status_denied_for_non_operator(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool)
+            resp = await resources_tools.set_resource_status(
+                pool, _NON_OPERATOR, resource_id=res_id, status="offline"
+            )
+            row = await _row(pool, res_id)
+        assert resp.status == "error"
+        assert resp.error_category == "authorization_denied"
+        # The denied call must not have mutated the host.
+        assert row == {"status": "available", "cordoned": False}
+
+    asyncio.run(_run())
+
+
+def test_cordon_denied_for_non_operator(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool)
+            resp = await resources_tools.cordon_resource(pool, _NON_OPERATOR, resource_id=res_id)
+            row = await _row(pool, res_id)
+        assert resp.status == "error"
+        assert resp.error_category == "authorization_denied"
+        assert row["cordoned"] is False
 
     asyncio.run(_run())
