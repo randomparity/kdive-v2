@@ -17,7 +17,6 @@ contract). Coverage maps to the #141 acceptance bullets:
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -145,8 +144,8 @@ async def _platform_audit_rows(url: str) -> list[tuple[object, ...]]:
         return list(await cur.fetchall())
 
 
-def _rows(resp: ToolResponse) -> list[dict[str, object]]:
-    return json.loads(resp.data["rows"])
+def _rows(resp: ToolResponse) -> list[dict[str, str]]:
+    return [item.data for item in resp.items]
 
 
 def _project_query(

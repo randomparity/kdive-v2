@@ -12,7 +12,6 @@ directly without MCP transport.
 
 from __future__ import annotations
 
-import json
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -86,7 +85,7 @@ async def _set_paused(
             _QUEUE_OBJECT_ID,
             "paused" if paused else "running",
             suggested_next_actions=[_JOBS_LIST_TOOL],
-            data={"queue_paused": json.dumps(paused)},
+            data={"queue_paused": "true" if paused else "false"},
         )
 
 
@@ -172,27 +171,24 @@ def _parse_states(states: list[str] | None) -> list[JobState] | None:
 
 
 def _jobs_response(depth: dict[str, int], jobs: list[Job]) -> ToolResponse:
-    rows = [_job_row(job) for job in jobs]
-    return ToolResponse.success(
+    items = [ToolResponse.success(str(job.id), job.state.value, data=_job_row(job)) for job in jobs]
+    return ToolResponse.collection(
         _JOBS_OBJECT_ID,
         "ok",
+        items,
         suggested_next_actions=[_PAUSE_TOOL, _RESUME_TOOL],
-        data={
-            "depth": json.dumps(depth, sort_keys=True),
-            "jobs": json.dumps(rows),
-        },
+        data={f"depth_{state}": str(count) for state, count in sorted(depth.items())},
     )
 
 
-def _job_row(job: Job) -> dict[str, str | None]:
+def _job_row(job: Job) -> dict[str, str]:
     """One cross-project job summary for the platform view (no payload — untrusted)."""
     return {
-        "id": str(job.id),
         "kind": job.kind.value,
         "state": job.state.value,
         "project": job.authorizing["project"],
         "attempt": str(job.attempt),
-        "worker_id": job.worker_id,
+        "worker_id": job.worker_id or "",
     }
 
 

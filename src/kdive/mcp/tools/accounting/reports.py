@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -246,10 +245,10 @@ def _report_args(
     }
 
 
-def _rollup_row_json(row: accounting_domain.RollupRow) -> dict[str, str | None]:
+def _rollup_row_data(row: accounting_domain.RollupRow) -> dict[str, str]:
     return {
         "project": row.project,
-        "principal": row.principal,
+        "principal": row.principal or "",
         "reserved": str(row.reserved),
         "reconciled": str(row.reconciled),
         "variance": str(row.variance),
@@ -259,18 +258,33 @@ def _rollup_row_json(row: accounting_domain.RollupRow) -> dict[str, str | None]:
 def _report_response(
     scope: str, group_by: str | None, targets: list[str], rollup: accounting_domain.Report
 ) -> ToolResponse:
-    return ToolResponse.success(
+    items = [
+        ToolResponse.success(_rollup_object_id(row), "ok", data=_rollup_row_data(row))
+        for row in rollup.rows
+    ]
+    total = _rollup_row_data(rollup.total)
+    return ToolResponse.collection(
         _REPORT_OBJECT_ID,
         "ok",
+        items,
         suggested_next_actions=["accounting.usage_project"],
         data={
             "scope": scope,
             "group_by": group_by or "",
-            "projects": json.dumps(sorted(targets)),
-            "rows": json.dumps([_rollup_row_json(r) for r in rollup.rows]),
-            "total": json.dumps(_rollup_row_json(rollup.total)),
+            "project_count": str(len(targets)),
+            "total_project": total["project"],
+            "total_principal": total["principal"],
+            "total_reserved": total["reserved"],
+            "total_reconciled": total["reconciled"],
+            "total_variance": total["variance"],
         },
     )
+
+
+def _rollup_object_id(row: accounting_domain.RollupRow) -> str:
+    if row.principal is None:
+        return row.project
+    return f"{row.project}:{row.principal}"
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:

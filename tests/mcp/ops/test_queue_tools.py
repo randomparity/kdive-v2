@@ -169,9 +169,13 @@ def test_jobs_list_returns_cross_project_state(migrated_url: str) -> None:
                 )
             resp = await ops_queue.jobs_list(pool, _ctx(platform_roles=_OPERATOR))
         assert resp.status == "ok"
-        depth = json.loads(resp.data["depth"])
+        depth = {
+            key.removeprefix("depth_"): int(value)
+            for key, value in resp.data.items()
+            if key.startswith("depth_")
+        }
         assert depth == {"queued": 2}  # both projects counted, cross-project
-        jobs = json.loads(resp.data["jobs"])
+        jobs = [item.data for item in resp.items]
         assert {j["project"] for j in jobs} == {"proj-a", "proj-b"}
         assert all("payload" not in j for j in jobs)  # untrusted payload not surfaced
         rows = await _platform_audit_rows(migrated_url)
@@ -197,9 +201,13 @@ def test_jobs_list_filters_by_state(migrated_url: str) -> None:
             resp = await ops_queue.jobs_list(
                 pool, _ctx(platform_roles=_OPERATOR), states=["running"]
             )
-        jobs = json.loads(resp.data["jobs"])
+        jobs = [item.data for item in resp.items]
         assert [j["state"] for j in jobs] == ["running"]  # filtered per-job rows
-        depth = json.loads(resp.data["depth"])
+        depth = {
+            key.removeprefix("depth_"): int(value)
+            for key, value in resp.data.items()
+            if key.startswith("depth_")
+        }
         assert depth == {"queued": 1, "running": 1}  # depth still spans all states
 
     asyncio.run(_run())

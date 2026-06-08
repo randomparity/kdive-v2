@@ -16,7 +16,6 @@ plain async handler taking the pool + request context (tested directly, never th
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Annotated, Literal, LiteralString
 from uuid import UUID
@@ -266,7 +265,7 @@ def _audit_args(filters: _Filters) -> dict[str, object]:
     }
 
 
-def _row_json(row: dict[str, object]) -> dict[str, str | None]:
+def _row_data(row: dict[str, object]) -> dict[str, str]:
     ts = row["ts"]
     object_id = row["object_id"]
     return {
@@ -276,24 +275,27 @@ def _row_json(row: dict[str, object]) -> dict[str, str | None]:
         "project": _as_str(row["project"]),
         "tool": _as_str(row["tool"]),
         "object_kind": _as_str(row["object_kind"]),
-        "object_id": str(object_id) if object_id is not None else None,
+        "object_id": str(object_id) if object_id is not None else "",
         "transition": _as_str(row["transition"]),
     }
 
 
-def _as_str(value: object) -> str | None:
-    return None if value is None else str(value)
+def _as_str(value: object) -> str:
+    return "" if value is None else str(value)
 
 
 def _response(rows: list[dict[str, object]]) -> ToolResponse:
-    return ToolResponse.success(
+    items: list[ToolResponse] = []
+    for row in rows:
+        data = _row_data(row)
+        items.append(ToolResponse.success(data["object_id"] or _OBJECT_ID, "ok", data=data))
+    return ToolResponse.collection(
         _OBJECT_ID,
         "ok",
+        items,
         suggested_next_actions=["inventory.list"],
         data={
-            "count": str(len(rows)),
             "truncated": "true" if len(rows) >= _MAX_ROWS else "false",
-            "rows": json.dumps([_row_json(r) for r in rows]),
         },
     )
 
