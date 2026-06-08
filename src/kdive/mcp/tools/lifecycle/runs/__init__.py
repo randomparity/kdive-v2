@@ -15,6 +15,7 @@ from kdive.mcp.tools.lifecycle.runs.build import build_run, complete_build
 from kdive.mcp.tools.lifecycle.runs.create import create_run
 from kdive.mcp.tools.lifecycle.runs.steps import boot_run, install_run
 from kdive.mcp.tools.lifecycle.runs.view import get_run
+from kdive.providers.composition import ProviderRuntime
 
 __all__ = [
     "boot_run",
@@ -27,7 +28,12 @@ __all__ = [
 ]
 
 
-def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
+def register(
+    app: FastMCP,
+    pool: AsyncConnectionPool,
+    *,
+    provider_runtime: ProviderRuntime | None = None,
+) -> None:
     """Register the `runs.*` tools on ``app``, bound to ``pool``."""
 
     @app.tool(
@@ -89,7 +95,18 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         ] = None,
     ) -> ToolResponse:
         """Enqueue the kernel build job for a Run; poll jobs.* for completion. Requires operator."""
-        return await build_run(pool, current_context(), run_id, cmdline=cmdline)
+        component_sources = None if provider_runtime is None else provider_runtime.component_sources
+        config_validator = (
+            None if provider_runtime is None else provider_runtime.build_config_validator
+        )
+        return await build_run(
+            pool,
+            current_context(),
+            run_id,
+            cmdline=cmdline,
+            component_sources=component_sources,
+            config_validator=config_validator,
+        )
 
     @app.tool(
         name="runs.complete_build",

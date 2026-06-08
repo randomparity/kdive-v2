@@ -23,13 +23,18 @@ from kdive.mcp.tools._common import authorizing as job_authorizing
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._common import job_envelope
 from kdive.mcp.tools._common import stale_handle as _stale_handle
+from kdive.mcp.tools.lifecycle.systems.provision import (
+    RootfsValidator,
+    _validate_profile_for_provider,
+    _validate_rootfs_for_provider,
+)
 from kdive.profiles.provisioning import (
     ProvisioningProfile,
     destructive_opt_in,
     profile_digest,
     reject_rootfs_upload_without_window,
-    validate_profile,
 )
+from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.security import audit
 from kdive.security.context import RequestContext
 from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
@@ -41,7 +46,13 @@ _TEARDOWN = "teardown"
 
 
 async def reprovision_system(
-    pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str, profile: dict[str, Any]
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    system_id: str,
+    profile: dict[str, Any],
+    component_sources: ComponentSourceCapabilities | None = None,
+    rootfs_validator: RootfsValidator | None = None,
 ) -> ToolResponse:
     """Reprovision a `ready` System in place under the same Allocation."""
     uid = _as_uuid(system_id)
@@ -49,13 +60,13 @@ async def reprovision_system(
         return _config_error(system_id)
     try:
         parsed = ProvisioningProfile.parse(profile)
-        validate_profile(parsed)
+        _validate_profile_for_provider(parsed, component_sources)
         reject_rootfs_upload_without_window(parsed)
     except CategorizedError as exc:
         return ToolResponse.failure(system_id, exc.category)
     with bind_context(principal=ctx.principal):
         try:
-            return await _reprovision_locked(pool, ctx, uid, parsed)
+            return await _reprovision_locked(pool, ctx, uid, parsed, rootfs_validator)
         except IllegalTransition:
             async with pool.connection() as conn:
                 latest = await SYSTEMS.get(conn, uid)
@@ -64,7 +75,11 @@ async def reprovision_system(
 
 
 async def _reprovision_locked(
-    pool: AsyncConnectionPool, ctx: RequestContext, system_id: UUID, profile: ProvisioningProfile
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    system_id: UUID,
+    profile: ProvisioningProfile,
+    rootfs_validator: RootfsValidator | None,
 ) -> ToolResponse:
     async with (
         pool.connection() as conn,
@@ -94,6 +109,10 @@ async def _reprovision_locked(
             return _config_error(str(system_id), data={"current_status": system.state.value})
         if await _has_live_run(conn, system_id):
             return _stale_handle(str(system_id), current_status=system.state.value)
+        try:
+            _validate_rootfs_for_provider(profile, rootfs_validator)
+        except CategorizedError as exc:
+            return ToolResponse.failure(str(system_id), exc.category)
         return await _admit_reprovision(conn, ctx, system, profile, digest, dedup_key)
 
 

@@ -18,6 +18,7 @@ from kdive.mcp.tools.lifecycle.systems.provision import (
     provision_defined_system,
     provision_system,
 )
+from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 
 __all__ = [
     "define_system",
@@ -30,8 +31,11 @@ __all__ = [
 ]
 
 
-def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
+def register(
+    app: FastMCP, pool: AsyncConnectionPool, *, provider_runtime: ProviderRuntime | None = None
+) -> None:
     """Register the `systems.*` tools on ``app``, bound to ``pool``."""
+    runtime = provider_runtime or build_default_provider_runtime()
 
     @app.tool(
         name="systems.define",
@@ -52,7 +56,12 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     ) -> ToolResponse:
         """Create a System in 'defined' for a granted Allocation (upload window). Operator only."""
         return await define_system(
-            pool, current_context(), allocation_id=allocation_id, profile=profile
+            pool,
+            current_context(),
+            allocation_id=allocation_id,
+            profile=profile,
+            component_sources=runtime.component_sources,
+            rootfs_validator=runtime.rootfs_validator,
         )
 
     @app.tool(
@@ -71,7 +80,12 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     ) -> ToolResponse:
         """Mint a System for a granted Allocation and enqueue provision. Operator only."""
         return await provision_system(
-            pool, current_context(), allocation_id=allocation_id, profile=profile
+            pool,
+            current_context(),
+            allocation_id=allocation_id,
+            profile=profile,
+            component_sources=runtime.component_sources,
+            rootfs_validator=runtime.rootfs_validator,
         )
 
     @app.tool(
@@ -86,7 +100,13 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         ],
     ) -> ToolResponse:
         """Admit a DEFINED System after its upload window is complete. Requires operator."""
-        return await provision_defined_system(pool, current_context(), system_id=system_id)
+        return await provision_defined_system(
+            pool,
+            current_context(),
+            system_id=system_id,
+            component_sources=runtime.component_sources,
+            rootfs_validator=runtime.rootfs_validator,
+        )
 
     @app.tool(
         name="systems.get",
@@ -124,5 +144,10 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     ) -> ToolResponse:
         """Reprovision a ready System in place under its Allocation. Requires operator + gate."""
         return await reprovision_system(
-            pool, current_context(), system_id=system_id, profile=profile
+            pool,
+            current_context(),
+            system_id=system_id,
+            profile=profile,
+            component_sources=runtime.component_sources,
+            rootfs_validator=runtime.rootfs_validator,
         )

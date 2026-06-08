@@ -13,8 +13,11 @@ from dataclasses import dataclass, field
 
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.components.references import ComponentRef
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind
+from kdive.profiles.provisioning import RootfsSource
+from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.providers.local_libvirt.connect import LocalLibvirtConnect
 from kdive.providers.local_libvirt.control import LocalLibvirtControl
@@ -51,9 +54,25 @@ from kdive.providers.ports import (
 from kdive.services.resource_discovery import ensure_discovered_resource_registered
 
 type DiscoveryRegistrar = Callable[[AsyncConnectionPool], Awaitable[None]]
+type BuildConfigValidator = Callable[[ComponentRef], None]
+type RootfsValidator = Callable[[RootfsSource], None]
 
 _LOCAL_POOL = "local-libvirt"
 _LOCAL_COST_CLASS = "local"
+
+
+def _local_component_sources() -> ComponentSourceCapabilities:
+    return ComponentSourceCapabilities(
+        provider=ResourceKind.LOCAL_LIBVIRT.value,
+        accepted_component_sources={
+            "rootfs": frozenset({"catalog", "local"}),
+            "kernel": frozenset({"local"}),
+            "initrd": frozenset({"local"}),
+            "config": frozenset({"local"}),
+            "patch": frozenset({"local"}),
+            "vmlinux": frozenset({"local"}),
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +95,9 @@ class ProviderRuntime:
     discovery_registrar: DiscoveryRegistrar | None = None
     attach_seam: AttachSeam = default_attach_seam
     debug_engine: GdbMiEngine = field(default_factory=LocalGdbMiEngine)
+    component_sources: ComponentSourceCapabilities = field(default_factory=_local_component_sources)
+    build_config_validator: BuildConfigValidator | None = None
+    rootfs_validator: RootfsValidator | None = None
 
     def install_boot(self) -> tuple[Installer, Booter]:
         return self.installer, self.booter
@@ -111,6 +133,9 @@ def build_default_provider_runtime() -> ProviderRuntime:
             {CaptureMethod.CONSOLE, CaptureMethod.HOST_DUMP, CaptureMethod.GDBSTUB}
         ),
         discovery_registrar=ensure_local_host_registered,
+        component_sources=_local_component_sources(),
+        build_config_validator=builder.validate_config_ref,
+        rootfs_validator=provisioner.validate_rootfs_ref,
     )
 
 

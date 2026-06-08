@@ -6,6 +6,7 @@ import struct
 
 import pytest
 
+from kdive.components.requirements import ConfigRequirements
 from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.local_libvirt.build import (
@@ -21,11 +22,13 @@ class _FakeStore:
     def __init__(self, blobs: dict[str, bytes], heads: dict[str, HeadResult]) -> None:
         self._blobs = blobs
         self._heads = heads
+        self.range_calls: list[tuple[str, int, int]] = []
 
     def head(self, key: str) -> HeadResult | None:
         return self._heads.get(key)
 
     def get_range(self, key: str, *, start: int, length: int) -> bytes:
+        self.range_calls.append((key, start, length))
         return self._blobs[key][start : start + length]
 
 
@@ -210,6 +213,95 @@ def test_initrd_is_validated_and_returned_in_keys() -> None:
     )
     assert out.output.kernel_ref == "k"
     assert set(out.heads) == {"kernel", "initrd"}
+
+
+def test_effective_config_satisfies_profile_requirements() -> None:
+    config = b"CONFIG_VIRTIO_BLK=y\n"
+    store = _FakeStore(
+        {"k": _BZIMAGE_HEAD, "c": config},
+        {
+            "k": HeadResult(len(_BZIMAGE_HEAD), "ck", "e"),
+            "c": HeadResult(len(config), "cc", "ec"),
+        },
+    )
+
+    out = validate_external_artifacts(
+        store,
+        manifest=[
+            ManifestEntry("kernel", "ck", len(_BZIMAGE_HEAD)),
+            ManifestEntry("effective_config", "cc", len(config)),
+        ],
+        keys={"kernel": "k", "effective_config": "c"},
+        declared_build_id=None,
+        profile_requirements=ConfigRequirements(required={"CONFIG_VIRTIO_BLK": "y"}),
+    )
+
+    assert set(out.heads) == {"kernel", "effective_config"}
+
+
+def test_effective_config_required_when_profile_requirements_selected() -> None:
+    store = _FakeStore({"k": _BZIMAGE_HEAD}, {"k": HeadResult(len(_BZIMAGE_HEAD), "ck", "e")})
+
+    with pytest.raises(CategorizedError) as caught:
+        validate_external_artifacts(
+            store,
+            manifest=[ManifestEntry("kernel", "ck", len(_BZIMAGE_HEAD))],
+            keys={"kernel": "k"},
+            declared_build_id=None,
+            profile_requirements=ConfigRequirements(required={"CONFIG_VIRTIO_BLK": "y"}),
+        )
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_oversized_effective_config_is_configuration_error_without_read() -> None:
+    store = _FakeStore(
+        {"k": _BZIMAGE_HEAD, "c": b""},
+        {
+            "k": HeadResult(len(_BZIMAGE_HEAD), "ck", "e"),
+            "c": HeadResult(1024 * 1024 + 1, "cc", "ec"),
+        },
+    )
+
+    with pytest.raises(CategorizedError) as caught:
+        validate_external_artifacts(
+            store,
+            manifest=[
+                ManifestEntry("kernel", "ck", len(_BZIMAGE_HEAD)),
+                ManifestEntry("effective_config", "cc", 1024 * 1024 + 1),
+            ],
+            keys={"kernel": "k", "effective_config": "c"},
+            declared_build_id=None,
+            profile_requirements=ConfigRequirements(required={"CONFIG_VIRTIO_BLK": "y"}),
+        )
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert ("c", 0, 1024 * 1024 + 1) not in store.range_calls
+
+
+def test_effective_config_mismatch_is_configuration_error() -> None:
+    config = b"CONFIG_VIRTIO_BLK=n\n"
+    store = _FakeStore(
+        {"k": _BZIMAGE_HEAD, "c": config},
+        {
+            "k": HeadResult(len(_BZIMAGE_HEAD), "ck", "e"),
+            "c": HeadResult(len(config), "cc", "ec"),
+        },
+    )
+
+    with pytest.raises(CategorizedError) as caught:
+        validate_external_artifacts(
+            store,
+            manifest=[
+                ManifestEntry("kernel", "ck", len(_BZIMAGE_HEAD)),
+                ManifestEntry("effective_config", "cc", len(config)),
+            ],
+            keys={"kernel": "k", "effective_config": "c"},
+            declared_build_id=None,
+            profile_requirements=ConfigRequirements(required={"CONFIG_VIRTIO_BLK": "y"}),
+        )
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
 def test_vmlinux_without_upload_key_is_configuration_error() -> None:

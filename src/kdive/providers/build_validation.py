@@ -6,6 +6,7 @@ import struct
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
+from kdive.components.requirements import ConfigRequirements, validate_config_requirements
 from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.ports import BuildOutput, ValidatedUpload
@@ -17,6 +18,7 @@ _BZIMAGE_MAGIC = b"HdrS"
 _BZIMAGE_MAGIC_OFFSET = 0x202
 _SHT_NOTE = 7
 _MAX_SECTION_BYTES = 16 * 1024 * 1024
+_MAX_EFFECTIVE_CONFIG_BYTES = 1024 * 1024
 
 
 class ValidatorStore(Protocol):
@@ -59,6 +61,7 @@ def validate_external_artifacts(
     manifest: Sequence[ManifestEntry],
     keys: Mapping[str, str],
     declared_build_id: str | None,
+    profile_requirements: ConfigRequirements | None = None,
 ) -> ValidatedUpload:
     """Validate uploaded build artifacts; return the ``BuildOutput`` plus object heads."""
     by_name = {e.name: e for e in manifest}
@@ -77,6 +80,13 @@ def validate_external_artifacts(
                 details={"name": name},
             )
         heads[name] = _validate_one_artifact(store, name, entry, key)
+    if profile_requirements is not None:
+        _validate_effective_config(
+            store,
+            keys=keys,
+            heads=heads,
+            profile_requirements=profile_requirements,
+        )
 
     build_id = ""
     if "vmlinux" in by_name:
@@ -98,6 +108,34 @@ def validate_external_artifacts(
         build_id=build_id,
     )
     return ValidatedUpload(output=output, heads=heads)
+
+
+def _validate_effective_config(
+    store: ValidatorStore,
+    *,
+    keys: Mapping[str, str],
+    heads: Mapping[str, HeadResult],
+    profile_requirements: ConfigRequirements,
+) -> None:
+    key = keys.get("effective_config")
+    head = heads.get("effective_config")
+    if key is None or head is None:
+        raise CategorizedError(
+            "external build profile requirements need an effective_config artifact",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    if head.size_bytes > _MAX_EFFECTIVE_CONFIG_BYTES:
+        raise CategorizedError(
+            "effective_config exceeds the readable size cap",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={
+                "name": "effective_config",
+                "size_bytes": head.size_bytes,
+                "max_size_bytes": _MAX_EFFECTIVE_CONFIG_BYTES,
+            },
+        )
+    data = store.get_range(key, start=0, length=head.size_bytes)
+    validate_config_requirements(data.decode("utf-8", errors="replace"), profile_requirements)
 
 
 def extract_build_id_ranged(store: ValidatorStore, key: str, *, max_size: int) -> str:

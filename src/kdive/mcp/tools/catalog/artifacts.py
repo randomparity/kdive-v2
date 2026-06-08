@@ -57,13 +57,14 @@ from kdive.store.objectstore import (
 _log = logging.getLogger(__name__)
 
 _TENANT = "local"
-_BUILD_ARTIFACT_NAMES = frozenset({"kernel", "initrd", "vmlinux"})
+_BUILD_ARTIFACT_NAMES = frozenset({"effective_config", "kernel", "initrd", "vmlinux"})
 _ROOTFS_NAME = "rootfs"
 _RETENTION_CLASS = "build"
 _DEFAULT_UPLOAD_TTL_SECONDS = 86400
 # The single presigned PUT caps at 5 GiB on real S3, so a larger declared size would mint
 # a PUT the store rejects mid-upload. Uploads above this need multipart/split — see #112.
 _DEFAULT_MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024
+_EFFECTIVE_CONFIG_MAX_UPLOAD_BYTES = 1024 * 1024
 _MAX_SEARCHABLE_ARTIFACT_BYTES = 1024 * 1024
 
 
@@ -129,7 +130,8 @@ def _validate_artifact_declarations(
         name, sha256, size = art.get("name"), art.get("sha256"), art.get("size_bytes")
         if name not in allowed or not isinstance(sha256, str) or not isinstance(size, int):
             return _config_error(object_id, data={"reason": "bad_artifact_declaration"})
-        if size <= 0 or size > cap:
+        artifact_cap = _EFFECTIVE_CONFIG_MAX_UPLOAD_BYTES if name == "effective_config" else cap
+        if size <= 0 or size > artifact_cap:
             return _config_error(object_id, data={"reason": "size_out_of_range"})
         entries.append(ManifestEntry(name=name, sha256=sha256, size_bytes=size))
     if not entries:

@@ -47,7 +47,7 @@ _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _PROFILE: dict[str, Any] = {
     "schema_version": 1,
     "kernel_source_ref": "git+https://git.kernel.org#v6.9",
-    "config_ref": "file:///configs/kdump.config",
+    "config": {"kind": "local", "path": "/configs/kdump.config"},
 }
 
 
@@ -580,7 +580,7 @@ def test_create_blocks_on_held_investigation_lock(migrated_url: str) -> None:
 _VALID_BUILD: dict[str, Any] = {
     "schema_version": 1,
     "kernel_source_ref": "git+https://git.kernel.org#v6.9",
-    "config_ref": "file:///configs/kdump.config",
+    "config": {"kind": "local", "path": "/configs/kdump.config"},
 }
 
 
@@ -678,6 +678,87 @@ def test_build_malformed_profile_is_config_error_no_job(migrated_url: str) -> No
         assert ncreated == 1  # the Run is untouched (still created), not flipped
 
     asyncio.run(_run())
+
+
+def test_build_rejects_unsupported_artifact_config_before_state_change(
+    migrated_url: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            profile = {
+                **copy.deepcopy(_VALID_BUILD),
+                "config": {
+                    "kind": "artifact",
+                    "artifact_id": "00000000-0000-0000-0000-000000000001",
+                    "sha256": "sha256:" + "1" * 64,
+                },
+            }
+            run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
+
+            resp = await runs_tools.build_run(pool, _ctx(Role.OPERATOR), run_id)
+
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM runs WHERE id = %s", (run_id,))
+                run_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE kind='build' AND dedup_key=%s",
+                    (f"{run_id}:build",),
+                )
+                jobs = await cur.fetchone()
+
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert run_row is not None and run_row["state"] == "created"
+        assert jobs is not None and jobs["n"] == 0
+
+    asyncio.run(_run())
+
+
+def test_build_rejects_local_config_outside_provider_roots_before_state_change(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside.config"
+    outside.write_text("CONFIG_CRASH_DUMP=y\n", encoding="utf-8")
+    calls: list[Any] = []
+
+    def _reject_config(config: Any) -> None:
+        calls.append(config)
+        raise CategorizedError(
+            "config is outside provider roots",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            profile = {
+                **copy.deepcopy(_VALID_BUILD),
+                "config": {"kind": "local", "path": str(outside)},
+            }
+            run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
+
+            resp = await runs_tools.build_run(
+                pool,
+                _ctx(Role.OPERATOR),
+                run_id,
+                config_validator=_reject_config,
+            )
+
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM runs WHERE id = %s", (run_id,))
+                run_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE kind='build' AND dedup_key=%s",
+                    (f"{run_id}:build",),
+                )
+                jobs = await cur.fetchone()
+
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert run_row is not None and run_row["state"] == "created"
+        assert jobs is not None and jobs["n"] == 0
+
+    asyncio.run(_run())
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("state", [RunState.FAILED, RunState.CANCELED])
@@ -2033,7 +2114,7 @@ def _profile_dump(**local_libvirt: Any) -> dict[str, Any]:
     """A real ProvisioningProfile.model_dump(by_alias=True) — pins the 'local-libvirt' alias."""
     from kdive.profiles.provisioning import ProvisioningProfile
 
-    section: dict[str, Any] = {"rootfs": {"kind": "path", "path": "/img"}}
+    section: dict[str, Any] = {"rootfs": {"kind": "local", "path": "/img"}}
     section.update(local_libvirt)
     return ProvisioningProfile.model_validate(
         {

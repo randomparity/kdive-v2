@@ -1,11 +1,17 @@
 # Linux 7.0.x Kernel Bug A/B Test Cases
 
-This directory contains individual Linux kernel bug case files for evaluating whether a VM-based MCP debugging environment improves agent performance on kernel issue identification and diagnosis.
+This directory contains human-operator test notes for known Linux kernel issues. They are
+not runtime inputs, fixture manifests, MCP tool arguments, or automation schemas.
 
-Each case is intended to be run as an A/B experiment:
+Use these files to choose and score an end-to-end functional exercise of KDIVE. The agent
+should still use the advertised MCP tools directly: provision a suitable System, build and
+boot kernels, inspect redacted artifacts, review source, patch, rebuild, and verify. Do not
+teach tooling to parse these files or make provider behavior depend on their contents.
+
+Each case can be used as an A/B experiment:
 
 - **Baseline**: Give the agent the public bug report or symptom and normal terminal access.
-- **MCP-assisted**: Give the agent the same starting information plus the KDIVE environment setup, VM provisioning tools, debug-kernel configuration, log capture, repro execution, and kernel-source navigation helpers.
+- **MCP-assisted**: Give the agent the same starting information plus the KDIVE environment setup, VM provisioning tools, log capture, repro execution, and kernel-source navigation helpers.
 - **Scoring**: Compare time to first useful hypothesis, ability to reproduce, correct subsystem identification, quality of root-cause explanation, and whether the agent can identify the relevant fix or minimal patch direction.
 
 ## Recommended order
@@ -23,9 +29,12 @@ Start with deterministic cases, then move into race/concurrency cases:
 9. `07-sched-ext-scx-root-uaf.md`
 10. `04-io-uring-zcrx-freelist-oob-write.md`
 
-## Kernel config baseline
+## Kernel config hints
 
-Use a debug kernel for most cases:
+The options below are hints for a human operator preparing a broad debug kernel for these
+cases. They are not a required KDIVE config schema and should not override an agent's
+choice of kernel configuration. Provider/profile-specific config fragments should live
+with provider fixtures and be treated as additive requirements for that profile.
 
 ```text
 CONFIG_KASAN=y

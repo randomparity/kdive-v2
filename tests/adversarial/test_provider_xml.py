@@ -62,7 +62,7 @@ def _profile(
             "provider": {
                 "local-libvirt": {
                     "domain_xml_params": {},
-                    "rootfs": {"kind": "path", "path": rootfs},
+                    "rootfs": {"kind": "local", "path": rootfs},
                     "crashkernel": "256M",
                 }
             },
@@ -86,13 +86,14 @@ _hostile = st.sampled_from(
 
 @given(rootfs=_hostile)
 def test_render_domain_xml_never_lets_a_profile_value_inject_markup(rootfs: str) -> None:
-    xml = render_domain_xml(_SYS, _profile(rootfs=rootfs))
+    rootfs_path = f"/var/lib/kdive/{rootfs}"
+    xml = render_domain_xml(_SYS, _profile(rootfs=rootfs_path))
     root = ET.fromstring(xml)  # noqa: S314 - self-rendered, asserting structure
     # Exactly one disk source, and its file attr equals the hostile value verbatim — the
     # value crossed as an attribute, creating no new elements.
     sources = root.findall("./devices/disk/source")
     assert len(sources) == 1
-    assert sources[0].get("file") == rootfs
+    assert sources[0].get("file") == rootfs_path
     assert root.find("evil") is None and root.tag == "domain"
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -13,6 +14,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.components.references import ComponentRef
 from kdive.db import upload_manifest
 from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -31,6 +33,7 @@ from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import systems as systems_tools
 from kdive.planes import systems as systems_handlers
+from kdive.providers.local_libvirt.materialize import materialize_rootfs_base
 from kdive.security.audit import args_digest
 from kdive.security.rbac import AuthorizationError, Role
 from kdive.store.objectstore import ArtifactWriteRequest, ObjectStore, artifact_key
@@ -156,11 +159,56 @@ async def _enqueue_teardown(pool: AsyncConnectionPool, system_id: str) -> Job:
 async def _provision(
     pool: AsyncConnectionPool, ctx: RequestContext, alloc_id: str, profile: dict[str, Any]
 ):
-    return await systems_tools.provision_system(pool, ctx, allocation_id=alloc_id, profile=profile)
+    return await systems_tools.provision_system(
+        pool,
+        ctx,
+        allocation_id=alloc_id,
+        profile=profile,
+        rootfs_validator=lambda _: None,
+    )
 
 
 async def _provision_defined(pool: AsyncConnectionPool, ctx: RequestContext, system_id: str):
     return await systems_tools.provision_defined_system(pool, ctx, system_id=system_id)
+
+
+def _artifact_rootfs_profile() -> dict[str, Any]:
+    profile = _profile()
+    profile["provider"]["local-libvirt"]["rootfs"] = {
+        "kind": "artifact",
+        "artifact_id": str(uuid4()),
+    }
+    return profile
+
+
+def _local_rootfs_profile(path: Path) -> dict[str, Any]:
+    profile = _profile()
+    profile["provider"]["local-libvirt"]["rootfs"] = {"kind": "local", "path": str(path)}
+    return profile
+
+
+def _rootfs_validator(allowed_root: Path):
+    cache_dir = allowed_root.parent / "cache"
+
+    def _validate(rootfs: ComponentRef) -> None:
+        materialize_rootfs_base(
+            rootfs,
+            allowed_roots=[allowed_root],
+            cache_dir=cache_dir,
+            project="proj",
+            component_store=None,
+            object_store=None,
+        )
+
+    return _validate
+
+
+def _failing_rootfs_validator(calls: list[ComponentRef]):
+    def _validate(rootfs: ComponentRef) -> None:
+        calls.append(rootfs)
+        raise AssertionError("rootfs validator must not run before authorization")
+
+    return _validate
 
 
 # --- systems.provision tool ----------------------------------------------------------------
@@ -336,6 +384,63 @@ def test_provision_unknown_domain_param_is_config_error_no_job(migrated_url: str
     asyncio.run(_run())
 
 
+def test_provision_rejects_unsupported_artifact_rootfs_before_system_and_job(
+    migrated_url: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await _provision(pool, _ctx(), alloc_id, _artifact_rootfs_profile())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+                await cur.execute("SELECT count(*) AS n FROM jobs")
+                job_n = await cur.fetchone()
+                await cur.execute("SELECT state FROM allocations WHERE id = %s", (alloc_id,))
+                alloc_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert sys_n is not None and sys_n["n"] == 0
+        assert job_n is not None and job_n["n"] == 0
+        assert alloc_row is not None and alloc_row["state"] == "granted"
+
+    asyncio.run(_run())
+
+
+def test_provision_rejects_local_rootfs_outside_allowed_root_before_system_and_job(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside.qcow2"
+    outside.write_bytes(b"rootfs")
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await systems_tools.provision_system(
+                pool,
+                _ctx(),
+                allocation_id=alloc_id,
+                profile=_local_rootfs_profile(outside),
+                rootfs_validator=_rootfs_validator(allowed_root),
+            )
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+                await cur.execute("SELECT count(*) AS n FROM jobs")
+                job_n = await cur.fetchone()
+                await cur.execute("SELECT state FROM allocations WHERE id = %s", (alloc_id,))
+                alloc_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert sys_n is not None and sys_n["n"] == 0
+        assert job_n is not None and job_n["n"] == 0
+        assert alloc_row is not None and alloc_row["state"] == "granted"
+
+    asyncio.run(_run())
+
+
 def test_provision_without_operator_raises(migrated_url: str) -> None:
     from kdive.security.rbac import AuthorizationError
 
@@ -346,6 +451,29 @@ def test_provision_without_operator_raises(migrated_url: str) -> None:
                 await _provision(pool, _ctx(Role.VIEWER), alloc_id, _profile())
 
     asyncio.run(_run())
+
+
+def test_provision_viewer_denied_before_provider_rootfs_validation(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    calls: list[ComponentRef] = []
+    outside = tmp_path / "outside.qcow2"
+    outside.write_bytes(b"rootfs")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            with pytest.raises(AuthorizationError):
+                await systems_tools.provision_system(
+                    pool,
+                    _ctx(Role.VIEWER),
+                    allocation_id=alloc_id,
+                    profile=_local_rootfs_profile(outside),
+                    rootfs_validator=_failing_rootfs_validator(calls),
+                )
+
+    asyncio.run(_run())
+    assert calls == []
 
 
 def test_provision_malformed_uuid_is_config_error(migrated_url: str) -> None:
@@ -1043,7 +1171,13 @@ async def _seed_run(pool: AsyncConnectionPool, sys_id: str, state: RunState) -> 
 async def _reprovision(
     pool: AsyncConnectionPool, ctx: RequestContext, system_id: str, profile: dict[str, Any]
 ):
-    return await systems_tools.reprovision_system(pool, ctx, system_id=system_id, profile=profile)
+    return await systems_tools.reprovision_system(
+        pool,
+        ctx,
+        system_id=system_id,
+        profile=profile,
+        rootfs_validator=lambda _: None,
+    )
 
 
 def test_reprovision_transitions_ready_to_reprovisioning_and_enqueues_job(
@@ -1197,6 +1331,40 @@ def test_reprovision_viewer_denied(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_reprovision_viewer_denied_before_provider_rootfs_validation(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    calls: list[ComponentRef] = []
+    outside = tmp_path / "outside.qcow2"
+    outside.write_bytes(b"rootfs")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            profile = _local_rootfs_profile(outside)
+            profile["provider"]["local-libvirt"]["destructive_ops"] = ["reprovision"]
+            resp = await systems_tools.reprovision_system(
+                pool,
+                _ctx(Role.VIEWER),
+                system_id=sys_id,
+                profile=profile,
+                rootfs_validator=_failing_rootfs_validator(calls),
+            )
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+                await cur.execute("SELECT count(*) AS n FROM jobs")
+                job_n = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "authorization_denied"
+        assert sys_row is not None and sys_row["state"] == "ready"
+        assert job_n is not None and job_n["n"] == 0
+
+    asyncio.run(_run())
+    assert calls == []
+
+
 def test_reprovision_without_scope_denied(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -1265,6 +1433,72 @@ def test_reprovision_bad_profile_is_config_error_no_job(migrated_url: str) -> No
                 job_n = await cur.fetchone()
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
+        assert job_n is not None and job_n["n"] == 0
+
+    asyncio.run(_run())
+
+
+def test_reprovision_rejects_unsupported_artifact_rootfs_before_mutating_ready_system(
+    migrated_url: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            resp = await _reprovision(pool, _ctx(), sys_id, _artifact_rootfs_profile())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT state, provisioning_profile FROM systems WHERE id = %s", (sys_id,)
+                )
+                sys_row = await cur.fetchone()
+                await cur.execute("SELECT count(*) AS n FROM jobs")
+                job_n = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert sys_row is not None and sys_row["state"] == "ready"
+        assert sys_row["provisioning_profile"]["provider"]["local-libvirt"]["rootfs"]["kind"] == (
+            "local"
+        )
+        assert job_n is not None and job_n["n"] == 0
+
+    asyncio.run(_run())
+
+
+def test_reprovision_rejects_local_rootfs_outside_allowed_root_before_mutating_ready_system(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside.qcow2"
+    outside.write_bytes(b"rootfs")
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            profile = _local_rootfs_profile(outside)
+            profile["provider"]["local-libvirt"]["destructive_ops"] = ["reprovision"]
+            resp = await systems_tools.reprovision_system(
+                pool,
+                _ctx(),
+                system_id=sys_id,
+                profile=profile,
+                rootfs_validator=_rootfs_validator(allowed_root),
+            )
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT state, provisioning_profile FROM systems WHERE id = %s", (sys_id,)
+                )
+                sys_row = await cur.fetchone()
+                await cur.execute("SELECT count(*) AS n FROM jobs")
+                job_n = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert sys_row is not None and sys_row["state"] == "ready"
+        assert (
+            sys_row["provisioning_profile"]["provider"]["local-libvirt"]["rootfs"]["path"]
+            == "/var/lib/kdive/rootfs/fedora-40.qcow2"
+        )
         assert job_n is not None and job_n["n"] == 0
 
     asyncio.run(_run())
@@ -1473,6 +1707,29 @@ def test_define_requires_operator(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_define_viewer_denied_before_provider_rootfs_validation(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    calls: list[ComponentRef] = []
+    outside = tmp_path / "outside.qcow2"
+    outside.write_bytes(b"rootfs")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            with pytest.raises(AuthorizationError):
+                await systems_tools.define_system(
+                    pool,
+                    _ctx(Role.VIEWER),
+                    allocation_id=alloc_id,
+                    profile=_local_rootfs_profile(outside),
+                    rootfs_validator=_failing_rootfs_validator(calls),
+                )
+
+    asyncio.run(_run())
+    assert calls == []
+
+
 def test_define_foreign_allocation_is_not_found(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -1480,6 +1737,57 @@ def test_define_foreign_allocation_is_not_found(migrated_url: str) -> None:
             resp = await _define(pool, _ctx(projects=("other",)), alloc_id, _upload_profile())
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_define_rejects_unsupported_artifact_rootfs_without_opening_upload_window(
+    migrated_url: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await _define(pool, _ctx(), alloc_id, _artifact_rootfs_profile())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+                await cur.execute("SELECT state FROM allocations WHERE id = %s", (alloc_id,))
+                alloc_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert sys_n is not None and sys_n["n"] == 0
+        assert alloc_row is not None and alloc_row["state"] == "granted"
+
+    asyncio.run(_run())
+
+
+def test_define_rejects_local_rootfs_outside_allowed_root_without_opening_upload_window(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside.qcow2"
+    outside.write_bytes(b"rootfs")
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await systems_tools.define_system(
+                pool,
+                _ctx(),
+                allocation_id=alloc_id,
+                profile=_local_rootfs_profile(outside),
+                rootfs_validator=_rootfs_validator(allowed_root),
+            )
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+                await cur.execute("SELECT state FROM allocations WHERE id = %s", (alloc_id,))
+                alloc_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert sys_n is not None and sys_n["n"] == 0
+        assert alloc_row is not None and alloc_row["state"] == "granted"
 
     asyncio.run(_run())
 
@@ -1539,6 +1847,108 @@ def test_provision_defined_refuses_released_allocation(migrated_url: str) -> Non
         assert job_row is not None and job_row["n"] == 0  # no provision job enqueued
 
     asyncio.run(_run())
+
+
+def test_provision_defined_revalidates_stored_profile_against_provider(
+    migrated_url: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            async with pool.connection() as conn:
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.ACTIVE)
+            sys_id = await _seed_system_with_profile(
+                pool,
+                alloc_id,
+                SystemState.DEFINED,
+                _artifact_rootfs_profile(),
+            )
+            resp = await _provision_defined(pool, _ctx(), sys_id)
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE dedup_key = %s",
+                    (f"{alloc_id}:provision",),
+                )
+                job_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert sys_row is not None and sys_row["state"] == "defined"
+        assert job_row is not None and job_row["n"] == 0
+
+    asyncio.run(_run())
+
+
+def test_provision_defined_revalidates_stored_local_rootfs_against_provider_roots(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside.qcow2"
+    outside.write_bytes(b"rootfs")
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            async with pool.connection() as conn:
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.ACTIVE)
+            sys_id = await _seed_system_with_profile(
+                pool,
+                alloc_id,
+                SystemState.DEFINED,
+                _local_rootfs_profile(outside),
+            )
+            resp = await systems_tools.provision_defined_system(
+                pool,
+                _ctx(),
+                system_id=sys_id,
+                rootfs_validator=_rootfs_validator(allowed_root),
+            )
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
+                sys_row = await cur.fetchone()
+                await cur.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE dedup_key = %s",
+                    (f"{alloc_id}:provision",),
+                )
+                job_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert sys_row is not None and sys_row["state"] == "defined"
+        assert job_row is not None and job_row["n"] == 0
+
+    asyncio.run(_run())
+
+
+def test_provision_defined_viewer_denied_before_provider_rootfs_validation(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    calls: list[ComponentRef] = []
+    outside = tmp_path / "outside.qcow2"
+    outside.write_bytes(b"rootfs")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            async with pool.connection() as conn:
+                await ALLOCATIONS.update_state(conn, UUID(alloc_id), AllocationState.ACTIVE)
+            sys_id = await _seed_system_with_profile(
+                pool,
+                alloc_id,
+                SystemState.DEFINED,
+                _local_rootfs_profile(outside),
+            )
+            with pytest.raises(AuthorizationError):
+                await systems_tools.provision_defined_system(
+                    pool,
+                    _ctx(Role.VIEWER),
+                    system_id=sys_id,
+                    rootfs_validator=_failing_rootfs_validator(calls),
+                )
+
+    asyncio.run(_run())
+    assert calls == []
 
 
 def test_provision_create_lane_rejects_upload(migrated_url: str) -> None:

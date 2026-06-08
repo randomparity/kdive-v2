@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -12,11 +12,14 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.components.catalog import load_fixture_catalog
+from kdive.components.references import ComponentRef
+from kdive.components.requirements import ConfigRequirements
 from kdive.db import upload_manifest
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, RUNS
 from kdive.db.upload_manifest import ManifestEntry
-from kdive.domain.errors import CategorizedError
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, Run, Sensitivity
 from kdive.domain.state import RunState
 from kdive.jobs import queue
@@ -34,6 +37,11 @@ from kdive.planes.runs_shared import existing_build_result as _existing_build_re
 from kdive.planes.runs_shared import platform_owned_cmdline_token
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
 from kdive.providers.build_validation import validate_external_artifacts
+from kdive.providers.component_validation import (
+    ComponentSourceCapabilities,
+    reject_unsupported_component_source,
+)
+from kdive.providers.composition import build_default_provider_runtime
 from kdive.providers.ports import BuildOutput, ValidatedUpload
 from kdive.security import audit
 from kdive.security.context import RequestContext
@@ -45,9 +53,17 @@ from kdive.store.objectstore import (
     register_artifact_row,
 )
 
+type ConfigValidator = Callable[[ComponentRef], None]
+
 
 async def build_run(
-    pool: AsyncConnectionPool, ctx: RequestContext, run_id: str, *, cmdline: str | None = None
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    run_id: str,
+    *,
+    cmdline: str | None = None,
+    component_sources: ComponentSourceCapabilities | None = None,
+    config_validator: ConfigValidator | None = None,
 ) -> ToolResponse:
     """Admit an idempotent server build for a Run and enqueue the build job."""
     uid = _as_uuid(run_id)
@@ -70,7 +86,28 @@ async def build_run(
                 return ToolResponse.failure(run_id, exc.category)
             if parsed.source != "server":
                 return _config_error(run_id, data={"reason": "external_source_uses_complete_build"})
+            try:
+                reject_unsupported_component_source(
+                    _component_sources(component_sources),
+                    component_kind="config",
+                    ref=parsed.config,
+                )
+            except CategorizedError as exc:
+                return ToolResponse.failure(run_id, exc.category)
+            if config_validator is not None:
+                try:
+                    config_validator(parsed.config)
+                except CategorizedError as exc:
+                    return ToolResponse.failure(run_id, exc.category)
             return await _build_locked(conn, ctx, run, cmdline)
+
+
+def _component_sources(
+    capabilities: ComponentSourceCapabilities | None,
+) -> ComponentSourceCapabilities:
+    if capabilities is not None:
+        return capabilities
+    return build_default_provider_runtime().component_sources
 
 
 async def _build_locked(
@@ -128,6 +165,7 @@ class CompleteBuildValidator(Protocol):
         manifest: Sequence[ManifestEntry],
         keys: Mapping[str, str],
         declared_build_id: str | None,
+        profile_requirements: ConfigRequirements | None = None,
     ) -> ValidatedUpload: ...
 
 
@@ -140,10 +178,15 @@ class StoreBackedValidator:
         manifest: Sequence[ManifestEntry],
         keys: Mapping[str, str],
         declared_build_id: str | None,
+        profile_requirements: ConfigRequirements | None = None,
     ) -> ValidatedUpload:
         store = object_store_from_env()
         return validate_external_artifacts(
-            store, manifest=manifest, keys=keys, declared_build_id=declared_build_id
+            store,
+            manifest=manifest,
+            keys=keys,
+            declared_build_id=declared_build_id,
+            profile_requirements=profile_requirements,
         )
 
 
@@ -178,9 +221,10 @@ async def complete_build(
                 return _complete_envelope(uid, recorded)
 
             try:
-                guard = _complete_build_guard(run)
+                profile = _external_build_profile(run)
             except CategorizedError as exc:
                 return ToolResponse.failure(run_id, exc.category)
+            guard = _complete_build_guard(run, profile)
             if guard is not None:
                 return guard
 
@@ -190,8 +234,14 @@ async def complete_build(
             keys = {e.name: f"{manifest_row.prefix}{e.name}" for e in manifest_row.entries}
 
             try:
+                requirements = _external_config_requirements(profile)
                 validated = await asyncio.to_thread(
-                    validator.validate, uid, list(manifest_row.entries), keys, build_id
+                    validator.validate,
+                    uid,
+                    list(manifest_row.entries),
+                    keys,
+                    build_id,
+                    requirements,
                 )
             except CategorizedError as exc:
                 return ToolResponse.failure(run_id, exc.category)
@@ -201,14 +251,37 @@ async def complete_build(
             )
 
 
-def _complete_build_guard(run: Run) -> ToolResponse | None:
-    """Reject a non-external or non-CREATED Run; ``None`` means proceed to finalize."""
+def _external_build_profile(run: Run) -> ExternalBuildProfile:
     parsed = BuildProfile.parse(run.build_profile)
     if not isinstance(parsed, ExternalBuildProfile):
-        return _config_error(str(run.id), data={"reason": "not_external_source"})
+        raise CategorizedError(
+            "run is not an external build",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    return parsed
+
+
+def _complete_build_guard(run: Run, profile: ExternalBuildProfile) -> ToolResponse | None:
+    """Reject a non-external or non-CREATED Run; ``None`` means proceed to finalize."""
+    _ = profile
     if run.state is not RunState.CREATED:
         return _config_error(str(run.id), data={"current_status": run.state.value})
     return None
+
+
+def _external_config_requirements(profile: ExternalBuildProfile) -> ConfigRequirements | None:
+    if profile.profile_requirements is None:
+        return None
+    entry = load_fixture_catalog().profile(
+        profile.profile_requirements.provider,
+        profile.profile_requirements.name,
+    )
+    if entry is None:
+        raise CategorizedError(
+            "unknown build profile requirements",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    return entry.requires.config
 
 
 def _complete_envelope(run_id: UUID, result: dict[str, Any]) -> ToolResponse:

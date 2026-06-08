@@ -14,7 +14,7 @@ from kdive.profiles.build import BuildProfile, ServerBuildProfile
 _VALID: dict[str, Any] = {
     "schema_version": 1,
     "kernel_source_ref": "git+https://git.kernel.org/pub/scm/linux.git#v6.9",
-    "config_ref": "file:///configs/x86_64-kdump.config",
+    "config": {"kind": "local", "path": "/configs/x86_64-kdump.config"},
     "patch_ref": "file:///patches/fix.patch",
 }
 
@@ -37,8 +37,29 @@ def test_valid_profile_parses() -> None:
 
     assert profile.schema_version == 1
     assert profile.kernel_source_ref.startswith("git+https://")
-    assert profile.config_ref.startswith("file://")
+    assert profile.config.kind == "local"
+    assert profile.config.path == "/configs/x86_64-kdump.config"
     assert profile.patch_ref == "file:///patches/fix.patch"
+
+
+def test_server_build_profile_parses_config_ref_and_profile_requirements() -> None:
+    profile = BuildProfile.parse(
+        {
+            "schema_version": 1,
+            "source": "server",
+            "kernel_source_ref": "file:///home/dave/src/linux",
+            "config": {"kind": "local", "path": "/var/lib/kdive/components/linux.config"},
+            "profile_requirements": {
+                "provider": "local-libvirt",
+                "name": "console-ready_x86_64",
+            },
+        }
+    )
+
+    assert isinstance(profile, ServerBuildProfile)
+    assert profile.config.kind == "local"
+    assert profile.profile_requirements is not None
+    assert profile.profile_requirements.name == "console-ready_x86_64"
 
 
 def test_patch_ref_defaults_to_none() -> None:
@@ -51,7 +72,7 @@ def test_patch_ref_defaults_to_none() -> None:
     assert profile.patch_ref is None
 
 
-@pytest.mark.parametrize("field", ["schema_version", "kernel_source_ref", "config_ref"])
+@pytest.mark.parametrize("field", ["schema_version", "kernel_source_ref", "config"])
 def test_missing_required_field_raises_configuration_error(field: str) -> None:
     data = _valid()
     del data[field]
@@ -65,7 +86,7 @@ def test_unknown_field_rejected() -> None:
 
 
 @pytest.mark.parametrize("value", ["", "   "])
-@pytest.mark.parametrize("field", ["kernel_source_ref", "config_ref"])
+@pytest.mark.parametrize("field", ["kernel_source_ref"])
 def test_blank_required_string_rejected(field: str, value: str) -> None:
     data = _valid()
     data[field] = value

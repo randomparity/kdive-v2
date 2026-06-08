@@ -11,8 +11,11 @@ from kdive.db.repositories import RUNS
 from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.state import RunState
+from kdive.mcp.tools.catalog import artifacts as artifacts_tools
 from kdive.mcp.tools.lifecycle import runs as runs_tools
+from kdive.providers.build_validation import validate_external_artifacts
 from kdive.providers.ports import BuildOutput
+from kdive.store.objectstore import HeadResult, PresignedUpload
 from tests.mcp.complete_build_support import (
     FakeValidator as _FakeValidator,
 )
@@ -34,6 +37,60 @@ from tests.mcp.complete_build_support import (
 from tests.mcp.complete_build_support import (
     seed_server_run as _seed_server_run,
 )
+
+_BZIMAGE_HEAD = b"\x00" * 0x202 + b"HdrS"
+_EXTERNAL_PROFILE_WITH_REQUIREMENTS = {
+    "schema_version": 1,
+    "source": "external",
+    "profile_requirements": {
+        "provider": "local-libvirt",
+        "name": "console-ready_x86_64",
+    },
+}
+
+
+class _UploadStore:
+    def presign_put(self, key, *, sha256, size_bytes, sensitivity, retention_class, expires_in):
+        _ = (sensitivity, retention_class, expires_in)
+        return PresignedUpload(
+            url=f"https://store/{key}", required_headers={"x-amz-checksum-sha256": sha256}
+        )
+
+
+class _ValidationStore:
+    def __init__(self, blobs: dict[str, bytes], heads: dict[str, HeadResult]) -> None:
+        self._blobs = blobs
+        self._heads = heads
+
+    def head(self, key: str) -> HeadResult | None:
+        return self._heads.get(key)
+
+    def get_range(self, key: str, *, start: int, length: int) -> bytes:
+        return self._blobs[key][start : start + length]
+
+
+class _RealValidator:
+    def __init__(self, store: _ValidationStore) -> None:
+        self._store = store
+
+    def validate(self, run_id, manifest, keys, declared_build_id, profile_requirements=None):
+        _ = run_id
+        return validate_external_artifacts(
+            self._store,
+            manifest=manifest,
+            keys=keys,
+            declared_build_id=declared_build_id,
+            profile_requirements=profile_requirements,
+        )
+
+
+async def _artifact_keys(pool, run_id) -> set[str]:
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT object_key FROM artifacts WHERE owner_kind='runs' AND owner_id=%s",
+            (run_id,),
+        )
+        return {row["object_key"] for row in await cur.fetchall()}
 
 
 def test_complete_build_finalizes_external_run(migrated_url: str) -> None:
@@ -179,5 +236,93 @@ def test_complete_build_writes_artifact_rows_and_deletes_manifest(migrated_url: 
         keys = {r["object_key"] for r in rows}
         assert keys == {kernel_key, vmlinux_key, f"local/runs/{run_id}/initrd"}
         assert manifest is None
+
+    asyncio.run(_run())
+
+
+def test_complete_build_writes_artifacts_after_effective_config_validation(
+    migrated_url: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(pool, _EXTERNAL_PROFILE_WITH_REQUIREMENTS)
+            config = b"CONFIG_SERIAL_8250_CONSOLE=y\nCONFIG_VIRTIO_BLK=y\nCONFIG_VIRTIO_PCI=y\n"
+            responses = await artifacts_tools.create_run_upload(
+                pool,
+                _ctx(),
+                run_id=str(run_id),
+                artifacts=[
+                    {"name": "kernel", "sha256": "ck", "size_bytes": len(_BZIMAGE_HEAD)},
+                    {"name": "effective_config", "sha256": "cc", "size_bytes": len(config)},
+                ],
+                store=_UploadStore(),
+            )
+            assert {response.status for response in responses} == {"upload_ready"}
+            assert await _artifact_keys(pool, run_id) == set()
+            kernel_key = f"local/runs/{run_id}/kernel"
+            config_key = f"local/runs/{run_id}/effective_config"
+            validator = _RealValidator(
+                _ValidationStore(
+                    {kernel_key: _BZIMAGE_HEAD, config_key: config},
+                    {
+                        kernel_key: HeadResult(len(_BZIMAGE_HEAD), "ck", "e-k"),
+                        config_key: HeadResult(len(config), "cc", "e-c"),
+                    },
+                )
+            )
+
+            resp = await runs_tools.complete_build(
+                pool,
+                _ctx(),
+                str(run_id),
+                build_id=None,
+                cmdline="x",
+                validator=validator,
+            )
+            keys = await _artifact_keys(pool, run_id)
+
+        assert resp.status == "succeeded", resp
+        assert keys == {kernel_key, config_key}
+
+    asyncio.run(_run())
+
+
+def test_complete_build_rejects_missing_effective_config_without_artifacts(
+    migrated_url: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(pool, _EXTERNAL_PROFILE_WITH_REQUIREMENTS)
+            responses = await artifacts_tools.create_run_upload(
+                pool,
+                _ctx(),
+                run_id=str(run_id),
+                artifacts=[
+                    {"name": "kernel", "sha256": "ck", "size_bytes": len(_BZIMAGE_HEAD)},
+                ],
+                store=_UploadStore(),
+            )
+            assert {response.status for response in responses} == {"upload_ready"}
+            kernel_key = f"local/runs/{run_id}/kernel"
+            validator = _RealValidator(
+                _ValidationStore(
+                    {kernel_key: _BZIMAGE_HEAD},
+                    {kernel_key: HeadResult(len(_BZIMAGE_HEAD), "ck", "e-k")},
+                )
+            )
+
+            resp = await runs_tools.complete_build(
+                pool,
+                _ctx(),
+                str(run_id),
+                build_id=None,
+                cmdline="x",
+                validator=validator,
+            )
+            keys = await _artifact_keys(pool, run_id)
+
+        assert resp.status == "error"
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert keys == set()
 
     asyncio.run(_run())

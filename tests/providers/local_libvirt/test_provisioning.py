@@ -43,8 +43,8 @@ _VALID: dict[str, Any] = {
         "local-libvirt": {
             "domain_xml_params": {"machine": "pc-q35-9.0"},
             "rootfs": {
-                "kind": "path",
-                "path": "oci://registry.internal/rootfs/fedora-40@sha256:abc123",
+                "kind": "local",
+                "path": "/var/lib/kdive/rootfs/fedora-40.qcow2",
             },
             "crashkernel": "256M",
         }
@@ -93,7 +93,7 @@ def test_render_carries_name_memory_vcpu_machine_and_rootfs() -> None:
     assert os_type.get("machine") == "pc-q35-9.0"
     source = root.find("devices/disk/source")
     assert source is not None
-    assert source.get("file") == "oci://registry.internal/rootfs/fedora-40@sha256:abc123"
+    assert source.get("file") == "/var/lib/kdive/rootfs/fedora-40.qcow2"
 
 
 def test_render_declares_qcow2_disk_driver() -> None:
@@ -237,6 +237,9 @@ def _prov(
         make_overlay=make_overlay,
         remove_overlay=remove_overlay,
         overlay_exists=overlay_exists,
+        materialize_rootfs=lambda rootfs, _system_id: (
+            rootfs.path if rootfs.kind == "local" else "/var/lib/kdive/rootfs/upload.qcow2"
+        ),
     )
 
 
@@ -313,7 +316,7 @@ def test_provision_creates_overlay_over_base_and_attaches_it() -> None:
     conn = _ProvConn()
     _prov(conn, make_overlay=lambda base, ov: made.append((base, ov))).provision(_SYS, _profile())
     base, overlay = made[0]
-    assert base == "oci://registry.internal/rootfs/fedora-40@sha256:abc123"  # the _VALID base
+    assert base == "/var/lib/kdive/rootfs/fedora-40.qcow2"  # the _VALID base
     assert overlay == overlay_path(_SYS)
     disk = _safe_fromstring(conn.recorded_xml[0]).find("devices/disk/source")
     assert disk is not None and disk.get("file") == overlay  # the domain boots the overlay

@@ -57,8 +57,8 @@ PROVISIONING_PROFILE: dict[str, Any] = {
         "local-libvirt": {
             "domain_xml_params": {"machine": "q35"},
             "rootfs": {
-                "kind": "path",
-                "path": "oci://registry.internal/rootfs/fedora-40@sha256:abc",
+                "kind": "local",
+                "path": "/var/lib/kdive/rootfs/fedora-40.qcow2",
             },
             "crashkernel": "256M",
         }
@@ -68,7 +68,7 @@ PROVISIONING_PROFILE: dict[str, Any] = {
 BUILD_PROFILE: dict[str, Any] = {
     "schema_version": 1,
     "kernel_source_ref": "git+https://git.kernel.org#v6.9",
-    "config_ref": "file:///configs/kdump.config",
+    "config": {"kind": "local", "path": "/configs/kdump.config"},
 }
 
 
