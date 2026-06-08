@@ -20,6 +20,7 @@ import os
 import subprocess  # noqa: S404 - qemu-img is invoked with a fixed argv, no shell
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
@@ -260,6 +261,41 @@ def _prepare_console_log(path: Path) -> None:
         ) from exc
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedOverlay:
+    path: str
+    created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisioningFiles:
+    make_overlay: MakeOverlay = _real_make_overlay
+    remove_overlay: RemoveOverlay = _real_remove_overlay
+    overlay_exists: OverlayExists = _real_overlay_exists
+    prepare_console_log: PrepareConsoleLog = _prepare_console_log
+
+    def prepare_overlay(self, system_id: UUID, *, base: str) -> PreparedOverlay:
+        overlay = overlay_path(system_id)
+        created = not self.overlay_exists(overlay)
+        if created:
+            self.make_overlay(base, overlay)
+        return PreparedOverlay(path=overlay, created=created)
+
+    def prepare_console(self, system_id: UUID) -> None:
+        self.prepare_console_log(console_log_path(system_id))
+
+    def cleanup_overlay_if_created(self, overlay: PreparedOverlay) -> None:
+        if not overlay.created:
+            return
+        try:
+            self.remove_overlay(overlay.path)
+        except CategorizedError:
+            _log.warning("failed to remove overlay after failed provision", exc_info=True)
+
+    def remove_overlay_for_domain(self, domain_name: str) -> None:
+        self.remove_overlay(overlay_path(domain_name.removeprefix("kdive-")))
+
+
 class LocalLibvirtProvisioning:
     """The realized provisioning port for the local libvirt host."""
 
@@ -276,13 +312,15 @@ class LocalLibvirtProvisioning:
         prepare_console_log: PrepareConsoleLog = _prepare_console_log,
     ) -> None:
         self._connect = connect
-        self._make_overlay = make_overlay
-        self._remove_overlay = remove_overlay
-        self._overlay_exists = overlay_exists
+        self._files = ProvisioningFiles(
+            make_overlay=make_overlay,
+            remove_overlay=remove_overlay,
+            overlay_exists=overlay_exists,
+            prepare_console_log=prepare_console_log,
+        )
         self._allowed_roots = allowed_roots or [Path(_ROOTFS_DIR)]
         self._cache_dir = cache_dir
         self._materialize_rootfs = materialize_rootfs or self._materialize_rootfs_base
-        self._prepare_console_log = prepare_console_log
 
     @classmethod
     def from_env(cls) -> LocalLibvirtProvisioning:
@@ -309,16 +347,13 @@ class LocalLibvirtProvisioning:
                 ``INFRASTRUCTURE_FAILURE`` for provider control-plane or overlay IO faults.
         """
         base = self._materialize_rootfs(profile.provider.local_libvirt.rootfs, system_id)
-        overlay = overlay_path(system_id)
-        xml = render_domain_xml(system_id, profile, disk_path=overlay)  # validates the profile
-        created_overlay = not self._overlay_exists(overlay)
-        if created_overlay:
-            self._make_overlay(base, overlay)  # the domain boots this overlay, not the base
+        overlay = self._files.prepare_overlay(system_id, base=base)
+        xml = render_domain_xml(system_id, profile, disk_path=overlay.path)  # validates the profile
         try:
-            self._prepare_console_log(console_log_path(system_id))
+            self._files.prepare_console(system_id)
             self._define_and_start(xml, system_id)
         except CategorizedError:
-            self._cleanup_overlay_if_created(created_overlay, overlay)
+            self._files.cleanup_overlay_if_created(overlay)
             raise
         return domain_name_for(system_id)
 
@@ -349,14 +384,6 @@ class LocalLibvirtProvisioning:
             raise self._provisioning_failure(system_id) from exc
         finally:
             _close(conn)
-
-    def _cleanup_overlay_if_created(self, created_overlay: bool, overlay: str) -> None:
-        if not created_overlay:
-            return
-        try:
-            self._remove_overlay(overlay)
-        except CategorizedError:
-            _log.warning("failed to remove overlay after failed provision", exc_info=True)
 
     @staticmethod
     def _provisioning_failure(system_id: UUID) -> CategorizedError:
@@ -399,7 +426,7 @@ class LocalLibvirtProvisioning:
                 achieved post-states.
         """
         self._teardown_domain(domain_name)
-        self._remove_overlay(overlay_path(domain_name.removeprefix("kdive-")))
+        self._files.remove_overlay_for_domain(domain_name)
 
     def _materialize_rootfs_base(self, rootfs: RootfsSource, system_id: UUID) -> str:
         return str(
