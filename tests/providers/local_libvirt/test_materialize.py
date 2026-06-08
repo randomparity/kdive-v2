@@ -8,7 +8,11 @@ import pytest
 from kdive.components.references import CatalogComponentRef, LocalComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import _UploadRootfs
-from kdive.providers.local_libvirt.lifecycle.materialize import materialize_rootfs_base
+from kdive.providers.local_libvirt.lifecycle.materialize import (
+    RootfsMaterializationContext,
+    RootfsUploadContext,
+    materialize_rootfs_base,
+)
 
 
 def test_materialize_local_rootfs_validates_allowed_root(tmp_path: Path) -> None:
@@ -19,11 +23,7 @@ def test_materialize_local_rootfs_validates_allowed_root(tmp_path: Path) -> None
 
     result = materialize_rootfs_base(
         LocalComponentRef(kind="local", path=str(image)),
-        allowed_roots=[root],
-        cache_dir=tmp_path / "cache",
-        project="proj-a",
-        component_store=None,
-        object_store=None,
+        context=RootfsMaterializationContext(allowed_roots=[root]),
     )
 
     assert result == image.resolve()
@@ -67,11 +67,7 @@ def test_materialize_local_backed_catalog_rootfs(
 
     result = materialize_rootfs_base(
         CatalogComponentRef(kind="catalog", provider="local-libvirt", name="base"),
-        allowed_roots=[root],
-        cache_dir=tmp_path / "cache",
-        project="proj-a",
-        component_store=None,
-        object_store=None,
+        context=RootfsMaterializationContext(allowed_roots=[root]),
     )
 
     assert result == image.resolve()
@@ -82,13 +78,10 @@ def test_materialize_uploaded_rootfs_uses_system_keyed_path(tmp_path: Path) -> N
 
     result = materialize_rootfs_base(
         _UploadRootfs(kind="upload"),
-        allowed_roots=[tmp_path],
-        cache_dir=tmp_path / "cache",
-        project="proj-a",
-        system_id=system_id,
-        upload_dir=tmp_path,
-        component_store=None,
-        object_store=None,
+        context=RootfsMaterializationContext(
+            allowed_roots=[tmp_path],
+            upload=RootfsUploadContext("local", system_id, tmp_path),
+        ),
     )
 
     assert result == tmp_path / f"local-systems-{system_id}-rootfs.qcow2"
@@ -98,11 +91,7 @@ def test_materialize_uploaded_rootfs_requires_system_context(tmp_path: Path) -> 
     with pytest.raises(CategorizedError) as error:
         materialize_rootfs_base(
             _UploadRootfs(kind="upload"),
-            allowed_roots=[tmp_path],
-            cache_dir=tmp_path / "cache",
-            project="proj-a",
-            component_store=None,
-            object_store=None,
+            context=RootfsMaterializationContext(allowed_roots=[tmp_path]),
         )
 
     assert error.value.category is ErrorCategory.CONFIGURATION_ERROR
@@ -147,11 +136,7 @@ def test_materialize_host_policy_catalog_rootfs_is_unavailable(
     with pytest.raises(CategorizedError) as error:
         materialize_rootfs_base(
             CatalogComponentRef(kind="catalog", provider="local-libvirt", name="base"),
-            allowed_roots=[root],
-            cache_dir=tmp_path / "cache",
-            project="proj-a",
-            component_store=None,
-            object_store=None,
+            context=RootfsMaterializationContext(allowed_roots=[root]),
         )
 
     assert error.value.category is ErrorCategory.CONFIGURATION_ERROR

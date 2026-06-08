@@ -36,7 +36,10 @@ from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers, teardow
 from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers, get_system
 from kdive.planes import systems as systems_handlers
 from kdive.profiles.provisioning import RootfsSource
-from kdive.providers.local_libvirt.lifecycle.materialize import materialize_rootfs_base
+from kdive.providers.local_libvirt.lifecycle.materialize import (
+    RootfsMaterializationContext,
+    materialize_rootfs_base,
+)
 from kdive.security.audit import args_digest
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.store.objectstore import ArtifactWriteRequest, ObjectStore, artifact_key
@@ -219,16 +222,10 @@ def _local_rootfs_profile(path: Path) -> dict[str, Any]:
 
 
 def _rootfs_validator(allowed_root: Path) -> Callable[[RootfsSource], None]:
-    cache_dir = allowed_root.parent / "cache"
-
     def _validate(rootfs: RootfsSource) -> None:
         materialize_rootfs_base(
             cast(ComponentRef, rootfs),
-            allowed_roots=[allowed_root],
-            cache_dir=cache_dir,
-            project="proj",
-            component_store=None,
-            object_store=None,
+            context=RootfsMaterializationContext(allowed_roots=[allowed_root]),
         )
 
     return _validate

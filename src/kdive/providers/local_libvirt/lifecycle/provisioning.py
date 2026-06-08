@@ -36,7 +36,11 @@ from kdive.profiles.provisioning import (
     validate_profile as _validate_profile,
 )
 from kdive.providers.local_libvirt.discovery import _KDIVE_METADATA_NS
-from kdive.providers.local_libvirt.lifecycle.materialize import materialize_rootfs_base
+from kdive.providers.local_libvirt.lifecycle.materialize import (
+    RootfsMaterializationContext,
+    RootfsUploadContext,
+    materialize_rootfs_base,
+)
 from kdive.providers.runtime_paths import console_log_path, domain_name_for
 
 _log = logging.getLogger(__name__)
@@ -401,13 +405,10 @@ class LocalLibvirtProvisioning:
         return str(
             materialize_rootfs_base(
                 rootfs,
-                allowed_roots=self._allowed_roots,
-                cache_dir=self._cache_dir,
-                project="local",
-                system_id=system_id,
-                upload_dir=Path(_ROOTFS_DIR),
-                component_store=None,
-                object_store=None,
+                context=RootfsMaterializationContext(
+                    allowed_roots=self._allowed_roots,
+                    upload=RootfsUploadContext("local", system_id, Path(_ROOTFS_DIR)),
+                ),
             )
         )
 

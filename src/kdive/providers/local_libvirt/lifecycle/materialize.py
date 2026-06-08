@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 from uuid import UUID
 
 from kdive.components.catalog import load_fixture_catalog
@@ -19,65 +19,36 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import RootfsSource, _UploadRootfs
 
 
-class ProviderComponent(Protocol):
-    id: UUID
-    source: ComponentRef
+@dataclass(frozen=True, slots=True)
+class RootfsUploadContext:
+    """System-owned upload staging context for an uploaded rootfs."""
+
+    tenant: str
+    system_id: UUID
+    upload_dir: Path
 
 
-class ComponentStore(Protocol):
-    def get_visible_component(
-        self,
-        component_id: UUID,
-        *,
-        project: str,
-    ) -> ProviderComponent | None:
-        """Return an authorized provider component or None."""
+@dataclass(frozen=True, slots=True)
+class RootfsMaterializationContext:
+    """Inputs needed to resolve a provider-readable rootfs base path."""
 
-
-class FetchedArtifact(Protocol):
-    path: Path
-    sha256: str
-    size_bytes: int
-
-
-class ObjectStore(Protocol):
-    def get_artifact(self, key: str, etag: str | None) -> FetchedArtifact:
-        """Fetch an authorized object-store artifact."""
+    allowed_roots: list[Path]
+    upload: RootfsUploadContext | None = None
 
 
 def materialize_rootfs_base(
     ref: RootfsSource | ComponentRef,
     *,
-    allowed_roots: list[Path],
-    cache_dir: Path,
-    project: str,
-    system_id: UUID | None = None,
-    upload_dir: Path | None = None,
-    component_store: ComponentStore | None,
-    object_store: ObjectStore | None,
+    context: RootfsMaterializationContext,
 ) -> Path:
     """Return a provider-readable rootfs base image path."""
-    _ = (cache_dir, project)
     if isinstance(ref, _UploadRootfs):
-        if system_id is None or upload_dir is None:
-            raise CategorizedError(
-                "uploaded rootfs materialization requires a system id and upload directory",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-            )
-        return upload_rootfs_path("local", system_id, upload_dir=upload_dir)
+        return _materialize_uploaded_rootfs(context)
     if isinstance(ref, LocalComponentRef):
-        return validate_local_component_path(
-            ref.path,
-            allowed_roots=allowed_roots,
-            sha256=ref.sha256,
-        )
+        return _materialize_local_rootfs(ref, context)
     if isinstance(ref, CatalogComponentRef):
-        return _materialize_catalog_rootfs(ref, allowed_roots=allowed_roots)
-    if (
-        isinstance(ref, ArtifactComponentRef | ComponentUploadRef)
-        or component_store is None
-        or object_store is None
-    ):
+        return _materialize_catalog_rootfs(ref, context)
+    if isinstance(ref, ArtifactComponentRef | ComponentUploadRef):
         raise CategorizedError(
             "artifact-backed rootfs materialization is not wired yet",
             category=ErrorCategory.MISSING_DEPENDENCY,
@@ -93,7 +64,29 @@ def upload_rootfs_path(tenant: str, system_id: UUID, *, upload_dir: Path) -> Pat
     return upload_dir / f"{tenant}-systems-{system_id}-rootfs.qcow2"
 
 
-def _materialize_catalog_rootfs(ref: CatalogComponentRef, *, allowed_roots: list[Path]) -> Path:
+def _materialize_uploaded_rootfs(context: RootfsMaterializationContext) -> Path:
+    if context.upload is None:
+        raise CategorizedError(
+            "uploaded rootfs materialization requires upload context",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    upload = context.upload
+    return upload_rootfs_path(upload.tenant, upload.system_id, upload_dir=upload.upload_dir)
+
+
+def _materialize_local_rootfs(
+    ref: LocalComponentRef, context: RootfsMaterializationContext
+) -> Path:
+    return validate_local_component_path(
+        ref.path,
+        allowed_roots=context.allowed_roots,
+        sha256=ref.sha256,
+    )
+
+
+def _materialize_catalog_rootfs(
+    ref: CatalogComponentRef, context: RootfsMaterializationContext
+) -> Path:
     catalog = load_fixture_catalog()
     entry = catalog.rootfs_entry(ref.provider, ref.name)
     if entry is None:
@@ -103,11 +96,7 @@ def _materialize_catalog_rootfs(ref: CatalogComponentRef, *, allowed_roots: list
             details={"provider": ref.provider, "name": ref.name},
         )
     if isinstance(entry.source, LocalComponentRef):
-        return validate_local_component_path(
-            entry.source.path,
-            allowed_roots=allowed_roots,
-            sha256=entry.source.sha256,
-        )
+        return _materialize_local_rootfs(entry.source, context)
     raise CategorizedError(
         "artifact-backed rootfs materialization is not wired yet",
         category=ErrorCategory.MISSING_DEPENDENCY,
