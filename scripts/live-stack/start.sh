@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck disable=SC1091 # repo-relative path computed from this script location
 source "${repo_root}/scripts/live-stack/env.sh"
 
 pid_file="${KDIVE_STACK_PID_FILE:-${repo_root}/.live-stack.pid}"
@@ -10,6 +11,7 @@ mode="${1:-foreground}"
 
 mkdir -p "${log_dir}"
 
+# shellcheck disable=SC2329 # invoked by trap below
 cleanup() {
   if [[ -f "${pid_file}" ]]; then
     while read -r pid; do
@@ -41,4 +43,8 @@ if [[ "${mode}" == "--daemon" ]]; then
   exit 0
 fi
 
-wait
+set +e
+wait -n
+rc="$?"
+set -e
+exit "${rc}"
