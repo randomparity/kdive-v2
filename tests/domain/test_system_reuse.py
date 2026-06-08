@@ -187,6 +187,17 @@ def test_snapshot_malformed_pcie_spec_raises_even_when_sizing_would_miss() -> No
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
+def test_snapshot_malformed_pcie_spec_raises_after_valid_unmatched_spec() -> None:
+    # A valid-but-unmatched spec precedes a malformed one: grammar is validated up front, so
+    # the malformed spec still raises (no short-circuit on the unmatched valid spec).
+    sizing = AllocationSizing(vcpu=4, memory_mb=8192, disk_gb=40)
+    req = ReuseRequirement(pcie=["10de:1eb8", "class=02"])
+
+    with pytest.raises(CategorizedError) as exc:
+        snapshot_satisfies(sizing, [_CLAIM], req)
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
 # --- ReuseRequirement.is_empty (require_pcie=[] no-op) --------------------------------
 
 

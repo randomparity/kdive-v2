@@ -92,8 +92,8 @@ def read_system_sizing(alloc: Allocation, system: System) -> AllocationSizing:
     return AllocationSizing(vcpu=vcpu, memory_mb=memory_mb, disk_gb=disk_gb)
 
 
-def _pcie_claim_contains(claims: list[PCIeClaim], spec: str) -> bool:
-    """Return whether ``claims`` holds a device matching the ``vendor:device`` ``spec``.
+def _parse_vendor_device(spec: str) -> tuple[str, str]:
+    """Parse a ``vendor:device`` spec, or raise for malformed / unsupported ``class=`` grammar.
 
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` if ``spec`` is malformed or a ``class=``
@@ -107,9 +107,22 @@ def _pcie_claim_contains(claims: list[PCIeClaim], spec: str) -> bool:
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"spec": spec},
         )
-    return any(
-        claim["vendor_id"] == parsed.vendor_id and claim["device_id"] == parsed.device_id
-        for claim in claims
+    return parsed.vendor_id, parsed.device_id
+
+
+def _pcie_claims_contain_all(claims: list[PCIeClaim], specs: list[str]) -> bool:
+    """Return whether ``claims`` contains a device for each ``vendor:device`` spec.
+
+    Every spec's grammar is validated before any membership check, so a malformed / ``class=``
+    spec raises deterministically regardless of an earlier unmatched spec's position.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` for any malformed or ``class=`` spec.
+    """
+    parsed = [_parse_vendor_device(spec) for spec in specs]
+    return all(
+        any(claim["vendor_id"] == vendor_id and claim["device_id"] == device_id for claim in claims)
+        for vendor_id, device_id in parsed
     )
 
 
@@ -132,9 +145,10 @@ def snapshot_satisfies(
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` for a malformed or ``class=`` pcie spec.
     """
-    # PCIe spec grammar is validated first so a malformed/class= spec surfaces deterministically
-    # (its own error) regardless of whether a sizing axis would also fall short.
-    pcie_ok = all(_pcie_claim_contains(claims, spec) for spec in req.pcie)
+    # Validate every pcie spec's grammar up front (not a short-circuiting any/all) so a
+    # malformed/class= spec raises its own error deterministically — even when it follows a
+    # valid-but-unmatched spec or a sizing miss that would otherwise return False first.
+    pcie_ok = _pcie_claims_contain_all(claims, req.pcie)
     if req.vcpus is not None and sizing.vcpu < req.vcpus:
         return False
     if req.memory_gb is not None and sizing.memory_mb < req.memory_gb * _MB_PER_GB:
