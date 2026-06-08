@@ -30,7 +30,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict
 from pygdbmi.constants import GdbTimeoutError
@@ -116,6 +116,55 @@ class MiRecord(_MiModel):
 
 def _mi_int(value: object) -> int | None:
     return int(value) if isinstance(value, str) and value.lstrip("-").isdigit() else None
+
+
+def _payload_dict(value: object) -> dict[str, Any]:
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
+
+
+def _payload_list(value: object) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _dict_rows(value: object) -> list[dict[str, Any]]:
+    return [row for row in _payload_list(value) if isinstance(row, dict)]
+
+
+def _result_payload_dict(records: list[MiRecord]) -> dict[str, Any]:
+    result = MiRecord.first_result(records)
+    if result is None:
+        return {}
+    return _payload_dict(result.payload)
+
+
+def _breakpoint_rows(records: list[MiRecord]) -> list[dict[str, Any]]:
+    payload = _result_payload_dict(records)
+    table = _payload_dict(payload.get("BreakpointTable"))
+    rows: list[dict[str, Any]] = []
+    for row in _dict_rows(table.get("body")):
+        entry = row.get("bkpt")
+        if isinstance(entry, dict):
+            rows.append(entry)
+    return rows
+
+
+def _register_names(records: list[MiRecord]) -> list[str]:
+    names = _result_payload_dict(records).get("register-names")
+    return [name for name in _payload_list(names) if isinstance(name, str)]
+
+
+def _register_values_by_number(records: list[MiRecord]) -> dict[str, object]:
+    rows = _dict_rows(_result_payload_dict(records).get("register-values"))
+    by_number: dict[str, object] = {}
+    for row in rows:
+        number = row.get("number")
+        if isinstance(number, str):
+            by_number[number] = row.get("value")
+    return by_number
+
+
+def _memory_segments(records: list[MiRecord]) -> list[dict[str, Any]]:
+    return _dict_rows(_result_payload_dict(records).get("memory"))
 
 
 def parse_mi_records(text: str) -> list[MiRecord]:
@@ -364,26 +413,13 @@ class GdbMiEngine:
         self.run(attachment, f"-break-delete {number}")
 
     def list_breakpoints(self, attachment: GdbMiAttachment) -> list[GdbBreakpointRef]:
-        records = self.run(attachment, "-break-list")
-        result = MiRecord.first_result(records)
-        payload = result.payload if result is not None and isinstance(result.payload, dict) else {}
-        table = (
-            payload.get("BreakpointTable")
-            if isinstance(payload.get("BreakpointTable"), dict)
-            else {}
-        )
-        body = table.get("body") if isinstance(table, dict) else None
-        rows = body if isinstance(body, list) else []
-        refs: list[GdbBreakpointRef] = []
-        for row in rows:
-            entry = row.get("bkpt") if isinstance(row, dict) else None
-            if isinstance(entry, dict):
-                refs.append(self._breakpoint_ref_from(entry))
-        return refs
+        return [
+            self._breakpoint_ref_from(entry)
+            for entry in _breakpoint_rows(self.run(attachment, "-break-list"))
+        ]
 
     def _breakpoint_ref(self, records: list[MiRecord], *, key: str) -> GdbBreakpointRef:
-        result = MiRecord.first_result(records)
-        payload = result.payload if result is not None and isinstance(result.payload, dict) else {}
+        payload = _result_payload_dict(records)
         entry = payload.get(key)
         if not isinstance(entry, dict):
             raise CategorizedError(
@@ -420,18 +456,8 @@ class GdbMiEngine:
             requested.append(name)
         # gdb keys register VALUES by ordinal number; map names->ordinals via
         # -data-list-register-names, then return only the requested names.
-        names_result = MiRecord.first_result(self.run(attachment, "-data-list-register-names"))
-        names_payload = names_result.payload if names_result is not None else None
-        ordered = names_payload.get("register-names") if isinstance(names_payload, dict) else None
-        ordered_names = ordered if isinstance(ordered, list) else []
-        values_result = MiRecord.first_result(self.run(attachment, "-data-list-register-values x"))
-        values_payload = values_result.payload if values_result is not None else None
-        rows = values_payload.get("register-values") if isinstance(values_payload, dict) else None
-        by_number = {
-            row.get("number"): row.get("value")
-            for row in (rows if isinstance(rows, list) else [])
-            if isinstance(row, dict)
-        }
+        ordered_names = _register_names(self.run(attachment, "-data-list-register-names"))
+        by_number = _register_values_by_number(self.run(attachment, "-data-list-register-values x"))
         registers: dict[str, object] = {}
         for name in requested:
             if name in ordered_names:
@@ -468,16 +494,9 @@ class GdbMiEngine:
                 details={"byte_count": byte_count},
             )
         records = self.run(attachment, f"-data-read-memory-bytes 0x{address:x} {byte_count}")
-        result = MiRecord.first_result(records)
-        payload = result.payload if result is not None and isinstance(result.payload, dict) else {}
-        memory = payload.get("memory")
-        segments = memory if isinstance(memory, list) else []
+        segments = _memory_segments(records)
         try:
-            blob = b"".join(
-                bytes.fromhex(str(seg.get("contents", "")))
-                for seg in segments
-                if isinstance(seg, dict)
-            )
+            blob = b"".join(bytes.fromhex(str(seg.get("contents", ""))) for seg in segments)
         except ValueError as exc:
             # A non-hex / odd-length `contents` is a malformed stub reply, not a verbatim dump;
             # surface it as an attach-level failure rather than letting ValueError escape uncaught.
@@ -517,7 +536,7 @@ class GdbMiEngine:
     # --- record helpers (public to _ExecutionControl) -------------------------------------
 
     def stop_record_from(self, record: MiRecord) -> GdbStopRecord:
-        payload = record.payload if isinstance(record.payload, dict) else {}
+        payload = _payload_dict(record.payload)
         reason = payload.get("reason")
         if isinstance(reason, str) and reason in _TERMINAL_STOP_REASONS:
             raise CategorizedError(
@@ -526,7 +545,8 @@ class GdbMiEngine:
                 details={"code": "session_exited", "reason": reason},
             )
         frame_payload = payload.get("frame")
-        frame = self._frame_from(frame_payload) if isinstance(frame_payload, dict) else None
+        frame_payload = _payload_dict(frame_payload)
+        frame = self._frame_from(frame_payload) if frame_payload else None
         thread = payload.get("stopped-threads")
         return GdbStopRecord(
             reason=reason if isinstance(reason, str) else None,
