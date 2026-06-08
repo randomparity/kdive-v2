@@ -22,7 +22,7 @@ from kdive.log import configure_logging
 from kdive.version import full_version
 
 if TYPE_CHECKING:
-    from kdive.providers.composition import ProviderRuntime
+    from kdive.providers.runtime import ProviderRuntime
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8000

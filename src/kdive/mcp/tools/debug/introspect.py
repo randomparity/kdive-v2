@@ -29,8 +29,8 @@ from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
-from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import LiveIntrospector, VmcoreIntrospector
+from kdive.providers.runtime import ProviderRuntime
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 

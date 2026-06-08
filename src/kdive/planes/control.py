@@ -17,8 +17,8 @@ from kdive.domain.state import SystemState
 from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import PowerPayload, SystemPayload, load_payload
-from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import Controller
+from kdive.providers.runtime import ProviderRuntime
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security import audit
 

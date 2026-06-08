@@ -24,8 +24,8 @@ from kdive.profiles.provisioning import (
     profile_digest,
     rootfs_upload_window_allowed,
 )
-from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import Provisioner
+from kdive.providers.runtime import ProviderRuntime
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security import audit
 from kdive.store import objectstore as _objectstore

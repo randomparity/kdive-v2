@@ -44,9 +44,9 @@ from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.debug.ops import DebugEngineRuntime, register_debug_ops
 from kdive.profiles.provisioning import ProvisioningProfile
-from kdive.providers.composition import ProviderRuntime
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.ports import Connector
+from kdive.providers.runtime import ProviderRuntime
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role

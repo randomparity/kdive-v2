@@ -21,8 +21,8 @@ from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
 from kdive.planes.runs_shared import finalize_build
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
-from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import Booter, Builder, BuildOutput, Installer
+from kdive.providers.runtime import ProviderRuntime
 from kdive.providers.runtime_paths import console_log_path, read_console_log
 from kdive.security import audit
 from kdive.security.artifacts.artifact_search import ArtifactSearchInputError, search_text

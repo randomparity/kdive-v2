@@ -38,7 +38,8 @@ from kdive.mcp.tools.ops import queue as ops_queue_tools
 from kdive.mcp.tools.ops import reconcile as ops_reconcile_tools
 from kdive.mcp.tools.ops import tuning as ops_tuning_tools
 from kdive.planes import control, runs, systems, vmcore
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
+from kdive.providers.composition import build_default_provider_runtime
+from kdive.providers.runtime import ProviderRuntime
 
 type PlaneRegistrar = Callable[[FastMCP, AsyncConnectionPool, ProviderRuntime], None]
 type HandlerRegistrar = Callable[[HandlerRegistry, ProviderRuntime], None]

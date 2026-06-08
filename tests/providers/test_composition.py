@@ -13,9 +13,9 @@ from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.providers import composition
-from kdive.providers.composition import ProviderRuntime
 from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.ports import BuildOutput, CaptureOutput, CrashOutput, IntrospectOutput
+from kdive.providers.runtime import ProviderRuntime
 from kdive.store.objectstore import StoredArtifact
 
 _RUN = UUID("22222222-2222-2222-2222-222222222222")

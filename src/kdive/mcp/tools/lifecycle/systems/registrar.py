@@ -24,7 +24,7 @@ from kdive.mcp.tools.lifecycle.systems.provision import (
     get_system as _get_system,
 )
 from kdive.profiles.types import ProvisioningProfileInput
-from kdive.providers.composition import ProviderRuntime
+from kdive.providers.runtime import ProviderRuntime
 
 
 def register(
