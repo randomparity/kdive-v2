@@ -19,6 +19,7 @@ from kdive.providers.ports.debug import (
     GdbMiEngine,
     GdbStopRecord,
 )
+from kdive.providers.ports.handles import OwnedInfra, SystemHandle, TransportHandle
 from kdive.providers.ports.lifecycle import (
     Booter,
     Connector,
@@ -58,8 +59,11 @@ __all__ = [
     "Installer",
     "IntrospectOutput",
     "LiveIntrospector",
+    "OwnedInfra",
     "Provisioner",
     "Retriever",
+    "SystemHandle",
+    "TransportHandle",
     "TransportHandleData",
     "ValidatedUpload",
     "VmcoreIntrospector",

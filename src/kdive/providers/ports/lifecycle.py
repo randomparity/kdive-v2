@@ -8,8 +8,8 @@ from uuid import UUID
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import PowerAction
 from kdive.profiles.provisioning import ProvisioningProfile
-from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.ports._common import config_error
+from kdive.providers.ports.handles import SystemHandle, TransportHandle
 
 _TRANSPORT_KINDS = frozenset({"gdbstub", "ssh"})
 

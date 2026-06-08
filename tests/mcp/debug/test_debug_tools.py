@@ -39,9 +39,8 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.debug import sessions as debug_tools
-from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
-from kdive.providers.ports import TransportHandleData
+from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.paths import PathSafetyError
 from kdive.security.secrets.secret_registry import SecretRegistry

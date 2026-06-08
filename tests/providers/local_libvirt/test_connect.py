@@ -10,14 +10,13 @@ from __future__ import annotations
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.interfaces import SystemHandle
 from kdive.providers.local_libvirt.lifecycle import connect as connect_mod
 from kdive.providers.local_libvirt.lifecycle.connect import (
     LocalLibvirtConnect,
     rsp_frame,
     valid_rsp_frame,
 )
-from kdive.providers.ports import TransportHandleData
+from kdive.providers.ports import SystemHandle, TransportHandleData
 
 # --- RSP framing codec ---------------------------------------------------------------------
 

@@ -1,33 +1,11 @@
-"""Tests for shared provider interface value types."""
+"""Tests for shared provider port value types."""
 
 from __future__ import annotations
 
-import kdive.providers.interfaces as interfaces
 from kdive.domain.discovery import ResourceRecord
 from kdive.domain.models import ResourceKind
 from kdive.domain.state import ResourceStatus
-from kdive.providers.interfaces import (
-    SystemHandle,
-    TransportHandle,
-)
-
-
-def test_stale_plane_protocols_are_not_public_interfaces() -> None:
-    for name in (
-        "DiscoveryPlane",
-        "ProvisioningPlane",
-        "BuildPlane",
-        "InstallPlane",
-        "ConnectPlane",
-        "DebugPlane",
-        "ControlPlane",
-        "RetrievePlane",
-        "AllocationPlane",
-        "ProvisioningProfile",
-        "BuildProfile",
-        "PowerAction",
-    ):
-        assert not hasattr(interfaces, name)
+from kdive.providers.ports import SystemHandle, TransportHandle
 
 
 def test_shared_provider_handles_are_distinct_types() -> None:

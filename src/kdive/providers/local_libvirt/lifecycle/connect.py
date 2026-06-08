@@ -24,8 +24,7 @@ import time
 from collections.abc import Callable
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.interfaces import SystemHandle, TransportHandle
-from kdive.providers.ports import TransportHandleData
+from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
 
 _GDBSTUB = "gdbstub"
 _SSH = "ssh"

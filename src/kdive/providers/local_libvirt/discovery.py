@@ -21,7 +21,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import ResourceStatus
-from kdive.providers.interfaces import OwnedInfra
+from kdive.providers.ports import OwnedInfra
 
 _KDIVE_METADATA_NS = "https://kdive.dev/libvirt/1"
 _URI_ENV = "KDIVE_LIBVIRT_URI"
