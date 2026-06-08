@@ -47,6 +47,20 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("server", help="run the MCP streamable-HTTP server")
     sub.add_parser("worker", help="run the job-queue worker loop")
     sub.add_parser("reconciler", help="run the drift-repair reconciler loop")
+    sub.add_parser("migrate", help="apply database migrations")
+    fixtures = sub.add_parser("install-fixtures", help="install default fixture catalog")
+    fixtures.add_argument("--dest", default="/etc/kdive/fixtures/local-libvirt")
+    fixtures.add_argument("--force", action="store_true", help="overwrite existing files")
+    compose = sub.add_parser("install-compose", help="install local backing-service compose file")
+    compose.add_argument("--dest", default="/etc/kdive/docker-compose.local.yml")
+    compose.add_argument("--force", action="store_true", help="overwrite an existing file")
+    seed = sub.add_parser("seed-demo", help="seed a project for local agent demos")
+    seed.add_argument("--project", default="demo")
+    seed.add_argument("--limit-kcu", default="1000000")
+    seed.add_argument("--max-concurrent-allocations", type=int, default=4)
+    seed.add_argument("--max-concurrent-systems", type=int, default=4)
+    sub.add_parser("print-local-env", help="print local demo KDIVE_* defaults")
+    sub.add_parser("stack", help="run server, worker, and reconciler under one supervisor")
     return parser
 
 
@@ -129,6 +143,43 @@ def main(argv: list[str] | None = None) -> None:
         asyncio.run(_run_worker())
     elif args.command == "reconciler":
         asyncio.run(_run_reconciler())
+    elif args.command == "migrate":
+        from kdive.admin.bootstrap import migrate
+
+        migrate()
+    elif args.command == "install-fixtures":
+        from pathlib import Path
+
+        from kdive.admin.bootstrap import install_fixtures
+
+        install_fixtures(Path(args.dest), force=args.force)
+    elif args.command == "install-compose":
+        from pathlib import Path
+
+        from kdive.admin.bootstrap import install_compose
+
+        install_compose(Path(args.dest), force=args.force)
+    elif args.command == "seed-demo":
+        from decimal import Decimal
+
+        from kdive.admin.bootstrap import seed_demo
+
+        asyncio.run(
+            seed_demo(
+                project=args.project,
+                limit_kcu=Decimal(args.limit_kcu),
+                max_concurrent_allocations=args.max_concurrent_allocations,
+                max_concurrent_systems=args.max_concurrent_systems,
+            )
+        )
+    elif args.command == "print-local-env":
+        from kdive.admin.bootstrap import print_local_env
+
+        print_local_env()
+    elif args.command == "stack":
+        from kdive.admin.bootstrap import run_stack
+
+        raise SystemExit(run_stack())
 
 
 if __name__ == "__main__":
