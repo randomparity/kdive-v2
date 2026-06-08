@@ -16,7 +16,6 @@ synchronous; the async build handler offloads the whole call via ``asyncio.to_th
 
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 import subprocess  # noqa: S404 - make is invoked with a fixed argv, no shell
@@ -28,6 +27,7 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from kdive.components.catalog import load_fixture_catalog
+from kdive.components.local_paths import validate_local_component_path
 from kdive.components.references import ComponentRef, LocalComponentRef
 from kdive.components.requirements import ConfigRequirements, validate_config_requirements
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -48,7 +48,9 @@ from kdive.store.objectstore import (
 
 _WORKSPACE_ENV = "KDIVE_BUILD_WORKSPACE"
 _KERNEL_SRC_ENV = "KDIVE_KERNEL_SRC"
+_BUILD_COMPONENT_ROOTS_ENV = "KDIVE_BUILD_COMPONENT_ROOTS"
 _DEFAULT_WORKSPACE = "/var/lib/kdive/build"
+_DEFAULT_BUILD_COMPONENT_ROOT = "/var/lib/kdive/build/components"
 _RETENTION_CLASS = "build"
 # Trailing chars of a redacted rsync/git-apply stderr placed in error details (bounded so a
 # large/noisy failure log cannot bloat a persisted error record).
@@ -102,9 +104,13 @@ class LocalLibvirtBuild:
         read_kernel_image: _ReadBytes,
         read_vmlinux: _ReadBytes,
         read_build_id: _ReadBuildId,
+        allowed_component_roots: list[Path] | None = None,
     ) -> None:
         self._tenant = tenant
         self._workspace_root = workspace_root
+        self._allowed_component_roots = allowed_component_roots or [
+            Path(_DEFAULT_BUILD_COMPONENT_ROOT)
+        ]
         self._store_factory = store_factory
         self._store: _StorePort | None = None
         self._checkout = checkout
@@ -126,16 +132,18 @@ class LocalLibvirtBuild:
         """
         workspace_root = Path(os.environ.get(_WORKSPACE_ENV, _DEFAULT_WORKSPACE))
         kernel_src = os.environ.get(_KERNEL_SRC_ENV, "")
+        allowed_component_roots = _build_component_roots_from_env()
         return cls(
             tenant="local",
             workspace_root=workspace_root,
             store_factory=object_store_from_env,
-            checkout=_make_checkout(kernel_src),
+            checkout=_make_checkout(kernel_src, allowed_component_roots),
             read_config=_real_read_config,
             run_make=_real_run_make,
             read_kernel_image=_real_read_kernel_image,
             read_vmlinux=_real_read_vmlinux,
             read_build_id=_real_read_build_id,
+            allowed_component_roots=allowed_component_roots,
         )
 
     def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput:
@@ -201,14 +209,32 @@ def _load_profile_config_requirements(provider: str, name: str) -> ConfigRequire
     return profile.requires.config
 
 
-def _make_checkout(kernel_src: str) -> _Checkout:
+def _build_component_roots_from_env() -> list[Path]:
+    raw = os.environ.get(_BUILD_COMPONENT_ROOTS_ENV)
+    if raw is None:
+        return [Path(_DEFAULT_BUILD_COMPONENT_ROOT)]
+    return [Path(part) for part in raw.split(":") if part]
+
+
+def _make_checkout(kernel_src: str, allowed_component_roots: list[Path]) -> _Checkout:
     def _checkout(run_id: UUID, profile: ServerBuildProfile, workspace: Path) -> None:
-        _real_checkout(kernel_src, profile, workspace)
+        _real_checkout(
+            kernel_src,
+            profile,
+            workspace,
+            allowed_component_roots=allowed_component_roots,
+        )
 
     return _checkout
 
 
-def _real_checkout(kernel_src: str, profile: ServerBuildProfile, workspace: Path) -> None:
+def _real_checkout(
+    kernel_src: str,
+    profile: ServerBuildProfile,
+    workspace: Path,
+    *,
+    allowed_component_roots: list[Path] | None = None,
+) -> None:
     """Materialize a warm per-Run workspace, stage the ``.config``, apply any patch.
 
     Steps run in order so the resetting rsync (sync) precedes config-staging and patch
@@ -217,7 +243,11 @@ def _real_checkout(kernel_src: str, profile: ServerBuildProfile, workspace: Path
     unit-tested with the steps stubbed.
     """
     _sync_tree(kernel_src, workspace)
-    _stage_config(profile.config, workspace)
+    _stage_config(
+        profile.config,
+        workspace,
+        allowed_component_roots=allowed_component_roots or [Path(_DEFAULT_BUILD_COMPONENT_ROOT)],
+    )
     if profile.patch_ref is not None:
         _apply_patch(profile.patch_ref, workspace)
 
@@ -388,23 +418,27 @@ def _resolve_local_ref(ref: str, *, kind: str) -> Path:
     return path
 
 
-def _resolve_config_ref(ref: ComponentRef) -> Path:
+def _resolve_config_ref(ref: ComponentRef, *, allowed_component_roots: list[Path]) -> Path:
     if not isinstance(ref, LocalComponentRef):
         raise _ref_error("config", "config component ref must be local for local-libvirt builds")
-    source = _resolve_local_ref(ref.path, kind="config")
-    if ref.sha256 is not None:
-        try:
-            digest = hashlib.sha256(source.read_bytes()).hexdigest()
-        except OSError as exc:
-            raise _ref_error("config", "config ref does not resolve to a readable file") from exc
-        if digest != ref.sha256.removeprefix("sha256:"):
-            raise _ref_error("config", "config ref sha256 does not match the resolved file")
-    return source
+    return validate_local_component_path(
+        ref.path,
+        allowed_roots=allowed_component_roots,
+        sha256=ref.sha256,
+    )
 
 
-def _stage_config(config: ComponentRef, workspace: Path) -> None:
+def _stage_config(
+    config: ComponentRef,
+    workspace: Path,
+    *,
+    allowed_component_roots: list[Path] | None = None,
+) -> None:
     """Copy the resolved config component to ``workspace/.config``."""
-    source = _resolve_config_ref(config)
+    source = _resolve_config_ref(
+        config,
+        allowed_component_roots=allowed_component_roots or [Path(_DEFAULT_BUILD_COMPONENT_ROOT)],
+    )
     try:
         shutil.copyfile(source, workspace / ".config")
     except OSError as exc:

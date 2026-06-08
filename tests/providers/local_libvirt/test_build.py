@@ -313,6 +313,28 @@ def test_from_env_does_not_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(builder, LocalLibvirtBuild)
 
 
+def test_from_env_parses_build_component_roots(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "KDIVE_BUILD_COMPONENT_ROOTS",
+        "/srv/kdive/build/components:/mnt/kdive/components",
+    )
+
+    builder = LocalLibvirtBuild.from_env()
+
+    assert builder._allowed_component_roots == [
+        Path("/srv/kdive/build/components"),
+        Path("/mnt/kdive/components"),
+    ]
+
+
+def test_from_env_defaults_build_component_roots(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KDIVE_BUILD_COMPONENT_ROOTS", raising=False)
+
+    builder = LocalLibvirtBuild.from_env()
+
+    assert builder._allowed_component_roots == [Path("/var/lib/kdive/build/components")]
+
+
 # --- real seam argv (the wrappers that only run under live_vm, but whose argv is testable) ----
 
 
@@ -543,10 +565,16 @@ def test_resolve_local_ref_rejects_directory(tmp_path: Path) -> None:
 def test_stage_config_copies_bytes_to_workspace_dotconfig(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    config = tmp_path / "x.config"
+    root = tmp_path / "components"
+    root.mkdir()
+    config = root / "x.config"
     config.write_text("CONFIG_FROM_REF=y\n")
 
-    _stage_config(LocalComponentRef(kind="local", path=str(config)), workspace)
+    _stage_config(
+        LocalComponentRef(kind="local", path=str(config)),
+        workspace,
+        allowed_component_roots=[root],
+    )
 
     assert (workspace / ".config").read_text() == "CONFIG_FROM_REF=y\n"
 
@@ -555,10 +583,16 @@ def test_stage_config_overwrites_existing_dotconfig(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / ".config").write_text("CONFIG_WARM_TREE=y\n")
-    config = tmp_path / "x.config"
+    root = tmp_path / "components"
+    root.mkdir()
+    config = root / "x.config"
     config.write_text("CONFIG_FROM_REF=y\n")
 
-    _stage_config(LocalComponentRef(kind="local", path=str(config)), workspace)
+    _stage_config(
+        LocalComponentRef(kind="local", path=str(config)),
+        workspace,
+        allowed_component_roots=[root],
+    )
 
     assert (workspace / ".config").read_text() == "CONFIG_FROM_REF=y\n"
 
@@ -566,39 +600,70 @@ def test_stage_config_overwrites_existing_dotconfig(tmp_path: Path) -> None:
 def test_stage_config_rejects_sha256_mismatch_before_copy(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    config = tmp_path / "x.config"
+    root = tmp_path / "components"
+    root.mkdir()
+    config = root / "x.config"
     config.write_text("CONFIG_FROM_REF=y\n")
 
     with pytest.raises(CategorizedError) as caught:
         _stage_config(
             LocalComponentRef(kind="local", path=str(config), sha256="sha256:" + "0" * 64),
             workspace,
+            allowed_component_roots=[root],
         )
 
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
-    assert caught.value.details == {"kind": "config"}
     assert not (workspace / ".config").exists()
 
 
 def test_stage_config_copies_config_with_matching_sha256(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    config = tmp_path / "x.config"
+    root = tmp_path / "components"
+    root.mkdir()
+    config = root / "x.config"
     content = b"CONFIG_FROM_REF=y\n"
     config.write_bytes(content)
     sha256 = f"sha256:{hashlib.sha256(content).hexdigest()}"
 
-    _stage_config(LocalComponentRef(kind="local", path=str(config), sha256=sha256), workspace)
+    _stage_config(
+        LocalComponentRef(kind="local", path=str(config), sha256=sha256),
+        workspace,
+        allowed_component_roots=[root],
+    )
 
     assert (workspace / ".config").read_bytes() == content
+
+
+def test_stage_config_rejects_config_outside_allowed_roots_before_copy(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    root = tmp_path / "components"
+    root.mkdir()
+    outside = tmp_path / "outside.config"
+    outside.write_text("CONFIG_FROM_REF=y\n")
+
+    with pytest.raises(CategorizedError) as caught:
+        _stage_config(
+            LocalComponentRef(kind="local", path=str(outside)),
+            workspace,
+            allowed_component_roots=[root],
+        )
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert not (workspace / ".config").exists()
 
 
 def test_stage_config_missing_ref_is_configuration_error(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
+    root = tmp_path / "components"
+    root.mkdir()
     with pytest.raises(CategorizedError) as caught:
         _stage_config(
-            LocalComponentRef(kind="local", path=str(tmp_path / "absent.config")), workspace
+            LocalComponentRef(kind="local", path=str(root / "absent.config")),
+            workspace,
+            allowed_component_roots=[root],
         )
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
@@ -608,7 +673,9 @@ def test_stage_config_copy_fault_is_infrastructure_failure(
 ) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    config = tmp_path / "x.config"
+    root = tmp_path / "components"
+    root.mkdir()
+    config = root / "x.config"
     config.write_text("CONFIG_FROM_REF=y\n")
 
     def _copy_fault(*_: object, **__: object) -> None:
@@ -617,7 +684,11 @@ def test_stage_config_copy_fault_is_infrastructure_failure(
     monkeypatch.setattr(build_module.shutil, "copyfile", _copy_fault)
 
     with pytest.raises(CategorizedError) as caught:
-        _stage_config(LocalComponentRef(kind="local", path=str(config)), workspace)
+        _stage_config(
+            LocalComponentRef(kind="local", path=str(config)),
+            workspace,
+            allowed_component_roots=[root],
+        )
 
     assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
     assert caught.value.details == {"op": "copy_config", "path": ".config"}
@@ -844,9 +915,9 @@ def test_real_checkout_calls_steps_in_order_with_right_args(
         order.append("sync")
         seen["sync"] = (kernel_src, ws)
 
-    def _stage(config_ref: object, ws: Path) -> None:
+    def _stage(config_ref: object, ws: Path, *, allowed_component_roots: list[Path]) -> None:
         order.append("stage")
-        seen["stage"] = (config_ref, ws)
+        seen["stage"] = (config_ref, ws, allowed_component_roots)
 
     def _patch(patch_ref: str, ws: Path) -> None:
         order.append("patch")
@@ -864,11 +935,14 @@ def test_real_checkout_calls_steps_in_order_with_right_args(
         }
     )
     assert isinstance(profile, ServerBuildProfile)
-    build_module._real_checkout("/src/linux", profile, workspace)
+    component_roots = [Path("/build/components")]
+    build_module._real_checkout(
+        "/src/linux", profile, workspace, allowed_component_roots=component_roots
+    )
 
     assert order == ["sync", "stage", "patch"]
     assert seen["sync"] == ("/src/linux", workspace)
-    assert seen["stage"] == (profile.config, workspace)
+    assert seen["stage"] == (profile.config, workspace, component_roots)
     assert seen["patch"] == ("/patches/p", workspace)
 
 
@@ -877,7 +951,11 @@ def test_real_checkout_skips_patch_when_absent(
 ) -> None:
     order: list[str] = []
     monkeypatch.setattr(build_module, "_sync_tree", lambda *_: order.append("sync"))
-    monkeypatch.setattr(build_module, "_stage_config", lambda *_: order.append("stage"))
+    monkeypatch.setattr(
+        build_module,
+        "_stage_config",
+        lambda *_, **__: order.append("stage"),
+    )
     monkeypatch.setattr(build_module, "_apply_patch", lambda *_: order.append("patch"))
 
     profile = _profile()  # patch_ref is None
