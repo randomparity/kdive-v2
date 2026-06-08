@@ -52,9 +52,20 @@ _TERMINAL_ALLOCATION_STATES = (
 _ORPHANED_SYSTEM_TERMINAL_STATES = (SystemState.TORN_DOWN, SystemState.FAILED)
 _TEARDOWN_JOB_IN_FLIGHT_STATES = (JobState.QUEUED, JobState.RUNNING)
 _RUN_COMPENSATION_STATES = (RunState.CREATED, RunState.RUNNING)
+_EXPIRED_ALLOCATION_STATE = AllocationState.EXPIRED
+_FAILED_JOB_STATE = JobState.FAILED
+_RUNNING_JOB_STATE = JobState.RUNNING
+_FAILED_RUN_STATE = RunState.FAILED
+_DETACHED_DEBUG_SESSION_STATE = DebugSessionState.DETACHED
+_LIVE_DEBUG_SESSION_STATE = DebugSessionState.LIVE
+_TORN_DOWN_SYSTEM_STATE = SystemState.TORN_DOWN
+_TEARDOWN_JOB_KIND = JobKind.TEARDOWN
+_LEASE_EXPIRED_CATEGORY = ErrorCategory.LEASE_EXPIRED
+_UPLOAD_RUN_OWNER_KIND = "runs"
+_UPLOAD_SYSTEM_OWNER_KIND = "systems"
 _UPLOAD_PRE_FINALIZE = {
-    "runs": RunState.CREATED,
-    "systems": SystemState.DEFINED,
+    _UPLOAD_RUN_OWNER_KIND: RunState.CREATED,
+    _UPLOAD_SYSTEM_OWNER_KIND: SystemState.DEFINED,
 }
 
 _TERMINAL_ALLOCATION_STATE_VALUES = tuple(state.value for state in _TERMINAL_ALLOCATION_STATES)
@@ -65,6 +76,15 @@ _TEARDOWN_JOB_IN_FLIGHT_STATE_VALUES = tuple(
     state.value for state in _TEARDOWN_JOB_IN_FLIGHT_STATES
 )
 _RUN_COMPENSATION_STATE_VALUES = tuple(state.value for state in _RUN_COMPENSATION_STATES)
+_EXPIRED_ALLOCATION_STATE_VALUE = _EXPIRED_ALLOCATION_STATE.value
+_FAILED_JOB_STATE_VALUE = _FAILED_JOB_STATE.value
+_RUNNING_JOB_STATE_VALUE = _RUNNING_JOB_STATE.value
+_FAILED_RUN_STATE_VALUE = _FAILED_RUN_STATE.value
+_DETACHED_DEBUG_SESSION_STATE_VALUE = _DETACHED_DEBUG_SESSION_STATE.value
+_LIVE_DEBUG_SESSION_STATE_VALUE = _LIVE_DEBUG_SESSION_STATE.value
+_TORN_DOWN_SYSTEM_STATE_VALUE = _TORN_DOWN_SYSTEM_STATE.value
+_TEARDOWN_JOB_KIND_VALUE = _TEARDOWN_JOB_KIND.value
+_LEASE_EXPIRED_CATEGORY_VALUE = _LEASE_EXPIRED_CATEGORY.value
 _UPLOAD_PRE_FINALIZE_VALUES = {
     owner_kind: state.value for owner_kind, state in _UPLOAD_PRE_FINALIZE.items()
 }
@@ -200,7 +220,7 @@ async def _expire_one(conn: AsyncConnection, allocation_id: UUID, project: str) 
         if not await _lease_elapsed(conn, allocation_id):
             return False
         alloc = await accounting.stamp_active_ended(conn, alloc, datetime.now(UTC))
-        await ALLOCATIONS.update_state(conn, allocation_id, AllocationState.EXPIRED)
+        await ALLOCATIONS.update_state(conn, allocation_id, _EXPIRED_ALLOCATION_STATE)
         await audit.record_system(
             conn,
             principal=SYSTEM_RECONCILER_PRINCIPAL,
@@ -208,7 +228,7 @@ async def _expire_one(conn: AsyncConnection, allocation_id: UUID, project: str) 
                 tool="reconciler.sweep_expired",
                 object_kind="allocations",
                 object_id=allocation_id,
-                transition=f"{alloc.state.value}->{AllocationState.EXPIRED.value}",
+                transition=f"{alloc.state.value}->{_EXPIRED_ALLOCATION_STATE_VALUE}",
                 args={"allocation_id": str(allocation_id)},
                 project=project,
             ),
@@ -290,7 +310,7 @@ async def _repair_orphaned_systems(conn: AsyncConnection) -> int:
                 already_queued = await cur.fetchone() is not None
             await queue.enqueue(
                 conn,
-                JobKind.TEARDOWN,
+                _TEARDOWN_JOB_KIND,
                 {"system_id": str(system_id)},
                 {
                     "principal": SYSTEM_RECONCILER_PRINCIPAL,
@@ -320,7 +340,7 @@ async def _repair_abandoned_jobs(conn: AsyncConnection) -> int:
             "SELECT id FROM jobs "
             "WHERE state = %s AND lease_expires_at < now() "
             "  AND attempt >= max_attempts",
-            (JobState.RUNNING.value,),
+            (_RUNNING_JOB_STATE_VALUE,),
         )
         zombie_ids: list[UUID] = [row["id"] for row in await cur.fetchall()]
     swept = 0
@@ -330,10 +350,10 @@ async def _repair_abandoned_jobs(conn: AsyncConnection) -> int:
                 "UPDATE jobs SET state = %s, error_category = %s "
                 "WHERE id = %s AND state = %s RETURNING kind, payload",
                 (
-                    JobState.FAILED.value,
-                    ErrorCategory.LEASE_EXPIRED.value,
+                    _FAILED_JOB_STATE_VALUE,
+                    _LEASE_EXPIRED_CATEGORY_VALUE,
                     job_id,
-                    JobState.RUNNING.value,
+                    _RUNNING_JOB_STATE_VALUE,
                 ),
             )
             row = await cur.fetchone()
@@ -354,8 +374,8 @@ async def _repair_abandoned_jobs(conn: AsyncConnection) -> int:
                     "UPDATE runs SET state = %s, failure_category = %s "
                     "WHERE id = %s AND state = ANY(%s)",
                     (
-                        RunState.FAILED.value,
-                        ErrorCategory.LEASE_EXPIRED.value,
+                        _FAILED_RUN_STATE_VALUE,
+                        _LEASE_EXPIRED_CATEGORY_VALUE,
                         run_id,
                         list(_RUN_COMPENSATION_STATE_VALUES),
                     ),
@@ -377,7 +397,7 @@ async def _repair_dead_sessions(conn: AsyncConnection, stale_after: timedelta) -
             "UPDATE debug_sessions SET state = %s "
             "WHERE state = %s AND worker_heartbeat_at IS NOT NULL "
             "  AND worker_heartbeat_at < now() - %s RETURNING id",
-            (DebugSessionState.DETACHED.value, DebugSessionState.LIVE.value, stale_after),
+            (_DETACHED_DEBUG_SESSION_STATE_VALUE, _LIVE_DEBUG_SESSION_STATE_VALUE, stale_after),
         )
         rows = await cur.fetchall()
     for row in rows:
@@ -408,7 +428,7 @@ async def _repair_leaked_domains(conn: AsyncConnection, reaper: InfraReaper) -> 
         ):
             await cur.execute(
                 "SELECT 1 FROM systems WHERE id = %s AND state <> %s",
-                (domain.system_id, SystemState.TORN_DOWN.value),
+                (domain.system_id, _TORN_DOWN_SYSTEM_STATE_VALUE),
             )
             has_live_row = await cur.fetchone() is not None
             await cur.execute(
@@ -416,7 +436,7 @@ async def _repair_leaked_domains(conn: AsyncConnection, reaper: InfraReaper) -> 
                 "  AND kind = %s AND payload->>'system_id' = %s",
                 (
                     list(_TEARDOWN_JOB_IN_FLIGHT_STATE_VALUES),
-                    JobKind.TEARDOWN.value,
+                    _TEARDOWN_JOB_KIND_VALUE,
                     str(domain.system_id),
                 ),
             )
@@ -453,16 +473,16 @@ async def _repair_abandoned_uploads(conn: AsyncConnection, store: UploadStore) -
             "  OR (m.owner_kind = %s AND EXISTS ("
             "     SELECT 1 FROM systems s WHERE s.id = m.owner_id AND s.state = %s)))",
             (
-                "runs",
-                _UPLOAD_PRE_FINALIZE_VALUES["runs"],
-                "systems",
-                _UPLOAD_PRE_FINALIZE_VALUES["systems"],
+                _UPLOAD_RUN_OWNER_KIND,
+                _UPLOAD_PRE_FINALIZE_VALUES[_UPLOAD_RUN_OWNER_KIND],
+                _UPLOAD_SYSTEM_OWNER_KIND,
+                _UPLOAD_PRE_FINALIZE_VALUES[_UPLOAD_SYSTEM_OWNER_KIND],
             ),
         )
         candidates = await cur.fetchall()
     reaped = 0
     for cand in candidates:
-        scope = LockScope.RUN if cand["owner_kind"] == "runs" else LockScope.SYSTEM
+        scope = LockScope.RUN if cand["owner_kind"] == _UPLOAD_RUN_OWNER_KIND else LockScope.SYSTEM
         if await _reap_one_owner(conn, store, cand["owner_kind"], cand["owner_id"], scope):
             reaped += 1
     return reaped
@@ -512,7 +532,10 @@ async def _reap_one_owner(
 
 async def _owner_pre_finalize(conn: AsyncConnection, owner_kind: str, owner_id: UUID) -> bool:
     """Report whether the owner is still in its pre-finalize state (locked re-read)."""
-    table = "runs" if owner_kind == "runs" else "systems"
+    if owner_kind == _UPLOAD_RUN_OWNER_KIND:
+        table = _UPLOAD_RUN_OWNER_KIND
+    else:
+        table = _UPLOAD_SYSTEM_OWNER_KIND
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             f"SELECT 1 FROM {table} WHERE id = %s AND state = %s",  # noqa: S608 - 2-value whitelist
