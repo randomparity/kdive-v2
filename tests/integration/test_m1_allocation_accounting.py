@@ -48,14 +48,17 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import AuthError
-from kdive.mcp.tools.accounting import usage as acct_tools
+from kdive.mcp.tools.accounting.admin import set_budget, set_quota
+from kdive.mcp.tools.accounting.estimate import estimate
+from kdive.mcp.tools.accounting.usage import usage_investigation, usage_project
 from kdive.mcp.tools.lifecycle import allocations as alloc_tools
 from kdive.mcp.tools.lifecycle import control as control_tools
-from kdive.mcp.tools.lifecycle import systems as systems_tools
+from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers, teardown_system
+from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers
 from kdive.planes import systems as systems_handlers
-from kdive.providers.local_libvirt.provisioning import domain_name_for
+from kdive.providers.local_libvirt.lifecycle.provisioning import domain_name_for
 from kdive.reconciler import loop
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.services import accounting
 from tests.integration._seed import (
     provisioning_profile,
@@ -64,9 +67,20 @@ from tests.integration._seed import (
 )
 from tests.integration.conftest import open_pool, request_context
 from tests.mcp.roles import PROJECT_A, PROJECT_B, make_role_fixture
+from tests.mcp.systems_support import (
+    TEST_COMPONENT_SOURCES as _TEST_COMPONENT_SOURCES,
+)
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _COEFF_LOCAL = Decimal("1.0")
+_SYSTEM_PROVISION_HANDLERS = SystemProvisionHandlers(
+    _TEST_COMPONENT_SOURCES,
+    lambda _: None,
+)
+_SYSTEM_ADMIN_HANDLERS = SystemAdminHandlers(
+    _TEST_COMPONENT_SOURCES,
+    lambda _: None,
+)
 
 
 def _rate(vcpus: int, memory_gb: int) -> Decimal:
@@ -351,21 +365,19 @@ def test_c2_system_quota_denied(migrated_url: str) -> None:
             )
             assert first.status == "granted" and second.status == "granted"
             # First provision occupies the single System slot (inserts as provisioning).
-            prov_one = await systems_tools.provision_system(
+            prov_one = await _SYSTEM_PROVISION_HANDLERS.provision_system(
                 pool,
                 ctx,
                 allocation_id=first.object_id,
                 profile=provisioning_profile(),
-                rootfs_validator=lambda _: None,
             )
             assert prov_one.status == "queued"
             # Second provision is on a DISTINCT allocation -> reaches the new-System quota branch.
-            prov_two = await systems_tools.provision_system(
+            prov_two = await _SYSTEM_PROVISION_HANDLERS.provision_system(
                 pool,
                 ctx,
                 allocation_id=second.object_id,
                 profile=provisioning_profile(),
-                rootfs_validator=lambda _: None,
             )
             assert prov_two.status == "error"
             assert prov_two.error_category == "quota_exceeded"
@@ -425,7 +437,7 @@ def test_c3_estimate_equals_reserved_row(migrated_url: str) -> None:
         async with open_pool(migrated_url) as pool:
             await register_resource(pool)
             await seed_project_limits(pool, limit_kcu=1000)
-            est = await acct_tools.estimate(
+            est = await estimate(
                 pool,
                 _viewer_ctx(),
                 project="proj",
@@ -486,12 +498,11 @@ def test_c3_reconciliation_nets_to_actual_and_usage_matches(migrated_url: str) -
             assert grant.status == "granted"
             alloc_id = UUID(grant.object_id)
             estimate = _estimate(2, 4, 3)  # rate 3.0 * 3h window = 9.0 reserved
-            prov = await systems_tools.provision_system(
+            prov = await _SYSTEM_PROVISION_HANDLERS.provision_system(
                 pool,
                 op,
                 allocation_id=grant.object_id,
                 profile=provisioning_profile(),
-                rootfs_validator=lambda _: None,
             )
             assert prov.status == "queued"
             job = await _provision_job_for_system(pool, prov.data["system_id"])
@@ -514,7 +525,7 @@ def test_c3_reconciliation_nets_to_actual_and_usage_matches(migrated_url: str) -
             assert net == actual  # billed the active interval, not credited back in full
             assert actual != estimate  # the lease did not run the full 3h window
             assert net != Decimal(0)  # the bug would have netted 0 (active_hours = 0)
-            usage = await acct_tools.usage_project(pool, _viewer_ctx(), project="proj")
+            usage = await usage_project(pool, _viewer_ctx(), project="proj")
             assert Decimal(usage.data["spent_kcu"]) == net
 
     asyncio.run(_run())
@@ -839,28 +850,27 @@ def test_c6_operator_refused_admin_ops(migrated_url: str) -> None:
             await seed_project_limits(pool, limit_kcu=1000)
             op = _operator_ctx()
             with pytest.raises(AuthorizationError):
-                await acct_tools.set_budget(pool, op, project="proj", limit_kcu="10")
+                await set_budget(pool, op, project="proj", limit_kcu="10")
             with pytest.raises(AuthorizationError):
-                await acct_tools.set_quota(
+                await set_quota(
                     pool, op, project="proj", max_concurrent_allocations=1, max_concurrent_systems=1
                 )
             # power off / teardown bind their admin check to a real System's project.
             grant = await _request_allocation(
                 pool, op, project="proj", vcpus=2, memory_gb=4, window=3
             )
-            prov = await systems_tools.provision_system(
+            prov = await _SYSTEM_PROVISION_HANDLERS.provision_system(
                 pool,
                 op,
                 allocation_id=grant.object_id,
                 profile=provisioning_profile(),
-                rootfs_validator=lambda _: None,
             )
             sys_id = prov.data["system_id"]
             async with pool.connection() as conn:
                 await conn.execute("UPDATE systems SET state = 'ready' WHERE id = %s", (sys_id,))
             power = await control_tools.power_system(pool, op, system_id=sys_id, action="off")
             assert power.status == "error" and power.error_category == "authorization_denied"
-            teardown = await systems_tools.teardown_system(pool, op, sys_id)
+            teardown = await teardown_system(pool, op, sys_id)
             assert teardown.status == "error"
             assert teardown.error_category == "authorization_denied"
 
@@ -878,12 +888,11 @@ def test_c6_operator_force_crash_returns_authorization_denied_envelope(migrated_
             grant = await _request_allocation(
                 pool, op, project="proj", vcpus=2, memory_gb=4, window=3
             )
-            prov = await systems_tools.provision_system(
+            prov = await _SYSTEM_PROVISION_HANDLERS.provision_system(
                 pool,
                 op,
                 allocation_id=grant.object_id,
                 profile=provisioning_profile(destructive_ops=["force_crash"]),
-                rootfs_validator=lambda _: None,
             )
             sys_id = prov.data["system_id"]
             async with pool.connection() as conn:
@@ -907,10 +916,10 @@ def test_c6_admin_and_operator_succeed_on_their_surfaces(migrated_url: str) -> N
             await register_resource(pool)
             admin = _admin_ctx()
             assert (
-                await acct_tools.set_budget(pool, admin, project="proj", limit_kcu="1000")
+                await set_budget(pool, admin, project="proj", limit_kcu="1000")
             ).status != "error"
             assert (
-                await acct_tools.set_quota(
+                await set_quota(
                     pool,
                     admin,
                     project="proj",
@@ -922,12 +931,11 @@ def test_c6_admin_and_operator_succeed_on_their_surfaces(migrated_url: str) -> N
             grant = await _request_allocation(
                 pool, op, project="proj", vcpus=2, memory_gb=4, window=3
             )
-            prov = await systems_tools.provision_system(
+            prov = await _SYSTEM_PROVISION_HANDLERS.provision_system(
                 pool,
                 op,
                 allocation_id=grant.object_id,
                 profile=provisioning_profile(destructive_ops=["reprovision"]),
-                rootfs_validator=lambda _: None,
             )
             sys_id = prov.data["system_id"]
             async with pool.connection() as conn:
@@ -938,12 +946,11 @@ def test_c6_admin_and_operator_succeed_on_their_surfaces(migrated_url: str) -> N
                 )
             power_on = await control_tools.power_system(pool, op, system_id=sys_id, action="on")
             assert power_on.status == "queued"
-            reprov = await systems_tools.reprovision_system(
+            reprov = await _SYSTEM_ADMIN_HANDLERS.reprovision_system(
                 pool,
                 op,
                 system_id=sys_id,
                 profile=provisioning_profile(destructive_ops=["reprovision"]),
-                rootfs_validator=lambda _: None,
             )
             assert reprov.status == "queued"
 
@@ -969,7 +976,7 @@ def test_c6_viewer_refused_cross_project_usage_by_investigation(migrated_url: st
             # and authorizes on it; a proj-a-only viewer is not a member, so the resolve
             # raises before any spend is read (the tenant-isolation boundary, ADR-0007 §6).
             with pytest.raises((AuthError, AuthorizationError)):
-                await acct_tools.usage_investigation(pool, viewer_a, investigation_id=str(inv_b))
+                await usage_investigation(pool, viewer_a, investigation_id=str(inv_b))
 
     asyncio.run(_run())
 
@@ -1005,12 +1012,11 @@ def test_c7_reprovision_in_place_cycle(migrated_url: str) -> None:
             grant = await _request_allocation(
                 pool, op, project="proj", vcpus=2, memory_gb=4, window=3
             )
-            prov = await systems_tools.provision_system(
+            prov = await _SYSTEM_PROVISION_HANDLERS.provision_system(
                 pool,
                 op,
                 allocation_id=grant.object_id,
                 profile=provisioning_profile(destructive_ops=["reprovision"]),
-                rootfs_validator=lambda _: None,
             )
             sys_id = prov.data["system_id"]
             async with pool.connection() as conn:
@@ -1024,12 +1030,11 @@ def test_c7_reprovision_in_place_cycle(migrated_url: str) -> None:
                 )
             new_profile = provisioning_profile(destructive_ops=["reprovision"])
             new_profile["vcpu"] = 8
-            resp = await systems_tools.reprovision_system(
+            resp = await _SYSTEM_ADMIN_HANDLERS.reprovision_system(
                 pool,
                 op,
                 system_id=sys_id,
                 profile=new_profile,
-                rootfs_validator=lambda _: None,
             )
             assert resp.status == "queued"
             # Drive the reprovision job handler -> reprovisioning -> ready (same row).

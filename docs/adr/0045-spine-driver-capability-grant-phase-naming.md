@@ -14,7 +14,7 @@
 The live-stack spine driver (sub-issue D) drives `allocate → … → release → report` over the
 MCP HTTP transport and must pass the `crash` phase, which calls `control.force_crash`. That
 tool is behind the three-check destructive gate
-(`kdive.security.gate.assert_destructive_allowed`): it requires the **admin** role on the
+(`kdive.security.authz.gate.assert_destructive_allowed`): it requires the **admin** role on the
 allocation's project, the controlling allocation's **`capability_scope.destructive_ops`** to
 grant `force_crash`, **and** the provisioning profile to opt `force_crash` in via
 `provider.local-libvirt.destructive_ops`.

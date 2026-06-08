@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.models import JobKind
 from kdive.profiles.provisioning import (
     BootMethod,
     ProvisioningProfile,
@@ -311,8 +312,8 @@ def test_destructive_opt_in_reports_profile_gate() -> None:
     data["provider"]["local-libvirt"]["destructive_ops"] = ["force_crash"]
     profile = ProvisioningProfile.parse(data)
 
-    assert destructive_opt_in(profile, "force_crash") is True
-    assert destructive_opt_in(profile, "reprovision") is False
+    assert destructive_opt_in(profile, JobKind.FORCE_CRASH) is True
+    assert destructive_opt_in(profile, JobKind.REPROVISION) is False
 
 
 def test_destructive_ops_rejects_blank_entry() -> None:
@@ -358,8 +359,11 @@ def test_capture_method_reports_profile_capture_tier(
     assert capture_method(ProvisioningProfile.parse(data)) is expected
 
 
-def test_capture_method_tolerates_malformed_stored_mapping() -> None:
-    assert capture_method({"schema_version": 1}) is CaptureMethod.CONSOLE
+def test_capture_method_rejects_malformed_stored_mapping() -> None:
+    with pytest.raises(CategorizedError) as exc:
+        capture_method({"schema_version": 1})
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
 def test_debug_block_rejects_unknown_key() -> None:

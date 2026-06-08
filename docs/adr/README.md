@@ -91,3 +91,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0062](0062-platform-operations.md) | Platform operations (M1.3): operator infra/control-plane tools, break-glass override, auditor reads, `require_role` denial-audit (builds on 0043) | Proposed |
 | [0063](0063-typed-provider-runtime.md) | Typed ProviderRuntime is the active M0/M1 provider seam | Accepted |
 | [0064](0064-expected-boot-failures-artifact-search.md) | Expected boot failures + bounded redacted artifact search | Proposed |
+| [0066](0066-remove-capability-registry-prototype-from-src.md) | Remove capability-registry prototype from production source | Accepted |

@@ -1,11 +1,9 @@
-"""Accounting usage and report MCP tools (ADR-0007, ADR-0043)."""
+"""Accounting report MCP tools (ADR-0043)."""
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Annotated, Literal
-from uuid import UUID
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
@@ -17,9 +15,15 @@ from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
+from kdive.mcp.tools._time_window import parse_timestamptz_window
+from kdive.mcp.tools.ops._auth import (
+    ALL_PROJECTS_SCOPE,
+    audit_platform_denial,
+    held_platform_roles,
+)
 from kdive.security import audit
-from kdive.security.context import RequestContext, require_project
-from kdive.security.rbac import (
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import (
     AuthorizationError,
     PlatformRole,
     Role,
@@ -28,98 +32,11 @@ from kdive.security.rbac import (
 )
 from kdive.services import accounting as accounting_domain
 
-_USAGE_OBJECT_ID = "usage"
 _REPORT_OBJECT_ID = "report"
 _REPORT_GRANTED_SET_TOOL = "accounting.report_granted_set"
 _REPORT_ALL_PROJECTS_TOOL = "accounting.report_all_projects"
 _SCOPE_GRANTED_SET = "granted-set"
-_SCOPE_ALL_PROJECTS = "all-projects"
 _GROUP_BY_PRINCIPAL = "principal"
-
-
-async def usage_project(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    *,
-    project: str,
-) -> ToolResponse:
-    """Report a project's spend rollup; ``viewer`` of the target project (ADR-0007 §6)."""
-    with bind_context(principal=ctx.principal):
-        try:
-            require_project(ctx, project)
-            require_role(ctx, project, Role.VIEWER)
-            async with pool.connection() as conn:
-                rollup = await accounting_domain.usage(conn, project)
-            return _usage_response(project, rollup)
-        except CategorizedError as exc:
-            return ToolResponse.failure(
-                _USAGE_OBJECT_ID,
-                exc.category,
-                suggested_next_actions=["accounting.usage_project"],
-            )
-
-
-async def usage_investigation(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    *,
-    investigation_id: str,
-) -> ToolResponse:
-    """Report spend for one investigation plus its owning project rollup."""
-    with bind_context(principal=ctx.principal):
-        try:
-            try:
-                inv_uuid = UUID(investigation_id)
-            except ValueError:
-                raise CategorizedError(
-                    f"investigation_id {investigation_id!r} is not a uuid",
-                    category=ErrorCategory.CONFIGURATION_ERROR,
-                ) from None
-            async with pool.connection() as conn:
-                owning_project = await _resolve_investigation_project(conn, inv_uuid)
-                if owning_project is None:
-                    raise CategorizedError(
-                        f"investigation {investigation_id} does not exist",
-                        category=ErrorCategory.CONFIGURATION_ERROR,
-                    )
-                # Authorize on the owning project before reading spend.
-                require_project(ctx, owning_project)
-                require_role(ctx, owning_project, Role.VIEWER)
-                rollup = await accounting_domain.usage(conn, owning_project)
-                investigation_kcu = await accounting_domain.usage_for_investigation(conn, inv_uuid)
-        except CategorizedError as exc:
-            return ToolResponse.failure(
-                _USAGE_OBJECT_ID,
-                exc.category,
-                suggested_next_actions=["accounting.usage_investigation"],
-            )
-    response = _usage_response(owning_project, rollup)
-    response.data["investigation_id"] = investigation_id
-    response.data["investigation_kcu"] = str(investigation_kcu)
-    return response
-
-
-async def _resolve_investigation_project(conn: AsyncConnection, inv_id: UUID) -> str | None:
-    async with conn.cursor() as cur:
-        await cur.execute("SELECT project FROM investigations WHERE id = %s", (inv_id,))
-        row = await cur.fetchone()
-    return None if row is None else str(row[0])
-
-
-def _usage_response(project: str, rollup: accounting_domain.ProjectUsage) -> ToolResponse:
-    by_cost_class = {cls: str(val) for cls, val in rollup.by_cost_class.items()}
-    return ToolResponse.success(
-        _USAGE_OBJECT_ID,
-        "ok",
-        suggested_next_actions=["accounting.estimate", "allocations.list"],
-        data={
-            "project": project,
-            "spent_kcu": str(rollup.spent_kcu),
-            "budget_remaining": str(rollup.budget_remaining),
-            "shared_kcu": str(rollup.shared_kcu),
-            "by_cost_class": json.dumps(by_cost_class, sort_keys=True),
-        },
-    )
 
 
 async def report_granted_set(
@@ -243,12 +160,12 @@ async def _report_all_projects(
                 agent_session=ctx.agent_session,
                 event=audit.PlatformAuditEvent(
                     tool=_REPORT_ALL_PROJECTS_TOOL,
-                    scope=_SCOPE_ALL_PROJECTS,
-                    args=_report_args(_SCOPE_ALL_PROJECTS, None, group_by, window),
-                    platform_role=_held_platform_roles(ctx),
+                    scope=ALL_PROJECTS_SCOPE,
+                    args=_report_args(ALL_PROJECTS_SCOPE, None, group_by, window),
+                    platform_role=held_platform_roles(ctx),
                 ),
             )
-    return _report_response(_SCOPE_ALL_PROJECTS, group_by, targets, rollup)
+    return _report_response(ALL_PROJECTS_SCOPE, group_by, targets, rollup)
 
 
 async def _audit_all_projects_denial(
@@ -264,28 +181,13 @@ async def _audit_all_projects_denial(
     on this openly-callable read. The role check runs before any pool connection is open, so
     the denial-audit opens its own connection and transaction here.
     """
-    held = _held_platform_roles(ctx)
-    if held is None:
-        return
-    async with pool.connection() as conn, conn.transaction():
-        await audit.record_platform(
-            conn,
-            principal=ctx.principal,
-            agent_session=ctx.agent_session,
-            event=audit.PlatformAuditEvent(
-                tool=_REPORT_ALL_PROJECTS_TOOL,
-                scope=_SCOPE_ALL_PROJECTS,
-                args=_report_args(_SCOPE_ALL_PROJECTS, None, group_by, window),
-                platform_role=held,
-            ),
-        )
-
-
-def _held_platform_roles(ctx: RequestContext) -> str | None:
-    """Return the caller's platform roles as a sorted comma string, or None if it holds none."""
-    if not ctx.platform_roles:
-        return None
-    return ",".join(sorted(r.value for r in ctx.platform_roles))
+    await audit_platform_denial(
+        pool,
+        ctx,
+        tool=_REPORT_ALL_PROJECTS_TOOL,
+        scope=ALL_PROJECTS_SCOPE,
+        args=_report_args(ALL_PROJECTS_SCOPE, None, group_by, window),
+    )
 
 
 async def _all_projects(conn: AsyncConnection) -> list[str]:
@@ -325,44 +227,7 @@ def _parse_window(window: object) -> tuple[datetime | None, datetime | None] | N
     so a malformed window surfaces an error rather than a silently-empty rollup. ``ledger.ts``
     is ``timestamptz``; a tz-naive bound would compare in an unintended zone.
     """
-    if window is None:
-        return None
-    if not isinstance(window, (list, tuple)) or len(window) != 2:
-        raise CategorizedError(
-            "window must be a [start, end] pair", category=ErrorCategory.CONFIGURATION_ERROR
-        )
-    start, end = (_parse_instant(window[0]), _parse_instant(window[1]))
-    if start is None and end is None:
-        return None
-    if start is not None and end is not None and start >= end:
-        raise CategorizedError(
-            f"window start {start.isoformat()} must precede end {end.isoformat()}",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    return (start, end)
-
-
-def _parse_instant(value: object) -> datetime | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise CategorizedError(
-            f"window bound {value!r} is not an ISO-8601 string",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        raise CategorizedError(
-            f"window bound {value!r} is not a valid ISO-8601 timestamp",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        ) from None
-    if parsed.tzinfo is None:
-        raise CategorizedError(
-            f"window bound {value!r} must be timezone-aware (ledger.ts is timestamptz)",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    return parsed
+    return parse_timestamptz_window(window, timestamp_column="ledger.ts")
 
 
 def _report_args(
@@ -380,10 +245,10 @@ def _report_args(
     }
 
 
-def _rollup_row_json(row: accounting_domain.RollupRow) -> dict[str, str | None]:
+def _rollup_row_data(row: accounting_domain.RollupRow) -> dict[str, str]:
     return {
         "project": row.project,
-        "principal": row.principal,
+        "principal": row.principal or "",
         "reserved": str(row.reserved),
         "reconciled": str(row.reconciled),
         "variance": str(row.variance),
@@ -393,46 +258,37 @@ def _rollup_row_json(row: accounting_domain.RollupRow) -> dict[str, str | None]:
 def _report_response(
     scope: str, group_by: str | None, targets: list[str], rollup: accounting_domain.Report
 ) -> ToolResponse:
-    return ToolResponse.success(
+    items = [
+        ToolResponse.success(_rollup_object_id(row), "ok", data=_rollup_row_data(row))
+        for row in rollup.rows
+    ]
+    total = _rollup_row_data(rollup.total)
+    return ToolResponse.collection(
         _REPORT_OBJECT_ID,
         "ok",
+        items,
         suggested_next_actions=["accounting.usage_project"],
         data={
             "scope": scope,
             "group_by": group_by or "",
-            "projects": json.dumps(sorted(targets)),
-            "rows": json.dumps([_rollup_row_json(r) for r in rollup.rows]),
-            "total": json.dumps(_rollup_row_json(rollup.total)),
+            "project_count": str(len(targets)),
+            "total_project": total["project"],
+            "total_principal": total["principal"],
+            "total_reserved": total["reserved"],
+            "total_reconciled": total["reconciled"],
+            "total_variance": total["variance"],
         },
     )
 
 
+def _rollup_object_id(row: accounting_domain.RollupRow) -> str:
+    if row.principal is None:
+        return row.project
+    return f"{row.project}:{row.principal}"
+
+
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
-    """Register usage and report accounting tools on ``app``, bound to ``pool``."""
-
-    @app.tool(
-        name="accounting.usage_project",
-        annotations=_docmeta.read_only(),
-        meta={"maturity": "implemented"},
-    )
-    async def accounting_usage_project(
-        project: Annotated[str, Field(description="Project to report spend for.")],
-    ) -> ToolResponse:
-        """Return spend rollup for one project. Requires viewer."""
-        return await usage_project(pool, current_context(), project=project)
-
-    @app.tool(
-        name="accounting.usage_investigation",
-        annotations=_docmeta.read_only(),
-        meta={"maturity": "implemented"},
-    )
-    async def accounting_usage_investigation(
-        investigation_id: Annotated[
-            str, Field(description="Investigation UUID to report spend for.")
-        ],
-    ) -> ToolResponse:
-        """Return spend rollup for one investigation and its owning project. Requires viewer."""
-        return await usage_investigation(pool, current_context(), investigation_id=investigation_id)
+    """Register report accounting tools on ``app``, bound to ``pool``."""
 
     @app.tool(
         name="accounting.report_granted_set",

@@ -10,19 +10,26 @@ from kdive.components.references import ComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
 
 type ComponentKind = Literal["rootfs", "kernel", "initrd", "config", "patch", "vmlinux"]
-type ComponentSourceKind = Literal["local", "artifact", "catalog"]
+type ComponentSourceKind = Literal["local", "artifact", "component-upload", "catalog"]
+
+ROOTFS_COMPONENT: ComponentKind = "rootfs"
+KERNEL_COMPONENT: ComponentKind = "kernel"
+INITRD_COMPONENT: ComponentKind = "initrd"
+CONFIG_COMPONENT: ComponentKind = "config"
+PATCH_COMPONENT: ComponentKind = "patch"
+VMLINUX_COMPONENT: ComponentKind = "vmlinux"
 
 
 @dataclass(frozen=True, slots=True)
 class ComponentSourceCapabilities:
     provider: str
-    accepted_component_sources: Mapping[str, frozenset[str]]
+    accepted_component_sources: Mapping[ComponentKind, frozenset[ComponentSourceKind]]
 
 
 def reject_unsupported_component_source(
     caps: ComponentSourceCapabilities,
     *,
-    component_kind: str,
+    component_kind: ComponentKind,
     ref: ComponentRef,
 ) -> None:
     """Raise a configuration error when ``ref`` is not advertised for a component kind."""

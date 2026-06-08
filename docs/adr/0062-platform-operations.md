@@ -67,6 +67,11 @@ placing new work on a cordoned host is exactly what cordon forbids, so naming th
 not be an escape hatch. `resources.cordon`/`uncordon` toggle the boolean; `resources.set_status`
 sets the health triad; the verbs stay on their own axes.
 
+**Current implementation note.** The historical flat `mcp/tools/allocations.py` references now
+map to `src/kdive/mcp/tools/lifecycle/allocations.py` for allocation admission/release and
+`src/kdive/mcp/tools/ops/` for platform operations such as inventory, queue, reconcile,
+tuning, audit, and break-glass.
+
 **Drain is modeled as an action, not a persisted state** (*decision 1a*): `resources.drain` sets
 `cordoned`, then `mode=passive` (default — report live allocations, let them finish) or
 `mode=force_release` (force-release each). The two modes **carry different authority**: cordon
@@ -105,6 +110,10 @@ helper so break-glass can inject a guard-exempt (`record_system`/`record_platfor
 while the per-project tools keep passing the membership-guarded `record`. **Both authorization and
 audit attribution differ** from the per-project tools; only the teardown/release mechanics are
 shared. The per-project tools are unchanged.
+
+**Current implementation note.** The release mechanics referenced here live in
+`src/kdive/mcp/tools/lifecycle/allocations.py`; break-glass entry points and platform audit
+writers live under `src/kdive/mcp/tools/ops/`.
 
 ### 5. `require_role` over-reach denials are audited via a dedicated `RoleDenied` exception caught at the dispatch boundary
 
@@ -151,7 +160,7 @@ CHECK keyed on `transition = 'denied'`: object columns may be NULL only on a `'d
 every real-transition row retains the original invariant.
 
 The `RoleDenied` retrofit must write the **reserved bare transition literal `'denied'`** — not the
-`{op}:denied` convention the destructive gate uses (`security/gate.py` writes
+`{op}:denied` convention the destructive gate uses (`security/authz/gate.py` writes
 `transition=f"{op.kind}:denied"`, e.g. `force_crash:denied`). The two denial kinds are designed to
 coexist under the one CHECK: (a) the destructive-gate denial always carries an object (the
 allocation it gated), so its `{op}:denied` row satisfies the CHECK's *object-present* branch with

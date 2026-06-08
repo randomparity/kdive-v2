@@ -25,12 +25,10 @@ from kdive.domain.models import Sensitivity
 from kdive.providers.ports import (
     CaptureOutput,
     CrashOutput,
-    CrashPostmortem,
     CrashResult,
-    Retriever,
 )
-from kdive.security.crash_commands import crash_command_rejection_reason
-from kdive.security.redaction import Redactor
+from kdive.security.artifacts.crash_commands import crash_command_rejection_reason
+from kdive.security.secrets.redaction import Redactor
 from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact, object_store_from_env
 
 _RETENTION_CLASS = "vmcore"
@@ -91,8 +89,11 @@ class LocalLibvirtRetrieve:
         """Capture a core via ``method``; store raw + redacted; return refs + build-id.
 
         Raises:
-            CategorizedError: ``READINESS_FAILURE`` if no complete core appears in the
-                window; ``INFRASTRUCTURE_FAILURE`` propagated from a failed artifact store.
+            CategorizedError: ``CONFIGURATION_ERROR`` for capture/build-id provenance or
+                input failures propagated by injected seams; ``MISSING_DEPENDENCY`` when a
+                capture, build-id, or redaction seam is unavailable; ``READINESS_FAILURE``
+                if no complete core appears in the window; or ``INFRASTRUCTURE_FAILURE``
+                propagated from a failed artifact store.
         """
         if method is CaptureMethod.HOST_DUMP:
             data = self._host_dump_capture(system_id)
@@ -144,8 +145,11 @@ class LocalLibvirtRetrieve:
         returns the parsed, **redacted** transcript.
 
         Raises:
-            CategorizedError: ``CONFIGURATION_ERROR`` on a build-id provenance mismatch;
-                ``MISSING_DEPENDENCY`` if the crash seams were not configured.
+            CategorizedError: ``CONFIGURATION_ERROR`` for a malformed ref rejected by an
+                injected fetch/build-id seam or a build-id provenance mismatch;
+                ``MISSING_DEPENDENCY`` if the crash seams were not configured;
+                ``STALE_HANDLE`` when a referenced object is missing; or
+                ``INFRASTRUCTURE_FAILURE`` for object-store IO failures.
         """
         if self._fetch_object is None or self._run_crash is None:
             raise CategorizedError(
@@ -229,11 +233,6 @@ def _real_run_crash(  # pragma: no cover - live_vm
 
 
 __all__ = [
-    "CaptureOutput",
-    "CrashOutput",
-    "CrashPostmortem",
-    "CrashResult",
     "LocalLibvirtRetrieve",
-    "Retriever",
     "crash_command_rejection_reason",
 ]

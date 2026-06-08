@@ -13,6 +13,7 @@ from kdive.db import upload_manifest
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.lifecycle_rules import TERMINAL_SYSTEM_STATES
 from kdive.domain.models import Job, JobKind, Sensitivity, System
 from kdive.domain.state import IllegalTransition, SystemState
 from kdive.jobs.context import context_from_job as job_context_from_job
@@ -23,8 +24,8 @@ from kdive.profiles.provisioning import (
     profile_digest,
     rootfs_upload_window_allowed,
 )
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 from kdive.providers.ports import Provisioner
+from kdive.providers.runtime import ProviderRuntime
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security import audit
 from kdive.store import objectstore as _objectstore
@@ -35,8 +36,6 @@ from kdive.store.objectstore import (
 )
 
 _log = logging.getLogger(__name__)
-
-TERMINAL_SYSTEM = frozenset({SystemState.TORN_DOWN, SystemState.FAILED})
 
 
 def object_store_from_env() -> _objectstore.ObjectStore:
@@ -105,6 +104,80 @@ async def _finalize_provision_ready(
     )
 
 
+async def _record_provision_failure(
+    conn: AsyncConnection, job: Job, *, system_id: UUID, project: str
+) -> None:
+    try:
+        async with conn.transaction():
+            await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
+            await audit_transition(
+                conn,
+                job,
+                project=project,
+                object_id=system_id,
+                transition="provisioning->failed",
+                tool="systems.provision",
+            )
+    except IllegalTransition:
+        _log.info("provision of system %s failed but it is already terminal", system_id)
+    except Exception:  # noqa: BLE001 - failure recording is best-effort; preserve provider error
+        _log.warning(
+            "provision of system %s failed but failure recording failed; preserving provider error",
+            system_id,
+            exc_info=True,
+        )
+
+
+async def _record_reprovision_failure(
+    conn: AsyncConnection, job: Job, *, system_id: UUID, project: str
+) -> None:
+    try:
+        async with conn.transaction():
+            await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
+            await audit_transition(
+                conn,
+                job,
+                project=project,
+                object_id=system_id,
+                transition="reprovisioning->failed",
+                tool="systems.reprovision",
+            )
+    except IllegalTransition:
+        _log.info("reprovision of system %s failed but it is already terminal", system_id)
+    except Exception:  # noqa: BLE001 - failure recording is best-effort; preserve provider error
+        _log.warning(
+            "reprovision of system %s failed but failure recording failed; "
+            "preserving provider error",
+            system_id,
+            exc_info=True,
+        )
+
+
+async def _locked_system_state(conn: AsyncConnection, system_id: UUID) -> SystemState | None:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT state FROM systems WHERE id = %s FOR UPDATE", (system_id,))
+        row = await cur.fetchone()
+    return SystemState(row["state"]) if row is not None else None
+
+
+async def _commit_provision_result(
+    conn: AsyncConnection,
+    job: Job,
+    system: System,
+    profile: ProvisioningProfile,
+    domain_name: str,
+) -> SystemState | None:
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system.id):
+        current = await _locked_system_state(conn, system.id)
+        if current is SystemState.PROVISIONING:
+            await conn.execute(
+                "UPDATE systems SET state = %s, domain_name = %s WHERE id = %s",
+                (SystemState.READY.value, domain_name, system.id),
+            )
+            await _finalize_provision_ready(conn, job, system, profile)
+        return current
+
+
 async def provision_handler(
     conn: AsyncConnection, job: Job, provisioning: Provisioner
 ) -> str | None:
@@ -118,41 +191,20 @@ async def provision_handler(
             details={"system_id": str(system_id)},
         )
     if system.state is not SystemState.PROVISIONING:
-        if system.state in TERMINAL_SYSTEM:
-            provisioning.teardown(system.domain_name or domain_name_for(system_id))
+        if system.state in TERMINAL_SYSTEM_STATES:
+            await asyncio.to_thread(
+                provisioning.teardown, system.domain_name or domain_name_for(system_id)
+            )
         return str(system_id)
     profile = ProvisioningProfile.parse(system.provisioning_profile)
     try:
-        domain_name = provisioning.provision(system_id, profile)
+        domain_name = await asyncio.to_thread(provisioning.provision, system_id, profile)
     except CategorizedError:
-        try:
-            async with conn.transaction():
-                await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
-                await audit_transition(
-                    conn,
-                    job,
-                    project=system.project,
-                    object_id=system_id,
-                    transition="provisioning->failed",
-                    tool="systems.provision",
-                )
-        except IllegalTransition:
-            _log.info("provision of system %s failed but it is already terminal", system_id)
+        await _record_provision_failure(conn, job, system_id=system_id, project=system.project)
         raise
-    current: SystemState | None = None
-    async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute("SELECT state FROM systems WHERE id = %s FOR UPDATE", (system_id,))
-            row = await cur.fetchone()
-            current = SystemState(row["state"]) if row is not None else None
-        if current is SystemState.PROVISIONING:
-            await conn.execute(
-                "UPDATE systems SET state = %s, domain_name = %s WHERE id = %s",
-                (SystemState.READY.value, domain_name, system_id),
-            )
-            await _finalize_provision_ready(conn, job, system, profile)
-    if current in TERMINAL_SYSTEM:
-        provisioning.teardown(domain_name)
+    current = await _commit_provision_result(conn, job, system, profile, domain_name)
+    if current in TERMINAL_SYSTEM_STATES:
+        await asyncio.to_thread(provisioning.teardown, domain_name)
         _log.info("provision of system %s superseded by teardown; domain reaped", system_id)
     return str(system_id)
 
@@ -173,21 +225,9 @@ async def reprovision_handler(
         return str(system_id)
     profile = ProvisioningProfile.parse(system.provisioning_profile)
     try:
-        domain_name = provisioning.reprovision(system_id, profile)
+        domain_name = await asyncio.to_thread(provisioning.reprovision, system_id, profile)
     except CategorizedError:
-        try:
-            async with conn.transaction():
-                await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
-                await audit_transition(
-                    conn,
-                    job,
-                    project=system.project,
-                    object_id=system_id,
-                    transition="reprovisioning->failed",
-                    tool="systems.reprovision",
-                )
-        except IllegalTransition:
-            _log.info("reprovision of system %s failed but it is already terminal", system_id)
+        await _record_reprovision_failure(conn, job, system_id=system_id, project=system.project)
         raise
     fingerprint = profile_digest(profile)
     current: SystemState | None = None
@@ -211,6 +251,9 @@ async def reprovision_handler(
                 transition="reprovisioning->ready",
                 tool="systems.reprovision",
             )
+    if current in TERMINAL_SYSTEM_STATES:
+        await asyncio.to_thread(provisioning.teardown, domain_name)
+        _log.info("reprovision of system %s superseded by teardown; domain reaped", system_id)
     return str(system_id)
 
 
@@ -235,7 +278,7 @@ async def teardown_handler(
                 transition=f"{old.value}->torn_down",
                 tool="systems.teardown",
             )
-    provisioning.teardown(domain_name)
+    await asyncio.to_thread(provisioning.teardown, domain_name)
     return str(system_id)
 
 
@@ -246,18 +289,15 @@ def register_handlers(
     provider_runtime: ProviderRuntime | None = None,
 ) -> None:
     """Bind the `provision`/`teardown`/`reprovision` job handlers."""
-    runtime = provider_runtime or build_default_provider_runtime()
-    prov = provisioning or runtime.provisioner
+    if provisioning is None:
+        if provider_runtime is None:
+            raise RuntimeError("systems handlers require provider runtime or provisioning")
+        provisioning = provider_runtime.provisioner
 
-    async def _provision(conn: AsyncConnection, job: Job) -> str | None:
-        return await provision_handler(conn, job, prov)
-
-    async def _teardown(conn: AsyncConnection, job: Job) -> str | None:
-        return await teardown_handler(conn, job, prov)
-
-    async def _reprovision(conn: AsyncConnection, job: Job) -> str | None:
-        return await reprovision_handler(conn, job, prov)
-
-    registry.register(JobKind.PROVISION, _provision)
-    registry.register(JobKind.TEARDOWN, _teardown)
-    registry.register(JobKind.REPROVISION, _reprovision)
+    registry.register(
+        JobKind.PROVISION, lambda conn, job: provision_handler(conn, job, provisioning)
+    )
+    registry.register(JobKind.TEARDOWN, lambda conn, job: teardown_handler(conn, job, provisioning))
+    registry.register(
+        JobKind.REPROVISION, lambda conn, job: reprovision_handler(conn, job, provisioning)
+    )

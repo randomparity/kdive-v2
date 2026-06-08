@@ -24,8 +24,10 @@ from kdive.db import upload_manifest
 from kdive.db.locks import LockScope
 from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.state import RunState
-from kdive.mcp.tools.lifecycle import systems as systems_tools
 from kdive.reconciler.loop import _reap_one_owner, _repair_abandoned_uploads
+from tests.mcp.systems_support import (
+    SYSTEM_PROVISION_HANDLERS as _SYSTEM_PROVISION_HANDLERS,
+)
 from tests.mcp.systems_support import (
     ctx as _ctx,
 )
@@ -73,7 +75,7 @@ async def _defined_system_via_define(url: str) -> UUID:
     """
     async with AsyncConnectionPool(url, min_size=1, max_size=2) as pool:
         alloc_id = await _granted_allocation(pool)
-        resp = await systems_tools.define_system(
+        resp = await _SYSTEM_PROVISION_HANDLERS.define_system(
             pool, _ctx(), allocation_id=alloc_id, profile=_upload_profile()
         )
     return UUID(resp.object_id)

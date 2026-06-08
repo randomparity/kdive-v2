@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -34,8 +35,8 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
-from kdive.security.context import RequestContext
-from kdive.security.rbac import AuthorizationError, Role, require_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import AuthorizationError, Role, require_role
 
 _log = logging.getLogger(__name__)
 
@@ -52,13 +53,8 @@ def _error(object_id: str, category: ErrorCategory) -> ToolResponse:
 
 
 def _in_scope(job: Job, ctx: RequestContext) -> bool:
-    """True iff ``job``'s owning project is granted to ``ctx`` (#11).
-
-    A job whose ``authorizing`` tuple carries no string ``project`` belongs to no one and
-    is therefore out of scope for every caller (fail closed).
-    """
-    project = job.authorizing.get("project")
-    return isinstance(project, str) and project in ctx.projects
+    """True iff ``job``'s owning project is granted to ``ctx`` (#11)."""
+    return job.authorizing["project"] in ctx.projects
 
 
 def _project(job: Job) -> str:
@@ -97,7 +93,12 @@ async def get_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str) -
 
 
 async def wait_job(
-    pool: AsyncConnectionPool, ctx: RequestContext, job_id: str, timeout_s: float
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    job_id: str,
+    timeout_s: float,
+    *,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> ToolResponse:
     """Poll until the job is terminal or ``timeout_s`` (clamped) elapses.
 
@@ -118,9 +119,10 @@ async def wait_job(
             if job is None or not _in_scope(job, ctx):
                 return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
             require_role(ctx, _project(job), Role.VIEWER)
-            if job.state in _TERMINAL or loop.time() >= deadline:
+            now = loop.time()
+            if job.state in _TERMINAL or now >= deadline:
                 return ToolResponse.from_job(job)
-            await asyncio.sleep(POLL_INTERVAL_S)
+            await sleep(min(POLL_INTERVAL_S, deadline - now))
 
 
 async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str) -> ToolResponse:
@@ -165,10 +167,8 @@ async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str
         return ToolResponse.from_job(job)
 
 
-async def list_jobs(
-    pool: AsyncConnectionPool, ctx: RequestContext, *, limit: int
-) -> list[ToolResponse]:
-    """Return the newest jobs (capped), each as an envelope, isolating bad rows."""
+async def list_jobs(pool: AsyncConnectionPool, ctx: RequestContext, *, limit: int) -> ToolResponse:
+    """Return the newest jobs (capped) in one collection envelope."""
     capped = max(1, min(limit, MAX_LIST_LIMIT))
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
@@ -178,9 +178,18 @@ async def list_jobs(
             try:
                 responses.append(ToolResponse.from_job(job))
             except ValueError:
-                _log.warning("job %s violates the response invariant; degraded", job.id)
+                _log.warning(
+                    "job %s violates the response invariant; degraded",
+                    job.id,
+                    exc_info=True,
+                )
                 responses.append(_error(str(job.id), ErrorCategory.INFRASTRUCTURE_FAILURE))
-        return responses
+        return ToolResponse.collection(
+            "jobs",
+            "ok",
+            responses,
+            suggested_next_actions=["jobs.get", "jobs.wait", "jobs.cancel"],
+        )
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
@@ -235,6 +244,6 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         limit: Annotated[
             int, Field(description="Maximum rows returned (capped at 200).")
         ] = DEFAULT_LIST_LIMIT,
-    ) -> list[ToolResponse]:
+    ) -> ToolResponse:
         """List the newest Jobs visible to the caller's readable projects. Requires viewer."""
         return await list_jobs(pool, current_context(), limit=limit)

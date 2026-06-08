@@ -276,7 +276,7 @@ def test_reconcile_once_reports_gc_count(migrated_url: str) -> None:
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             report = await loop.reconcile_once(pool, loop.NullReaper())
-        assert report.idempotency_keys_gcd == 1
+        assert report.idempotency_keys_gc_count == 1
 
     asyncio.run(_run())
 

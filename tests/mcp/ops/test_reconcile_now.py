@@ -25,8 +25,9 @@ from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.domain.state import AllocationState, SystemState
 from kdive.mcp.tools.ops import reconcile as ops_reconcile
 from kdive.reconciler.loop import NullReaper, reconcile_once
-from kdive.security.context import RequestContext
-from kdive.security.rbac import PlatformRole
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import PlatformRole
+from tests.db_waits import wait_until_any_backend_waiting
 from tests.reconciler.conftest import connect, seed_system
 
 
@@ -140,25 +141,46 @@ def test_reconcile_now_clean_state_returns_zero_summary(migrated_url: str) -> No
     asyncio.run(_run())
 
 
-def test_non_operator_is_denied_and_writes_no_audit_row(migrated_url: str) -> None:
+def test_project_only_non_operator_is_denied_and_writes_no_audit_row(
+    migrated_url: str,
+) -> None:
     async def _run() -> None:
         async with await connect(migrated_url) as seed:
             await seed_system(
                 seed, system_state=SystemState.READY, alloc_state=AllocationState.RELEASED
             )
         async with _pool(migrated_url) as pool:
-            # A project-only token (no platform role) and an auditor token are both denied;
-            # platform roles are granted independently (operator is not implied by auditor).
-            for roles in (frozenset(), frozenset({PlatformRole.PLATFORM_AUDITOR})):
-                resp = await ops_reconcile.reconcile_now(
-                    pool, _ctx(platform_roles=roles), reaper=NullReaper(), upload_store=None
-                )
-                assert resp.status == "error"
-                assert resp.error_category == "authorization_denied"
-                assert resp.suggested_next_actions == ["ops.reconcile_now"]
+            resp = await ops_reconcile.reconcile_now(
+                pool, _ctx(), reaper=NullReaper(), upload_store=None
+            )
+            assert resp.status == "error"
+            assert resp.error_category == "authorization_denied"
+            assert resp.suggested_next_actions == ["ops.reconcile_now"]
         # The denied calls performed no repair and wrote no audit row.
         assert await _teardown_job_count(migrated_url) == 0
         assert await _platform_audit_count(migrated_url) == 0
+
+    asyncio.run(_run())
+
+
+def test_auditor_non_operator_denial_is_audited(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            await seed_system(
+                seed, system_state=SystemState.READY, alloc_state=AllocationState.RELEASED
+            )
+        async with _pool(migrated_url) as pool:
+            resp = await ops_reconcile.reconcile_now(
+                pool,
+                _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_AUDITOR})),
+                reaper=NullReaper(),
+                upload_store=None,
+            )
+            assert resp.status == "error"
+            assert resp.error_category == "authorization_denied"
+        assert await _teardown_job_count(migrated_url) == 0
+        rows = await _platform_audit_rows(migrated_url)
+        assert rows == [("op-1", "platform_auditor", "all-projects")]
 
     asyncio.run(_run())
 
@@ -206,8 +228,7 @@ def test_on_demand_pass_serializes_with_periodic_on_the_same_system_lock(
                         pool, _ctx(platform_roles=_OPERATOR), reaper=NullReaper(), upload_store=None
                     )
                 )
-                # Give the task time to reach and block on the per-System lock the holder owns.
-                await asyncio.sleep(0.3)
+                await wait_until_any_backend_waiting(holder, locktype="advisory")
                 assert not task.done(), "reconcile_now did not block on the held System lock"
                 assert await _teardown_job_count(migrated_url) == 0
             # holder transaction committed -> lock released; the repair now proceeds.

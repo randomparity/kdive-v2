@@ -25,9 +25,10 @@ from pydantic import Field
 
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import ErrorCategory
-from kdive.domain.models import Job, JobKind, PowerAction, System
+from kdive.domain.models import DestructiveJobKind, JobKind, PowerAction, System
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
+from kdive.jobs.payloads import PowerPayload, SystemPayload
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
@@ -44,14 +45,14 @@ from kdive.mcp.tools._common import (
 from kdive.mcp.tools._common import job_envelope
 from kdive.profiles.provisioning import ProvisioningProfile, destructive_opt_in
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
-from kdive.security.rbac import Role, require_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
+from kdive.security.authz.rbac import Role, require_role
 
 # Systems that have a started libvirt domain (so a power op has something to act on).
 _STARTED_SYSTEM = frozenset({SystemState.READY, SystemState.CRASHED})
-_FORCE_CRASH = "force_crash"
-_POWER = "power"
+_FORCE_CRASH = JobKind.FORCE_CRASH
+_POWER = JobKind.POWER
 # Power on is a reversible lifecycle move (operator); off/cycle/reset tear into a running
 # guest and are destructive-administration ops (admin) — ADR-0037 §1/§2.
 _POWER_ON_ACTIONS = frozenset({PowerAction.ON})
@@ -61,10 +62,6 @@ _DESTRUCTIVE_POWER_ACTIONS = frozenset({PowerAction.OFF, PowerAction.CYCLE, Powe
 def _power_required_role(action: PowerAction) -> Role:
     """The lowest role that may issue ``action``: ``operator`` for ``on``, else ``admin``."""
     return Role.OPERATOR if action in _POWER_ON_ACTIONS else Role.ADMIN
-
-
-def _system_job_envelope(job: Job, system_id: UUID) -> ToolResponse:
-    return job_envelope(job, "system_id", system_id)
 
 
 async def power_system(
@@ -103,11 +100,11 @@ async def power_system(
             job = await queue.enqueue(
                 conn,
                 JobKind.POWER,
-                {"system_id": system_id, "action": power_action.value},
+                PowerPayload(system_id=system_id, action=power_action),
                 job_authorizing(ctx, system.project),
                 f"{system_id}:power:{power_action.value}:{uuid4()}",
             )
-        return _system_job_envelope(job, uid)
+        return job_envelope(job, "system_id", uid)
 
 
 async def _authorize_destructive(
@@ -115,7 +112,7 @@ async def _authorize_destructive(
     ctx: RequestContext,
     system: System,
     system_uid: UUID,
-    op_kind: str,
+    op_kind: DestructiveJobKind,
     *,
     tool: str,
 ) -> ToolResponse | None:
@@ -134,7 +131,7 @@ async def _authorize_destructive(
                     tool=tool,
                     object_kind="systems",
                     object_id=system_uid,
-                    transition=f"{op_kind}:denied",
+                    transition=f"{op_kind.value}:denied",
                     args={"system_id": str(system_uid), "missing": denied.missing},
                     project=system.project,
                 ),
@@ -143,7 +140,7 @@ async def _authorize_destructive(
     return None
 
 
-def _op_opt_in(system: System, op_kind: str) -> bool:
+def _op_opt_in(system: System, op_kind: DestructiveJobKind) -> bool:
     """Resolve the gate's profile opt-in factor from the System's provisioning profile."""
     profile = ProvisioningProfile.parse(system.provisioning_profile)
     return destructive_opt_in(profile, op_kind)
@@ -175,11 +172,11 @@ async def force_crash_system(
             job = await queue.enqueue(
                 conn,
                 JobKind.FORCE_CRASH,
-                {"system_id": system_id},
+                SystemPayload(system_id=system_id),
                 job_authorizing(ctx, system.project),
                 f"{system_id}:force_crash",
             )
-        return _system_job_envelope(job, uid)
+        return job_envelope(job, "system_id", uid)
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:

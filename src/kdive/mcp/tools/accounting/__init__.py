@@ -1,1 +1,1 @@
-"""Accounting MCP tool modules."""
+"""Accounting MCP tool package."""

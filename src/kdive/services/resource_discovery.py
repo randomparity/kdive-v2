@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any
 from uuid import uuid4
 
 from psycopg import AsyncConnection, AsyncCursor
@@ -12,15 +12,9 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.locks import LockScope, advisory_xact_lock
+from kdive.domain.discovery import DiscoverySource, ResourceRecord
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Resource, ResourceKind
-from kdive.providers.interfaces import ResourceRecord
-
-
-class DiscoverySource(Protocol):
-    """Provider discovery port used by core registration."""
-
-    def list_resources(self) -> list[ResourceRecord]: ...
 
 
 async def register_discovered_resource(

@@ -51,12 +51,12 @@ def test_reconcile_report_holds_counts_and_failures() -> None:
         abandoned_jobs=2,
         dead_sessions=3,
         leaked_domains=4,
-        idempotency_keys_gcd=6,
+        idempotency_keys_gc_count=6,
         failures=("abandoned_jobs",),
     )
     assert report.expired_allocations == 5
     assert report.orphaned_systems == 1
-    assert report.idempotency_keys_gcd == 6
+    assert report.idempotency_keys_gc_count == 6
     assert report.failures == ("abandoned_jobs",)
 
 
@@ -451,7 +451,7 @@ def test_reconcile_once_counts_a_mixed_pass(migrated_url: str) -> None:
             abandoned_jobs=1,
             dead_sessions=1,
             leaked_domains=1,
-            idempotency_keys_gcd=0,
+            idempotency_keys_gc_count=0,
             failures=(),
         )
         assert reaper.destroyed == ["vm-leak"]
@@ -501,5 +501,29 @@ def test_reconciler_run_survives_a_failing_pass(monkeypatch: pytest.MonkeyPatch)
         reconciler = Reconciler(pool, NullReaper(), interval=timedelta(milliseconds=5))
         await asyncio.wait_for(reconciler.run(stop), timeout=2.0)
         assert calls == 2  # raised once, retried, then stopped
+
+    asyncio.run(_run())
+
+
+def test_reconciler_run_wakes_promptly_when_stopped_during_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _run() -> None:
+        stop = asyncio.Event()
+        first_pass_done = asyncio.Event()
+
+        async def _run_once(self: Reconciler) -> ReconcileReport:
+            first_pass_done.set()
+            return ReconcileReport(0, 0, 0, 0, 0, 0, ())
+
+        monkeypatch.setattr(Reconciler, "run_once", _run_once)
+        pool = cast(AsyncConnectionPool, object())
+        reconciler = Reconciler(pool, NullReaper(), interval=timedelta(seconds=30))
+        task = asyncio.create_task(reconciler.run(stop))
+        await asyncio.wait_for(first_pass_done.wait(), timeout=1.0)
+
+        stop.set()
+
+        await asyncio.wait_for(task, timeout=1.0)
 
     asyncio.run(_run())

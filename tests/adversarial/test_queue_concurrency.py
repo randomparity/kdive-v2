@@ -23,13 +23,14 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import JobKind
 from kdive.domain.state import JobState
 from kdive.jobs import queue
+from kdive.jobs.payloads import BuildPayload
 from tests.adversarial.conftest import count_rows, open_conn, open_conns
 
 _AUTHORIZING = {"principal": "p", "agent_session": None, "project": "a"}
 
 
-def _build_payload() -> dict[str, str]:
-    return {"run_id": str(uuid4())}
+def _build_payload() -> BuildPayload:
+    return BuildPayload(run_id=str(uuid4()))
 
 
 async def _expire_lease(conn: psycopg.AsyncConnection, job_id: object) -> None:

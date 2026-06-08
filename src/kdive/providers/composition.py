@@ -2,110 +2,65 @@
 
 This module is the only place the MCP and worker assembly path constructs local-libvirt
 providers. It exposes typed runtime ports for the single local-libvirt provider shipped today;
-the capability registry remains a separate provider-selection primitive for the future
-multi-provider path.
+ADR-0066 removed the superseded capability-registry prototype from production source.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.components.references import ComponentRef
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind
-from kdive.profiles.provisioning import RootfsSource
-from kdive.providers.component_validation import ComponentSourceCapabilities
+from kdive.providers.component_validation import (
+    CONFIG_COMPONENT,
+    INITRD_COMPONENT,
+    KERNEL_COMPONENT,
+    PATCH_COMPONENT,
+    ROOTFS_COMPONENT,
+    VMLINUX_COMPONENT,
+    ComponentKind,
+    ComponentSourceCapabilities,
+    ComponentSourceKind,
+)
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
-from kdive.providers.local_libvirt.connect import LocalLibvirtConnect
-from kdive.providers.local_libvirt.control import LocalLibvirtControl
-from kdive.providers.local_libvirt.debug_gdbmi import (
+from kdive.providers.local_libvirt.debug.debug_gdbmi import (
     GdbMiEngine as LocalGdbMiEngine,
 )
-from kdive.providers.local_libvirt.debug_gdbmi import (
+from kdive.providers.local_libvirt.debug.debug_gdbmi import (
     default_attach_seam,
 )
-from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
-from kdive.providers.local_libvirt.install import LocalLibvirtInstall
-from kdive.providers.local_libvirt.introspect_drgn import (
+from kdive.providers.local_libvirt.debug.introspect_drgn import (
     LocalLibvirtLiveIntrospect,
     LocalLibvirtVmcoreIntrospect,
 )
-from kdive.providers.local_libvirt.provisioning import (
+from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
+from kdive.providers.local_libvirt.lifecycle.connect import LocalLibvirtConnect
+from kdive.providers.local_libvirt.lifecycle.control import LocalLibvirtControl
+from kdive.providers.local_libvirt.lifecycle.install import LocalLibvirtInstall
+from kdive.providers.local_libvirt.lifecycle.provisioning import (
     LocalLibvirtProvisioning,
 )
 from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
-from kdive.providers.ports import (
-    AttachSeam,
-    Booter,
-    Builder,
-    Connector,
-    Controller,
-    CrashPostmortem,
-    GdbMiEngine,
-    Installer,
-    LiveIntrospector,
-    Provisioner,
-    Retriever,
-    VmcoreIntrospector,
-)
+from kdive.providers.runtime import ProviderRuntime
 from kdive.services.resource_discovery import ensure_discovered_resource_registered
-
-type DiscoveryRegistrar = Callable[[AsyncConnectionPool], Awaitable[None]]
-type BuildConfigValidator = Callable[[ComponentRef], None]
-type RootfsValidator = Callable[[RootfsSource], None]
 
 _LOCAL_POOL = "local-libvirt"
 _LOCAL_COST_CLASS = "local"
 
 
 def _local_component_sources() -> ComponentSourceCapabilities:
+    accepted: dict[ComponentKind, frozenset[ComponentSourceKind]] = {
+        ROOTFS_COMPONENT: frozenset({"catalog", "local"}),
+        KERNEL_COMPONENT: frozenset({"local"}),
+        INITRD_COMPONENT: frozenset({"local"}),
+        CONFIG_COMPONENT: frozenset({"local"}),
+        PATCH_COMPONENT: frozenset({"local"}),
+        VMLINUX_COMPONENT: frozenset({"local"}),
+    }
     return ComponentSourceCapabilities(
         provider=ResourceKind.LOCAL_LIBVIRT.value,
-        accepted_component_sources={
-            "rootfs": frozenset({"catalog", "local"}),
-            "kernel": frozenset({"local"}),
-            "initrd": frozenset({"local"}),
-            "config": frozenset({"local"}),
-            "patch": frozenset({"local"}),
-            "vmlinux": frozenset({"local"}),
-        },
+        accepted_component_sources=accepted,
     )
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderRuntime:
-    """Typed provider ports for the default runtime."""
-
-    provisioner: Provisioner
-    builder: Builder
-    installer: Installer
-    booter: Booter
-    connector: Connector
-    controller: Controller
-    retriever: Retriever
-    crash_postmortem: CrashPostmortem
-    vmcore_introspector: VmcoreIntrospector
-    live_introspector: LiveIntrospector
-    supported_capture_methods: frozenset[CaptureMethod] = field(
-        default_factory=lambda: frozenset(CaptureMethod)
-    )
-    discovery_registrar: DiscoveryRegistrar | None = None
-    attach_seam: AttachSeam = default_attach_seam
-    debug_engine: GdbMiEngine = field(default_factory=LocalGdbMiEngine)
-    component_sources: ComponentSourceCapabilities = field(default_factory=_local_component_sources)
-    build_config_validator: BuildConfigValidator | None = None
-    rootfs_validator: RootfsValidator | None = None
-
-    def install_boot(self) -> tuple[Installer, Booter]:
-        return self.installer, self.booter
-
-    async def register_discovery(self, pool: AsyncConnectionPool) -> None:
-        """Run provider first-start discovery registration, if this runtime has one."""
-        if self.discovery_registrar is not None:
-            await self.discovery_registrar(pool)
 
 
 def build_default_provider_runtime() -> ProviderRuntime:
@@ -133,6 +88,8 @@ def build_default_provider_runtime() -> ProviderRuntime:
             {CaptureMethod.CONSOLE, CaptureMethod.HOST_DUMP, CaptureMethod.GDBSTUB}
         ),
         discovery_registrar=ensure_local_host_registered,
+        attach_seam=default_attach_seam,
+        debug_engine=LocalGdbMiEngine(),
         component_sources=_local_component_sources(),
         build_config_validator=builder.validate_config_ref,
         rootfs_validator=provisioner.validate_rootfs_ref,
@@ -140,7 +97,6 @@ def build_default_provider_runtime() -> ProviderRuntime:
 
 
 async def ensure_local_host_registered(pool: AsyncConnectionPool) -> None:
-    """Register the local-libvirt host on first start."""
     discovery = LocalLibvirtDiscovery.from_env()
     await ensure_discovered_resource_registered(
         pool,
@@ -153,6 +109,5 @@ async def ensure_local_host_registered(pool: AsyncConnectionPool) -> None:
 
 
 __all__ = [
-    "ProviderRuntime",
     "build_default_provider_runtime",
 ]

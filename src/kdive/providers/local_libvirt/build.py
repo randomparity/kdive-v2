@@ -34,12 +34,10 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
 from kdive.providers.build_validation import (
-    extract_build_id_ranged,
     parse_gnu_build_id,
-    validate_external_artifacts,
 )
-from kdive.providers.ports import Builder, BuildOutput, ValidatedUpload
-from kdive.security.redaction import Redactor
+from kdive.providers.ports import BuildOutput
+from kdive.security.secrets.redaction import Redactor
 from kdive.store.objectstore import (
     ArtifactWriteRequest,
     StoredArtifact,
@@ -572,11 +570,5 @@ def _sync_tree(kernel_src: str, workspace: Path) -> None:
 
 
 __all__ = [
-    "BuildOutput",
-    "Builder",
     "LocalLibvirtBuild",
-    "ValidatedUpload",
-    "extract_build_id_ranged",
-    "parse_gnu_build_id",
-    "validate_external_artifacts",
 ]

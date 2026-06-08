@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any, LiteralString, NamedTuple
 from uuid import UUID
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
-from kdive.db.idempotency import run_step
+from kdive.db.idempotency import abandon_run_step, claim_run_step, complete_run_step
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -20,22 +19,25 @@ from kdive.domain.state import IllegalTransition, RunState
 from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
-from kdive.planes.runs_shared import (
+from kdive.planes.runs_shared import finalize_build
+from kdive.profiles.build import BuildProfile, ServerBuildProfile
+from kdive.providers.ports import Booter, Builder, BuildOutput, Installer
+from kdive.providers.runtime import ProviderRuntime
+from kdive.providers.runtime_paths import console_log_path, read_console_log
+from kdive.security import audit
+from kdive.security.artifacts.artifact_search import ArtifactSearchInputError, search_text
+from kdive.security.authz.context import RequestContext
+from kdive.security.secrets.redaction import Redactor
+from kdive.services.run_steps import (
+    BuildStepResult,
     cmdline_for,
     existing_build_result,
-    finalize_build,
     install_method_for,
     installed_initrd_ref,
 )
-from kdive.profiles.build import BuildProfile, ServerBuildProfile
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
-from kdive.providers.ports import Booter, Builder, BuildOutput, Installer
-from kdive.providers.runtime_paths import console_log_path, read_console_log
-from kdive.security import audit
-from kdive.security.artifact_search import ArtifactSearchInputError, search_text
-from kdive.security.redaction import Redactor
 from kdive.store.objectstore import (
     ArtifactWriteRequest,
+    StoredArtifact,
     object_store_from_env,
     register_artifact_row,
 )
@@ -77,6 +79,18 @@ async def _fail_build(conn: AsyncConnection, job: Job, run: Run, category: Error
         )
 
 
+async def _abandon_run_step_best_effort(conn: AsyncConnection, run_id: UUID, step: str) -> None:
+    try:
+        await abandon_run_step(conn, run_id, step)
+    except Exception:
+        _log.warning(
+            "failed to abandon %s step claim for run %s; preserving original failure",
+            step,
+            run_id,
+            exc_info=True,
+        )
+
+
 async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> str | None:
     """Build the Run's kernel and drive it `running -> succeeded` or failed."""
     payload = load_payload(job, BuildPayload)
@@ -102,25 +116,14 @@ async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> st
         except CategorizedError as exc:
             await _fail_build(conn, job, run, exc.category)
             raise
-        result = {
-            "kernel_ref": output.kernel_ref,
-            "debuginfo_ref": output.debuginfo_ref,
-            "build_id": output.build_id,
-        }
-        if payload.cmdline is not None:
-            result["cmdline"] = payload.cmdline
+        result = BuildStepResult(
+            kernel_ref=output.kernel_ref,
+            debuginfo_ref=output.debuginfo_ref,
+            build_id=output.build_id,
+            cmdline=payload.cmdline,
+        )
     await finalize_build(conn, job, run, result)
     return str(run_id)
-
-
-async def _run_step_locked(
-    conn: AsyncConnection,
-    run_id: UUID,
-    step: str,
-    fn: Callable[[], Awaitable[dict[str, Any]]],
-) -> None:
-    async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run_id):
-        await run_step(conn, run_id, step, fn)
 
 
 async def install_handler(conn: AsyncConnection, job: Job, installer: Installer) -> str | None:
@@ -146,8 +149,10 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
     _log.info("install: run %s resolved cmdline %r (method %s)", run_id, cmdline, method.value)
     initrd_ref = await installed_initrd_ref(conn, run_id)
     job_ctx = job_context_from_job(job, run.project)
-
-    async def _do() -> dict[str, Any]:
+    claim = await claim_run_step(conn, run_id, "install")
+    if not claim.claimed:
+        return str(run_id)
+    try:
         await asyncio.to_thread(
             installer.install,
             run.system_id,
@@ -157,6 +162,11 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
             method=method,
             initrd_ref=initrd_ref,
         )
+    except Exception:
+        await _abandon_run_step_best_effort(conn, run_id, "install")
+        raise
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run_id):
+        await complete_run_step(conn, run_id, "install", {"system_id": str(run.system_id)})
         await audit.record(
             conn,
             job_ctx,
@@ -169,9 +179,6 @@ async def install_handler(conn: AsyncConnection, job: Job, installer: Installer)
                 project=run.project,
             ),
         )
-        return {"system_id": str(run.system_id)}
-
-    await _run_step_locked(conn, run_id, "install", _do)
     return str(run_id)
 
 
@@ -205,37 +212,11 @@ async def _capture_console_artifact(
     conn: AsyncConnection, system_id: UUID
 ) -> _ConsoleArtifact | None:
     try:
-        raw = await asyncio.to_thread(read_console_log, console_log_path(system_id))
-        if not raw:
-            _log.warning(
-                "console log for system %s is empty or unreadable; registering no console artifact",
-                system_id,
-            )
+        redacted = await _read_redacted_console(system_id)
+        if redacted is None:
             return None
-        redacted = Redactor().redact_text(raw.decode("utf-8", "replace")).encode("utf-8")
-        stored = await asyncio.to_thread(
-            lambda: object_store_from_env().put_artifact(
-                ArtifactWriteRequest(
-                    tenant="local",
-                    owner_kind="systems",
-                    owner_id=str(system_id),
-                    name="console",
-                    data=redacted,
-                    sensitivity=Sensitivity.REDACTED,
-                    retention_class="console",
-                )
-            )
-        )
-        async with conn.transaction():
-            existing = await _existing_console_row(conn, system_id)
-            if existing is None:
-                inserted = await ARTIFACTS.insert(
-                    conn, register_artifact_row(stored, owner_kind="systems", owner_id=system_id)
-                )
-                return _ConsoleArtifact(inserted.id, inserted.object_key, redacted)
-            if existing.etag != stored.etag:
-                await conn.execute(_REFRESH_CONSOLE_ETAG_SQL, (stored.etag, existing.id))
-            return _ConsoleArtifact(existing.id, stored.key, redacted)
+        stored = await _store_console_artifact(system_id, redacted)
+        return await _upsert_console_artifact_row(conn, system_id, stored, redacted)
     except Exception:
         _log.warning(
             "console artifact registration failed for system %s; boot outcome unaffected",
@@ -243,6 +224,52 @@ async def _capture_console_artifact(
             exc_info=True,
         )
         return None
+
+
+async def _read_redacted_console(system_id: UUID) -> bytes | None:
+    raw = await asyncio.to_thread(read_console_log, console_log_path(system_id))
+    if not raw:
+        _log.warning(
+            "console log for system %s is empty or unreadable; registering no console artifact",
+            system_id,
+        )
+        return None
+    return Redactor().redact_text(raw.decode("utf-8", "replace")).encode("utf-8")
+
+
+async def _store_console_artifact(system_id: UUID, redacted: bytes) -> StoredArtifact:
+    def _put() -> StoredArtifact:
+        return object_store_from_env().put_artifact(
+            ArtifactWriteRequest(
+                tenant="local",
+                owner_kind="systems",
+                owner_id=str(system_id),
+                name="console",
+                data=redacted,
+                sensitivity=Sensitivity.REDACTED,
+                retention_class="console",
+            )
+        )
+
+    return await asyncio.to_thread(_put)
+
+
+async def _upsert_console_artifact_row(
+    conn: AsyncConnection,
+    system_id: UUID,
+    stored: StoredArtifact,
+    redacted: bytes,
+) -> _ConsoleArtifact:
+    async with conn.transaction():
+        existing = await _existing_console_row(conn, system_id)
+        if existing is None:
+            inserted = await ARTIFACTS.insert(
+                conn, register_artifact_row(stored, owner_kind="systems", owner_id=system_id)
+            )
+            return _ConsoleArtifact(inserted.id, inserted.object_key, redacted)
+        if existing.etag != stored.etag:
+            await conn.execute(_REFRESH_CONSOLE_ETAG_SQL, (stored.etag, existing.id))
+        return _ConsoleArtifact(existing.id, stored.key, redacted)
 
 
 def _expected_crash_matches(run: Run, redacted_console: bytes) -> bool:
@@ -267,18 +294,57 @@ def _expected_crash_matches(run: Run, redacted_console: bytes) -> bool:
         return False
 
 
-async def _boot_step_locked(
+async def _record_boot_audit(
     conn: AsyncConnection,
-    system_id: UUID,
-    run_id: UUID,
-    fn: Callable[[], Awaitable[dict[str, Any]]],
+    job_ctx: RequestContext,
+    run: Run,
 ) -> None:
-    async with (
-        conn.transaction(),
-        advisory_xact_lock(conn, LockScope.SYSTEM, system_id),
-        advisory_xact_lock(conn, LockScope.RUN, run_id),
-    ):
-        await run_step(conn, run_id, "boot", fn)
+    await audit.record(
+        conn,
+        job_ctx,
+        audit.AuditEvent(
+            tool="runs.boot",
+            object_kind="runs",
+            object_id=run.id,
+            transition="boot",
+            args={"run_id": str(run.id)},
+            project=run.project,
+        ),
+    )
+
+
+async def _run_boot_and_capture_outcome(
+    conn: AsyncConnection,
+    job_ctx: RequestContext,
+    run: Run,
+    booter: Booter,
+) -> dict[str, Any]:
+    try:
+        await asyncio.to_thread(booter.boot, run.system_id)
+    except CategorizedError as exc:
+        artifact = None
+        if (
+            exc.category is ErrorCategory.READINESS_FAILURE
+            and run.expected_boot_failure is not None
+        ):
+            artifact = await _capture_console_artifact(conn, run.system_id)
+        if artifact is not None and artifact.data and _expected_crash_matches(run, artifact.data):
+            await _record_boot_audit(conn, job_ctx, run)
+            return {
+                "system_id": str(run.system_id),
+                "boot_outcome": "expected_crash_observed",
+                "expectation_matched": True,
+                "evidence_kind": "console",
+                "evidence_artifact_id": str(artifact.id),
+            }
+        raise
+    artifact = await _capture_console_artifact(conn, run.system_id)
+    await _record_boot_audit(conn, job_ctx, run)
+    return {
+        "system_id": str(run.system_id),
+        "boot_outcome": "ready",
+        **({"evidence_artifact_id": str(artifact.id)} if artifact else {}),
+    }
 
 
 async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str | None:
@@ -292,61 +358,27 @@ async def boot_handler(conn: AsyncConnection, job: Job, booter: Booter) -> str |
             details={"run_id": str(run_id)},
         )
     job_ctx = job_context_from_job(job, run.project)
-
-    async def _record_boot_audit() -> None:
-        await audit.record(
-            conn,
-            job_ctx,
-            audit.AuditEvent(
-                tool="runs.boot",
-                object_kind="runs",
-                object_id=run_id,
-                transition="boot",
-                args={"run_id": str(run_id)},
-                project=run.project,
-            ),
-        )
+    claim = await claim_run_step(conn, run_id, "boot")
+    if not claim.claimed:
+        return str(run_id)
 
     try:
-
-        async def _do() -> dict[str, Any]:
-            try:
-                await asyncio.to_thread(booter.boot, run.system_id)
-            except CategorizedError as exc:
-                artifact = None
-                if (
-                    exc.category is ErrorCategory.READINESS_FAILURE
-                    and run.expected_boot_failure is not None
-                ):
-                    artifact = await _capture_console_artifact(conn, run.system_id)
-                if (
-                    artifact is not None
-                    and artifact.data
-                    and _expected_crash_matches(run, artifact.data)
-                ):
-                    await _record_boot_audit()
-                    return {
-                        "system_id": str(run.system_id),
-                        "boot_outcome": "expected_crash_observed",
-                        "expectation_matched": True,
-                        "evidence_kind": "console",
-                        "evidence_artifact_id": str(artifact.id),
-                    }
-                raise
-            artifact = await _capture_console_artifact(conn, run.system_id)
-            await _record_boot_audit()
-            return {
-                "system_id": str(run.system_id),
-                "boot_outcome": "ready",
-                **({"evidence_artifact_id": str(artifact.id)} if artifact else {}),
-            }
-
-        await _boot_step_locked(conn, run.system_id, run_id, _do)
+        result = await _run_boot_and_capture_outcome(conn, job_ctx, run, booter)
     except CategorizedError:
+        await _abandon_run_step_best_effort(conn, run_id, "boot")
         try:
             await _capture_console_artifact(conn, run.system_id)
         finally:
             raise
+    except Exception:
+        await _abandon_run_step_best_effort(conn, run_id, "boot")
+        raise
+    async with (
+        conn.transaction(),
+        advisory_xact_lock(conn, LockScope.SYSTEM, run.system_id),
+        advisory_xact_lock(conn, LockScope.RUN, run_id),
+    ):
+        await complete_run_step(conn, run_id, "boot", result)
     return str(run_id)
 
 
@@ -359,24 +391,16 @@ def register_handlers(
     provider_runtime: ProviderRuntime | None = None,
 ) -> None:
     """Bind the `build`/`install`/`boot` job handlers."""
-    runtime = provider_runtime or build_default_provider_runtime()
-    build = builder or runtime.builder
+    if builder is None:
+        if provider_runtime is None:
+            raise RuntimeError("runs handlers require provider runtime or run ports")
+        builder = provider_runtime.builder
     if installer is None or booter is None:
-        default_installer, default_booter = runtime.install_boot()
-        install: Installer = installer or default_installer
-        boot: Booter = booter or default_booter
-    else:
-        install, boot = installer, booter
+        if provider_runtime is None:
+            raise RuntimeError("runs handlers require provider runtime or run ports")
+        installer = installer or provider_runtime.installer
+        booter = booter or provider_runtime.booter
 
-    async def _build(conn: AsyncConnection, job: Job) -> str | None:
-        return await build_handler(conn, job, build)
-
-    async def _install(conn: AsyncConnection, job: Job) -> str | None:
-        return await install_handler(conn, job, install)
-
-    async def _boot(conn: AsyncConnection, job: Job) -> str | None:
-        return await boot_handler(conn, job, boot)
-
-    registry.register(JobKind.BUILD, _build)
-    registry.register(JobKind.INSTALL, _install)
-    registry.register(JobKind.BOOT, _boot)
+    registry.register(JobKind.BUILD, lambda conn, job: build_handler(conn, job, builder))
+    registry.register(JobKind.INSTALL, lambda conn, job: install_handler(conn, job, installer))
+    registry.register(JobKind.BOOT, lambda conn, job: boot_handler(conn, job, booter))

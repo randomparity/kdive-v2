@@ -7,7 +7,7 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction
-from kdive.providers.local_libvirt.control import LocalLibvirtControl
+from kdive.providers.local_libvirt.lifecycle.control import LocalLibvirtControl
 from tests.providers.local_libvirt.fakes import FakeDomain, FakeLibvirtConn
 
 

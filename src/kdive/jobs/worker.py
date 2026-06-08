@@ -25,7 +25,8 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry, JobHandler
-from kdive.security.redaction import Redactor
+from kdive.security.secrets.redaction import Redactor
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
 
 _log = logging.getLogger(__name__)
 _CONTEXT_VALUE_MAX = 1000
@@ -44,6 +45,7 @@ class Worker:
         lease: timedelta = queue.DEFAULT_LEASE,
         heartbeat_interval: timedelta = timedelta(seconds=30),
         poll_interval: timedelta = timedelta(seconds=1),
+        secret_registry: SecretRegistry | None = None,
     ) -> None:
         """Build a worker.
 
@@ -71,6 +73,9 @@ class Worker:
         self._lease = lease
         self._heartbeat_interval = heartbeat_interval
         self._poll_interval = poll_interval
+        self._secret_registry = (
+            PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
+        )
 
     async def run_once(self) -> Job | None:
         """Claim and dispatch one job; return it, or ``None`` if idle.
@@ -110,10 +115,10 @@ class Worker:
                 job = await self.run_once()
             except Exception:  # noqa: BLE001 - a durable worker survives a transient per-iteration error
                 _log.exception("run_once failed; continuing after %ss", poll)
-                await asyncio.sleep(poll)
+                await _sleep_until_stop(stop, poll)
                 continue
             if job is None:
-                await asyncio.sleep(poll)
+                await _sleep_until_stop(stop, poll)
 
     async def _dispatch(self, job: Job, handler: JobHandler) -> None:
         heartbeat = asyncio.create_task(self._heartbeat_loop(job.id))
@@ -128,8 +133,13 @@ class Worker:
                     else ErrorCategory.INFRASTRUCTURE_FAILURE
                 )
                 async with self._pool.connection() as conn:
-                    await queue.fail(conn, job, category, failure_context=_failure_context(exc))
-                _log.warning("job %s failed: %s", job.id, category)
+                    await queue.fail(
+                        conn,
+                        job,
+                        category,
+                        failure_context=_failure_context(exc, self._secret_registry),
+                    )
+                _log.warning("job %s failed: %s", job.id, category, exc_info=True)
                 return
             async with self._pool.connection() as conn:
                 completed = await queue.complete(conn, job.id, self._worker_id, result_ref)
@@ -158,11 +168,15 @@ class Worker:
                     if not await queue.heartbeat(conn, job_id, self._worker_id, lease=self._lease):
                         return
         except Exception:  # noqa: BLE001 - a failing heartbeat must not crash the worker; stop beating and let the lease lapse
-            _log.warning("heartbeat for job %s failed; stopping (lease will lapse)", job_id)
+            _log.warning(
+                "heartbeat for job %s failed; stopping (lease will lapse)",
+                job_id,
+                exc_info=True,
+            )
 
 
-def _failure_context(exc: Exception) -> dict[str, str]:
-    redactor = Redactor()
+def _failure_context(exc: Exception, registry: SecretRegistry) -> dict[str, str]:
+    redactor = Redactor(registry=registry)
     context = {"failure_message": _redacted(redactor, str(exc))}
     if isinstance(exc, CategorizedError):
         for key, value in exc.details.items():
@@ -184,3 +198,8 @@ def _context_key(key: str) -> str:
 
 def _redacted(redactor: Redactor, value: str) -> str:
     return redactor.redact_text(value)[:_CONTEXT_VALUE_MAX]
+
+
+async def _sleep_until_stop(stop: asyncio.Event, timeout: float) -> None:
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(stop.wait(), timeout=timeout)

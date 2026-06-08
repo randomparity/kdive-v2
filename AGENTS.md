@@ -83,10 +83,9 @@ implements narrow port protocols for the planes it supports (Discovery, Provisio
 Build, Install, Connect, Debug, Control, Retrieve; Allocation is core, not a provider
 plane), but runtime code calls those typed ports directly.
 
-`CapabilityRegistry` (`providers/capability.py`) and the old `OpContract` dispatch model
-remain quarantined prototype coverage for future multi-provider dispatch. They are not the
-current production assembly path, and registry tests do not prove MCP or worker runtime
-behavior. The only provider today is `providers/local_libvirt/`.
+The old `CapabilityRegistry` / `OpContract` dispatch design now exists only in historical
+ADRs and planning records (ADR-0066 removed the in-tree prototype). It is not the current
+production assembly path. The only provider today is `providers/local_libvirt/`.
 
 The falsifiable design hypothesis: adding a new provider (e.g. remote libvirt in M2)
 is mostly a provider implementation plus `ProviderRuntime` wiring; broader registry-based

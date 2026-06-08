@@ -12,8 +12,6 @@ envelope's failure-status set). RBAC: `request`/`release` require `operator`; re
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -23,12 +21,11 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
-from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, RESOURCES
 from kdive.domain.cost import Selector
-from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Allocation, Resource
-from kdive.domain.state import AllocationState, IllegalTransition, ResourceStatus
+from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
@@ -36,10 +33,8 @@ from kdive.mcp.tool_payloads import AllocationRequestPayload, ResourceById, Reso
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
-from kdive.security import audit
-from kdive.security.context import RequestContext, require_project
-from kdive.security.rbac import Role, require_role
-from kdive.services import accounting
+from kdive.security.authz.context import RequestContext, require_project
+from kdive.security.authz.rbac import Role, require_role
 from kdive.services.allocation_admission import (
     AdmissionOutcome,
     admit,
@@ -47,30 +42,17 @@ from kdive.services.allocation_admission import (
 from kdive.services.allocation_admission import (
     AllocationRequest as DomainAllocationRequest,
 )
+from kdive.services.allocation_release import (
+    ReleaseOutcome,
+    ctx_audit_writer,
+    release_with_backstops,
+)
 from kdive.services.allocation_renew import RenewOutcome, renew
 
 _log = logging.getLogger(__name__)
 
 DEFAULT_LIST_LIMIT = 50
 MAX_LIST_LIMIT = 200
-_RELEASABLE = (AllocationState.GRANTED, AllocationState.ACTIVE)
-_TERMINAL = (AllocationState.RELEASED, AllocationState.EXPIRED, AllocationState.FAILED)
-
-# The release transition helper writes its audit row through an injected writer so the
-# break-glass path (a platform_admin who is not a member of the target project) can use a
-# guard-exempt writer, while the per-project release keeps the membership-guarded one. The
-# writer composes one INSERT on ``conn`` inside the release transaction; it does not open
-# its own transaction (ADR-0062 §4).
-AuditWriter = Callable[[AsyncConnection, audit.AuditEvent], Awaitable[None]]
-
-
-def ctx_audit_writer(ctx: RequestContext) -> AuditWriter:
-    """The per-project writer: the membership-guarded ``audit.record`` (default release path)."""
-
-    async def _write(conn: AsyncConnection, event: audit.AuditEvent) -> None:
-        await audit.record(conn, ctx, event)
-
-    return _write
 
 
 def _envelope_for_allocation(alloc: Allocation) -> ToolResponse:
@@ -213,29 +195,6 @@ async def get_allocation(
         return _envelope_for_allocation(alloc)
 
 
-async def _transition_and_audit(
-    conn: AsyncConnection,
-    audit_writer: AuditWriter,
-    alloc_id: UUID,
-    frm: AllocationState,
-    to: AllocationState,
-    *,
-    project: str,
-) -> None:
-    await ALLOCATIONS.update_state(conn, alloc_id, to)
-    await audit_writer(
-        conn,
-        audit.AuditEvent(
-            tool="allocations.release",
-            object_kind="allocations",
-            object_id=alloc_id,
-            transition=f"{frm.value}->{to.value}",
-            args={"allocation_id": str(alloc_id)},
-            project=project,
-        ),
-    )
-
-
 async def release_allocation(
     pool: AsyncConnectionPool, ctx: RequestContext, allocation_id: str
 ) -> ToolResponse:
@@ -249,91 +208,26 @@ async def release_allocation(
             if alloc is None or alloc.project not in ctx.projects:
                 return _config_error(allocation_id)
             require_role(ctx, alloc.project, Role.OPERATOR)
-        return await release_with_backstops(
+        outcome = await release_with_backstops(
             pool, uid, project=alloc.project, audit_writer=ctx_audit_writer(ctx)
         )
+        return _release_response(uid, outcome)
 
 
-async def release_with_backstops(
-    pool: AsyncConnectionPool,
-    uid: UUID,
-    *,
-    project: str,
-    audit_writer: AuditWriter,
-) -> ToolResponse:
-    """Run ``_release_locked`` with the ``IllegalTransition`` / ``CategorizedError`` backstops.
-
-    Shared by the per-project ``allocations.release`` and the break-glass
-    ``ops.force_release`` (ADR-0062 §4) so the two callers cannot drift: ``_release_locked``
-    is unguarded, and both its failure modes must surface as a typed envelope rather than
-    leak the raw exception. ``audit_writer`` selects the membership-guarded
-    (:func:`ctx_audit_writer`) or guard-exempt break-glass attribution.
-    """
-    async with pool.connection() as conn:
-        try:
-            return await _release_locked(conn, audit_writer, uid, project=project)
-        except IllegalTransition:
-            # Backstop for an interleaving the lock did not cover (e.g. a future provision
-            # path). Caught OUTSIDE the rolled-back transaction; re-read.
-            async with pool.connection() as conn2:
-                latest = await ALLOCATIONS.get(conn2, uid)
-            data = {"current_status": latest.state.value} if latest else {}
-            return ToolResponse.failure(str(uid), ErrorCategory.CONFIGURATION_ERROR, data=data)
-        except CategorizedError as exc:
-            # Reconciliation cannot price the allocation (e.g. an active allocation with no
-            # persisted size). The transaction rolled back, so no terminal transition or
-            # ledger row was committed; surface the typed failure.
-            return ToolResponse.failure(str(uid), exc.category)
-
-
-async def _release_locked(
-    conn: AsyncConnection, audit_writer: AuditWriter, uid: UUID, *, project: str
-) -> ToolResponse:
-    """Drive an allocation to ``released`` and reconcile its spend in one transaction.
-
-    Holds ``PROJECT → ALLOCATION`` (the global lock order, ADR-0040 §1): the project lock
-    so the ``reconcile`` debit to ``budgets.spent_kcu`` is race-free against admission and
-    the ``→expired`` sweep, the allocation lock so release and the sweep cannot both
-    reconcile one allocation (ADR-0040 §4). On the ``active → releasing`` edge the billing
-    interval is closed (``active_ended_at``) before ``reconcile`` reads it; a terminal
-    allocation is a ``stale_handle`` (the sweep or a prior release already reconciled it).
-    """
-    async with (
-        conn.transaction(),
-        advisory_xact_lock(conn, LockScope.PROJECT, project),
-        advisory_xact_lock(conn, LockScope.ALLOCATION, uid),
-    ):
-        current = await ALLOCATIONS.get(conn, uid)
-        if current is None:
-            return _config_error(str(uid))
-        if current.state in _TERMINAL:
-            return ToolResponse.failure(
-                str(uid),
-                ErrorCategory.STALE_HANDLE,
-                suggested_next_actions=["allocations.get"],
-                data={"current_status": current.state.value},
-            )
-        if current.state not in (*_RELEASABLE, AllocationState.RELEASING):
-            return ToolResponse.failure(
-                str(uid),
-                ErrorCategory.CONFIGURATION_ERROR,
-                data={"current_status": current.state.value},
-            )
-        if current.state in _RELEASABLE:
-            await _transition_and_audit(
-                conn, audit_writer, uid, current.state, AllocationState.RELEASING, project=project
-            )
-            current = await accounting.stamp_active_ended(conn, current, datetime.now(UTC))
-        await _transition_and_audit(
-            conn,
-            audit_writer,
-            uid,
-            AllocationState.RELEASING,
-            AllocationState.RELEASED,
-            project=project,
-        )
-        await accounting.reconcile(conn, current)
-    return ToolResponse.success(str(uid), "released")
+def _release_response(uid: UUID, outcome: ReleaseOutcome) -> ToolResponse:
+    """Map release service outcome to the allocations MCP envelope."""
+    if outcome.released:
+        return ToolResponse.success(str(uid), "released")
+    data = {"current_status": outcome.current_status} if outcome.current_status else {}
+    category = outcome.category or ErrorCategory.CONFIGURATION_ERROR
+    return ToolResponse.failure(
+        str(uid),
+        category,
+        suggested_next_actions=["allocations.get"]
+        if category is ErrorCategory.STALE_HANDLE
+        else [],
+        data=data,
+    )
 
 
 async def renew_allocation(
@@ -390,8 +284,8 @@ def _renew_response(uid: UUID, outcome: RenewOutcome) -> ToolResponse:
 
 async def list_allocations(
     pool: AsyncConnectionPool, ctx: RequestContext, *, project: str, limit: int
-) -> list[ToolResponse]:
-    """Return the newest allocations for ``project``, each as an envelope."""
+) -> ToolResponse:
+    """Return the newest allocations for ``project`` in one collection envelope."""
     require_project(ctx, project)
     require_role(ctx, project, Role.VIEWER)
     capped = max(1, min(limit, MAX_LIST_LIMIT))
@@ -414,7 +308,13 @@ async def list_allocations(
                         str(row.get("id", "?")), ErrorCategory.INFRASTRUCTURE_FAILURE
                     )
                 )
-        return responses
+        return ToolResponse.collection(
+            "allocations",
+            "ok",
+            responses,
+            suggested_next_actions=["allocations.get", "allocations.release"],
+            data={"project": project},
+        )
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
@@ -502,6 +402,6 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         limit: Annotated[
             int, Field(description="Maximum rows returned (capped at 200).")
         ] = DEFAULT_LIST_LIMIT,
-    ) -> list[ToolResponse]:
+    ) -> ToolResponse:
         """List the newest Allocations for a project. Requires viewer."""
         return await list_allocations(pool, current_context(), project=project, limit=limit)

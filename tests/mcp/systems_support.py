@@ -17,14 +17,32 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Budget, Job, JobKind, Quota
 from kdive.domain.state import AllocationState
 from kdive.jobs import queue
+from kdive.jobs.payloads import SystemPayload
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.lifecycle import systems as systems_tools
+from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers
+from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers
+from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
-from kdive.security.rbac import Role
+from kdive.security.authz.rbac import Role
 from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 TEST_DT = datetime(2026, 1, 1, tzinfo=UTC)
+TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
+    provider="test-provider",
+    accepted_component_sources={
+        "rootfs": frozenset({"catalog", "local"}),
+        "config": frozenset({"local"}),
+    },
+)
+SYSTEM_PROVISION_HANDLERS = SystemProvisionHandlers(
+    TEST_COMPONENT_SOURCES,
+    lambda _: None,
+)
+SYSTEM_ADMIN_HANDLERS = SystemAdminHandlers(
+    TEST_COMPONENT_SOURCES,
+    lambda _: None,
+)
 
 PROVISIONING_PROFILE: dict[str, Any] = {
     "schema_version": 1,
@@ -150,7 +168,7 @@ async def enqueue_provision(conn_pool: AsyncConnectionPool, system_id: str, allo
         return await queue.enqueue(
             conn,
             JobKind.PROVISION,
-            {"system_id": system_id},
+            SystemPayload(system_id=system_id),
             {"principal": "user-1", "agent_session": "s", "project": "proj"},
             f"{alloc_id}:provision",
         )
@@ -162,6 +180,9 @@ async def define_system(
     alloc_id: str,
     profile: dict[str, Any],
 ):
-    return await systems_tools.define_system(
-        conn_pool, request_ctx, allocation_id=alloc_id, profile=profile
+    return await SYSTEM_PROVISION_HANDLERS.define_system(
+        conn_pool,
+        request_ctx,
+        allocation_id=alloc_id,
+        profile=profile,
     )

@@ -212,10 +212,11 @@ introspection ports) and passes those ports to MCP tool registrars and worker
 handlers. The only concrete provider today is local-libvirt; composition is
 centralized in `src/kdive/providers/composition.py`.
 
-The capability registry from ADR-0009/ADR-0022 remains a prototype for a later
-multi-provider milestone, not the live dispatch path. It is not used for job
-routing, destructive-op gating, or reconciler behavior in M0/M1. ADR-0063 records
-this narrowing so contributors extend the runtime that actually serves requests.
+The capability registry from ADR-0009/ADR-0022 is historical design context, not an
+in-tree prototype or the live dispatch path. It is not used for job routing,
+destructive-op gating, or reconciler behavior in M0/M1. ADR-0063 records this narrowing
+and ADR-0066 removed the prototype source so contributors extend the runtime that actually
+serves requests.
 
 ## Lifecycle planes
 
@@ -237,9 +238,9 @@ postmortem, run-readiness preflight.
 
 ## MCP tool surface
 
-Atomic primitives mapped to planes, plus thin orchestration conveniences. Every
-tool returns structured JSON with the relevant object id, status,
-`suggested_next_actions`, and artifact **references** — never log dumps.
+Atomic primitives mapped to planes. Every tool returns structured JSON with the
+relevant object id, status, `suggested_next_actions`, and artifact **references** —
+never log dumps.
 
 **Long-running operations use an explicit job model.** Provision, build, install,
 capture-vmcore can run 30+ minutes. Those tools enqueue a job and return
@@ -259,36 +260,35 @@ Allocation                            (admission control + accounting)
 
 Provisioning
   systems.provision(allocation_id, provisioning_profile)   → job → system_id
-  systems.list / .get / .reprovision / .teardown
+  systems.define / .provision_defined
+  systems.get / .reprovision / .teardown
 
 Investigation + Run
   investigations.open(project, title)         → investigation_id
   runs.create(investigation_id, system_id, build_profile, …)
-  runs.build(run_id)    → job        runs.install(run_id) → job
-  runs.boot(run_id)     → job        runs.get(run_id)
+  runs.build(run_id)    → job        runs.complete_build(run_id)
+  runs.install(run_id)  → job        runs.boot(run_id) → job
+  runs.get(run_id)
 
 Connect + Debug
   debug.start_session(run_id, transport)   debug.end_session
   debug.set_breakpoint / .clear / .list
   debug.continue / .interrupt
-  debug.read_registers / .read_symbol / .read_memory(≤4096) / .evaluate(constrained)
+  debug.read_registers / .read_memory(≤4096)
   introspect.run / .from_vmcore         postmortem.crash / .triage
 
 Control + Retrieve                    (destructive → policy gate)
   control.power(system_id, on|off|cycle|reset)
   control.force_crash(system_id)
-  artifacts.list(run_id) / .get(ref)
+  artifacts.list(system_id) / .get(artifact_id) / .search_text(artifact_id, pattern)
+  artifacts.create_run_upload / .create_system_upload
   vmcore.list(system_id) / .fetch(system_id) → job
 
 Jobs (long-running spine)
   jobs.get(job_id) / jobs.wait(job_id, timeout) / jobs.cancel(job_id) / jobs.list
-
-Orchestration conveniences (thin wrappers)
-  workflow.build_boot_debug(run_id)        workflow.build_boot_test(run_id)
 ```
 
-- Workflow tools are optional sugar, not the only path — an agent can drive
-  plane-by-plane, which matches how it iterates on a patch.
+- Agents drive workflows plane-by-plane, which matches how they iterate on a patch.
 - `jobs.*` is the uniform async spine: every long-running tool returns the same
   job-handle shape, so the agent learns one polling pattern.
 - `debug.read_memory` keeps the PoC's 4096-byte cap.
@@ -367,7 +367,7 @@ partial spend to the Allocation regardless of completion. **Cancel/abandon clean
 part of each typed worker operation's policy: each op declares in code whether cancel yields
 clean-rollback, best-effort, or orphan-flagged state — `jobs.cancel` on a half-done
 `provision` / `install` is never undefined. ADR-0063 narrows the M0/M1 provider seam to typed
-runtime ports; the dormant capability registry does not drive this behavior today.
+runtime ports; the historical capability-registry design does not drive this behavior.
 
 ## Error taxonomy
 
@@ -448,7 +448,8 @@ Milestone-based. ("Sprint" is avoided per the project doc-style guard.)
   (small … max) over the provisioning profile plus **full custom** configuration
   (CPU/memory/PCIe passthrough); a **fleet availability** view (which hosts/shapes
   are free now); a **reservation/backlog scheduler** so scarce hardware is used
-  efficiently ("always work queued"); and **system reuse** + `systems.list`.
+  efficiently ("always work queued"); and **system reuse** plus a future system
+  list view.
   Realizes latent domain-model concepts already named above — Resource
   `capabilities` (PCIe), `cost_class`, the `draining` status, and reservations.
 - **M1.5 — Fault-injection provider.** A mock provider behind the real plane

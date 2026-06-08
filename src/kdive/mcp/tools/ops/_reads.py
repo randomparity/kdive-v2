@@ -21,13 +21,16 @@ from typing import TYPE_CHECKING
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.mcp.tools._time_window import parse_timestamptz_window
+from kdive.mcp.tools.ops._auth import (
+    ALL_PROJECTS_SCOPE,
+    audit_platform_denial,
+    held_platform_roles,
+)
 from kdive.security import audit
 
 if TYPE_CHECKING:
-    from kdive.security.context import RequestContext
-
-_SCOPE_ALL_PROJECTS = "all-projects"
+    from kdive.security.authz.context import RequestContext
 
 
 def parse_window(window: object) -> tuple[datetime | None, datetime | None] | None:
@@ -40,51 +43,7 @@ def parse_window(window: object) -> tuple[datetime | None, datetime | None] | No
     ``audit_log.ts`` is ``timestamptz``; a tz-naive bound would compare in an unintended
     zone.
     """
-    if window is None:
-        return None
-    if not isinstance(window, (list, tuple)) or len(window) != 2:
-        raise CategorizedError(
-            "window must be a [start, end] pair", category=ErrorCategory.CONFIGURATION_ERROR
-        )
-    start, end = (_parse_instant(window[0]), _parse_instant(window[1]))
-    if start is None and end is None:
-        return None
-    if start is not None and end is not None and start >= end:
-        raise CategorizedError(
-            f"window start {start.isoformat()} must precede end {end.isoformat()}",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    return (start, end)
-
-
-def _parse_instant(value: object) -> datetime | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise CategorizedError(
-            f"window bound {value!r} is not an ISO-8601 string",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        raise CategorizedError(
-            f"window bound {value!r} is not a valid ISO-8601 timestamp",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        ) from None
-    if parsed.tzinfo is None:
-        raise CategorizedError(
-            f"window bound {value!r} must be timezone-aware (audit_log.ts is timestamptz)",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    return parsed
-
-
-def held_platform_roles(ctx: RequestContext) -> str | None:
-    """Return the caller's platform roles as a sorted comma string, or None if it holds none."""
-    if not ctx.platform_roles:
-        return None
-    return ",".join(sorted(r.value for r in ctx.platform_roles))
+    return parse_timestamptz_window(window, timestamp_column="audit_log.ts")
 
 
 async def record_read(
@@ -108,7 +67,7 @@ async def record_read(
             agent_session=ctx.agent_session,
             event=audit.PlatformAuditEvent(
                 tool=tool,
-                scope=_SCOPE_ALL_PROJECTS,
+                scope=ALL_PROJECTS_SCOPE,
                 args=args,
                 platform_role=held_platform_roles(ctx),
             ),
@@ -129,18 +88,4 @@ async def audit_denial(
     on this openly-callable read. The role check runs before any pool connection is open, so
     the denial-audit opens its own connection and transaction here.
     """
-    held = held_platform_roles(ctx)
-    if held is None:
-        return
-    async with pool.connection() as conn, conn.transaction():
-        await audit.record_platform(
-            conn,
-            principal=ctx.principal,
-            agent_session=ctx.agent_session,
-            event=audit.PlatformAuditEvent(
-                tool=tool,
-                scope=_SCOPE_ALL_PROJECTS,
-                args=args,
-                platform_role=held,
-            ),
-        )
+    await audit_platform_denial(pool, ctx, tool=tool, scope=ALL_PROJECTS_SCOPE, args=args)

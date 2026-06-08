@@ -85,7 +85,7 @@ Set a breakpoint on a live DebugSession via gdb-MI. Requires operator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `location` | `string` | yes | Symbol or address to break at (gdb location syntax). |
+| `location` | `string` | yes | Bare C function or symbol name to break at. |
 | `session_id` | `string` | yes | The live DebugSession to set a breakpoint on. |
 
 ## `debug.start_session`

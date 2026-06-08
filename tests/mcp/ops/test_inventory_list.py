@@ -14,7 +14,6 @@ contract). Coverage maps to the #141 acceptance bullets:
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -29,7 +28,7 @@ from kdive.domain.state import AllocationState, ResourceStatus, SystemState
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.ops import inventory as inventory_tools
-from kdive.security.rbac import PlatformRole, Role
+from kdive.security.authz.rbac import PlatformRole, Role
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -166,11 +165,11 @@ async def _platform_audit_rows(url: str) -> list[tuple[object, ...]]:
 
 
 def _systems(resp: ToolResponse) -> list[dict[str, object]]:
-    return json.loads(resp.data["systems"])
+    return [item.data for item in resp.items if item.data["kind"] == "system"]
 
 
 def _allocations(resp: ToolResponse) -> list[dict[str, object]]:
-    return json.loads(resp.data["allocations"])
+    return [item.data for item in resp.items if item.data["kind"] == "allocation"]
 
 
 # ---- authorization ----------------------------------------------------------------

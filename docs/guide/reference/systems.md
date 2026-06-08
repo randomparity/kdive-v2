@@ -17,7 +17,7 @@ Create a System in 'defined' for a granted Allocation (upload window). Operator 
 
 `implemented` · `read-only`
 
-Render a System; failed maps to a failure envelope. Requires viewer.
+Return a System the caller can view.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -48,7 +48,7 @@ Admit a DEFINED System after its upload window is complete. Requires operator.
 
 `partial` · `destructive`
 
-Reprovision a ready System in place under its Allocation. Requires operator + gate.
+Enqueue in-place reprovision for a ready System. Requires operator and opt-in.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -59,7 +59,7 @@ Reprovision a ready System in place under its Allocation. Requires operator + ga
 
 `partial` · `destructive`
 
-Enqueue an idempotent teardown for a System; destroys the domain. Requires admin.
+Enqueue teardown for a System. Requires admin and destructive-op opt-in.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

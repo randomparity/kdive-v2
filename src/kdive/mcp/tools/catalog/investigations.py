@@ -13,7 +13,7 @@ ErrorCategory).
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, TypedDict
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
@@ -34,10 +34,25 @@ from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.security import audit
-from kdive.security.context import RequestContext, require_project
-from kdive.security.rbac import Role, require_role
+from kdive.security.authz.context import RequestContext, require_project
+from kdive.security.authz.rbac import Role, require_role
 
 _TERMINAL_INVESTIGATION = frozenset({InvestigationState.CLOSED, InvestigationState.ABANDONED})
+
+
+class ExternalRefInput(TypedDict):
+    """Raw MCP input for a full external tracker reference."""
+
+    tracker: str
+    id: str
+    url: str
+
+
+class ExternalRefKey(TypedDict):
+    """Raw MCP input identifying an external reference by natural key."""
+
+    tracker: str
+    id: str
 
 
 def _envelope_for_investigation(inv: Investigation) -> ToolResponse:
@@ -54,7 +69,7 @@ def _envelope_for_investigation(inv: Investigation) -> ToolResponse:
     )
 
 
-def _parse_external_refs(raw: list[dict[str, Any]] | None) -> list[ExternalRef]:
+def _parse_external_refs(raw: list[ExternalRefInput] | None) -> list[ExternalRef]:
     """Parse + dedup external refs by the ``(tracker, id)`` natural key (last-wins).
 
     Raises:
@@ -75,7 +90,7 @@ async def open_investigation(
     *,
     project: str,
     title: str,
-    external_refs: list[dict[str, Any]] | None = None,
+    external_refs: list[ExternalRefInput] | None = None,
 ) -> ToolResponse:
     """Mint an Investigation (`open`) for the caller's project."""
     require_project(ctx, project)
@@ -204,10 +219,13 @@ async def _get_for_update(conn: AsyncConnection, uid: UUID) -> Investigation | N
     return Investigation.model_validate(row) if row else None
 
 
-def _natural_key(ref: dict[str, Any]) -> tuple[str, str] | None:
+def _natural_key(ref: ExternalRefKey) -> tuple[str, str] | None:
     """The ``(tracker, id)`` identity of a ref input; ``None`` if either is missing/blank."""
-    tracker = ref.get("tracker")
-    rid = ref.get("id")
+    try:
+        tracker = ref["tracker"]
+        rid = ref["id"]
+    except KeyError:
+        return None
     if not isinstance(tracker, str) or not tracker:
         return None
     if not isinstance(rid, str) or not rid:
@@ -286,7 +304,7 @@ async def _unlink_locked(
 
 
 async def link_external_ref(
-    pool: AsyncConnectionPool, ctx: RequestContext, investigation_id: str, ref: dict[str, Any]
+    pool: AsyncConnectionPool, ctx: RequestContext, investigation_id: str, ref: ExternalRefInput
 ) -> ToolResponse:
     """Upsert an external ref onto an Investigation (keyed on `(tracker, id)`)."""
     uid = _as_uuid(investigation_id)
@@ -306,7 +324,7 @@ async def link_external_ref(
 
 
 async def unlink_external_ref(
-    pool: AsyncConnectionPool, ctx: RequestContext, investigation_id: str, ref: dict[str, Any]
+    pool: AsyncConnectionPool, ctx: RequestContext, investigation_id: str, ref: ExternalRefKey
 ) -> ToolResponse:
     """Remove an external ref by its `(tracker, id)` key (idempotent; `url` ignored)."""
     uid = _as_uuid(investigation_id)
@@ -336,7 +354,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         project: Annotated[str, Field(description="Project to create the Investigation under.")],
         title: Annotated[str, Field(description="Human-readable title for the Investigation.")],
         external_refs: Annotated[
-            list[dict[str, Any]] | None,
+            list[ExternalRefInput] | None,
             Field(description="Optional external tracker refs (each with tracker, id, url)."),
         ] = None,
     ) -> ToolResponse:
@@ -377,8 +395,8 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     async def investigations_link(
         investigation_id: Annotated[str, Field(description="The Investigation to add the ref to.")],
         ref: Annotated[
-            dict[str, Any],
-            Field(description="External ref to upsert, with tracker, id, and optional url."),
+            ExternalRefInput,
+            Field(description="External ref to upsert, with tracker, id, and url."),
         ],
     ) -> ToolResponse:
         """Upsert an external ref onto an Investigation by (tracker, id) key. Requires operator."""
@@ -394,7 +412,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             str, Field(description="The Investigation to remove the ref from.")
         ],
         ref: Annotated[
-            dict[str, Any],
+            ExternalRefKey,
             Field(description="Ref to remove; only tracker and id are used as the key."),
         ],
     ) -> ToolResponse:

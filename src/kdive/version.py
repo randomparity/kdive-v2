@@ -10,6 +10,7 @@ exposed for tests.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
@@ -36,9 +37,12 @@ class VersionInfo:
 
 
 def _git(*args: str) -> str | None:
+    git = shutil.which("git")
+    if git is None:
+        return None
     try:
         result = subprocess.run(
-            ["git", *args],
+            [git, *args],  # noqa: S603  # fixed git executable; args are internal constants
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT,

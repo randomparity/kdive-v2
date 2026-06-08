@@ -109,6 +109,18 @@ def test_success_factory_builds_non_failure_envelope() -> None:
     assert resp.data == {"k": "v"}
 
 
+def test_data_accepts_nested_json_values_and_rejects_other_objects() -> None:
+    resp = ToolResponse.success(
+        "inventory",
+        "ok",
+        data={"rows": [{"id": "a", "count": 1, "enabled": True, "note": None}]},
+    )
+
+    assert resp.data["rows"] == [{"id": "a", "count": 1, "enabled": True, "note": None}]
+    with pytest.raises(ValueError, match="non-JSON"):
+        ToolResponse.success("bad", "ok", data={"when": _NOW})
+
+
 def test_success_factory_on_failure_status_raises() -> None:
     # "failed" is a failure status; building it via success() (no category) is misuse.
     with pytest.raises(ValueError, match="error_category"):
@@ -123,6 +135,26 @@ def test_failure_factory_sets_error_status_and_category() -> None:
     assert resp.error_category == "allocation_denied"
     assert resp.data == {"reason": "at_capacity"}
     assert resp.suggested_next_actions == []
+
+
+def test_collection_factory_wraps_item_envelopes() -> None:
+    first = ToolResponse.success("a", "available", refs={"object": "tenant/a"})
+    second = ToolResponse.failure("b", ErrorCategory.INFRASTRUCTURE_FAILURE)
+
+    resp = ToolResponse.collection(
+        "artifacts",
+        "ok",
+        [first, second],
+        suggested_next_actions=["artifacts.get"],
+        data={"owner": "system-1"},
+    )
+
+    assert resp.object_id == "artifacts"
+    assert resp.status == "ok"
+    assert resp.data["count"] == "2"
+    assert resp.data["owner"] == "system-1"
+    assert resp.suggested_next_actions == ["artifacts.get"]
+    assert resp.items == [first, second]
 
 
 def test_common_as_uuid_parses_valid_uuid_and_rejects_bad_value() -> None:

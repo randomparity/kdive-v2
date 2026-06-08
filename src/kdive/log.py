@@ -21,6 +21,9 @@ import sys
 from collections.abc import Generator
 from contextvars import ContextVar, Token
 
+from kdive.security.secrets.redaction import SecretRedactionFilter
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+
 _FIELDS: tuple[str, ...] = ("request_id", "job_id", "principal", "object_id", "transition")
 
 _CONTEXT: dict[str, ContextVar[str | None]] = {
@@ -81,6 +84,8 @@ class JsonFormatter(logging.Formatter):
         payload.update(getattr(record, _CTX_RECORD_ATTR, {}))
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
+        elif record.exc_text:
+            payload["exc"] = record.exc_text
         return json.dumps(payload, default=str)
 
 
@@ -88,21 +93,36 @@ class _KdiveHandler(logging.StreamHandler):
     """Marker handler so :func:`configure_logging` can stay idempotent."""
 
 
-def configure_logging(level: str = "INFO") -> None:
+def configure_logging(
+    level: str = "INFO", *, secret_registry: SecretRegistry | None = None
+) -> None:
     """Install the JSON formatter + context filter on the root logger, idempotently.
 
     Safe to call from each entrypoint (server, worker, reconciler): a second call
-    updates the level but does not add a duplicate handler.
+    updates the level and redaction registry but does not add a duplicate handler.
 
     Args:
         level: A standard logging level name (e.g. ``"INFO"``, ``"DEBUG"``); an
             unknown name falls back to ``INFO``.
+        secret_registry: Registry used by the logging redaction filter. When omitted,
+            the process-global default is used for tests and CLI helpers.
     """
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
-    if any(isinstance(handler, _KdiveHandler) for handler in root.handlers):
-        return
+    registry = PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
+    for handler in root.handlers:
+        if isinstance(handler, _KdiveHandler):
+            _set_redaction_filter(handler, registry)
+            return
     handler = _KdiveHandler(sys.stderr)
     handler.setFormatter(JsonFormatter())
     handler.addFilter(ContextFilter())
+    _set_redaction_filter(handler, registry)
     root.addHandler(handler)
+
+
+def _set_redaction_filter(handler: logging.Handler, registry: SecretRegistry) -> None:
+    handler.filters = [
+        existing for existing in handler.filters if not isinstance(existing, SecretRedactionFilter)
+    ]
+    handler.addFilter(SecretRedactionFilter(registry))

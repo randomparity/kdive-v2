@@ -26,7 +26,7 @@ CREATE TABLE component_uploads (
     tenant text NOT NULL,
     provider text NOT NULL,
     component_kind text NOT NULL,
-    artifact_id uuid,
+    component_id uuid,
     sha256 text NOT NULL CONSTRAINT component_uploads_sha256_check
         CHECK (sha256 IS NULL OR sha256 ~ '^sha256:[0-9a-f]{64}$'),
     size_bytes bigint NOT NULL CONSTRAINT component_uploads_size_positive_check

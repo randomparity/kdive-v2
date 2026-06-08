@@ -17,7 +17,10 @@ insert, and a lost race closes the just-opened transport (ADR-0032 §6a). The
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Any, LiteralString
 from uuid import UUID, uuid4
@@ -41,14 +44,14 @@ from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.debug.ops import DebugEngineRuntime, register_debug_ops
 from kdive.profiles.provisioning import ProvisioningProfile
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
-from kdive.providers.interfaces import SystemHandle, TransportHandle
-from kdive.providers.ports import Connector
+from kdive.providers.ports import Connector, SystemHandle, TransportHandle
+from kdive.providers.runtime import ProviderRuntime
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.paths import PathSafetyError
-from kdive.security.rbac import Role, require_role
-from kdive.security.secrets import SecretBackend, secret_backend_from_env
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import Role, require_role
+from kdive.security.secrets.paths import PathSafetyError
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
 
 _GDBSTUB = "gdbstub"
 _SSH = "ssh"
@@ -66,6 +69,18 @@ _OCCUPIED_SQL: LiteralString = (
     "JOIN runs r ON r.id = s.run_id "
     "WHERE r.system_id = %s AND s.transport = %s AND s.state IN ('attach', 'live') LIMIT 1"
 )
+
+
+@dataclass(frozen=True)
+class _AttachRequest:
+    run: Run
+    system: System
+    session_id: UUID
+    transport: str
+
+
+def _secret_scope(session_id: UUID) -> str:
+    return f"debug-session:{session_id}"
 
 
 async def _system_for_run(conn: AsyncConnection, run: Run) -> System | None:
@@ -92,13 +107,15 @@ async def _system_occupied(conn: AsyncConnection, system_id: UUID, transport: st
         return await cur.fetchone() is not None
 
 
-def _open_transport(
+async def _open_transport(
     connector: Connector, system: System, transport: str
 ) -> TransportHandle | ToolResponse:
     """Open the transport outside any lock; map a provider failure to an envelope."""
     handle_name = system.domain_name or str(system.id)
     try:
-        return connector.open_transport(SystemHandle(handle_name), transport)
+        return await asyncio.to_thread(
+            connector.open_transport, SystemHandle(handle_name), transport
+        )
     except CategorizedError as exc:
         category = (
             exc.category
@@ -115,46 +132,138 @@ def _map_attach_failure_category(category: ErrorCategory) -> ErrorCategory:
     return category
 
 
-async def start_session(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    *,
-    run_id: str,
-    transport: str = _GDBSTUB,
-    connector: Connector,
-    secret_backend: SecretBackend | None = None,
-) -> ToolResponse:
-    """Open a single-attach transport and insert a `live` DebugSession (operator).
+def _release_failed_attach_secret(
+    registry: SecretRegistry, secret_scope: str, result: ToolResponse | TransportHandle
+) -> None:
+    if isinstance(result, ToolResponse) and result.status != "live":
+        registry.release(secret_scope)
 
-    For ``transport="ssh"`` the guest credential is resolved from the System's profile
-    ``ssh_credential_ref`` through ``secret_backend`` **before** the transport is opened, so
-    the redaction registry is seeded before any transport output can carry the value
-    (ADR-0039 §2). gdbstub needs no credential.
+
+class DebugSessionHandlers:
+    """Bound debug session lifecycle handlers.
+
+    The public methods take only MCP-facing inputs; provider and test seams are bound once
+    at construction, matching the lifecycle handler pattern used by runs and systems.
     """
-    uid = _as_uuid(run_id)
-    if uid is None:
-        return _config_error(run_id)
-    if transport not in _TRANSPORTS:
-        return _config_error(run_id)
-    with bind_context(principal=ctx.principal):
-        async with pool.connection() as conn:
-            run = await RUNS.get(conn, uid)
-            if run is None or run.project not in ctx.projects:
-                return _config_error(run_id)
-            require_role(ctx, run.project, Role.OPERATOR)
-            guard = await _attach_preconditions(conn, run, transport)
-            if isinstance(guard, ToolResponse):
-                return guard
-            system = guard
-            resolved = _resolve_credential(system, transport, secret_backend)
-            if isinstance(resolved, ToolResponse):
-                return resolved
-            opened = _open_transport(connector, system, transport)
+
+    def __init__(
+        self,
+        connector: Connector,
+        *,
+        runtime: DebugEngineRuntime | None = None,
+        secret_backend_factory: Callable[[UUID], SecretBackend] | None = None,
+        secret_registry: SecretRegistry | None = None,
+    ) -> None:
+        self._connector = connector
+        self._runtime = runtime
+        self._secret_backend_factory = secret_backend_factory
+        self._secret_registry = (
+            PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
+        )
+
+    async def start_session(
+        self,
+        pool: AsyncConnectionPool,
+        ctx: RequestContext,
+        *,
+        run_id: str,
+        transport: str = _GDBSTUB,
+    ) -> ToolResponse:
+        """Open a single-attach transport and insert a `live` DebugSession (operator).
+
+        For ``transport="ssh"`` the guest credential is resolved from the System's profile
+        ``ssh_credential_ref`` through the bound secret backend factory **before** the
+        transport is opened, so the redaction registry is seeded before any transport output
+        can carry the value (ADR-0039 §2). gdbstub needs no credential.
+        """
+        uid = _as_uuid(run_id)
+        if uid is None:
+            return _config_error(run_id)
+        if transport not in _TRANSPORTS:
+            return _config_error(run_id)
+        session_id = uuid4()
+        secret_scope = _secret_scope(session_id)
+        with bind_context(principal=ctx.principal):
+            async with pool.connection() as conn:
+                request = await self._prepare_attach_request(conn, ctx, uid, transport, session_id)
+            if isinstance(request, ToolResponse):
+                return request
+            opened = await _open_transport(self._connector, request.system, request.transport)
+            _release_failed_attach_secret(self._secret_registry, secret_scope, opened)
             if isinstance(opened, ToolResponse):
                 return opened
-            return await _insert_session_locked(
-                conn, ctx, run, system, opened, connector, transport
-            )
+            async with pool.connection() as conn:
+                response = await _insert_session_locked(
+                    conn,
+                    ctx,
+                    request.run,
+                    request.system,
+                    opened,
+                    self._connector,
+                    request.transport,
+                    request.session_id,
+                )
+            _release_failed_attach_secret(self._secret_registry, secret_scope, response)
+            return response
+
+    async def _prepare_attach_request(
+        self,
+        conn: AsyncConnection,
+        ctx: RequestContext,
+        run_id: UUID,
+        transport: str,
+        session_id: UUID,
+    ) -> _AttachRequest | ToolResponse:
+        run = await RUNS.get(conn, run_id)
+        if run is None or run.project not in ctx.projects:
+            return _config_error(str(run_id))
+        require_role(ctx, run.project, Role.OPERATOR)
+        guard = await _attach_preconditions(conn, run, transport)
+        if isinstance(guard, ToolResponse):
+            return guard
+        backend = self._credential_backend(session_id, transport)
+        resolved = _resolve_credential(guard, transport, backend)
+        if isinstance(resolved, ToolResponse):
+            return resolved
+        return _AttachRequest(run=run, system=guard, session_id=session_id, transport=transport)
+
+    def _credential_backend(self, session_id: UUID, transport: str) -> SecretBackend | None:
+        if transport != _SSH or self._secret_backend_factory is None:
+            return None
+        return self._secret_backend_factory(session_id)
+
+    async def end_session(
+        self,
+        pool: AsyncConnectionPool,
+        ctx: RequestContext,
+        session_id: str,
+    ) -> ToolResponse:
+        """Drive a live/attach DebugSession `-> detached` (idempotent on detached; operator).
+
+        Also reaps the lazy gdb-MI engine (ADR-0034 §4d): under the per-session lock it exits
+        the gdb subprocess and drops the registry entry, so an ended session never strands a
+        subprocess or holds the single-attach stub. Reaping a session that never ran a
+        Debug-plane op is a no-op.
+        """
+        uid = _as_uuid(session_id)
+        if uid is None:
+            return _config_error(session_id)
+        with bind_context(principal=ctx.principal):
+            async with pool.connection() as conn:
+                session = await DEBUG_SESSIONS.get(conn, uid)
+                if session is None or session.project not in ctx.projects:
+                    return _config_error(session_id)
+                require_role(ctx, session.project, Role.OPERATOR)
+                resolved = await _resolve_session_system(conn, uid)
+                if resolved is None:
+                    return _config_error(session_id)
+                _, system_id = resolved
+                envelope = await _detach_locked(conn, ctx, uid, system_id, self._connector)
+            if self._runtime is not None:
+                async with self._runtime.lock_for(session_id):
+                    self._runtime.reap(session_id)
+            self._secret_registry.release(_secret_scope(uid))
+            return envelope
 
 
 def _resolve_credential(
@@ -225,6 +334,7 @@ async def _insert_session_locked(
     handle: TransportHandle,
     connector: Connector,
     transport: str,
+    session_id: UUID,
 ) -> ToolResponse:
     """Re-check conflict + ready under the per-System lock, then insert + drive `-> live`.
 
@@ -235,17 +345,17 @@ async def _insert_session_locked(
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system.id):
         current = await SYSTEMS.get(conn, system.id)
         if current is None or current.state is not SystemState.READY:
-            connector.close_transport(handle)
+            await _close(connector, str(handle))
             status = current.state.value if current else "torn_down"
             return _config_error(str(run.id), data={"current_status": status})
         if await _system_occupied(conn, system.id, transport):
-            connector.close_transport(handle)
+            await _close(connector, str(handle))
             return ToolResponse.failure(str(run.id), ErrorCategory.TRANSPORT_CONFLICT)
         now = datetime.now(UTC)  # placeholder; the DB owns created_at/updated_at
         session = await DEBUG_SESSIONS.insert(
             conn,
             DebugSession(
-                id=uuid4(),
+                id=session_id,
                 created_at=now,
                 updated_at=now,
                 principal=ctx.principal,
@@ -304,41 +414,6 @@ async def _resolve_session_system(
     return session, run.system_id
 
 
-async def end_session(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    session_id: str,
-    *,
-    connector: Connector,
-    runtime: DebugEngineRuntime | None = None,
-) -> ToolResponse:
-    """Drive a live/attach DebugSession `-> detached` (idempotent on detached; operator).
-
-    Also reaps the lazy gdb-MI engine (ADR-0034 §4d): under the per-session lock it exits the
-    gdb subprocess and drops the registry entry, so an ended session never strands a subprocess
-    or holds the single-attach stub. Reaping a session that never ran a Debug-plane op is a
-    no-op.
-    """
-    uid = _as_uuid(session_id)
-    if uid is None:
-        return _config_error(session_id)
-    with bind_context(principal=ctx.principal):
-        async with pool.connection() as conn:
-            session = await DEBUG_SESSIONS.get(conn, uid)
-            if session is None or session.project not in ctx.projects:
-                return _config_error(session_id)
-            require_role(ctx, session.project, Role.OPERATOR)
-            resolved = await _resolve_session_system(conn, uid)
-            if resolved is None:
-                return _config_error(session_id)
-            _, system_id = resolved
-            envelope = await _detach_locked(conn, ctx, uid, system_id, connector)
-        if runtime is not None:
-            async with runtime.lock_for(session_id):
-                runtime.reap(session_id)
-        return envelope
-
-
 async def _detach_locked(
     conn: AsyncConnection,
     ctx: RequestContext,
@@ -357,7 +432,7 @@ async def _detach_locked(
             return _config_error(str(session_id))
         if row["state"] == DebugSessionState.DETACHED.value:
             return _detached_envelope(session_id, row["project"])
-        _close(connector, row["transport_handle"])
+        await _close(connector, row["transport_handle"])
         await DEBUG_SESSIONS.update_state(conn, session_id, DebugSessionState.DETACHED)
         await audit.record(
             conn,
@@ -374,12 +449,12 @@ async def _detach_locked(
     return _detached_envelope(session_id, row["project"])
 
 
-def _close(connector: Connector, handle: str | None) -> None:
+async def _close(connector: Connector, handle: str | None) -> None:
     """Close the transport best-effort; a missing/failing close never blocks the detach."""
     if handle is None:
         return
     with contextlib.suppress(CategorizedError):
-        connector.close_transport(TransportHandle(handle))
+        await asyncio.to_thread(connector.close_transport, TransportHandle(handle))
 
 
 def _detached_envelope(session_id: UUID, project: str) -> ToolResponse:
@@ -389,7 +464,11 @@ def _detached_envelope(session_id: UUID, project: str) -> ToolResponse:
 
 
 def register(
-    app: FastMCP, pool: AsyncConnectionPool, *, provider_runtime: ProviderRuntime | None = None
+    app: FastMCP,
+    pool: AsyncConnectionPool,
+    *,
+    provider_runtime: ProviderRuntime | None = None,
+    secret_registry: SecretRegistry | None = None,
 ) -> None:
     """Register the `debug.*` tools on ``app``, bound to ``pool``.
 
@@ -399,12 +478,22 @@ def register(
     locks + the `live_vm`-gated attach seam); its seven tools register here too, so `app.py` is
     untouched. `end_session` reaps the lazy engine via the shared runtime.
     """
-    provider = provider_runtime or build_default_provider_runtime()
+    if provider_runtime is None:
+        raise RuntimeError("debug registrar requires an injected provider runtime")
+    provider = provider_runtime
     connector: Connector = provider.connector
-    secret_backend: SecretBackend = secret_backend_from_env()
     attach = provider.attach_seam
     engine = provider.debug_engine
     runtime = DebugEngineRuntime(engine=engine, attach=attach)
+    registry = PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
+    handlers = DebugSessionHandlers(
+        connector,
+        runtime=runtime,
+        secret_backend_factory=lambda session_id: secret_backend_from_env(
+            registry=registry, scope=_secret_scope(session_id)
+        ),
+        secret_registry=registry,
+    )
 
     @app.tool(
         name="debug.start_session",
@@ -419,13 +508,8 @@ def register(
         ] = _GDBSTUB,
     ) -> ToolResponse:
         """Open a single-attach transport and insert a live DebugSession. Requires operator."""
-        return await start_session(
-            pool,
-            current_context(),
-            run_id=run_id,
-            transport=transport,
-            connector=connector,
-            secret_backend=secret_backend,
+        return await handlers.start_session(
+            pool, current_context(), run_id=run_id, transport=transport
         )
 
     @app.tool(
@@ -437,8 +521,6 @@ def register(
         session_id: Annotated[str, Field(description="The DebugSession to detach and close.")],
     ) -> ToolResponse:
         """Drive a live/attach DebugSession to detached; close its transport. Requires operator."""
-        return await end_session(
-            pool, current_context(), session_id, connector=connector, runtime=runtime
-        )
+        return await handlers.end_session(pool, current_context(), session_id)
 
     register_debug_ops(app, pool, runtime)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import shlex
 import signal
-import subprocess
+import subprocess  # noqa: S404  # supervises fixed local KDIVE child processes
 import sys
 import time
 from collections.abc import Mapping, Sequence
@@ -21,7 +21,6 @@ from kdive.db.migrate import apply_migrations
 
 
 def local_env_defaults() -> dict[str, str]:
-    """Return repo-independent defaults for a local host-run KDIVE stack."""
     home = os.environ.get("HOME", "")
     host = os.environ.get("KDIVE_HTTP_HOST", "127.0.0.1")
     port = os.environ.get("KDIVE_HTTP_PORT", "8000")
@@ -48,18 +47,15 @@ def local_env_defaults() -> dict[str, str]:
 
 
 def print_local_env() -> None:
-    """Print shell exports for :func:`local_env_defaults`."""
     for key, value in local_env_defaults().items():
         print(f"export {key}={shlex.quote(value)}")
 
 
 def default_fixture_files() -> Mapping[str, str]:
-    """Return the embedded local-libvirt fixture files keyed by relative path."""
     return LOCAL_LIBVIRT_FIXTURES
 
 
 def default_compose_text() -> str:
-    """Return the embedded backing-service compose file."""
     return LOCAL_COMPOSE
 
 
@@ -69,7 +65,6 @@ def _refuse_existing(path: Path, *, force: bool) -> None:
 
 
 def install_fixtures(dest: Path, *, force: bool = False) -> None:
-    """Install the embedded fixture catalog under ``dest``."""
     _refuse_existing(dest, force=force)
     for relative, content in LOCAL_LIBVIRT_FIXTURES.items():
         path = dest / relative
@@ -78,14 +73,12 @@ def install_fixtures(dest: Path, *, force: bool = False) -> None:
 
 
 def install_compose(dest: Path, *, force: bool = False) -> None:
-    """Install the embedded backing-service compose file at ``dest``."""
     _refuse_existing(dest, force=force)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(LOCAL_COMPOSE, encoding="utf-8")
 
 
 def migrate(database_url: str | None = None) -> int:
-    """Apply packaged database migrations and return the number applied."""
     url = database_url or os.environ["KDIVE_DATABASE_URL"]
     conn = psycopg.connect(url, autocommit=True)
     try:
@@ -103,7 +96,6 @@ def seed_project_statements(
     max_concurrent_allocations: int,
     max_concurrent_systems: int,
 ) -> list[tuple[str, Sequence[Any]]]:
-    """Build parameterized budget/quota upserts for one demo project."""
     return [
         (
             "INSERT INTO budgets (project, limit_kcu, spent_kcu) "
@@ -149,14 +141,12 @@ async def seed_demo(
 
 
 async def register_local_resource(pool: Any) -> None:
-    """Register the local-libvirt resource using the default provider runtime."""
     from kdive.providers.composition import build_default_provider_runtime
 
     await build_default_provider_runtime().register_discovery(pool)
 
 
 def supervisor_commands(env: Mapping[str, str]) -> list[list[str]]:
-    """Return the three host process commands for the local stack supervisor."""
     del env
     return [
         [sys.executable, "-m", "kdive", "server"],
@@ -166,9 +156,12 @@ def supervisor_commands(env: Mapping[str, str]) -> list[list[str]]:
 
 
 def run_stack() -> int:
-    """Run server, worker, and reconciler as child processes until one exits."""
     env = {**local_env_defaults(), **os.environ}
-    children = [subprocess.Popen(cmd, env=env) for cmd in supervisor_commands(env)]  # noqa: S603
+    children = [
+        # Commands come from supervisor_commands: sys.executable plus fixed kdive module args.
+        subprocess.Popen(cmd, env=env)  # noqa: S603
+        for cmd in supervisor_commands(env)
+    ]
 
     def stop(_signum: int, _frame: object) -> None:
         for child in children:

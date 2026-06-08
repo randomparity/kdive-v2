@@ -23,7 +23,7 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.providers.ports import BuildOutput, ValidatedUpload
-from kdive.security.rbac import Role
+from kdive.security.authz.rbac import Role
 from kdive.store.objectstore import HeadResult
 
 TEST_DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -167,7 +167,7 @@ class FakeValidator:
 
     def validate(
         self,
-        run_id,
+        *,
         manifest,
         keys,
         declared_build_id,

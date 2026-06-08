@@ -8,20 +8,24 @@ the `attach()` subprocess path are `live_vm`-gated and not unit-tested here.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.local_libvirt import debug_gdbmi
-from kdive.providers.local_libvirt.debug_gdbmi import (
+from kdive.mcp.tools.debug.session_registry import GdbMiSessionRegistry
+from kdive.providers.local_libvirt.debug import debug_gdbmi
+from kdive.providers.local_libvirt.debug.debug_gdbmi import (
     MAX_MEMORY_READ_BYTES,
     GdbMiEngine,
     MiRecord,
+    PygdbmiController,
     parse_mi_records,
 )
-from kdive.providers.ports import GdbMiAttachment, GdbMiSessionRegistry
-from kdive.security.redaction import Redactor
+from kdive.providers.ports import GdbMiAttachment
+from kdive.security.secrets.redaction import Redactor
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY
 
 
 class _FakeMiController:
@@ -32,9 +36,11 @@ class _FakeMiController:
         *,
         responses: dict[str, list[dict[str, object]]] | None = None,
         reads: list[list[dict[str, object]]] | None = None,
+        response_timeout: bool = False,
     ) -> None:
         self._responses = responses or {}
         self._reads = list(reads or [])
+        self._response_timeout = response_timeout
         self.written: list[str] = []
         self.read_timeouts: list[float] = []
         self.exited = False
@@ -53,11 +59,31 @@ class _FakeMiController:
     def get_gdb_response(
         self, *, timeout_sec: float, raise_error_on_timeout: bool = True
     ) -> list[dict[str, object]]:
-        del timeout_sec, raise_error_on_timeout
+        if self._response_timeout and raise_error_on_timeout:
+            raise debug_gdbmi._timeout_error("get_gdb_response", timeout_sec)
         return []
 
     def exit(self) -> None:
         self.exited = True
+
+
+class _TimeoutGdbController:
+    def get_gdb_response(
+        self, *, timeout_sec: float, raise_error_on_timeout: bool = True
+    ) -> list[dict[str, object]]:
+        from pygdbmi.constants import GdbTimeoutError
+
+        del timeout_sec, raise_error_on_timeout
+        raise GdbTimeoutError("timed out")
+
+    def exit(self) -> None:
+        pass
+
+
+def _pygdbmi_controller(controller: object) -> PygdbmiController:
+    wrapped = object.__new__(PygdbmiController)
+    wrapped._controller = controller
+    return wrapped
 
 
 def _attachment(controller: _FakeMiController, tmp_path: Path) -> GdbMiAttachment:
@@ -85,6 +111,22 @@ def test_mi_record_from_raw_whitelists_keys() -> None:
     record = MiRecord.from_raw({"type": "result", "message": "done", "extra": "dropped"})
     assert record.type == "result"
     assert record.message == "done"
+
+
+def test_pygdbmi_response_timeout_raises_by_default() -> None:
+    controller = _pygdbmi_controller(_TimeoutGdbController())
+
+    with pytest.raises(CategorizedError) as exc:
+        controller.get_gdb_response(timeout_sec=0.25)
+
+    assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert exc.value.details["code"] == "transport_stall"
+
+
+def test_pygdbmi_response_timeout_can_return_empty_when_requested() -> None:
+    controller = _pygdbmi_controller(_TimeoutGdbController())
+
+    assert controller.get_gdb_response(timeout_sec=0.25, raise_error_on_timeout=False) == []
 
 
 # --- breakpoints ---------------------------------------------------------------------------
@@ -186,7 +228,7 @@ def _register_controller() -> _FakeMiController:
 
 def test_read_registers_maps_names_to_values(tmp_path: Path) -> None:
     result = _engine().read_registers(_attachment(_register_controller(), tmp_path), ["rax", "rcx"])
-    assert result["registers"] == {"rax": "0xdead", "rcx": "0xcafe"}
+    assert result == {"rax": "0xdead", "rcx": "0xcafe"}
 
 
 def test_read_registers_rejects_empty_list(tmp_path: Path) -> None:
@@ -378,6 +420,28 @@ def test_read_memory_transcript_line_is_redacted(tmp_path: Path) -> None:
     assert "[REDACTED]" in transcript
 
 
+def test_transcript_redactor_sees_secrets_registered_after_engine_creation(
+    tmp_path: Path,
+) -> None:
+    secret = "lateprocesssecret"  # pragma: allowlist secret - fake test value
+    scope = object()
+    engine = GdbMiEngine()
+    attachment = _attachment(_memory_controller(0x5000, 4, "00112233"), tmp_path)
+    PROCESS_SECRET_REGISTRY.register(secret, scope=scope)
+    try:
+        engine.append_transcript(
+            attachment.transcript_path,
+            "-break-insert -h panic",
+            [MiRecord(type="console", payload=f"loaded {secret}")],
+        )
+    finally:
+        PROCESS_SECRET_REGISTRY.release(scope)
+
+    transcript = attachment.transcript_path.read_text(encoding="utf-8")
+    assert secret not in transcript
+    assert "[REDACTED]" in transcript
+
+
 # --- continue / interrupt ------------------------------------------------------------------
 
 
@@ -438,6 +502,20 @@ def test_continue_zero_timeout_uses_interactive_wait_cap(tmp_path: Path) -> None
     assert stop.timed_out is True
     assert controller.written == ["-exec-continue", "-exec-interrupt"]
     assert len(controller.read_timeouts) == resume_reads + 1
+
+
+@pytest.mark.parametrize("timeout_sec", [-1.0, math.inf, math.nan])
+def test_continue_rejects_invalid_timeout(timeout_sec: float, tmp_path: Path) -> None:
+    controller = _FakeMiController(
+        responses={"-exec-continue": [{"type": "result", "message": "running", "payload": None}]},
+    )
+
+    with pytest.raises(CategorizedError) as exc:
+        _engine().continue_(_attachment(controller, tmp_path), timeout_sec=timeout_sec)
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert exc.value.details["code"] == "bad_continue_timeout"
+    assert controller.written == []
 
 
 def test_continue_raises_transport_stall_on_silent_link(tmp_path: Path) -> None:
@@ -506,9 +584,9 @@ def test_continue_raises_session_exited_on_terminal_stop(tmp_path: Path) -> None
 # --- transcript ----------------------------------------------------------------------------
 
 
-def test_run_appends_one_transcript_line_per_command(tmp_path: Path) -> None:
+def test_execute_mi_command_appends_one_transcript_line_per_command(tmp_path: Path) -> None:
     attachment = _attachment(_FakeMiController(), tmp_path)
-    _engine().run(attachment, "-break-list")
+    _engine().execute_mi_command(attachment, "-break-list")
     lines = attachment.transcript_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     entry = json.loads(lines[0])

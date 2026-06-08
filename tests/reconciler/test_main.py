@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from kdive.__main__ import build_parser
+from kdive.security.secrets.secret_registry import SecretRegistry
 
 
 def test_reconciler_subcommand_parses() -> None:
@@ -55,7 +56,7 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(loop.Reconciler, "__init__", _fake_init)
     monkeypatch.setattr(loop.Reconciler, "run", _fake_run)
 
-    asyncio.run(__main__._run_reconciler())
+    asyncio.run(__main__._run_reconciler(SecretRegistry()))
 
     assert events == ["open", "discover", "run", "close"]
     assert isinstance(constructed["reaper"], loop.NullReaper)

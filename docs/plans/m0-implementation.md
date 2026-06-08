@@ -20,7 +20,7 @@
 - **Milestone:** `M0 — Walking skeleton` (exists).
 - Each sub-issue carries its `area:*` (and `provider:local-libvirt` where it touches the provider), a `Depends on:` line, and acceptance criteria copied into the issue body.
 
-## Package layout (locked here)
+## Package layout
 
 ```
 src/kdive/
@@ -28,10 +28,20 @@ src/kdive/
   db/          schema/NNNN_*.sql · migrate.py · pool.py · repositories.py · locks.py · idempotency.py
   store/       objectstore.py
   jobs/        models.py · queue.py · worker.py
-  mcp/         app.py · auth.py · tools/{resources,allocations,systems,investigations,runs,debug,control,vmcore,artifacts,jobs}.py
+  mcp/         app.py · auth.py · responses.py
+  mcp/tools/   catalog/{resources,jobs,investigations,artifacts*}.py
+               lifecycle/{allocations,control,vmcore}.py
+               lifecycle/{runs,systems}/
+               debug/{sessions,ops,introspect}.py
+               accounting/{admin,estimate,reports,usage}.py
+               ops/{audit,breakglass,inventory,queue,reconcile,tuning}.py
+  planes/      runs.py · systems.py · control.py · vmcore.py
+  services/    allocation_admission.py · allocation_idempotency.py · resource_discovery.py
   security/    rbac.py · audit.py · gate.py · redaction.py · secret_registry.py · paths.py · secrets.py
   reconciler/  loop.py
-  providers/   capability.py · interfaces.py · local_libvirt/{discovery,provisioning,build,install,connect,debug_gdbmi,introspect_drgn,control,retrieve}.py
+  providers/   composition.py · ports/ · local_libvirt/{build,discovery,retrieve}.py
+               local_libvirt/lifecycle/{provisioning,install,connect,control}.py
+               local_libvirt/debug/{debug_gdbmi,introspect_drgn,execution,mi_*}.py
   profiles/    provisioning.py · build.py
   log.py       structured-logging config (JSON, stdlib logging)
   __main__.py  (server | worker | reconciler entrypoints)
@@ -157,10 +167,15 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:mcp-api` · `area:security`
 - **Depends on:** #5, #7
 - **Goal:** A FastMCP streamable-HTTP server that authenticates bearer JWTs and exposes the `jobs.*` tools.
-- **Files:** Create `src/kdive/mcp/app.py`, `mcp/auth.py`, `mcp/tools/jobs.py`, `src/kdive/__main__.py`; `tests/mcp/`.
+- **Files:** Create `src/kdive/mcp/app.py`, `mcp/auth.py`, `mcp/responses.py`,
+  `mcp/tools/catalog/jobs.py`, `src/kdive/__main__.py`; `tests/mcp/`.
 - **Scope:**
   - `auth.py`: FastMCP `JWTVerifier` against `KDIVE_OIDC_JWKS_URI`, enforcing `iss` + `aud` (ADR-0002/0010); derive `principal` (sub), `agent_session` (claim, optional in M0), and validate `project` against the request param.
-  - `app.py`: `FastMCP(name=..., auth=...)`, `transport="http"`; a request-context accessor returning `(principal, agent_session, project)`. **`app.py` aggregates the tool surface**: each `tools/<plane>.py` exposes a `register(app)` function and `app.py` calls every module's `register` at startup, so a plane issue surfaces its tools via that hook without editing the others.
+  - `app.py`: `FastMCP(name=..., auth=...)`, `transport="http"`; a request-context
+    accessor returning `(principal, agent_session, project)`. **`app.py` aggregates the
+    tool surface** through `_PLANE_REGISTRARS` and `_HANDLER_REGISTRARS`, so each nested
+    tool or worker module contributes one registrar without changing `build_app` or
+    `build_handler_registry`.
   - `tools/jobs.py`: `jobs.get/.wait/.cancel/.list` returning the spec's job-handle shape.
   - `__main__.py`: `server` and `worker` subcommands — `server` runs the app; `worker` runs the `worker.run` loop from #7 (the process that executes jobs). Both initialize the `kdive/log.py` structured logger (#1) and emit per-request/per-job logs keyed by id + principal.
 - **Acceptance:** a request with no/invalid token is rejected; a valid token resolves the principal context; `jobs.get` on a known job returns its status; structured JSON shape matches the spec (object id, status, suggested_next_actions, refs).
@@ -169,11 +184,11 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:security`
 - **Depends on:** #5, #8
 - **Goal:** Project-scoped roles, append-only audit on every transition, and the three-check destructive gate.
-- **Files:** Create `src/kdive/security/rbac.py`, `security/audit.py`, `security/gate.py`; `tests/security/`.
+- **Files:** Create `src/kdive/security/authz/rbac.py`, `security/audit.py`, `security/authz/gate.py`; `tests/security/`.
 - **Scope:**
-  - `rbac.py`: `viewer`/`operator`/`admin` per project from token claims; `require_role(ctx, project, role)`.
+  - `authz/rbac.py`: `viewer`/`operator`/`admin` per project from token claims; `require_role(ctx, project, role)`.
   - `audit.py`: `record(ctx, tool, object_kind, object_id, transition, args)` → append-only `audit_log` row with `args_digest` (hash, not raw args).
-  - `gate.py`: `assert_destructive_allowed(ctx, allocation, op)` — all three of capability scope, `admin` role, explicit profile opt-in (ADR-0006).
+  - `authz/gate.py`: `assert_destructive_allowed(ctx, allocation, op)` — all three of capability scope, `admin` role, explicit profile opt-in (ADR-0006).
 - **Acceptance:** a destructive op is refused if any single check is absent (three tests); every state transition through a repository writes exactly one audit row; `args_digest` never contains secret material.
 
 ### Issue 10 — Reconciler loop (M0 subset)
@@ -191,37 +206,48 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:security`
 - **Depends on:** #1
 - **Goal:** Redaction, path-safety, and a by-reference secret backend, ported and wired. (Phase-1 foundation — the debug/retrieve planes depend on it for transcript/vmcore redaction.)
-- **Files:** Create `src/kdive/security/redaction.py`, `security/secret_registry.py`, `security/paths.py`, `security/secrets.py` (port `~/src/kdive-v1/src/kdive/safety/{redaction,secret_registry,paths}.py`); tests.
+- **Files:** Create `src/kdive/security/secrets/redaction.py`, `security/secrets/secret_registry.py`, `security/secrets/paths.py`, `security/secrets/secrets.py` (port `~/src/kdive-v1/src/kdive/safety/{redaction,secret_registry,paths}.py`); tests.
 - **Scope:**
   - Port the three safety modules behind the new package; keep `PROCESS_SECRET_REGISTRY` semantics.
-  - `secrets.py`: `SecretBackend` Protocol + `FileRefBackend` resolving only within an allowlisted root (path-safety check), registering the value into the redaction registry **before** use; pre-registration output quarantined.
+  - `secrets/secrets.py`: `SecretBackend` Protocol + `FileRefBackend` resolving only within an allowlisted root (path-safety check), registering the value into the redaction registry **before** use; pre-registration output quarantined.
 - **Acceptance:** a registered secret value is masked by exact-value replacement in sample output; a file-ref escaping the allowlisted root is rejected; resolution registers before returning the value (ordering test).
 
 ---
 
 ## Phase 2 — Provider framework
 
-### Issue 11 — Capability registry prototype and plane interfaces
+### Issue 11 — Historical capability registry prototype and plane interfaces
 - **Labels:** `area:providers`
 - **Depends on:** #3, #5
 - **Goal:** The original provider-seam prototype — typed plane `Protocol`s, an `OpContract`,
   and capability-match dispatch (never by name). ADR-0063 later superseded this for
-  production runtime assembly with typed `ProviderRuntime` ports.
-- **Files:** Create `src/kdive/providers/capability.py`, `providers/interfaces.py`; `tests/providers/`.
+  production runtime assembly with typed `ProviderRuntime` ports, and ADR-0066 removed the
+  registry prototype from production source.
+- **Files:** `providers/ports/`; historical registry design remains in ADR-0009,
+  ADR-0022, and dated planning docs.
 - **Scope:**
-  - `interfaces.py`: the **eight** provider-plane `Protocol`s (Discovery, Provisioning, Build, Install, Connect, Debug, Control, Retrieve); the ninth plane, Allocation, is handled in core, not as a provider Protocol.
-  - `capability.py`: `Capability{plane,operation,resource_kind,contract}`, `OpContract{idempotent,destructive,cancelable,long_running,cleanup}`, a `register(provider, capabilities)` and `dispatch(plane, op, resource_kind) -> bound op`; multiple matches resolved by explicit pin → health → cost_class → stable tiebreak (ADR-0009); advertised-but-unhonored → typed `not_implemented`.
-- **Acceptance:** prototype dispatch selects a registered fake provider by capability; an unregistered op raises `not_implemented`; two providers matching are resolved deterministically by the documented order (test asserts the winner).
+  - `ports/`: provider-plane `Protocol`s and value aliases used by `ProviderRuntime`
+    typed ports, with the package facade as the stable import surface. Allocation is
+    handled in core, not as a provider Protocol.
+- **Acceptance:** live provider tests cover typed runtime composition; no production
+  capability-registry API remains.
 
 ---
 
 ## Phase 3 — Planes (local-libvirt)
 
+These issue recipes are historical M0 slices, but the file paths below name the
+current runtime layout. Provider work should extend typed ports wired by
+`providers/composition.py`; the removed capability-registry dispatch path is
+only ADR history.
+
 ### Issue 12 — Discovery + Allocation (admission)
 - **Labels:** `area:allocation` · `provider:local-libvirt`
 - **Depends on:** #11, #9
 - **Goal:** Register the local libvirt host and grant always-yes, capacity-checked allocations.
-- **Files:** Create `src/kdive/providers/local_libvirt/discovery.py`, `src/kdive/mcp/tools/resources.py`, `mcp/tools/allocations.py`, `src/kdive/domain/allocation_admission.py`; tests.
+- **Files:** Create `src/kdive/providers/local_libvirt/discovery.py`,
+  `src/kdive/mcp/tools/catalog/resources.py`, `mcp/tools/lifecycle/allocations.py`,
+  `src/kdive/services/allocation_admission.py`; tests.
 - **Scope:**
   - `discovery.py`: enumerate the libvirt host (`libvirt.open(KDIVE_LIBVIRT_URI)`), advertise arch/cpu/memory + `gdbstub` transport capability; `list_owned()` returns domains tagged with `system_id`.
   - `allocation_admission.py`: per-project advisory lock → check per-host concurrent-Allocation cap → grant or `allocation_denied`.
@@ -242,7 +268,9 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:provisioning` · `provider:local-libvirt`
 - **Depends on:** #11, #13
 - **Goal:** Provision and tear down a libvirt System as a job.
-- **Files:** Create `src/kdive/providers/local_libvirt/provisioning.py`, `src/kdive/mcp/tools/systems.py`; register a `provision`/`teardown` job handler; tests.
+- **Files:** Create `src/kdive/providers/local_libvirt/lifecycle/provisioning.py`,
+  `src/kdive/mcp/tools/lifecycle/systems/`, `src/kdive/planes/systems.py`; register
+  `provision`/`teardown` job handlers; tests.
 - **Scope:**
   - Create the `systems` row (`provisioning`) **first**, then render domain XML from the profile + rootfs and `defineXML`/`create`, tagging the domain with `system_id` metadata (ADR-0009/reconciler ordering).
   - `teardown`: `destroy`+`undefine`; idempotent.
@@ -253,7 +281,8 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:core-platform`
 - **Depends on:** #5, #8
 - **Goal:** Campaign + run-attempt lifecycle, including external references.
-- **Files:** Create `src/kdive/mcp/tools/investigations.py`, `mcp/tools/runs.py`; `tests/`.
+- **Files:** Create `src/kdive/mcp/tools/catalog/investigations.py`,
+  `mcp/tools/lifecycle/runs/`; `tests/`.
 - **Scope:**
   - `investigations.open(project,title,external_refs?)`, `.get`, `.close`, `.link`, `.unlink` (mutable `external_refs` of `{tracker,id,url}`); `open → active` on first Run.
   - `runs.create(investigation_id, system_id, build_profile)`, `.get`; Run state machine; a failed step is terminal for the Run (Failure & retry section).
@@ -264,7 +293,9 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:build-install`
 - **Depends on:** #11, #15
 - **Goal:** Build a kernel from source as an idempotent job.
-- **Files:** Create `src/kdive/providers/local_libvirt/build.py`, `src/kdive/profiles/build.py`, `mcp/tools/runs.py` (add `runs.build`); register `build` handler; tests.
+- **Files:** Create `src/kdive/providers/local_libvirt/build.py`,
+  `src/kdive/profiles/build.py`, `mcp/tools/lifecycle/runs/build.py`; register
+  `build` handler in `src/kdive/planes/runs.py`; tests.
 - **Scope:**
   - `BuildProfile` (kernel source ref, config, patch ref); `build()` runs `make` in a workspace, ensuring `CONFIG_CRASH_DUMP`/`crashkernel` + `CONFIG_DEBUG_INFO(_DWARF)`/BTF for the kdump and symbolization prerequisites; stores **two** artifacts on the Run — the bootable kernel image (`kernel_ref`) **and a build-id-keyed `vmlinux`/debuginfo artifact (`debuginfo_ref`)** that #20/#22 load to symbolize the vmcore (port v1 `symbols/`).
   - To bound wall-clock, M0 builds **incrementally from a warm source tree** (base tree + the profile's patch), not a cold from-scratch build; the warm tree is part of the build-workspace setup.
@@ -275,7 +306,9 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:build-install` · `provider:local-libvirt`
 - **Depends on:** #16, #14
 - **Goal:** Install the built kernel onto the System and boot it, with kdump in effect.
-- **Files:** Create `src/kdive/providers/local_libvirt/install.py`, `mcp/tools/runs.py` (add `runs.install`, `runs.boot`); register handlers; tests.
+- **Files:** Create `src/kdive/providers/local_libvirt/lifecycle/install.py`,
+  `mcp/tools/lifecycle/runs/steps.py` (add `runs.install`, `runs.boot`); register
+  handlers in `src/kdive/planes/runs.py`; tests.
 - **Scope:**
   - `install()`: stage kernel/initrd for direct-kernel boot with a `crashkernel=` reservation; ensure the kdump capture service/initramfs is present (kdump prerequisite).
   - `boot()`: boot the installed kernel; run-readiness preflight (port v1 `prereqs/`) before declaring boot ready; `boot_timeout`/`readiness_failure` on failure.
@@ -285,7 +318,9 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:debug` · `provider:local-libvirt`
 - **Depends on:** #11, #17, #23
 - **Goal:** Open a single-attach gdbstub transport and manage the DebugSession row.
-- **Files:** Create `src/kdive/providers/local_libvirt/connect.py`, `mcp/tools/debug.py` (start/end session); port `~/src/kdive-v1/.../transport/backends/qemu_gdbstub.py`; tests.
+- **Files:** Create `src/kdive/providers/local_libvirt/lifecycle/connect.py`,
+  `mcp/tools/debug/sessions.py` (start/end session); port
+  `~/src/kdive-v1/.../transport/backends/qemu_gdbstub.py`; tests.
 - **Scope:**
   - `open_transport(system, "gdbstub")` → QEMU gdbstub; `debug.start_session` inserts a `debug_sessions` row `attach → live` with the transport handle + heartbeat; a second attach to a `live` session returns `transport_conflict`.
   - `debug.end_session` → `detached`; `force_crash`/reboot also drives `live → detached` (coordinated with #21).
@@ -295,9 +330,11 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:debug`
 - **Depends on:** #18
 - **Goal:** Constrained debug ops over the gdbstub via the ported gdb-MI tier.
-- **Files:** Create `src/kdive/providers/local_libvirt/debug_gdbmi.py` (port `~/src/kdive-v1/.../providers/local/debug/gdb_mi.py`, 854 LOC); add to `mcp/tools/debug.py`; tests.
+- **Files:** Create `src/kdive/providers/local_libvirt/debug/debug_gdbmi.py` plus
+  sibling MI protocol/controller/execution/transcript helpers as needed; add to
+  `mcp/tools/debug/ops.py`; tests.
 - **Scope:**
-  - Port gdb-MI behind the `DebugPlane` Protocol; expose `debug.set_breakpoint/.clear/.list`, `.read_memory` (enforce the **4096-byte cap**, ported invariant), `.read_registers`, `.continue`, `.interrupt`.
+  - Port gdb-MI behind the typed `GdbMiEngine` runtime port; expose `debug.set_breakpoint/.clear/.list`, `.read_memory` (enforce the **4096-byte cap**, ported invariant), `.read_registers`, `.continue`, `.interrupt`.
   - All transcript output passes through the redactor (#23) before persistence/response.
 - **Acceptance (live_vm):** set a breakpoint at a symbol, continue, hit it, read registers and ≤4096 bytes of memory; a >4096 read is rejected; a known secret in the gdb-MI **textual transcript** is masked in the response (this is transcript redaction — raw `read_memory` bytes are returned verbatim under the 4096-byte cap, not redacted).
 
@@ -305,7 +342,7 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:debug`
 - **Depends on:** #22
 - **Goal:** Offline drgn introspection of a captured vmcore on the host — no live guest, no SSH.
-- **Files:** Create `src/kdive/providers/local_libvirt/introspect_drgn.py` (port the M0 subset of the vmcore path in `~/src/kdive-v1/src/kdive/introspect/*` + `prereqs/drgn_probe.py`); add `introspect.from_vmcore`; tests.
+- **Files:** Create `src/kdive/providers/local_libvirt/debug/introspect_drgn.py` (port the M0 subset of the vmcore path in `~/src/kdive-v1/src/kdive/introspect/*` + `prereqs/drgn_probe.py`); add `introspect.from_vmcore`; tests.
 - **Scope:**
   - drgn opens the fetched vmcore on the host (`drgn.program_from_core`-style), **loading the Run's `debuginfo_ref` (`vmlinux`) from #16 for symbols/types**, and runs a minimal helper set (tasks, modules, sysinfo).
   - **Live drgn (`introspect.run`) is deferred to M1.** v1 implements it as drgn-over-SSH (`local-drgn-introspect`, `transports=["ssh"]`), which needs a guest SSH transport + credentials (secret backend) that the M0 walking-skeleton path does not otherwise require; introducing it here is scope creep and `introspect.run` is not in the M0 tool subset.
@@ -316,7 +353,9 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:control-retrieve` · `provider:local-libvirt`
 - **Depends on:** #11, #14, #9
 - **Goal:** Power/reset and force_crash, behind the destructive-op gate.
-- **Files:** Create `src/kdive/providers/local_libvirt/control.py`, `mcp/tools/control.py`; register `force_crash`/power job handlers; tests.
+- **Files:** Create `src/kdive/providers/local_libvirt/lifecycle/control.py`,
+  `mcp/tools/lifecycle/control.py`, `src/kdive/planes/control.py`; register
+  `force_crash`/power job handlers; tests.
 - **Scope:**
   - `power(on|off|cycle|reset)` via `virsh`/libvirt API; `force_crash` via `sysrq-c` (or QEMU monitor `nmi`), driving System `ready → crashed` and the DebugSession `live → detached`.
   - Every op passes `gate.assert_destructive_allowed` (#9); jobs use `dedup_key=(system_id, op[, action])`.
@@ -326,7 +365,10 @@ The core platform (#3–#10) is the gating path; planes parallelize once #11 lan
 - **Labels:** `area:control-retrieve`
 - **Depends on:** #21, #6, #23
 - **Goal:** Capture the kdump vmcore, store it (raw + redacted), and port crash postmortem.
-- **Files:** Create `src/kdive/providers/local_libvirt/retrieve.py` (port subset of `~/src/kdive-v1/.../postmortem/*`), `mcp/tools/vmcore.py`, `mcp/tools/artifacts.py`; register `capture_vmcore` handler; tests.
+- **Files:** Create `src/kdive/providers/local_libvirt/retrieve.py` (port subset of
+  `~/src/kdive-v1/.../postmortem/*`), `mcp/tools/lifecycle/vmcore.py`,
+  `mcp/tools/catalog/artifacts.py`, `src/kdive/planes/vmcore.py`; register
+  `capture_vmcore` handler; tests.
 - **Scope:**
   - `capture_vmcore` waits for kdump to finish, writes the **raw** vmcore (`sensitive`) and a **redacted** derivative to the object store (object before row, #6), returns an artifact ref; if no core within the capture window → `readiness_failure`. The job is enqueued with `dedup_key=(system_id, "capture_vmcore")`.
   - `vmcore.list/.fetch` (→ job), `artifacts.list/.get` (returns the redacted derivative only); crash postmortem port for `postmortem.crash`/`.triage`, loading the Run's `debuginfo_ref` (from #16) to symbolize the core.

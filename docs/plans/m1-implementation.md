@@ -30,12 +30,15 @@ src/kdive/
   domain/models.py                        # + LedgerEntry, Budget, Quota, CostClassCoefficient
   domain/state.py                         # + allocation granted/active→expired; system ready↔reprovisioning,→failed
   domain/cost.py                          # NEW — kcu rate/cost, W_CPU/W_MEM, coeff resolution
-  domain/accounting.py                    # NEW — ledger emit (reserved/reconciled), rollup, budget_remaining
-  domain/allocation_admission.py          # extend admit(): PROJECT lock + quota + budget + reserve + lease window
-  mcp/tools/accounting.py                 # NEW — estimate, usage, set_budget, set_quota
-  mcp/tools/allocations.py                # + renew
-  mcp/tools/systems.py                    # + reprovision; + system-quota check on provision
-  mcp/tools/debug.py                      # + transport="ssh"; + introspect.run (live)
+  services/accounting.py                  # NEW — ledger emit (reserved/reconciled), rollup, budget_remaining
+  services/allocation_admission.py        # extend admit(): PROJECT lock + quota + budget + reserve + lease window
+  services/allocation_renew.py            # renew admission and idempotency
+  mcp/tools/accounting/{admin,estimate,reports,usage}.py # estimate, usage, reports, set_budget, set_quota
+  mcp/tools/lifecycle/allocations.py      # + renew
+  mcp/tools/lifecycle/systems/{admin,provision,registrar}.py # + reprovision; + system-quota check on provision
+  mcp/tools/debug/{sessions,ops,introspect}.py # + transport="ssh"; + introspect.run (live)
+  planes/systems.py                       # provision/teardown/reprovision worker handlers
+  planes/control.py · planes/vmcore.py    # control and retrieve worker handlers
   providers/local_libvirt/provisioning.py # + reprovision op + handler
   providers/local_libvirt/connect.py      # + ssh transport backend + capability
   providers/local_libvirt/introspect_drgn.py # + live introspect (drgn over ssh)
@@ -98,7 +101,8 @@ Each wave's issues are independent and dispatch in parallel; the next wave waits
 - **Labels:** `area:allocation`
 - **Depends on:** ①
 - **Goal:** The kcu rate/cost computation and a pre-commit estimate tool.
-- **Files:** Create `src/kdive/domain/cost.py`, `src/kdive/mcp/tools/accounting.py` (estimate only); tests.
+- **Files:** Create `src/kdive/domain/cost.py`,
+  `src/kdive/mcp/tools/accounting/estimate.py` (estimate only); tests.
 - **Scope:**
   - `cost.py`: `W_CPU=1.0`, `W_MEM=0.25` constants; `rate(coeff, vcpus, memory_gb)` and `cost(rate, hours)`; `resolve_coeff(conn, cost_class)` reading `cost_class_coefficients`, failing closed (`configuration_error`) on a missing row.
   - `validate_size(selector)` / `validate_window(window)`: reject `vcpus < 1`, `memory_gb < 0`, or `window ≤ 0` (`configuration_error`), so `rate`/`estimate` are always `≥ 0` (the budget-minting guard, ADR-0007 decision 2). Used by **both** `estimate` and admission. The **≤ resource-caps** check is a *separate* `validate_against_resource(selector, resource)` used **only by admission (④)** — `estimate` has no target Resource.
@@ -109,9 +113,21 @@ Each wave's issues are independent and dispatch in parallel; the next wave waits
 - **Labels:** `area:allocation`
 - **Depends on:** ②
 - **Goal:** Append-only ledger writers, the release-time reconciliation, and the usage rollup.
-- **Files:** Create `src/kdive/domain/accounting.py`; extend `mcp/tools/accounting.py` (usage), `mcp/tools/allocations.py` (wire reconcile into `release`); tests.
+- **Files:** Create `src/kdive/services/accounting.py`; extend
+  `mcp/tools/accounting/usage.py`, `mcp/tools/accounting/reports.py`, and
+  `mcp/tools/lifecycle/allocations.py` (wire reconcile into `release`); tests.
 - **Scope:**
-  - `accounting.py`: `reserve(conn, allocation, estimate)` writes a `reserved` row **and** `budgets.spent_kcu += estimate` in one transaction; `reconcile(conn, allocation)` computes `actual = rate × active_hours` (`active_hours = active_ended_at − active_started_at`, read from the allocation row, never from `updated_at`), writes `kcu_delta = actual − Σ reserved`, **and** applies the same delta to `budgets.spent_kcu`; `usage(conn, project)` returns `{spent_kcu, budget_remaining = limit_kcu − spent_kcu, by_cost_class, shared_kcu}` reading the O(1) running total (the `by_cost_class`/`shared_kcu` `Σ` is off the locked hot path); `usage_for_investigation(conn, id)` sums only allocations whose Runs are **solely** in that investigation (a shared allocation is excluded → counted in the project's `shared_kcu`, never double-counted).
+  - `services/accounting.py`: `reserve(conn, allocation, estimate)` writes a `reserved`
+    row **and** `budgets.spent_kcu += estimate` in one transaction; `reconcile(conn,
+    allocation)` computes `actual = rate × active_hours` (`active_hours =
+    active_ended_at − active_started_at`, read from the allocation row, never from
+    `updated_at`), writes `kcu_delta = actual − Σ reserved`, **and** applies the same
+    delta to `budgets.spent_kcu`; `usage(conn, project)` returns `{spent_kcu,
+    budget_remaining = limit_kcu − spent_kcu, by_cost_class, shared_kcu}` reading the
+    O(1) running total (the `by_cost_class`/`shared_kcu` `Σ` is off the locked hot
+    path); `usage_for_investigation(conn, id)` sums only allocations whose Runs are
+    **solely** in that investigation (a shared allocation is excluded → counted in the
+    project's `shared_kcu`, never double-counted).
   - Wire `reconcile` into `allocations.release`: **under `LockScope.PROJECT → ALLOCATION`**, stamp `active_ended_at` on the `active → releasing` transition and write the `reconciled` credit in one transaction, so release and the `→expired` sweep (⑤) — which takes the same per-Allocation lock — can never both reconcile one allocation (release on a terminal allocation → `stale_handle`). Release from `granted` leaves `active_started_at` null → `active_hours = 0` → full credit.
   - `accounting.usage(project | investigation_id)` tool; `viewer` role **scoped to the target project** — the `investigation_id` form resolves the investigation's owning project and enforces `require_project` + `require_role(viewer)` on it (no cross-project read bypass; ADR-0007 decision 6 / ADR-0037).
 - **Acceptance:** a `reserve` then `reconcile` for a known active duration net to `rate × active_hours` and leave `budgets.spent_kcu` equal to the ledger `Σ` (running-total invariant); `usage` computes `budget_remaining = limit − spent_kcu` in O(1); release from `granted` (never active) reconciles to a full credit; a release racing an expired-lease sweep yields exactly **one** `reconciled` row and one `spent_kcu` adjustment (two-connection test); investigation rollup sums across two allocations, and an allocation shared by two investigations is in neither per-investigation sum but in the project's `shared_kcu` (no double-count); a `viewer` in project A is refused `usage(investigation_id)` for a B-owned investigation.
@@ -120,7 +136,10 @@ Each wave's issues are independent and dispatch in parallel; the next wave waits
 - **Labels:** `area:allocation` · `area:security`
 - **Depends on:** ③
 - **Goal:** Fail-closed admission: per-project quota + budget check-then-debit, composed with M0's host cap, plus the admin set tools and the lease window at grant. Concurrency/idempotency contract per [ADR-0040](../adr/0040-admission-lifecycle-concurrency.md) (lock order, idempotency key, atomic check-then-debit).
-- **Files:** Extend `src/kdive/domain/allocation_admission.py`, `mcp/tools/allocations.py` (request selector/window), `mcp/tools/systems.py` (system-quota check), `mcp/tools/accounting.py` (set_budget/set_quota); tests.
+- **Files:** Extend `src/kdive/services/allocation_admission.py`,
+  `mcp/tools/lifecycle/allocations.py` (request selector/window),
+  `mcp/tools/lifecycle/systems/provision.py` (system-quota check),
+  `mcp/tools/accounting/admin.py` (set_budget/set_quota); tests.
 - **Scope:**
   - Extend `admit()`: **validate first** (②'s `validate_size`/`validate_window` + admission-only `validate_against_resource` → `configuration_error`, so `estimate ≥ 0`); **resolve `(principal, idempotency_key)`** (replay → return stored `allocation_id`, no re-grant/re-debit; principal-scoped so a key cannot resolve another tenant's allocation); then acquire `LockScope.PROJECT(project)` **then** `LockScope.RESOURCE` (the global order `PROJECT < RESOURCE < ALLOCATION < SYSTEM`); under the project lock check `max_concurrent_allocations` (→ `quota_exceeded`) and `(limit_kcu − spent_kcu) ≥ estimate` (→ `allocation_denied`); under the resource lock the unchanged M0 host-cap check; in one transaction insert `granted` Allocation (`lease_expiry = now()+window`, `requested_vcpus/memory_gb`; `active_started_at` null until provisioned), the `reserved` ledger row + `spent_kcu += estimate` (call ③'s `reserve`), the `(principal, idempotency_key) → allocation_id` record, and the audit row.
   - Stamp `active_started_at` on the `granted → active` transition (the System reaches `ready` in `systems.provision`) so the billing interval opens when work actually starts.
@@ -132,7 +151,9 @@ Each wave's issues are independent and dispatch in parallel; the next wave waits
 - **Labels:** `area:allocation` · `area:core-platform`
 - **Depends on:** ④
 - **Goal:** Renewal and automatic reclamation of expired allocations. Single-reconciliation + renew-idempotency contract per [ADR-0040](../adr/0040-admission-lifecycle-concurrency.md).
-- **Files:** Extend `mcp/tools/allocations.py` (renew), `reconciler/loop.py` (expiry sweep); `__main__.py` unchanged; tests.
+- **Files:** Extend `mcp/tools/lifecycle/allocations.py` (renew),
+  `src/kdive/services/allocation_renew.py`, `reconciler/loop.py` (expiry sweep);
+  `__main__.py` unchanged; tests.
 - **Scope:**
   - `allocations.renew(allocation_id, extend, idempotency_key)`: validate `extend > 0` (`configuration_error`); resolve `idempotency_key` (replay → no re-extend/re-charge); under `LockScope.PROJECT`, clamp to `KDIVE_LEASE_MAX` from now, re-check budget for the **added** window, write an incremental `reserved` delta + `spent_kcu += `, extend `lease_expiry`; over budget → `allocation_denied` (window unchanged); terminal allocation → `stale_handle`; `operator` role.
   - Reconciler `→expired` pass: select non-terminal allocations with `lease_expiry < now()`; **per allocation, under `LockScope.PROJECT → ALLOCATION`**, transition `→ expired` (audited), stamp `active_ended_at`, and write the `reconciled` credit in one transaction — the same per-Allocation lock `allocations.release` (③) takes, so the two can never double-reconcile one allocation; then hand the System to the **existing** orphaned-System teardown, which honors the M0 in-flight-job grace window (drain → force-kill) so the `→expired` flip never bypasses the drain. Idempotent; one structured-log line per reclaim. **Scope:** M1 gates the *idle* expiry path (no in-flight job) + grace-window drain of a cleanly completing job; the expiry-mid-job race is M1.5.
@@ -145,7 +166,7 @@ Each wave's issues are independent and dispatch in parallel; the next wave waits
 - **Labels:** `area:security`
 - **Depends on:** ④
 - **Goal:** Make the role boundary real and tested; provide the separated-principal fixtures later issues reuse.
-- **Files:** Extend `security/rbac.py` call sites across `mcp/tools/*`; extend the mock-OIDC test fixture (separated principals); tests under `tests/security/`, `tests/mcp/`.
+- **Files:** Extend `security/authz/rbac.py` call sites across `mcp/tools/*`; extend the mock-OIDC test fixture (separated principals); tests under `tests/security/`, `tests/mcp/`.
 - **Scope:**
   - Pin each tool to its **lowest** sufficient role (table in [0037](../adr/0037-rbac-hardening-role-separation.md)): `accounting.set_budget`/`set_quota` → `admin`; the destructive gate's role factor → `admin` (force_crash, power off/cycle/reset, teardown); read/usage → `viewer`; lifecycle → `operator`. Every check binds to the **target object's project**, resolved per-object — `accounting.usage(investigation_id)` resolves the investigation's project before `require_role(viewer)` (no cross-project bypass).
   - Mock-OIDC fixture mints distinct `viewer`/`operator`/`admin` tokens per test project (≥ two projects, so cross-project access can be tested).
@@ -158,7 +179,9 @@ Each wave's issues are independent and dispatch in parallel; the next wave waits
 - **Labels:** `area:provisioning` · `provider:local-libvirt`
 - **Depends on:** ① (state edge), M0 #16 (provisioning plane)
 - **Goal:** Reprovision a System in place under the same Allocation.
-- **Files:** Extend `providers/local_libvirt/provisioning.py` (reprovision op + handler), `mcp/tools/systems.py` (reprovision); tests.
+- **Files:** Extend `providers/local_libvirt/provisioning.py` (reprovision op),
+  `mcp/tools/lifecycle/systems/admin.py` (reprovision), and `src/kdive/planes/systems.py`
+  (handler); tests.
 - **Scope:**
   - `systems.reprovision(system_id, provisioning_profile)` → `reprovision` job, `dedup_key=(system_id,"reprovision",profile_digest)`; drives `ready → reprovisioning → ready`, updating `provisioning_profile`/`target_fingerprint` on the **same** row and re-defining the domain re-tagged with the same `system_id`.
   - Contract: idempotent (profile digest), destructive, cleanup `best-effort` (interrupted → `failed`). Gate: capability scope ∧ profile opt-in ∧ **`operator`** role ([0038](../adr/0038-system-reprovision-in-place.md)). Refuse if a non-terminal Run exists (`stale_handle`).
@@ -168,7 +191,10 @@ Each wave's issues are independent and dispatch in parallel; the next wave waits
 - **Labels:** `area:debug` · `provider:local-libvirt`
 - **Depends on:** M0 #18 (Connect/DebugSession), #20 (offline drgn), #23 (secret backend) — no M1 accounting dep
 - **Goal:** A second Connect transport (SSH) and live drgn introspection over it.
-- **Files:** Extend `providers/local_libvirt/connect.py` (ssh backend + capability), `providers/local_libvirt/introspect_drgn.py` (live path), `mcp/tools/debug.py` (`transport="ssh"`, `introspect.run`); port the v1 SSH backend; tests.
+- **Files:** Extend `providers/local_libvirt/connect.py` (ssh backend + capability),
+  `providers/local_libvirt/introspect_drgn.py` (live path),
+  `mcp/tools/debug/sessions.py` (`transport="ssh"`), and
+  `mcp/tools/debug/introspect.py` (`introspect.run`); port the v1 SSH backend; tests.
 - **Scope:**
   - Register capability `(connect, open_transport, local-libvirt)` advertising `kind="ssh"`; SSH backend opens a connection to the booted guest.
   - Credential by `ssh_credential_ref` (in the provisioning profile) resolved through the file-ref backend **and registered into `PROCESS_SECRET_REGISTRY` before use**; pre-registration output quarantined.

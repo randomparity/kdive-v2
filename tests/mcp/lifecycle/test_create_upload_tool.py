@@ -15,7 +15,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.db import upload_manifest
 from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RESOURCES, RUNS, SYSTEMS
-from kdive.domain.errors import ErrorCategory
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import (
     Allocation,
     Investigation,
@@ -33,10 +33,10 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.catalog import artifacts as artifacts_tools
-from kdive.mcp.tools.lifecycle import systems as systems_tools
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.mcp.tools.catalog.artifacts_uploads import create_run_upload, create_system_upload
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.store.objectstore import PresignedUpload
+from tests.mcp.systems_support import SYSTEM_PROVISION_HANDLERS
 from tests.mcp.systems_support import granted_allocation as _granted_allocation
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -60,6 +60,11 @@ class _FakeStore:
         return PresignedUpload(
             url=f"https://store/{key}", required_headers={"x-amz-checksum-sha256": sha256}
         )
+
+
+class _FailingStore:
+    def presign_put(self, key, *, sha256, size_bytes, sensitivity, retention_class, expires_in):
+        raise CategorizedError("presign failed", category=ErrorCategory.INFRASTRUCTURE_FAILURE)
 
 
 def _ctx(
@@ -149,8 +154,11 @@ async def _defined_system_via_tool(
 ) -> str:
     """Produce a DEFINED System through systems.define (the real producer, #111)."""
     alloc_id = await _granted_allocation(pool)
-    resp = await systems_tools.define_system(
-        pool, _ctx(), allocation_id=alloc_id, profile=_provisioning_profile(rootfs_kind)
+    resp = await SYSTEM_PROVISION_HANDLERS.define_system(
+        pool,
+        _ctx(),
+        allocation_id=alloc_id,
+        profile=_provisioning_profile(rootfs_kind),
     )
     return resp.object_id
 
@@ -198,7 +206,7 @@ def test_create_upload_mints_presigned_puts_and_persists_manifest(migrated_url: 
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
-            responses = await artifacts_tools.create_run_upload(
+            responses = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -208,13 +216,17 @@ def test_create_upload_mints_presigned_puts_and_persists_manifest(migrated_url: 
                 ],
                 store=store,
             )
-            assert [r.object_id for r in responses] == [
+            items = responses.items
+            assert responses.object_id == run_id
+            assert responses.status == "upload_ready"
+            assert responses.data["count"] == "2"
+            assert [r.object_id for r in items] == [
                 f"local/runs/{run_id}/kernel",
                 f"local/runs/{run_id}/vmlinux",
             ]
-            assert responses[0].refs["upload_url"].startswith("https://store/")
-            assert responses[0].suggested_next_actions == ["runs.complete_build"]
-            assert responses[0].data["name"] == "kernel"
+            assert items[0].refs["upload_url"].startswith("https://store/")
+            assert items[0].suggested_next_actions == ["runs.complete_build"]
+            assert items[0].data["name"] == "kernel"
             signed_keys = {c[0] for c in store.calls}
             assert signed_keys == {
                 f"local/runs/{run_id}/kernel",
@@ -233,7 +245,7 @@ def test_create_upload_accepts_effective_config_for_external_run(migrated_url: s
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
-            responses = await artifacts_tools.create_run_upload(
+            responses = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -246,7 +258,8 @@ def test_create_upload_accepts_effective_config_for_external_run(migrated_url: s
             async with pool.connection() as conn:
                 manifest = await upload_manifest.get_manifest(conn, "runs", UUID(run_id))
 
-        assert [r.object_id for r in responses] == [
+        items = responses.items
+        assert [r.object_id for r in items] == [
             f"local/runs/{run_id}/kernel",
             f"local/runs/{run_id}/effective_config",
         ]
@@ -265,15 +278,14 @@ def test_create_upload_rejects_non_external_run(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_SERVER_PROFILE)
             store = _FakeStore()
-            out = await artifacts_tools.create_run_upload(
+            out = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
                 artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": 100}],
                 store=store,
             )
-        assert len(out) == 1
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         assert store.calls == []
 
     asyncio.run(_run())
@@ -284,14 +296,52 @@ def test_create_upload_rejects_unknown_artifact_name_for_run(migrated_url: str) 
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
-            out = await artifacts_tools.create_run_upload(
+            out = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
                 artifacts=[{"name": "rootfs", "sha256": "aaa", "size_bytes": 100}],
                 store=store,
             )
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert store.calls == []
+
+    asyncio.run(_run())
+
+
+def test_create_upload_rejects_missing_artifact_key_before_minting(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
+            store = _FakeStore()
+            out = await create_run_upload(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                artifacts=[{"name": "kernel", "sha256": "aaa"}],
+                store=store,
+            )
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.data["reason"] == "bad_artifact_declaration"
+        assert store.calls == []
+
+    asyncio.run(_run())
+
+
+def test_create_upload_rejects_bad_artifact_types_before_minting(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
+            store = _FakeStore()
+            out = await create_run_upload(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                artifacts=[{"name": "kernel", "sha256": b"aaa", "size_bytes": 100}],
+                store=store,
+            )
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.data["reason"] == "bad_artifact_declaration"
         assert store.calls == []
 
     asyncio.run(_run())
@@ -302,15 +352,34 @@ def test_create_upload_rejects_oversize_before_minting(migrated_url: str) -> Non
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
-            out = await artifacts_tools.create_run_upload(
+            out = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
                 artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": 10**13}],
                 store=store,
             )
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         assert store.calls == []
+
+    asyncio.run(_run())
+
+
+def test_create_upload_maps_presign_failure_without_manifest(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
+            out = await create_run_upload(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": 100}],
+                store=_FailingStore(),
+            )
+            async with pool.connection() as conn:
+                manifest = await upload_manifest.get_manifest(conn, "runs", UUID(run_id))
+        assert out.error_category == ErrorCategory.INFRASTRUCTURE_FAILURE.value
+        assert manifest is None
 
     asyncio.run(_run())
 
@@ -321,15 +390,15 @@ def test_create_upload_rejects_just_over_5gib(migrated_url: str) -> None:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
             five_gib = 5 * 1024 * 1024 * 1024
-            out = await artifacts_tools.create_run_upload(
+            out = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
                 artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": five_gib + 1}],
                 store=store,
             )
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
-        assert out[0].data["reason"] == "size_out_of_range"
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.data["reason"] == "size_out_of_range"
         assert store.calls == []  # rejected before minting any presigned PUT
 
     asyncio.run(_run())
@@ -341,14 +410,14 @@ def test_create_upload_accepts_exactly_5gib(migrated_url: str) -> None:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
             five_gib = 5 * 1024 * 1024 * 1024
-            responses = await artifacts_tools.create_run_upload(
+            responses = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
                 artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": five_gib}],
                 store=store,
             )
-        assert responses[0].object_id == f"local/runs/{run_id}/kernel"
+        assert responses.items[0].object_id == f"local/runs/{run_id}/kernel"
         assert store.calls == [(f"local/runs/{run_id}/kernel", "aaa", five_gib)]
 
     asyncio.run(_run())
@@ -361,14 +430,14 @@ def test_create_upload_accepts_large_binary_artifacts_at_5gib(migrated_url: str,
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
             five_gib = 5 * 1024 * 1024 * 1024
-            responses = await artifacts_tools.create_run_upload(
+            responses = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
                 artifacts=[{"name": name, "sha256": "aaa", "size_bytes": five_gib}],
                 store=store,
             )
-        assert responses[0].object_id == f"local/runs/{run_id}/{name}"
+        assert responses.items[0].object_id == f"local/runs/{run_id}/{name}"
         assert store.calls == [(f"local/runs/{run_id}/{name}", "aaa", five_gib)]
 
     asyncio.run(_run())
@@ -381,7 +450,7 @@ def test_create_upload_rejects_effective_config_over_1mib_without_manifest(
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
-            out = await artifacts_tools.create_run_upload(
+            out = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -396,8 +465,8 @@ def test_create_upload_rejects_effective_config_over_1mib_without_manifest(
             )
             async with pool.connection() as conn:
                 manifest = await upload_manifest.get_manifest(conn, "runs", UUID(run_id))
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
-        assert out[0].data["reason"] == "size_out_of_range"
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.data["reason"] == "size_out_of_range"
         assert store.calls == []
         assert manifest is None
 
@@ -409,7 +478,7 @@ def test_create_upload_requires_operator(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             with pytest.raises(AuthorizationError):
-                await artifacts_tools.create_run_upload(
+                await create_run_upload(
                     pool,
                     _ctx(role=Role.VIEWER),
                     run_id=run_id,
@@ -425,15 +494,16 @@ def test_create_upload_for_defined_system_mints_rootfs_and_persists(migrated_url
         async with _pool(migrated_url) as pool:
             sys_id = await _defined_system_via_tool(pool)
             store = _FakeStore()
-            responses = await artifacts_tools.create_system_upload(
+            responses = await create_system_upload(
                 pool,
                 _ctx(),
                 system_id=sys_id,
                 artifacts=[{"name": "rootfs", "sha256": "aaa", "size_bytes": 100}],
                 store=store,
             )
-            assert [r.object_id for r in responses] == [f"local/systems/{sys_id}/rootfs"]
-            assert responses[0].suggested_next_actions == ["systems.provision_defined"]
+            items = responses.items
+            assert [r.object_id for r in items] == [f"local/systems/{sys_id}/rootfs"]
+            assert items[0].suggested_next_actions == ["systems.provision_defined"]
             assert {c[0] for c in store.calls} == {f"local/systems/{sys_id}/rootfs"}
             async with pool.connection() as conn:
                 manifest = await upload_manifest.get_manifest(conn, "systems", UUID(sys_id))
@@ -450,16 +520,15 @@ def test_create_upload_rejects_non_upload_kind_defined_system(migrated_url: str)
         async with _pool(migrated_url) as pool:
             sys_id = await _seed_system(pool, state=SystemState.DEFINED, rootfs_kind="local")
             store = _FakeStore()
-            responses = await artifacts_tools.create_system_upload(
+            responses = await create_system_upload(
                 pool,
                 _ctx(),
                 system_id=sys_id,
                 artifacts=[{"name": "rootfs", "sha256": "aaa", "size_bytes": 100}],
                 store=store,
             )
-        assert len(responses) == 1
-        assert responses[0].error_category == "configuration_error"
-        assert responses[0].data["reason"] == "owner_not_accepting_upload"
+        assert responses.error_category == "configuration_error"
+        assert responses.data["reason"] == "owner_not_accepting_upload"
         assert store.calls == []  # no PUT minted
 
     asyncio.run(_run())
@@ -470,14 +539,14 @@ def test_create_upload_rejects_non_rootfs_name_for_system(migrated_url: str) -> 
         async with _pool(migrated_url) as pool:
             sys_id = await _defined_system_via_tool(pool)
             store = _FakeStore()
-            out = await artifacts_tools.create_system_upload(
+            out = await create_system_upload(
                 pool,
                 _ctx(),
                 system_id=sys_id,
                 artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": 100}],
                 store=store,
             )
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         assert store.calls == []
 
     asyncio.run(_run())
@@ -488,14 +557,14 @@ def test_create_upload_rejects_empty_artifacts(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
-            out = await artifacts_tools.create_run_upload(
+            out = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
                 artifacts=[],
                 store=store,
             )
-        assert out[0].error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         assert store.calls == []
 
     asyncio.run(_run())

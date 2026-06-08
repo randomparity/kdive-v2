@@ -20,7 +20,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from pydantic import (
     BaseModel,
@@ -34,8 +34,10 @@ from kdive.components.catalog import load_fixture_catalog
 from kdive.components.references import ArtifactComponentRef, CatalogComponentRef, LocalComponentRef
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import ResourceKind
+from kdive.domain.models import DestructiveJobKind, ResourceKind
+from kdive.domain.profile_documents import SerializedProvisioningProfile
 from kdive.profiles._schema import schema_version_validator
+from kdive.profiles.types import ProvisioningProfileInput
 
 type NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 """A string that is non-empty after whitespace stripping; blank values fail validation."""
@@ -133,7 +135,7 @@ class ProvisioningProfile(_ProfileBase):
     _reject_coerced_version = schema_version_validator
 
     @classmethod
-    def parse(cls, data: Mapping[str, object]) -> ProvisioningProfile:
+    def parse(cls, data: ProvisioningProfileInput) -> ProvisioningProfile:
         """Validate a profile document, mapping any failure to ``configuration_error``.
 
         Args:
@@ -162,6 +164,14 @@ class ProvisioningProfile(_ProfileBase):
             ) from exc
 
 
+def dump_profile(profile: ProvisioningProfile) -> SerializedProvisioningProfile:
+    """Serialize a parsed provisioning profile for JSON persistence."""
+    return cast(
+        SerializedProvisioningProfile,
+        profile.model_dump(mode="json", by_alias=True),
+    )
+
+
 def profile_digest(profile: ProvisioningProfile) -> str:
     """Return the SHA-256 hex of a canonical encoding of a parsed profile (ADR-0038 §3).
 
@@ -175,7 +185,7 @@ def profile_digest(profile: ProvisioningProfile) -> str:
         profile: A validated profile (parse before hashing — never hash raw input, whose
             ordering and coercions are not normalized).
     """
-    canonical = json.dumps(profile.model_dump(by_alias=True), sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(dump_profile(profile), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -232,21 +242,14 @@ def validate_profile(profile: ProvisioningProfile) -> None:
     validate_rootfs_reference(profile.provider.local_libvirt.rootfs)
 
 
-def destructive_opt_in(profile: ProvisioningProfile, op: str) -> bool:
+def destructive_opt_in(profile: ProvisioningProfile, op: DestructiveJobKind) -> bool:
     """Return whether the profile opts into a destructive operation."""
-    return op in profile.provider.local_libvirt.destructive_ops
+    return op.value in profile.provider.local_libvirt.destructive_ops
 
 
 def capture_method(profile: ProvisioningProfile | Mapping[str, object]) -> CaptureMethod:
-    """Resolve the crash-capture method a provisioning profile enables.
-
-    Stored legacy rows may contain malformed profile mappings. Those are treated as the
-    baseline console method, matching the previous tolerant read path.
-    """
-    try:
-        parsed = _parsed_profile(profile)
-    except CategorizedError:
-        return CaptureMethod.CONSOLE
+    """Resolve the crash-capture method a provisioning profile enables."""
+    parsed = _parsed_profile(profile)
     section = parsed.provider.local_libvirt
     if section.crashkernel is not None:
         return CaptureMethod.KDUMP

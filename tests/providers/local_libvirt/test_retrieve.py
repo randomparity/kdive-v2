@@ -11,12 +11,10 @@ from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.providers.local_libvirt.retrieve import (
-    CaptureOutput,
-    CrashOutput,
-    CrashResult,
     LocalLibvirtRetrieve,
     crash_command_rejection_reason,
 )
+from kdive.providers.ports import CaptureOutput, CrashOutput, CrashResult
 from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact
 
 _ALLOW = frozenset({"bt", "log", "ps", "p", "rd"})

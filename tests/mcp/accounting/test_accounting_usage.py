@@ -42,8 +42,8 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import AuthError, RequestContext
-from kdive.mcp.tools.accounting import usage as acct_tools
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.mcp.tools.accounting.usage import usage_investigation, usage_project
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.services import accounting
 from tests.mcp.roles import PROJECT_A, PROJECT_B, make_role_fixture
 
@@ -188,7 +188,7 @@ def test_usage_by_project_reports_totals(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             await _seed_spend(pool)
-            resp = await acct_tools.usage_project(pool, _ctx(), project="proj")
+            resp = await usage_project(pool, _ctx(), project="proj")
         assert resp.status == "ok"
         assert resp.error_category is None
         assert resp.suggested_next_actions == ["accounting.estimate", "allocations.list"]
@@ -196,6 +196,7 @@ def test_usage_by_project_reports_totals(migrated_url: str) -> None:
         assert resp.data["spent_kcu"] == "6.0000"
         assert resp.data["budget_remaining"] == "94.0000"
         assert resp.data["shared_kcu"] == "0.0000"
+        assert resp.data["by_cost_class"] == {"local": "6.0000"}
 
     asyncio.run(_run())
 
@@ -204,7 +205,7 @@ def test_usage_by_project_requires_viewer(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             try:
-                await acct_tools.usage_project(pool, _ctx(role=None), project="proj")
+                await usage_project(pool, _ctx(role=None), project="proj")
                 raise AssertionError("expected AuthorizationError")
             except AuthorizationError:
                 pass
@@ -217,7 +218,7 @@ def test_usage_foreign_project_refused(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             other = _ctx(projects=("elsewhere",))
             try:
-                await acct_tools.usage_project(pool, other, project="proj")
+                await usage_project(pool, other, project="proj")
                 raise AssertionError("expected AuthError")
             except AuthError:
                 pass
@@ -229,7 +230,7 @@ def test_usage_by_investigation_resolves_project(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             inv_id = await _seed_investigation(pool, "proj")
-            resp = await acct_tools.usage_investigation(pool, _ctx(), investigation_id=str(inv_id))
+            resp = await usage_investigation(pool, _ctx(), investigation_id=str(inv_id))
         assert resp.status == "ok"
         assert resp.data["project"] == "proj"
         assert resp.data["investigation_id"] == str(inv_id)
@@ -241,7 +242,7 @@ def test_usage_by_investigation_resolves_project(migrated_url: str) -> None:
 def test_usage_by_investigation_unknown_id_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await acct_tools.usage_investigation(pool, _ctx(), investigation_id=str(uuid4()))
+            resp = await usage_investigation(pool, _ctx(), investigation_id=str(uuid4()))
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
         assert resp.suggested_next_actions == ["accounting.usage_investigation"]
@@ -252,7 +253,7 @@ def test_usage_by_investigation_unknown_id_is_config_error(migrated_url: str) ->
 def test_usage_by_investigation_malformed_id_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await acct_tools.usage_investigation(pool, _ctx(), investigation_id="not-a-uuid")
+            resp = await usage_investigation(pool, _ctx(), investigation_id="not-a-uuid")
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
         assert resp.suggested_next_actions == ["accounting.usage_investigation"]
@@ -269,7 +270,7 @@ def test_viewer_in_a_refused_usage_for_b_investigation(migrated_url: str) -> Non
             inv_b = await _seed_investigation(pool, PROJECT_B)
             viewer_a = _ctx(projects=(PROJECT_A,))
             try:
-                await acct_tools.usage_investigation(pool, viewer_a, investigation_id=str(inv_b))
+                await usage_investigation(pool, viewer_a, investigation_id=str(inv_b))
                 raise AssertionError("expected AuthError")
             except AuthError:
                 pass
@@ -288,12 +289,12 @@ def test_separated_fixture_viewer_reads_own_but_not_foreign(migrated_url: str) -
             fx = make_role_fixture()
             viewer_a = fx.project(PROJECT_A).viewer.ctx
 
-            own = await acct_tools.usage_project(pool, viewer_a, project=PROJECT_A)
+            own = await usage_project(pool, viewer_a, project=PROJECT_A)
             assert own.status == "ok"
             assert own.data["project"] == PROJECT_A
 
             try:
-                await acct_tools.usage_investigation(pool, viewer_a, investigation_id=str(inv_b))
+                await usage_investigation(pool, viewer_a, investigation_id=str(inv_b))
                 raise AssertionError("expected AuthError for a foreign investigation_id")
             except AuthError:
                 pass

@@ -1,30 +1,35 @@
 """MCP dispatch-boundary middleware: the denial-audit retrofit (ADR-0062 §5, issue #142).
 
-`require_role`'s **member-over-reach** site raises :class:`~kdive.security.rbac.RoleDenied`
-(the dedicated discriminator, not the base :class:`~kdive.security.rbac.AuthorizationError`
+`require_role`'s **member-over-reach** site raises :class:`~kdive.security.authz.rbac.RoleDenied`
+(the dedicated discriminator, not the base :class:`~kdive.security.authz.rbac.AuthorizationError`
 the non-member site keeps). :class:`DenialAuditMiddleware` is the single tool-dispatch
 boundary that catches **`RoleDenied` specifically**, writes one guard-exempt `audit_log`
 denial row (object NULL, reserved bare ``transition='denied'``, ``project`` from the
-exception), and re-raises so the tool's own ``except`` path still maps the denial to a
-response. Catching the ``AuthorizationError`` base instead would double-write
-``require_platform_role`` denials and :class:`~kdive.security.gate.DestructiveOpDenied`
+exception), and returns the uniform authorization-denied envelope. Catching the
+``AuthorizationError`` base instead would double-write
+``require_platform_role`` denials and :class:`~kdive.security.authz.gate.DestructiveOpDenied`
 (both already handled elsewhere); the non-member denial is also deliberately excluded to
 avoid write-amplification (ADR-0043 §4 / ADR-0062 §5).
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from fastmcp.server.middleware import Middleware
 
+from kdive.domain.errors import ErrorCategory
 from kdive.mcp.auth import current_context
+from kdive.mcp.responses import ToolResponse
 from kdive.security import audit
-from kdive.security.rbac import RoleDenied
+from kdive.security.authz.rbac import RoleDenied
 
 if TYPE_CHECKING:
     from psycopg_pool import AsyncConnectionPool
+
+_log = logging.getLogger(__name__)
 
 
 def _current_agent_session() -> str | None:
@@ -57,18 +62,22 @@ class DenialAuditMiddleware(Middleware):
         context: Any,
         call_next: Callable[[Any], Any],
     ) -> Any:
-        """Dispatch one tool call; audit and re-raise a member-over-reach denial.
+        """Dispatch one tool call; audit and map a member-over-reach denial.
 
         Only :class:`RoleDenied` is caught — every other exception (including the base
-        :class:`~kdive.security.rbac.AuthorizationError` non-member denial,
-        :class:`~kdive.security.gate.DestructiveOpDenied`, and unrelated errors) propagates
-        unaudited. The original exception is re-raised unchanged.
+        :class:`~kdive.security.authz.rbac.AuthorizationError` non-member denial,
+        :class:`~kdive.security.authz.gate.DestructiveOpDenied`, and unrelated errors) propagates
+        unaudited.
         """
         try:
             return await call_next(context)
         except RoleDenied as denial:
-            await self._record(context.message.name, denial)
-            raise
+            tool = context.message.name
+            try:
+                await self._record(tool, denial)
+            except Exception:
+                _log.warning("failed to audit RoleDenied for tool %s", tool, exc_info=True)
+            return ToolResponse.failure(tool, ErrorCategory.AUTHORIZATION_DENIED)
 
     async def _record(self, tool: str, denial: RoleDenied) -> None:
         async with self._pool.connection() as conn, conn.transaction():

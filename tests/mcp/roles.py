@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from fastmcp.server.auth.providers.jwt import RSAKeyPair
 
 from kdive.mcp.auth import RequestContext, context_from_claims
-from kdive.security.rbac import Role
+from kdive.security.authz.rbac import Role
 from tests.mcp.conftest import make_keypair, mint
 
 PROJECT_A = "proj-a"

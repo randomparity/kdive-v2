@@ -22,6 +22,7 @@ from psycopg.types.json import Jsonb
 
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobAuthorizing, JobKind
+from kdive.domain.state import JobState
 from kdive.jobs.payloads import (
     Authorizing,
     PayloadModel,
@@ -36,7 +37,7 @@ DEFAULT_LEASE = timedelta(minutes=5)
 async def enqueue(
     conn: AsyncConnection,
     kind: JobKind,
-    payload: PayloadModel | dict[str, Any],
+    payload: PayloadModel,
     authorizing: Authorizing | JobAuthorizing | dict[str, Any],
     dedup_key: str,
     *,
@@ -54,14 +55,14 @@ async def enqueue(
     """
     if max_attempts < 1:
         raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
-    payload = dump_payload(kind, payload)
+    payload_json = dump_payload(kind, payload)
     authorizing = dump_authorizing(authorizing)
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "INSERT INTO jobs (kind, payload, state, max_attempts, authorizing, dedup_key) "
             "VALUES (%s, %s, 'queued', %s, %s, %s) "
             "ON CONFLICT (dedup_key) DO NOTHING",
-            (kind, Jsonb(payload), max_attempts, Jsonb(authorizing), dedup_key),
+            (kind, Jsonb(payload_json), max_attempts, Jsonb(authorizing), dedup_key),
         )
         await cur.execute("SELECT * FROM jobs WHERE dedup_key = %s", (dedup_key,))
         row = await cur.fetchone()
@@ -218,23 +219,29 @@ async def set_queue_paused(conn: AsyncConnection, paused: bool) -> None:
 
 
 async def all_recent_jobs(
-    conn: AsyncConnection, limit: int, *, states: Sequence[str] | None = None
+    conn: AsyncConnection, limit: int, *, states: Sequence[JobState] | None = None
 ) -> list[Job]:
     """Return the most recent jobs across **every** project, newest first, capped.
 
     The platform view (``ops.jobs_list``, ADR-0062): unlike :func:`recent_jobs` this is
     **not** project-scoped — it spans all tenants for an operator's cross-project queue
     inspection, so its only caller must already hold ``platform_operator``. ``states``,
-    when given, filters to those job states (e.g. ``["queued", "running"]``); an empty
+    when given, filters to those job states (e.g. ``[JobState.QUEUED]``); an empty
     sequence yields no rows. The ``id`` tiebreaker totals the order on a shared
     ``created_at`` so the cap never drops an arbitrary one of a tied pair.
     """
-    where = "" if states is None else " WHERE state = ANY(%(states)s::text[])"
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT * FROM jobs" + where + " ORDER BY created_at DESC, id DESC LIMIT %(limit)s",
-            {"limit": limit, "states": list(states) if states is not None else None},
-        )
+        if states is None:
+            await cur.execute(
+                "SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT %(limit)s",
+                {"limit": limit},
+            )
+        else:
+            await cur.execute(
+                "SELECT * FROM jobs WHERE state = ANY(%(states)s::text[]) "
+                "ORDER BY created_at DESC, id DESC LIMIT %(limit)s",
+                {"limit": limit, "states": [state.value for state in states]},
+            )
         rows = await cur.fetchall()
     return [Job.model_validate(row) for row in rows]
 

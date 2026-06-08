@@ -16,15 +16,17 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, Sensitivity
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
+from kdive.jobs.payloads import CaptureVmcorePayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
 from kdive.planes import vmcore as vmcore_plane
-from kdive.providers.ports import CaptureOutput, CrashOutput
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.providers.ports import CaptureOutput, CrashOutput, CrashPostmortem
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.store.objectstore import StoredArtifact
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
 
 _AUTH = {"principal": "u", "agent_session": "s", "project": "proj"}
+_TEST_CAPTURE_METHODS = frozenset({CaptureMethod.HOST_DUMP})
 
 
 def _ctx(
@@ -42,6 +44,21 @@ async def _pool(url: str) -> AsyncIterator[AsyncConnectionPool]:
         yield pool
     finally:
         await pool.close()
+
+
+async def _fetch_vmcore(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    system_id: str,
+    method: str = "host_dump",
+):
+    return await _vmcore_handlers().fetch_vmcore(
+        pool,
+        ctx,
+        system_id=system_id,
+        method=method,
+    )
 
 
 def _capture_output(sys_id: str, method: CaptureMethod = CaptureMethod.HOST_DUMP) -> CaptureOutput:
@@ -103,6 +120,13 @@ class _FakeCrash:
         )
 
 
+def _vmcore_handlers(crash: CrashPostmortem | None = None) -> vmcore_tools.VmcoreHandlers:
+    return vmcore_tools.VmcoreHandlers(
+        supported_methods=_TEST_CAPTURE_METHODS,
+        crash=crash or _FakeCrash(),
+    )
+
+
 class _RaisingCrash:
     """A CrashPostmortem that raises a planted CategorizedError."""
 
@@ -122,7 +146,7 @@ def test_fetch_vmcore_crashed_enqueues_job(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
-            resp = await vmcore_tools.fetch_vmcore(pool, _ctx(), system_id=sys_id)
+            resp = await _fetch_vmcore(pool, _ctx(), system_id=sys_id)
             assert resp.status == "queued"
             assert resp.data["system_id"] == sys_id
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -145,7 +169,7 @@ def test_fetch_vmcore_non_crashed_is_config_error(migrated_url: str) -> None:
                 await conn.execute(
                     "UPDATE systems SET state = 'torn_down' WHERE id = %s", (sys_id,)
                 )
-            resp = await vmcore_tools.fetch_vmcore(pool, _ctx(), system_id=sys_id)
+            resp = await _fetch_vmcore(pool, _ctx(), system_id=sys_id)
         assert resp.status == "error" and resp.error_category == "configuration_error"
         assert resp.data["current_status"] == "torn_down"
 
@@ -157,7 +181,7 @@ def test_fetch_vmcore_without_operator_raises(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
             with pytest.raises(AuthorizationError):
-                await vmcore_tools.fetch_vmcore(pool, _ctx(Role.VIEWER), system_id=sys_id)
+                await _fetch_vmcore(pool, _ctx(Role.VIEWER), system_id=sys_id)
 
     asyncio.run(_run())
 
@@ -165,7 +189,7 @@ def test_fetch_vmcore_without_operator_raises(migrated_url: str) -> None:
 def test_fetch_vmcore_malformed_uuid_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await vmcore_tools.fetch_vmcore(pool, _ctx(), system_id="nope")
+            resp = await _fetch_vmcore(pool, _ctx(), system_id="nope")
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -175,7 +199,7 @@ def test_fetch_rejects_unsupported_method(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
-            resp = await vmcore_tools.fetch_vmcore(pool, _ctx(), system_id=sys_id, method="kdump")
+            resp = await _fetch_vmcore(pool, _ctx(), system_id=sys_id, method="kdump")
             assert resp.status == "error"
             assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
@@ -186,7 +210,7 @@ def test_fetch_rejects_non_core_method(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
-            resp = await vmcore_tools.fetch_vmcore(pool, _ctx(), system_id=sys_id, method="console")
+            resp = await _fetch_vmcore(pool, _ctx(), system_id=sys_id, method="console")
             assert resp.status == "error"
             assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
@@ -197,9 +221,7 @@ def test_fetch_records_method_in_dedup_key(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
-            resp = await vmcore_tools.fetch_vmcore(
-                pool, _ctx(), system_id=sys_id, method="host_dump"
-            )
+            resp = await _fetch_vmcore(pool, _ctx(), system_id=sys_id, method="host_dump")
             assert resp.status == "queued"
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -222,7 +244,7 @@ async def _enqueue_capture(
         return await queue.enqueue(
             conn,
             JobKind.CAPTURE_VMCORE,
-            {"system_id": sys_id, "method": method},
+            CaptureVmcorePayload(system_id=sys_id, method=CaptureMethod(method)),
             _AUTH,
             f"{sys_id}:capture_vmcore:{method}",
         )
@@ -361,7 +383,7 @@ def test_list_vmcores_redacted_only(migrated_url: str) -> None:
             async with pool.connection() as conn:
                 await vmcore_plane.capture_handler(conn, job, _FakeRetriever(sys_id))
             resp = await vmcore_tools.list_vmcores(pool, _ctx(), system_id=sys_id)
-        keys = {r.refs["object"] for r in resp}
+        keys = {r.refs["object"] for r in resp.items}
         assert keys == {f"local/systems/{sys_id}/vmcore-host_dump-redacted"}
 
     asyncio.run(_run())
@@ -399,8 +421,8 @@ def test_postmortem_crash_bad_command_is_config_error(migrated_url: str) -> None
         async with _pool(migrated_url) as pool:
             run_id = await _crashed_with_built_run(pool)
             crash = _FakeCrash()
-            resp = await vmcore_tools.postmortem_crash(
-                pool, _ctx(), run_id=run_id, commands=["bt | sh"], crash=crash
+            resp = await _vmcore_handlers(crash).postmortem_crash(
+                pool, _ctx(), run_id=run_id, commands=["bt | sh"]
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
         assert crash.kwargs == {}  # the port was never called
@@ -413,8 +435,8 @@ def test_postmortem_crash_runs_and_redacts(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _crashed_with_built_run(pool)
             crash = _FakeCrash()
-            resp = await vmcore_tools.postmortem_crash(
-                pool, _ctx(), run_id=run_id, commands=["log"], crash=crash
+            resp = await _vmcore_handlers(crash).postmortem_crash(
+                pool, _ctx(), run_id=run_id, commands=["log"]
             )
         assert resp.status != "error"
         assert "hunter2" not in resp.data["transcript"]
@@ -429,8 +451,8 @@ def test_postmortem_crash_requires_viewer_role(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _crashed_with_built_run(pool)
             with pytest.raises(AuthorizationError):
-                await vmcore_tools.postmortem_crash(
-                    pool, _ctx(role=None), run_id=run_id, commands=["log"], crash=_FakeCrash()
+                await _vmcore_handlers().postmortem_crash(
+                    pool, _ctx(role=None), run_id=run_id, commands=["log"]
                 )
 
     asyncio.run(_run())
@@ -441,8 +463,8 @@ def test_postmortem_crash_unbuilt_run_is_config_error(migrated_url: str) -> None
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
             run_id = await seed_run_on_system(pool, sys_id, debuginfo_ref=None, build_id=None)
-            resp = await vmcore_tools.postmortem_crash(
-                pool, _ctx(), run_id=run_id, commands=["log"], crash=_FakeCrash()
+            resp = await _vmcore_handlers().postmortem_crash(
+                pool, _ctx(), run_id=run_id, commands=["log"]
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
@@ -454,8 +476,8 @@ def test_postmortem_crash_provenance_mismatch_is_config_error(migrated_url: str)
         async with _pool(migrated_url) as pool:
             run_id = await _crashed_with_built_run(pool)
             crash = _RaisingCrash(ErrorCategory.CONFIGURATION_ERROR)
-            resp = await vmcore_tools.postmortem_crash(
-                pool, _ctx(), run_id=run_id, commands=["log"], crash=crash
+            resp = await _vmcore_handlers(crash).postmortem_crash(
+                pool, _ctx(), run_id=run_id, commands=["log"]
             )
         # The provider raises CategorizedError; the tool returns a typed failure, never a 500.
         assert resp.status == "error" and resp.error_category == "configuration_error"
@@ -468,7 +490,7 @@ def test_postmortem_triage_runs_and_relabels_actions(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _crashed_with_built_run(pool)
             crash = _FakeCrash()
-            resp = await vmcore_tools.postmortem_triage(pool, _ctx(), run_id=run_id, crash=crash)
+            resp = await _vmcore_handlers(crash).postmortem_triage(pool, _ctx(), run_id=run_id)
         assert resp.status != "error"
         assert "hunter2" not in resp.data["transcript"]
         assert resp.suggested_next_actions == ["postmortem.triage", "artifacts.list"]
@@ -482,9 +504,7 @@ def test_postmortem_triage_propagates_failure(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
             run_id = await seed_run_on_system(pool, sys_id, debuginfo_ref=None, build_id=None)
-            resp = await vmcore_tools.postmortem_triage(
-                pool, _ctx(), run_id=run_id, crash=_FakeCrash()
-            )
+            resp = await _vmcore_handlers().postmortem_triage(pool, _ctx(), run_id=run_id)
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -497,8 +517,8 @@ def test_postmortem_crash_no_core_is_config_error(migrated_url: str) -> None:
             run_id = await seed_run_on_system(
                 pool, sys_id, debuginfo_ref="k/runs/r/vmlinux", build_id="deadbeef"
             )
-            resp = await vmcore_tools.postmortem_crash(
-                pool, _ctx(), run_id=run_id, commands=["log"], crash=_FakeCrash()
+            resp = await _vmcore_handlers().postmortem_crash(
+                pool, _ctx(), run_id=run_id, commands=["log"]
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
@@ -516,15 +536,17 @@ def test_no_raw_vmcore_key_in_any_read_response(migrated_url: str) -> None:
             async with pool.connection() as conn:
                 await vmcore_plane.capture_handler(conn, job, _FakeRetriever(sys_id))
             refs: list[str] = []
-            from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+            from kdive.mcp.tools.catalog.artifacts_reads import artifacts_get, artifacts_list
 
-            for r in await vmcore_tools.list_vmcores(pool, _ctx(), system_id=sys_id):
+            vmcores = await vmcore_tools.list_vmcores(pool, _ctx(), system_id=sys_id)
+            for r in vmcores.items:
                 refs.extend(r.refs.values())
-            listed = await artifacts_tools.artifacts_list(pool, _ctx(), system_id=sys_id)
-            for r in listed:
+            listed = await artifacts_list(pool, _ctx(), system_id=sys_id)
+            artifact_items = listed.items
+            for r in artifact_items:
                 refs.extend(r.refs.values())
-            for r in listed:
-                got = await artifacts_tools.artifacts_get(pool, _ctx(), artifact_id=r.object_id)
+            for r in artifact_items:
+                got = await artifacts_get(pool, _ctx(), artifact_id=r.object_id)
                 refs.extend(got.refs.values())
         assert refs  # something was returned
         # A raw core is `.../vmcore-{method}` (no `-redacted`); it must never surface.
@@ -540,3 +562,9 @@ def test_register_handlers_binds_capture_vmcore() -> None:
     registry = HandlerRegistry()
     vmcore_plane.register_handlers(registry, retriever=_FakeRetriever("x"))
     assert registry.get(JobKind.CAPTURE_VMCORE) is not None
+
+
+def test_register_handlers_requires_provider_runtime_or_retriever() -> None:
+    registry = HandlerRegistry()
+    with pytest.raises(RuntimeError, match="provider runtime or retriever"):
+        vmcore_plane.register_handlers(registry)

@@ -17,6 +17,13 @@
   `introspect.from_vmcore` offline-introspection surface).
 - **Spec:** [`../superpowers/specs/2026-06-04-drgn-introspection-from-vmcore-design.md`](../superpowers/specs/2026-06-04-drgn-introspection-from-vmcore-design.md)
 
+> **Implementation note (2026-06-08):** The MCP tool package was later split into
+> `catalog`, `lifecycle`, `debug`, `accounting`, and `ops` subpackages. The implemented
+> introspection registrar now lives at `mcp/tools/debug/introspect.py` and is imported by
+> `mcp/app.py` through the debug tool package. The decision below is retained for the
+> offline-introspection behavior and provider seam; the old flat introspection-module path
+> is historical.
+
 ## Context
 
 ADR-0031 captured the kdump `vmcore` (raw `sensitive` + a redacted dmesg derivative) and
@@ -107,12 +114,11 @@ is run through the ADR-0027 `Redactor.redact_value` (structure-aware) **before i
 the port**, so it is redacted both when returned and before any later persistence. It is
 returned in `ToolResponse.data["report"]` as a JSON string (`data` is `dict[str, str]`).
 
-### 7. New module `mcp/tools/introspect.py`; one registrar append; no migration
+### 7. New debug tool module; one registrar append; no migration
 
-The tool lives in its **own** module `mcp/tools/introspect.py` (not `mcp/tools/debug.py`,
-which a sibling issue owns), registered by appending `introspect.register` to
-`_PLANE_REGISTRARS` in `mcp/app.py`. No `_HANDLER_REGISTRARS` change (no job kind). No
-schema migration.
+The tool lives in `mcp/tools/debug/introspect.py` as part of the debug tool package,
+registered by appending `introspect.register` to `_PLANE_REGISTRARS` in `mcp/app.py`.
+No `_HANDLER_REGISTRARS` change (no job kind). No schema migration.
 
 ## Consequences
 
@@ -128,7 +134,7 @@ schema migration.
 - A wrong-vmlinux core is a `configuration_error` (provenance); a drgn open/decode failure
   is a `debug_attach_failure`; an unbuilt Run or core-less System is a `configuration_error`.
 - All guest-derived output is `Redactor`-scrubbed before return and before any persistence.
-- `mcp/app.py` gains one tuple append + one import; `mcp/tools/introspect.py` and
+- `mcp/app.py` gains one tuple append + one import; `mcp/tools/debug/introspect.py` and
   `providers/local_libvirt/introspect_drgn.py` are new. **No schema migration.**
 
 ## Considered & rejected
@@ -142,11 +148,10 @@ schema migration.
   subsystem is a large surface the M0 acceptance does not ask for (it asks only for the
   three named helpers). The script path returns with the live tier in M1 where its
   execution model is designed whole. M0 runs only the three fixed helpers.
-- **Put `introspect.from_vmcore` in `mcp/tools/debug.py`.** Rejected: a sibling issue (#20)
-  concurrently creates `debug.py` on a different base; #22 depends on #24, not #20, so
-  `debug.py` does not exist on this base. Co-locating would force a cross-issue ordering and
-  a merge conflict on a file #22 does not own. The tool gets its own module
-  `mcp/tools/introspect.py`; the planes stay independent.
+- **Put `introspect.from_vmcore` in a flat debug tool module.** Rejected: the
+  implemented tool package now groups debug tools under `mcp/tools/debug/`. Co-locating in
+  a flat module would restore the obsolete boundary; the tool stays in
+  `mcp/tools/debug/introspect.py`.
 - **Run the helpers in a subprocess (`python3 -`) like v1.** Rejected: v1's subprocess +
   wrapper exists to sandbox a *caller-supplied* script and to bound it with a `timeout`.
   With only three fixed in-tree helpers there is no untrusted code to sandbox, so M0 runs

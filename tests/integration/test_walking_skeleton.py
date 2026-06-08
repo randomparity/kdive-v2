@@ -28,14 +28,15 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
+from kdive.jobs.payloads import BuildPayload, CaptureVmcorePayload
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+from kdive.mcp.tools.catalog.artifacts_reads import artifacts_get, artifacts_list
 from kdive.mcp.tools.lifecycle import control as control_tools
 from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
 from kdive.planes import runs as runs_handlers
 from kdive.planes import vmcore as vmcore_plane
 from kdive.providers.ports import BuildOutput, CaptureOutput, CrashOutput
-from kdive.security.rbac import Role
+from kdive.security.authz.rbac import Role
 from tests.integration._seed import (
     seed_crashed_system_with_run,
     seed_granted_allocation,
@@ -189,7 +190,7 @@ def test_force_crash_allowed_when_all_gate_checks_present(migrated_url: str) -> 
 async def _enqueue_build(pool: AsyncConnectionPool, run_id: str) -> Job:
     async with pool.connection() as conn:
         return await queue.enqueue(
-            conn, JobKind.BUILD, {"run_id": run_id}, _AUTH, f"{run_id}:build"
+            conn, JobKind.BUILD, BuildPayload(run_id=run_id), _AUTH, f"{run_id}:build"
         )
 
 
@@ -233,7 +234,7 @@ async def _enqueue_capture(
         return await queue.enqueue(
             conn,
             JobKind.CAPTURE_VMCORE,
-            {"system_id": system_id, "method": method},
+            CaptureVmcorePayload(system_id=system_id, method=CaptureMethod(method)),
             _AUTH,
             f"{system_id}:capture_vmcore:{method}",
         )
@@ -248,12 +249,15 @@ def test_planted_secret_is_redacted(migrated_url: str) -> None:
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
                 await vmcore_plane.capture_handler(conn, job, _SecretBearingRetriever(sys_id))
-            resp = await vmcore_tools.postmortem_crash(
+            handlers = vmcore_tools.VmcoreHandlers(
+                supported_methods=frozenset({CaptureMethod.HOST_DUMP}),
+                crash=_SecretBearingCrash(),
+            )
+            resp = await handlers.postmortem_crash(
                 pool,
                 request_context(),
                 run_id=run_id,
                 commands=["log"],
-                crash=_SecretBearingCrash(),
             )
             assert resp.status != "error"
             transcript = resp.data["transcript"]
@@ -274,12 +278,13 @@ def test_raw_vmcore_is_sensitive_and_unreachable(migrated_url: str) -> None:
                 await vmcore_plane.capture_handler(conn, job, _SecretBearingRetriever(sys_id))
             ctx = request_context()
             refs: list[str] = []
-            for r in await vmcore_tools.list_vmcores(pool, ctx, system_id=sys_id):
+            vmcores = await vmcore_tools.list_vmcores(pool, ctx, system_id=sys_id)
+            for r in vmcores.items:
                 refs.extend(r.refs.values())
-            listed = await artifacts_tools.artifacts_list(pool, ctx, system_id=sys_id)
-            for r in listed:
+            listed = await artifacts_list(pool, ctx, system_id=sys_id)
+            for r in listed.items:
                 refs.extend(r.refs.values())
-                got = await artifacts_tools.artifacts_get(pool, ctx, artifact_id=r.object_id)
+                got = await artifacts_get(pool, ctx, artifact_id=r.object_id)
                 refs.extend(got.refs.values())
             # The raw `sensitive` row's id is known only via direct SQL; artifacts.get on it is
             # not-found-shaped (no leak even by id).
@@ -290,7 +295,7 @@ def test_raw_vmcore_is_sensitive_and_unreachable(migrated_url: str) -> None:
                 )
                 raw_row = await cur.fetchone()
             assert raw_row is not None
-            raw_get = await artifacts_tools.artifacts_get(pool, ctx, artifact_id=str(raw_row["id"]))
+            raw_get = await artifacts_get(pool, ctx, artifact_id=str(raw_row["id"]))
             assert raw_get.status == "error"  # the raw row is unfetchable through the surface
         assert refs  # the redacted artifact was returned
         # A raw core is `.../vmcore-{method}` (no `-redacted`); it must never surface.

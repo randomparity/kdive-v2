@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Literal, NamedTuple, Protocol, cast
@@ -17,18 +18,62 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.components.local_paths import validate_local_component_path
 from kdive.components.references import ComponentRef, parse_component_ref
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.providers.component_validation import ComponentKind
 from kdive.store.objectstore import HeadResult
 
 type Visibility = Literal["public", "project", "host-policy"]
+type UploadVisibility = Literal["public", "project"]
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentRegistration:
+    provider: str
+    component_kind: ComponentKind
+    visibility: Visibility
+    project: str | None
+    principal: str
+
+
+@dataclass(frozen=True, slots=True)
+class LinkLocalComponentRequest:
+    registration: ComponentRegistration
+    path: str
+    sha256: str
+    allowed_roots: Iterable[Path]
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactComponentRequest:
+    registration: ComponentRegistration
+    artifact_id: UUID
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentUploadRegistration:
+    tenant: str
+    provider: str
+    component_kind: ComponentKind
+    visibility: UploadVisibility
+    project: str
+    principal: str
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentUploadIntentRequest:
+    registration: ComponentUploadRegistration
+    sha256: str
+    size_bytes: int
+    ttl: timedelta = timedelta(hours=1)
 
 
 class ProviderComponent(NamedTuple):
     id: UUID
     provider: str
-    component_kind: str
+    component_kind: ComponentKind
     source: ComponentRef
     artifact_id: UUID | None
-    visibility: str
+    visibility: Visibility
     project: str | None
     principal: str
     sha256: str | None
@@ -41,51 +86,51 @@ class UploadVerifier(Protocol):
 
 async def link_local_component(
     pool: AsyncConnectionPool,
-    *,
-    provider: str,
-    component_kind: str,
-    path: str,
-    sha256: str,
-    allowed_roots: Iterable[Path],
-    visibility: Visibility,
-    project: str | None,
-    principal: str,
+    request: LinkLocalComponentRequest,
 ) -> UUID:
-    resolved = validate_local_component_path(path, allowed_roots=allowed_roots, sha256=sha256)
-    source = parse_component_ref({"kind": "local", "path": str(resolved), "sha256": sha256})
+    """Register a local-file provider component.
+
+    Raises:
+        CategorizedError: The path is outside ``allowed_roots`` or the digest is invalid.
+    """
+    registration = request.registration
+    resolved = validate_local_component_path(
+        request.path,
+        allowed_roots=request.allowed_roots,
+        sha256=request.sha256,
+    )
+    source = parse_component_ref({"kind": "local", "path": str(resolved), "sha256": request.sha256})
     async with pool.connection() as conn:
         row = await conn.execute(
             "INSERT INTO provider_components "
             "(provider, component_kind, source, visibility, project, principal, sha256) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (
-                provider,
-                component_kind,
+                registration.provider,
+                registration.component_kind,
                 Jsonb(source.model_dump(mode="json")),
-                visibility,
-                project,
-                principal,
-                sha256,
+                registration.visibility,
+                registration.project,
+                registration.principal,
+                request.sha256,
             ),
         )
         found = await row.fetchone()
-    assert found is not None
-    return found[0]
+    return _inserted_id(found)
 
 
 async def create_artifact_component(
     pool: AsyncConnectionPool,
-    *,
-    provider: str,
-    component_kind: str,
-    artifact_id: UUID,
-    sha256: str,
-    visibility: Visibility,
-    project: str | None,
-    principal: str,
+    request: ArtifactComponentRequest,
 ) -> UUID:
+    """Register an artifact-backed provider component.
+
+    Raises:
+        CategorizedError: The artifact component reference is invalid.
+    """
+    registration = request.registration
     source = parse_component_ref(
-        {"kind": "artifact", "artifact_id": str(artifact_id), "sha256": sha256}
+        {"kind": "artifact", "artifact_id": str(request.artifact_id), "sha256": request.sha256}
     )
     async with pool.connection() as conn:
         row = await conn.execute(
@@ -94,19 +139,18 @@ async def create_artifact_component(
             "principal, sha256) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (
-                provider,
-                component_kind,
+                registration.provider,
+                registration.component_kind,
                 Jsonb(source.model_dump(mode="json")),
-                artifact_id,
-                visibility,
-                project,
-                principal,
-                sha256,
+                request.artifact_id,
+                registration.visibility,
+                registration.project,
+                registration.principal,
+                request.sha256,
             ),
         )
         found = await row.fetchone()
-    assert found is not None
-    return found[0]
+    return _inserted_id(found)
 
 
 async def get_visible_component(
@@ -129,7 +173,7 @@ async def list_visible_components(
     pool: AsyncConnectionPool,
     *,
     provider: str,
-    component_kind: str,
+    component_kind: ComponentKind,
     project: str,
 ) -> list[ProviderComponent]:
     async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -146,17 +190,15 @@ async def list_visible_components(
 
 async def create_component_upload_intent(
     pool: AsyncConnectionPool,
-    *,
-    tenant: str,
-    provider: str,
-    component_kind: str,
-    sha256: str,
-    size_bytes: int,
-    visibility: Literal["public", "project"],
-    project: str,
-    principal: str,
-    ttl: timedelta = timedelta(hours=1),
+    request: ComponentUploadIntentRequest,
 ) -> tuple[UUID, str]:
+    """Create a pending upload intent and return its object-store key.
+
+    Raises:
+        CategorizedError: The eventual upload cannot be finalized if its object metadata does
+            not match this intent.
+    """
+    registration = request.registration
     async with pool.connection() as conn:
         row = await conn.execute(
             "INSERT INTO component_uploads "
@@ -164,24 +206,23 @@ async def create_component_upload_intent(
             "principal, state, deadline) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', now() + %s) RETURNING id",
             (
-                tenant,
-                provider,
-                component_kind,
-                sha256,
-                size_bytes,
-                visibility,
-                project,
-                principal,
-                ttl,
+                registration.tenant,
+                registration.provider,
+                registration.component_kind,
+                request.sha256,
+                request.size_bytes,
+                registration.visibility,
+                registration.project,
+                registration.principal,
+                request.ttl,
             ),
         )
         found = await row.fetchone()
-    assert found is not None
-    upload_id = found[0]
+    upload_id = _inserted_id(found)
     return upload_id, component_upload_object_key(
-        tenant=tenant,
-        provider=provider,
-        component_kind=component_kind,
+        tenant=registration.tenant,
+        provider=registration.provider,
+        component_kind=registration.component_kind,
         upload_id=upload_id,
     )
 
@@ -192,6 +233,7 @@ async def finalize_component_upload(
     *,
     object_store: UploadVerifier,
 ) -> UUID:
+    """Validate an upload intent and return the finalized provider component id."""
     async with pool.connection() as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -205,7 +247,7 @@ async def finalize_component_upload(
                 "component upload does not exist",
                 category=ErrorCategory.CONFIGURATION_ERROR,
             )
-        existing = upload["artifact_id"]
+        existing = upload["component_id"]
         if existing is not None:
             return existing
         if upload["state"] != "pending" or upload["expired"]:
@@ -234,19 +276,18 @@ async def finalize_component_upload(
                 category=ErrorCategory.CONFIGURATION_ERROR,
             )
         source = {
-            "kind": "artifact",
-            "artifact_id": str(upload_id),
+            "kind": "component-upload",
+            "upload_id": str(upload_id),
             "sha256": upload["sha256"],
         }
         row = await conn.execute(
             "INSERT INTO provider_components "
-            "(provider, component_kind, source, artifact_id, visibility, project, "
-            "principal, sha256) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            "(provider, component_kind, source, visibility, project, principal, sha256) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (
                 upload["provider"],
                 upload["component_kind"],
                 Jsonb(source),
-                upload_id,
                 upload["visibility"],
                 upload["project"],
                 upload["principal"],
@@ -254,10 +295,9 @@ async def finalize_component_upload(
             ),
         )
         inserted = await row.fetchone()
-        assert inserted is not None
-        component_id = inserted[0]
+        component_id = _inserted_id(inserted)
         await conn.execute(
-            "UPDATE component_uploads SET artifact_id = %s, state = 'finalized' WHERE id = %s",
+            "UPDATE component_uploads SET component_id = %s, state = 'finalized' WHERE id = %s",
             (component_id, upload_id),
         )
         return component_id
@@ -267,10 +307,19 @@ def component_upload_object_key(
     *,
     tenant: str,
     provider: str,
-    component_kind: str,
+    component_kind: ComponentKind,
     upload_id: UUID,
 ) -> str:
     return f"{tenant}/provider-components/{provider}/{component_kind}/{upload_id}"
+
+
+def _inserted_id(row: tuple[UUID] | None) -> UUID:
+    if row is None:
+        raise CategorizedError(
+            "provider component insert did not return an id",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+        )
+    return row[0]
 
 
 def _s3_checksum_to_component_sha256(value: str | None) -> str | None:
@@ -301,10 +350,10 @@ def _component_from_row(row: dict[str, object]) -> ProviderComponent:
     return ProviderComponent(
         id=cast(UUID, row["id"]),
         provider=cast(str, row["provider"]),
-        component_kind=cast(str, row["component_kind"]),
+        component_kind=cast(ComponentKind, row["component_kind"]),
         source=source,
         artifact_id=cast(UUID | None, row["artifact_id"]),
-        visibility=cast(str, row["visibility"]),
+        visibility=cast(Visibility, row["visibility"]),
         project=cast(str | None, row["project"]),
         principal=cast(str, row["principal"]),
         sha256=cast(str | None, row["sha256"]),

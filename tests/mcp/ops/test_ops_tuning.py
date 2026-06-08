@@ -31,7 +31,7 @@ from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.ops import tuning
-from kdive.security.rbac import PlatformRole, Role
+from kdive.security.authz.rbac import PlatformRole, Role
 from kdive.services.allocation_admission import AllocationRequest, admit
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

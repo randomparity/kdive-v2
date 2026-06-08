@@ -11,9 +11,9 @@ tuple (:class:`_Attribution`). Three objects deviate, per their schema rows:
   rather than as attribution columns.
 * :class:`Artifact` is a write-once record — no lifecycle ``state``.
 
-``jsonb`` columns whose interior shape is owned by a later issue (capabilities,
-provisioning/build profiles, job payload, authorizing tuple) are typed as
-``dict[str, Any]`` here; the typed models land with the issues that own them.
+``jsonb`` columns whose interior shape is open-ended (capabilities, job payload,
+authorizing tuple) remain typed as ``dict[str, Any]`` here. Profile-owned JSON
+columns use profile document aliases and are parsed by their owning profile modules.
 
 The "failure category set iff the object reached a failure state" invariant on
 :class:`Run` and :class:`Job` is not enforced at this layer. The repository
@@ -33,6 +33,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from kdive.domain.errors import ErrorCategory
+from kdive.domain.profile_documents import (
+    SerializedBuildProfile,
+    SerializedExpectedBootFailure,
+    SerializedProvisioningProfile,
+)
 from kdive.domain.state import (
     AllocationState,
     DebugSessionState,
@@ -69,6 +74,14 @@ class JobKind(StrEnum):
     FORCE_CRASH = "force_crash"
     POWER = "power"
     CAPTURE_VMCORE = "capture_vmcore"
+
+
+type DestructiveJobKind = Literal[
+    JobKind.REPROVISION,
+    JobKind.TEARDOWN,
+    JobKind.FORCE_CRASH,
+    JobKind.POWER,
+]
 
 
 class PowerAction(StrEnum):
@@ -176,7 +189,7 @@ class System(DomainModel, _Attribution):
 
     allocation_id: UUID
     state: SystemState
-    provisioning_profile: dict[str, Any]
+    provisioning_profile: SerializedProvisioningProfile
     target_fingerprint: str | None = None
     domain_name: str | None = None
 
@@ -216,8 +229,8 @@ class Run(DomainModel, _Attribution):
     investigation_id: UUID
     system_id: UUID
     state: RunState
-    build_profile: dict[str, Any]
-    expected_boot_failure: dict[str, Any] | None = None
+    build_profile: SerializedBuildProfile
+    expected_boot_failure: SerializedExpectedBootFailure | None = None
     kernel_ref: str | None = None
     debuginfo_ref: str | None = None
     failure_category: ErrorCategory | None = None

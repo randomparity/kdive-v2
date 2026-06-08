@@ -31,7 +31,7 @@ Upsert an external ref onto an Investigation by (tracker, id) key. Requires oper
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `investigation_id` | `string` | yes | The Investigation to add the ref to. |
-| `ref` | `object` | yes | External ref to upsert, with tracker, id, and optional url. |
+| `ref` | `object` | yes | External ref to upsert, with tracker, id, and url. |
 
 ## `investigations.open`
 

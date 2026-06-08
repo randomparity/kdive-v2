@@ -128,6 +128,11 @@ live host. The `provision`/`teardown` **handlers** (in `mcp/tools/systems.py`) o
 Postgres state machine and call the provider; the provider owns no Postgres, the handler
 owns no XML. The real `libvirt.open` path is `live_vm`-gated, as for discovery.
 
+**Current implementation note.** The historical flat `mcp/tools/systems.py` boundary is now
+split under `src/kdive/mcp/tools/lifecycle/systems/` for MCP admission and
+`src/kdive/planes/systems.py` for worker job handlers. The ownership split above still
+applies: MCP/worker code owns database state, and the provider owns libvirt XML/runtime work.
+
 ### 5. `teardown` is idempotent and best-effort over an already-absent domain
 
 A `teardown` job may run after the domain is already gone (a prior partial teardown, a

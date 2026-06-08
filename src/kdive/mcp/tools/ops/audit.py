@@ -1,11 +1,11 @@
 """The ``audit.query`` auditor-read tool (ADR-0062 §6, #141).
 
-Reads ``audit_log`` in two forms selected by the presence of a ``project`` filter:
+Reads ``audit_log`` in two explicit scopes:
 
-* **project-scoped** (``project`` given) — requires ``require_role(project, admin)``; the
-  audit trail is sensitive, so only a project admin reads their own. Not written to
+* **project** — requires ``project`` and ``require_role(project, admin)``; the audit trail
+  is sensitive, so only a project admin reads their own. Not written to
   ``platform_audit_log`` (a member reading their own trail is not a cross-tenant read).
-* **cross-project** (``project`` omitted) — requires ``platform_auditor`` (satisfied by
+* **all-projects** — forbids ``project`` and requires ``platform_auditor`` (satisfied by
   ``platform_admin``); read-audited to ``platform_audit_log``. The read target is
   ``audit_log`` while the read-access record lands in ``platform_audit_log``, so a platform
   read never pollutes the per-project trail it inspects (ADR-0043 §4).
@@ -16,16 +16,15 @@ plain async handler taking the pool + request context (tested directly, never th
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
-from typing import Annotated, LiteralString
+from typing import Annotated, Literal, LiteralString
 from uuid import UUID
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.log import bind_context
@@ -33,8 +32,9 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.ops import _reads
-from kdive.security.context import RequestContext
-from kdive.security.rbac import (
+from kdive.mcp.tools.ops._auth import ALL_PROJECTS_SCOPE
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import (
     AuthorizationError,
     PlatformRole,
     Role,
@@ -48,27 +48,88 @@ _OBJECT_ID = "audit.query"
 _MAX_ROWS = 500
 
 
+class _AuditQueryFilters(BaseModel):
+    """Common ``audit.query`` filters shared by both read shapes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    principal: Annotated[str | None, Field(description="Filter by acting principal.")] = None
+    object_id: Annotated[str | None, Field(description="Filter by audited object UUID.")] = None
+    transition: Annotated[
+        str | None, Field(description="Filter by transition literal (e.g. 'requested').")
+    ] = None
+    window: Annotated[
+        list[str | None] | None,
+        Field(description="[start, end] ISO-8601 timestamptz pair; omit for all time."),
+    ] = None
+
+
+class ProjectAuditQuery(_AuditQueryFilters):
+    """Project-scoped audit read request."""
+
+    scope: Literal["project"]
+    project: Annotated[str, Field(description="Project to read; requires project admin.")]
+
+
+class AllProjectsAuditQuery(_AuditQueryFilters):
+    """Cross-project audit read request."""
+
+    scope: Literal["all-projects"]
+
+
+type AuditQueryRequest = ProjectAuditQuery | AllProjectsAuditQuery
+
+
+async def query_project(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    request: ProjectAuditQuery,
+) -> ToolResponse:
+    """Read one project's audit log; requires project admin."""
+    with bind_context(principal=ctx.principal):
+        try:
+            filters = _parse_filters(
+                request.principal,
+                request.object_id,
+                request.transition,
+                request.window,
+            )
+        except CategorizedError as exc:
+            return ToolResponse.failure(_OBJECT_ID, exc.category, suggested_next_actions=[_TOOL])
+        return await _query_project(pool, ctx, request.project, filters)
+
+
+async def query_all_projects(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    request: AllProjectsAuditQuery,
+) -> ToolResponse:
+    """Read every project's audit log; requires platform auditor."""
+    with bind_context(principal=ctx.principal):
+        try:
+            filters = _parse_filters(
+                request.principal,
+                request.object_id,
+                request.transition,
+                request.window,
+            )
+        except CategorizedError as exc:
+            return ToolResponse.failure(_OBJECT_ID, exc.category, suggested_next_actions=[_TOOL])
+        return await _query_cross_project(pool, ctx, filters)
+
+
 async def query(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
-    project: str | None = None,
-    principal: str | None = None,
-    object_id: str | None = None,
-    transition: str | None = None,
-    window: object = None,
+    request: AuditQueryRequest,
 ) -> ToolResponse:
-    """Read ``audit_log``; project-scoped (``project`` given) or cross-project (omitted)."""
-    with bind_context(principal=ctx.principal):
-        try:
-            object_uuid = _parse_object_id(object_id)
-            parsed_window = _reads.parse_window(window)
-        except CategorizedError as exc:
-            return ToolResponse.failure(_OBJECT_ID, exc.category, suggested_next_actions=[_TOOL])
-        filters = _Filters(principal, object_uuid, transition, parsed_window)
-        if project is not None:
-            return await _query_project(pool, ctx, project, filters)
-        return await _query_cross_project(pool, ctx, filters)
+    """Dispatch the typed ``audit.query`` request model to its explicit handler."""
+    if isinstance(request, ProjectAuditQuery):
+        return await query_project(pool, ctx, request=request)
+    return await query_all_projects(pool, ctx, request=request)
 
 
 class _Filters:
@@ -87,6 +148,17 @@ class _Filters:
         self.object_id = object_id
         self.transition = transition
         self.window = window
+
+
+def _parse_filters(
+    principal: str | None,
+    object_id: str | None,
+    transition: str | None,
+    window: object,
+) -> _Filters:
+    object_uuid = _parse_object_id(object_id)
+    parsed_window = _reads.parse_window(window)
+    return _Filters(principal, object_uuid, transition, parsed_window)
 
 
 def _parse_object_id(object_id: str | None) -> UUID | None:
@@ -185,7 +257,7 @@ def _audit_args(filters: _Filters) -> dict[str, object]:
     """The public filter args for the audit ``args_digest`` (no secret values)."""
     window = filters.window
     return {
-        "scope": "all-projects",
+        "scope": ALL_PROJECTS_SCOPE,
         "principal": filters.principal,
         "object_id": str(filters.object_id) if filters.object_id is not None else None,
         "transition": filters.transition,
@@ -193,7 +265,7 @@ def _audit_args(filters: _Filters) -> dict[str, object]:
     }
 
 
-def _row_json(row: dict[str, object]) -> dict[str, str | None]:
+def _row_data(row: dict[str, object]) -> dict[str, str]:
     ts = row["ts"]
     object_id = row["object_id"]
     return {
@@ -203,24 +275,27 @@ def _row_json(row: dict[str, object]) -> dict[str, str | None]:
         "project": _as_str(row["project"]),
         "tool": _as_str(row["tool"]),
         "object_kind": _as_str(row["object_kind"]),
-        "object_id": str(object_id) if object_id is not None else None,
+        "object_id": str(object_id) if object_id is not None else "",
         "transition": _as_str(row["transition"]),
     }
 
 
-def _as_str(value: object) -> str | None:
-    return None if value is None else str(value)
+def _as_str(value: object) -> str:
+    return "" if value is None else str(value)
 
 
 def _response(rows: list[dict[str, object]]) -> ToolResponse:
-    return ToolResponse.success(
+    items: list[ToolResponse] = []
+    for row in rows:
+        data = _row_data(row)
+        items.append(ToolResponse.success(data["object_id"] or _OBJECT_ID, "ok", data=data))
+    return ToolResponse.collection(
         _OBJECT_ID,
         "ok",
+        items,
         suggested_next_actions=["inventory.list"],
         data={
-            "count": str(len(rows)),
             "truncated": "true" if len(rows) >= _MAX_ROWS else "false",
-            "rows": json.dumps([_row_json(r) for r in rows]),
         },
     )
 
@@ -229,38 +304,22 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the ``audit.query`` tool on ``app``, bound to ``pool``."""
 
     @app.tool(
-        name="audit.query",
+        name=_TOOL,
         annotations=_docmeta.read_only(),
         meta={"maturity": "implemented"},
     )
     async def audit_query(
-        project: Annotated[
-            str | None,
-            Field(description="Project to read (project form, requires admin); omit for cross."),
-        ] = None,
-        principal: Annotated[str | None, Field(description="Filter by acting principal.")] = None,
-        object_id: Annotated[
-            str | None, Field(description="Filter by audited object UUID.")
-        ] = None,
-        transition: Annotated[
-            str | None, Field(description="Filter by transition literal (e.g. 'requested').")
-        ] = None,
-        window: Annotated[
-            list[str | None] | None,
-            Field(description="[start, end] ISO-8601 timestamptz pair; omit for all time."),
-        ] = None,
+        request: Annotated[
+            AuditQueryRequest,
+            Field(
+                discriminator="scope",
+                description="Project or all-projects audit query request.",
+            ),
+        ],
     ) -> ToolResponse:
         """Read audit_log: project form (admin) or cross-project (platform_auditor).
 
         Returns the most recent matching rows (capped at 500, newest first);
         ``data.truncated`` is "true" when the cap is hit — narrow with filters.
         """
-        return await query(
-            pool,
-            current_context(),
-            project=project,
-            principal=principal,
-            object_id=object_id,
-            transition=transition,
-            window=window,
-        )
+        return await query(pool, current_context(), request=request)

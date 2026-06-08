@@ -22,7 +22,8 @@ from kdive.log import configure_logging
 from kdive.version import full_version
 
 if TYPE_CHECKING:
-    from kdive.providers.composition import ProviderRuntime
+    from kdive.providers.runtime import ProviderRuntime
+    from kdive.security.secrets.secret_registry import SecretRegistry
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8000
@@ -64,19 +65,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _run_server(host: str, port: int) -> None:
+async def _run_server(host: str, port: int, secret_registry: SecretRegistry) -> None:
     from kdive.mcp.app import build_app
 
     pool = create_pool()
     await pool.open()
     try:
-        app = build_app(pool)
+        app = build_app(pool, secret_registry=secret_registry)
         await app.run_async(transport="http", host=host, port=port)
     finally:
+        secret_registry.clear()
         await pool.close()
 
 
-async def _run_worker() -> None:
+async def _run_worker(secret_registry: SecretRegistry) -> None:
     from kdive.jobs.worker import Worker
     from kdive.mcp.app import build_handler_registry
 
@@ -88,13 +90,19 @@ async def _run_worker() -> None:
         loop.add_signal_handler(sig, stop.set)
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
     try:
-        worker = Worker(pool, build_handler_registry(), worker_id=worker_id)
+        worker = Worker(
+            pool,
+            build_handler_registry(),
+            worker_id=worker_id,
+            secret_registry=secret_registry,
+        )
         await worker.run(stop)
     finally:
+        secret_registry.clear()
         await pool.close()
 
 
-async def _run_reconciler() -> None:
+async def _run_reconciler(secret_registry: SecretRegistry) -> None:
     from kdive.domain.errors import CategorizedError
     from kdive.providers.composition import build_default_provider_runtime
     from kdive.reconciler.loop import NullReaper, Reconciler
@@ -115,6 +123,7 @@ async def _run_reconciler() -> None:
         reconciler = Reconciler(pool, NullReaper(), upload_store=upload_store)
         await reconciler.run(stop)
     finally:
+        secret_registry.clear()
         await pool.close()
 
 
@@ -133,16 +142,19 @@ async def _register_provider_resources(pool: AsyncConnectionPool, runtime: Provi
 def main(argv: list[str] | None = None) -> None:
     """Parse arguments, configure logging, and dispatch to the chosen subcommand."""
     args = build_parser().parse_args(argv)
-    configure_logging(args.log_level)
+    from kdive.security.secrets.secret_registry import SecretRegistry
+
+    secret_registry = SecretRegistry()
+    configure_logging(args.log_level, secret_registry=secret_registry)
     _log.info("starting kdive %s (%s)", full_version(), args.command)
     if args.command == "server":
         host = os.environ.get("KDIVE_HTTP_HOST", _DEFAULT_HOST)
         port = int(os.environ.get("KDIVE_HTTP_PORT", str(_DEFAULT_PORT)))
-        asyncio.run(_run_server(host, port))
+        asyncio.run(_run_server(host, port, secret_registry))
     elif args.command == "worker":
-        asyncio.run(_run_worker())
+        asyncio.run(_run_worker(secret_registry))
     elif args.command == "reconciler":
-        asyncio.run(_run_reconciler())
+        asyncio.run(_run_reconciler(secret_registry))
     elif args.command == "migrate":
         from kdive.admin.bootstrap import migrate
 

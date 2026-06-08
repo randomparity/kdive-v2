@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import timedelta
 from uuid import UUID, uuid4
 
@@ -16,13 +17,15 @@ from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
+from kdive.jobs.payloads import BuildPayload
 from kdive.jobs.worker import Worker
+from kdive.security.secrets.secret_registry import SecretRegistry
 
 _AUTHORIZING = {"principal": "p", "agent_session": None, "project": "a"}
 
 
-def _build_payload() -> dict[str, str]:
-    return {"run_id": str(uuid4())}
+def _build_payload() -> BuildPayload:
+    return BuildPayload(run_id=str(uuid4()))
 
 
 async def _final_state(url: str, job_id: UUID) -> Job:
@@ -169,21 +172,25 @@ def test_run_once_dead_letters_after_max_attempts(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_failed_job_persists_redacted_failure_context(migrated_url: str) -> None:
+def test_failed_job_persists_redacted_failure_context(
+    migrated_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
     async def _run() -> None:
         async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:
             run_id = uuid4()
+            secret_registry = SecretRegistry()
+            secret_registry.register("supersecret", scope=None)
 
             async def always_raises(conn: psycopg.AsyncConnection, job: Job) -> str:
                 raise CategorizedError(
-                    "token=supersecret build failed",
+                    "saw supersecret build failed",
                     category=ErrorCategory.BUILD_FAILURE,
                     details={"run_id": run_id, "payload": {"not": "safe"}},
                 )
 
             reg = HandlerRegistry()
             reg.register(JobKind.BUILD, always_raises)
-            worker = Worker(pool, reg, worker_id="w1")
+            worker = Worker(pool, reg, worker_id="w1", secret_registry=secret_registry)
             async with pool.connection() as conn:
                 job = await queue.enqueue(
                     conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-context"
@@ -194,10 +201,13 @@ def test_failed_job_persists_redacted_failure_context(migrated_url: str) -> None
             final = await _final_state(migrated_url, job.id)
             assert final.state is JobState.FAILED
             assert final.failure_context == {
-                "failure_message": "token=[REDACTED] build failed",
+                "failure_message": "saw [REDACTED] build failed",
                 "failure_detail_run_id": str(run_id),
             }
+            records = [record for record in caplog.records if "failed:" in record.getMessage()]
+            assert records and records[0].exc_info is not None
 
+    caplog.set_level(logging.WARNING, logger="kdive.jobs.worker")
     asyncio.run(_run())
 
 
@@ -306,7 +316,7 @@ def test_heartbeat_renews_live_lease(migrated_url: str, monkeypatch: pytest.Monk
 
 
 def test_heartbeat_error_does_not_crash_dispatch(
-    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     async def _run() -> None:
         async with AsyncConnectionPool(migrated_url, min_size=3, max_size=10) as pool:
@@ -340,7 +350,12 @@ def test_heartbeat_error_does_not_crash_dispatch(
             assert processed is not None
             final = await _final_state(migrated_url, job.id)
             assert final.state is JobState.SUCCEEDED  # finalized despite the bad heartbeat
+            records = [
+                record for record in caplog.records if "heartbeat for job" in record.getMessage()
+            ]
+            assert records and records[0].exc_info is not None
 
+    caplog.set_level(logging.WARNING, logger="kdive.jobs.worker")
     asyncio.run(_run())
 
 
@@ -466,5 +481,53 @@ def test_run_survives_run_once_error(migrated_url: str, monkeypatch: pytest.Monk
             monkeypatch.setattr(worker, "run_once", fake_run_once)
             await asyncio.wait_for(worker.run(stop), timeout=2)
             assert calls >= 2  # the loop survived the first iteration's error and ran again
+
+    asyncio.run(_run())
+
+
+def test_run_stops_while_idle_sleep_is_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _run() -> None:
+        worker = Worker(
+            _unopened_pool(),
+            HandlerRegistry(),
+            worker_id="w1",
+            poll_interval=timedelta(seconds=30),
+        )
+        stop = asyncio.Event()
+        idle_reached = asyncio.Event()
+
+        async def fake_run_once() -> Job | None:
+            idle_reached.set()
+            return None
+
+        monkeypatch.setattr(worker, "run_once", fake_run_once)
+        task = asyncio.create_task(worker.run(stop))
+        await asyncio.wait_for(idle_reached.wait(), timeout=1)
+        stop.set()
+        await asyncio.wait_for(task, timeout=1)
+
+    asyncio.run(_run())
+
+
+def test_run_stops_while_error_sleep_is_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _run() -> None:
+        worker = Worker(
+            _unopened_pool(),
+            HandlerRegistry(),
+            worker_id="w1",
+            poll_interval=timedelta(seconds=30),
+        )
+        stop = asyncio.Event()
+        error_reached = asyncio.Event()
+
+        async def fake_run_once() -> Job | None:
+            error_reached.set()
+            raise RuntimeError("transient dequeue error")
+
+        monkeypatch.setattr(worker, "run_once", fake_run_once)
+        task = asyncio.create_task(worker.run(stop))
+        await asyncio.wait_for(error_reached.wait(), timeout=1)
+        stop.set()
+        await asyncio.wait_for(task, timeout=1)
 
     asyncio.run(_run())

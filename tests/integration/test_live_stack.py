@@ -262,7 +262,7 @@ def _write_report_artifact(payload: dict[str, object]) -> Path:
     return path
 
 
-def _find_project_row(rows: list[dict[str, object]], project: str) -> dict[str, object]:
+def _find_project_row(rows: list[dict[str, str]], project: str) -> dict[str, str]:
     """Return the rollup row for ``project``, or fail the phase if absent (no spend rolled up)."""
     for row in rows:
         if row.get("project") == project:
@@ -620,8 +620,12 @@ async def _assert_report(
             ),
             "report",
         )
-    rows = json.loads(env.data["rows"])
-    total = json.loads(env.data["total"])
+    rows = [item.data for item in env.items]
+    total = {
+        "reserved": env.data["total_reserved"],
+        "reconciled": env.data["total_reconciled"],
+        "variance": env.data["total_variance"],
+    }
     row = _find_project_row(rows, _PROJECT)
     reserved = Decimal(str(row["reserved"]))
     reconciled = Decimal(str(row["reconciled"]))

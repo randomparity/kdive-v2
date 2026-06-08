@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -13,9 +13,10 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Job, JobKind, System
+from kdive.domain.models import DestructiveJobKind, Job, JobKind, System
 from kdive.domain.state import IllegalTransition, RunState, SystemState
 from kdive.jobs import queue
+from kdive.jobs.payloads import ReprovisionPayload, SystemPayload
 from kdive.log import bind_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import as_uuid as _as_uuid
@@ -31,47 +32,55 @@ from kdive.mcp.tools.lifecycle.systems.provision import (
 from kdive.profiles.provisioning import (
     ProvisioningProfile,
     destructive_opt_in,
+    dump_profile,
     profile_digest,
     reject_rootfs_upload_without_window,
 )
+from kdive.profiles.types import ProvisioningProfileInput
 from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
-from kdive.security.rbac import Role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
+from kdive.security.authz.rbac import Role
 
 _NON_TERMINAL_RUN = frozenset({RunState.CREATED, RunState.RUNNING})
-_REPROVISION = "reprovision"
-_TEARDOWN = "teardown"
+_REPROVISION = JobKind.REPROVISION
+_TEARDOWN = JobKind.TEARDOWN
 
 
-async def reprovision_system(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    *,
-    system_id: str,
-    profile: dict[str, Any],
-    component_sources: ComponentSourceCapabilities | None = None,
-    rootfs_validator: RootfsValidator | None = None,
-) -> ToolResponse:
-    """Reprovision a `ready` System in place under the same Allocation."""
-    uid = _as_uuid(system_id)
-    if uid is None:
-        return _config_error(system_id)
-    try:
-        parsed = ProvisioningProfile.parse(profile)
-        _validate_profile_for_provider(parsed, component_sources)
-        reject_rootfs_upload_without_window(parsed)
-    except CategorizedError as exc:
-        return ToolResponse.failure(system_id, exc.category)
-    with bind_context(principal=ctx.principal):
+@dataclass(frozen=True, slots=True)
+class SystemAdminHandlers:
+    """Destructive system handlers with provider validation seams bound at construction."""
+
+    component_sources: ComponentSourceCapabilities
+    rootfs_validator: RootfsValidator
+
+    async def reprovision_system(
+        self,
+        pool: AsyncConnectionPool,
+        ctx: RequestContext,
+        *,
+        system_id: str,
+        profile: ProvisioningProfileInput,
+    ) -> ToolResponse:
+        """Reprovision a `ready` System in place under the same Allocation."""
+        uid = _as_uuid(system_id)
+        if uid is None:
+            return _config_error(system_id)
         try:
-            return await _reprovision_locked(pool, ctx, uid, parsed, rootfs_validator)
-        except IllegalTransition:
-            async with pool.connection() as conn:
-                latest = await SYSTEMS.get(conn, uid)
-            data = {"current_status": latest.state.value} if latest else {}
-            return _config_error(system_id, data=data)
+            parsed = ProvisioningProfile.parse(profile)
+            _validate_profile_for_provider(parsed, self.component_sources)
+            reject_rootfs_upload_without_window(parsed)
+        except CategorizedError as exc:
+            return ToolResponse.failure(system_id, exc.category)
+        with bind_context(principal=ctx.principal):
+            try:
+                return await _reprovision_locked(pool, ctx, uid, parsed, self.rootfs_validator)
+            except IllegalTransition:
+                async with pool.connection() as conn:
+                    latest = await SYSTEMS.get(conn, uid)
+                data = {"current_status": latest.state.value} if latest else {}
+                return _config_error(system_id, data=data)
 
 
 async def _reprovision_locked(
@@ -79,7 +88,7 @@ async def _reprovision_locked(
     ctx: RequestContext,
     system_id: UUID,
     profile: ProvisioningProfile,
-    rootfs_validator: RootfsValidator | None,
+    rootfs_validator: RootfsValidator,
 ) -> ToolResponse:
     async with (
         pool.connection() as conn,
@@ -103,7 +112,7 @@ async def _reprovision_locked(
         if system.state is SystemState.REPROVISIONING:
             existing = await _job_for_dedup_key(conn, dedup_key)
             if existing is not None:
-                return _system_job_envelope(existing, system_id)
+                return job_envelope(existing, "system_id", system_id)
             return _config_error(str(system_id), data={"current_status": system.state.value})
         if system.state is not SystemState.READY:
             return _config_error(str(system_id), data={"current_status": system.state.value})
@@ -129,17 +138,17 @@ async def _audit_destructive_denied(
     conn: AsyncConnection,
     ctx: RequestContext,
     system: System,
-    op_kind: str,
+    op_kind: DestructiveJobKind,
     missing: list[str],
 ) -> None:
     await audit.record(
         conn,
         ctx,
         audit.AuditEvent(
-            tool=f"systems.{op_kind}",
+            tool=f"systems.{op_kind.value}",
             object_kind="systems",
             object_id=system.id,
-            transition=f"{op_kind}:denied",
+            transition=f"{op_kind.value}:denied",
             args={"system_id": str(system.id), "missing": missing},
             project=system.project,
         ),
@@ -174,7 +183,7 @@ async def _admit_reprovision(
     await SYSTEMS.update_state(conn, system.id, SystemState.REPROVISIONING)
     await conn.execute(
         "UPDATE systems SET provisioning_profile = %s WHERE id = %s",
-        (Jsonb(profile.model_dump(by_alias=True)), system.id),
+        (Jsonb(dump_profile(profile)), system.id),
     )
     await audit.record(
         conn,
@@ -191,11 +200,11 @@ async def _admit_reprovision(
     job = await queue.enqueue(
         conn,
         JobKind.REPROVISION,
-        {"system_id": str(system.id), "profile_digest": digest},
+        ReprovisionPayload(system_id=str(system.id), profile_digest=digest),
         job_authorizing(ctx, system.project),
         dedup_key,
     )
-    return _system_job_envelope(job, system.id)
+    return job_envelope(job, "system_id", system.id)
 
 
 async def teardown_system(
@@ -237,12 +246,8 @@ async def teardown_system(
             job = await queue.enqueue(
                 conn,
                 JobKind.TEARDOWN,
-                {"system_id": str(uid)},
+                SystemPayload(system_id=str(uid)),
                 job_authorizing(ctx, system.project),
                 f"{uid}:teardown",
             )
-        return _system_job_envelope(job, uid)
-
-
-def _system_job_envelope(job: Job, system_id: UUID) -> ToolResponse:
-    return job_envelope(job, "system_id", system_id)
+        return job_envelope(job, "system_id", uid)

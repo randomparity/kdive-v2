@@ -5,6 +5,7 @@ import pytest
 from kdive.components.references import (
     ArtifactComponentRef,
     CatalogComponentRef,
+    ComponentUploadRef,
     LocalComponentRef,
     parse_component_ref,
 )
@@ -32,6 +33,14 @@ def test_parse_artifact_ref() -> None:
     assert isinstance(ref, ArtifactComponentRef)
 
 
+def test_parse_component_upload_ref() -> None:
+    ref = parse_component_ref(
+        {"kind": "component-upload", "upload_id": "00000000-0000-0000-0000-000000000000"}
+    )
+
+    assert isinstance(ref, ComponentUploadRef)
+
+
 def test_parse_catalog_ref() -> None:
     ref = parse_component_ref({"kind": "catalog", "provider": "local-libvirt", "name": "fedora"})
 
@@ -45,6 +54,7 @@ def test_parse_catalog_ref() -> None:
         {"kind": "local", "path": "relative.img"},
         {"kind": "local", "path": "/x", "sha256": "deadbeef"},
         {"kind": "artifact", "artifact_id": "not-a-uuid"},
+        {"kind": "component-upload", "upload_id": "not-a-uuid"},
         {"kind": "catalog", "provider": "remote-libvirt", "name": ""},
         {"kind": "url", "url": "https://example.invalid/x.qcow2"},
     ],

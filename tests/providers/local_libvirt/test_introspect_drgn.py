@@ -13,7 +13,7 @@ from typing import cast
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.local_libvirt.introspect_drgn import (
+from kdive.providers.local_libvirt.debug.introspect_drgn import (
     IntrospectOutput,
     LiveIntrospector,
     LocalLibvirtLiveIntrospect,

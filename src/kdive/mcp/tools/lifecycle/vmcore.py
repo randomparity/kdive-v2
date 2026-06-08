@@ -12,22 +12,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Annotated, Literal, LiteralString, NamedTuple
-from uuid import UUID
+from dataclasses import dataclass
+from typing import Annotated, Literal
 
 from fastmcp import FastMCP
-from psycopg import AsyncConnection
-from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
-from kdive.db.artifact_queries import raw_vmcore_key
-from kdive.db.repositories import RUNS, SYSTEMS
+from kdive.db.repositories import SYSTEMS
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError
-from kdive.domain.models import Job, JobKind
+from kdive.domain.models import JobKind
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
+from kdive.jobs.payloads import CaptureVmcorePayload
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
@@ -44,13 +42,14 @@ from kdive.mcp.tools._common import (
 from kdive.mcp.tools._common import (
     job_envelope,
 )
-from kdive.mcp.tools.catalog import artifacts as artifacts_tools
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
+from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.providers.ports import CrashPostmortem
-from kdive.security.context import RequestContext
-from kdive.security.crash_commands import crash_command_rejection_reason
-from kdive.security.rbac import Role, require_role
-from kdive.security.redaction import Redactor
+from kdive.providers.runtime import ProviderRuntime
+from kdive.security.artifacts.crash_commands import crash_command_rejection_reason
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import Role, require_role
+from kdive.security.secrets.redaction import Redactor
+from kdive.services.artifact_listing import RedactedArtifact, list_redacted_system_artifacts
 
 _log = logging.getLogger(__name__)
 
@@ -90,12 +89,6 @@ _CRASH_ALLOWLIST: frozenset[str] = frozenset(
 )
 _TRIAGE_COMMANDS: tuple[str, ...] = ("log", "bt")
 
-_BUILD_STEP_SQL: LiteralString = "SELECT result FROM run_steps WHERE run_id = %s AND step = 'build'"
-
-
-def _system_job_envelope(job: Job, system_id: UUID) -> ToolResponse:
-    return job_envelope(job, "system_id", system_id)
-
 
 # --- vmcore.fetch (admission) --------------------------------------------------------------
 
@@ -106,20 +99,56 @@ _VMCORE_METHODS: frozenset[CaptureMethod] = frozenset(
 )
 
 
-async def fetch_vmcore(
+@dataclass(frozen=True, slots=True)
+class VmcoreHandlers:
+    """vmcore/postmortem MCP handlers with provider seams bound at construction."""
+
+    supported_methods: frozenset[CaptureMethod]
+    crash: CrashPostmortem
+
+    async def fetch_vmcore(
+        self,
+        pool: AsyncConnectionPool,
+        ctx: RequestContext,
+        *,
+        system_id: str,
+        method: str = "host_dump",
+    ) -> ToolResponse:
+        return await _fetch_vmcore(
+            pool,
+            ctx,
+            system_id=system_id,
+            method=method,
+            supported_methods=self.supported_methods,
+        )
+
+    async def postmortem_crash(
+        self,
+        pool: AsyncConnectionPool,
+        ctx: RequestContext,
+        *,
+        run_id: str,
+        commands: list[str],
+    ) -> ToolResponse:
+        return await _postmortem_crash(
+            pool, ctx, run_id=run_id, commands=commands, crash=self.crash
+        )
+
+    async def postmortem_triage(
+        self, pool: AsyncConnectionPool, ctx: RequestContext, *, run_id: str
+    ) -> ToolResponse:
+        return await _postmortem_triage(pool, ctx, run_id=run_id, crash=self.crash)
+
+
+async def _fetch_vmcore(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
     system_id: str,
     method: str = "host_dump",
-    supported_methods: frozenset[CaptureMethod] | None = None,
+    supported_methods: frozenset[CaptureMethod],
 ) -> ToolResponse:
     """Admit a `capture_vmcore` job on a `crashed` System (operator); return the job handle."""
-    supported_methods = (
-        supported_methods
-        if supported_methods is not None
-        else build_default_provider_runtime().supported_capture_methods
-    )
     uid = _as_uuid(system_id)
     if uid is None:
         return _config_error(system_id)
@@ -148,11 +177,11 @@ async def fetch_vmcore(
             job = await queue.enqueue(
                 conn,
                 JobKind.CAPTURE_VMCORE,
-                {"system_id": system_id, "method": capture_method.value},
+                CaptureVmcorePayload(system_id=system_id, method=capture_method),
                 job_authorizing(ctx, system.project),
                 f"{system_id}:capture_vmcore:{capture_method.value}",
             )
-        return _system_job_envelope(job, uid)
+        return job_envelope(job, "system_id", uid)
 
 
 # --- vmcore.list ---------------------------------------------------------------------------
@@ -164,59 +193,31 @@ def _is_redacted_vmcore(object_key: str) -> bool:
 
 async def list_vmcores(
     pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str
-) -> list[ToolResponse]:
-    """Return the System's `redacted` vmcore artifacts (`artifacts.list` for the vmcore rows)."""
-    listed = await artifacts_tools.artifacts_list(pool, ctx, system_id=system_id)
-    return [r for r in listed if _is_redacted_vmcore(r.refs.get("object", ""))]
+) -> ToolResponse:
+    """Return the System's `redacted` vmcore artifacts in one collection envelope."""
+    listed = await list_redacted_system_artifacts(pool, ctx, system_id=system_id)
+    items = [_vmcore_item(row) for row in listed if _is_redacted_vmcore(row.object_key)]
+    return ToolResponse.collection(
+        system_id,
+        "ok",
+        items,
+        suggested_next_actions=["artifacts.get", "postmortem.crash"],
+    )
+
+
+def _vmcore_item(artifact: RedactedArtifact) -> ToolResponse:
+    return ToolResponse.success(
+        artifact.id,
+        "available",
+        suggested_next_actions=["artifacts.get"],
+        refs={"object": artifact.object_key},
+    )
 
 
 # --- postmortem.crash / .triage ------------------------------------------------------------
 
 
-async def _build_id_for_run(conn: AsyncConnection, run_id: UUID) -> str | None:
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(_BUILD_STEP_SQL, (run_id,))
-        row = await cur.fetchone()
-    if row is None or not isinstance(row["result"], dict):
-        return None
-    build_id = row["result"].get("build_id")
-    return build_id if isinstance(build_id, str) and build_id else None
-
-
-class _PostmortemTargets(NamedTuple):
-    """The resolved (non-null) inputs the crash port needs to symbolize a Run's core."""
-
-    debuginfo_ref: str
-    build_id: str
-    vmcore_ref: str
-
-
-async def _resolve_postmortem(
-    conn: AsyncConnection, ctx: RequestContext, run_id: str, commands: list[str]
-) -> _PostmortemTargets | ToolResponse:
-    """Resolve the debuginfo ref, build-id, and raw core key (all non-null), or a failure."""
-    uid = _as_uuid(run_id)
-    if uid is None:
-        return _config_error(run_id)
-    run = await RUNS.get(conn, uid)
-    if run is None or run.project not in ctx.projects:
-        return _config_error(run_id)
-    require_role(ctx, run.project, Role.VIEWER)
-    if run.debuginfo_ref is None:
-        return _config_error(run_id)
-    build_id = await _build_id_for_run(conn, uid)
-    if build_id is None:
-        return _config_error(run_id)
-    for command in commands:
-        if crash_command_rejection_reason(command, _CRASH_ALLOWLIST) is not None:
-            return _config_error(run_id)
-    vmcore_ref = await raw_vmcore_key(conn, run.system_id)
-    if vmcore_ref is None:
-        return _config_error(run_id)
-    return _PostmortemTargets(run.debuginfo_ref, build_id, vmcore_ref)
-
-
-async def postmortem_crash(
+async def _postmortem_crash(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
@@ -226,8 +227,11 @@ async def postmortem_crash(
 ) -> ToolResponse:
     """Run the crash command batch over the Run's captured core; redact and return (ungated)."""
     with bind_context(principal=ctx.principal):
+        for command in commands:
+            if crash_command_rejection_reason(command, _CRASH_ALLOWLIST) is not None:
+                return _config_error(run_id)
         async with pool.connection() as conn:
-            resolved = await _resolve_postmortem(conn, ctx, run_id, commands)
+            resolved = await resolve_run_vmcore_target(conn, ctx, run_id)
         if isinstance(resolved, ToolResponse):
             return resolved
         try:
@@ -251,11 +255,11 @@ async def postmortem_crash(
         )
 
 
-async def postmortem_triage(
+async def _postmortem_triage(
     pool: AsyncConnectionPool, ctx: RequestContext, *, run_id: str, crash: CrashPostmortem
 ) -> ToolResponse:
     """Run the fixed triage command batch and return the redacted report."""
-    resp = await postmortem_crash(
+    resp = await _postmortem_crash(
         pool, ctx, run_id=run_id, commands=list(_TRIAGE_COMMANDS), crash=crash
     )
     if resp.status == "error":
@@ -272,9 +276,13 @@ def register(
     app: FastMCP, pool: AsyncConnectionPool, *, provider_runtime: ProviderRuntime | None = None
 ) -> None:
     """Register the `vmcore.*` / `postmortem.*` tools on ``app``, bound to ``pool``."""
-    runtime = provider_runtime or build_default_provider_runtime()
-    crash = runtime.crash_postmortem
-    supported_methods = runtime.supported_capture_methods
+    if provider_runtime is None:
+        raise RuntimeError("vmcore registrar requires an injected provider runtime")
+    runtime = provider_runtime
+    handlers = VmcoreHandlers(
+        supported_methods=runtime.supported_capture_methods,
+        crash=runtime.crash_postmortem,
+    )
 
     @app.tool(
         name="vmcore.fetch",
@@ -289,12 +297,11 @@ def register(
         ] = "host_dump",
     ) -> ToolResponse:
         """Enqueue a capture_vmcore job on a crashed System. Requires operator."""
-        return await fetch_vmcore(
+        return await handlers.fetch_vmcore(
             pool,
             current_context(),
             system_id=system_id,
             method=method,
-            supported_methods=supported_methods,
         )
 
     @app.tool(
@@ -307,7 +314,7 @@ def register(
             str,
             Field(description="The System whose redacted vmcore artifacts to list."),
         ],
-    ) -> list[ToolResponse]:
+    ) -> ToolResponse:
         """List the redacted vmcore artifacts for a System. Requires viewer."""
         return await list_vmcores(pool, current_context(), system_id=system_id)
 
@@ -324,8 +331,8 @@ def register(
         ],
     ) -> ToolResponse:
         """Run a crash command batch over a Run's captured core; returns redacted output."""
-        return await postmortem_crash(
-            pool, current_context(), run_id=run_id, commands=commands, crash=crash
+        return await handlers.postmortem_crash(
+            pool, current_context(), run_id=run_id, commands=commands
         )
 
     @app.tool(
@@ -337,4 +344,4 @@ def register(
         run_id: Annotated[str, Field(description="The Run whose captured core to triage.")],
     ) -> ToolResponse:
         """Run the fixed triage commands (log+bt) over a Run's captured core; redacted report."""
-        return await postmortem_triage(pool, current_context(), run_id=run_id, crash=crash)
+        return await handlers.postmortem_triage(pool, current_context(), run_id=run_id)

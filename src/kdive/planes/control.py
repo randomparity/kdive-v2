@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import NamedTuple
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -9,21 +11,37 @@ from psycopg import AsyncConnection
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.lifecycle_rules import TERMINAL_SYSTEM_STATES
 from kdive.domain.models import Job, JobKind, System
 from kdive.domain.state import SystemState
 from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import PowerPayload, SystemPayload, load_payload
-from kdive.providers.composition import ProviderRuntime, build_default_provider_runtime
 from kdive.providers.ports import Controller
+from kdive.providers.runtime import ProviderRuntime
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security import audit
 
-TERMINAL_SYSTEM = frozenset({SystemState.TORN_DOWN, SystemState.FAILED})
+
+class _ControlTarget(NamedTuple):
+    domain_name: str
+    project: str
 
 
 def domain_name(system: System) -> str:
     return system.domain_name or domain_name_for(system.id)
+
+
+async def _control_target(conn: AsyncConnection, system_id: UUID, *, op: str) -> _ControlTarget:
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
+        system = await SYSTEMS.get(conn, system_id)
+        if system is None:
+            raise CategorizedError(
+                f"{op} target system is gone",
+                category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+                details={"system_id": str(system_id)},
+            )
+        return _ControlTarget(domain_name(system), system.project)
 
 
 async def power_handler(conn: AsyncConnection, job: Job, control: Controller) -> str | None:
@@ -31,6 +49,8 @@ async def power_handler(conn: AsyncConnection, job: Job, control: Controller) ->
     payload = load_payload(job, PowerPayload)
     system_id = UUID(payload.system_id)
     action = payload.action
+    target = await _control_target(conn, system_id, op="power")
+    await asyncio.to_thread(control.power, target.domain_name, action)
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
         system = await SYSTEMS.get(conn, system_id)
         if system is None:
@@ -39,17 +59,16 @@ async def power_handler(conn: AsyncConnection, job: Job, control: Controller) ->
                 category=ErrorCategory.INFRASTRUCTURE_FAILURE,
                 details={"system_id": str(system_id)},
             )
-        control.power(domain_name(system), action)
         await audit.record(
             conn,
-            job_context_from_job(job, system.project),
+            job_context_from_job(job, target.project),
             audit.AuditEvent(
                 tool="control.power",
                 object_kind="systems",
                 object_id=system_id,
                 transition=f"power:{action.value}",
                 args={"system_id": str(system_id), "action": action.value},
-                project=system.project,
+                project=target.project,
             ),
         )
     return str(system_id)
@@ -58,6 +77,15 @@ async def power_handler(conn: AsyncConnection, job: Job, control: Controller) ->
 async def force_crash_handler(conn: AsyncConnection, job: Job, control: Controller) -> str | None:
     """Crash the guest and drive System ready->crashed + DebugSession live->detached."""
     system_id = UUID(load_payload(job, SystemPayload).system_id)
+    target = await _force_crash_target(conn, system_id)
+    if target is None:
+        return str(system_id)
+    await asyncio.to_thread(control.force_crash, target.domain_name)
+    await _finalize_force_crash(conn, job, system_id, target.project)
+    return str(system_id)
+
+
+async def _force_crash_target(conn: AsyncConnection, system_id: UUID) -> _ControlTarget | None:
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
         system = await SYSTEMS.get(conn, system_id)
         if system is None:
@@ -66,25 +94,39 @@ async def force_crash_handler(conn: AsyncConnection, job: Job, control: Controll
                 category=ErrorCategory.INFRASTRUCTURE_FAILURE,
                 details={"system_id": str(system_id)},
             )
-        if system.state in TERMINAL_SYSTEM:
-            return str(system_id)
-        control.force_crash(domain_name(system))
+        if system.state in TERMINAL_SYSTEM_STATES:
+            return None
+        return _ControlTarget(domain_name(system), system.project)
+
+
+async def _finalize_force_crash(
+    conn: AsyncConnection, job: Job, system_id: UUID, project: str
+) -> None:
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system_id):
+        system = await SYSTEMS.get(conn, system_id)
+        if system is None:
+            raise CategorizedError(
+                "force_crash target system is gone",
+                category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+                details={"system_id": str(system_id)},
+            )
+        if system.state in TERMINAL_SYSTEM_STATES:
+            return
         if system.state is SystemState.READY:
             await SYSTEMS.update_state(conn, system_id, SystemState.CRASHED)
             await audit.record(
                 conn,
-                job_context_from_job(job, system.project),
+                job_context_from_job(job, project),
                 audit.AuditEvent(
                     tool="control.force_crash",
                     object_kind="systems",
                     object_id=system_id,
                     transition="ready->crashed",
                     args={"system_id": str(system_id)},
-                    project=system.project,
+                    project=project,
                 ),
             )
         await detach_sessions(conn, job, system)
-    return str(system_id)
 
 
 async def detach_sessions(conn: AsyncConnection, job: Job, system: System) -> None:
@@ -124,15 +166,13 @@ def register_handlers(
     control: Controller | None = None,
     provider_runtime: ProviderRuntime | None = None,
 ) -> None:
-    """Bind the `power`/`force_crash` job handlers; build the provider lazily from env."""
-    runtime = provider_runtime or build_default_provider_runtime()
-    ctrl = control or runtime.controller
+    """Bind the `power`/`force_crash` job handlers."""
+    if control is None:
+        if provider_runtime is None:
+            raise RuntimeError("control handlers require provider runtime or control")
+        control = provider_runtime.controller
 
-    async def _power(conn: AsyncConnection, job: Job) -> str | None:
-        return await power_handler(conn, job, ctrl)
-
-    async def _force_crash(conn: AsyncConnection, job: Job) -> str | None:
-        return await force_crash_handler(conn, job, ctrl)
-
-    registry.register(JobKind.POWER, _power)
-    registry.register(JobKind.FORCE_CRASH, _force_crash)
+    registry.register(JobKind.POWER, lambda conn, job: power_handler(conn, job, control))
+    registry.register(
+        JobKind.FORCE_CRASH, lambda conn, job: force_crash_handler(conn, job, control)
+    )

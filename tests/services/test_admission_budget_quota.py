@@ -22,11 +22,12 @@ from psycopg.types.json import Jsonb
 
 from kdive.db.repositories import BUDGETS, QUOTAS, RESOURCES
 from kdive.domain.cost import Selector
-from kdive.domain.errors import ErrorCategory
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Budget, Quota, Resource, ResourceKind
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
+from kdive.services import allocation_idempotency
 from kdive.services.allocation_admission import (
     AllocationRequest,
     admit,
@@ -138,6 +139,29 @@ def test_grant_reserves_estimate_and_writes_one_ledger_audit(migrated_url: str) 
             assert await _count(conn, "allocations") == 1
             # one ->granted admission audit row.
             assert await _count(conn, "audit_log") == 1
+
+    asyncio.run(_run())
+
+
+def test_within_budget_is_false_without_budget_row(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            assert await allocation_idempotency.within_budget(conn, "proj", Decimal("1")) is False
+
+    asyncio.run(_run())
+
+
+def test_within_budget_compares_remaining_budget(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            await _seed_budget(conn, limit="10")
+            await conn.execute("UPDATE budgets SET spent_kcu = %s WHERE project = %s", (6, "proj"))
+
+            exact = await allocation_idempotency.within_budget(conn, "proj", Decimal("4"))
+            too_much = await allocation_idempotency.within_budget(conn, "proj", Decimal("4.0001"))
+
+        assert exact is True
+        assert too_much is False
 
     asyncio.run(_run())
 
@@ -263,6 +287,101 @@ def test_replayed_idempotency_key_returns_original_no_double_charge(migrated_url
             assert await _count(conn, "allocations") == 1
             assert await _count(conn, "ledger") == 1
             assert await _spent(conn) == Decimal("6.0000")
+
+    asyncio.run(_run())
+
+
+def test_resolve_replay_returns_none_without_key(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            replay = await allocation_idempotency.resolve_replay(
+                conn,
+                principal=CTX.principal,
+                key="missing",
+                kind="allocations.request",
+                operation_label="allocation request",
+            )
+
+        assert replay is None
+
+    asyncio.run(_run())
+
+
+def test_resolve_replay_returns_original_allocation(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            res = await _seed_resource(conn)
+            await _seed_budget(conn, limit="100")
+            await _seed_quota(conn)
+            first = await _admit(conn, resource=res, idempotency_key="replay")
+            assert first.allocation is not None
+
+            replay = await allocation_idempotency.resolve_replay(
+                conn,
+                principal=CTX.principal,
+                key="replay",
+                kind="allocations.request",
+                operation_label="allocation request",
+            )
+
+        assert replay is not None
+        assert replay.id == first.allocation.id
+
+    asyncio.run(_run())
+
+
+def test_resolve_replay_missing_allocation_reference_raises(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            missing_id = uuid4()
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO idempotency_keys (key, principal, project, kind, result) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (
+                        "stale",
+                        CTX.principal,
+                        "proj",
+                        "allocations.request",
+                        Jsonb({"allocation_id": str(missing_id)}),
+                    ),
+                )
+            with pytest.raises(RuntimeError, match=str(missing_id)):
+                await allocation_idempotency.resolve_replay(
+                    conn,
+                    principal=CTX.principal,
+                    key="stale",
+                    kind="allocations.request",
+                    operation_label="allocation request",
+                )
+
+    asyncio.run(_run())
+
+
+def test_record_key_duplicate_maps_to_configuration_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            allocation_id = uuid4()
+            await allocation_idempotency.record_key(
+                conn,
+                principal=CTX.principal,
+                key="dup",
+                project="proj",
+                kind="allocations.request",
+                allocation_id=allocation_id,
+            )
+            with pytest.raises(CategorizedError) as caught:
+                await allocation_idempotency.record_key(
+                    conn,
+                    principal=CTX.principal,
+                    key="dup",
+                    project="proj",
+                    kind="allocations.request",
+                    allocation_id=allocation_id,
+                )
+
+        assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+        assert caught.value.details == {"principal": CTX.principal}
 
     asyncio.run(_run())
 

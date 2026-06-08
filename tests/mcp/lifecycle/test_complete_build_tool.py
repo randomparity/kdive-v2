@@ -11,9 +11,10 @@ from kdive.db.repositories import RUNS
 from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.state import RunState
-from kdive.mcp.tools.catalog import artifacts as artifacts_tools
-from kdive.mcp.tools.lifecycle import runs as runs_tools
+from kdive.mcp.tools.catalog.artifacts_uploads import create_run_upload
+from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers
 from kdive.providers.build_validation import validate_external_artifacts
+from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.providers.ports import BuildOutput
 from kdive.store.objectstore import HeadResult, PresignedUpload
 from tests.mcp.complete_build_support import (
@@ -47,6 +48,15 @@ _EXTERNAL_PROFILE_WITH_REQUIREMENTS = {
         "name": "console-ready_x86_64",
     },
 }
+_TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
+    provider="test-provider",
+    accepted_component_sources={"config": frozenset({"local"})},
+)
+_DEFAULT_BUILD_HANDLERS = RunBuildHandlers(_TEST_COMPONENT_SOURCES)
+
+
+def _build_handlers(validator) -> RunBuildHandlers:
+    return RunBuildHandlers(_TEST_COMPONENT_SOURCES, complete_validator=validator)
 
 
 class _UploadStore:
@@ -73,8 +83,7 @@ class _RealValidator:
     def __init__(self, store: _ValidationStore) -> None:
         self._store = store
 
-    def validate(self, run_id, manifest, keys, declared_build_id, profile_requirements=None):
-        _ = run_id
+    def validate(self, *, manifest, keys, declared_build_id, profile_requirements=None):
         return validate_external_artifacts(
             self._store,
             manifest=manifest,
@@ -98,13 +107,12 @@ def test_complete_build_finalizes_external_run(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_external_run_with_manifest(pool)
             validator = _FakeValidator(BuildOutput(f"local/runs/{run_id}/kernel", "", ""))
-            resp = await runs_tools.complete_build(
+            resp = await _build_handlers(validator).complete_build(
                 pool,
                 _ctx(),
                 str(run_id),
                 build_id=None,
                 cmdline="dhash_entries=1",
-                validator=validator,
             )
             assert resp.status == "succeeded"
             async with pool.connection() as conn:
@@ -120,11 +128,12 @@ def test_complete_build_is_idempotent(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_external_run_with_manifest(pool)
             validator = _FakeValidator(BuildOutput(f"local/runs/{run_id}/kernel", "", ""))
-            r1 = await runs_tools.complete_build(
-                pool, _ctx(), str(run_id), build_id=None, cmdline="x", validator=validator
+            handlers = _build_handlers(validator)
+            r1 = await handlers.complete_build(
+                pool, _ctx(), str(run_id), build_id=None, cmdline="x"
             )
-            r2 = await runs_tools.complete_build(
-                pool, _ctx(), str(run_id), build_id=None, cmdline="x", validator=validator
+            r2 = await handlers.complete_build(
+                pool, _ctx(), str(run_id), build_id=None, cmdline="x"
             )
         assert r1.status == "succeeded" and r2.status == "succeeded"
         assert validator.calls == 1  # the short-read short-circuits the second
@@ -136,7 +145,7 @@ def test_complete_build_rejects_server_run(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_server_run(pool)
-            resp = await runs_tools.complete_build(
+            resp = await _DEFAULT_BUILD_HANDLERS.complete_build(
                 pool, _ctx(), str(run_id), build_id=None, cmdline="x"
             )
         assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
@@ -151,8 +160,8 @@ def test_complete_build_maps_validation_build_failure(migrated_url: str) -> None
             validator = _FakeValidator(
                 CategorizedError("bad", category=ErrorCategory.BUILD_FAILURE)
             )
-            resp = await runs_tools.complete_build(
-                pool, _ctx(), str(run_id), build_id=None, cmdline="x", validator=validator
+            resp = await _build_handlers(validator).complete_build(
+                pool, _ctx(), str(run_id), build_id=None, cmdline="x"
             )
         assert resp.error_category == ErrorCategory.BUILD_FAILURE.value
 
@@ -163,7 +172,11 @@ def test_build_run_rejects_external_source(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_external_run(pool)
-            resp = await runs_tools.build_run(pool, _ctx(), str(run_id))
+            resp = await _DEFAULT_BUILD_HANDLERS.build_run(
+                pool,
+                _ctx(),
+                str(run_id),
+            )
         assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
     asyncio.run(_run())
@@ -173,7 +186,7 @@ def test_complete_build_malformed_stored_profile_is_config_error(migrated_url: s
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_run(pool, {"source": "bogus"})
-            resp = await runs_tools.complete_build(
+            resp = await _DEFAULT_BUILD_HANDLERS.complete_build(
                 pool, _ctx(), str(run_id), build_id=None, cmdline="x"
             )
         assert resp.status == "error"  # a structured failure, not a raised ToolError
@@ -186,7 +199,7 @@ def test_complete_build_rejects_run_with_no_manifest(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_external_run(pool)
-            resp = await runs_tools.complete_build(
+            resp = await _DEFAULT_BUILD_HANDLERS.complete_build(
                 pool, _ctx(), str(run_id), build_id=None, cmdline="x"
             )
         assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
@@ -200,7 +213,7 @@ def test_complete_build_rejects_non_created_run(migrated_url: str) -> None:
             run_id = await _seed_external_run_with_manifest(pool)
             async with pool.connection() as conn:
                 await conn.execute("UPDATE runs SET state='failed' WHERE id=%s", (run_id,))
-            resp = await runs_tools.complete_build(
+            resp = await _DEFAULT_BUILD_HANDLERS.complete_build(
                 pool, _ctx(), str(run_id), build_id=None, cmdline="x"
             )
         assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
@@ -221,8 +234,8 @@ def test_complete_build_writes_artifact_rows_and_deletes_manifest(migrated_url: 
             kernel_key = f"local/runs/{run_id}/kernel"
             vmlinux_key = f"local/runs/{run_id}/vmlinux"
             validator = _FakeValidator(BuildOutput(kernel_key, vmlinux_key, "abcd"))
-            resp = await runs_tools.complete_build(
-                pool, _ctx(), str(run_id), build_id="abcd", cmdline="x", validator=validator
+            resp = await _build_handlers(validator).complete_build(
+                pool, _ctx(), str(run_id), build_id="abcd", cmdline="x"
             )
             assert resp.status == "succeeded"
             async with pool.connection() as conn:
@@ -247,7 +260,7 @@ def test_complete_build_writes_artifacts_after_effective_config_validation(
         async with _pool(migrated_url) as pool:
             run_id = await _seed_run(pool, _EXTERNAL_PROFILE_WITH_REQUIREMENTS)
             config = b"CONFIG_SERIAL_8250_CONSOLE=y\nCONFIG_VIRTIO_BLK=y\nCONFIG_VIRTIO_PCI=y\n"
-            responses = await artifacts_tools.create_run_upload(
+            responses = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=str(run_id),
@@ -257,7 +270,7 @@ def test_complete_build_writes_artifacts_after_effective_config_validation(
                 ],
                 store=_UploadStore(),
             )
-            assert {response.status for response in responses} == {"upload_ready"}
+            assert {response.status for response in responses.items} == {"upload_ready"}
             assert await _artifact_keys(pool, run_id) == set()
             kernel_key = f"local/runs/{run_id}/kernel"
             config_key = f"local/runs/{run_id}/effective_config"
@@ -271,13 +284,12 @@ def test_complete_build_writes_artifacts_after_effective_config_validation(
                 )
             )
 
-            resp = await runs_tools.complete_build(
+            resp = await _build_handlers(validator).complete_build(
                 pool,
                 _ctx(),
                 str(run_id),
                 build_id=None,
                 cmdline="x",
-                validator=validator,
             )
             keys = await _artifact_keys(pool, run_id)
 
@@ -293,7 +305,7 @@ def test_complete_build_rejects_missing_effective_config_without_artifacts(
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_run(pool, _EXTERNAL_PROFILE_WITH_REQUIREMENTS)
-            responses = await artifacts_tools.create_run_upload(
+            responses = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=str(run_id),
@@ -302,7 +314,7 @@ def test_complete_build_rejects_missing_effective_config_without_artifacts(
                 ],
                 store=_UploadStore(),
             )
-            assert {response.status for response in responses} == {"upload_ready"}
+            assert {response.status for response in responses.items} == {"upload_ready"}
             kernel_key = f"local/runs/{run_id}/kernel"
             validator = _RealValidator(
                 _ValidationStore(
@@ -311,13 +323,12 @@ def test_complete_build_rejects_missing_effective_config_without_artifacts(
                 )
             )
 
-            resp = await runs_tools.complete_build(
+            resp = await _build_handlers(validator).complete_build(
                 pool,
                 _ctx(),
                 str(run_id),
                 build_id=None,
                 cmdline="x",
-                validator=validator,
             )
             keys = await _artifact_keys(pool, run_id)
 

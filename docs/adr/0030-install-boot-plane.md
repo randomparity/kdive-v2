@@ -166,6 +166,11 @@ the existing helper unchanged.
   `register_handlers`; `mcp/app.py` is **unchanged** (`runs.register_handlers` already
   registers); `docs/adr/README.md` gains one index row. No other shared file is edited.
 
+**Current implementation note.** The historical flat `mcp/tools/runs.py` boundary is now
+split under `src/kdive/mcp/tools/lifecycle/runs/` for MCP admission/read handlers and
+`src/kdive/planes/runs.py` for worker job handlers. Registration remains centralized through
+the lifecycle runs registrar and the worker handler registry.
+
 ## Considered & rejected
 
 - **Give install and boot their own `RunState`s (e.g. `installed`, `booted`).**

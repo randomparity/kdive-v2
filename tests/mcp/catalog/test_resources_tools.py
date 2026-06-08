@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID, uuid4
 
+import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog import resources as resources_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
-from kdive.security.rbac import PlatformRole
+from kdive.security.authz.rbac import PlatformRole
 from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
@@ -51,8 +53,11 @@ def test_list_returns_host_with_flat_capability_projection(migrated_url: str) ->
         async with _pool(migrated_url) as pool:
             res_id = await _register(pool)
             responses = await resources_tools.list_resources_tool(pool, CTX, kind=None)
-        assert len(responses) == 1
-        resp = responses[0]
+        assert responses.object_id == "resources"
+        assert responses.status == "ok"
+        items = responses.items
+        assert len(items) == 1
+        resp = items[0]
         assert resp.object_id == res_id
         assert resp.status == "available"
         assert resp.data["kind"] == "local-libvirt"
@@ -70,26 +75,32 @@ def test_list_kind_filter_miss_is_configuration_error(migrated_url: str) -> None
         async with _pool(migrated_url) as pool:
             await _register(pool)
             responses = await resources_tools.list_resources_tool(pool, CTX, kind="nope")
-        assert len(responses) == 1
-        assert responses[0].status == "error"
-        assert responses[0].error_category == "configuration_error"
+        assert responses.status == "error"
+        assert responses.error_category == "configuration_error"
 
     asyncio.run(_run())
 
 
 def test_list_malformed_resource_row_degrades_to_infrastructure_failure(
     migrated_url: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             res_id = await _register(pool)
             async with pool.connection() as conn:
                 await conn.execute("UPDATE resources SET capabilities = '[]'::jsonb")
+            caplog.set_level(logging.WARNING, logger=resources_tools.__name__)
             responses = await resources_tools.list_resources_tool(pool, CTX, kind="local-libvirt")
-        assert len(responses) == 1
-        assert responses[0].object_id == res_id
-        assert responses[0].status == "error"
-        assert responses[0].error_category == "infrastructure_failure"
+        items = responses.items
+        assert len(items) == 1
+        assert items[0].object_id == res_id
+        assert items[0].status == "error"
+        assert items[0].error_category == "infrastructure_failure"
+        assert any(
+            record.exc_info is not None and f"resource {res_id}" in record.message
+            for record in caplog.records
+        )
 
     asyncio.run(_run())
 
@@ -134,6 +145,12 @@ _OPERATOR = RequestContext(
     platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}),
 )
 _NON_OPERATOR = RequestContext(principal="user-1", agent_session="s", projects=("proj",))
+_AUDITOR = RequestContext(
+    principal="auditor-1",
+    agent_session="s",
+    projects=(),
+    platform_roles=frozenset({PlatformRole.PLATFORM_AUDITOR}),
+)
 
 
 async def _row(pool: AsyncConnectionPool, res_id: str) -> dict[str, Any]:
@@ -151,6 +168,14 @@ async def _platform_audit_count(pool: AsyncConnectionPool, tool: str) -> int:
         fetched = await cur.fetchone()
     assert fetched is not None
     return int(fetched[0])
+
+
+async def _platform_audit_rows(pool: AsyncConnectionPool) -> list[tuple[object, ...]]:
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT principal, platform_role, tool, scope FROM platform_audit_log ORDER BY ts"
+        )
+        return list(await cur.fetchall())
 
 
 def test_set_status_changes_health_only(migrated_url: str) -> None:
@@ -269,6 +294,25 @@ def test_set_status_denied_for_non_operator(migrated_url: str) -> None:
         assert resp.error_category == "authorization_denied"
         # The denied call must not have mutated the host.
         assert row == {"status": "available", "cordoned": False}
+
+    asyncio.run(_run())
+
+
+def test_set_status_denied_for_auditor_is_audited(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool)
+            resp = await resources_tools.set_resource_status(
+                pool, _AUDITOR, resource_id=res_id, status="offline"
+            )
+            row = await _row(pool, res_id)
+            audited = await _platform_audit_rows(pool)
+        assert resp.status == "error"
+        assert resp.error_category == "authorization_denied"
+        assert row == {"status": "available", "cordoned": False}
+        assert audited == [
+            ("auditor-1", "platform_auditor", "resources.set_status", f"resource:{res_id}")
+        ]
 
     asyncio.run(_run())
 

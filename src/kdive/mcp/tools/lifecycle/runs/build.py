@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Protocol
+from dataclasses import dataclass, field
+from typing import Protocol
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -33,19 +34,19 @@ from kdive.mcp.tools.lifecycle.runs.common import (
     RUN_BUILD_TERMINAL,
     run_job_envelope,
 )
-from kdive.planes.runs_shared import existing_build_result as _existing_build_result
-from kdive.planes.runs_shared import platform_owned_cmdline_token
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
 from kdive.providers.build_validation import validate_external_artifacts
 from kdive.providers.component_validation import (
+    CONFIG_COMPONENT,
     ComponentSourceCapabilities,
     reject_unsupported_component_source,
 )
-from kdive.providers.composition import build_default_provider_runtime
 from kdive.providers.ports import BuildOutput, ValidatedUpload
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.rbac import Role, require_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import Role, require_role
+from kdive.services.run_steps import BuildStepResult, platform_owned_cmdline_token
+from kdive.services.run_steps import existing_build_result as _existing_build_result
 from kdive.store.objectstore import (
     HeadResult,
     StoredArtifact,
@@ -54,60 +55,6 @@ from kdive.store.objectstore import (
 )
 
 type ConfigValidator = Callable[[ComponentRef], None]
-
-
-async def build_run(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    run_id: str,
-    *,
-    cmdline: str | None = None,
-    component_sources: ComponentSourceCapabilities | None = None,
-    config_validator: ConfigValidator | None = None,
-) -> ToolResponse:
-    """Admit an idempotent server build for a Run and enqueue the build job."""
-    uid = _as_uuid(run_id)
-    if uid is None:
-        return _config_error(run_id)
-    owned = platform_owned_cmdline_token(cmdline)
-    if owned is not None:
-        return _config_error(
-            run_id, data={"reason": "cmdline_overrides_platform_args", "token": owned}
-        )
-    with bind_context(principal=ctx.principal):
-        async with pool.connection() as conn:
-            run = await RUNS.get(conn, uid)
-            if run is None or run.project not in ctx.projects:
-                return _config_error(run_id)
-            require_role(ctx, run.project, Role.OPERATOR)
-            try:
-                parsed = BuildProfile.parse(run.build_profile)
-            except CategorizedError as exc:
-                return ToolResponse.failure(run_id, exc.category)
-            if parsed.source != "server":
-                return _config_error(run_id, data={"reason": "external_source_uses_complete_build"})
-            try:
-                reject_unsupported_component_source(
-                    _component_sources(component_sources),
-                    component_kind="config",
-                    ref=parsed.config,
-                )
-            except CategorizedError as exc:
-                return ToolResponse.failure(run_id, exc.category)
-            if config_validator is not None:
-                try:
-                    config_validator(parsed.config)
-                except CategorizedError as exc:
-                    return ToolResponse.failure(run_id, exc.category)
-            return await _build_locked(conn, ctx, run, cmdline)
-
-
-def _component_sources(
-    capabilities: ComponentSourceCapabilities | None,
-) -> ComponentSourceCapabilities:
-    if capabilities is not None:
-        return capabilities
-    return build_default_provider_runtime().component_sources
 
 
 async def _build_locked(
@@ -161,7 +108,7 @@ class CompleteBuildValidator(Protocol):
 
     def validate(
         self,
-        run_id: UUID,
+        *,
         manifest: Sequence[ManifestEntry],
         keys: Mapping[str, str],
         declared_build_id: str | None,
@@ -174,7 +121,7 @@ class StoreBackedValidator:
 
     def validate(
         self,
-        run_id: UUID,
+        *,
         manifest: Sequence[ManifestEntry],
         keys: Mapping[str, str],
         declared_build_id: str | None,
@@ -190,65 +137,117 @@ class StoreBackedValidator:
         )
 
 
-async def complete_build(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    run_id: str,
-    *,
-    build_id: str | None,
-    cmdline: str,
-    validator: CompleteBuildValidator | None = None,
-) -> ToolResponse:
-    """Validate an external Run's uploads and finalize it ``created -> succeeded``."""
-    validator = validator or StoreBackedValidator()
-    uid = _as_uuid(run_id)
-    if uid is None:
-        return _config_error(run_id)
-    owned = platform_owned_cmdline_token(cmdline)
-    if owned is not None:
-        return _config_error(
-            run_id, data={"reason": "cmdline_overrides_platform_args", "token": owned}
-        )
-    with bind_context(principal=ctx.principal):
-        async with pool.connection() as conn:
-            run = await RUNS.get(conn, uid)
-            if run is None or run.project not in ctx.projects:
-                return _config_error(run_id)
-            require_role(ctx, run.project, Role.OPERATOR)
+@dataclass(frozen=True, slots=True)
+class RunBuildHandlers:
+    """Handlers with provider validation seams bound by the registrar or test fixture."""
 
-            recorded = await _existing_build_result(conn, uid)
-            if recorded is not None:
-                return _complete_envelope(uid, recorded)
+    component_sources: ComponentSourceCapabilities
+    config_validator: ConfigValidator | None = None
+    complete_validator: CompleteBuildValidator = field(default_factory=StoreBackedValidator)
 
-            try:
-                profile = _external_build_profile(run)
-            except CategorizedError as exc:
-                return ToolResponse.failure(run_id, exc.category)
-            guard = _complete_build_guard(run, profile)
-            if guard is not None:
-                return guard
-
-            manifest_row = await upload_manifest.get_manifest(conn, "runs", uid)
-            if manifest_row is None:
-                return _config_error(run_id, data={"reason": "no_upload_manifest"})
-            keys = {e.name: f"{manifest_row.prefix}{e.name}" for e in manifest_row.entries}
-
-            try:
-                requirements = _external_config_requirements(profile)
-                validated = await asyncio.to_thread(
-                    validator.validate,
-                    uid,
-                    list(manifest_row.entries),
-                    keys,
-                    build_id,
-                    requirements,
-                )
-            except CategorizedError as exc:
-                return ToolResponse.failure(run_id, exc.category)
-
-            return await _finalize_external_build(
-                conn, ctx, run, validated.output, cmdline, keys, validated.heads
+    async def build_run(
+        self,
+        pool: AsyncConnectionPool,
+        ctx: RequestContext,
+        run_id: str,
+        *,
+        cmdline: str | None = None,
+    ) -> ToolResponse:
+        """Admit an idempotent server build for a Run and enqueue the build job."""
+        uid = _as_uuid(run_id)
+        if uid is None:
+            return _config_error(run_id)
+        owned = platform_owned_cmdline_token(cmdline)
+        if owned is not None:
+            return _config_error(
+                run_id, data={"reason": "cmdline_overrides_platform_args", "token": owned}
             )
+        with bind_context(principal=ctx.principal):
+            async with pool.connection() as conn:
+                run = await RUNS.get(conn, uid)
+                if run is None or run.project not in ctx.projects:
+                    return _config_error(run_id)
+                require_role(ctx, run.project, Role.OPERATOR)
+                try:
+                    parsed = BuildProfile.parse(run.build_profile)
+                except CategorizedError as exc:
+                    return ToolResponse.failure(run_id, exc.category)
+                if parsed.source != "server":
+                    return _config_error(
+                        run_id, data={"reason": "external_source_uses_complete_build"}
+                    )
+                try:
+                    reject_unsupported_component_source(
+                        self.component_sources,
+                        component_kind=CONFIG_COMPONENT,
+                        ref=parsed.config,
+                    )
+                except CategorizedError as exc:
+                    return ToolResponse.failure(run_id, exc.category)
+                if self.config_validator is not None:
+                    try:
+                        self.config_validator(parsed.config)
+                    except CategorizedError as exc:
+                        return ToolResponse.failure(run_id, exc.category)
+                return await _build_locked(conn, ctx, run, cmdline)
+
+    async def complete_build(
+        self,
+        pool: AsyncConnectionPool,
+        ctx: RequestContext,
+        run_id: str,
+        *,
+        build_id: str | None,
+        cmdline: str,
+    ) -> ToolResponse:
+        """Validate an external Run's uploads and finalize it ``created -> succeeded``."""
+        uid = _as_uuid(run_id)
+        if uid is None:
+            return _config_error(run_id)
+        owned = platform_owned_cmdline_token(cmdline)
+        if owned is not None:
+            return _config_error(
+                run_id, data={"reason": "cmdline_overrides_platform_args", "token": owned}
+            )
+        with bind_context(principal=ctx.principal):
+            async with pool.connection() as conn:
+                run = await RUNS.get(conn, uid)
+                if run is None or run.project not in ctx.projects:
+                    return _config_error(run_id)
+                require_role(ctx, run.project, Role.OPERATOR)
+
+                recorded = await _existing_build_result(conn, uid)
+                if recorded is not None:
+                    return _complete_envelope(uid, recorded)
+
+                try:
+                    profile = _external_build_profile(run)
+                except CategorizedError as exc:
+                    return ToolResponse.failure(run_id, exc.category)
+                guard = _complete_build_guard(run, profile)
+                if guard is not None:
+                    return guard
+
+                manifest_row = await upload_manifest.get_manifest(conn, "runs", uid)
+                if manifest_row is None:
+                    return _config_error(run_id, data={"reason": "no_upload_manifest"})
+                keys = {e.name: f"{manifest_row.prefix}{e.name}" for e in manifest_row.entries}
+
+                try:
+                    requirements = _external_config_requirements(profile)
+                    validated = await asyncio.to_thread(
+                        self.complete_validator.validate,
+                        manifest=list(manifest_row.entries),
+                        keys=keys,
+                        declared_build_id=build_id,
+                        profile_requirements=requirements,
+                    )
+                except CategorizedError as exc:
+                    return ToolResponse.failure(run_id, exc.category)
+
+                return await _finalize_external_build(
+                    conn, ctx, run, validated.output, cmdline, keys, validated.heads
+                )
 
 
 def _external_build_profile(run: Run) -> ExternalBuildProfile:
@@ -284,15 +283,10 @@ def _external_config_requirements(profile: ExternalBuildProfile) -> ConfigRequir
     return entry.requires.config
 
 
-def _complete_envelope(run_id: UUID, result: dict[str, Any]) -> ToolResponse:
+def _complete_envelope(run_id: UUID, result: BuildStepResult) -> ToolResponse:
     """Build the success envelope from a ledger ``result``."""
-    refs = {"kernel": result["kernel_ref"]}
-    if result.get("debuginfo_ref"):
-        refs["vmlinux"] = result["debuginfo_ref"]
-    if result.get("initrd_ref"):
-        refs["initrd"] = result["initrd_ref"]
     return ToolResponse.success(
-        str(run_id), "succeeded", suggested_next_actions=["runs.get"], refs=refs
+        str(run_id), "succeeded", suggested_next_actions=["runs.get"], refs=result.refs()
     )
 
 
@@ -306,13 +300,13 @@ async def _finalize_external_build(
     heads: dict[str, HeadResult],
 ) -> ToolResponse:
     """Write artifact rows, ledger result, and created -> succeeded under the per-Run lock."""
-    result = {
-        "kernel_ref": output.kernel_ref,
-        "debuginfo_ref": output.debuginfo_ref,
-        "initrd_ref": keys.get("initrd", ""),
-        "build_id": output.build_id,
-        "cmdline": cmdline,
-    }
+    result = BuildStepResult(
+        kernel_ref=output.kernel_ref,
+        debuginfo_ref=output.debuginfo_ref,
+        initrd_ref=keys.get("initrd"),
+        build_id=output.build_id,
+        cmdline=cmdline,
+    )
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run.id):
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute("SELECT state FROM runs WHERE id = %s FOR UPDATE", (run.id,))
@@ -333,7 +327,7 @@ async def _finalize_external_build(
         await conn.execute(
             "INSERT INTO run_steps (run_id, step, state, result) "
             "VALUES (%s, 'build', 'succeeded', %s) ON CONFLICT (run_id, step) DO NOTHING",
-            (run.id, Jsonb(result)),
+            (run.id, Jsonb(result.dump())),
         )
         await conn.execute(
             "UPDATE runs SET kernel_ref = %s, debuginfo_ref = %s, state = 'succeeded' "

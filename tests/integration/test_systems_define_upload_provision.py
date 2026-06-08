@@ -14,10 +14,12 @@ import pytest
 from psycopg.rows import dict_row
 
 from kdive.domain.models import Sensitivity
-from kdive.mcp.tools.catalog import artifacts as artifacts_tools
-from kdive.mcp.tools.lifecycle import systems as systems_tools
+from kdive.mcp.tools.catalog.artifacts_uploads import create_system_upload
 from kdive.planes import systems as systems_handlers
 from kdive.store.objectstore import ArtifactWriteRequest, ObjectStore, artifact_key
+from tests.mcp.systems_support import (
+    SYSTEM_PROVISION_HANDLERS as _SYSTEM_PROVISION_HANDLERS,
+)
 from tests.mcp.systems_support import (
     FakeProvisioning as _FakeProvisioning,
 )
@@ -54,15 +56,16 @@ def test_define_upload_provision_reaches_ready_with_committed_rootfs(
             sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
 
             # 2. create_system_upload opens the window (persists the manifest, mints a PUT)
-            uploads = await artifacts_tools.create_system_upload(
+            uploads = await create_system_upload(
                 pool,
                 _ctx(),
                 system_id=sys_id,
                 artifacts=[{"name": "rootfs", "sha256": "sha256:x", "size_bytes": 18}],
                 store=minio_store,
             )
-            assert uploads[0].status == "upload_ready"
-            assert uploads[0].suggested_next_actions == ["systems.provision_defined"]
+            upload_items = uploads.items
+            assert upload_items[0].status == "upload_ready"
+            assert upload_items[0].suggested_next_actions == ["systems.provision_defined"]
 
             # 3. the agent PUTs the qcow2 (staged directly into the store for the test)
             minio_store.put_artifact(
@@ -78,7 +81,9 @@ def test_define_upload_provision_reaches_ready_with_committed_rootfs(
             )
 
             # 4. provision_defined admits the DEFINED System by System id
-            resp = await systems_tools.provision_defined_system(pool, _ctx(), system_id=sys_id)
+            resp = await _SYSTEM_PROVISION_HANDLERS.provision_defined_system(
+                pool, _ctx(), system_id=sys_id
+            )
             assert resp.status == "queued"
 
             # 5. the provision handler drives provisioning -> ready and commits the rootfs

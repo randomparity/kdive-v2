@@ -3,8 +3,8 @@ Kernel Debug, Inspect, Validate, Explore (KDIVE)
 
 An MCP platform for Linux kernel build-boot-debug workflows. See
 [`docs/specs/top-level-design.md`](docs/specs/top-level-design.md) for the
-architecture and [`docs/plans/m0-implementation.md`](docs/plans/m0-implementation.md)
-for the current milestone plan.
+architecture and the milestone plans:
+[`M0`](docs/plans/m0-implementation.md) and [`M1`](docs/plans/m1-implementation.md).
 
 Requirements
 ------------
@@ -21,8 +21,6 @@ Requirements
   ```
 
   The other native runtime dependency needs nothing extra: `psycopg[binary]` bundles libpq.
-  The `drgn` package is installed only for live-VM introspection with
-  `uv sync --extra live-vm`; it ships a manylinux wheel.
 
 Setup
 -----

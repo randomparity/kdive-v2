@@ -17,7 +17,7 @@ scaffolding & tooling") requires a `kdive/log.py` that configures stdlib `loggin
 for JSON/key-value output with that context **and adds no new dependency**. The
 top-level design states that tool responses carry artifact *references*, "never log
 dumps" (`../specs/top-level-design.md`), and a separate safety layer (Issue 23 —
-`security/redaction.py`) must be able to scrub registered secrets from log records
+`security/secrets/redaction.py`) must be able to scrub registered secrets from log records
 without every emit site cooperating.
 
 The binding forces:

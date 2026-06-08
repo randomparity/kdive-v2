@@ -17,7 +17,7 @@
 
 kdive's RBAC is strictly per-project: a token's `roles` claim is a `{project: role}` map and
 `require_role(ctx, project, role)` checks membership plus rank on **one** project
-(`security/rbac.py`). There is no actor that can operate across projects or on shared
+(`security/authz/rbac.py`). There is no actor that can operate across projects or on shared
 infrastructure. ADR-0006 foresaw this:
 
 > "there is no implicit global admin — a cross-project role, if ever needed, is a separate

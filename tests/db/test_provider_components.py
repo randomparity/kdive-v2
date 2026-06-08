@@ -7,11 +7,17 @@ import base64
 import hashlib
 from datetime import timedelta
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.provider_components import (
+    ArtifactComponentRequest,
+    ComponentRegistration,
+    ComponentUploadIntentRequest,
+    ComponentUploadRegistration,
+    LinkLocalComponentRequest,
     component_upload_object_key,
     create_artifact_component,
     create_component_upload_intent,
@@ -22,6 +28,8 @@ from kdive.db.provider_components import (
 )
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.store.objectstore import HeadResult
+
+type TestVisibility = Literal["public", "project", "host-policy"]
 
 
 class _ObjectStore:
@@ -39,6 +47,73 @@ def _component_file(tmp_path: Path, name: str = "component.img") -> tuple[Path, 
     return path, f"sha256:{hashlib.sha256(content).hexdigest()}"
 
 
+def _registration(
+    *,
+    visibility: TestVisibility = "project",
+    project: str | None = "proj-a",
+    principal: str = "alice",
+) -> ComponentRegistration:
+    return ComponentRegistration(
+        provider="local-libvirt",
+        component_kind="rootfs",
+        visibility=visibility,
+        project=project,
+        principal=principal,
+    )
+
+
+def _local_request(
+    path: Path,
+    sha256: str,
+    allowed_roots: list[Path],
+    *,
+    visibility: TestVisibility = "project",
+    project: str | None = "proj-a",
+) -> LinkLocalComponentRequest:
+    return LinkLocalComponentRequest(
+        registration=_registration(visibility=visibility, project=project),
+        path=str(path),
+        sha256=sha256,
+        allowed_roots=allowed_roots,
+    )
+
+
+def _artifact_request(
+    *,
+    artifact_id: UUID,
+    sha256: str,
+    visibility: TestVisibility = "project",
+    project: str | None = "proj-a",
+) -> ArtifactComponentRequest:
+    return ArtifactComponentRequest(
+        registration=_registration(visibility=visibility, project=project),
+        artifact_id=artifact_id,
+        sha256=sha256,
+    )
+
+
+def _upload_request(
+    *,
+    tenant: str = "proj-a",
+    sha256: str,
+    size_bytes: int = 42,
+    ttl: timedelta = timedelta(hours=1),
+) -> ComponentUploadIntentRequest:
+    return ComponentUploadIntentRequest(
+        registration=ComponentUploadRegistration(
+            tenant=tenant,
+            provider="local-libvirt",
+            component_kind="rootfs",
+            visibility="project",
+            project="proj-a",
+            principal="alice",
+        ),
+        sha256=sha256,
+        size_bytes=size_bytes,
+        ttl=ttl,
+    )
+
+
 def test_project_component_visible_only_to_same_project(migrated_url: str, tmp_path: Path) -> None:
     async def _run() -> None:
         path, sha256 = _component_file(tmp_path)
@@ -46,14 +121,7 @@ def test_project_component_visible_only_to_same_project(migrated_url: str, tmp_p
             await pool.open()
             component_id = await link_local_component(
                 pool,
-                provider="local-libvirt",
-                component_kind="rootfs",
-                path=str(path),
-                sha256=sha256,
-                allowed_roots=[tmp_path],
-                visibility="project",
-                project="proj-a",
-                principal="alice",
+                _local_request(path, sha256, [tmp_path]),
             )
 
             same_project = await list_visible_components(
@@ -78,14 +146,7 @@ def test_get_visible_component_respects_project_visibility(
             await pool.open()
             component_id = await link_local_component(
                 pool,
-                provider="local-libvirt",
-                component_kind="rootfs",
-                path=str(path),
-                sha256=sha256,
-                allowed_roots=[tmp_path],
-                visibility="project",
-                project="proj-a",
-                principal="alice",
+                _local_request(path, sha256, [tmp_path]),
             )
 
             denied = await get_visible_component(pool, component_id, project="proj-b")
@@ -107,14 +168,7 @@ def test_host_policy_component_hidden_from_project_lookup(
             await pool.open()
             component_id = await link_local_component(
                 pool,
-                provider="local-libvirt",
-                component_kind="rootfs",
-                path=str(path),
-                sha256=sha256,
-                allowed_roots=[tmp_path],
-                visibility="host-policy",
-                project="proj-a",
-                principal="alice",
+                _local_request(path, sha256, [tmp_path], visibility="host-policy"),
             )
 
             listed = await list_visible_components(
@@ -142,14 +196,7 @@ def test_link_local_component_rejects_path_outside_allowed_roots(
             try:
                 await link_local_component(
                     pool,
-                    provider="local-libvirt",
-                    component_kind="rootfs",
-                    path=str(outside),
-                    sha256=sha256,
-                    allowed_roots=[root],
-                    visibility="project",
-                    project="proj-a",
-                    principal="alice",
+                    _local_request(outside, sha256, [root]),
                 )
             except CategorizedError as exc:
                 assert exc.category is ErrorCategory.CONFIGURATION_ERROR
@@ -175,14 +222,7 @@ def test_link_local_component_rejects_bad_sha_without_poisoning_listing(
             try:
                 await link_local_component(
                     pool,
-                    provider="local-libvirt",
-                    component_kind="rootfs",
-                    path=str(path),
-                    sha256="not-a-sha",
-                    allowed_roots=[tmp_path],
-                    visibility="project",
-                    project="proj-a",
-                    principal="alice",
+                    _local_request(path, "not-a-sha", [tmp_path]),
                 )
             except CategorizedError as exc:
                 assert exc.category is ErrorCategory.CONFIGURATION_ERROR
@@ -205,13 +245,7 @@ def test_artifact_component_visible_only_to_same_project(migrated_url: str) -> N
             artifact_id = UUID("00000000-0000-0000-0000-000000000001")
             component_id = await create_artifact_component(
                 pool,
-                provider="local-libvirt",
-                component_kind="rootfs",
-                artifact_id=artifact_id,
-                sha256="sha256:" + "1" * 64,
-                visibility="project",
-                project="proj-a",
-                principal="alice",
+                _artifact_request(artifact_id=artifact_id, sha256="sha256:" + "1" * 64),
             )
 
             same_project = await list_visible_components(
@@ -234,13 +268,10 @@ def test_create_artifact_component_rejects_bad_sha(migrated_url: str) -> None:
             try:
                 await create_artifact_component(
                     pool,
-                    provider="local-libvirt",
-                    component_kind="rootfs",
-                    artifact_id=UUID("00000000-0000-0000-0000-000000000001"),
-                    sha256="not-a-sha",
-                    visibility="project",
-                    project="proj-a",
-                    principal="alice",
+                    _artifact_request(
+                        artifact_id=UUID("00000000-0000-0000-0000-000000000001"),
+                        sha256="not-a-sha",
+                    ),
                 )
             except CategorizedError as exc:
                 assert exc.category is ErrorCategory.CONFIGURATION_ERROR
@@ -262,14 +293,7 @@ def test_component_upload_finalization_is_idempotent(migrated_url: str) -> None:
             await pool.open()
             upload_id, key = await create_component_upload_intent(
                 pool,
-                tenant="proj-a",
-                provider="local-libvirt",
-                component_kind="rootfs",
-                sha256="sha256:" + "2" * 64,
-                size_bytes=42,
-                visibility="project",
-                project="proj-a",
-                principal="alice",
+                _upload_request(sha256="sha256:" + "2" * 64),
             )
             assert key == component_upload_object_key(
                 tenant="proj-a",
@@ -282,8 +306,24 @@ def test_component_upload_finalization_is_idempotent(migrated_url: str) -> None:
 
             first = await finalize_component_upload(pool, upload_id, object_store=store)
             second = await finalize_component_upload(pool, upload_id, object_store=store)
+            async with pool.connection() as conn:
+                row = await conn.execute(
+                    "SELECT component_uploads.component_id, provider_components.artifact_id, "
+                    "provider_components.source "
+                    "FROM component_uploads "
+                    "JOIN provider_components "
+                    "ON provider_components.id = component_uploads.component_id "
+                    "WHERE component_uploads.id = %s",
+                    (upload_id,),
+                )
+                finalized = await row.fetchone()
 
         assert first == second
+        assert finalized is not None
+        assert finalized[0] == first
+        assert finalized[1] is None
+        assert finalized[2]["kind"] == "component-upload"
+        assert finalized[2]["upload_id"] == str(upload_id)
 
     asyncio.run(_run())
 
@@ -294,15 +334,7 @@ def test_expired_component_upload_cannot_finalize(migrated_url: str) -> None:
             await pool.open()
             upload_id, key = await create_component_upload_intent(
                 pool,
-                tenant="proj-a",
-                provider="local-libvirt",
-                component_kind="rootfs",
-                sha256="sha256:" + "7" * 64,
-                size_bytes=42,
-                visibility="project",
-                project="proj-a",
-                principal="alice",
-                ttl=timedelta(seconds=-1),
+                _upload_request(sha256="sha256:" + "7" * 64, ttl=timedelta(seconds=-1)),
             )
             store = _ObjectStore(
                 {key: HeadResult(size_bytes=42, checksum_sha256="sha256:" + "7" * 64, etag="e")}
@@ -328,14 +360,7 @@ def test_failed_component_upload_cannot_finalize(migrated_url: str) -> None:
             await pool.open()
             upload_id, key = await create_component_upload_intent(
                 pool,
-                tenant="proj-a",
-                provider="local-libvirt",
-                component_kind="rootfs",
-                sha256="sha256:" + "8" * 64,
-                size_bytes=42,
-                visibility="project",
-                project="proj-a",
-                principal="alice",
+                _upload_request(sha256="sha256:" + "8" * 64),
             )
             async with pool.connection() as conn:
                 await conn.execute(
@@ -366,14 +391,7 @@ def test_component_upload_finalization_uses_persisted_tenant(migrated_url: str) 
             await pool.open()
             upload_id, key = await create_component_upload_intent(
                 pool,
-                tenant="local",
-                provider="local-libvirt",
-                component_kind="rootfs",
-                sha256="sha256:" + "3" * 64,
-                size_bytes=42,
-                visibility="project",
-                project="proj-a",
-                principal="alice",
+                _upload_request(tenant="local", sha256="sha256:" + "3" * 64),
             )
             assert key == component_upload_object_key(
                 tenant="local",
@@ -406,14 +424,7 @@ def test_component_upload_finalization_accepts_s3_base64_sha256(migrated_url: st
             digest = bytes.fromhex("4" * 64)
             upload_id, key = await create_component_upload_intent(
                 pool,
-                tenant="local",
-                provider="local-libvirt",
-                component_kind="rootfs",
-                sha256="sha256:" + digest.hex(),
-                size_bytes=42,
-                visibility="project",
-                project="proj-a",
-                principal="alice",
+                _upload_request(tenant="local", sha256="sha256:" + digest.hex()),
             )
             store = _ObjectStore(
                 {
@@ -442,14 +453,7 @@ def test_component_upload_finalization_rejects_s3_checksum_mismatch(
             await pool.open()
             upload_id, key = await create_component_upload_intent(
                 pool,
-                tenant="local",
-                provider="local-libvirt",
-                component_kind="rootfs",
-                sha256="sha256:" + "5" * 64,
-                size_bytes=42,
-                visibility="project",
-                project="proj-a",
-                principal="alice",
+                _upload_request(tenant="local", sha256="sha256:" + "5" * 64),
             )
             wrong_digest = bytes.fromhex("6" * 64)
             store = _ObjectStore(

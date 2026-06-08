@@ -76,7 +76,7 @@ def test_build_verifier_constructs_with_full_env(monkeypatch: pytest.MonkeyPatch
 
 
 def test_context_from_claims_parses_roles() -> None:
-    from kdive.security.rbac import Role
+    from kdive.security.authz.rbac import Role
 
     ctx = context_from_claims({"sub": "alice", "projects": ["a"], "roles": {"a": "admin"}})
     assert ctx.roles == {"a": Role.ADMIN}
@@ -88,7 +88,7 @@ def test_context_from_claims_absent_roles_is_empty() -> None:
 
 
 def test_context_from_claims_parses_platform_roles() -> None:
-    from kdive.security.rbac import PlatformRole
+    from kdive.security.authz.rbac import PlatformRole
 
     ctx = context_from_claims({"sub": "alice", "platform_roles": ["platform_auditor"]})
     assert ctx.platform_roles == frozenset({PlatformRole.PLATFORM_AUDITOR})

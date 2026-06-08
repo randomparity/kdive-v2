@@ -39,12 +39,11 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.debug import sessions as debug_tools
-from kdive.providers.interfaces import SystemHandle, TransportHandle
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
-from kdive.providers.ports import TransportHandleData
-from kdive.security.paths import PathSafetyError
-from kdive.security.rbac import AuthorizationError, Role
-from kdive.security.secret_registry import SecretRegistry
+from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
+from kdive.security.authz.rbac import AuthorizationError, Role
+from kdive.security.secrets.paths import PathSafetyError
+from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
@@ -103,6 +102,61 @@ def _ctx(
 ) -> RequestContext:
     roles = {"proj": role} if role is not None else {}
     return RequestContext(principal="user-1", agent_session="s", projects=projects, roles=roles)
+
+
+def _handlers(
+    connector: _FakeConnector,
+    *,
+    runtime: Any | None = None,
+    secret_backend: Any | None = None,
+    secret_backend_factory: Any | None = None,
+    secret_registry: SecretRegistry | None = None,
+) -> debug_tools.DebugSessionHandlers:
+    if secret_backend is not None:
+
+        def _backend_factory(_: UUID) -> Any:
+            return secret_backend
+
+        secret_backend_factory = _backend_factory
+    return debug_tools.DebugSessionHandlers(
+        connector,
+        runtime=runtime,
+        secret_backend_factory=secret_backend_factory,
+        secret_registry=secret_registry,
+    )
+
+
+async def _start_session(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    run_id: str,
+    transport: str = "gdbstub",
+    connector: _FakeConnector,
+    secret_backend: Any | None = None,
+    secret_backend_factory: Any | None = None,
+    secret_registry: SecretRegistry | None = None,
+):
+    return await _handlers(
+        connector,
+        secret_backend=secret_backend,
+        secret_backend_factory=secret_backend_factory,
+        secret_registry=secret_registry,
+    ).start_session(pool, ctx, run_id=run_id, transport=transport)
+
+
+async def _end_session(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    session_id: str,
+    *,
+    connector: _FakeConnector,
+    runtime: Any | None = None,
+    secret_registry: SecretRegistry | None = None,
+):
+    return await _handlers(connector, runtime=runtime, secret_registry=secret_registry).end_session(
+        pool, ctx, session_id
+    )
 
 
 @asynccontextmanager
@@ -246,7 +300,7 @@ def test_start_session_attaches_and_row_is_live(migrated_url: str) -> None:
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             run_id = await _seed_run(pool, sys_id)
             conn_fake = _FakeConnector()
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool, _ctx(), run_id=run_id, transport="gdbstub", connector=conn_fake
             )
             assert resp.status == "live"
@@ -283,7 +337,7 @@ def test_second_start_session_is_transport_conflict(migrated_url: str) -> None:
             await _seed_session(pool, run_a, DebugSessionState.LIVE)
             before = await _session_count(pool)
             conn_fake = _FakeConnector()
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool, _ctx(), run_id=run_b, transport="gdbstub", connector=conn_fake
             )
             after = await _session_count(pool)
@@ -313,10 +367,10 @@ def test_locked_recheck_closes_transport_when_system_crashed(migrated_url: str) 
                 # Drive the real row to `crashed` so the locked re-read observes the race,
                 # while the `system` object handed to the locked insert is still stale-ready.
                 await SYSTEMS.update_state(conn, system.id, SystemState.CRASHED)
-                conn_fake = _FakeConnector()
+                conn_fake = _RaisingCloseConnector()
                 handle = conn_fake.open_transport(SystemHandle("kdive-x"), "gdbstub")
                 resp = await debug_tools._insert_session_locked(
-                    conn, _ctx(), run, system, handle, conn_fake, "gdbstub"
+                    conn, _ctx(), run, system, handle, conn_fake, "gdbstub", uuid4()
                 )
             count = await _session_count(pool)
         assert resp.status == "error" and resp.error_category == "configuration_error"
@@ -341,10 +395,10 @@ def test_locked_recheck_closes_transport_when_conflict_appears(migrated_url: str
                 run = await RUNS.get(conn, UUID(run_b))
                 system = await SYSTEMS.get(conn, UUID(sys_id))
                 assert run is not None and system is not None
-                conn_fake = _FakeConnector()
+                conn_fake = _RaisingCloseConnector()
                 handle = conn_fake.open_transport(SystemHandle("kdive-x"), "gdbstub")
                 resp = await debug_tools._insert_session_locked(
-                    conn, _ctx(), run, system, handle, conn_fake, "gdbstub"
+                    conn, _ctx(), run, system, handle, conn_fake, "gdbstub", uuid4()
                 )
             count = await _session_count(pool)
         assert resp.status == "error" and resp.error_category == "transport_conflict"
@@ -361,7 +415,7 @@ def test_start_session_run_not_succeeded_is_config_error(migrated_url: str) -> N
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             run_id = await _seed_run(pool, sys_id, state=RunState.CREATED, booted=False)
             conn_fake = _FakeConnector()
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool, _ctx(), run_id=run_id, transport="gdbstub", connector=conn_fake
             )
             count = await _session_count(pool)
@@ -379,7 +433,7 @@ def test_start_session_unbooted_run_is_boot_first(migrated_url: str) -> None:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             run_id = await _seed_run(pool, sys_id, booted=False)
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool, _ctx(), run_id=run_id, transport="gdbstub", connector=_FakeConnector()
             )
             count = await _session_count(pool)
@@ -396,7 +450,7 @@ def test_start_session_non_ready_system_is_config_error(migrated_url: str) -> No
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.DEFINED)
             run_id = await _seed_run(pool, sys_id)
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool, _ctx(), run_id=run_id, transport="gdbstub", connector=_FakeConnector()
             )
             count = await _session_count(pool)
@@ -418,7 +472,7 @@ def test_start_session_rejects_expected_crash_run(migrated_url: str) -> None:
                 boot_result={"boot_outcome": "expected_crash_observed"},
             )
             conn_fake = _FakeConnector()
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -442,7 +496,7 @@ def test_start_session_bad_transport_is_config_error(migrated_url: str) -> None:
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             run_id = await _seed_run(pool, sys_id)
             conn_fake = _FakeConnector()
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool, _ctx(), run_id=run_id, transport="serial", connector=conn_fake
             )
             count = await _session_count(pool)
@@ -470,7 +524,7 @@ def test_start_session_connector_failure_maps_category(
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             run_id = await _seed_run(pool, sys_id)
             conn_fake = _FakeConnector(raises=CategorizedError("x", category=category))
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool, _ctx(), run_id=run_id, transport="gdbstub", connector=conn_fake
             )
             count = await _session_count(pool)
@@ -486,7 +540,7 @@ def test_start_session_cross_project_is_config_error(migrated_url: str) -> None:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             run_id = await _seed_run(pool, sys_id)
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool,
                 _ctx(projects=("other",)),
                 run_id=run_id,
@@ -501,7 +555,7 @@ def test_start_session_cross_project_is_config_error(migrated_url: str) -> None:
 def test_start_session_malformed_uuid_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool, _ctx(), run_id="not-a-uuid", transport="gdbstub", connector=_FakeConnector()
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
@@ -516,7 +570,7 @@ def test_start_session_without_operator_raises(migrated_url: str) -> None:
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             run_id = await _seed_run(pool, sys_id)
             with pytest.raises(AuthorizationError):
-                await debug_tools.start_session(
+                await _start_session(
                     pool,
                     _ctx(Role.VIEWER),
                     run_id=run_id,
@@ -544,17 +598,19 @@ class _OrderRecordingBackend:
         *,
         value: str = "guest-ssh-secret",
         registry: SecretRegistry | None = None,
+        scope: object | None = None,
     ) -> None:
         self._log = log
         self._value = value
         self._registry = registry
+        self._scope = scope
         self.refs: list[str] = []
 
     def resolve(self, ref: str) -> str:
         self.refs.append(ref)
         self._log.append(f"resolve:{ref}")
         if self._registry is not None:
-            self._registry.register(self._value, scope=None)
+            self._registry.register(self._value, scope=self._scope)
         return self._value
 
 
@@ -568,6 +624,29 @@ class _OrderRecordingConnector(_FakeConnector):
     def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle:
         self._log.append(f"open:{kind}")
         return super().open_transport(system, kind)
+
+
+class _ConnectionRecordingContext:
+    def __init__(self, context: Any, log: list[str]) -> None:
+        self._context = context
+        self._log = log
+
+    async def __aenter__(self) -> Any:
+        self._log.append("connection:enter")
+        return await self._context.__aenter__()
+
+    async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> Any:
+        self._log.append("connection:exit")
+        return await self._context.__aexit__(exc_type, exc, traceback)
+
+
+class _ConnectionRecordingPool:
+    def __init__(self, pool: AsyncConnectionPool, log: list[str]) -> None:
+        self._pool = pool
+        self._log = log
+
+    def connection(self) -> _ConnectionRecordingContext:
+        return _ConnectionRecordingContext(self._pool.connection(), self._log)
 
 
 def _ssh_profile() -> dict[str, Any]:
@@ -610,7 +689,7 @@ def test_start_session_ssh_attaches_and_row_records_ssh_transport(migrated_url: 
             log: list[str] = []
             connector = _OrderRecordingConnector(log)
             backend = _OrderRecordingBackend(log)
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -643,7 +722,7 @@ def test_start_session_ssh_resolves_credential_before_opening_transport(migrated
             registry = SecretRegistry()
             connector = _OrderRecordingConnector(log)
             backend = _OrderRecordingBackend(log, registry=registry)
-            await debug_tools.start_session(
+            await _start_session(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -660,6 +739,35 @@ def test_start_session_ssh_resolves_credential_before_opening_transport(migrated
     asyncio.run(_run())
 
 
+def test_start_session_opens_transport_between_db_connections(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
+            run_id = await _seed_run(pool, sys_id)
+            log: list[str] = []
+            recording_pool: Any = _ConnectionRecordingPool(pool, log)
+            connector = _OrderRecordingConnector(log)
+
+            resp = await _handlers(connector).start_session(
+                recording_pool,
+                _ctx(),
+                run_id=run_id,
+                transport="gdbstub",
+            )
+
+        assert resp.status == "live"
+        assert log == [
+            "connection:enter",
+            "connection:exit",
+            "open:gdbstub",
+            "connection:enter",
+            "connection:exit",
+        ]
+
+    asyncio.run(_run())
+
+
 def test_start_session_ssh_missing_credential_ref_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -667,7 +775,7 @@ def test_start_session_ssh_missing_credential_ref_is_config_error(migrated_url: 
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)  # no ssh_credential_ref
             run_id = await _seed_run(pool, sys_id)
             connector = _FakeConnector()
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -693,7 +801,7 @@ def test_start_session_ssh_invalid_profile_is_config_error(migrated_url: str) ->
             run_id = await _seed_run(pool, sys_id)
             connector = _FakeConnector()
             backend = _OrderRecordingBackend([])
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -728,7 +836,7 @@ def test_start_session_ssh_path_escape_is_config_error(migrated_url: str) -> Non
             sys_id = await _seed_ssh_system(pool, alloc_id)
             run_id = await _seed_run(pool, sys_id)
             connector = _FakeConnector()
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -752,7 +860,7 @@ def test_start_session_ssh_backend_dependency_failure_preserves_category(
             sys_id = await _seed_ssh_system(pool, alloc_id)
             run_id = await _seed_run(pool, sys_id)
             err = CategorizedError("vault down", category=ErrorCategory.MISSING_DEPENDENCY)
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -766,31 +874,40 @@ def test_start_session_ssh_backend_dependency_failure_preserves_category(
 
 
 def test_ssh_credential_masks_after_session_ends(migrated_url: str) -> None:
-    # ADR-0039 §2: the guest credential is registered process-global, retained for the process
-    # lifetime — so it keeps masking output even after the session detaches (intentional, the
-    # first M1 op to exercise the contract under a live transport). Uses a test-local registry
-    # through an injected backend so the assertion does not depend on process-global state.
+    # ADR-0039 §2: the guest credential is registered before transport use, scoped to the
+    # DebugSession, and released when the session detaches.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_ssh_system(pool, alloc_id)
             run_id = await _seed_run(pool, sys_id)
             registry = SecretRegistry()
-            backend = _OrderRecordingBackend([], registry=registry)
-            start = await debug_tools.start_session(
+
+            def _backend_for(session_id: UUID) -> _OrderRecordingBackend:
+                return _OrderRecordingBackend(
+                    [],
+                    registry=registry,
+                    scope=f"debug-session:{session_id}",
+                )
+
+            start = await _start_session(
                 pool,
                 _ctx(),
                 run_id=run_id,
                 transport="ssh",
                 connector=_FakeConnector(),
-                secret_backend=backend,
+                secret_backend_factory=_backend_for,
             )
             assert start.status == "live"
-            await debug_tools.end_session(pool, _ctx(), start.object_id, connector=_FakeConnector())
-            # The credential is still a redaction needle after detach (process-lifetime scope).
             assert "guest-ssh-secret" in registry.snapshot()
-            registry.release(None)  # the global scope is never evicted
-            assert "guest-ssh-secret" in registry.snapshot()
+            await _end_session(
+                pool,
+                _ctx(),
+                start.object_id,
+                connector=_FakeConnector(),
+                secret_registry=registry,
+            )
+            assert "guest-ssh-secret" not in registry.snapshot()
 
     asyncio.run(_run())
 
@@ -804,7 +921,7 @@ def test_second_ssh_attach_is_transport_conflict(migrated_url: str) -> None:
             run_b = await _seed_run(pool, sys_id)
             await _seed_session(pool, run_a, DebugSessionState.LIVE, transport="ssh")
             connector = _FakeConnector()
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool,
                 _ctx(),
                 run_id=run_b,
@@ -827,7 +944,7 @@ def test_gdbstub_and_ssh_sessions_coexist_on_one_system(migrated_url: str) -> No
             run_a = await _seed_run(pool, sys_id)
             run_b = await _seed_run(pool, sys_id)
             await _seed_session(pool, run_a, DebugSessionState.LIVE, transport="gdbstub")
-            resp = await debug_tools.start_session(
+            resp = await _start_session(
                 pool,
                 _ctx(),
                 run_id=run_b,
@@ -851,7 +968,7 @@ def test_end_session_detaches_live(migrated_url: str) -> None:
             run_id = await _seed_run(pool, sys_id)
             session_id = await _seed_session(pool, run_id, DebugSessionState.LIVE)
             conn_fake = _FakeConnector()
-            resp = await debug_tools.end_session(pool, _ctx(), session_id, connector=conn_fake)
+            resp = await _end_session(pool, _ctx(), session_id, connector=conn_fake)
             assert resp.status == "detached"
             assert conn_fake.closed  # transport closed on detach
             async with pool.connection() as c, c.cursor(row_factory=dict_row) as cur:
@@ -876,9 +993,7 @@ def test_end_session_already_detached_is_idempotent(migrated_url: str) -> None:
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             run_id = await _seed_run(pool, sys_id)
             session_id = await _seed_session(pool, run_id, DebugSessionState.DETACHED)
-            resp = await debug_tools.end_session(
-                pool, _ctx(), session_id, connector=_FakeConnector()
-            )
+            resp = await _end_session(pool, _ctx(), session_id, connector=_FakeConnector())
             assert resp.status == "detached"
             async with pool.connection() as c, c.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -897,9 +1012,7 @@ def test_end_session_detaches_attach(migrated_url: str) -> None:
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             run_id = await _seed_run(pool, sys_id)
             session_id = await _seed_session(pool, run_id, DebugSessionState.ATTACH)
-            resp = await debug_tools.end_session(
-                pool, _ctx(), session_id, connector=_FakeConnector()
-            )
+            resp = await _end_session(pool, _ctx(), session_id, connector=_FakeConnector())
             assert resp.status == "detached"
             async with pool.connection() as c, c.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -920,9 +1033,7 @@ def test_end_session_close_failure_still_detaches(migrated_url: str) -> None:
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             run_id = await _seed_run(pool, sys_id)
             session_id = await _seed_session(pool, run_id, DebugSessionState.LIVE)
-            resp = await debug_tools.end_session(
-                pool, _ctx(), session_id, connector=_RaisingCloseConnector()
-            )
+            resp = await _end_session(pool, _ctx(), session_id, connector=_RaisingCloseConnector())
             assert resp.status == "detached"
             async with pool.connection() as c, c.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM debug_sessions WHERE id = %s", (session_id,))
@@ -935,9 +1046,7 @@ def test_end_session_close_failure_still_detaches(migrated_url: str) -> None:
 def test_end_session_malformed_uuid_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await debug_tools.end_session(
-                pool, _ctx(), "not-a-uuid", connector=_FakeConnector()
-            )
+            resp = await _end_session(pool, _ctx(), "not-a-uuid", connector=_FakeConnector())
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -950,7 +1059,7 @@ def test_end_session_cross_project_is_config_error(migrated_url: str) -> None:
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             run_id = await _seed_run(pool, sys_id)
             session_id = await _seed_session(pool, run_id, DebugSessionState.LIVE)
-            resp = await debug_tools.end_session(
+            resp = await _end_session(
                 pool, _ctx(projects=("other",)), session_id, connector=_FakeConnector()
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
@@ -966,8 +1075,6 @@ def test_end_session_without_operator_raises(migrated_url: str) -> None:
             run_id = await _seed_run(pool, sys_id)
             session_id = await _seed_session(pool, run_id, DebugSessionState.LIVE)
             with pytest.raises(AuthorizationError):
-                await debug_tools.end_session(
-                    pool, _ctx(Role.VIEWER), session_id, connector=_FakeConnector()
-                )
+                await _end_session(pool, _ctx(Role.VIEWER), session_id, connector=_FakeConnector())
 
     asyncio.run(_run())

@@ -19,7 +19,7 @@ from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.lifecycle import allocations as alloc_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.services.resource_discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
@@ -332,8 +332,12 @@ def test_list_returns_project_allocations(migrated_url: str) -> None:
             await _request(pool, _ctx())
             await _request(pool, _ctx())
             responses = await alloc_tools.list_allocations(pool, _ctx(), project="proj", limit=50)
-        assert len(responses) == 2
-        assert all(r.status == "granted" for r in responses)
+        items = responses.items
+        assert responses.object_id == "allocations"
+        assert responses.status == "ok"
+        assert responses.data["project"] == "proj"
+        assert len(items) == 2
+        assert all(r.status == "granted" for r in items)
 
     asyncio.run(_run())
 

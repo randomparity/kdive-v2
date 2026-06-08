@@ -12,7 +12,6 @@ directly without MCP transport.
 
 from __future__ import annotations
 
-import json
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -27,9 +26,10 @@ from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
+from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.rbac import AuthorizationError, PlatformRole, require_platform_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_platform_role
 
 _QUEUE_OBJECT_ID = "queue"
 _JOBS_OBJECT_ID = "jobs"
@@ -38,7 +38,6 @@ _RESUME_TOOL = "ops.queue_resume"
 _JOBS_LIST_TOOL = "ops.jobs_list"
 _DEFAULT_LIST_LIMIT = 50
 _MAX_LIST_LIMIT = 200
-_VALID_STATES = frozenset(s.value for s in JobState)
 
 
 async def queue_pause(pool: AsyncConnectionPool, ctx: RequestContext) -> ToolResponse:
@@ -59,7 +58,7 @@ async def _set_paused(
         try:
             require_platform_role(ctx, PlatformRole.PLATFORM_OPERATOR)
         except AuthorizationError:
-            await _audit_denial(pool, ctx, tool)
+            await audit_platform_denial(pool, ctx, tool=tool, scope="queue")
             return ToolResponse.failure(
                 _QUEUE_OBJECT_ID,
                 ErrorCategory.AUTHORIZATION_DENIED,
@@ -79,14 +78,14 @@ async def _set_paused(
                     tool=tool,
                     scope="queue",
                     args={"queue_paused": paused},
-                    platform_role=_held_platform_roles(ctx),
+                    platform_role=held_platform_roles(ctx),
                 ),
             )
         return ToolResponse.success(
             _QUEUE_OBJECT_ID,
             "paused" if paused else "running",
             suggested_next_actions=[_JOBS_LIST_TOOL],
-            data={"queue_paused": json.dumps(paused)},
+            data={"queue_paused": "true" if paused else "false"},
         )
 
 
@@ -110,7 +109,7 @@ async def jobs_list(
         try:
             require_platform_role(ctx, PlatformRole.PLATFORM_OPERATOR)
         except AuthorizationError:
-            await _audit_denial(pool, ctx, _JOBS_LIST_TOOL)
+            await audit_platform_denial(pool, ctx, tool=_JOBS_LIST_TOOL, scope="queue")
             return ToolResponse.failure(
                 _JOBS_OBJECT_ID,
                 ErrorCategory.AUTHORIZATION_DENIED,
@@ -136,14 +135,19 @@ async def jobs_list(
                     event=audit.PlatformAuditEvent(
                         tool=_JOBS_LIST_TOOL,
                         scope="all-projects",
-                        args={"states": parsed_states, "limit": capped},
-                        platform_role=_held_platform_roles(ctx),
+                        args={
+                            "states": None
+                            if parsed_states is None
+                            else [state.value for state in parsed_states],
+                            "limit": capped,
+                        },
+                        platform_role=held_platform_roles(ctx),
                     ),
                 )
         return _jobs_response(depth, jobs)
 
 
-def _parse_states(states: list[str] | None) -> list[str] | None:
+def _parse_states(states: list[str] | None) -> list[JobState] | None:
     """Return the validated state list, or ``None`` for all states.
 
     An unknown state string is a caller error (``configuration_error``) rather than a
@@ -154,65 +158,38 @@ def _parse_states(states: list[str] | None) -> list[str] | None:
     """
     if states is None:
         return None
+    parsed: list[JobState] = []
     for state in states:
-        if state not in _VALID_STATES:
+        try:
+            parsed.append(JobState(state))
+        except ValueError:
             raise CategorizedError(
-                f"unknown job state {state!r}; expected one of {sorted(_VALID_STATES)}",
+                f"unknown job state {state!r}; expected one of {sorted(s.value for s in JobState)}",
                 category=ErrorCategory.CONFIGURATION_ERROR,
-            )
-    return states
+            ) from None
+    return parsed
 
 
 def _jobs_response(depth: dict[str, int], jobs: list[Job]) -> ToolResponse:
-    rows = [_job_row(job) for job in jobs]
-    return ToolResponse.success(
+    items = [ToolResponse.success(str(job.id), job.state.value, data=_job_row(job)) for job in jobs]
+    return ToolResponse.collection(
         _JOBS_OBJECT_ID,
         "ok",
+        items,
         suggested_next_actions=[_PAUSE_TOOL, _RESUME_TOOL],
-        data={
-            "depth": json.dumps(depth, sort_keys=True),
-            "jobs": json.dumps(rows),
-        },
+        data={f"depth_{state}": str(count) for state, count in sorted(depth.items())},
     )
 
 
-def _job_row(job: Job) -> dict[str, str | None]:
+def _job_row(job: Job) -> dict[str, str]:
     """One cross-project job summary for the platform view (no payload — untrusted)."""
-    project = job.authorizing.get("project")
     return {
-        "id": str(job.id),
         "kind": job.kind.value,
         "state": job.state.value,
-        "project": str(project) if isinstance(project, str) else None,
+        "project": job.authorizing["project"],
         "attempt": str(job.attempt),
-        "worker_id": job.worker_id,
+        "worker_id": job.worker_id or "",
     }
-
-
-async def _audit_denial(pool: AsyncConnectionPool, ctx: RequestContext, tool: str) -> None:
-    """Audit a platform-role denial iff the caller holds ≥1 platform role (ADR-0043 §4).
-
-    A project-only token's denial is the routine non-grant case and is *not* recorded —
-    auditing it would let any authenticated token amplify writes into
-    ``platform_audit_log`` on these broadly-registered tools.
-    """
-    held = _held_platform_roles(ctx)
-    if held is None:
-        return
-    async with pool.connection() as conn, conn.transaction():
-        await audit.record_platform(
-            conn,
-            principal=ctx.principal,
-            agent_session=ctx.agent_session,
-            event=audit.PlatformAuditEvent(tool=tool, scope="queue", args={}, platform_role=held),
-        )
-
-
-def _held_platform_roles(ctx: RequestContext) -> str | None:
-    """Return the caller's platform roles as a sorted comma string, or None if none."""
-    if not ctx.platform_roles:
-        return None
-    return ",".join(sorted(r.value for r in ctx.platform_roles))
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:

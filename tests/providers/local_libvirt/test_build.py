@@ -17,6 +17,7 @@ from kdive.components.references import LocalComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
+from kdive.providers.build_validation import parse_gnu_build_id
 from kdive.providers.local_libvirt import build as build_module
 from kdive.providers.local_libvirt.build import (
     LocalLibvirtBuild,
@@ -26,7 +27,6 @@ from kdive.providers.local_libvirt.build import (
     _resolve_local_ref,
     _stage_config,
     _sync_tree,
-    parse_gnu_build_id,
 )
 from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact
 

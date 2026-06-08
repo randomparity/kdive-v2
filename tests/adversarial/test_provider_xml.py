@@ -27,8 +27,8 @@ from hypothesis import strategies as st
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.local_libvirt.discovery import _parse_arch, _parse_system_id
-from kdive.providers.local_libvirt.install import LocalLibvirtInstall, ReadinessResult
-from kdive.providers.local_libvirt.provisioning import render_domain_xml
+from kdive.providers.local_libvirt.lifecycle.install import LocalLibvirtInstall, ReadinessResult
+from kdive.providers.local_libvirt.lifecycle.provisioning import render_domain_xml
 from tests.providers.local_libvirt.fakes import FakeDomain, FakeLibvirtConn
 
 _SYS = UUID("11111111-1111-1111-1111-111111111111")
@@ -87,7 +87,7 @@ _hostile = st.sampled_from(
 @given(rootfs=_hostile)
 def test_render_domain_xml_never_lets_a_profile_value_inject_markup(rootfs: str) -> None:
     rootfs_path = f"/var/lib/kdive/{rootfs}"
-    xml = render_domain_xml(_SYS, _profile(rootfs=rootfs_path))
+    xml = render_domain_xml(_SYS, _profile(), disk_path=rootfs_path)
     root = ET.fromstring(xml)  # noqa: S314 - self-rendered, asserting structure
     # Exactly one disk source, and its file attr equals the hostile value verbatim — the
     # value crossed as an attribute, creating no new elements.
@@ -101,7 +101,9 @@ def test_console_log_element_does_not_enable_append() -> None:
     # Readiness pre-marker scoping (ADR-0055 §3/§8) relies on the console log being
     # truncated per create(). QEMU/libvirt default logappend=off; the rendered <log> must
     # not set append='on', or a stale prior-boot marker could survive into the next boot.
-    domain = ET.fromstring(render_domain_xml(_SYS, _profile()))  # noqa: S314 - self-rendered
+    domain = ET.fromstring(  # noqa: S314 - self-rendered
+        render_domain_xml(_SYS, _profile(), disk_path="/var/lib/kdive/rootfs/base.qcow2")
+    )
     logs = domain.findall("./devices/serial/log")
     assert logs, "the always-on serial console <log> tee must be present (ADR-0049 §4)"
     for log in logs:

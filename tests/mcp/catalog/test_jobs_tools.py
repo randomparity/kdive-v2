@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import uuid4
@@ -13,9 +14,10 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.models import JobKind
 from kdive.jobs import queue
+from kdive.jobs.payloads import BuildPayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog import jobs as jobs_tools
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.security.authz.rbac import AuthorizationError, Role
 
 CTX = RequestContext(principal="user-1", agent_session="s", projects=("proj",))
 OP_CTX = RequestContext(
@@ -26,8 +28,8 @@ VIEWER_CTX = RequestContext(
 )
 
 
-def _build_payload() -> dict[str, str]:
-    return {"run_id": str(uuid4())}
+def _build_payload() -> BuildPayload:
+    return BuildPayload(run_id=str(uuid4()))
 
 
 @asynccontextmanager
@@ -132,6 +134,30 @@ def test_wait_zero_timeout_is_single_read(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_wait_caps_sleep_to_remaining_timeout(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            job_id = await _enqueue(pool, "d1")  # stays queued (no worker)
+            sleeps: list[float] = []
+
+            async def _sleep(delay: float) -> None:
+                sleeps.append(delay)
+                assert delay <= 0.05
+                await asyncio.sleep(delay)
+
+            resp = await jobs_tools.wait_job(
+                pool,
+                VIEWER_CTX,
+                job_id,
+                timeout_s=0.05,
+                sleep=_sleep,
+            )
+        assert resp.status == "queued"
+        assert len(sleeps) == 1
+
+    asyncio.run(_run())
+
+
 @pytest.mark.parametrize("timeout_s", [float("nan"), float("inf"), float("-inf")])
 def test_wait_non_finite_timeout_is_configuration_error(
     migrated_url: str, timeout_s: float
@@ -148,22 +174,27 @@ def test_wait_non_finite_timeout_is_configuration_error(
 
 
 def test_wait_loops_until_terminal(migrated_url: str) -> None:
-    """Exercise the sleep-then-re-poll branch: a concurrent task cancels the job
-    after one poll interval, and wait must return the canceled envelope having
-    looped at least once (timeout long enough to require a real poll)."""
+    """Exercise the sleep-then-re-poll branch without a wall-clock delay."""
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             job_id = await _enqueue(pool, "d1")
+            polls = 0
 
-            async def _cancel_after_delay() -> None:
-                await asyncio.sleep(jobs_tools.POLL_INTERVAL_S + 0.1)
+            async def _cancel_after_first_poll(_: float) -> None:
+                nonlocal polls
+                polls += 1
                 await jobs_tools.cancel_job(pool, OP_CTX, job_id)
 
-            canceller = asyncio.create_task(_cancel_after_delay())
-            resp = await jobs_tools.wait_job(pool, VIEWER_CTX, job_id, timeout_s=5.0)
-            await canceller
+            resp = await jobs_tools.wait_job(
+                pool,
+                VIEWER_CTX,
+                job_id,
+                timeout_s=5.0,
+                sleep=_cancel_after_first_poll,
+            )
         assert resp.status == "canceled"
+        assert polls == 1
 
     asyncio.run(_run())
 
@@ -174,8 +205,12 @@ def test_list_jobs_newest_first_and_capped(migrated_url: str) -> None:
             for i in range(3):
                 await _enqueue(pool, f"d{i}")
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=2)
-        assert len(resp) == 2
-        assert all(r.status == "queued" for r in resp)
+        items = resp.items
+        assert resp.object_id == "jobs"
+        assert resp.status == "ok"
+        assert resp.data["count"] == "2"
+        assert len(items) == 2
+        assert all(r.status == "queued" for r in items)
 
     asyncio.run(_run())
 
@@ -184,12 +219,15 @@ def test_list_jobs_empty(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=50)
-        assert resp == []
+        assert resp.status == "ok"
+        assert resp.items == []
 
     asyncio.run(_run())
 
 
-def test_list_jobs_isolates_invariant_violating_row(migrated_url: str) -> None:
+def test_list_jobs_isolates_invariant_violating_row(
+    migrated_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
     """A single producer-bug row (failed with no category) degrades to an error
     envelope without blanking the rest of the list."""
 
@@ -203,12 +241,18 @@ def test_list_jobs_isolates_invariant_violating_row(migrated_url: str) -> None:
                     "UPDATE jobs SET state = 'failed', error_category = NULL WHERE id = %s",
                     (bad_id,),
                 )
+            caplog.set_level(logging.WARNING, logger=jobs_tools.__name__)
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=50)
-        by_id = {r.object_id: r for r in resp}
-        assert len(resp) == 2  # the bad row did not blank the list
+        items = resp.items
+        by_id = {r.object_id: r for r in items}
+        assert len(items) == 2  # the bad row did not blank the list
         assert by_id[good_id].status == "queued"
         assert by_id[bad_id].status == "error"
         assert by_id[bad_id].error_category == "infrastructure_failure"
+        assert any(
+            record.exc_info is not None and f"job {bad_id}" in record.message
+            for record in caplog.records
+        )
 
     asyncio.run(_run())
 
@@ -306,7 +350,7 @@ def test_list_jobs_only_returns_callers_project(migrated_url: str) -> None:
             mine = await _enqueue_in(pool, "mine", "proj")
             await _enqueue_in(pool, "theirs", "other")
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=50)
-        ids = {r.object_id for r in resp}
+        ids = {r.object_id for r in resp.items}
         assert ids == {mine}  # the "other"-project job is not listed
 
     asyncio.run(_run())
@@ -317,7 +361,7 @@ def test_list_jobs_excludes_roleless_projects(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             await _enqueue(pool, "d1")
             resp = await jobs_tools.list_jobs(pool, CTX, limit=50)
-        assert resp == []
+        assert resp.items == []
 
     asyncio.run(_run())
 
@@ -330,9 +374,12 @@ def test_list_jobs_excludes_jobs_with_no_project(migrated_url: str) -> None:
                 await conn.execute(
                     "INSERT INTO jobs (kind, payload, state, max_attempts, authorizing, dedup_key) "
                     "VALUES ('build', %s, 'queued', 3, %s, 'noproj')",
-                    (Jsonb(_build_payload()), Jsonb({"principal": "p"})),
+                    (
+                        Jsonb(_build_payload().model_dump(mode="json", exclude_none=True)),
+                        Jsonb({"principal": "p"}),
+                    ),
                 )
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=50)
-        assert resp == []
+        assert resp.items == []
 
     asyncio.run(_run())

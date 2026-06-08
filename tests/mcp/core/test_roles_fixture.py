@@ -12,7 +12,7 @@ import asyncio
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 
 from kdive.mcp.auth import context_from_claims
-from kdive.security.rbac import Role
+from kdive.security.authz.rbac import Role
 from tests.mcp.conftest import AUDIENCE, ISSUER
 from tests.mcp.roles import PROJECT_A, PROJECT_B, PROJECTS, make_role_fixture
 

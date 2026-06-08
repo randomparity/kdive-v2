@@ -23,10 +23,11 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.models import JobKind
 from kdive.jobs import queue
+from kdive.jobs.payloads import BuildPayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.ops import queue as ops_queue
-from kdive.security.rbac import PlatformRole
+from kdive.security.authz.rbac import PlatformRole
 
 
 def _ctx(
@@ -61,8 +62,8 @@ def _authorizing(project: str) -> dict[str, object]:
     return {"principal": "p", "agent_session": None, "project": project}
 
 
-def _build_payload() -> dict[str, str]:
-    return {"run_id": str(uuid4())}
+def _build_payload() -> BuildPayload:
+    return BuildPayload(run_id=str(uuid4()))
 
 
 async def _paused(url: str) -> bool:
@@ -169,9 +170,13 @@ def test_jobs_list_returns_cross_project_state(migrated_url: str) -> None:
                 )
             resp = await ops_queue.jobs_list(pool, _ctx(platform_roles=_OPERATOR))
         assert resp.status == "ok"
-        depth = json.loads(resp.data["depth"])
+        depth = {
+            key.removeprefix("depth_"): int(value)
+            for key, value in resp.data.items()
+            if key.startswith("depth_")
+        }
         assert depth == {"queued": 2}  # both projects counted, cross-project
-        jobs = json.loads(resp.data["jobs"])
+        jobs = [item.data for item in resp.items]
         assert {j["project"] for j in jobs} == {"proj-a", "proj-b"}
         assert all("payload" not in j for j in jobs)  # untrusted payload not surfaced
         rows = await _platform_audit_rows(migrated_url)
@@ -197,9 +202,13 @@ def test_jobs_list_filters_by_state(migrated_url: str) -> None:
             resp = await ops_queue.jobs_list(
                 pool, _ctx(platform_roles=_OPERATOR), states=["running"]
             )
-        jobs = json.loads(resp.data["jobs"])
+        jobs = [item.data for item in resp.items]
         assert [j["state"] for j in jobs] == ["running"]  # filtered per-job rows
-        depth = json.loads(resp.data["depth"])
+        depth = {
+            key.removeprefix("depth_"): int(value)
+            for key, value in resp.data.items()
+            if key.startswith("depth_")
+        }
         assert depth == {"queued": 1, "running": 1}  # depth still spans all states
 
     asyncio.run(_run())

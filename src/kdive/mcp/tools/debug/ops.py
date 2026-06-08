@@ -38,15 +38,15 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
+from kdive.mcp.tools.debug.session_registry import GdbMiSessionRegistry
 from kdive.providers.ports import (
     AttachSeam,
     GdbMiAttachment,
     GdbMiEngine,
-    GdbMiSessionRegistry,
     TransportHandleData,
 )
-from kdive.security.context import RequestContext
-from kdive.security.rbac import Role, require_role
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import Role, require_role
 
 # Base dir for per-session gdb/MI transcript files. Configurable so a deployment points it at
 # the run-artifact tree and tests at a temp dir; the default mirrors the other planes'
@@ -239,9 +239,8 @@ def _read_registers_op(
     runtime: DebugEngineRuntime, session_id: str, registers: list[str]
 ) -> _EngineOp:
     def op(attachment: GdbMiAttachment) -> ToolResponse:
-        result = runtime.engine.read_registers(attachment, registers)
-        values = result.get("registers")
-        rendered = {str(k): str(v) for k, v in values.items()} if isinstance(values, dict) else {}
+        values = runtime.engine.read_registers(attachment, registers)
+        rendered = {str(k): str(v) for k, v in values.items()}
         return ToolResponse.success(
             session_id,
             "read",
@@ -304,9 +303,7 @@ def register_debug_ops(
         session_id: Annotated[
             str, Field(description="The live DebugSession to set a breakpoint on.")
         ],
-        location: Annotated[
-            str, Field(description="Symbol or address to break at (gdb location syntax).")
-        ],
+        location: Annotated[str, Field(description="Bare C function or symbol name to break at.")],
     ) -> ToolResponse:
         """Set a breakpoint on a live DebugSession via gdb-MI. Requires operator."""
         return await run_engine_op(

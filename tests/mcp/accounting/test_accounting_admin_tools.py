@@ -17,8 +17,8 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import BUDGETS, QUOTAS
 from kdive.mcp.auth import AuthError, RequestContext
-from kdive.mcp.tools.accounting import usage as acct_tools
-from kdive.security.rbac import AuthorizationError, Role
+from kdive.mcp.tools.accounting.admin import set_budget, set_quota
+from kdive.security.authz.rbac import AuthorizationError, Role
 
 
 def _ctx(
@@ -41,7 +41,7 @@ async def _pool(url: str) -> AsyncIterator[AsyncConnectionPool]:
 def test_set_budget_creates_row(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await acct_tools.set_budget(pool, _ctx(), project="proj", limit_kcu="250")
+            resp = await set_budget(pool, _ctx(), project="proj", limit_kcu="250")
             assert resp.status == "ok"
             assert resp.suggested_next_actions == [
                 "accounting.usage_project",
@@ -67,12 +67,12 @@ def test_set_budget_reset_preserves_spent(migrated_url: str) -> None:
     # A re-set updates limit_kcu but must not clobber the DB-maintained spent_kcu total.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            await acct_tools.set_budget(pool, _ctx(), project="proj", limit_kcu="100")
+            await set_budget(pool, _ctx(), project="proj", limit_kcu="100")
             async with pool.connection() as conn:
                 await conn.execute(
                     "UPDATE budgets SET spent_kcu = %s WHERE project = %s", (Decimal("42"), "proj")
                 )
-            await acct_tools.set_budget(pool, _ctx(), project="proj", limit_kcu="500")
+            await set_budget(pool, _ctx(), project="proj", limit_kcu="500")
             async with pool.connection() as conn:
                 budget = await BUDGETS.get(conn, "proj")
             assert budget is not None
@@ -86,9 +86,7 @@ def test_set_budget_requires_admin(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             with pytest.raises(AuthorizationError):
-                await acct_tools.set_budget(
-                    pool, _ctx(role=Role.OPERATOR), project="proj", limit_kcu="10"
-                )
+                await set_budget(pool, _ctx(role=Role.OPERATOR), project="proj", limit_kcu="10")
 
     asyncio.run(_run())
 
@@ -98,7 +96,7 @@ def test_set_budget_foreign_project_refused(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             other = _ctx(projects=("elsewhere",), role=Role.ADMIN)
             with pytest.raises(AuthError):
-                await acct_tools.set_budget(pool, other, project="proj", limit_kcu="10")
+                await set_budget(pool, other, project="proj", limit_kcu="10")
 
     asyncio.run(_run())
 
@@ -107,7 +105,7 @@ def test_set_budget_foreign_project_refused(migrated_url: str) -> None:
 def test_set_budget_malformed_limit_is_config_error(migrated_url: str, bad: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await acct_tools.set_budget(pool, _ctx(), project="proj", limit_kcu=bad)
+            resp = await set_budget(pool, _ctx(), project="proj", limit_kcu=bad)
             assert resp.status == "error"
             assert resp.error_category == "configuration_error"
             assert resp.suggested_next_actions == ["accounting.set_budget"]
@@ -121,7 +119,7 @@ def test_set_budget_malformed_limit_is_config_error(migrated_url: str, bad: str)
 def test_set_quota_creates_row(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await acct_tools.set_quota(
+            resp = await set_quota(
                 pool, _ctx(), project="proj", max_concurrent_allocations=3, max_concurrent_systems=5
             )
             assert resp.status == "ok"
@@ -146,10 +144,10 @@ def test_set_quota_creates_row(migrated_url: str) -> None:
 def test_set_quota_reset_overwrites(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            await acct_tools.set_quota(
+            await set_quota(
                 pool, _ctx(), project="proj", max_concurrent_allocations=1, max_concurrent_systems=1
             )
-            await acct_tools.set_quota(
+            await set_quota(
                 pool,
                 _ctx(),
                 project="proj",
@@ -169,7 +167,7 @@ def test_set_quota_requires_admin(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             with pytest.raises(AuthorizationError):
-                await acct_tools.set_quota(
+                await set_quota(
                     pool,
                     _ctx(role=Role.OPERATOR),
                     project="proj",
@@ -184,7 +182,7 @@ def test_set_quota_requires_admin(migrated_url: str) -> None:
 def test_set_quota_negative_is_config_error(migrated_url: str, allocs: int, systems: int) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await acct_tools.set_quota(
+            resp = await set_quota(
                 pool,
                 _ctx(),
                 project="proj",

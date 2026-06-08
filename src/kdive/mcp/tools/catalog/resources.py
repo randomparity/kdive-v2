@@ -28,9 +28,10 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
+from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
 from kdive.security import audit
-from kdive.security.context import RequestContext
-from kdive.security.rbac import (
+from kdive.security.authz.context import RequestContext
+from kdive.security.authz.rbac import (
     AuthorizationError,
     PlatformRole,
     require_platform_role,
@@ -49,7 +50,7 @@ def _error(object_id: str) -> ToolResponse:
     return ToolResponse.failure(object_id, ErrorCategory.CONFIGURATION_ERROR)
 
 
-def _project_capabilities(resource: Resource) -> dict[str, str]:
+def _resource_capability_data(resource: Resource) -> dict[str, str]:
     """Flatten the capabilities jsonb to string values for the envelope."""
     caps = resource.capabilities
     data: dict[str, str] = {"kind": resource.kind.value}
@@ -67,7 +68,7 @@ def _resource_envelope(resource: Resource, *, next_actions: list[str]) -> ToolRe
         str(resource.id),
         resource.status.value,
         suggested_next_actions=next_actions,
-        data=_project_capabilities(resource),
+        data=_resource_capability_data(resource),
     )
 
 
@@ -95,15 +96,15 @@ def _resource_row_error(row: dict[str, Any]) -> ToolResponse:
 
 async def list_resources_tool(
     pool: AsyncConnectionPool, ctx: RequestContext, *, kind: str | None
-) -> list[ToolResponse]:
-    """Return every resource (optionally filtered by ``kind``) as an envelope."""
+) -> ToolResponse:
+    """Return every resource (optionally filtered by ``kind``) in one collection envelope."""
     if kind is None:
         resource_kind = None
     else:
         try:
             resource_kind = ResourceKind(kind)
         except ValueError:
-            return [ToolResponse.failure("resources.list", ErrorCategory.CONFIGURATION_ERROR)]
+            return ToolResponse.failure("resources.list", ErrorCategory.CONFIGURATION_ERROR)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             rows = await _fetch_resource_rows(conn, resource_kind)
@@ -117,9 +118,18 @@ async def list_resources_tool(
                     )
                 )
             except ValueError:
-                _log.warning("resource row violates the response invariant; degraded")
+                _log.warning(
+                    "resource %s violates the response invariant; degraded",
+                    row.get("id", "<missing>"),
+                    exc_info=True,
+                )
                 responses.append(_resource_row_error(row))
-        return responses
+        return ToolResponse.collection(
+            "resources",
+            "ok",
+            responses,
+            suggested_next_actions=["resources.describe", "allocations.request"],
+        )
 
 
 async def describe_resource(
@@ -165,7 +175,7 @@ async def _audit_host_action(
                 tool=tool,
                 scope=f"resource:{resource_id}:{detail}",
                 args={"resource_id": str(resource_id)},
-                platform_role=PlatformRole.PLATFORM_OPERATOR.value,
+                platform_role=held_platform_roles(ctx),
             ),
         )
 
@@ -186,6 +196,13 @@ async def set_resource_status(
     try:
         require_platform_role(ctx, PlatformRole.PLATFORM_OPERATOR)
     except AuthorizationError:
+        await audit_platform_denial(
+            pool,
+            ctx,
+            tool=_SET_STATUS_TOOL,
+            scope=f"resource:{resource_id}",
+            args={"resource_id": resource_id, "status": status},
+        )
         return _denied(resource_id)
     uid = _as_uuid(resource_id)
     if uid is None:
@@ -214,6 +231,13 @@ async def _set_cordoned(
     try:
         require_platform_role(ctx, PlatformRole.PLATFORM_OPERATOR)
     except AuthorizationError:
+        await audit_platform_denial(
+            pool,
+            ctx,
+            tool=tool,
+            scope=f"resource:{resource_id}",
+            args={"resource_id": resource_id, "cordoned": cordoned},
+        )
         return _denied(resource_id)
     uid = _as_uuid(resource_id)
     if uid is None:
@@ -263,7 +287,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
             str | None,
             Field(description="Filter by resource kind (e.g. 'local-libvirt'); omit for all."),
         ] = None,
-    ) -> list[ToolResponse]:
+    ) -> ToolResponse:
         """List Resources, optional kind. Requires a valid token; no project membership needed."""
         return await list_resources_tool(pool, current_context(), kind=kind)
 

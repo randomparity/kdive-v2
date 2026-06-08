@@ -14,7 +14,7 @@ import jwt  # PyJWT: decode a token's claims without verifying the signature
 import pytest
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 
-from kdive.security.rbac import Role, roles_from_claims
+from kdive.security.authz.rbac import Role, roles_from_claims
 from tests.integration.live_stack.conftest import require_issuer, require_stack
 from tests.integration.live_stack.harness import LiveStackClient, _build_claims, mint_token
 from tests.mcp.conftest import AUDIENCE, make_keypair, mint

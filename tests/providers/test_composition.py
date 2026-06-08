@@ -6,7 +6,6 @@ import asyncio
 from typing import cast
 from uuid import UUID
 
-import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.components.references import LocalComponentRef
@@ -14,9 +13,15 @@ from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.providers import composition
-from kdive.providers.composition import ProviderRuntime
-from kdive.providers.interfaces import SystemHandle, TransportHandle
-from kdive.providers.ports import BuildOutput, CaptureOutput, CrashOutput, IntrospectOutput
+from kdive.providers.ports import (
+    BuildOutput,
+    CaptureOutput,
+    CrashOutput,
+    IntrospectOutput,
+    SystemHandle,
+    TransportHandle,
+)
+from kdive.providers.runtime import ProviderRuntime
 from kdive.store.objectstore import StoredArtifact
 
 _RUN = UUID("22222222-2222-2222-2222-222222222222")
@@ -137,21 +142,8 @@ def test_provider_runtime_returns_typed_provider_ports_directly() -> None:
 
     assert output.build_id == "deadbeef"
     assert builder.calls == [(_RUN, "/configs/kdump.config")]
-    assert runtime.install_boot() == (install, install)
-
-
-def test_default_runtime_does_not_build_unused_capability_registry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _FailRegistry:
-        def __init__(self) -> None:
-            raise AssertionError("default typed runtime should not build a capability registry")
-
-    monkeypatch.setattr(composition, "CapabilityRegistry", _FailRegistry, raising=False)
-
-    runtime = composition.build_default_provider_runtime()
-
-    assert runtime.builder is not None
+    assert runtime.installer is install
+    assert runtime.booter is install
 
 
 def test_default_runtime_advertises_implemented_component_sources_only() -> None:
