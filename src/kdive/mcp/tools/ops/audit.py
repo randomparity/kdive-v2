@@ -74,10 +74,12 @@ async def query(
         if scope_error is not None:
             return scope_error
         if scope == _PROJECT_SCOPE:
-            assert project is not None
+            if project is None:
+                return _config_failure("project_required")
             return await _query_project(pool, ctx, project, filters)
-        assert scope == ALL_PROJECTS_SCOPE
-        return await _query_cross_project(pool, ctx, filters)
+        if scope == ALL_PROJECTS_SCOPE:
+            return await _query_cross_project(pool, ctx, filters)
+        return _config_failure("unknown_scope")
 
 
 class _Filters:

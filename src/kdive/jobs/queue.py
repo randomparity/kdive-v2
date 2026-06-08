@@ -229,12 +229,18 @@ async def all_recent_jobs(
     sequence yields no rows. The ``id`` tiebreaker totals the order on a shared
     ``created_at`` so the cap never drops an arbitrary one of a tied pair.
     """
-    where = "" if states is None else " WHERE state = ANY(%(states)s::text[])"
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT * FROM jobs" + where + " ORDER BY created_at DESC, id DESC LIMIT %(limit)s",
-            {"limit": limit, "states": list(states) if states is not None else None},
-        )
+        if states is None:
+            await cur.execute(
+                "SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT %(limit)s",
+                {"limit": limit},
+            )
+        else:
+            await cur.execute(
+                "SELECT * FROM jobs WHERE state = ANY(%(states)s::text[]) "
+                "ORDER BY created_at DESC, id DESC LIMIT %(limit)s",
+                {"limit": limit, "states": list(states)},
+            )
         rows = await cur.fetchall()
     return [Job.model_validate(row) for row in rows]
 
