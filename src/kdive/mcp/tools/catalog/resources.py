@@ -224,6 +224,21 @@ async def set_resource_status(
         return _resource_envelope(resource, next_actions=["resources.describe"])
 
 
+async def _apply_cordon(conn: AsyncConnection, uid: UUID, *, cordoned: bool) -> Resource | None:
+    """Set a host's ``cordoned`` flag and return the updated row, or ``None`` if no such host.
+
+    The pure UPDATE shared by ``resources.cordon``/``uncordon`` and ``resources.drain``; it
+    carries no role check or audit so each caller applies its own authorization and audit tool.
+    """
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "UPDATE resources SET cordoned = %s WHERE id = %s RETURNING *",
+            (cordoned, uid),
+        )
+        row = await cur.fetchone()
+    return Resource.model_validate(row) if row is not None else None
+
+
 async def _set_cordoned(
     pool: AsyncConnectionPool, ctx: RequestContext, *, resource_id: str, cordoned: bool, tool: str
 ) -> ToolResponse:
@@ -244,18 +259,13 @@ async def _set_cordoned(
         return _error(resource_id)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    "UPDATE resources SET cordoned = %s WHERE id = %s RETURNING *",
-                    (cordoned, uid),
-                )
-                row = await cur.fetchone()
-            if row is None:
+            resource = await _apply_cordon(conn, uid, cordoned=cordoned)
+            if resource is None:
                 return _error(resource_id)
             await _audit_host_action(
                 conn, ctx, tool=tool, resource_id=uid, detail=f"cordoned={cordoned}"
             )
-        return _resource_envelope(Resource.model_validate(row), next_actions=["resources.describe"])
+        return _resource_envelope(resource, next_actions=["resources.describe"])
 
 
 async def cordon_resource(
