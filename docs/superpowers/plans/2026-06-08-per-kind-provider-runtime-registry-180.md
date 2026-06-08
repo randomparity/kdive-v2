@@ -324,7 +324,7 @@ def test_enabling_fault_inject_before_it_exists_fails_closed() -> None:
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 ```
 
-`tests/reconciler/test_main.py` — replace the runtime monkeypatch (line ~46) with a fake resolver:
+`tests/reconciler/test_main.py` — replace the `_FakeRuntime` class **and** its monkeypatch (the old class is then unused — remove it) with a fake resolver:
 
 ```python
     class _FakeResolver:
@@ -583,14 +583,7 @@ async def _run_runtime(
         ...
 ```
 
-- `install_handler(conn, job, installer=None, *, resolver=None)`: after the `system` existence check and before `claim_run_step`, resolve via the already-loaded system:
-
-```python
-    if installer is None:
-        installer = (await _run_runtime_for_system(conn, run.system_id, resolver)).installer
-```
-
-with a sibling helper resolving by system (or inline `runtime_for_system`); to avoid two helpers, inline it:
+- `install_handler(conn, job, installer=None, *, resolver=None)`: the installer is used only after `claim = await claim_run_step(...)` / `if not claim.claimed: return str(run_id)` (`runs.py:153-154`). Resolve **after** that guard, immediately before `installer.install(...)`, via the already-loaded system (so the idempotent not-claimed re-entry never resolves):
 
 ```python
     if installer is None:
@@ -599,7 +592,7 @@ with a sibling helper resolving by system (or inline `runtime_for_system`); to a
         installer = (await resolver.runtime_for_system(conn, run.system_id)).installer
 ```
 
-- `boot_handler(conn, job, booter=None, *, resolver=None)`: after `if run is None: raise ...` and before `claim_run_step`, resolve via run:
+- `boot_handler(conn, job, booter=None, *, resolver=None)`: `booter.boot(...)` runs inside `_run_boot_and_capture_outcome`, reached only after `claim = await claim_run_step(...)` / `if not claim.claimed: return str(run_id)` (`runs.py:361-363`). Resolve **after** that guard, immediately before `_run_boot_and_capture_outcome(conn, job_ctx, run, booter)`:
 
 ```python
     if booter is None:
