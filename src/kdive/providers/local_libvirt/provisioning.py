@@ -365,28 +365,7 @@ class LocalLibvirtProvisioning:
             self._make_overlay(base, overlay)  # the domain boots this overlay, not the base
         try:
             self._prepare_console_log(console_log_path(system_id))
-            conn = self._connect()
-            try:
-                domain = conn.defineXML(xml)
-                try:
-                    domain.create()
-                except libvirt.libvirtError as exc:
-                    if exc.get_error_code() != libvirt.VIR_ERR_OPERATION_INVALID:
-                        # Not "already running" — a real start failure. Undefine the domain we
-                        # just defined so provision stays transactional (a started domain or
-                        # none); swallow an undefine error so it cannot mask the start failure.
-                        # The overlay is reclaimed by the outer handler, which catches this
-                        # re-raise as well as a define failure.
-                        try:
-                            domain.undefine()
-                        except libvirt.libvirtError:
-                            _log.warning(
-                                "failed to undefine domain after a failed start; continuing",
-                                exc_info=True,
-                            )
-                        raise
-            finally:
-                _close(conn)
+            self._define_and_start(xml)
         except libvirt.libvirtError as exc:
             if created_overlay:
                 self._cleanup_created_overlay(overlay)
@@ -400,6 +379,29 @@ class LocalLibvirtProvisioning:
                 self._cleanup_created_overlay(overlay)
             raise
         return domain_name_for(system_id)
+
+    def _define_and_start(self, xml: str) -> None:
+        conn = self._connect()
+        try:
+            domain = conn.defineXML(xml)
+            try:
+                domain.create()
+            except libvirt.libvirtError as exc:
+                if exc.get_error_code() == libvirt.VIR_ERR_OPERATION_INVALID:
+                    return
+                # Not "already running" — a real start failure. Undefine the domain we just
+                # defined so provision stays transactional (a started domain or none). The
+                # overlay is reclaimed by provision(), which catches this re-raise.
+                try:
+                    domain.undefine()
+                except libvirt.libvirtError:
+                    _log.warning(
+                        "failed to undefine domain after a failed start; continuing",
+                        exc_info=True,
+                    )
+                raise
+        finally:
+            _close(conn)
 
     def _cleanup_created_overlay(self, overlay: str) -> None:
         try:
