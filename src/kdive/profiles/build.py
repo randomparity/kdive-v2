@@ -35,8 +35,9 @@ from pydantic import (
 
 from kdive.components.references import ComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.profile_documents import SerializedBuildProfile
 from kdive.profiles._schema import schema_version_validator
-from kdive.profiles.types import BuildProfileInput, SerializedBuildProfile
+from kdive.profiles.types import BuildProfileInput
 
 type NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 """A string that is non-empty after whitespace stripping; blank values fail validation."""

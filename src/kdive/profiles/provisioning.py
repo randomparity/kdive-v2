@@ -35,8 +35,9 @@ from kdive.components.references import ArtifactComponentRef, CatalogComponentRe
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
+from kdive.domain.profile_documents import SerializedProvisioningProfile
 from kdive.profiles._schema import schema_version_validator
-from kdive.profiles.types import ProvisioningProfileInput, SerializedProvisioningProfile
+from kdive.profiles.types import ProvisioningProfileInput
 
 type NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 """A string that is non-empty after whitespace stripping; blank values fail validation."""

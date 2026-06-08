@@ -15,6 +15,7 @@ from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError
 from kdive.domain.models import ExpectedBootFailure, Investigation, Run
+from kdive.domain.profile_documents import SerializedExpectedBootFailure
 from kdive.domain.state import InvestigationState, RunState
 from kdive.log import bind_context
 from kdive.mcp.responses import ToolResponse
@@ -28,11 +29,7 @@ from kdive.mcp.tools.lifecycle.runs.common import (
     SYSTEM_GONE,
 )
 from kdive.profiles.build import BuildProfile, ParsedBuildProfile, dump_build_profile
-from kdive.profiles.types import (
-    BuildProfileInput,
-    ExpectedBootFailureInput,
-    SerializedExpectedBootFailure,
-)
+from kdive.profiles.types import BuildProfileInput, ExpectedBootFailureInput
 from kdive.security import audit
 from kdive.security.context import RequestContext
 from kdive.security.rbac import Role, require_role

@@ -33,6 +33,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from kdive.domain.errors import ErrorCategory
+from kdive.domain.profile_documents import (
+    SerializedBuildProfile,
+    SerializedExpectedBootFailure,
+    SerializedProvisioningProfile,
+)
 from kdive.domain.state import (
     AllocationState,
     DebugSessionState,
@@ -41,11 +46,6 @@ from kdive.domain.state import (
     ResourceStatus,
     RunState,
     SystemState,
-)
-from kdive.profiles.types import (
-    SerializedBuildProfile,
-    SerializedExpectedBootFailure,
-    SerializedProvisioningProfile,
 )
 
 
