@@ -46,7 +46,7 @@ from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_platform_role
-from kdive.services.allocation_release import AuditWriter, release_with_backstops
+from kdive.services.allocation_release import AuditWriter, ReleaseOutcome, release_with_backstops
 
 _log = logging.getLogger(__name__)
 
@@ -150,12 +150,29 @@ async def force_release(
             alloc.project,
             ctx.principal,
         )
-        return await release_with_backstops(
+        outcome = await release_with_backstops(
             pool,
             uid,
             project=alloc.project,
             audit_writer=_breakglass_audit_writer(ctx.principal),
         )
+        return _force_release_response(uid, outcome)
+
+
+def _force_release_response(uid: UUID, outcome: ReleaseOutcome) -> ToolResponse:
+    """Map release service outcome to the break-glass MCP envelope."""
+    if outcome.released:
+        return ToolResponse.success(str(uid), "released")
+    data = {"current_status": outcome.current_status} if outcome.current_status else {}
+    category = outcome.category or ErrorCategory.CONFIGURATION_ERROR
+    return ToolResponse.failure(
+        str(uid),
+        category,
+        suggested_next_actions=["allocations.get"]
+        if category is ErrorCategory.STALE_HANDLE
+        else [],
+        data=data,
+    )
 
 
 async def force_teardown(

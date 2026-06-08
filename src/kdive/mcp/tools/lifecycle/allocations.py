@@ -42,7 +42,11 @@ from kdive.services.allocation_admission import (
 from kdive.services.allocation_admission import (
     AllocationRequest as DomainAllocationRequest,
 )
-from kdive.services.allocation_release import ctx_audit_writer, release_with_backstops
+from kdive.services.allocation_release import (
+    ReleaseOutcome,
+    ctx_audit_writer,
+    release_with_backstops,
+)
 from kdive.services.allocation_renew import RenewOutcome, renew
 
 _log = logging.getLogger(__name__)
@@ -204,9 +208,26 @@ async def release_allocation(
             if alloc is None or alloc.project not in ctx.projects:
                 return _config_error(allocation_id)
             require_role(ctx, alloc.project, Role.OPERATOR)
-        return await release_with_backstops(
+        outcome = await release_with_backstops(
             pool, uid, project=alloc.project, audit_writer=ctx_audit_writer(ctx)
         )
+        return _release_response(uid, outcome)
+
+
+def _release_response(uid: UUID, outcome: ReleaseOutcome) -> ToolResponse:
+    """Map release service outcome to the allocations MCP envelope."""
+    if outcome.released:
+        return ToolResponse.success(str(uid), "released")
+    data = {"current_status": outcome.current_status} if outcome.current_status else {}
+    category = outcome.category or ErrorCategory.CONFIGURATION_ERROR
+    return ToolResponse.failure(
+        str(uid),
+        category,
+        suggested_next_actions=["allocations.get"]
+        if category is ErrorCategory.STALE_HANDLE
+        else [],
+        data=data,
+    )
 
 
 async def renew_allocation(
