@@ -14,6 +14,7 @@ avoid write-amplification (ADR-0043 §4 / ADR-0062 §5).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +28,8 @@ from kdive.security.rbac import RoleDenied
 
 if TYPE_CHECKING:
     from psycopg_pool import AsyncConnectionPool
+
+_log = logging.getLogger(__name__)
 
 
 def _current_agent_session() -> str | None:
@@ -70,7 +73,10 @@ class DenialAuditMiddleware(Middleware):
             return await call_next(context)
         except RoleDenied as denial:
             tool = context.message.name
-            await self._record(tool, denial)
+            try:
+                await self._record(tool, denial)
+            except Exception:
+                _log.warning("failed to audit RoleDenied for tool %s", tool, exc_info=True)
             return ToolResponse.failure(tool, ErrorCategory.AUTHORIZATION_DENIED)
 
     async def _record(self, tool: str, denial: RoleDenied) -> None:

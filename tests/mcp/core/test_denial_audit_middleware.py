@@ -127,6 +127,30 @@ def test_role_denied_writes_one_denial_row_and_returns_envelope(migrated_url: st
     assert "operator" in reason  # the human-readable denial reason is captured
 
 
+def test_role_denied_audit_failure_still_returns_envelope(
+    migrated_url: str,
+) -> None:
+    class _FailingRecordMiddleware(DenialAuditMiddleware):
+        async def _record(self, tool: str, denial: RoleDenied) -> None:
+            _ = (tool, denial)
+            raise RuntimeError("audit unavailable")
+
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, open=False) as pool:
+            await pool.open()
+            mw = _FailingRecordMiddleware(pool, agent_session=lambda: "sess-1")
+
+            async def _call_next(_ctx: Any) -> None:
+                raise _role_denied()
+
+            result = await mw.on_call_tool(_FakeContext("allocations.release"), _call_next)
+            assert result.error_category == "authorization_denied"
+            async with pool.connection() as conn:
+                assert await _count_audit(conn) == 0
+
+    asyncio.run(_run())
+
+
 def test_role_denied_project_comes_from_exception_not_call_args(migrated_url: str) -> None:
     # The middleware never inspects tool arguments for project; it reads it off RoleDenied.
     denial = RoleDenied(
