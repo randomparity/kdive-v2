@@ -213,10 +213,13 @@ def test_concurrent_start_session_keeps_single_attach_and_leaks_no_transport(
                 run_a = await _seed_booted_run(pool, system_id)
                 run_b = await _seed_booted_run(pool, system_id)
                 conn = _TrackingConnector()
+                handlers = debug_tools.DebugSessionHandlers(conn)
 
-                async def start(run_id: str, conn: _TrackingConnector = conn) -> Any:
-                    return await debug_tools.start_session(
-                        pool, _ctx(), run_id=run_id, transport="gdbstub", connector=conn
+                async def start(
+                    run_id: str, handlers: debug_tools.DebugSessionHandlers = handlers
+                ) -> Any:
+                    return await handlers.start_session(
+                        pool, _ctx(), run_id=run_id, transport="gdbstub"
                     )
 
                 results = await asyncio.gather(start(run_a), start(run_b))
@@ -238,9 +241,13 @@ def test_concurrent_end_session_is_idempotent_and_closes_once(migrated_url: str)
                 run_id = await _seed_booted_run(pool, system_id)
                 session_id = await _seed_live_session(pool, run_id)
                 conn = _TrackingConnector()
+                handlers = debug_tools.DebugSessionHandlers(conn)
 
-                async def end(sid: str = session_id, conn: _TrackingConnector = conn) -> Any:
-                    return await debug_tools.end_session(pool, _ctx(), sid, connector=conn)
+                async def end(
+                    sid: str = session_id,
+                    handlers: debug_tools.DebugSessionHandlers = handlers,
+                ) -> Any:
+                    return await handlers.end_session(pool, _ctx(), sid)
 
                 results = await asyncio.gather(end(), end())
                 assert all(r.status == "detached" for r in results)

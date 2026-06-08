@@ -121,58 +121,119 @@ def _map_attach_failure_category(category: ErrorCategory) -> ErrorCategory:
     return category
 
 
-async def start_session(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    *,
-    run_id: str,
-    transport: str = _GDBSTUB,
-    connector: Connector,
-    secret_backend: SecretBackend | None = None,
-    secret_backend_factory: Callable[[UUID], SecretBackend] | None = None,
-    secret_registry: SecretRegistry | None = None,
-) -> ToolResponse:
-    """Open a single-attach transport and insert a `live` DebugSession (operator).
+class DebugSessionHandlers:
+    """Bound debug session lifecycle handlers.
 
-    For ``transport="ssh"`` the guest credential is resolved from the System's profile
-    ``ssh_credential_ref`` through ``secret_backend`` **before** the transport is opened, so
-    the redaction registry is seeded before any transport output can carry the value
-    (ADR-0039 §2). gdbstub needs no credential.
+    The public methods take only MCP-facing inputs; provider and test seams are bound once
+    at construction, matching the lifecycle handler pattern used by runs and systems.
     """
-    uid = _as_uuid(run_id)
-    if uid is None:
-        return _config_error(run_id)
-    if transport not in _TRANSPORTS:
-        return _config_error(run_id)
-    session_id = uuid4()
-    registry = PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
-    secret_scope = _secret_scope(session_id)
-    with bind_context(principal=ctx.principal):
-        async with pool.connection() as conn:
-            run = await RUNS.get(conn, uid)
-            if run is None or run.project not in ctx.projects:
-                return _config_error(run_id)
-            require_role(ctx, run.project, Role.OPERATOR)
-            guard = await _attach_preconditions(conn, run, transport)
-            if isinstance(guard, ToolResponse):
-                return guard
-            system = guard
-            backend = secret_backend
-            if backend is None and secret_backend_factory is not None and transport == _SSH:
-                backend = secret_backend_factory(session_id)
-            resolved = _resolve_credential(system, transport, backend)
-            if isinstance(resolved, ToolResponse):
-                return resolved
-            opened = _open_transport(connector, system, transport)
-            if isinstance(opened, ToolResponse):
-                registry.release(secret_scope)
-                return opened
-            response = await _insert_session_locked(
-                conn, ctx, run, system, opened, connector, transport, session_id
-            )
-            if response.status != "live":
-                registry.release(secret_scope)
-            return response
+
+    def __init__(
+        self,
+        connector: Connector,
+        *,
+        runtime: DebugEngineRuntime | None = None,
+        secret_backend_factory: Callable[[UUID], SecretBackend] | None = None,
+        secret_registry: SecretRegistry | None = None,
+    ) -> None:
+        self._connector = connector
+        self._runtime = runtime
+        self._secret_backend_factory = secret_backend_factory
+        self._secret_registry = (
+            PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
+        )
+
+    async def start_session(
+        self,
+        pool: AsyncConnectionPool,
+        ctx: RequestContext,
+        *,
+        run_id: str,
+        transport: str = _GDBSTUB,
+    ) -> ToolResponse:
+        """Open a single-attach transport and insert a `live` DebugSession (operator).
+
+        For ``transport="ssh"`` the guest credential is resolved from the System's profile
+        ``ssh_credential_ref`` through the bound secret backend factory **before** the
+        transport is opened, so the redaction registry is seeded before any transport output
+        can carry the value (ADR-0039 §2). gdbstub needs no credential.
+        """
+        uid = _as_uuid(run_id)
+        if uid is None:
+            return _config_error(run_id)
+        if transport not in _TRANSPORTS:
+            return _config_error(run_id)
+        session_id = uuid4()
+        secret_scope = _secret_scope(session_id)
+        with bind_context(principal=ctx.principal):
+            async with pool.connection() as conn:
+                run = await RUNS.get(conn, uid)
+                if run is None or run.project not in ctx.projects:
+                    return _config_error(run_id)
+                require_role(ctx, run.project, Role.OPERATOR)
+                guard = await _attach_preconditions(conn, run, transport)
+                if isinstance(guard, ToolResponse):
+                    return guard
+                system = guard
+                backend = self._credential_backend(session_id, transport)
+                resolved = _resolve_credential(system, transport, backend)
+                if isinstance(resolved, ToolResponse):
+                    return resolved
+                opened = _open_transport(self._connector, system, transport)
+                if isinstance(opened, ToolResponse):
+                    self._secret_registry.release(secret_scope)
+                    return opened
+                response = await _insert_session_locked(
+                    conn,
+                    ctx,
+                    run,
+                    system,
+                    opened,
+                    self._connector,
+                    transport,
+                    session_id,
+                )
+                if response.status != "live":
+                    self._secret_registry.release(secret_scope)
+                return response
+
+    def _credential_backend(self, session_id: UUID, transport: str) -> SecretBackend | None:
+        if transport != _SSH or self._secret_backend_factory is None:
+            return None
+        return self._secret_backend_factory(session_id)
+
+    async def end_session(
+        self,
+        pool: AsyncConnectionPool,
+        ctx: RequestContext,
+        session_id: str,
+    ) -> ToolResponse:
+        """Drive a live/attach DebugSession `-> detached` (idempotent on detached; operator).
+
+        Also reaps the lazy gdb-MI engine (ADR-0034 §4d): under the per-session lock it exits
+        the gdb subprocess and drops the registry entry, so an ended session never strands a
+        subprocess or holds the single-attach stub. Reaping a session that never ran a
+        Debug-plane op is a no-op.
+        """
+        uid = _as_uuid(session_id)
+        if uid is None:
+            return _config_error(session_id)
+        with bind_context(principal=ctx.principal):
+            async with pool.connection() as conn:
+                session = await DEBUG_SESSIONS.get(conn, uid)
+                if session is None or session.project not in ctx.projects:
+                    return _config_error(session_id)
+                require_role(ctx, session.project, Role.OPERATOR)
+                resolved = await _resolve_session_system(conn, uid)
+                if resolved is None:
+                    return _config_error(session_id)
+                _, system_id = resolved
+                envelope = await _detach_locked(conn, ctx, uid, system_id, self._connector)
+            if self._runtime is not None:
+                async with self._runtime.lock_for(session_id):
+                    self._runtime.reap(session_id)
+            self._secret_registry.release(_secret_scope(uid))
+            return envelope
 
 
 def _resolve_credential(
@@ -323,44 +384,6 @@ async def _resolve_session_system(
     return session, run.system_id
 
 
-async def end_session(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    session_id: str,
-    *,
-    connector: Connector,
-    runtime: DebugEngineRuntime | None = None,
-    secret_registry: SecretRegistry | None = None,
-) -> ToolResponse:
-    """Drive a live/attach DebugSession `-> detached` (idempotent on detached; operator).
-
-    Also reaps the lazy gdb-MI engine (ADR-0034 §4d): under the per-session lock it exits the
-    gdb subprocess and drops the registry entry, so an ended session never strands a subprocess
-    or holds the single-attach stub. Reaping a session that never ran a Debug-plane op is a
-    no-op.
-    """
-    uid = _as_uuid(session_id)
-    if uid is None:
-        return _config_error(session_id)
-    registry = PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
-    with bind_context(principal=ctx.principal):
-        async with pool.connection() as conn:
-            session = await DEBUG_SESSIONS.get(conn, uid)
-            if session is None or session.project not in ctx.projects:
-                return _config_error(session_id)
-            require_role(ctx, session.project, Role.OPERATOR)
-            resolved = await _resolve_session_system(conn, uid)
-            if resolved is None:
-                return _config_error(session_id)
-            _, system_id = resolved
-            envelope = await _detach_locked(conn, ctx, uid, system_id, connector)
-        if runtime is not None:
-            async with runtime.lock_for(session_id):
-                runtime.reap(session_id)
-        registry.release(_secret_scope(uid))
-        return envelope
-
-
 async def _detach_locked(
     conn: AsyncConnection,
     ctx: RequestContext,
@@ -428,6 +451,13 @@ def register(
     attach = provider.attach_seam
     engine = provider.debug_engine
     runtime = DebugEngineRuntime(engine=engine, attach=attach)
+    handlers = DebugSessionHandlers(
+        connector,
+        runtime=runtime,
+        secret_backend_factory=lambda session_id: secret_backend_from_env(
+            scope=_secret_scope(session_id)
+        ),
+    )
 
     @app.tool(
         name="debug.start_session",
@@ -442,15 +472,8 @@ def register(
         ] = _GDBSTUB,
     ) -> ToolResponse:
         """Open a single-attach transport and insert a live DebugSession. Requires operator."""
-        return await start_session(
-            pool,
-            current_context(),
-            run_id=run_id,
-            transport=transport,
-            connector=connector,
-            secret_backend_factory=lambda session_id: secret_backend_from_env(
-                scope=_secret_scope(session_id)
-            ),
+        return await handlers.start_session(
+            pool, current_context(), run_id=run_id, transport=transport
         )
 
     @app.tool(
@@ -462,8 +485,6 @@ def register(
         session_id: Annotated[str, Field(description="The DebugSession to detach and close.")],
     ) -> ToolResponse:
         """Drive a live/attach DebugSession to detached; close its transport. Requires operator."""
-        return await end_session(
-            pool, current_context(), session_id, connector=connector, runtime=runtime
-        )
+        return await handlers.end_session(pool, current_context(), session_id)
 
     register_debug_ops(app, pool, runtime)
