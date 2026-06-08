@@ -29,6 +29,7 @@ from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
+from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import SystemState
@@ -187,16 +188,37 @@ async def force_teardown(
             system.project,
             ctx.principal,
         )
+        return await _teardown_locked(pool, ctx, uid)
+
+
+async def _teardown_locked(
+    pool: AsyncConnectionPool, ctx: RequestContext, uid: UUID
+) -> ToolResponse:
+    """Read state, short-circuit `torn_down`, and enqueue — all under the System lock.
+
+    Mirrors `systems.teardown`'s concurrency discipline (`lifecycle/systems/admin.py`): the
+    `advisory_xact_lock(SYSTEM)` spans the authoritative state read, the idempotent
+    `torn_down` short-circuit, and the enqueue, so a concurrent teardown cannot slip a state
+    change between the check and the enqueue. The `{uid}:teardown` dedup key keeps it
+    re-invokable regardless. The `platform_audit_log` row is already committed by the caller.
+    """
+    async with (
+        pool.connection() as conn,
+        conn.transaction(),
+        advisory_xact_lock(conn, LockScope.SYSTEM, uid),
+    ):
+        system = await SYSTEMS.get(conn, uid)
+        if system is None:  # Resolved a moment ago; a concurrent delete is a stale handle.
+            return _config_error(str(uid))
         if system.state is SystemState.TORN_DOWN:
             return ToolResponse.success(
-                system_id,
+                str(uid),
                 "torn_down",
                 suggested_next_actions=["systems.get"],
                 data={"project": system.project},
             )
-        async with pool.connection() as conn, conn.transaction():
-            job = await _enqueue_teardown(conn, ctx, uid, system.project)
-        return job_envelope(job, "system_id", uid)
+        job = await _enqueue_teardown(conn, ctx, uid, system.project)
+    return job_envelope(job, "system_id", uid)
 
 
 async def _enqueue_teardown(

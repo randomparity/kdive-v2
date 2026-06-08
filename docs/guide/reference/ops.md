@@ -23,3 +23,54 @@ Break-glass teardown of a stuck cross-project System. Requires platform_admin.
 |---|---|---|---|
 | `reason` | `string` | yes | Mandatory non-blank break-glass justification (audited). |
 | `system_id` | `string` | yes | The cross-project System to tear down. |
+
+## `ops.jobs_list`
+
+`implemented` · `read-only`
+
+Cross-project queue depth and per-job state. Requires platform operator.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `limit` | `integer` | no | Maximum per-job rows returned (capped at 200). |
+| `states` | `any` | no | Filter per-job rows to these job states; omit for all. |
+
+## `ops.queue_pause`
+
+`implemented`
+
+Pause the worker's claim loop (jobs in flight finish). Requires platform operator.
+
+## `ops.queue_resume`
+
+`implemented`
+
+Resume the worker's claim loop. Requires platform operator.
+
+## `ops.reconcile_now`
+
+`implemented`
+
+Run one reconcile pass on demand; return the repair summary. Platform operator.
+
+## `ops.set_cost_class_coeff`
+
+`implemented`
+
+Upsert a cost class's pricing coefficient. Applies from the next charge. Operator.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `coeff` | `any` | yes | Pricing multiplier (number or decimal string, > 0). |
+| `cost_class` | `string` | yes | Cost class whose pricing coefficient to set. |
+
+## `ops.set_host_capacity`
+
+`implemented`
+
+Set a host's concurrent allocation cap. Blocks new placement; no eviction. Operator.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `concurrent_allocation_cap` | `integer` | yes | Maximum concurrent allocations on the host (>= 0). |
+| `resource_id` | `string` | yes | Host (resource) id to set the cap for. |

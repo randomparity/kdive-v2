@@ -430,6 +430,26 @@ def test_force_teardown_idempotent_on_torn_down(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_force_teardown_twice_dedups_to_one_job(migrated_url: str) -> None:
+    # Re-invoking break-glass teardown enqueues no second job (the {uid}:teardown dedup key),
+    # and the read+check+enqueue runs under the SYSTEM lock so the second call is race-safe.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id = await _system(pool, state=SystemState.READY)
+            first = await breakglass.force_teardown(
+                pool, _admin_ctx(), system_id=str(sys_id), reason="evict"
+            )
+            second = await breakglass.force_teardown(
+                pool, _admin_ctx(), system_id=str(sys_id), reason="evict again"
+            )
+        assert first.object_id == second.object_id  # same dedup'd job
+        assert await _job_count(migrated_url, f"{sys_id}:teardown") == 1
+        # Both attempts are audited (the accountability row records each break-glass call).
+        assert await _count_platform_audit(migrated_url) == 2
+
+    asyncio.run(_run())
+
+
 def test_force_teardown_bad_uuid_unaudited(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
