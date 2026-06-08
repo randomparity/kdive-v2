@@ -371,7 +371,7 @@ Update `__all__` → `["build_local_runtime", "build_provider_resolver", "ensure
 
 - [ ] **Step 3: `app.py` — thread the resolver; MCP registrars get the resolved local runtime; handlers still get it too (worker migration is Task 4)**
 
-Replace the composition import and add the resolver/ResourceKind imports:
+Replace the composition import (`app.py:48`) and the runtime-type import (`app.py:49`) with the resolver/ResourceKind imports. **Remove `from kdive.providers.runtime import ProviderRuntime` entirely** — every `ProviderRuntime` annotation in `app.py` (the `PlaneRegistrar`/`HandlerRegistrar` aliases, `_plain`'s ignored slot, the `build_app` param) becomes `ProviderResolver`, so the import is orphaned and would trip ruff F401 at this commit's `just lint`. (A value-level `resolver.resolve(...)` yields a `ProviderRuntime` but needs no import.)
 
 ```python
 from kdive.domain.models import ResourceKind
