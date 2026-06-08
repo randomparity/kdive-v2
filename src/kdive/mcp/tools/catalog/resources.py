@@ -21,14 +21,15 @@ from pydantic import Field
 
 from kdive.db.repositories import RESOURCES
 from kdive.domain.errors import ErrorCategory
-from kdive.domain.models import Resource, ResourceKind
-from kdive.domain.state import ResourceStatus
+from kdive.domain.models import Allocation, Resource, ResourceKind
+from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
+from kdive.mcp.tools.ops.breakglass import breakglass_release_allocation
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import (
@@ -36,6 +37,7 @@ from kdive.security.authz.rbac import (
     PlatformRole,
     require_platform_role,
 )
+from kdive.services.allocation_release import ReleaseOutcome
 
 _log = logging.getLogger(__name__)
 
@@ -44,6 +46,13 @@ _FLAT_CAP_KEYS = ("arch", "vcpus", "memory_mb", "concurrent_allocation_cap")
 _SET_STATUS_TOOL = "resources.set_status"
 _CORDON_TOOL = "resources.cordon"
 _UNCORDON_TOOL = "resources.uncordon"
+_DRAIN_TOOL = "resources.drain"
+
+# Allocations that hold a slot on the host — the releasable states. Deliberately not the
+# broader capacity set (which also counts `requested`): a `requested` allocation is waiting
+# for placement, not holding the host, and is not releasable (ADR-0062 §3).
+_DRAINABLE = (AllocationState.GRANTED, AllocationState.ACTIVE, AllocationState.RELEASING)
+_DRAIN_MODES = ("passive", "force_release")
 
 
 def _error(object_id: str) -> ToolResponse:
@@ -184,6 +193,24 @@ def _denied(object_id: str) -> ToolResponse:
     return ToolResponse.failure(object_id, ErrorCategory.AUTHORIZATION_DENIED)
 
 
+def _classify_drain_release(alloc_id: str, outcome: ReleaseOutcome) -> ToolResponse:
+    """Map one break-glass release outcome to a per-allocation drain result item (ADR-0062 §3).
+
+    ``released`` → success; ``STALE_HANDLE`` (already terminal — nothing to do) → ``skipped``;
+    any other category → failure. ``current_status`` is carried only when present — the
+    reconcile-failure outcome has none — mirroring the sibling break-glass envelope so the two
+    tools' result shapes never diverge.
+    """
+    if outcome.released:
+        return ToolResponse.success(alloc_id, "released")
+    data = {"current_status": outcome.current_status} if outcome.current_status else {}
+    if outcome.category is ErrorCategory.STALE_HANDLE:
+        return ToolResponse.success(alloc_id, "skipped", data=data)
+    return ToolResponse.failure(
+        alloc_id, outcome.category or ErrorCategory.CONFIGURATION_ERROR, data=data
+    )
+
+
 async def set_resource_status(
     pool: AsyncConnectionPool, ctx: RequestContext, *, resource_id: str, status: str
 ) -> ToolResponse:
@@ -284,6 +311,121 @@ async def uncordon_resource(
     )
 
 
+def _drain_role(mode: str) -> PlatformRole:
+    """`force_release` empties every tenant's allocations → admin; passive cordon → operator."""
+    if mode == "force_release":
+        return PlatformRole.PLATFORM_ADMIN
+    return PlatformRole.PLATFORM_OPERATOR
+
+
+async def _live_allocations(conn: AsyncConnection, resource_id: UUID) -> list[Allocation]:
+    """Allocations currently holding a slot on the host (``_DRAINABLE``), oldest first."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT * FROM allocations WHERE resource_id = %s AND state = ANY(%s) "
+            "ORDER BY created_at, id",
+            (resource_id, [s.value for s in _DRAINABLE]),
+        )
+        rows = await cur.fetchall()
+    return [Allocation.model_validate(row) for row in rows]
+
+
+async def _force_release_allocations(
+    pool: AsyncConnectionPool, ctx: RequestContext, live: list[Allocation], *, reason: str
+) -> tuple[list[ToolResponse], dict[str, int]]:
+    """Break-glass release each live allocation; return per-allocation items + a tally.
+
+    A per-allocation failure does not stop the drain or roll back earlier releases — the host
+    is left partially drained and still cordoned, so the action is re-invokable over the
+    remaining set (ADR-0062 §3).
+    """
+    items: list[ToolResponse] = []
+    tally = {"released": 0, "skipped": 0, "failed": 0}
+    for alloc in live:
+        outcome = await breakglass_release_allocation(
+            pool, ctx, alloc=alloc, tool=_DRAIN_TOOL, reason=reason
+        )
+        item = _classify_drain_release(str(alloc.id), outcome)
+        items.append(item)
+        if item.status == "released":
+            tally["released"] += 1
+        elif item.status == "skipped":
+            tally["skipped"] += 1
+        else:
+            tally["failed"] += 1
+    return items, tally
+
+
+async def drain_resource(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    resource_id: str,
+    mode: str = "passive",
+    reason: str = "",
+) -> ToolResponse:
+    """Cordon a host, then report (``passive``) or force-release (``force_release``) allocations.
+
+    ``passive`` (``platform_operator``) cordons and returns the host's live allocations to finish
+    or expire. ``force_release`` (``platform_admin`` + a non-blank ``reason``) cordons and routes
+    each live allocation through the same break-glass attribution path as ``ops.force_release``,
+    returning a per-allocation result list (released/skipped/failed). Both modes leave the host
+    ``cordoned``; the action carries no persisted state (ADR-0062 §3).
+    """
+    if mode not in _DRAIN_MODES:
+        return _error(mode)
+    try:
+        require_platform_role(ctx, _drain_role(mode))
+    except AuthorizationError:
+        await audit_platform_denial(
+            pool,
+            ctx,
+            tool=_DRAIN_TOOL,
+            scope=f"resource:{resource_id}",
+            args={"resource_id": resource_id, "mode": mode},
+        )
+        return _denied(resource_id)
+    if mode == "force_release" and not reason.strip():
+        return _error(resource_id)
+    uid = _as_uuid(resource_id)
+    if uid is None:
+        return _error(resource_id)
+    with bind_context(principal=ctx.principal):
+        async with pool.connection() as conn:
+            resource = await _apply_cordon(conn, uid, cordoned=True)
+            if resource is None:
+                return _error(resource_id)
+            await _audit_host_action(
+                conn, ctx, tool=_DRAIN_TOOL, resource_id=uid, detail="cordoned=true"
+            )
+        async with pool.connection() as conn:
+            live = await _live_allocations(conn, uid)
+        if mode == "passive":
+            items = [
+                ToolResponse.success(
+                    str(alloc.id),
+                    alloc.state.value,
+                    data={"project": alloc.project, "resource_id": str(uid)},
+                )
+                for alloc in live
+            ]
+            return ToolResponse.collection(
+                resource_id,
+                "cordoned",
+                items,
+                suggested_next_actions=[_DRAIN_TOOL, "inventory.list"],
+                data={"mode": mode},
+            )
+        items, tally = await _force_release_allocations(pool, ctx, live, reason=reason)
+        return ToolResponse.collection(
+            resource_id,
+            "cordoned",
+            items,
+            suggested_next_actions=[_DRAIN_TOOL],
+            data={"mode": mode, **{key: str(value) for key, value in tally.items()}},
+        )
+
+
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `resources.*` tools on ``app``, bound to ``pool``."""
 
@@ -347,3 +489,27 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     ) -> ToolResponse:
         """Restore a host to schedulable; leaves status unchanged. Requires platform operator."""
         return await uncordon_resource(pool, current_context(), resource_id=resource_id)
+
+    @app.tool(
+        name="resources.drain",
+        annotations=_docmeta.destructive(),
+        meta={"maturity": "implemented"},
+    )
+    async def resources_drain(
+        resource_id: Annotated[str, Field(description="The host Resource UUID to drain.")],
+        mode: Annotated[
+            str,
+            Field(description="'passive' (operator: cordon + report) or 'force_release' (admin)."),
+        ] = "passive",
+        reason: Annotated[
+            str,
+            Field(description="Mandatory non-blank justification for 'force_release' (audited)."),
+        ] = "",
+    ) -> ToolResponse:
+        """Cordon a host, then report (passive) or force-release (force_release) its allocations.
+
+        passive requires platform operator; force_release requires platform admin + a reason.
+        """
+        return await drain_resource(
+            pool, current_context(), resource_id=resource_id, mode=mode, reason=reason
+        )

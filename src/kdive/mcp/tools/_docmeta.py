@@ -23,6 +23,7 @@ DESTRUCTIVE_TOOLS = frozenset(
         "systems.reprovision",
         "ops.force_teardown",
         "ops.force_release",
+        "resources.drain",
     }
 )
 

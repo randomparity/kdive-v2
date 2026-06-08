@@ -82,6 +82,7 @@ _BEHAVIOR_TESTS_BY_TOOL = {
     "ops.set_host_capacity": ("tests/mcp/ops/test_ops_tuning.py",),
     "resources.cordon": ("tests/mcp/catalog/test_resources_tools.py",),
     "resources.describe": ("tests/mcp/catalog/test_resources_tools.py",),
+    "resources.drain": ("tests/mcp/catalog/test_resources_tools.py",),
     "resources.list": ("tests/mcp/catalog/test_resources_tools.py",),
     "resources.set_status": ("tests/mcp/catalog/test_resources_tools.py",),
     "resources.uncordon": ("tests/mcp/catalog/test_resources_tools.py",),

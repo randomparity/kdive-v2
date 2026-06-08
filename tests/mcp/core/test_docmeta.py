@@ -33,6 +33,7 @@ def test_destructive_tools_set_is_the_reviewed_set() -> None:
                 "systems.reprovision",
                 "ops.force_teardown",
                 "ops.force_release",
+                "resources.drain",
             }
         )
         == _docmeta.DESTRUCTIVE_TOOLS
