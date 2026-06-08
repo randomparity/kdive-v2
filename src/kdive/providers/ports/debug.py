@@ -117,7 +117,11 @@ class GdbMiEngine(Protocol):
         ...
 
     def continue_(self, attachment: GdbMiAttachment, *, timeout_sec: float) -> GdbStopRecord:
-        """Resume execution and return the next stop record, if any.
+        """Resume execution and return a stop record.
+
+        If the requested wait times out, the provider interrupts execution and returns the
+        resulting stop with ``timed_out=True``. If no stop arrives after the interrupt, the
+        provider raises instead of returning ``None``.
 
         Raises:
             CategorizedError: ``CONFIGURATION_ERROR`` for invalid timeout values,
