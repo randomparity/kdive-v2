@@ -8,16 +8,10 @@ realized operation contracts.
 
 from __future__ import annotations
 
-from typing import Any, NewType, TypedDict
+from typing import NewType, TypedDict
 
 SystemHandle = NewType("SystemHandle", str)
 TransportHandle = NewType("TransportHandle", str)
-KernelArtifact = NewType("KernelArtifact", str)
-ArtifactRef = NewType("ArtifactRef", str)
-BreakpointId = NewType("BreakpointId", str)
-
-type BreakLocation = dict[str, Any]
-type Registers = dict[str, Any]
 
 
 class OwnedInfra(TypedDict):
