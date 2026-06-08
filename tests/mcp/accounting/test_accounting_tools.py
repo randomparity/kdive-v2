@@ -13,8 +13,8 @@ from contextlib import asynccontextmanager
 
 from psycopg_pool import AsyncConnectionPool
 
+import kdive.mcp.tools.accounting as acct_tools
 from kdive.mcp.auth import AuthError, RequestContext
-from kdive.mcp.tools.accounting import usage as acct_tools
 from kdive.security.rbac import AuthorizationError, Role
 
 

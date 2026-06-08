@@ -25,12 +25,12 @@ from uuid import UUID, uuid4
 import psycopg
 from psycopg_pool import AsyncConnectionPool
 
+import kdive.mcp.tools.accounting as acct_tools
 from kdive.db.repositories import ALLOCATIONS, RESOURCES
 from kdive.domain.models import Allocation, Resource, ResourceKind
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
-from kdive.mcp.tools.accounting import usage as acct_tools
 from kdive.security.rbac import AuthorizationError, PlatformRole, Role
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

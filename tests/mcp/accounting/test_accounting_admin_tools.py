@@ -15,9 +15,9 @@ from decimal import Decimal
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
+import kdive.mcp.tools.accounting as acct_tools
 from kdive.db.repositories import BUDGETS, QUOTAS
 from kdive.mcp.auth import AuthError, RequestContext
-from kdive.mcp.tools.accounting import usage as acct_tools
 from kdive.security.rbac import AuthorizationError, Role
 
 

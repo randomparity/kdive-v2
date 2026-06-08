@@ -19,7 +19,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import build_verifier
 from kdive.mcp.middleware import DenialAuditMiddleware
-from kdive.mcp.tools.accounting import usage as accounting_tools
+from kdive.mcp.tools import accounting as accounting_tools
 from kdive.mcp.tools.catalog import artifacts, investigations, jobs, resources
 from kdive.mcp.tools.debug import introspect
 from kdive.mcp.tools.debug import sessions as debug_tools

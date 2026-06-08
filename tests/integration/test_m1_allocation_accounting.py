@@ -38,6 +38,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+import kdive.mcp.tools.accounting as acct_tools
 from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RUNS, SYSTEMS
 from kdive.domain.cost import cost, quantize_kcu, rate
 from kdive.domain.models import Allocation, Investigation, Job, Run, System
@@ -48,7 +49,6 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import AuthError
-from kdive.mcp.tools.accounting import usage as acct_tools
 from kdive.mcp.tools.lifecycle import allocations as alloc_tools
 from kdive.mcp.tools.lifecycle import control as control_tools
 from kdive.mcp.tools.lifecycle import systems as systems_tools
