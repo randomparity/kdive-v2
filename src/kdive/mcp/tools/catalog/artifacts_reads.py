@@ -118,12 +118,12 @@ async def artifacts_list(
     return ToolResponse.collection(
         system_id,
         "ok",
-        await artifact_list_items(pool, ctx, system_id=system_id),
+        await _artifact_list_items(pool, ctx, system_id=system_id),
         suggested_next_actions=["artifacts.get"],
     )
 
 
-async def artifact_list_items(
+async def _artifact_list_items(
     pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str
 ) -> list[ToolResponse]:
     """Return redacted artifact item envelopes; absent systems produce an empty list."""

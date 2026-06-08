@@ -43,7 +43,7 @@ from kdive.mcp.tools._common import (
     job_envelope,
 )
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
-from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+from kdive.mcp.tools.catalog.artifacts_reads import _artifact_list_items
 from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import CrashPostmortem
 from kdive.security.context import RequestContext
@@ -199,7 +199,7 @@ async def list_vmcores(
     pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str
 ) -> ToolResponse:
     """Return the System's `redacted` vmcore artifacts in one collection envelope."""
-    listed = await artifacts_tools.artifact_list_items(pool, ctx, system_id=system_id)
+    listed = await _artifact_list_items(pool, ctx, system_id=system_id)
     items = [r for r in listed if _is_redacted_vmcore(r.refs.get("object", ""))]
     return ToolResponse.collection(
         system_id,

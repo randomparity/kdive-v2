@@ -14,7 +14,6 @@ from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.catalog.artifacts_reads import (
     ArtifactReadHandlers,
     ArtifactSearchRequest,
-    artifact_list_items,
     artifacts_get,
     artifacts_list,
 )
@@ -27,7 +26,6 @@ from kdive.mcp.tools.catalog.artifacts_uploads import (
 __all__ = [
     "artifacts_get",
     "artifacts_list",
-    "artifact_list_items",
     "ArtifactSearchRequest",
     "ArtifactReadHandlers",
     "create_run_upload",
