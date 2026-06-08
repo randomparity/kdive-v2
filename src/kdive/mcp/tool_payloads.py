@@ -39,6 +39,10 @@ type ResourceSelector = ResourceById | ResourceByKind
 
 class AllocationRequestPayload(SelectorPayload):
     resource: ResourceSelector = Field(default_factory=ResourceByKind, discriminator="mode")
+    pcie_devices: list[str] = Field(
+        default_factory=list,
+        description="PCIe match specs ('vendor:device' or 'class=NN') to resolve + claim.",
+    )
 
 
 class EstimateRequestPayload(SelectorPayload):

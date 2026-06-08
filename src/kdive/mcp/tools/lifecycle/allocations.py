@@ -12,6 +12,7 @@ envelope's failure-status set). RBAC: `request`/`release` require `operator`; re
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -23,8 +24,9 @@ from pydantic import Field
 
 from kdive.db.repositories import ALLOCATIONS, RESOURCES
 from kdive.domain.cost import Selector
-from kdive.domain.errors import ErrorCategory
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Resource
+from kdive.domain.pcie import MatchOutcome, parse_match_spec
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
@@ -35,6 +37,7 @@ from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.security.authz.context import RequestContext, require_project
 from kdive.security.authz.rbac import Role, require_role
+from kdive.services import pcie_claim
 from kdive.services.allocation_admission import (
     AdmissionOutcome,
     admit,
@@ -97,6 +100,70 @@ async def _resolve_resource(
     return Resource.model_validate(row) if row else None
 
 
+@dataclass(frozen=True, slots=True)
+class _Selection:
+    """A resolved placement target, or the typed denial category when none qualifies."""
+
+    resource: Resource | None
+    category: ErrorCategory = ErrorCategory.CONFIGURATION_ERROR
+
+
+async def _select_target(
+    conn: AsyncConnection, resource_id: UUID | None, kind: str, specs: tuple[str, ...]
+) -> _Selection:
+    """Resolve the placement target, PCIe-aware when ``specs`` is non-empty (ADR-0068).
+
+    With no specs this is the PCIe-blind path: ``_resolve_resource`` picks a schedulable
+    host (a missing/non-schedulable target is a ``configuration_error``). With specs, the
+    candidate schedulable hosts are filtered to one that has a **free matching device for
+    every spec** — a best-effort pre-lock filter; the in-lock claim re-resolves
+    authoritatively. The denial splits config vs. capacity: a spec **no candidate host's
+    descriptors match at all** is a ``configuration_error`` (the card is not in the fleet);
+    a spec whose matches exist but are **all currently claimed** is an ``allocation_denied``
+    (busy, queueable via #164).
+    """
+    if not specs:
+        return _Selection(await _resolve_resource(conn, resource_id, kind))
+    candidates = await _schedulable_candidates(conn, resource_id, kind)
+    if not candidates:
+        return _Selection(None, ErrorCategory.CONFIGURATION_ERROR)
+    saw_capacity = False
+    for candidate in candidates:
+        descriptors = pcie_claim.descriptors_for(candidate)
+        claims = await pcie_claim.active_claims(conn, candidate.id)
+        resolution = pcie_claim.resolve_union(list(specs), descriptors, claims=claims)
+        if resolution.outcome is MatchOutcome.MATCHED:
+            return _Selection(candidate)
+        if resolution.outcome is MatchOutcome.CAPACITY:
+            saw_capacity = True
+    category = (
+        ErrorCategory.ALLOCATION_DENIED if saw_capacity else ErrorCategory.CONFIGURATION_ERROR
+    )
+    return _Selection(None, category)
+
+
+async def _schedulable_candidates(
+    conn: AsyncConnection, resource_id: UUID | None, kind: str
+) -> list[Resource]:
+    """Return the schedulable placement candidates for the PCIe-aware selection.
+
+    A by-id request yields the single host if it is schedulable (the same bar
+    :func:`_resolve_resource` holds it to); a by-kind request yields every schedulable
+    host of the kind, oldest first, so selection can route around a busy card.
+    """
+    if resource_id is not None:
+        resource = await _resolve_resource(conn, resource_id, kind)
+        return [resource] if resource is not None else []
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT * FROM resources WHERE kind = %s AND status = 'available' AND NOT cordoned "
+            "ORDER BY created_at, id",
+            (kind,),
+        )
+        rows = await cur.fetchall()
+    return [Resource.model_validate(row) for row in rows]
+
+
 async def request_allocation(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
@@ -133,11 +200,18 @@ async def request_allocation(
         else:
             kind = payload.resource.kind
         selector = Selector(vcpus=payload.vcpus, memory_gb=payload.memory_gb)
+        specs = tuple(payload.pcie_devices)
+        try:
+            for spec in specs:  # grammar validation only — pre-lock, no durable write
+                parse_match_spec(spec)
+        except CategorizedError:
+            return _config_error(kind if resolved_id is None else str(resolved_id))
         async with pool.connection() as conn:
-            resource = await _resolve_resource(conn, resolved_id, kind)
-            if resource is None:
+            selection = await _select_target(conn, resolved_id, kind, specs)
+            if selection.resource is None:
                 object_id = str(resolved_id) if resolved_id is not None else kind
-                return _config_error(object_id)
+                return ToolResponse.failure(object_id, selection.category, data={})
+            resource = selection.resource
             outcome = await admit(
                 conn,
                 DomainAllocationRequest(
@@ -147,6 +221,7 @@ async def request_allocation(
                     selector=selector,
                     window=payload.window,
                     idempotency_key=idempotency_key,
+                    pcie_specs=specs,
                 ),
             )
         if outcome.granted and outcome.allocation is not None:
