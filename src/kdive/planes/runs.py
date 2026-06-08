@@ -21,6 +21,7 @@ from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
 from kdive.planes.runs_shared import (
+    BuildStepResult,
     cmdline_for,
     existing_build_result,
     finalize_build,
@@ -103,13 +104,12 @@ async def build_handler(conn: AsyncConnection, job: Job, builder: Builder) -> st
         except CategorizedError as exc:
             await _fail_build(conn, job, run, exc.category)
             raise
-        result = {
-            "kernel_ref": output.kernel_ref,
-            "debuginfo_ref": output.debuginfo_ref,
-            "build_id": output.build_id,
-        }
-        if payload.cmdline is not None:
-            result["cmdline"] = payload.cmdline
+        result = BuildStepResult(
+            kernel_ref=output.kernel_ref,
+            debuginfo_ref=output.debuginfo_ref,
+            build_id=output.build_id,
+            cmdline=payload.cmdline,
+        )
     await finalize_build(conn, job, run, result)
     return str(run_id)
 

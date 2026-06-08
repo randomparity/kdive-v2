@@ -12,12 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Annotated, Literal, LiteralString, NamedTuple
+from typing import Annotated, Literal, NamedTuple
 from uuid import UUID
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
-from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
@@ -45,6 +44,7 @@ from kdive.mcp.tools._common import (
     job_envelope,
 )
 from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+from kdive.planes.runs_shared import existing_build_result
 from kdive.providers.composition import ProviderRuntime
 from kdive.providers.ports import CrashPostmortem
 from kdive.security.context import RequestContext
@@ -89,8 +89,6 @@ _CRASH_ALLOWLIST: frozenset[str] = frozenset(
     }
 )
 _TRIAGE_COMMANDS: tuple[str, ...] = ("log", "bt")
-
-_BUILD_STEP_SQL: LiteralString = "SELECT result FROM run_steps WHERE run_id = %s AND step = 'build'"
 
 
 def _system_job_envelope(job: Job, system_id: UUID) -> ToolResponse:
@@ -171,13 +169,8 @@ async def list_vmcores(
 
 
 async def _build_id_for_run(conn: AsyncConnection, run_id: UUID) -> str | None:
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(_BUILD_STEP_SQL, (run_id,))
-        row = await cur.fetchone()
-    if row is None or not isinstance(row["result"], dict):
-        return None
-    build_id = row["result"].get("build_id")
-    return build_id if isinstance(build_id, str) and build_id else None
+    result = await existing_build_result(conn, run_id)
+    return None if result is None else result.build_id
 
 
 class _PostmortemTargets(NamedTuple):

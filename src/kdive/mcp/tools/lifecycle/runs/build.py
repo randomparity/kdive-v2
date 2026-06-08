@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -33,8 +33,8 @@ from kdive.mcp.tools.lifecycle.runs.common import (
     RUN_BUILD_TERMINAL,
     run_job_envelope,
 )
+from kdive.planes.runs_shared import BuildStepResult, platform_owned_cmdline_token
 from kdive.planes.runs_shared import existing_build_result as _existing_build_result
-from kdive.planes.runs_shared import platform_owned_cmdline_token
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
 from kdive.providers.build_validation import validate_external_artifacts
 from kdive.providers.component_validation import (
@@ -283,15 +283,10 @@ def _external_config_requirements(profile: ExternalBuildProfile) -> ConfigRequir
     return entry.requires.config
 
 
-def _complete_envelope(run_id: UUID, result: dict[str, Any]) -> ToolResponse:
+def _complete_envelope(run_id: UUID, result: BuildStepResult) -> ToolResponse:
     """Build the success envelope from a ledger ``result``."""
-    refs = {"kernel": result["kernel_ref"]}
-    if result.get("debuginfo_ref"):
-        refs["vmlinux"] = result["debuginfo_ref"]
-    if result.get("initrd_ref"):
-        refs["initrd"] = result["initrd_ref"]
     return ToolResponse.success(
-        str(run_id), "succeeded", suggested_next_actions=["runs.get"], refs=refs
+        str(run_id), "succeeded", suggested_next_actions=["runs.get"], refs=result.refs()
     )
 
 
@@ -305,13 +300,13 @@ async def _finalize_external_build(
     heads: dict[str, HeadResult],
 ) -> ToolResponse:
     """Write artifact rows, ledger result, and created -> succeeded under the per-Run lock."""
-    result = {
-        "kernel_ref": output.kernel_ref,
-        "debuginfo_ref": output.debuginfo_ref,
-        "initrd_ref": keys.get("initrd", ""),
-        "build_id": output.build_id,
-        "cmdline": cmdline,
-    }
+    result = BuildStepResult(
+        kernel_ref=output.kernel_ref,
+        debuginfo_ref=output.debuginfo_ref,
+        initrd_ref=keys.get("initrd"),
+        build_id=output.build_id,
+        cmdline=cmdline,
+    )
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run.id):
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute("SELECT state FROM runs WHERE id = %s FOR UPDATE", (run.id,))
@@ -332,7 +327,7 @@ async def _finalize_external_build(
         await conn.execute(
             "INSERT INTO run_steps (run_id, step, state, result) "
             "VALUES (%s, 'build', 'succeeded', %s) ON CONFLICT (run_id, step) DO NOTHING",
-            (run.id, Jsonb(result)),
+            (run.id, Jsonb(result.dump())),
         )
         await conn.execute(
             "UPDATE runs SET kernel_ref = %s, debuginfo_ref = %s, state = 'succeeded' "
