@@ -13,7 +13,12 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.models import Sensitivity
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+from kdive.mcp.tools.catalog.artifacts_reads import (
+    ArtifactReadHandlers,
+    ArtifactSearchRequest,
+    artifacts_get,
+    artifacts_list,
+)
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.store.objectstore import FetchedArtifact, HeadResult
 from tests.mcp._seed import seed_crashed_system
@@ -73,8 +78,8 @@ class _SearchStore:
         return FetchedArtifact(self.data, Sensitivity.REDACTED, "console")
 
 
-def _artifact_read_handlers(store: _SearchStore) -> artifacts_tools.ArtifactReadHandlers:
-    return artifacts_tools.ArtifactReadHandlers(lambda: store)
+def _artifact_read_handlers(store: _SearchStore) -> ArtifactReadHandlers:
+    return ArtifactReadHandlers(lambda: store)
 
 
 def _search_request(
@@ -84,8 +89,8 @@ def _search_request(
     before_lines: int = 2,
     after_lines: int = 4,
     max_matches: int = 20,
-) -> artifacts_tools.ArtifactSearchRequest:
-    return artifacts_tools.ArtifactSearchRequest(
+) -> ArtifactSearchRequest:
+    return ArtifactSearchRequest(
         artifact_id=artifact_id,
         pattern=pattern,
         before_lines=before_lines,
@@ -98,7 +103,7 @@ def test_artifacts_list_returns_redacted_only(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id, _, red_id = await _seed_system_with_artifacts(pool)
-            resp = await artifacts_tools.artifacts_list(pool, _ctx(), system_id=sys_id)
+            resp = await artifacts_list(pool, _ctx(), system_id=sys_id)
         ids = {r.object_id for r in resp.collection_items()}
         assert ids == {red_id}  # the sensitive row is never surfaced
 
@@ -195,7 +200,7 @@ def test_artifacts_list_requires_viewer_role(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             sys_id, _, _ = await _seed_system_with_artifacts(pool)
             with pytest.raises(AuthorizationError):
-                await artifacts_tools.artifacts_list(pool, _ctx(role=None), system_id=sys_id)
+                await artifacts_list(pool, _ctx(role=None), system_id=sys_id)
 
     asyncio.run(_run())
 
@@ -204,7 +209,7 @@ def test_artifacts_get_redacted_returns_ref(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             _, _, red_id = await _seed_system_with_artifacts(pool)
-            resp = await artifacts_tools.artifacts_get(pool, _ctx(), artifact_id=red_id)
+            resp = await artifacts_get(pool, _ctx(), artifact_id=red_id)
         assert resp.status != "error" and resp.refs
 
     asyncio.run(_run())
@@ -215,7 +220,7 @@ def test_artifacts_get_requires_viewer_role(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             _, _, red_id = await _seed_system_with_artifacts(pool)
             with pytest.raises(AuthorizationError):
-                await artifacts_tools.artifacts_get(pool, _ctx(role=None), artifact_id=red_id)
+                await artifacts_get(pool, _ctx(role=None), artifact_id=red_id)
 
     asyncio.run(_run())
 
@@ -224,7 +229,7 @@ def test_artifacts_get_sensitive_is_not_found_shaped(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             _, sens_id, _ = await _seed_system_with_artifacts(pool)
-            resp = await artifacts_tools.artifacts_get(pool, _ctx(), artifact_id=sens_id)
+            resp = await artifacts_get(pool, _ctx(), artifact_id=sens_id)
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -234,9 +239,7 @@ def test_artifacts_get_cross_project_is_not_found_shaped(migrated_url: str) -> N
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             _, _, red_id = await _seed_system_with_artifacts(pool)
-            resp = await artifacts_tools.artifacts_get(
-                pool, _ctx(projects=("other",)), artifact_id=red_id
-            )
+            resp = await artifacts_get(pool, _ctx(projects=("other",)), artifact_id=red_id)
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -245,7 +248,7 @@ def test_artifacts_get_cross_project_is_not_found_shaped(migrated_url: str) -> N
 def test_artifacts_get_malformed_uuid_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await artifacts_tools.artifacts_get(pool, _ctx(), artifact_id="nope")
+            resp = await artifacts_get(pool, _ctx(), artifact_id="nope")
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -255,9 +258,7 @@ def test_artifacts_list_cross_project_is_empty(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id, _, _ = await _seed_system_with_artifacts(pool)
-            resp = await artifacts_tools.artifacts_list(
-                pool, _ctx(projects=("other",)), system_id=sys_id
-            )
+            resp = await artifacts_list(pool, _ctx(projects=("other",)), system_id=sys_id)
         assert resp.collection_items() == []
 
     asyncio.run(_run())

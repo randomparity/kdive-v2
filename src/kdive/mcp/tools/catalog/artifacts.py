@@ -12,31 +12,31 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.catalog.artifacts_reads import (
-    ArtifactReadHandlers,
-    ArtifactSearchRequest,
-    artifacts_get,
-    artifacts_list,
+    ArtifactReadHandlers as _ArtifactReadHandlers,
+)
+from kdive.mcp.tools.catalog.artifacts_reads import (
+    ArtifactSearchRequest as _ArtifactSearchRequest,
+)
+from kdive.mcp.tools.catalog.artifacts_reads import (
+    artifacts_get as _artifacts_get,
+)
+from kdive.mcp.tools.catalog.artifacts_reads import (
+    artifacts_list as _artifacts_list,
 )
 from kdive.mcp.tools.catalog.artifacts_uploads import (
-    ArtifactDeclaration,
-    create_run_upload,
-    create_system_upload,
+    ArtifactDeclaration as _ArtifactDeclaration,
 )
-
-__all__ = [
-    "artifacts_get",
-    "artifacts_list",
-    "ArtifactSearchRequest",
-    "ArtifactReadHandlers",
-    "create_run_upload",
-    "create_system_upload",
-    "register",
-]
+from kdive.mcp.tools.catalog.artifacts_uploads import (
+    create_run_upload as _create_run_upload,
+)
+from kdive.mcp.tools.catalog.artifacts_uploads import (
+    create_system_upload as _create_system_upload,
+)
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the `artifacts.*` tools on ``app``, bound to ``pool``."""
-    read_handlers = ArtifactReadHandlers()
+    read_handlers = _ArtifactReadHandlers()
 
     @app.tool(
         name="artifacts.list",
@@ -49,7 +49,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         ],
     ) -> ToolResponse:
         """List the redacted artifacts for a System. Requires viewer."""
-        return await artifacts_list(pool, current_context(), system_id=system_id)
+        return await _artifacts_list(pool, current_context(), system_id=system_id)
 
     @app.tool(
         name="artifacts.get",
@@ -63,7 +63,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         ],
     ) -> ToolResponse:
         """Fetch one redacted artifact by id. Requires viewer; sensitive ids are not-found."""
-        return await artifacts_get(pool, current_context(), artifact_id=artifact_id)
+        return await _artifacts_get(pool, current_context(), artifact_id=artifact_id)
 
     @app.tool(
         name="artifacts.search_text",
@@ -84,7 +84,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         return await read_handlers.artifacts_search_text(
             pool,
             current_context(),
-            request=ArtifactSearchRequest(
+            request=_ArtifactSearchRequest(
                 artifact_id=artifact_id,
                 pattern=pattern,
                 before_lines=before_lines,
@@ -101,12 +101,12 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     async def artifacts_create_run_upload_tool(
         run_id: Annotated[str, Field(description="The external-build Run id.")],
         artifacts: Annotated[
-            list[ArtifactDeclaration],
+            list[_ArtifactDeclaration],
             Field(description="Declared build artifacts: [{name, sha256 (base64), size_bytes}]."),
         ],
     ) -> ToolResponse:
         """Mint presigned PUTs for an external Run's build artifacts. Requires operator."""
-        return await create_run_upload(pool, current_context(), run_id=run_id, artifacts=artifacts)
+        return await _create_run_upload(pool, current_context(), run_id=run_id, artifacts=artifacts)
 
     @app.tool(
         name="artifacts.create_system_upload",
@@ -116,11 +116,11 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     async def artifacts_create_system_upload_tool(
         system_id: Annotated[str, Field(description="The DEFINED System id.")],
         artifacts: Annotated[
-            list[ArtifactDeclaration],
+            list[_ArtifactDeclaration],
             Field(description="Declared rootfs artifact: [{name, sha256 (base64), size_bytes}]."),
         ],
     ) -> ToolResponse:
         """Mint a presigned PUT for a DEFINED System's rootfs. Requires operator."""
-        return await create_system_upload(
+        return await _create_system_upload(
             pool, current_context(), system_id=system_id, artifacts=artifacts
         )

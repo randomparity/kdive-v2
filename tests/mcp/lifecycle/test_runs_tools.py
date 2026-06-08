@@ -2064,7 +2064,7 @@ def test_boot_handler_console_is_readable_via_artifacts(
     The SQL-count tests only verify the row was inserted; this test proves the artifacts
     read surface actually returns the console artifact, closing the behavioral gap.
     """
-    from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+    from kdive.mcp.tools.catalog.artifacts_reads import artifacts_list
 
     monkeypatch.setattr(runs_handlers, "object_store_from_env", lambda: minio_store)
     monkeypatch.setattr(runs_handlers, "console_log_path", lambda sid: tmp_path / f"{sid}.log")
@@ -2082,7 +2082,7 @@ def test_boot_handler_console_is_readable_via_artifacts(
             assert result == run_id
 
             # artifacts_list must return the console as a redacted artifact envelope.
-            listed = await artifacts_tools.artifacts_list(pool, _ctx(), system_id=system_id)
+            listed = await artifacts_list(pool, _ctx(), system_id=system_id)
 
         items = listed.collection_items()
         assert len(items) == 1

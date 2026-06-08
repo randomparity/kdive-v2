@@ -11,7 +11,7 @@ from kdive.db.repositories import RUNS
 from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.state import RunState
-from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+from kdive.mcp.tools.catalog.artifacts_uploads import create_run_upload
 from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers
 from kdive.providers.build_validation import validate_external_artifacts
 from kdive.providers.component_validation import ComponentSourceCapabilities
@@ -260,7 +260,7 @@ def test_complete_build_writes_artifacts_after_effective_config_validation(
         async with _pool(migrated_url) as pool:
             run_id = await _seed_run(pool, _EXTERNAL_PROFILE_WITH_REQUIREMENTS)
             config = b"CONFIG_SERIAL_8250_CONSOLE=y\nCONFIG_VIRTIO_BLK=y\nCONFIG_VIRTIO_PCI=y\n"
-            responses = await artifacts_tools.create_run_upload(
+            responses = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=str(run_id),
@@ -307,7 +307,7 @@ def test_complete_build_rejects_missing_effective_config_without_artifacts(
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_run(pool, _EXTERNAL_PROFILE_WITH_REQUIREMENTS)
-            responses = await artifacts_tools.create_run_upload(
+            responses = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=str(run_id),

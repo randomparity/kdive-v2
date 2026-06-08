@@ -14,7 +14,7 @@ import pytest
 from psycopg.rows import dict_row
 
 from kdive.domain.models import Sensitivity
-from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+from kdive.mcp.tools.catalog.artifacts_uploads import create_system_upload
 from kdive.planes import systems as systems_handlers
 from kdive.store.objectstore import ArtifactWriteRequest, ObjectStore, artifact_key
 from tests.mcp.systems_support import (
@@ -56,7 +56,7 @@ def test_define_upload_provision_reaches_ready_with_committed_rootfs(
             sys_id = (await _define(pool, _ctx(), alloc_id, _upload_profile())).object_id
 
             # 2. create_system_upload opens the window (persists the manifest, mints a PUT)
-            uploads = await artifacts_tools.create_system_upload(
+            uploads = await create_system_upload(
                 pool,
                 _ctx(),
                 system_id=sys_id,

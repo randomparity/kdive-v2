@@ -33,7 +33,7 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+from kdive.mcp.tools.catalog.artifacts_uploads import create_run_upload, create_system_upload
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.store.objectstore import PresignedUpload
 from tests.mcp.systems_support import SYSTEM_PROVISION_HANDLERS
@@ -201,7 +201,7 @@ def test_create_upload_mints_presigned_puts_and_persists_manifest(migrated_url: 
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
-            responses = await artifacts_tools.create_run_upload(
+            responses = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -240,7 +240,7 @@ def test_create_upload_accepts_effective_config_for_external_run(migrated_url: s
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
-            responses = await artifacts_tools.create_run_upload(
+            responses = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -273,7 +273,7 @@ def test_create_upload_rejects_non_external_run(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_SERVER_PROFILE)
             store = _FakeStore()
-            out = await artifacts_tools.create_run_upload(
+            out = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -291,7 +291,7 @@ def test_create_upload_rejects_unknown_artifact_name_for_run(migrated_url: str) 
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
-            out = await artifacts_tools.create_run_upload(
+            out = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -309,7 +309,7 @@ def test_create_upload_rejects_oversize_before_minting(migrated_url: str) -> Non
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
-            out = await artifacts_tools.create_run_upload(
+            out = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -328,7 +328,7 @@ def test_create_upload_rejects_just_over_5gib(migrated_url: str) -> None:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
             five_gib = 5 * 1024 * 1024 * 1024
-            out = await artifacts_tools.create_run_upload(
+            out = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -348,7 +348,7 @@ def test_create_upload_accepts_exactly_5gib(migrated_url: str) -> None:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
             five_gib = 5 * 1024 * 1024 * 1024
-            responses = await artifacts_tools.create_run_upload(
+            responses = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -368,7 +368,7 @@ def test_create_upload_accepts_large_binary_artifacts_at_5gib(migrated_url: str,
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
             five_gib = 5 * 1024 * 1024 * 1024
-            responses = await artifacts_tools.create_run_upload(
+            responses = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -388,7 +388,7 @@ def test_create_upload_rejects_effective_config_over_1mib_without_manifest(
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
-            out = await artifacts_tools.create_run_upload(
+            out = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,
@@ -416,7 +416,7 @@ def test_create_upload_requires_operator(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             with pytest.raises(AuthorizationError):
-                await artifacts_tools.create_run_upload(
+                await create_run_upload(
                     pool,
                     _ctx(role=Role.VIEWER),
                     run_id=run_id,
@@ -432,7 +432,7 @@ def test_create_upload_for_defined_system_mints_rootfs_and_persists(migrated_url
         async with _pool(migrated_url) as pool:
             sys_id = await _defined_system_via_tool(pool)
             store = _FakeStore()
-            responses = await artifacts_tools.create_system_upload(
+            responses = await create_system_upload(
                 pool,
                 _ctx(),
                 system_id=sys_id,
@@ -458,7 +458,7 @@ def test_create_upload_rejects_non_upload_kind_defined_system(migrated_url: str)
         async with _pool(migrated_url) as pool:
             sys_id = await _seed_system(pool, state=SystemState.DEFINED, rootfs_kind="local")
             store = _FakeStore()
-            responses = await artifacts_tools.create_system_upload(
+            responses = await create_system_upload(
                 pool,
                 _ctx(),
                 system_id=sys_id,
@@ -477,7 +477,7 @@ def test_create_upload_rejects_non_rootfs_name_for_system(migrated_url: str) -> 
         async with _pool(migrated_url) as pool:
             sys_id = await _defined_system_via_tool(pool)
             store = _FakeStore()
-            out = await artifacts_tools.create_system_upload(
+            out = await create_system_upload(
                 pool,
                 _ctx(),
                 system_id=sys_id,
@@ -495,7 +495,7 @@ def test_create_upload_rejects_empty_artifacts(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
             store = _FakeStore()
-            out = await artifacts_tools.create_run_upload(
+            out = await create_run_upload(
                 pool,
                 _ctx(),
                 run_id=run_id,

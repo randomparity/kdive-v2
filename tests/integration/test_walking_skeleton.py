@@ -29,7 +29,7 @@ from kdive.domain.models import Job, JobKind
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+from kdive.mcp.tools.catalog.artifacts_reads import artifacts_get, artifacts_list
 from kdive.mcp.tools.lifecycle import control as control_tools
 from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
 from kdive.planes import runs as runs_handlers
@@ -280,10 +280,10 @@ def test_raw_vmcore_is_sensitive_and_unreachable(migrated_url: str) -> None:
             vmcores = await vmcore_tools.list_vmcores(pool, ctx, system_id=sys_id)
             for r in vmcores.collection_items():
                 refs.extend(r.refs.values())
-            listed = await artifacts_tools.artifacts_list(pool, ctx, system_id=sys_id)
+            listed = await artifacts_list(pool, ctx, system_id=sys_id)
             for r in listed.collection_items():
                 refs.extend(r.refs.values())
-                got = await artifacts_tools.artifacts_get(pool, ctx, artifact_id=r.object_id)
+                got = await artifacts_get(pool, ctx, artifact_id=r.object_id)
                 refs.extend(got.refs.values())
             # The raw `sensitive` row's id is known only via direct SQL; artifacts.get on it is
             # not-found-shaped (no leak even by id).
@@ -294,7 +294,7 @@ def test_raw_vmcore_is_sensitive_and_unreachable(migrated_url: str) -> None:
                 )
                 raw_row = await cur.fetchone()
             assert raw_row is not None
-            raw_get = await artifacts_tools.artifacts_get(pool, ctx, artifact_id=str(raw_row["id"]))
+            raw_get = await artifacts_get(pool, ctx, artifact_id=str(raw_row["id"]))
             assert raw_get.status == "error"  # the raw row is unfetchable through the surface
         assert refs  # the redacted artifact was returned
         # A raw core is `.../vmcore-{method}` (no `-redacted`); it must never surface.
