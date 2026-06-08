@@ -315,11 +315,11 @@ async def _insert_session_locked(
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system.id):
         current = await SYSTEMS.get(conn, system.id)
         if current is None or current.state is not SystemState.READY:
-            connector.close_transport(handle)
+            _close(connector, str(handle))
             status = current.state.value if current else "torn_down"
             return _config_error(str(run.id), data={"current_status": status})
         if await _system_occupied(conn, system.id, transport):
-            connector.close_transport(handle)
+            _close(connector, str(handle))
             return ToolResponse.failure(str(run.id), ErrorCategory.TRANSPORT_CONFLICT)
         now = datetime.now(UTC)  # placeholder; the DB owns created_at/updated_at
         session = await DEBUG_SESSIONS.insert(

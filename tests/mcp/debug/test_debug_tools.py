@@ -368,7 +368,7 @@ def test_locked_recheck_closes_transport_when_system_crashed(migrated_url: str) 
                 # Drive the real row to `crashed` so the locked re-read observes the race,
                 # while the `system` object handed to the locked insert is still stale-ready.
                 await SYSTEMS.update_state(conn, system.id, SystemState.CRASHED)
-                conn_fake = _FakeConnector()
+                conn_fake = _RaisingCloseConnector()
                 handle = conn_fake.open_transport(SystemHandle("kdive-x"), "gdbstub")
                 resp = await debug_tools._insert_session_locked(
                     conn, _ctx(), run, system, handle, conn_fake, "gdbstub", uuid4()
@@ -396,7 +396,7 @@ def test_locked_recheck_closes_transport_when_conflict_appears(migrated_url: str
                 run = await RUNS.get(conn, UUID(run_b))
                 system = await SYSTEMS.get(conn, UUID(sys_id))
                 assert run is not None and system is not None
-                conn_fake = _FakeConnector()
+                conn_fake = _RaisingCloseConnector()
                 handle = conn_fake.open_transport(SystemHandle("kdive-x"), "gdbstub")
                 resp = await debug_tools._insert_session_locked(
                     conn, _ctx(), run, system, handle, conn_fake, "gdbstub", uuid4()
