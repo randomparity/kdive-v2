@@ -12,7 +12,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from functools import partial
-from typing import Any
 from uuid import UUID, uuid4
 
 from psycopg import AsyncConnection
@@ -44,9 +43,11 @@ from kdive.profiles.provisioning import (
     ProvisioningProfile,
     RootfsSource,
     _UploadRootfs,
+    dump_profile,
     reject_rootfs_upload_without_window,
     validate_profile,
 )
+from kdive.profiles.types import ProvisioningProfileInput
 from kdive.providers.component_validation import (
     ComponentSourceCapabilities,
     reject_unsupported_component_source,
@@ -193,7 +194,7 @@ async def provision_system(
     ctx: RequestContext,
     *,
     allocation_id: str,
-    profile: dict[str, Any],
+    profile: ProvisioningProfileInput,
     component_sources: ComponentSourceCapabilities | None = None,
     rootfs_validator: RootfsValidator | None = None,
 ) -> ToolResponse:
@@ -441,7 +442,7 @@ async def _insert_system_and_activate(
             project=alloc.project,
             allocation_id=alloc.id,
             state=state,
-            provisioning_profile=profile.model_dump(by_alias=True),
+            provisioning_profile=dump_profile(profile),
         ),
     )
     await audit.record(
@@ -532,7 +533,7 @@ async def define_system(
     ctx: RequestContext,
     *,
     allocation_id: str,
-    profile: dict[str, Any],
+    profile: ProvisioningProfileInput,
     component_sources: ComponentSourceCapabilities | None = None,
     rootfs_validator: RootfsValidator | None = None,
 ) -> ToolResponse:

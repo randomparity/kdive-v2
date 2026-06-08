@@ -24,7 +24,7 @@ builder resolves the config and preflights it against the kernel tree (ADR-0029 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from pydantic import (
     BaseModel,
@@ -36,6 +36,7 @@ from pydantic import (
 from kdive.components.references import ComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles._schema import schema_version_validator
+from kdive.profiles.types import BuildProfileInput, SerializedBuildProfile
 
 type NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 """A string that is non-empty after whitespace stripping; blank values fail validation."""
@@ -84,7 +85,7 @@ class BuildProfile:
     """Parse boundary that dispatches a build-profile document on ``source``."""
 
     @classmethod
-    def parse(cls, data: Mapping[str, object]) -> ParsedBuildProfile:
+    def parse(cls, data: BuildProfileInput) -> ParsedBuildProfile:
         """Validate a build-profile document, mapping any failure to ``configuration_error``.
 
         Dispatches on ``source`` (default ``"server"``, so existing server documents
@@ -130,3 +131,8 @@ class BuildProfile:
                     )
                 },
             ) from exc
+
+
+def dump_build_profile(profile: ParsedBuildProfile) -> SerializedBuildProfile:
+    """Serialize a parsed build profile for JSON persistence."""
+    return cast(SerializedBuildProfile, profile.model_dump(mode="json"))

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
@@ -15,6 +15,7 @@ from kdive.mcp.tools.lifecycle.runs.build import build_run, complete_build
 from kdive.mcp.tools.lifecycle.runs.create import create_run
 from kdive.mcp.tools.lifecycle.runs.steps import boot_run, install_run
 from kdive.mcp.tools.lifecycle.runs.view import get_run
+from kdive.profiles.types import BuildProfileInput, ExpectedBootFailureInput
 from kdive.providers.composition import ProviderRuntime
 
 __all__ = [
@@ -59,10 +60,10 @@ def register(
         investigation_id: Annotated[str, Field(description="Investigation to attach the Run to.")],
         system_id: Annotated[str, Field(description="Ready System (active Allocation) to bind.")],
         build_profile: Annotated[
-            dict[str, Any], Field(description="Build profile for the Run's kernel.")
+            BuildProfileInput, Field(description="Build profile for the Run's kernel.")
         ],
         expected_boot_failure: Annotated[
-            dict[str, Any] | None,
+            ExpectedBootFailureInput | None,
             Field(
                 description=(
                     "Optional expected boot failure, e.g. "

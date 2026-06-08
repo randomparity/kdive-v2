@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -31,9 +30,11 @@ from kdive.mcp.tools.lifecycle.systems.provision import (
 from kdive.profiles.provisioning import (
     ProvisioningProfile,
     destructive_opt_in,
+    dump_profile,
     profile_digest,
     reject_rootfs_upload_without_window,
 )
+from kdive.profiles.types import ProvisioningProfileInput
 from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.security import audit
 from kdive.security.context import RequestContext
@@ -50,7 +51,7 @@ async def reprovision_system(
     ctx: RequestContext,
     *,
     system_id: str,
-    profile: dict[str, Any],
+    profile: ProvisioningProfileInput,
     component_sources: ComponentSourceCapabilities | None = None,
     rootfs_validator: RootfsValidator | None = None,
 ) -> ToolResponse:
@@ -174,7 +175,7 @@ async def _admit_reprovision(
     await SYSTEMS.update_state(conn, system.id, SystemState.REPROVISIONING)
     await conn.execute(
         "UPDATE systems SET provisioning_profile = %s WHERE id = %s",
-        (Jsonb(profile.model_dump(by_alias=True)), system.id),
+        (Jsonb(dump_profile(profile)), system.id),
     )
     await audit.record(
         conn,

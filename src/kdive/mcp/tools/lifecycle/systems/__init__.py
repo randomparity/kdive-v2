@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
@@ -18,6 +18,7 @@ from kdive.mcp.tools.lifecycle.systems.provision import (
     provision_defined_system,
     provision_system,
 )
+from kdive.profiles.types import ProvisioningProfileInput
 from kdive.providers.composition import ProviderRuntime
 
 __all__ = [
@@ -49,7 +50,7 @@ def register(
             str, Field(description="Granted Allocation to create a DEFINED System for.")
         ],
         profile: Annotated[
-            dict[str, Any],
+            ProvisioningProfileInput,
             Field(
                 description="Provisioning profile for the System; an 'upload' rootfs opens a "
                 "pre-provision rootfs-upload window."
@@ -76,7 +77,7 @@ def register(
             str, Field(description="Granted Allocation to provision a System for.")
         ],
         profile: Annotated[
-            dict[str, Any],
+            ProvisioningProfileInput,
             Field(description="Provisioning profile for the System create lane."),
         ],
     ) -> ToolResponse:
@@ -140,7 +141,7 @@ def register(
     async def systems_reprovision(
         system_id: Annotated[str, Field(description="The ready System to reprovision in place.")],
         profile: Annotated[
-            dict[str, Any],
+            ProvisioningProfileInput,
             Field(description="New provisioning profile; must opt in to reprovision."),
         ],
     ) -> ToolResponse:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import cast
 from uuid import UUID, uuid4
 
 from psycopg import AsyncConnection
@@ -27,7 +27,12 @@ from kdive.mcp.tools.lifecycle.runs.common import (
     RUN_HOSTABLE,
     SYSTEM_GONE,
 )
-from kdive.profiles.build import BuildProfile, ParsedBuildProfile
+from kdive.profiles.build import BuildProfile, ParsedBuildProfile, dump_build_profile
+from kdive.profiles.types import (
+    BuildProfileInput,
+    ExpectedBootFailureInput,
+    SerializedExpectedBootFailure,
+)
 from kdive.security import audit
 from kdive.security.context import RequestContext
 from kdive.security.rbac import Role, require_role
@@ -39,8 +44,8 @@ async def create_run(
     *,
     investigation_id: str,
     system_id: str,
-    build_profile: dict[str, Any],
-    expected_boot_failure: dict[str, Any] | None = None,
+    build_profile: BuildProfileInput,
+    expected_boot_failure: ExpectedBootFailureInput | None = None,
 ) -> ToolResponse:
     """Bind a Run to a `ready` System and an Investigation."""
     inv_uid = _as_uuid(investigation_id)
@@ -48,8 +53,6 @@ async def create_run(
         return _config_error(investigation_id)
     sys_uid = _as_uuid(system_id)
     if sys_uid is None:
-        return _config_error(system_id)
-    if not isinstance(build_profile, dict):
         return _config_error(system_id)
     try:
         parsed_build_profile = BuildProfile.parse(build_profile)
@@ -85,8 +88,8 @@ async def create_run(
 
 
 def _parse_expected_boot_failure(
-    object_id: str, value: dict[str, Any] | None
-) -> dict[str, Any] | ToolResponse | None:
+    object_id: str, value: ExpectedBootFailureInput | None
+) -> SerializedExpectedBootFailure | ToolResponse | None:
     if value is None:
         return None
     if not isinstance(value, dict):
@@ -95,7 +98,10 @@ def _parse_expected_boot_failure(
         parsed = ExpectedBootFailure.model_validate(value)
     except ValidationError:
         return _config_error(object_id, data={"reason": "bad_expected_boot_failure"})
-    return parsed.model_dump(mode="json", exclude_none=True)
+    return cast(
+        SerializedExpectedBootFailure,
+        parsed.model_dump(mode="json", exclude_none=True),
+    )
 
 
 async def _investigation_for_update(conn: AsyncConnection, uid: UUID) -> Investigation | None:
@@ -111,7 +117,7 @@ async def _create_locked(
     inv_uid: UUID,
     sys_uid: UUID,
     build_profile: ParsedBuildProfile,
-    expected_boot_failure: dict[str, Any] | None,
+    expected_boot_failure: SerializedExpectedBootFailure | None,
     *,
     project: str,
 ) -> ToolResponse:
@@ -145,7 +151,7 @@ async def _create_locked(
                 investigation_id=inv_uid,
                 system_id=sys_uid,
                 state=RunState.CREATED,
-                build_profile=build_profile.model_dump(mode="json"),
+                build_profile=dump_build_profile(build_profile),
                 expected_boot_failure=expected_boot_failure,
             ),
         )
@@ -187,7 +193,7 @@ async def _create_locked(
             "investigation_id": str(inv_uid),
             "system_id": str(sys_uid),
             **(
-                {"expected_boot_failure": expected_boot_failure["kind"]}
+                {"expected_boot_failure": str(expected_boot_failure["kind"])}
                 if expected_boot_failure is not None
                 else {}
             ),
