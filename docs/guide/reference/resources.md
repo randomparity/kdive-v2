@@ -22,6 +22,20 @@ Describe a Resource. Requires a valid token; no project membership needed.
 |---|---|---|---|
 | `resource_id` | `string` | yes | The Resource UUID to describe. |
 
+## `resources.drain`
+
+`implemented` · `destructive`
+
+Cordon a host, then report (passive) or force-release (force_release) its allocations.
+
+passive requires platform operator; force_release requires platform admin + a reason.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `mode` | `string` | no | 'passive' (operator: cordon + report) or 'force_release' (admin). |
+| `reason` | `string` | no | Mandatory non-blank justification for 'force_release' (audited). |
+| `resource_id` | `string` | yes | The host Resource UUID to drain. |
+
 ## `resources.list`
 
 `implemented` · `read-only`

@@ -57,6 +57,7 @@
 | [`postmortem.triage`](postmortem.md#postmortemtriage) | `partial` |
 | [`resources.cordon`](resources.md#resourcescordon) | `implemented` |
 | [`resources.describe`](resources.md#resourcesdescribe) | `implemented` |
+| [`resources.drain`](resources.md#resourcesdrain) | `implemented` |
 | [`resources.list`](resources.md#resourceslist) | `implemented` |
 | [`resources.set_status`](resources.md#resourcesset_status) | `implemented` |
 | [`resources.uncordon`](resources.md#resourcesuncordon) | `implemented` |
