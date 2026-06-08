@@ -2,7 +2,8 @@
 
 The middleware catches a member-over-reach `RoleDenied` at the one MCP tool-dispatch
 boundary, writes a single `audit_log` denial row (object NULL, `transition='denied'`,
-`project` taken from the exception), and re-raises. Non-membership denials (base
+`project` taken from the exception), and returns an authorization-denied envelope.
+Non-membership denials (base
 `AuthorizationError`), `require_platform_role` denials, and `DestructiveOpDenied` are
 NOT caught here — confirming no double-write / no write-amplification.
 """
@@ -18,6 +19,7 @@ import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.mcp.middleware import DenialAuditMiddleware
+from kdive.mcp.responses import ToolResponse
 from kdive.security.gate import DestructiveOpDenied
 from kdive.security.rbac import AuthorizationError, Role, RoleDenied
 
@@ -83,8 +85,35 @@ def _drive(
     return asyncio.run(_run())
 
 
-def test_role_denied_writes_one_denial_row_and_reraises(migrated_url: str) -> None:
-    rows = _drive(migrated_url, _role_denied(), expect_type=RoleDenied)
+def _drive_role_denied(
+    migrated_url: str,
+    denial: RoleDenied,
+    *,
+    agent_session: str | None = "sess-1",
+) -> tuple[ToolResponse, list[tuple[Any, ...]]]:
+    async def _run() -> tuple[ToolResponse, list[tuple[Any, ...]]]:
+        async with AsyncConnectionPool(migrated_url, open=False) as pool:
+            await pool.open()
+            mw = DenialAuditMiddleware(pool, agent_session=lambda: agent_session)
+
+            async def _call_next(_ctx: Any) -> None:
+                raise denial
+
+            result = await mw.on_call_tool(_FakeContext("allocations.release"), _call_next)
+            async with pool.connection() as conn, conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT principal, agent_session, project, tool, object_kind, "
+                    "object_id, transition, reason FROM audit_log ORDER BY ts"
+                )
+                return result, await cur.fetchall()
+
+    return asyncio.run(_run())
+
+
+def test_role_denied_writes_one_denial_row_and_returns_envelope(migrated_url: str) -> None:
+    resp, rows = _drive_role_denied(migrated_url, _role_denied())
+    assert resp.object_id == "allocations.release"
+    assert resp.error_category == "authorization_denied"
     assert len(rows) == 1
     principal, agent_session, project, tool, kind, obj, transition, reason = rows[0]
     assert (principal, agent_session, project, tool) == (
@@ -103,13 +132,13 @@ def test_role_denied_project_comes_from_exception_not_call_args(migrated_url: st
     denial = RoleDenied(
         principal="bob", project="resolved-from-row", held=None, required=Role.ADMIN
     )
-    rows = _drive(migrated_url, denial, expect_type=RoleDenied)
+    _resp, rows = _drive_role_denied(migrated_url, denial)
     assert len(rows) == 1
     assert rows[0][2] == "resolved-from-row"
 
 
 def test_null_agent_session_persists(migrated_url: str) -> None:
-    rows = _drive(migrated_url, _role_denied(), expect_type=RoleDenied, agent_session=None)
+    _resp, rows = _drive_role_denied(migrated_url, _role_denied(), agent_session=None)
     assert len(rows) == 1
     assert rows[0][1] is None
 
