@@ -120,6 +120,37 @@ async def _record_provision_failure(
             )
     except IllegalTransition:
         _log.info("provision of system %s failed but it is already terminal", system_id)
+    except Exception:  # noqa: BLE001 - failure recording is best-effort; preserve provider error
+        _log.warning(
+            "provision of system %s failed but failure recording failed; preserving provider error",
+            system_id,
+            exc_info=True,
+        )
+
+
+async def _record_reprovision_failure(
+    conn: AsyncConnection, job: Job, *, system_id: UUID, project: str
+) -> None:
+    try:
+        async with conn.transaction():
+            await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
+            await audit_transition(
+                conn,
+                job,
+                project=project,
+                object_id=system_id,
+                transition="reprovisioning->failed",
+                tool="systems.reprovision",
+            )
+    except IllegalTransition:
+        _log.info("reprovision of system %s failed but it is already terminal", system_id)
+    except Exception:  # noqa: BLE001 - failure recording is best-effort; preserve provider error
+        _log.warning(
+            "reprovision of system %s failed but failure recording failed; "
+            "preserving provider error",
+            system_id,
+            exc_info=True,
+        )
 
 
 async def _locked_system_state(conn: AsyncConnection, system_id: UUID) -> SystemState | None:
@@ -196,19 +227,7 @@ async def reprovision_handler(
     try:
         domain_name = await asyncio.to_thread(provisioning.reprovision, system_id, profile)
     except CategorizedError:
-        try:
-            async with conn.transaction():
-                await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
-                await audit_transition(
-                    conn,
-                    job,
-                    project=system.project,
-                    object_id=system_id,
-                    transition="reprovisioning->failed",
-                    tool="systems.reprovision",
-                )
-        except IllegalTransition:
-            _log.info("reprovision of system %s failed but it is already terminal", system_id)
+        await _record_reprovision_failure(conn, job, system_id=system_id, project=system.project)
         raise
     fingerprint = profile_digest(profile)
     current: SystemState | None = None

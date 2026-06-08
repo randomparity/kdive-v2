@@ -1589,6 +1589,34 @@ def test_reprovision_handler_provider_failure_sets_failed(migrated_url: str) -> 
     asyncio.run(_run())
 
 
+def test_reprovision_handler_recording_failure_preserves_provider_error(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _scoped_active_allocation(pool)
+            sys_id = await _seed_ready_system(pool, alloc_id)
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE systems SET state = 'reprovisioning' WHERE id = %s", (sys_id,)
+                )
+            job = await _enqueue_reprovision(pool, sys_id)
+            prov = _FakeProvisioning(reprovision_error=True)
+
+            async def _fail_audit(*args: object, **kwargs: object) -> None:
+                del args, kwargs
+                raise RuntimeError("audit store unavailable")
+
+            monkeypatch.setattr(systems_handlers, "audit_transition", _fail_audit)
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError) as caught:
+                    await systems_handlers.reprovision_handler(conn, job, prov)
+
+        assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE
+
+    asyncio.run(_run())
+
+
 def test_reprovision_handler_retry_on_ready_is_noop(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
