@@ -237,9 +237,9 @@ postmortem, run-readiness preflight.
 
 ## MCP tool surface
 
-Atomic primitives mapped to planes, plus thin orchestration conveniences. Every
-tool returns structured JSON with the relevant object id, status,
-`suggested_next_actions`, and artifact **references** — never log dumps.
+Atomic primitives mapped to planes. Every tool returns structured JSON with the
+relevant object id, status, `suggested_next_actions`, and artifact **references** —
+never log dumps.
 
 **Long-running operations use an explicit job model.** Provision, build, install,
 capture-vmcore can run 30+ minutes. Those tools enqueue a job and return
@@ -282,13 +282,9 @@ Control + Retrieve                    (destructive → policy gate)
 
 Jobs (long-running spine)
   jobs.get(job_id) / jobs.wait(job_id, timeout) / jobs.cancel(job_id) / jobs.list
-
-Orchestration conveniences (thin wrappers)
-  workflow.build_boot_debug(run_id)        workflow.build_boot_test(run_id)
 ```
 
-- Workflow tools are optional sugar, not the only path — an agent can drive
-  plane-by-plane, which matches how it iterates on a patch.
+- Agents drive workflows plane-by-plane, which matches how they iterate on a patch.
 - `jobs.*` is the uniform async spine: every long-running tool returns the same
   job-handle shape, so the agent learns one polling pattern.
 - `debug.read_memory` keeps the PoC's 4096-byte cap.
