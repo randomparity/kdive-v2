@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import shlex
 import signal
-import subprocess
+import subprocess  # noqa: S404  # supervises fixed local KDIVE child processes
 import sys
 import time
 from collections.abc import Mapping, Sequence
@@ -157,7 +157,11 @@ def supervisor_commands(env: Mapping[str, str]) -> list[list[str]]:
 
 def run_stack() -> int:
     env = {**local_env_defaults(), **os.environ}
-    children = [subprocess.Popen(cmd, env=env) for cmd in supervisor_commands(env)]  # noqa: S603
+    children = [
+        # Commands come from supervisor_commands: sys.executable plus fixed kdive module args.
+        subprocess.Popen(cmd, env=env)  # noqa: S603
+        for cmd in supervisor_commands(env)
+    ]
 
     def stop(_signum: int, _frame: object) -> None:
         for child in children:

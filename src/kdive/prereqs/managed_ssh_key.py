@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -128,7 +129,18 @@ def _ensure_private_dir(key_dir: Path) -> None:
 
 def _generate_keypair(private_key: Path, public_key: Path) -> None:
     _run_keygen(
-        ["ssh-keygen", "-t", "ed25519", "-N", "", "-f", str(private_key), "-C", KEY_COMMENT, "-q"]
+        [
+            _keygen_executable(),
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-f",
+            str(private_key),
+            "-C",
+            KEY_COMMENT,
+            "-q",
+        ]
     )
     _enforce_private_mode(private_key)
     # ssh-keygen creates the public half subject to the process umask (0644 only under a
@@ -141,7 +153,7 @@ def _generate_keypair(private_key: Path, public_key: Path) -> None:
 
 
 def _rederive_public_key(private_key: Path, public_key: Path) -> None:
-    material = _run_keygen(["ssh-keygen", "-y", "-f", str(private_key)])
+    material = _run_keygen([_keygen_executable(), "-y", "-f", str(private_key)])
     try:
         fd = os.open(str(public_key), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644)
         with os.fdopen(fd, "w") as handle:
@@ -151,11 +163,26 @@ def _rederive_public_key(private_key: Path, public_key: Path) -> None:
         raise ManagedKeyError(f"cannot write managed public key {public_key}: {exc}") from exc
 
 
+def _keygen_executable() -> str:
+    executable = shutil.which("ssh-keygen")
+    if executable is None:
+        raise ManagedKeyError(
+            "ssh-keygen not found on PATH; install the OpenSSH client, or set "
+            "KDIVE_ROOTFS_AUTHORIZED_KEY to a public key file"
+        )
+    return executable
+
+
 def _run_keygen(argv: list[str]) -> str:
     try:
         completed = subprocess.run(
-            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False
-        )
+            # Fixed ssh-keygen executable from _keygen_executable(); key paths are KDIVE-owned.
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )  # noqa: S603
     except FileNotFoundError as exc:
         raise ManagedKeyError(
             "ssh-keygen not found on PATH; install the OpenSSH client, or set "

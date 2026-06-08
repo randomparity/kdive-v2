@@ -76,3 +76,31 @@ def test_unknown_no_baked_no_git(monkeypatch):
     monkeypatch.setattr(version, "package_version", lambda: "0.2.0")
     monkeypatch.setattr(version, "_git", lambda *a: None)
     assert full_version() == "0.2.0-dev"
+
+
+def test_git_returns_none_when_git_executable_is_absent(monkeypatch):
+    monkeypatch.setattr(version.shutil, "which", lambda name: None)
+
+    def _unexpected_run(*_args, **_kwargs):
+        raise AssertionError("subprocess.run must not be called without git")
+
+    monkeypatch.setattr(version.subprocess, "run", _unexpected_run)
+
+    assert version._git("status", "--porcelain") is None
+
+
+def test_git_uses_resolved_executable(monkeypatch):
+    class _Result:
+        stdout = "abc123\n"
+
+    seen: list[list[str]] = []
+    monkeypatch.setattr(version.shutil, "which", lambda name: "/usr/bin/git")
+
+    def _run(argv, **_kwargs):
+        seen.append(argv)
+        return _Result()
+
+    monkeypatch.setattr(version.subprocess, "run", _run)
+
+    assert version._git("rev-parse", "--short", "HEAD") == "abc123"
+    assert seen == [["/usr/bin/git", "rev-parse", "--short", "HEAD"]]
