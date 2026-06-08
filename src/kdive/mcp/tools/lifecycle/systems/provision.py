@@ -43,11 +43,14 @@ from kdive.mcp.tools._common import (
     job_envelope,
 )
 from kdive.profiles.provisioning import (
+    AllocationSizing,
     ProvisioningProfile,
     RootfsSource,
     _UploadRootfs,
     dump_profile,
+    reconcile_profile_sizing,
     reject_rootfs_upload_without_window,
+    require_concrete_sizing,
     validate_profile,
 )
 from kdive.profiles.types import ProvisioningProfileInput
@@ -148,6 +151,45 @@ def _validate_rootfs_for_provider(
     rootfs_validator(rootfs)
 
 
+# Maps the Allocation's GB memory snapshot to the profile's MB sizing (ADR-0067 lossless).
+_MB_PER_GB = 1024
+
+
+def _stored_profile_for(
+    profile: ProvisioningProfileInput, alloc: Allocation
+) -> ProvisioningProfile:
+    """Resolve the concrete profile to store for ``alloc`` (ADR-0067, ADR-0024 delta).
+
+    When the Allocation carries a complete resolved-sizing snapshot (``requested_vcpus`` /
+    ``requested_memory_gb`` / ``requested_disk_gb``), the profile sizing is reconciled
+    against it — filled when omitted, rejected when conflicting — so admitted size equals
+    booted size. When the snapshot is incomplete (a full-custom or legacy allocation), the
+    profile must carry its own concrete sizing. Either way the stored profile is concrete,
+    so the libvirt renderer never reads a ``None`` size.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` on a conflicting restatement or a profile
+            with missing sizing in the no-snapshot lane.
+    """
+    if (
+        alloc.requested_vcpus is not None
+        and alloc.requested_memory_gb is not None
+        and alloc.requested_disk_gb is not None
+    ):
+        reconciled = reconcile_profile_sizing(
+            profile,
+            AllocationSizing(
+                vcpu=alloc.requested_vcpus,
+                memory_mb=alloc.requested_memory_gb * _MB_PER_GB,
+                disk_gb=alloc.requested_disk_gb,
+            ),
+        )
+        return ProvisioningProfile.parse(reconciled)
+    parsed = ProvisioningProfile.parse(profile)
+    require_concrete_sizing(parsed)
+    return parsed
+
+
 @dataclass(frozen=True, slots=True)
 class SystemProvisionHandlers:
     """Provisioning handlers with provider validation seams bound at construction."""
@@ -218,7 +260,14 @@ class SystemProvisionHandlers:
         profile: ProvisioningProfileInput,
         mode: CreateSystemMode,
     ) -> ToolResponse:
-        """Parse, authorize, and lock the shared create-lane admission path."""
+        """Parse, authorize, and lock the shared create-lane admission path.
+
+        The submitted profile is structurally pre-parsed first (sizing now optional,
+        ADR-0067) for early provider/rootfs validation. The sizing is reconciled against the
+        Allocation's resolved snapshot inside the lock — once ``alloc`` is in scope — at the
+        single create-insert point (:func:`_stored_profile_for`), so the stored profile is
+        always concrete and admitted size equals booted size.
+        """
         uid = _as_uuid(allocation_id)
         if uid is None:
             return _config_error(allocation_id)
@@ -233,13 +282,17 @@ class SystemProvisionHandlers:
                     if isinstance(locked, MissingAllocation):
                         return _config_error(str(locked.allocation_id))
                     conn, alloc, existing = locked
+                    try:
+                        stored = _stored_profile_for(profile, alloc)
+                    except CategorizedError as exc:
+                        return ToolResponse.failure(str(alloc.id), exc.category)
                     if mode == "provision":
                         return await _provision_create_response(
                             conn,
                             ctx,
                             alloc,
                             existing,
-                            profile=parsed,
+                            profile=stored,
                             rootfs_validator=self.rootfs_validator,
                         )
                     return await _define_create_response(
@@ -247,7 +300,7 @@ class SystemProvisionHandlers:
                         ctx,
                         alloc,
                         existing,
-                        profile=parsed,
+                        profile=stored,
                         rootfs_validator=self.rootfs_validator,
                     )
             except IllegalTransition:
@@ -522,6 +575,7 @@ async def _insert_system_and_activate(
             allocation_id=alloc.id,
             state=state,
             provisioning_profile=dump_profile(profile),
+            shape=alloc.shape,
         ),
     )
     await audit.record(

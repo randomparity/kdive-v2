@@ -2125,3 +2125,171 @@ def test_reconciler_gc_tears_down_defined_orphan(migrated_url: str) -> None:
         assert job_n is not None and job_n["n"] == 1
 
     asyncio.run(_run())
+
+
+# --- M1.4 shape-sized provisioning (#161): size flows from the snapshot into the profile ----
+
+
+def _sized_profile(**sizes: int) -> dict[str, Any]:
+    """A profile with all sizing fields stripped, then re-added per ``sizes`` (for restate)."""
+    profile = _profile()
+    for field in ("vcpu", "memory_mb", "disk_gb"):
+        del profile[field]
+    profile.update(sizes)
+    return profile
+
+
+async def _stored_profile(pool: AsyncConnectionPool, system_id: str) -> dict[str, Any]:
+    async with pool.connection() as conn:
+        system = await SYSTEMS.get(conn, UUID(system_id))
+    assert system is not None
+    return cast(dict[str, Any], system.provisioning_profile)
+
+
+def test_shape_sized_provision_constructs_profile_from_snapshot(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(
+                pool,
+                requested_vcpus=2,
+                requested_memory_gb=4,
+                requested_disk_gb=20,
+                shape="medium",
+            )
+            # The profile omits sizing entirely; it is constructed from the snapshot.
+            resp = await _provision(pool, _ctx(), alloc_id, _sized_profile())
+            assert resp.status == "queued"
+            stored = await _stored_profile(pool, resp.data["system_id"])
+        assert stored["vcpu"] == 2
+        assert stored["memory_mb"] == 4096  # 4 GB -> MB, lossless
+        assert stored["disk_gb"] == 20
+
+    asyncio.run(_run())
+
+
+def test_shape_sized_provision_accepts_matching_restatement(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(
+                pool, requested_vcpus=2, requested_memory_gb=4, requested_disk_gb=20, shape="medium"
+            )
+            resp = await _provision(
+                pool, _ctx(), alloc_id, _sized_profile(vcpu=2, memory_mb=4096, disk_gb=20)
+            )
+        assert resp.status == "queued"
+
+    asyncio.run(_run())
+
+
+def test_shape_sized_provision_rejects_conflicting_restatement(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(
+                pool, requested_vcpus=2, requested_memory_gb=4, requested_disk_gb=20, shape="medium"
+            )
+            # Restating a DIFFERENT vcpu than the resolved size is a conflict.
+            resp = await _provision(
+                pool, _ctx(), alloc_id, _sized_profile(vcpu=8, memory_mb=4096, disk_gb=20)
+            )
+            assert resp.status == "error"
+            assert resp.error_category == "configuration_error"
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+        assert sys_n is not None and sys_n["n"] == 0  # no durable write
+
+    asyncio.run(_run())
+
+
+def test_no_snapshot_lane_requires_profile_sizing(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            # No requested_* snapshot (legacy / full-custom): a profile missing sizing is an error.
+            alloc_id = await _granted_allocation(pool)
+            resp = await _provision(pool, _ctx(), alloc_id, _sized_profile())
+            assert resp.status == "error"
+            assert resp.error_category == "configuration_error"
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT count(*) AS n FROM systems")
+                sys_n = await cur.fetchone()
+        assert sys_n is not None and sys_n["n"] == 0
+
+    asyncio.run(_run())
+
+
+def test_no_snapshot_lane_provisions_with_profile_sizing(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            resp = await _provision(pool, _ctx(), alloc_id, _profile())  # carries concrete sizing
+            assert resp.status == "queued"
+            stored = await _stored_profile(pool, resp.data["system_id"])
+        assert stored["vcpu"] == 4  # the profile's own sizing is authoritative
+
+    asyncio.run(_run())
+
+
+def test_system_records_shape_label(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(
+                pool, requested_vcpus=2, requested_memory_gb=4, requested_disk_gb=20, shape="medium"
+            )
+            # The handler does not yet copy the label; assert the System's own shape column
+            # is wired through provisioning (the System sizing remains the profile JSON).
+            resp = await _provision(pool, _ctx(), alloc_id, _sized_profile())
+            async with pool.connection() as conn:
+                system = await SYSTEMS.get(conn, UUID(resp.data["system_id"]))
+        assert system is not None
+        assert system.shape == "medium"
+
+    asyncio.run(_run())
+
+
+def test_catalog_change_after_provision_does_not_resize_system(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(
+                pool, requested_vcpus=2, requested_memory_gb=4, requested_disk_gb=20, shape="medium"
+            )
+            resp = await _provision(pool, _ctx(), alloc_id, _sized_profile())
+            sys_id = resp.data["system_id"]
+            # Redefine `medium` in the catalog AFTER the System is provisioned.
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE system_shapes SET vcpus = 8, memory_mb = 16384, disk_gb = 80 "
+                    "WHERE name = 'medium'"
+                )
+            stored = await _stored_profile(pool, sys_id)
+        # The System's stored sizing is unchanged — the catalog edit is not retroactive.
+        assert stored["vcpu"] == 2
+        assert stored["memory_mb"] == 4096
+        assert stored["disk_gb"] == 20
+
+    asyncio.run(_run())
+
+
+def test_define_then_catalog_change_then_provision_defined_keeps_size(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(
+                pool, requested_vcpus=2, requested_memory_gb=4, requested_disk_gb=20, shape="medium"
+            )
+            # define freezes the reconciled size into the stored profile.
+            defined = await _define(pool, _ctx(), alloc_id, _sized_profile())
+            sys_id = defined.object_id
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE system_shapes SET vcpus = 8, memory_mb = 16384, disk_gb = 80 "
+                    "WHERE name = 'medium'"
+                )
+            resp = await _provision_defined(pool, _ctx(), sys_id)
+            assert resp.status == "queued"
+            stored = await _stored_profile(pool, sys_id)
+        # provision_defined re-validates the stored profile; the intervening catalog change
+        # has no effect (sizing is read from the stored profile, never re-resolved).
+        assert stored["vcpu"] == 2
+        assert stored["memory_mb"] == 4096
+        assert stored["disk_gb"] == 20
+
+    asyncio.run(_run())

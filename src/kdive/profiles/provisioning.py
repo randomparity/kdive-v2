@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Literal, cast
 
@@ -121,13 +122,22 @@ class ProviderSection(_ProfileBase):
 
 
 class ProvisioningProfile(_ProfileBase):
-    """A versioned provisioning profile: agnostic core plus a provider section."""
+    """A versioned provisioning profile: agnostic core plus a provider section.
+
+    The sizing fields (``vcpu`` / ``memory_mb`` / ``disk_gb``) are **optional** (ADR-0024
+    delta, ADR-0067): a shape-sized allocation omits them and ``systems.provision``
+    constructs them from the resolved sizing snapshot via :func:`reconcile_profile_sizing`
+    before the profile is stored. A *present* value is still strictly ``> 0``. A stored
+    profile always carries concrete sizing — reconciliation fills the snapshot and the
+    no-snapshot lane rejects a NULL-sized profile — so the libvirt renderer never reads a
+    ``None`` (it dereferences ``vcpu``/``memory_mb`` unconditionally).
+    """
 
     schema_version: Literal[1]
     arch: NonEmptyStr
-    vcpu: int = Field(gt=0, strict=True)
-    memory_mb: int = Field(gt=0, strict=True)
-    disk_gb: int = Field(gt=0, strict=True)
+    vcpu: int | None = Field(default=None, gt=0, strict=True)
+    memory_mb: int | None = Field(default=None, gt=0, strict=True)
+    disk_gb: int | None = Field(default=None, gt=0, strict=True)
     boot_method: BootMethod
     kernel_source_ref: NonEmptyStr
     provider: ProviderSection
@@ -162,6 +172,83 @@ class ProvisioningProfile(_ProfileBase):
                 category=ErrorCategory.CONFIGURATION_ERROR,
                 details=details,
             ) from exc
+
+
+@dataclass(frozen=True, slots=True)
+class AllocationSizing:
+    """The at-grant sizing snapshot a shape-sized allocation provisions at (ADR-0067).
+
+    These are the persisted ``requested_vcpus`` / ``requested_memory_gb`` (mapped to MB) /
+    ``requested_disk_gb`` of the Allocation — the authority a profile is reconciled against.
+    Read from persisted state, never re-resolved from the catalog.
+    """
+
+    vcpu: int
+    memory_mb: int
+    disk_gb: int
+
+
+def reconcile_profile_sizing(
+    data: ProvisioningProfileInput, sizing: AllocationSizing
+) -> dict[str, object]:
+    """Build a profile dict whose sizing equals the allocation snapshot (ADR-0024 delta).
+
+    For a shape-sized allocation the resolved tuple is the authority: a profile may omit
+    ``vcpu`` / ``memory_mb`` / ``disk_gb`` (they are filled from ``sizing``), or restate
+    them — but only with the *same* values; a conflicting restatement is rejected so
+    admitted size and booted size can never diverge. Builds a new dict (the immutable
+    request-inputs invariant, ADR-0003/0024) rather than mutating the input. Reads only the
+    passed snapshot, never the catalog, so a later ``shapes.set`` cannot re-size a stamped
+    profile.
+
+    Args:
+        data: The submitted profile document (sizing optional or matching).
+        sizing: The Allocation's persisted sizing snapshot.
+
+    Returns:
+        A new profile dict with concrete ``vcpu`` / ``memory_mb`` / ``disk_gb``.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` if a submitted size conflicts with the
+            snapshot.
+    """
+    reconciled = dict(data)
+    for field, resolved in (
+        ("vcpu", sizing.vcpu),
+        ("memory_mb", sizing.memory_mb),
+        ("disk_gb", sizing.disk_gb),
+    ):
+        submitted = reconciled.get(field)
+        if submitted is not None and submitted != resolved:
+            raise CategorizedError(
+                f"provisioning profile {field}={submitted!r} conflicts with the "
+                f"allocation's resolved size {resolved}",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"field": field, "resolved": str(resolved)},
+            )
+        reconciled[field] = resolved
+    return reconciled
+
+
+def require_concrete_sizing(profile: ProvisioningProfile) -> None:
+    """Reject a profile with any NULL sizing field (the no-snapshot lane, ADR-0067).
+
+    A full-custom or legacy allocation carries no resolved sizing snapshot, so its profile
+    must supply its own ``vcpu`` / ``memory_mb`` / ``disk_gb``. A stored profile must never
+    carry a ``None`` size — the libvirt renderer dereferences them unconditionally.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` if any sizing field is ``None``.
+    """
+    missing = [
+        field for field in ("vcpu", "memory_mb", "disk_gb") if getattr(profile, field) is None
+    ]
+    if missing:
+        raise CategorizedError(
+            f"provisioning profile is missing required sizing: {', '.join(missing)}",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"missing": missing},
+        )
 
 
 def dump_profile(profile: ProvisioningProfile) -> SerializedProvisioningProfile:
