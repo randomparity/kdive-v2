@@ -33,6 +33,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from kdive.domain.errors import ErrorCategory
+from kdive.domain.pcie import PCIeClaim
 from kdive.domain.profile_documents import (
     SerializedBuildProfile,
     SerializedExpectedBootFailure,
@@ -172,6 +173,12 @@ class Allocation(DomainModel, _Attribution):
     ``active_ended_at`` on release/expiry); ``active_hours`` is their difference, never
     derived from ``updated_at`` (ADR-0007 §3). All four are null on an M0/just-granted
     allocation.
+
+    M1.4 adds ``pcie_claim`` (ADR-0068): the snapshot list of ``(vendor_id, device_id,
+    bdf)`` devices this allocation holds, resolved inside the per-Resource lock at
+    admission. Empty for a non-PCIe allocation. Occupancy is derived from this column on
+    non-terminal allocations, so the claim frees on every terminal transition simply by
+    the allocation leaving the non-terminal set; the row persists as a historical snapshot.
     """
 
     resource_id: UUID
@@ -182,6 +189,7 @@ class Allocation(DomainModel, _Attribution):
     requested_memory_gb: int | None = None
     active_started_at: datetime | None = None
     active_ended_at: datetime | None = None
+    pcie_claim: list[PCIeClaim] = Field(default_factory=list)
 
 
 class System(DomainModel, _Attribution):

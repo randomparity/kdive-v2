@@ -223,7 +223,10 @@ RESOURCES = StatefulRepository(
     json_columns=frozenset({"capabilities"}),
 )
 ALLOCATIONS = StatefulRepository(
-    Allocation, "allocations", AllocationState, json_columns=frozenset({"capability_scope"})
+    Allocation,
+    "allocations",
+    AllocationState,
+    json_columns=frozenset({"capability_scope", "pcie_claim"}),
 )
 SYSTEMS = StatefulRepository(
     System, "systems", SystemState, json_columns=frozenset({"provisioning_profile"})

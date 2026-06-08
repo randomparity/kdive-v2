@@ -99,6 +99,7 @@ def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
         "0011",
         "0012",
         "0013",
+        "0014",
     ]
     assert second == []
 
@@ -435,6 +436,25 @@ def test_allocations_gain_m1_size_and_billing_columns(pg_conn: psycopg.Connectio
     assert cols.get("active_ended_at") == "timestamp with time zone"
 
 
+def test_migration_0014_adds_pcie_claim_jsonb_default_empty(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    cols = _columns(pg_conn, "allocations")
+    assert cols.get("pcie_claim") == "jsonb"
+    # NOT NULL with a '[]' default: an allocation inserted without a claim reads as empty.
+    assert _nullable(pg_conn, "allocations").get("pcie_claim") == "NO"
+    res = pg_conn.execute(
+        "INSERT INTO resources (kind, pool, cost_class, status, host_uri) "
+        "VALUES ('local-libvirt', 'p', 'local', 'available', 'qemu:///system') RETURNING id"
+    ).fetchone()
+    assert res is not None
+    row = pg_conn.execute(
+        "INSERT INTO allocations (resource_id, state, principal, project) "
+        "VALUES (%s, 'granted', 'alice', 'p') RETURNING pcie_claim",
+        (res[0],),
+    ).fetchone()
+    assert row is not None and row[0] == []
+
+
 def test_widened_state_checks_accept_new_values(pg_conn: psycopg.Connection) -> None:
     migrate.apply_migrations(pg_conn)
     res = pg_conn.execute(
@@ -482,6 +502,7 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
         "0011",
         "0012",
         "0013",
+        "0014",
     ]
 
 
