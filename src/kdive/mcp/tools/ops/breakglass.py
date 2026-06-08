@@ -31,6 +31,7 @@ from pydantic import Field
 
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
+from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
@@ -120,7 +121,11 @@ async def force_release(
             scope=f"denied:{allocation_id}",
             args={"allocation_id": allocation_id},
         )
-        raise
+        return ToolResponse.failure(
+            allocation_id,
+            ErrorCategory.AUTHORIZATION_DENIED,
+            suggested_next_actions=[_FORCE_RELEASE_TOOL],
+        )
     with bind_context(principal=ctx.principal):
         if _blank(reason):
             return _config_error(allocation_id)
@@ -178,7 +183,11 @@ async def force_teardown(
             scope=f"denied:{system_id}",
             args={"system_id": system_id},
         )
-        raise
+        return ToolResponse.failure(
+            system_id,
+            ErrorCategory.AUTHORIZATION_DENIED,
+            suggested_next_actions=[_FORCE_TEARDOWN_TOOL],
+        )
     with bind_context(principal=ctx.principal):
         if _blank(reason):
             return _config_error(system_id)

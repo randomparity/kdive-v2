@@ -26,6 +26,7 @@ import psycopg
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import ALLOCATIONS, RESOURCES, SYSTEMS
+from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import (
     Allocation,
     Resource,
@@ -35,7 +36,7 @@ from kdive.domain.models import (
 from kdive.domain.state import AllocationState, ResourceStatus, SystemState
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.ops import breakglass
-from kdive.security.authz.rbac import AuthorizationError, PlatformRole
+from kdive.security.authz.rbac import PlatformRole
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _TARGET_PROJECT = "tenant-x"
@@ -295,13 +296,12 @@ def test_force_release_operator_denied(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _alloc(pool, state=AllocationState.ACTIVE)
-            try:
-                await breakglass.force_release(
-                    pool, _operator_ctx(), allocation_id=str(alloc_id), reason="nope"
-                )
-                raise AssertionError("expected AuthorizationError for a platform_operator")
-            except AuthorizationError:
-                pass
+            resp = await breakglass.force_release(
+                pool, _operator_ctx(), allocation_id=str(alloc_id), reason="nope"
+            )
+            assert resp.status == "error"
+            assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
+            assert resp.suggested_next_actions == ["ops.force_release"]
             assert await _alloc_state(migrated_url, alloc_id) == "active"
             assert await _platform_audit_rows(migrated_url) == [
                 (
@@ -410,13 +410,12 @@ def test_force_teardown_operator_denied(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await _system(pool, state=SystemState.READY)
-            try:
-                await breakglass.force_teardown(
-                    pool, _operator_ctx(), system_id=str(sys_id), reason="nope"
-                )
-                raise AssertionError("expected AuthorizationError for a platform_operator")
-            except AuthorizationError:
-                pass
+            resp = await breakglass.force_teardown(
+                pool, _operator_ctx(), system_id=str(sys_id), reason="nope"
+            )
+            assert resp.status == "error"
+            assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
+            assert resp.suggested_next_actions == ["ops.force_teardown"]
             assert await _job_count(migrated_url, f"{sys_id}:teardown") == 0
             assert await _platform_audit_rows(migrated_url) == [
                 (
