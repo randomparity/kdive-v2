@@ -179,6 +179,26 @@ def test_resolve_multiset_config_wins_over_capacity() -> None:
     assert result.outcome is MatchOutcome.CONFIG
 
 
+def test_resolve_multiset_overlapping_specs_finds_assignment() -> None:
+    # A narrow exact spec and a broad class spec that overlap on one card. A naive
+    # first-fit in spec order would let the class spec grab the X710 and then fail the
+    # exact spec; an exact assignment gives the X710 to the exact spec and the other
+    # class-02 card to the class spec. Order must not matter.
+    nic_b = _desc("0000:3b:00.2", "8086", "9999", "020000", "other NIC")
+    fleet = [X710_A, nic_b]
+    for specs in (["class=02", "8086:1572"], ["8086:1572", "class=02"]):
+        result = resolve_multiset(specs, fleet, claims=[])
+        assert result.outcome is MatchOutcome.MATCHED, specs
+        assert {d["bdf"] for d in result.devices} == {X710_A["bdf"], nic_b["bdf"]}, specs
+
+
+def test_resolve_multiset_unsatisfiable_overlap_is_capacity() -> None:
+    # One card matches both specs; the exact card is the only class-02 device too.
+    # Two specs, one card → genuinely unsatisfiable (busy/insufficient) → capacity.
+    result = resolve_multiset(["class=02", "8086:1572"], [X710_A], claims=[])
+    assert result.outcome is MatchOutcome.CAPACITY
+
+
 def test_resolve_multiset_empty_is_matched_no_devices() -> None:
     result = resolve_multiset([], FLEET, claims=[])
     assert result.outcome is MatchOutcome.MATCHED

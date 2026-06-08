@@ -32,6 +32,15 @@ class PCIeDescriptor(TypedDict):
     """A static, host-local PCIe device descriptor written by discovery (ADR-0068).
 
     No ``free`` flag: occupancy is derived from active claims, never stored here.
+
+    Field contract (the matcher assumes discovery-normalized values; consumers that build
+    descriptors from other sources — DB rows, future providers — must match it):
+
+    - ``vendor_id`` / ``device_id``: bare lowercase **4-hex** (no ``0x``).
+    - ``class_code``: bare lowercase **6-hex** (class+subclass+prog-if, e.g. ``020000``); the
+      ``class=`` matcher prefix-slices it, so a short/empty value silently under-matches.
+    - ``bdf``: canonical ``DDDD:BB:SS.F`` lowercase hex.
+    - ``label``: opaque display string (untrusted libvirt/lspci text; never an identity).
     """
 
     bdf: str
@@ -179,10 +188,16 @@ def resolve_multiset(
     """Resolve a multiset of specs to **distinct** free devices (one per spec).
 
     Two identical specs resolve to two different devices; a device is consumed by at most one
-    spec. The aggregate outcome follows the worst per-spec result, with ``CONFIG`` dominating
-    ``CAPACITY``: a spec no descriptor matches can never be satisfied on this host (a hard
-    denial), whereas a busy spec is queueable, so a multiset mixing both is reported
-    ``CONFIG``.
+    spec. Assignment is an exact **maximum bipartite matching** (Kuhn's augmenting paths), not
+    a first-fit greedy pass, so overlapping specs (a broad ``class=`` and a narrow
+    ``vendor:device`` that share a card) never spuriously fail when a valid distinct
+    assignment exists — the outcome is order-independent.
+
+    The aggregate outcome, when a full assignment is impossible, follows ADR-0068's denial
+    split with ``CONFIG`` dominating ``CAPACITY``: a spec that **no descriptor matches at all**
+    can never be satisfied on this host (a hard config denial), whereas a spec whose matches
+    exist but are exhausted (claimed, or out of distinct free cards) is a queueable capacity
+    denial. A multiset mixing the two is reported ``CONFIG``.
 
     Args:
         specs: Raw match specs (each validated; a malformed one raises).
@@ -196,34 +211,51 @@ def resolve_multiset(
         CategorizedError: ``CONFIGURATION_ERROR`` if any spec is malformed.
     """
     parsed_specs = [parse_match_spec(s) for s in specs]
+    if any(not any(descriptor_matches(p, d) for d in descriptors) for p in parsed_specs):
+        return MultisetResolution(MatchOutcome.CONFIG, [])
     claimed = {c["bdf"] for c in claims}
     available = [d for d in descriptors if d["bdf"] not in claimed]
-    taken_bdfs: set[str] = set()
-    chosen: list[PCIeDescriptor] = []
-    saw_config = False
-    saw_capacity = False
-    for parsed in parsed_specs:
-        pick = _pick_distinct(parsed, available, taken_bdfs)
-        if pick is not None:
-            taken_bdfs.add(pick["bdf"])
-            chosen.append(pick)
-            continue
-        if any(descriptor_matches(parsed, d) for d in descriptors):
-            saw_capacity = True
-        else:
-            saw_config = True
-    if saw_config:
-        return MultisetResolution(MatchOutcome.CONFIG, [])
-    if saw_capacity:
+    assignment = _max_bipartite_match(parsed_specs, available)
+    if assignment is None:
         return MultisetResolution(MatchOutcome.CAPACITY, [])
-    return MultisetResolution(MatchOutcome.MATCHED, chosen)
+    return MultisetResolution(MatchOutcome.MATCHED, [available[i] for i in assignment])
 
 
-def _pick_distinct(
-    spec: MatchSpec, available: list[PCIeDescriptor], taken: set[str]
-) -> PCIeDescriptor | None:
-    """Return the first free, not-yet-assigned descriptor matching ``spec``, or ``None``."""
-    for descriptor in available:
-        if descriptor["bdf"] not in taken and descriptor_matches(spec, descriptor):
-            return descriptor
-    return None
+@dataclass(slots=True)
+class _Matching:
+    """Mutable bipartite-matching state for :func:`_max_bipartite_match`."""
+
+    specs: list[MatchSpec]
+    available: list[PCIeDescriptor]
+    spec_to_device: dict[int, int]  # spec index -> chosen available index
+    device_to_spec: dict[int, int]  # available index -> owning spec index
+
+
+def _max_bipartite_match(
+    specs: list[MatchSpec], available: list[PCIeDescriptor]
+) -> list[int] | None:
+    """Assign each spec a distinct ``available`` index via Kuhn's algorithm.
+
+    Returns the per-spec descriptor index list when every spec is matched, else ``None``
+    (no perfect matching exists — fewer distinct free devices than specs).
+    """
+    state = _Matching(specs=specs, available=available, spec_to_device={}, device_to_spec={})
+    for spec_idx in range(len(specs)):
+        if not _augment(state, spec_idx, set()):
+            return None
+    return [state.spec_to_device[i] for i in range(len(specs))]
+
+
+def _augment(state: _Matching, spec_idx: int, visited: set[int]) -> bool:
+    """Match ``spec_idx`` to a device, displacing a prior owner along an augmenting path."""
+    spec = state.specs[spec_idx]
+    for device_idx, descriptor in enumerate(state.available):
+        if device_idx in visited or not descriptor_matches(spec, descriptor):
+            continue
+        visited.add(device_idx)
+        owner = state.device_to_spec.get(device_idx)
+        if owner is None or _augment(state, owner, visited):
+            state.device_to_spec[device_idx] = spec_idx
+            state.spec_to_device[spec_idx] = device_idx
+            return True
+    return False
