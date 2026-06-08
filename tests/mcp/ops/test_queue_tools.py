@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import psycopg
+import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.models import JobKind
@@ -95,6 +96,24 @@ def test_pause_sets_flag_and_audits(migrated_url: str) -> None:
         rows = await _platform_audit_rows(migrated_url)
         assert len(rows) == 1
         assert rows[0][1] == "platform_operator" and rows[0][2] == "ops.queue_pause"
+
+    asyncio.run(_run())
+
+
+def test_pause_flag_and_audit_commit_atomically(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A failed audit write must roll back the flag flip: never a paused queue with no row.
+    async def _run() -> None:
+        async def boom(*args: object, **kwargs: object) -> object:
+            raise RuntimeError("audit db error")
+
+        monkeypatch.setattr(ops_queue.audit, "record_platform", boom)
+        async with _pool(migrated_url) as pool:
+            with pytest.raises(RuntimeError, match="audit db error"):
+                await ops_queue.queue_pause(pool, _ctx(platform_roles=_OPERATOR))
+        assert await _paused(migrated_url) is False  # rolled back with the audit
+        assert await _count_platform_audit(migrated_url) == 0
 
     asyncio.run(_run())
 

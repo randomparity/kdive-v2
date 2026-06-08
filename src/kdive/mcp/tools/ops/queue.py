@@ -65,20 +65,23 @@ async def _set_paused(
                 ErrorCategory.AUTHORIZATION_DENIED,
                 suggested_next_actions=[tool],
             )
-        async with pool.connection() as conn:
+        # One transaction: the flag flip and its audit row commit together or neither
+        # does, so a failed audit write can never leave a paused/resumed queue unaudited
+        # (the house pattern, accounting.set_budget). `set_queue_paused`'s own
+        # `conn.transaction()` nests as a savepoint here; the outer block owns the commit.
+        async with pool.connection() as conn, conn.transaction():
             await queue.set_queue_paused(conn, paused)
-            async with conn.transaction():
-                await audit.record_platform(
-                    conn,
-                    principal=ctx.principal,
-                    agent_session=ctx.agent_session,
-                    event=audit.PlatformAuditEvent(
-                        tool=tool,
-                        scope="queue",
-                        args={"queue_paused": paused},
-                        platform_role=_held_platform_roles(ctx),
-                    ),
-                )
+            await audit.record_platform(
+                conn,
+                principal=ctx.principal,
+                agent_session=ctx.agent_session,
+                event=audit.PlatformAuditEvent(
+                    tool=tool,
+                    scope="queue",
+                    args={"queue_paused": paused},
+                    platform_role=_held_platform_roles(ctx),
+                ),
+            )
         return ToolResponse.success(
             _QUEUE_OBJECT_ID,
             "paused" if paused else "running",
