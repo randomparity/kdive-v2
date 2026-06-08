@@ -17,6 +17,7 @@ insert, and a lost race closes the just-opened transport (ADR-0032 §6a). The
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -98,13 +99,15 @@ async def _system_occupied(conn: AsyncConnection, system_id: UUID, transport: st
         return await cur.fetchone() is not None
 
 
-def _open_transport(
+async def _open_transport(
     connector: Connector, system: System, transport: str
 ) -> TransportHandle | ToolResponse:
     """Open the transport outside any lock; map a provider failure to an envelope."""
     handle_name = system.domain_name or str(system.id)
     try:
-        return connector.open_transport(SystemHandle(handle_name), transport)
+        return await asyncio.to_thread(
+            connector.open_transport, SystemHandle(handle_name), transport
+        )
     except CategorizedError as exc:
         category = (
             exc.category
@@ -179,7 +182,7 @@ class DebugSessionHandlers:
                 resolved = _resolve_credential(system, transport, backend)
                 if isinstance(resolved, ToolResponse):
                     return resolved
-                opened = _open_transport(self._connector, system, transport)
+                opened = await _open_transport(self._connector, system, transport)
                 if isinstance(opened, ToolResponse):
                     self._secret_registry.release(secret_scope)
                     return opened
@@ -315,11 +318,11 @@ async def _insert_session_locked(
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system.id):
         current = await SYSTEMS.get(conn, system.id)
         if current is None or current.state is not SystemState.READY:
-            _close(connector, str(handle))
+            await _close(connector, str(handle))
             status = current.state.value if current else "torn_down"
             return _config_error(str(run.id), data={"current_status": status})
         if await _system_occupied(conn, system.id, transport):
-            _close(connector, str(handle))
+            await _close(connector, str(handle))
             return ToolResponse.failure(str(run.id), ErrorCategory.TRANSPORT_CONFLICT)
         now = datetime.now(UTC)  # placeholder; the DB owns created_at/updated_at
         session = await DEBUG_SESSIONS.insert(
@@ -402,7 +405,7 @@ async def _detach_locked(
             return _config_error(str(session_id))
         if row["state"] == DebugSessionState.DETACHED.value:
             return _detached_envelope(session_id, row["project"])
-        _close(connector, row["transport_handle"])
+        await _close(connector, row["transport_handle"])
         await DEBUG_SESSIONS.update_state(conn, session_id, DebugSessionState.DETACHED)
         await audit.record(
             conn,
@@ -419,12 +422,12 @@ async def _detach_locked(
     return _detached_envelope(session_id, row["project"])
 
 
-def _close(connector: Connector, handle: str | None) -> None:
+async def _close(connector: Connector, handle: str | None) -> None:
     """Close the transport best-effort; a missing/failing close never blocks the detach."""
     if handle is None:
         return
     with contextlib.suppress(CategorizedError):
-        connector.close_transport(TransportHandle(handle))
+        await asyncio.to_thread(connector.close_transport, TransportHandle(handle))
 
 
 def _detached_envelope(session_id: UUID, project: str) -> ToolResponse:
