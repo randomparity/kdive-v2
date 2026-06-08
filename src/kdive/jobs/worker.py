@@ -129,7 +129,7 @@ class Worker:
                 )
                 async with self._pool.connection() as conn:
                     await queue.fail(conn, job, category, failure_context=_failure_context(exc))
-                _log.warning("job %s failed: %s", job.id, category)
+                _log.warning("job %s failed: %s", job.id, category, exc_info=True)
                 return
             async with self._pool.connection() as conn:
                 completed = await queue.complete(conn, job.id, self._worker_id, result_ref)

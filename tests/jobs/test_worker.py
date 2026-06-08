@@ -170,7 +170,9 @@ def test_run_once_dead_letters_after_max_attempts(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_failed_job_persists_redacted_failure_context(migrated_url: str) -> None:
+def test_failed_job_persists_redacted_failure_context(
+    migrated_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
     async def _run() -> None:
         async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:
             run_id = uuid4()
@@ -198,7 +200,10 @@ def test_failed_job_persists_redacted_failure_context(migrated_url: str) -> None
                 "failure_message": "token=[REDACTED] build failed",
                 "failure_detail_run_id": str(run_id),
             }
+            records = [record for record in caplog.records if "failed:" in record.getMessage()]
+            assert records and records[0].exc_info is not None
 
+    caplog.set_level(logging.WARNING, logger="kdive.jobs.worker")
     asyncio.run(_run())
 
 
