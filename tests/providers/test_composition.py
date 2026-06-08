@@ -142,7 +142,8 @@ def test_provider_runtime_returns_typed_provider_ports_directly() -> None:
 
     assert output.build_id == "deadbeef"
     assert builder.calls == [(_RUN, "/configs/kdump.config")]
-    assert runtime.install_boot() == (install, install)
+    assert runtime.installer is install
+    assert runtime.booter is install
 
 
 def test_default_runtime_advertises_implemented_component_sources_only() -> None:

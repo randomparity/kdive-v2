@@ -115,9 +115,6 @@ class ProviderRuntime:
     build_config_validator: BuildConfigValidator | None = None
     rootfs_validator: RootfsValidator | None = None
 
-    def install_boot(self) -> tuple[Installer, Booter]:
-        return self.installer, self.booter
-
     async def register_discovery(self, pool: AsyncConnectionPool) -> None:
         if self.discovery_registrar is not None:
             await self.discovery_registrar(pool)

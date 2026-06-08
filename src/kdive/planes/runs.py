@@ -377,9 +377,8 @@ def register_handlers(
     if installer is None or booter is None:
         if provider_runtime is None:
             raise RuntimeError("runs handlers require provider runtime or run ports")
-        default_installer, default_booter = provider_runtime.install_boot()
-        installer = installer or default_installer
-        booter = booter or default_booter
+        installer = installer or provider_runtime.installer
+        booter = booter or provider_runtime.booter
 
     registry.register(JobKind.BUILD, lambda conn, job: build_handler(conn, job, builder))
     registry.register(JobKind.INSTALL, lambda conn, job: install_handler(conn, job, installer))
