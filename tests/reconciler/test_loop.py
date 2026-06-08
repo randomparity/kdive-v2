@@ -503,3 +503,27 @@ def test_reconciler_run_survives_a_failing_pass(monkeypatch: pytest.MonkeyPatch)
         assert calls == 2  # raised once, retried, then stopped
 
     asyncio.run(_run())
+
+
+def test_reconciler_run_wakes_promptly_when_stopped_during_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _run() -> None:
+        stop = asyncio.Event()
+        first_pass_done = asyncio.Event()
+
+        async def _run_once(self: Reconciler) -> ReconcileReport:
+            first_pass_done.set()
+            return ReconcileReport(0, 0, 0, 0, 0, 0, ())
+
+        monkeypatch.setattr(Reconciler, "run_once", _run_once)
+        pool = cast(AsyncConnectionPool, object())
+        reconciler = Reconciler(pool, NullReaper(), interval=timedelta(seconds=30))
+        task = asyncio.create_task(reconciler.run(stop))
+        await asyncio.wait_for(first_pass_done.wait(), timeout=1.0)
+
+        stop.set()
+
+        await asyncio.wait_for(task, timeout=1.0)
+
+    asyncio.run(_run())

@@ -14,6 +14,7 @@ ships :class:`NullReaper` so the Postgres-only repairs run today.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -657,4 +658,5 @@ class Reconciler:
                 await self.run_once()
             except Exception:  # noqa: BLE001 - a durable reconciler survives a transient per-pass error
                 _log.exception("reconcile pass failed; continuing after %ss", interval)
-            await asyncio.sleep(interval)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=interval)
