@@ -10,7 +10,3 @@ their concrete modules in :mod:`kdive.mcp.app`.
 """
 
 from __future__ import annotations
-
-from kdive.mcp.tools.ops import breakglass
-
-__all__ = ["breakglass"]
