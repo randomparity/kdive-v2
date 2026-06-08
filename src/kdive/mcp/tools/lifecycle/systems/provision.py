@@ -116,6 +116,13 @@ type RootfsValidator = Callable[[RootfsSource], None]
 type LockedAllocationSystem = tuple[AsyncConnection, Allocation, System | None]
 
 
+@dataclass(frozen=True, slots=True)
+class MissingAllocation:
+    """A not-found or out-of-scope Allocation encountered while acquiring locks."""
+
+    allocation_id: UUID
+
+
 def _validate_profile_for_provider(
     profile: ProvisioningProfile,
     capabilities: ComponentSourceCapabilities,
@@ -255,8 +262,8 @@ async def _provision_system(
     with bind_context(principal=ctx.principal):
         try:
             async with _locked_allocation_system(pool, ctx, uid) as locked:
-                if isinstance(locked, ToolResponse):
-                    return locked
+                if isinstance(locked, MissingAllocation):
+                    return _config_error(str(locked.allocation_id))
                 conn, alloc, existing = locked
                 return await _provision_create_response(
                     conn,
@@ -278,13 +285,13 @@ async def _locked_allocation_system(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     alloc_id: UUID,
-) -> AsyncIterator[LockedAllocationSystem | ToolResponse]:
+) -> AsyncIterator[LockedAllocationSystem | MissingAllocation]:
     # Resolve the allocation's project (immutable) before locking so the PROJECT lock key
     # is known up front; a missing/foreign allocation is a not-found-shaped config error.
     async with pool.connection() as probe:
         probe_alloc = await ALLOCATIONS.get(probe, alloc_id)
     if probe_alloc is None or probe_alloc.project not in ctx.projects:
-        yield _config_error(str(alloc_id))
+        yield MissingAllocation(alloc_id)
         return
     project = probe_alloc.project
     # PROJECT → ALLOCATION (the global lock order, ADR-0040 §1): the project lock so the
@@ -298,7 +305,7 @@ async def _locked_allocation_system(
     ):
         alloc = await ALLOCATIONS.get(conn, alloc_id)
         if alloc is None or alloc.project not in ctx.projects:
-            yield _config_error(str(alloc_id))
+            yield MissingAllocation(alloc_id)
             return
         require_role(ctx, alloc.project, Role.OPERATOR)
         existing = await _find_system_for_allocation(conn, alloc_id)
@@ -637,8 +644,8 @@ async def _define_system(
     with bind_context(principal=ctx.principal):
         try:
             async with _locked_allocation_system(pool, ctx, uid) as locked:
-                if isinstance(locked, ToolResponse):
-                    return locked
+                if isinstance(locked, MissingAllocation):
+                    return _config_error(str(locked.allocation_id))
                 conn, alloc, existing = locked
                 return await _define_create_response(
                     conn,
