@@ -163,14 +163,34 @@ class SystemProvisionHandlers:
         allocation_id: str,
         profile: ProvisioningProfileInput,
     ) -> ToolResponse:
-        return await _provision_system(
-            pool,
-            ctx,
-            allocation_id=allocation_id,
-            profile=profile,
-            component_sources=self.component_sources,
-            rootfs_validator=self.rootfs_validator,
-        )
+        """Mint a System for a ``granted`` Allocation and enqueue its provision job."""
+        uid = _as_uuid(allocation_id)
+        if uid is None:
+            return _config_error(allocation_id)
+        try:
+            parsed = ProvisioningProfile.parse(profile)
+            _validate_profile_for_provider(parsed, self.component_sources)
+        except CategorizedError as exc:
+            return ToolResponse.failure(allocation_id, exc.category)
+        with bind_context(principal=ctx.principal):
+            try:
+                async with _locked_allocation_system(pool, ctx, uid) as locked:
+                    if isinstance(locked, MissingAllocation):
+                        return _config_error(str(locked.allocation_id))
+                    conn, alloc, existing = locked
+                    return await _provision_create_response(
+                        conn,
+                        ctx,
+                        alloc,
+                        existing,
+                        profile=parsed,
+                        rootfs_validator=self.rootfs_validator,
+                    )
+            except IllegalTransition:
+                async with pool.connection() as conn:
+                    latest = await ALLOCATIONS.get(conn, uid)
+                data = {"current_status": latest.state.value} if latest else {}
+                return _config_error(allocation_id, data=data)
 
     async def provision_defined_system(
         self,
@@ -179,13 +199,18 @@ class SystemProvisionHandlers:
         *,
         system_id: str,
     ) -> ToolResponse:
-        return await _provision_defined_system(
-            pool,
-            ctx,
-            system_id=system_id,
-            component_sources=self.component_sources,
-            rootfs_validator=self.rootfs_validator,
-        )
+        """Admit a ``defined`` System after its upload window is complete."""
+        uid = _as_uuid(system_id)
+        if uid is None:
+            return _config_error(system_id)
+        with bind_context(principal=ctx.principal):
+            return await _provision_defined_locked(
+                pool,
+                ctx,
+                uid,
+                component_sources=self.component_sources,
+                rootfs_validator=self.rootfs_validator,
+            )
 
     async def define_system(
         self,
@@ -195,14 +220,34 @@ class SystemProvisionHandlers:
         allocation_id: str,
         profile: ProvisioningProfileInput,
     ) -> ToolResponse:
-        return await _define_system(
-            pool,
-            ctx,
-            allocation_id=allocation_id,
-            profile=profile,
-            component_sources=self.component_sources,
-            rootfs_validator=self.rootfs_validator,
-        )
+        """Create a System in ``defined`` for a ``granted`` Allocation."""
+        uid = _as_uuid(allocation_id)
+        if uid is None:
+            return _config_error(allocation_id)
+        try:
+            parsed = ProvisioningProfile.parse(profile)
+            _validate_profile_for_provider(parsed, self.component_sources)
+        except CategorizedError as exc:
+            return ToolResponse.failure(allocation_id, exc.category)
+        with bind_context(principal=ctx.principal):
+            try:
+                async with _locked_allocation_system(pool, ctx, uid) as locked:
+                    if isinstance(locked, MissingAllocation):
+                        return _config_error(str(locked.allocation_id))
+                    conn, alloc, existing = locked
+                    return await _define_create_response(
+                        conn,
+                        ctx,
+                        alloc,
+                        existing,
+                        profile=parsed,
+                        rootfs_validator=self.rootfs_validator,
+                    )
+            except IllegalTransition:
+                async with pool.connection() as conn:
+                    latest = await ALLOCATIONS.get(conn, uid)
+                data = {"current_status": latest.state.value} if latest else {}
+                return _config_error(allocation_id, data=data)
 
 
 async def _within_system_quota(conn: AsyncConnection, project: str) -> bool:
@@ -239,45 +284,6 @@ async def _find_system_for_allocation(conn: AsyncConnection, alloc_id: UUID) -> 
         )
         row = await cur.fetchone()
     return System.model_validate(row) if row else None
-
-
-async def _provision_system(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    *,
-    allocation_id: str,
-    profile: ProvisioningProfileInput,
-    component_sources: ComponentSourceCapabilities,
-    rootfs_validator: RootfsValidator,
-) -> ToolResponse:
-    """Mint a System for a ``granted`` Allocation and enqueue its provision job."""
-    uid = _as_uuid(allocation_id)
-    if uid is None:
-        return _config_error(allocation_id)
-    try:
-        parsed = ProvisioningProfile.parse(profile)
-        _validate_profile_for_provider(parsed, component_sources)
-    except CategorizedError as exc:
-        return ToolResponse.failure(allocation_id, exc.category)
-    with bind_context(principal=ctx.principal):
-        try:
-            async with _locked_allocation_system(pool, ctx, uid) as locked:
-                if isinstance(locked, MissingAllocation):
-                    return _config_error(str(locked.allocation_id))
-                conn, alloc, existing = locked
-                return await _provision_create_response(
-                    conn,
-                    ctx,
-                    alloc,
-                    existing,
-                    profile=parsed,
-                    rootfs_validator=rootfs_validator,
-                )
-        except IllegalTransition:
-            async with pool.connection() as conn:
-                latest = await ALLOCATIONS.get(conn, uid)
-            data = {"current_status": latest.state.value} if latest else {}
-            return _config_error(allocation_id, data=data)
 
 
 @asynccontextmanager
@@ -392,28 +398,6 @@ async def _admit_defined(
         f"{alloc.id}:provision",
     )
     return _system_job_envelope(job, system.id)
-
-
-async def _provision_defined_system(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    *,
-    system_id: str,
-    component_sources: ComponentSourceCapabilities,
-    rootfs_validator: RootfsValidator,
-) -> ToolResponse:
-    """Admit a ``defined`` System after its upload window is complete."""
-    uid = _as_uuid(system_id)
-    if uid is None:
-        return _config_error(system_id)
-    with bind_context(principal=ctx.principal):
-        return await _provision_defined_locked(
-            pool,
-            ctx,
-            uid,
-            component_sources=component_sources,
-            rootfs_validator=rootfs_validator,
-        )
 
 
 async def _provision_defined_locked(
@@ -614,49 +598,3 @@ async def _insert_provisioning_system(
         f"{alloc.id}:provision",
     )
     return _system_job_envelope(job, system.id)
-
-
-async def _define_system(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    *,
-    allocation_id: str,
-    profile: ProvisioningProfileInput,
-    component_sources: ComponentSourceCapabilities,
-    rootfs_validator: RootfsValidator,
-) -> ToolResponse:
-    """Create a System in ``defined`` for a ``granted`` Allocation (ADR-0025 decision 10).
-
-    The create-without-provision producer: it opens the rootfs-upload window (ADR-0048 §5).
-    Validates the profile (``upload`` rootfs is admitted here — this is the one tool that
-    opens an upload window), then under the per-allocation lock inserts the System at
-    ``defined`` and flips the Allocation ``granted -> active``. Operator only. Returns a
-    System envelope (no job — define does no provider work).
-    """
-    uid = _as_uuid(allocation_id)
-    if uid is None:
-        return _config_error(allocation_id)
-    try:
-        parsed = ProvisioningProfile.parse(profile)
-        _validate_profile_for_provider(parsed, component_sources)
-    except CategorizedError as exc:
-        return ToolResponse.failure(allocation_id, exc.category)
-    with bind_context(principal=ctx.principal):
-        try:
-            async with _locked_allocation_system(pool, ctx, uid) as locked:
-                if isinstance(locked, MissingAllocation):
-                    return _config_error(str(locked.allocation_id))
-                conn, alloc, existing = locked
-                return await _define_create_response(
-                    conn,
-                    ctx,
-                    alloc,
-                    existing,
-                    profile=parsed,
-                    rootfs_validator=rootfs_validator,
-                )
-        except IllegalTransition:
-            async with pool.connection() as conn:
-                latest = await ALLOCATIONS.get(conn, uid)
-            data = {"current_status": latest.state.value} if latest else {}
-            return _config_error(allocation_id, data=data)

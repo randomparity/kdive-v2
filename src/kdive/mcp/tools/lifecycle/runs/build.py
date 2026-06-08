@@ -200,74 +200,54 @@ class RunBuildHandlers:
         cmdline: str,
     ) -> ToolResponse:
         """Validate an external Run's uploads and finalize it ``created -> succeeded``."""
-        return await _complete_build(
-            pool,
-            ctx,
-            run_id,
-            build_id=build_id,
-            cmdline=cmdline,
-            validator=self.complete_validator,
-        )
-
-
-async def _complete_build(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    run_id: str,
-    *,
-    build_id: str | None,
-    cmdline: str,
-    validator: CompleteBuildValidator,
-) -> ToolResponse:
-    """Validate an external Run's uploads and finalize it ``created -> succeeded``."""
-    uid = _as_uuid(run_id)
-    if uid is None:
-        return _config_error(run_id)
-    owned = platform_owned_cmdline_token(cmdline)
-    if owned is not None:
-        return _config_error(
-            run_id, data={"reason": "cmdline_overrides_platform_args", "token": owned}
-        )
-    with bind_context(principal=ctx.principal):
-        async with pool.connection() as conn:
-            run = await RUNS.get(conn, uid)
-            if run is None or run.project not in ctx.projects:
-                return _config_error(run_id)
-            require_role(ctx, run.project, Role.OPERATOR)
-
-            recorded = await _existing_build_result(conn, uid)
-            if recorded is not None:
-                return _complete_envelope(uid, recorded)
-
-            try:
-                profile = _external_build_profile(run)
-            except CategorizedError as exc:
-                return ToolResponse.failure(run_id, exc.category)
-            guard = _complete_build_guard(run, profile)
-            if guard is not None:
-                return guard
-
-            manifest_row = await upload_manifest.get_manifest(conn, "runs", uid)
-            if manifest_row is None:
-                return _config_error(run_id, data={"reason": "no_upload_manifest"})
-            keys = {e.name: f"{manifest_row.prefix}{e.name}" for e in manifest_row.entries}
-
-            try:
-                requirements = _external_config_requirements(profile)
-                validated = await asyncio.to_thread(
-                    validator.validate,
-                    uid,
-                    list(manifest_row.entries),
-                    keys,
-                    build_id,
-                    requirements,
-                )
-            except CategorizedError as exc:
-                return ToolResponse.failure(run_id, exc.category)
-
-            return await _finalize_external_build(
-                conn, ctx, run, validated.output, cmdline, keys, validated.heads
+        uid = _as_uuid(run_id)
+        if uid is None:
+            return _config_error(run_id)
+        owned = platform_owned_cmdline_token(cmdline)
+        if owned is not None:
+            return _config_error(
+                run_id, data={"reason": "cmdline_overrides_platform_args", "token": owned}
             )
+        with bind_context(principal=ctx.principal):
+            async with pool.connection() as conn:
+                run = await RUNS.get(conn, uid)
+                if run is None or run.project not in ctx.projects:
+                    return _config_error(run_id)
+                require_role(ctx, run.project, Role.OPERATOR)
+
+                recorded = await _existing_build_result(conn, uid)
+                if recorded is not None:
+                    return _complete_envelope(uid, recorded)
+
+                try:
+                    profile = _external_build_profile(run)
+                except CategorizedError as exc:
+                    return ToolResponse.failure(run_id, exc.category)
+                guard = _complete_build_guard(run, profile)
+                if guard is not None:
+                    return guard
+
+                manifest_row = await upload_manifest.get_manifest(conn, "runs", uid)
+                if manifest_row is None:
+                    return _config_error(run_id, data={"reason": "no_upload_manifest"})
+                keys = {e.name: f"{manifest_row.prefix}{e.name}" for e in manifest_row.entries}
+
+                try:
+                    requirements = _external_config_requirements(profile)
+                    validated = await asyncio.to_thread(
+                        self.complete_validator.validate,
+                        uid,
+                        list(manifest_row.entries),
+                        keys,
+                        build_id,
+                        requirements,
+                    )
+                except CategorizedError as exc:
+                    return ToolResponse.failure(run_id, exc.category)
+
+                return await _finalize_external_build(
+                    conn, ctx, run, validated.output, cmdline, keys, validated.heads
+                )
 
 
 def _external_build_profile(run: Run) -> ExternalBuildProfile:
