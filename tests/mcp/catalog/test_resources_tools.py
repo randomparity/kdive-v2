@@ -53,7 +53,7 @@ def test_list_returns_host_with_flat_capability_projection(migrated_url: str) ->
             responses = await resources_tools.list_resources_tool(pool, CTX, kind=None)
         assert responses.object_id == "resources"
         assert responses.status == "ok"
-        items = responses.collection_items()
+        items = responses.items
         assert len(items) == 1
         resp = items[0]
         assert resp.object_id == res_id
@@ -88,7 +88,7 @@ def test_list_malformed_resource_row_degrades_to_infrastructure_failure(
             async with pool.connection() as conn:
                 await conn.execute("UPDATE resources SET capabilities = '[]'::jsonb")
             responses = await resources_tools.list_resources_tool(pool, CTX, kind="local-libvirt")
-        items = responses.collection_items()
+        items = responses.items
         assert len(items) == 1
         assert items[0].object_id == res_id
         assert items[0].status == "error"

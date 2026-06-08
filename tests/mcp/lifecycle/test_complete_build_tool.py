@@ -270,9 +270,7 @@ def test_complete_build_writes_artifacts_after_effective_config_validation(
                 ],
                 store=_UploadStore(),
             )
-            assert {response.status for response in responses.collection_items()} == {
-                "upload_ready"
-            }
+            assert {response.status for response in responses.items} == {"upload_ready"}
             assert await _artifact_keys(pool, run_id) == set()
             kernel_key = f"local/runs/{run_id}/kernel"
             config_key = f"local/runs/{run_id}/effective_config"
@@ -316,9 +314,7 @@ def test_complete_build_rejects_missing_effective_config_without_artifacts(
                 ],
                 store=_UploadStore(),
             )
-            assert {response.status for response in responses.collection_items()} == {
-                "upload_ready"
-            }
+            assert {response.status for response in responses.items} == {"upload_ready"}
             kernel_key = f"local/runs/{run_id}/kernel"
             validator = _RealValidator(
                 _ValidationStore(

@@ -332,7 +332,7 @@ def test_list_returns_project_allocations(migrated_url: str) -> None:
             await _request(pool, _ctx())
             await _request(pool, _ctx())
             responses = await alloc_tools.list_allocations(pool, _ctx(), project="proj", limit=50)
-        items = responses.collection_items()
+        items = responses.items
         assert responses.object_id == "allocations"
         assert responses.status == "ok"
         assert responses.data["project"] == "proj"

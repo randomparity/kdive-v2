@@ -142,7 +142,7 @@ def test_collection_factory_wraps_item_envelopes() -> None:
     assert resp.data["count"] == "2"
     assert resp.data["owner"] == "system-1"
     assert resp.suggested_next_actions == ["artifacts.get"]
-    assert resp.collection_items() == [first, second]
+    assert resp.items == [first, second]
 
 
 def test_common_as_uuid_parses_valid_uuid_and_rejects_bad_value() -> None:

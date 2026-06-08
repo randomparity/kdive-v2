@@ -221,7 +221,7 @@ def test_create_upload_mints_presigned_puts_and_persists_manifest(migrated_url: 
                 ],
                 store=store,
             )
-            items = responses.collection_items()
+            items = responses.items
             assert responses.object_id == run_id
             assert responses.status == "upload_ready"
             assert responses.data["count"] == "2"
@@ -263,7 +263,7 @@ def test_create_upload_accepts_effective_config_for_external_run(migrated_url: s
             async with pool.connection() as conn:
                 manifest = await upload_manifest.get_manifest(conn, "runs", UUID(run_id))
 
-        items = responses.collection_items()
+        items = responses.items
         assert [r.object_id for r in items] == [
             f"local/runs/{run_id}/kernel",
             f"local/runs/{run_id}/effective_config",
@@ -422,7 +422,7 @@ def test_create_upload_accepts_exactly_5gib(migrated_url: str) -> None:
                 artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": five_gib}],
                 store=store,
             )
-        assert responses.collection_items()[0].object_id == f"local/runs/{run_id}/kernel"
+        assert responses.items[0].object_id == f"local/runs/{run_id}/kernel"
         assert store.calls == [(f"local/runs/{run_id}/kernel", "aaa", five_gib)]
 
     asyncio.run(_run())
@@ -442,7 +442,7 @@ def test_create_upload_accepts_large_binary_artifacts_at_5gib(migrated_url: str,
                 artifacts=[{"name": name, "sha256": "aaa", "size_bytes": five_gib}],
                 store=store,
             )
-        assert responses.collection_items()[0].object_id == f"local/runs/{run_id}/{name}"
+        assert responses.items[0].object_id == f"local/runs/{run_id}/{name}"
         assert store.calls == [(f"local/runs/{run_id}/{name}", "aaa", five_gib)]
 
     asyncio.run(_run())
@@ -506,7 +506,7 @@ def test_create_upload_for_defined_system_mints_rootfs_and_persists(migrated_url
                 artifacts=[{"name": "rootfs", "sha256": "aaa", "size_bytes": 100}],
                 store=store,
             )
-            items = responses.collection_items()
+            items = responses.items
             assert [r.object_id for r in items] == [f"local/systems/{sys_id}/rootfs"]
             assert items[0].suggested_next_actions == ["systems.provision_defined"]
             assert {c[0] for c in store.calls} == {f"local/systems/{sys_id}/rootfs"}

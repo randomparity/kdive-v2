@@ -63,7 +63,7 @@ def test_define_upload_provision_reaches_ready_with_committed_rootfs(
                 artifacts=[{"name": "rootfs", "sha256": "sha256:x", "size_bytes": 18}],
                 store=minio_store,
             )
-            upload_items = uploads.collection_items()
+            upload_items = uploads.items
             assert upload_items[0].status == "upload_ready"
             assert upload_items[0].suggested_next_actions == ["systems.provision_defined"]
 

@@ -9,9 +9,7 @@ rather than per-plane discipline.
 
 from __future__ import annotations
 
-import json
-
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job
@@ -38,10 +36,11 @@ class ToolResponse(BaseModel):
 
     object_id: str
     status: str
-    suggested_next_actions: list[str] = []
-    refs: dict[str, str] = {}
+    suggested_next_actions: list[str] = Field(default_factory=list)
+    refs: dict[str, str] = Field(default_factory=dict)
     error_category: str | None = None
-    data: dict[str, str] = {}
+    data: dict[str, str] = Field(default_factory=dict)
+    items: list[ToolResponse] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _category_iff_failed(self) -> ToolResponse:
@@ -94,26 +93,15 @@ class ToolResponse(BaseModel):
     ) -> ToolResponse:
         """Build one envelope for a collection-returning tool."""
         payload = dict(data or {})
-        payload["items"] = json.dumps(
-            [item.model_dump(mode="json") for item in items],
-            sort_keys=True,
-        )
         payload["count"] = str(len(items))
-        return cls.success(
-            object_id,
-            status,
-            suggested_next_actions=suggested_next_actions,
-            refs=refs,
+        return cls(
+            object_id=object_id,
+            status=status,
+            suggested_next_actions=suggested_next_actions or [],
+            refs=refs or {},
             data=payload,
+            items=list(items),
         )
-
-    def collection_items(self) -> list[ToolResponse]:
-        """Parse ``data["items"]`` from a collection envelope."""
-        raw = self.data.get("items", "[]")
-        decoded = json.loads(raw)
-        if not isinstance(decoded, list):
-            raise ValueError("collection envelope data['items'] must be a JSON list")
-        return [ToolResponse.model_validate(item) for item in decoded]
 
     @classmethod
     def failure(
