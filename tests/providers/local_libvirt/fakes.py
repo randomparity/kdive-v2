@@ -90,10 +90,55 @@ class FakeDomain:
 
 
 @dataclass
+class FakeNodeDevice:
+    """A libvirt node device exposing name()/XMLDesc(), for PCIe discovery tests."""
+
+    device_name: str
+    xml: str
+
+    def name(self) -> str:
+        return self.device_name
+
+    def XMLDesc(self, flags: int = 0) -> str:  # noqa: N802 - mirrors the libvirt binding name
+        return self.xml
+
+
+def pci_nodedev_xml(
+    *,
+    name: str = "pci_0000_3b_00_0",
+    cls: str = "0x020000",
+    domain: int = 0,
+    bus: int = 0x3B,
+    slot: int = 0,
+    function: int = 0,
+    vendor_id: str = "0x8086",
+    device_id: str = "0x1572",
+    product_label: str | None = "Ethernet Controller X710",
+) -> str:
+    """Render a libvirt nodedev PCI XML; bus/slot/function are DECIMAL like real nodedev."""
+    product = (
+        f"<product id='{device_id}'>{product_label}</product>"
+        if product_label is not None
+        else f"<product id='{device_id}'/>"
+    )
+    return (
+        f"<device><name>{name}</name>"
+        f"<capability type='pci'>"
+        f"<class>{cls}</class>"
+        f"<domain>{domain}</domain><bus>{bus}</bus>"
+        f"<slot>{slot}</slot><function>{function}</function>"
+        f"{product}"
+        f"<vendor id='{vendor_id}'>Intel Corporation</vendor>"
+        f"</capability></device>"
+    )
+
+
+@dataclass
 class FakeLibvirtConn:
     caps_xml: str = _CAPS_XML
     info: list[object] = field(default_factory=lambda: ["x86_64", 16384, 8, 2400, 1, 1, 4, 2])
     domains: list[FakeDomain] = field(default_factory=list)
+    node_devices: list[FakeNodeDevice] = field(default_factory=list)  # PCI nodedev inventory
     lookup: dict[str, FakeDomain] = field(default_factory=dict)  # name -> domain for control ops
     defined_xml: list[str] = field(default_factory=list)  # captures defineXML payloads in order
     define_error: int | None = None  # libvirt error code defineXML raises, if set
@@ -103,6 +148,9 @@ class FakeLibvirtConn:
 
     def getCapabilities(self) -> str:
         return self.caps_xml
+
+    def listAllDevices(self, flags: int = 0) -> list[FakeNodeDevice]:  # noqa: N802
+        return self.node_devices
 
     def listAllDomains(self, flags: int = 0) -> list[FakeDomain]:
         return self.domains

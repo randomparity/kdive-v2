@@ -19,6 +19,7 @@ from defusedxml.ElementTree import fromstring as _safe_fromstring
 from kdive.domain.discovery import ResourceRecord
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
+from kdive.domain.pcie import PCIE_DEVICES_KEY, PCIeDescriptor
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import ResourceStatus
 from kdive.providers.ports import OwnedInfra
@@ -34,9 +35,15 @@ class _LibvirtDomain(Protocol):
     def metadata(self, kind: int, uri: str | None, flags: int) -> str: ...
 
 
+class _LibvirtNodeDevice(Protocol):
+    def name(self) -> str: ...
+    def XMLDesc(self, flags: int = 0) -> str: ...  # noqa: N802 - libvirt binding name
+
+
 class _LibvirtConn(Protocol):
     def getInfo(self) -> list[Any]: ...
     def getCapabilities(self) -> str: ...
+    def listAllDevices(self, flags: int = 0) -> Sequence[_LibvirtNodeDevice]: ...
     def listAllDomains(self, flags: int = 0) -> Sequence[_LibvirtDomain]: ...
 
 
@@ -55,6 +62,66 @@ def _parse_arch(caps_xml: str) -> str:
     except ET.ParseError:
         return "unknown"
     return root.findtext("./host/cpu/arch") or "unknown"
+
+
+def _hex_id(raw: str) -> str:
+    """Normalize a libvirt ``id='0xVVVV'`` attribute to a bare lowercase 4-hex string."""
+    return raw.removeprefix("0x").lower()
+
+
+def _parse_pci_descriptor(device_xml: str) -> PCIeDescriptor | None:
+    """Parse one nodedev PCI XML into a static :class:`PCIeDescriptor`; ``None`` if not PCI.
+
+    The nodedev ``<bus>/<slot>/<function>`` fields are **decimal** integers, so the BDF is
+    composed with explicit hex formatting (``<slot>31</slot>`` → ``1f``). ``class_code`` is
+    the full 6-hex form the matcher prefix-slices; ``label`` is the ``<product>`` text,
+    falling back to ``vendor:device`` when the element is self-closing/empty.
+
+    Parsed with ``defusedxml`` (the XML crosses the libvirtd trust boundary, as
+    :func:`_parse_arch`): a non-PCI or structurally-incomplete document returns ``None`` so
+    one bad device never blanks the inventory; an *attack* document raises (fail loud).
+    """
+    root: ET.Element = _safe_fromstring(device_xml)
+    cap = root.find("./capability[@type='pci']")
+    if cap is None:
+        return None
+    try:
+        bdf = _compose_bdf(cap)
+        vendor_id = _hex_id(_required_attr(cap, "vendor", "id"))
+        device_id = _hex_id(_required_attr(cap, "product", "id"))
+        class_code = (cap.findtext("class") or "").removeprefix("0x").lower()
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not class_code:
+        return None
+    label = (cap.findtext("product") or "").strip() or f"{vendor_id}:{device_id}"
+    return PCIeDescriptor(
+        bdf=bdf,
+        vendor_id=vendor_id,
+        device_id=device_id,
+        class_code=class_code,
+        label=label,
+    )
+
+
+def _required_attr(cap: ET.Element, tag: str, attr: str) -> str:
+    """Return ``cap/<tag>``'s ``attr``; raise ``KeyError`` if the element/attribute is absent."""
+    element = cap.find(tag)
+    if element is None:
+        raise KeyError(tag)
+    value = element.get(attr)
+    if value is None:
+        raise KeyError(f"{tag}@{attr}")
+    return value
+
+
+def _compose_bdf(cap: ET.Element) -> str:
+    """Compose the canonical hex ``DDDD:BB:SS.F`` BDF from decimal nodedev address fields."""
+    domain = int(cap.findtext("domain", default="0"))
+    bus = int(cap.findtext("bus", default="0"))
+    slot = int(cap.findtext("slot", default="0"))
+    function = int(cap.findtext("function", default="0"))
+    return f"{domain:04x}:{bus:02x}:{slot:02x}.{function:x}"
 
 
 def _parse_system_id(meta_xml: str) -> str | None:
@@ -117,6 +184,7 @@ class LocalLibvirtDiscovery:
             "memory_mb": int(info[1]),
             "transports": ["gdbstub"],
             CONCURRENT_ALLOCATION_CAP_KEY: self.concurrent_allocation_cap,
+            PCIE_DEVICES_KEY: self._list_pcie_descriptors(conn),
         }
         return [
             ResourceRecord(
@@ -126,6 +194,23 @@ class LocalLibvirtDiscovery:
                 status=ResourceStatus.AVAILABLE,
             )
         ]
+
+    def _list_pcie_descriptors(self, conn: _LibvirtConn) -> list[PCIeDescriptor]:
+        """Enumerate the host's PCI node devices into static descriptors (ADR-0068).
+
+        Each malformed/incomplete device is skipped so one bad device never blanks the
+        inventory; the descriptor is static (no occupancy flag), so a re-scan is idempotent
+        against live claims.
+        """
+        descriptors: list[PCIeDescriptor] = []
+        for device in conn.listAllDevices(libvirt.VIR_CONNECT_LIST_NODE_DEVICES_CAP_PCI_DEV):
+            try:
+                descriptor = _parse_pci_descriptor(device.XMLDesc())
+            except ET.ParseError:
+                continue  # unparseable XML for this device → skip, keep the rest
+            if descriptor is not None:
+                descriptors.append(descriptor)
+        return descriptors
 
     def list_owned(self) -> list[OwnedInfra]:
         """Return `{system_id, domain_name}` for each kdive-tagged domain."""
