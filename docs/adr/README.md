@@ -97,3 +97,6 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0068](0068-custom-config-pcie-modeling.md) | Custom config + PCIe capability modeling (M1.4) | Proposed |
 | [0069](0069-reservation-pending-queue-scheduler.md) | Reservation / FIFO pending-queue scheduler (M1.4) | Proposed |
 | [0070](0070-fleet-availability-system-reuse.md) | Fleet availability + system reuse (M1.4) | Proposed |
+| [0071](0071-per-kind-provider-runtime-registry.md) | Per-kind ProviderRuntime registry — the selection seam (M1.5) | Proposed |
+| [0072](0072-fault-injection-provider-seeded-engine.md) | Fault-injection provider + seeded decision-keyed fault engine (M1.5) | Proposed |
+| [0073](0073-forced-secret-resolution-redaction.md) | Forced secret resolution + end-to-end redaction validation (M1.5) | Proposed |
