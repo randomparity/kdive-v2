@@ -162,7 +162,7 @@ async def _seed_system(
                 state=system_state,
                 provisioning_profile=provisioning_profile
                 if provisioning_profile is not None
-                else {"schema_version": 1},
+                else _profile_dump(),
             ),
         )
     return str(system.id)
@@ -2329,17 +2329,20 @@ def test_install_method_console_for_bare_system() -> None:
     assert run_steps.install_method_for(system) is CaptureMethod.CONSOLE
 
 
-def test_install_method_console_for_partial_profile_does_not_raise() -> None:
-    # The minimal seed profile (no provider section) must resolve, not raise.
+def test_install_method_rejects_partial_profile() -> None:
     system = _system_with_profile({"schema_version": 1})
-    assert run_steps.install_method_for(system) is CaptureMethod.CONSOLE
+    with pytest.raises(CategorizedError) as exc:
+        run_steps.install_method_for(system)
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
-def test_install_method_reads_alias_not_attribute_spelling() -> None:
-    # A crashkernel under the WRONG key 'local_libvirt' must NOT resolve kdump:
-    # the resolver reads the persisted alias 'local-libvirt' (ADR-0051 Decision 1).
+def test_install_method_rejects_attribute_spelling() -> None:
     system = _system_with_profile({"provider": {"local_libvirt": {"crashkernel": "256M"}}})
-    assert run_steps.install_method_for(system) is CaptureMethod.CONSOLE
+    with pytest.raises(CategorizedError) as exc:
+        run_steps.install_method_for(system)
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
 async def _record_build_ledger(

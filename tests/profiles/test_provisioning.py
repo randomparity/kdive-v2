@@ -358,8 +358,11 @@ def test_capture_method_reports_profile_capture_tier(
     assert capture_method(ProvisioningProfile.parse(data)) is expected
 
 
-def test_capture_method_tolerates_malformed_stored_mapping() -> None:
-    assert capture_method({"schema_version": 1}) is CaptureMethod.CONSOLE
+def test_capture_method_rejects_malformed_stored_mapping() -> None:
+    with pytest.raises(CategorizedError) as exc:
+        capture_method({"schema_version": 1})
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
 def test_debug_block_rejects_unknown_key() -> None:

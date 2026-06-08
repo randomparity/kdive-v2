@@ -248,15 +248,8 @@ def destructive_opt_in(profile: ProvisioningProfile, op: str) -> bool:
 
 
 def capture_method(profile: ProvisioningProfile | Mapping[str, object]) -> CaptureMethod:
-    """Resolve the crash-capture method a provisioning profile enables.
-
-    Stored legacy rows may contain malformed profile mappings. Those are treated as the
-    baseline console method, matching the previous tolerant read path.
-    """
-    try:
-        parsed = _parsed_profile(profile)
-    except CategorizedError:
-        return CaptureMethod.CONSOLE
+    """Resolve the crash-capture method a provisioning profile enables."""
+    parsed = _parsed_profile(profile)
     section = parsed.provider.local_libvirt
     if section.crashkernel is not None:
         return CaptureMethod.KDUMP
