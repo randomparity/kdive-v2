@@ -48,6 +48,24 @@ class AuditEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class DenialEvent:
+    """A member-over-reach `require_role` denial (ADR-0062 §5).
+
+    Object-agnostic: the dispatch boundary records the actor, tool, and project (the last
+    taken from the :class:`~kdive.security.rbac.RoleDenied` exception), not the object the
+    handler would have resolved after the gate. ``reason`` is the human-readable denial
+    text (e.g. the held-vs-required role); it carries no secret values.
+    """
+
+    principal: str
+    agent_session: str | None
+    project: str
+    tool: str
+    args: Mapping[str, object]
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class PlatformAuditEvent:
     """A platform-scope read or denial audit event."""
 
@@ -139,6 +157,50 @@ async def record_platform(
         row = await cur.fetchone()
     if row is None:  # Invariant: INSERT ... RETURNING always yields one row.
         raise RuntimeError("INSERT into platform_audit_log returned no row")
+    return row[0]
+
+
+_DENIED_TRANSITION = "denied"
+
+
+async def record_denial(
+    conn: AsyncConnection,
+    *,
+    event: DenialEvent,
+) -> UUID:
+    """Append one `audit_log` row for a member-over-reach denial; return its id.
+
+    The guard-exempt denial writer (precedent: :func:`record_system` — no
+    ``project in ctx.projects`` membership guard, since the dispatch boundary has already
+    authenticated the actor and the project comes from the ``RoleDenied`` exception). It
+    writes the **reserved bare** ``transition='denied'`` literal with NULL object columns
+    (the boundary is object-agnostic) — distinct from the destructive gate's
+    ``f"{op.kind}:denied"`` convention, whose rows always carry their gated object. The
+    ``tool`` column records which tool was denied, so the bare transition loses nothing.
+
+    Runs the INSERT on ``conn`` without opening a transaction, so the caller composes it
+    (the dispatch boundary opens its own connection in the denial path).
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO audit_log "
+            "(principal, agent_session, project, tool, object_kind, object_id, "
+            " transition, args_digest, reason) "
+            "VALUES (%s, %s, %s, %s, NULL, NULL, %s, %s, %s) "
+            "RETURNING id",
+            (
+                event.principal,
+                event.agent_session,
+                event.project,
+                event.tool,
+                _DENIED_TRANSITION,
+                args_digest(event.args),
+                event.reason,
+            ),
+        )
+        row = await cur.fetchone()
+    if row is None:  # Invariant: INSERT ... RETURNING always yields one row.
+        raise RuntimeError("INSERT into audit_log returned no row")
     return row[0]
 
 

@@ -97,6 +97,7 @@ def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
         "0009",
         "0010",
         "0011",
+        "0012",
     ]
     assert second == []
 
@@ -278,6 +279,64 @@ def test_platform_audit_log_accepts_null_platform_role_row(pg_conn: psycopg.Conn
     assert row == (None, None)
 
 
+def test_migration_0012_makes_audit_object_columns_nullable(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    nullable = _nullable(pg_conn, "audit_log")
+    # Denial rows are object-agnostic (ADR-0062 §5), so the object columns relax to NULL.
+    assert nullable.get("object_kind") == "YES"
+    assert nullable.get("object_id") == "YES"
+    assert nullable.get("reason") == "YES"
+    # project stays NOT NULL — a member-over-reach denial always carries a resolvable one.
+    assert nullable.get("project") == "NO"
+    for col in ("principal", "tool", "transition", "args_digest"):
+        assert nullable.get(col) == "NO", col
+
+
+def test_migration_0012_check_rejects_non_denied_row_with_null_object(
+    pg_conn: psycopg.Connection,
+) -> None:
+    migrate.apply_migrations(pg_conn)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        pg_conn.execute(
+            "INSERT INTO audit_log "
+            "(principal, project, tool, transition, args_digest) "
+            "VALUES ('alice', 'proj', 'systems.teardown', 'ready->torn_down', 'd')"
+        )
+
+
+def test_migration_0012_check_accepts_bare_denied_row_without_object(
+    pg_conn: psycopg.Connection,
+) -> None:
+    migrate.apply_migrations(pg_conn)
+    pg_conn.execute(
+        "INSERT INTO audit_log "
+        "(principal, project, tool, transition, args_digest, reason) "
+        "VALUES ('alice', 'proj', 'allocations.release', 'denied', 'd', 'over-reach')"
+    )
+    row = pg_conn.execute(
+        "SELECT object_kind, object_id, reason FROM audit_log WHERE transition = 'denied'"
+    ).fetchone()
+    assert row == (None, None, "over-reach")
+
+
+def test_migration_0012_check_accepts_destructive_gate_denied_row_with_object(
+    pg_conn: psycopg.Connection,
+) -> None:
+    # The destructive gate's `{op}:denied` row carries its gated object → object-present
+    # branch, no exemption; both denial kinds coexist under the one CHECK.
+    migrate.apply_migrations(pg_conn)
+    pg_conn.execute(
+        "INSERT INTO audit_log "
+        "(principal, project, tool, object_kind, object_id, transition, args_digest) "
+        "VALUES ('alice', 'proj', 'control.force_crash', 'systems', "
+        "gen_random_uuid(), 'force_crash:denied', 'd')"
+    )
+    count = pg_conn.execute(
+        "SELECT count(*) FROM audit_log WHERE transition = 'force_crash:denied'"
+    ).fetchone()
+    assert count is not None and count[0] == 1
+
+
 def test_migration_0002_creates_accounting_tables(pg_conn: psycopg.Connection) -> None:
     migrate.apply_migrations(pg_conn)
     assert _tables(pg_conn) >= M1_TABLES
@@ -420,4 +479,5 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
         "0009",
         "0010",
         "0011",
+        "0012",
     ]
