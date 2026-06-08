@@ -176,6 +176,17 @@ def test_snapshot_malformed_pcie_spec_is_configuration_error() -> None:
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
+def test_snapshot_malformed_pcie_spec_raises_even_when_sizing_would_miss() -> None:
+    # A malformed pcie spec surfaces its own error deterministically, not masked by a
+    # sizing shortfall that would otherwise return False first.
+    sizing = AllocationSizing(vcpu=4, memory_mb=8192, disk_gb=40)
+    req = ReuseRequirement(vcpus=999, pcie=["class=02"])
+
+    with pytest.raises(CategorizedError) as exc:
+        snapshot_satisfies(sizing, [_CLAIM], req)
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
 # --- ReuseRequirement.is_empty (require_pcie=[] no-op) --------------------------------
 
 

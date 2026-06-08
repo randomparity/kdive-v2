@@ -69,22 +69,25 @@ def register(
         require_vcpus: Annotated[
             int | None,
             Field(
+                gt=0,
                 description="Optional reuse assertion: the System's persisted snapshot must have "
-                "at least this many vcpus, re-checked under the lock. Omit to skip."
+                "at least this many vcpus, re-checked under the lock. Omit to skip.",
             ),
         ] = None,
         require_memory_gb: Annotated[
             int | None,
             Field(
+                gt=0,
                 description="Optional reuse assertion: the System's snapshot must have at least "
-                "this much memory in GB. Omit to skip."
+                "this much memory in GB. Omit to skip.",
             ),
         ] = None,
         require_disk_gb: Annotated[
             int | None,
             Field(
+                gt=0,
                 description="Optional reuse assertion: the System's snapshot must have at least "
-                "this much disk in GB. Omit to skip."
+                "this much disk in GB. Omit to skip.",
             ),
         ] = None,
         require_pcie: Annotated[

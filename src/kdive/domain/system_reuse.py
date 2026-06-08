@@ -132,10 +132,13 @@ def snapshot_satisfies(
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` for a malformed or ``class=`` pcie spec.
     """
+    # PCIe spec grammar is validated first so a malformed/class= spec surfaces deterministically
+    # (its own error) regardless of whether a sizing axis would also fall short.
+    pcie_ok = all(_pcie_claim_contains(claims, spec) for spec in req.pcie)
     if req.vcpus is not None and sizing.vcpu < req.vcpus:
         return False
     if req.memory_gb is not None and sizing.memory_mb < req.memory_gb * _MB_PER_GB:
         return False
     if req.disk_gb is not None and sizing.disk_gb < req.disk_gb:
         return False
-    return all(_pcie_claim_contains(claims, spec) for spec in req.pcie)
+    return pcie_ok
