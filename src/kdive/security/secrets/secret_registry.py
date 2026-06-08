@@ -1,11 +1,11 @@
-"""Process-scoped registry of known secret values (ADR-0027, refines ADR-0012).
+"""Registry of known secret values (ADR-0027, refines ADR-0012).
 
 Ported from the PoC ``kdive.safety.secret_registry``. Both the logging
-``SecretRedactionFilter`` and every ``Redactor`` seed from
-``PROCESS_SECRET_REGISTRY``, so a value resolved through a ``SecretBackend`` is
-masked on the logging path and the return/persistence path without each call site
-re-supplying it. This module is a leaf (no internal imports) to keep ``Redactor``
-free of an import cycle through ``logging``.
+``SecretRedactionFilter`` and app-owned ``Redactor`` instances seed from the same
+``SecretRegistry``, so a value resolved through a ``SecretBackend`` is masked on
+the logging path and the return/persistence path without each call site
+re-supplying it. ``PROCESS_SECRET_REGISTRY`` remains the default for tests and
+small CLI helpers that do not have an app composition owner.
 """
 
 from __future__ import annotations
@@ -65,8 +65,13 @@ class SecretRegistry:
         with self._lock:
             return self._version
 
+    def clear(self) -> None:
+        """Drop all registered values and advance the version for cached redactors."""
+        with self._lock:
+            self._refcount.clear()
+            self._by_scope.clear()
+            self._version += 1
+
 
 PROCESS_SECRET_REGISTRY = SecretRegistry()
-"""The one process-global registry both the logging filter and every ``Redactor``
-seed from, so a resolved secret is masked on the logging and return/persistence
-paths without each call site re-supplying it."""
+"""Default registry for tests and CLI helpers without an app-owned registry."""

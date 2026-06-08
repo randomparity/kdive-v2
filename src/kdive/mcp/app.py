@@ -40,13 +40,18 @@ from kdive.mcp.tools.ops import tuning as ops_tuning_tools
 from kdive.planes import control, runs, systems, vmcore
 from kdive.providers.composition import build_default_provider_runtime
 from kdive.providers.runtime import ProviderRuntime
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
 
-type PlaneRegistrar = Callable[[FastMCP, AsyncConnectionPool, ProviderRuntime], None]
+type PlaneRegistrar = Callable[
+    [FastMCP, AsyncConnectionPool, ProviderRuntime, SecretRegistry], None
+]
 type HandlerRegistrar = Callable[[HandlerRegistry, ProviderRuntime], None]
 
 
 def _plain(register: Callable[[FastMCP, AsyncConnectionPool], None]) -> PlaneRegistrar:
-    def _register(app: FastMCP, pool: AsyncConnectionPool, _: ProviderRuntime) -> None:
+    def _register(
+        app: FastMCP, pool: AsyncConnectionPool, _: ProviderRuntime, __: SecretRegistry
+    ) -> None:
         register(app, pool)
 
     return _register
@@ -63,14 +68,18 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _plain(ops_reconcile_tools.register),
     _plain(allocations.register),
     _plain(ops_breakglass_tools.register),
-    lambda app, pool, runtime: systems_tools.register(app, pool, provider_runtime=runtime),
+    lambda app, pool, runtime, registry: systems_tools.register(
+        app, pool, provider_runtime=runtime
+    ),
     _plain(investigations.register),
-    lambda app, pool, runtime: runs_tools.register(app, pool, provider_runtime=runtime),
+    lambda app, pool, runtime, registry: runs_tools.register(app, pool, provider_runtime=runtime),
     _plain(control_tools.register),
     _plain(artifacts.register),
-    lambda app, pool, runtime: vmcore_tools.register(app, pool, provider_runtime=runtime),
-    lambda app, pool, runtime: debug_tools.register(app, pool, provider_runtime=runtime),
-    lambda app, pool, runtime: introspect.register(app, pool, provider_runtime=runtime),
+    lambda app, pool, runtime, registry: vmcore_tools.register(app, pool, provider_runtime=runtime),
+    lambda app, pool, runtime, registry: debug_tools.register(
+        app, pool, provider_runtime=runtime, secret_registry=registry
+    ),
+    lambda app, pool, runtime, registry: introspect.register(app, pool, provider_runtime=runtime),
     _plain(ops_queue_tools.register),
     _plain(ops_tuning_tools.register),
     _plain(audit_tools.register),
@@ -97,6 +106,7 @@ def build_app(
     *,
     verifier: JWTVerifier | None = None,
     provider_runtime: ProviderRuntime | None = None,
+    secret_registry: SecretRegistry | None = None,
 ) -> FastMCP:
     """Construct the FastMCP app and register every plane's tools.
 
@@ -106,12 +116,15 @@ def build_app(
             ``None``, built from the OIDC env vars via :func:`build_verifier`.
         provider_runtime: Injected provider dispatch runtime passed to provider-aware
             tool registrars; when ``None``, built from the default provider composition.
+        secret_registry: App-owned registry shared by secret backends and logging. When
+            ``None``, the process-global default is used for tests and CLI helpers.
     """
     app: FastMCP = FastMCP(name="kdive", auth=verifier or build_verifier())
     app.add_middleware(DenialAuditMiddleware(pool))
     runtime = provider_runtime or build_default_provider_runtime()
+    registry = PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
     for register in _PLANE_REGISTRARS:
-        register(app, pool, runtime)
+        register(app, pool, runtime, registry)
     return app
 
 

@@ -11,6 +11,8 @@ import uuid
 import pytest
 
 from kdive import log as klog
+from kdive.security.secrets.redaction import REDACTION, SecretRedactionFilter
+from kdive.security.secrets.secret_registry import SecretRegistry
 
 
 def _capture_logger(name: str) -> tuple[logging.Logger, io.StringIO]:
@@ -114,6 +116,41 @@ def test_configure_logging_is_idempotent() -> None:
         assert len(json_handlers) == 1
         handler = json_handlers[0]
         assert any(isinstance(f, klog.ContextFilter) for f in handler.filters)
+        assert any(isinstance(f, SecretRedactionFilter) for f in handler.filters)
+    finally:
+        root.handlers = before
+
+
+def test_configure_logging_updates_redaction_registry() -> None:
+    root = logging.getLogger()
+    before = list(root.handlers)
+    try:
+        first = SecretRegistry()
+        second = SecretRegistry()
+        klog.configure_logging(secret_registry=first)
+        klog.configure_logging(secret_registry=second)
+        handlers = [h for h in root.handlers if isinstance(h, logging.StreamHandler)]
+        filters = [
+            log_filter
+            for handler in handlers
+            for log_filter in handler.filters
+            if isinstance(log_filter, SecretRedactionFilter)
+        ]
+        assert len(filters) == 1
+        first.register("old-secret", scope=None)
+        second.register("new-secret", scope=None)
+        record = logging.LogRecord(
+            "kdive.test.redaction",
+            logging.INFO,
+            __file__,
+            0,
+            "old-secret new-secret",
+            None,
+            None,
+        )
+        filters[0].filter(record)
+        assert "old-secret" in record.getMessage()
+        assert record.getMessage() == f"old-secret {REDACTION}"
     finally:
         root.handlers = before
 

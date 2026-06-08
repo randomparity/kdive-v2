@@ -61,6 +61,16 @@ def test_version_is_monotonic_on_change() -> None:
     assert v0 < v1 < v2 < v3
 
 
+def test_clear_drops_all_values_and_bumps_version() -> None:
+    registry = SecretRegistry()
+    registry.register("a", scope=None)
+    registry.register("b", scope=object())
+    before = registry.version()
+    registry.clear()
+    assert registry.snapshot() == frozenset()
+    assert registry.version() > before
+
+
 def test_release_of_unknown_scope_does_not_bump_version() -> None:
     registry = SecretRegistry()
     registry.register("a", scope=None)

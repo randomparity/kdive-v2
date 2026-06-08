@@ -26,6 +26,7 @@ from kdive.domain.models import Job
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry, JobHandler
 from kdive.security.secrets.redaction import Redactor
+from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
 
 _log = logging.getLogger(__name__)
 _CONTEXT_VALUE_MAX = 1000
@@ -44,6 +45,7 @@ class Worker:
         lease: timedelta = queue.DEFAULT_LEASE,
         heartbeat_interval: timedelta = timedelta(seconds=30),
         poll_interval: timedelta = timedelta(seconds=1),
+        secret_registry: SecretRegistry | None = None,
     ) -> None:
         """Build a worker.
 
@@ -71,6 +73,9 @@ class Worker:
         self._lease = lease
         self._heartbeat_interval = heartbeat_interval
         self._poll_interval = poll_interval
+        self._secret_registry = (
+            PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
+        )
 
     async def run_once(self) -> Job | None:
         """Claim and dispatch one job; return it, or ``None`` if idle.
@@ -128,7 +133,12 @@ class Worker:
                     else ErrorCategory.INFRASTRUCTURE_FAILURE
                 )
                 async with self._pool.connection() as conn:
-                    await queue.fail(conn, job, category, failure_context=_failure_context(exc))
+                    await queue.fail(
+                        conn,
+                        job,
+                        category,
+                        failure_context=_failure_context(exc, self._secret_registry),
+                    )
                 _log.warning("job %s failed: %s", job.id, category, exc_info=True)
                 return
             async with self._pool.connection() as conn:
@@ -165,8 +175,8 @@ class Worker:
             )
 
 
-def _failure_context(exc: Exception) -> dict[str, str]:
-    redactor = Redactor()
+def _failure_context(exc: Exception, registry: SecretRegistry) -> dict[str, str]:
+    redactor = Redactor(registry=registry)
     context = {"failure_message": _redacted(redactor, str(exc))}
     if isinstance(exc, CategorizedError):
         for key, value in exc.details.items():

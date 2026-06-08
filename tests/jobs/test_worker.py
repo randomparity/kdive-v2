@@ -18,6 +18,7 @@ from kdive.domain.state import JobState
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.worker import Worker
+from kdive.security.secrets.secret_registry import SecretRegistry
 
 _AUTHORIZING = {"principal": "p", "agent_session": None, "project": "a"}
 
@@ -176,17 +177,19 @@ def test_failed_job_persists_redacted_failure_context(
     async def _run() -> None:
         async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:
             run_id = uuid4()
+            secret_registry = SecretRegistry()
+            secret_registry.register("supersecret", scope=None)
 
             async def always_raises(conn: psycopg.AsyncConnection, job: Job) -> str:
                 raise CategorizedError(
-                    "token=supersecret build failed",
+                    "saw supersecret build failed",
                     category=ErrorCategory.BUILD_FAILURE,
                     details={"run_id": run_id, "payload": {"not": "safe"}},
                 )
 
             reg = HandlerRegistry()
             reg.register(JobKind.BUILD, always_raises)
-            worker = Worker(pool, reg, worker_id="w1")
+            worker = Worker(pool, reg, worker_id="w1", secret_registry=secret_registry)
             async with pool.connection() as conn:
                 job = await queue.enqueue(
                     conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-context"
@@ -197,7 +200,7 @@ def test_failed_job_persists_redacted_failure_context(
             final = await _final_state(migrated_url, job.id)
             assert final.state is JobState.FAILED
             assert final.failure_context == {
-                "failure_message": "token=[REDACTED] build failed",
+                "failure_message": "saw [REDACTED] build failed",
                 "failure_detail_run_id": str(run_id),
             }
             records = [record for record in caplog.records if "failed:" in record.getMessage()]

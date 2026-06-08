@@ -464,7 +464,11 @@ def _detached_envelope(session_id: UUID, project: str) -> ToolResponse:
 
 
 def register(
-    app: FastMCP, pool: AsyncConnectionPool, *, provider_runtime: ProviderRuntime | None = None
+    app: FastMCP,
+    pool: AsyncConnectionPool,
+    *,
+    provider_runtime: ProviderRuntime | None = None,
+    secret_registry: SecretRegistry | None = None,
 ) -> None:
     """Register the `debug.*` tools on ``app``, bound to ``pool``.
 
@@ -481,12 +485,14 @@ def register(
     attach = provider.attach_seam
     engine = provider.debug_engine
     runtime = DebugEngineRuntime(engine=engine, attach=attach)
+    registry = PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
     handlers = DebugSessionHandlers(
         connector,
         runtime=runtime,
         secret_backend_factory=lambda session_id: secret_backend_from_env(
-            scope=_secret_scope(session_id)
+            registry=registry, scope=_secret_scope(session_id)
         ),
+        secret_registry=registry,
     )
 
     @app.tool(

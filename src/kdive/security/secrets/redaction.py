@@ -1,9 +1,9 @@
 """Value/pattern redaction for the return/persistence and logging paths (ADR-0027).
 
-Ported from the PoC ``kdive.safety.redaction``. Every ``Redactor`` seeds from
-``PROCESS_SECRET_REGISTRY`` in addition to any explicit ``secret_values``, so a
-credential resolved through a ``SecretBackend`` is masked without each call site
-re-supplying it. ``SecretRedactionFilter`` masks the logging boundary.
+Ported from the PoC ``kdive.safety.redaction``. Runtime code should pass the
+app-owned ``SecretRegistry`` so ``Redactor`` and ``SecretRedactionFilter`` share
+the same source of registered values. ``PROCESS_SECRET_REGISTRY`` remains the
+default for tests and small CLI helpers.
 """
 
 from __future__ import annotations
@@ -47,13 +47,19 @@ def redact_url_credentials(url: str) -> str:
 class Redactor:
     """Redacts known secret values and ``key=value`` patterns from text and structures.
 
-    Seeds from ``PROCESS_SECRET_REGISTRY`` in addition to any explicit ``secret_values``.
-    The snapshot is taken at construction; build a fresh ``Redactor`` per response so
-    newly registered values are reflected (ADR-0027 §3).
+    Seeds from ``registry`` in addition to any explicit ``secret_values``. The snapshot
+    is taken at construction; build a fresh ``Redactor`` per response so newly
+    registered values are reflected (ADR-0027 §3).
     """
 
-    def __init__(self, secret_values: list[str] | None = None) -> None:
-        merged = [*PROCESS_SECRET_REGISTRY.snapshot(), *(secret_values or [])]
+    def __init__(
+        self,
+        secret_values: list[str] | None = None,
+        *,
+        registry: SecretRegistry | None = None,
+    ) -> None:
+        registry = PROCESS_SECRET_REGISTRY if registry is None else registry
+        merged = [*registry.snapshot(), *(secret_values or [])]
         self._secret_values = [value for value in merged if value]
         secret_name = r"[A-Za-z0-9_-]*(?:password|passwd|token|api[_-]?key|secret)[A-Za-z0-9_-]*"
         self._key_value_pattern = re.compile(rf"(?i)\b({secret_name})(\s*[=:]\s*)([^\s]+)")
@@ -101,12 +107,12 @@ class SecretRedactionFilter(logging.Filter):
         super().__init__()
         self._registry = registry
         self._cached_version = -1
-        self._redactor = Redactor()
+        self._redactor = Redactor(registry=registry)
 
     def _current(self) -> Redactor:
         version = self._registry.version()
         if version != self._cached_version:
-            self._redactor = Redactor(list(self._registry.snapshot()))
+            self._redactor = Redactor(registry=self._registry)
             self._cached_version = version
         return self._redactor
 
