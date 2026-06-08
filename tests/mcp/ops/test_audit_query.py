@@ -24,12 +24,13 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import psycopg
+import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.ops import audit as audit_tools
-from kdive.security.rbac import PlatformRole, Role
+from kdive.security.rbac import PlatformRole, Role, RoleDenied
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -169,28 +170,23 @@ def test_project_form_admin_reads_only_that_project(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_project_form_viewer_denied(migrated_url: str) -> None:
+def test_project_form_member_below_admin_propagates_roledenied(migrated_url: str) -> None:
+    # A member of the project whose held rank is below admin (viewer/operator) is a
+    # member-over-reach: post-#142 require_role raises RoleDenied, and the project form must
+    # let it propagate to DenialAuditMiddleware (ADR-0062 §8 — the boundary writes the
+    # transition='denied' audit_log row) rather than swallowing it into a failure envelope.
+    # A non-member instead gets the base AuthorizationError envelope (see
+    # test_project_form_non_member_denied), so the two denial kinds stay distinct.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             await _seed_two_projects(pool)
-            ctx = _ctx(roles={"proj-a": Role.VIEWER}, projects=("proj-a",))
-            resp = await audit_tools.query(pool, ctx, project="proj-a")
-        assert resp.status == "error"
-        assert resp.error_category == "authorization_denied"
-        assert resp.suggested_next_actions == ["audit.query"]
-        assert await _count_platform_audit(migrated_url) == 0
-
-    asyncio.run(_run())
-
-
-def test_project_form_operator_denied(migrated_url: str) -> None:
-    async def _run() -> None:
-        async with _pool(migrated_url) as pool:
-            await _seed_two_projects(pool)
-            ctx = _ctx(roles={"proj-a": Role.OPERATOR}, projects=("proj-a",))
-            resp = await audit_tools.query(pool, ctx, project="proj-a")
-        assert resp.status == "error"
-        assert resp.error_category == "authorization_denied"
+            for role in (Role.VIEWER, Role.OPERATOR):
+                ctx = _ctx(roles={"proj-a": role}, projects=("proj-a",))
+                with pytest.raises(RoleDenied) as exc:
+                    await audit_tools.query(pool, ctx, project="proj-a")
+                assert exc.value.project == "proj-a"
+            # The boundary writes to audit_log, not platform_audit_log; the tool writes neither.
+            assert await _count_platform_audit(migrated_url) == 0
 
     asyncio.run(_run())
 

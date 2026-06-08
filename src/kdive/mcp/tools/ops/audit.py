@@ -38,6 +38,7 @@ from kdive.security.rbac import (
     AuthorizationError,
     PlatformRole,
     Role,
+    RoleDenied,
     require_platform_role,
     require_role,
 )
@@ -106,6 +107,12 @@ async def _query_project(
     """Project-scoped form: require admin on ``project``, read only its rows, no platform audit."""
     try:
         require_role(ctx, project, Role.ADMIN)
+    except RoleDenied:
+        # A member's rank-below over-reach must reach the dispatch boundary so
+        # DenialAuditMiddleware records the denial (ADR-0062 §5); do not swallow it
+        # into a failure envelope here. The non-member base AuthorizationError is not
+        # boundary-audited, so it keeps the graceful envelope below.
+        raise
     except AuthorizationError:
         return ToolResponse.failure(
             _OBJECT_ID, ErrorCategory.AUTHORIZATION_DENIED, suggested_next_actions=[_TOOL]
