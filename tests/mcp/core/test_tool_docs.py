@@ -3,7 +3,7 @@
 Builds the app with a null pool + a local-keypair verifier (the service-test
 path; needs no DB and no OIDC env), then asserts every tool is fully
 documented, the destructive hint matches the reviewed set, and every
-`implemented` tool is assigned to a non-live behavior test module.
+`implemented` or `partial` tool is assigned to a non-live behavior test module.
 """
 
 from __future__ import annotations
@@ -42,7 +42,24 @@ _BEHAVIOR_TESTS_BY_TOOL = {
     "allocations.request": ("tests/mcp/lifecycle/test_allocations_tools.py",),
     "artifacts.create_run_upload": ("tests/mcp/lifecycle/test_create_upload_tool.py",),
     "artifacts.create_system_upload": ("tests/mcp/lifecycle/test_create_upload_tool.py",),
+    "artifacts.get": ("tests/mcp/catalog/test_artifacts_tools.py",),
+    "artifacts.list": ("tests/mcp/catalog/test_artifacts_tools.py",),
+    "artifacts.search_text": ("tests/mcp/catalog/test_artifacts_tools.py",),
     "audit.query": ("tests/mcp/ops/test_audit_query.py",),
+    "control.force_crash": ("tests/mcp/lifecycle/test_control_tools.py",),
+    "control.power": ("tests/mcp/lifecycle/test_control_tools.py",),
+    "debug.clear_breakpoint": ("tests/mcp/debug/test_debug_ops.py",),
+    "debug.continue": ("tests/mcp/debug/test_debug_ops.py",),
+    "debug.end_session": (
+        "tests/mcp/debug/test_debug_tools.py",
+        "tests/mcp/debug/test_debug_ops.py",
+    ),
+    "debug.interrupt": ("tests/mcp/debug/test_debug_ops.py",),
+    "debug.list_breakpoints": ("tests/mcp/debug/test_debug_ops.py",),
+    "debug.read_memory": ("tests/mcp/debug/test_debug_ops.py",),
+    "debug.read_registers": ("tests/mcp/debug/test_debug_ops.py",),
+    "debug.set_breakpoint": ("tests/mcp/debug/test_debug_ops.py",),
+    "debug.start_session": ("tests/mcp/debug/test_debug_tools.py",),
     "inventory.list": ("tests/mcp/ops/test_inventory_list.py",),
     "investigations.close": ("tests/mcp/catalog/test_investigations_tools.py",),
     "investigations.get": ("tests/mcp/catalog/test_investigations_tools.py",),
@@ -53,6 +70,8 @@ _BEHAVIOR_TESTS_BY_TOOL = {
     "jobs.get": ("tests/mcp/catalog/test_jobs_tools.py",),
     "jobs.list": ("tests/mcp/catalog/test_jobs_tools.py",),
     "jobs.wait": ("tests/mcp/catalog/test_jobs_tools.py",),
+    "introspect.from_vmcore": ("tests/mcp/debug/test_introspect_tools.py",),
+    "introspect.run": ("tests/mcp/debug/test_introspect_tools.py",),
     "ops.force_release": ("tests/mcp/ops/test_breakglass.py",),
     "ops.force_teardown": ("tests/mcp/ops/test_breakglass.py",),
     "ops.jobs_list": ("tests/mcp/ops/test_queue_tools.py",),
@@ -66,12 +85,22 @@ _BEHAVIOR_TESTS_BY_TOOL = {
     "resources.list": ("tests/mcp/catalog/test_resources_tools.py",),
     "resources.set_status": ("tests/mcp/catalog/test_resources_tools.py",),
     "resources.uncordon": ("tests/mcp/catalog/test_resources_tools.py",),
+    "postmortem.crash": ("tests/mcp/lifecycle/test_vmcore_tools.py",),
+    "postmortem.triage": ("tests/mcp/lifecycle/test_vmcore_tools.py",),
+    "runs.boot": ("tests/mcp/lifecycle/test_runs_tools.py",),
+    "runs.build": ("tests/mcp/lifecycle/test_runs_tools.py",),
     "runs.complete_build": ("tests/mcp/lifecycle/test_complete_build_tool.py",),
     "runs.create": ("tests/mcp/lifecycle/test_runs_tools.py",),
     "runs.get": ("tests/mcp/lifecycle/test_runs_tools.py",),
+    "runs.install": ("tests/mcp/lifecycle/test_runs_tools.py",),
     "systems.define": ("tests/mcp/lifecycle/test_systems_tools.py",),
     "systems.get": ("tests/mcp/lifecycle/test_systems_tools.py",),
+    "systems.provision": ("tests/mcp/lifecycle/test_systems_tools.py",),
     "systems.provision_defined": ("tests/mcp/lifecycle/test_systems_tools.py",),
+    "systems.reprovision": ("tests/mcp/lifecycle/test_systems_tools.py",),
+    "systems.teardown": ("tests/mcp/lifecycle/test_systems_tools.py",),
+    "vmcore.fetch": ("tests/mcp/lifecycle/test_vmcore_tools.py",),
+    "vmcore.list": ("tests/mcp/lifecycle/test_vmcore_tools.py",),
 }
 
 
@@ -199,12 +228,13 @@ def test_backstop_actually_detects_the_known_gate_callers() -> None:
     }
 
 
-def test_implemented_tools_have_a_covering_test() -> None:
-    implemented = {t.name for t in TOOLS if (t.meta or {}).get("maturity") == "implemented"}
+def test_active_tools_have_a_covering_test() -> None:
+    covered_maturities = {"implemented", "partial"}
+    active = {t.name for t in TOOLS if (t.meta or {}).get("maturity") in covered_maturities}
     mapped = set(_BEHAVIOR_TESTS_BY_TOOL)
-    assert implemented == mapped, (
-        "implemented tool behavior-test map is out of date: "
-        f"missing {sorted(implemented - mapped)}, stale {sorted(mapped - implemented)}"
+    assert active == mapped, (
+        "active tool behavior-test map is out of date: "
+        f"missing {sorted(active - mapped)}, stale {sorted(mapped - active)}"
     )
 
     missing_files: list[str] = []
