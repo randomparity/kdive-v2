@@ -34,6 +34,7 @@ from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
+from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
 from kdive.security import audit
 from kdive.security.rbac import AuthorizationError, PlatformRole, require_platform_role
 
@@ -58,7 +59,7 @@ async def set_cost_class_coeff(
         try:
             require_platform_role(ctx, PlatformRole.PLATFORM_OPERATOR)
         except AuthorizationError:
-            await _audit_denial(pool, ctx, _SET_COEFF_TOOL, cost_class)
+            await audit_platform_denial(pool, ctx, tool=_SET_COEFF_TOOL, scope=cost_class)
             return _denied(_COEFF_OBJECT_ID, _SET_COEFF_TOOL)
         try:
             _validate_cost_class(cost_class)
@@ -94,7 +95,7 @@ async def set_host_capacity(
         try:
             require_platform_role(ctx, PlatformRole.PLATFORM_OPERATOR)
         except AuthorizationError:
-            await _audit_denial(pool, ctx, _SET_CAPACITY_TOOL, resource_id)
+            await audit_platform_denial(pool, ctx, tool=_SET_CAPACITY_TOOL, scope=resource_id)
             return _denied(_CAPACITY_OBJECT_ID, _SET_CAPACITY_TOOL)
         try:
             target = _parse_resource_id(resource_id)
@@ -220,37 +221,9 @@ async def _audit_applied(
             tool=tool,
             scope=target,
             args=values,
-            platform_role=_held_platform_roles(ctx),
+            platform_role=held_platform_roles(ctx),
         ),
     )
-
-
-async def _audit_denial(
-    pool: AsyncConnectionPool, ctx: RequestContext, tool: str, target: str
-) -> None:
-    """Audit a denial iff the caller holds ≥1 platform role (ADR-0043 §4 amplification rule).
-
-    A project-only token's denial is the routine non-grant case and is not recorded;
-    recording it would let any authenticated token amplify writes into ``platform_audit_log``.
-    The role check ran before any connection opened, so this opens its own connection.
-    """
-    held = _held_platform_roles(ctx)
-    if held is None:
-        return
-    async with pool.connection() as conn, conn.transaction():
-        await audit.record_platform(
-            conn,
-            principal=ctx.principal,
-            agent_session=ctx.agent_session,
-            event=audit.PlatformAuditEvent(tool=tool, scope=target, args={}, platform_role=held),
-        )
-
-
-def _held_platform_roles(ctx: RequestContext) -> str | None:
-    """Return the caller's platform roles as a sorted comma string, or None if it holds none."""
-    if not ctx.platform_roles:
-        return None
-    return ",".join(sorted(r.value for r in ctx.platform_roles))
 
 
 def _denied(object_id: str, tool: str) -> ToolResponse:

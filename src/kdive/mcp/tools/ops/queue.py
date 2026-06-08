@@ -27,6 +27,7 @@ from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
+from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
 from kdive.security import audit
 from kdive.security.context import RequestContext
 from kdive.security.rbac import AuthorizationError, PlatformRole, require_platform_role
@@ -59,7 +60,7 @@ async def _set_paused(
         try:
             require_platform_role(ctx, PlatformRole.PLATFORM_OPERATOR)
         except AuthorizationError:
-            await _audit_denial(pool, ctx, tool)
+            await audit_platform_denial(pool, ctx, tool=tool, scope="queue")
             return ToolResponse.failure(
                 _QUEUE_OBJECT_ID,
                 ErrorCategory.AUTHORIZATION_DENIED,
@@ -79,7 +80,7 @@ async def _set_paused(
                     tool=tool,
                     scope="queue",
                     args={"queue_paused": paused},
-                    platform_role=_held_platform_roles(ctx),
+                    platform_role=held_platform_roles(ctx),
                 ),
             )
         return ToolResponse.success(
@@ -110,7 +111,7 @@ async def jobs_list(
         try:
             require_platform_role(ctx, PlatformRole.PLATFORM_OPERATOR)
         except AuthorizationError:
-            await _audit_denial(pool, ctx, _JOBS_LIST_TOOL)
+            await audit_platform_denial(pool, ctx, tool=_JOBS_LIST_TOOL, scope="queue")
             return ToolResponse.failure(
                 _JOBS_OBJECT_ID,
                 ErrorCategory.AUTHORIZATION_DENIED,
@@ -137,7 +138,7 @@ async def jobs_list(
                         tool=_JOBS_LIST_TOOL,
                         scope="all-projects",
                         args={"states": parsed_states, "limit": capped},
-                        platform_role=_held_platform_roles(ctx),
+                        platform_role=held_platform_roles(ctx),
                     ),
                 )
         return _jobs_response(depth, jobs)
@@ -187,32 +188,6 @@ def _job_row(job: Job) -> dict[str, str | None]:
         "attempt": str(job.attempt),
         "worker_id": job.worker_id,
     }
-
-
-async def _audit_denial(pool: AsyncConnectionPool, ctx: RequestContext, tool: str) -> None:
-    """Audit a platform-role denial iff the caller holds ≥1 platform role (ADR-0043 §4).
-
-    A project-only token's denial is the routine non-grant case and is *not* recorded —
-    auditing it would let any authenticated token amplify writes into
-    ``platform_audit_log`` on these broadly-registered tools.
-    """
-    held = _held_platform_roles(ctx)
-    if held is None:
-        return
-    async with pool.connection() as conn, conn.transaction():
-        await audit.record_platform(
-            conn,
-            principal=ctx.principal,
-            agent_session=ctx.agent_session,
-            event=audit.PlatformAuditEvent(tool=tool, scope="queue", args={}, platform_role=held),
-        )
-
-
-def _held_platform_roles(ctx: RequestContext) -> str | None:
-    """Return the caller's platform roles as a sorted comma string, or None if none."""
-    if not ctx.platform_roles:
-        return None
-    return ",".join(sorted(r.value for r in ctx.platform_roles))
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:

@@ -22,6 +22,7 @@ from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
+from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
 from kdive.reconciler.loop import (
     InfraReaper,
     NullReaper,
@@ -71,6 +72,13 @@ async def reconcile_now(
         try:
             require_platform_role(ctx, PlatformRole.PLATFORM_OPERATOR)
         except AuthorizationError:
+            await audit_platform_denial(
+                pool,
+                ctx,
+                tool=_RECONCILE_TOOL,
+                scope=_RECONCILE_SCOPE,
+                args={"tool": _RECONCILE_TOOL},
+            )
             return ToolResponse.failure(
                 _RECONCILE_OBJECT_ID,
                 ErrorCategory.AUTHORIZATION_DENIED,
@@ -89,23 +97,10 @@ async def reconcile_now(
                     tool=_RECONCILE_TOOL,
                     scope=_RECONCILE_SCOPE,
                     args={"tool": _RECONCILE_TOOL},
-                    platform_role=_held_platform_roles(ctx),
+                    platform_role=held_platform_roles(ctx),
                 ),
             )
         return _reconcile_response(report)
-
-
-def _held_platform_roles(ctx: RequestContext) -> str | None:
-    """The caller's platform roles as a sorted comma string (mirrors accounting.report).
-
-    Records the roles actually held — not the literal gate requirement — so the audit row
-    stays faithful to the caller (e.g. an operator who also holds auditor) and robust if
-    the gate is ever widened. Never ``None`` on the success path, since the gate has
-    already proven the caller holds ``platform_operator``.
-    """
-    if not ctx.platform_roles:
-        return None
-    return ",".join(sorted(r.value for r in ctx.platform_roles))
 
 
 def _reconcile_response(report: ReconcileReport) -> ToolResponse:

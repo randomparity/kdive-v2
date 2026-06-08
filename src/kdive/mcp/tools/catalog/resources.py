@@ -28,6 +28,7 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
+from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
 from kdive.security import audit
 from kdive.security.context import RequestContext
 from kdive.security.rbac import (
@@ -165,7 +166,7 @@ async def _audit_host_action(
                 tool=tool,
                 scope=f"resource:{resource_id}:{detail}",
                 args={"resource_id": str(resource_id)},
-                platform_role=PlatformRole.PLATFORM_OPERATOR.value,
+                platform_role=held_platform_roles(ctx),
             ),
         )
 
@@ -186,6 +187,13 @@ async def set_resource_status(
     try:
         require_platform_role(ctx, PlatformRole.PLATFORM_OPERATOR)
     except AuthorizationError:
+        await audit_platform_denial(
+            pool,
+            ctx,
+            tool=_SET_STATUS_TOOL,
+            scope=f"resource:{resource_id}",
+            args={"resource_id": resource_id, "status": status},
+        )
         return _denied(resource_id)
     uid = _as_uuid(resource_id)
     if uid is None:
@@ -214,6 +222,13 @@ async def _set_cordoned(
     try:
         require_platform_role(ctx, PlatformRole.PLATFORM_OPERATOR)
     except AuthorizationError:
+        await audit_platform_denial(
+            pool,
+            ctx,
+            tool=tool,
+            scope=f"resource:{resource_id}",
+            args={"resource_id": resource_id, "cordoned": cordoned},
+        )
         return _denied(resource_id)
     uid = _as_uuid(resource_id)
     if uid is None:

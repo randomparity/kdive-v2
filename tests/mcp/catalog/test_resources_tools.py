@@ -134,6 +134,12 @@ _OPERATOR = RequestContext(
     platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}),
 )
 _NON_OPERATOR = RequestContext(principal="user-1", agent_session="s", projects=("proj",))
+_AUDITOR = RequestContext(
+    principal="auditor-1",
+    agent_session="s",
+    projects=(),
+    platform_roles=frozenset({PlatformRole.PLATFORM_AUDITOR}),
+)
 
 
 async def _row(pool: AsyncConnectionPool, res_id: str) -> dict[str, Any]:
@@ -151,6 +157,14 @@ async def _platform_audit_count(pool: AsyncConnectionPool, tool: str) -> int:
         fetched = await cur.fetchone()
     assert fetched is not None
     return int(fetched[0])
+
+
+async def _platform_audit_rows(pool: AsyncConnectionPool) -> list[tuple[object, ...]]:
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT principal, platform_role, tool, scope FROM platform_audit_log ORDER BY ts"
+        )
+        return list(await cur.fetchall())
 
 
 def test_set_status_changes_health_only(migrated_url: str) -> None:
@@ -269,6 +283,25 @@ def test_set_status_denied_for_non_operator(migrated_url: str) -> None:
         assert resp.error_category == "authorization_denied"
         # The denied call must not have mutated the host.
         assert row == {"status": "available", "cordoned": False}
+
+    asyncio.run(_run())
+
+
+def test_set_status_denied_for_auditor_is_audited(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            res_id = await _register(pool)
+            resp = await resources_tools.set_resource_status(
+                pool, _AUDITOR, resource_id=res_id, status="offline"
+            )
+            row = await _row(pool, res_id)
+            audited = await _platform_audit_rows(pool)
+        assert resp.status == "error"
+        assert resp.error_category == "authorization_denied"
+        assert row == {"status": "available", "cordoned": False}
+        assert audited == [
+            ("auditor-1", "platform_auditor", "resources.set_status", f"resource:{res_id}")
+        ]
 
     asyncio.run(_run())
 

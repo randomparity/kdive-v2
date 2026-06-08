@@ -42,9 +42,10 @@ from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._common import job_envelope
 from kdive.mcp.tools.lifecycle.allocations import AuditWriter, release_with_backstops
+from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
 from kdive.security import audit
 from kdive.security.context import RequestContext
-from kdive.security.rbac import PlatformRole, require_platform_role
+from kdive.security.rbac import AuthorizationError, PlatformRole, require_platform_role
 
 _log = logging.getLogger(__name__)
 
@@ -59,12 +60,6 @@ def _breakglass_audit_writer(principal: str) -> AuditWriter:
         await audit.record_system(conn, principal=principal, event=event)
 
     return _write
-
-
-def _held_platform_roles(ctx: RequestContext) -> str | None:
-    if not ctx.platform_roles:
-        return None
-    return ",".join(sorted(r.value for r in ctx.platform_roles))
 
 
 def _blank(reason: str) -> bool:
@@ -95,7 +90,7 @@ async def _record_breakglass(
                 tool=tool,
                 scope=scope,
                 args={"object_id": object_id, "reason": reason},
-                platform_role=_held_platform_roles(ctx),
+                platform_role=held_platform_roles(ctx),
             ),
         )
 
@@ -115,7 +110,17 @@ async def force_release(
     writer (the admin is not a project member). A reconcile failure or stale handle returns a
     typed envelope; the accountability row is written regardless.
     """
-    require_platform_role(ctx, PlatformRole.PLATFORM_ADMIN)
+    try:
+        require_platform_role(ctx, PlatformRole.PLATFORM_ADMIN)
+    except AuthorizationError:
+        await audit_platform_denial(
+            pool,
+            ctx,
+            tool=_FORCE_RELEASE_TOOL,
+            scope=f"denied:{allocation_id}",
+            args={"allocation_id": allocation_id},
+        )
+        raise
     with bind_context(principal=ctx.principal):
         if _blank(reason):
             return _config_error(allocation_id)
@@ -163,7 +168,17 @@ async def force_teardown(
     authorizing context bound to the target's project; a terminal System returns success
     idempotently.
     """
-    require_platform_role(ctx, PlatformRole.PLATFORM_ADMIN)
+    try:
+        require_platform_role(ctx, PlatformRole.PLATFORM_ADMIN)
+    except AuthorizationError:
+        await audit_platform_denial(
+            pool,
+            ctx,
+            tool=_FORCE_TEARDOWN_TOOL,
+            scope=f"denied:{system_id}",
+            args={"system_id": system_id},
+        )
+        raise
     with bind_context(principal=ctx.principal):
         if _blank(reason):
             return _config_error(system_id)

@@ -303,7 +303,14 @@ def test_force_release_operator_denied(migrated_url: str) -> None:
             except AuthorizationError:
                 pass
             assert await _alloc_state(migrated_url, alloc_id) == "active"
-            assert await _count_platform_audit(migrated_url) == 0
+            assert await _platform_audit_rows(migrated_url) == [
+                (
+                    "ops-operator",
+                    "platform_operator",
+                    "ops.force_release",
+                    f"denied:{alloc_id}",
+                )
+            ]
 
     asyncio.run(_run())
 
@@ -411,7 +418,14 @@ def test_force_teardown_operator_denied(migrated_url: str) -> None:
             except AuthorizationError:
                 pass
             assert await _job_count(migrated_url, f"{sys_id}:teardown") == 0
-            assert await _count_platform_audit(migrated_url) == 0
+            assert await _platform_audit_rows(migrated_url) == [
+                (
+                    "ops-operator",
+                    "platform_operator",
+                    "ops.force_teardown",
+                    f"denied:{sys_id}",
+                )
+            ]
 
     asyncio.run(_run())
 
