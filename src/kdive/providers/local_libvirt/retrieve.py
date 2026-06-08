@@ -142,8 +142,11 @@ class LocalLibvirtRetrieve:
         returns the parsed, **redacted** transcript.
 
         Raises:
-            CategorizedError: ``CONFIGURATION_ERROR`` on a build-id provenance mismatch;
-                ``MISSING_DEPENDENCY`` if the crash seams were not configured.
+            CategorizedError: ``CONFIGURATION_ERROR`` for a malformed ref rejected by an
+                injected fetch/build-id seam or a build-id provenance mismatch;
+                ``MISSING_DEPENDENCY`` if the crash seams were not configured;
+                ``STALE_HANDLE`` when a referenced object is missing; or
+                ``INFRASTRUCTURE_FAILURE`` for object-store IO failures.
         """
         if self._fetch_object is None or self._run_crash is None:
             raise CategorizedError(

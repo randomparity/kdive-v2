@@ -203,7 +203,10 @@ class LocalLibvirtVmcoreIntrospect:
 
         Raises:
             CategorizedError: ``MISSING_DEPENDENCY`` if the drgn seams were not configured
-                (off-gate); ``CONFIGURATION_ERROR`` on a build-id provenance mismatch;
+                (off-gate); ``CONFIGURATION_ERROR`` for a malformed ref rejected by an
+                injected fetch/build-id seam or a build-id provenance mismatch;
+                ``STALE_HANDLE`` when a referenced object is missing;
+                ``INFRASTRUCTURE_FAILURE`` for object-store IO failures; or
                 ``DEBUG_ATTACH_FAILURE`` if drgn cannot open the core or load the vmlinux.
         """
         if self._open_program is None or self._run_helper is None:
