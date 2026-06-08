@@ -69,6 +69,15 @@ stack-up:
     @echo "MCP URL: http://127.0.0.1:8000/mcp"
     @echo "Full runbook: docs/runbooks/live-stack.md"
 
+stack-start:
+    ./scripts/live-stack/start.sh
+
+stack-start-daemon:
+    ./scripts/live-stack/start.sh --daemon
+
+stack-stop:
+    ./scripts/live-stack/stop.sh
+
 # Run the live_stack suite (needs `just stack-up` + VM fixtures). --strict-markers fails a
 # mis-marked test instead of silently deselecting; pytest exit 5 ("no tests collected", e.g.
 # the marked driver not yet present) is tolerated as a clean skip, other codes propagate.

@@ -27,3 +27,17 @@ def test_live_stack_scripts_are_strict_bash() -> None:
     for name in ("env.sh", "apply-migrations.sh", "start.sh", "stop.sh"):
         text = (ROOT / "scripts/live-stack" / name).read_text()
         assert text.startswith("#!/usr/bin/env bash\nset -euo pipefail\n")
+
+
+def test_stack_start_runs_all_three_kdive_processes() -> None:
+    text = (ROOT / "scripts/live-stack/start.sh").read_text()
+    assert "python -m kdive server" in text
+    assert "python -m kdive worker" in text
+    assert "python -m kdive reconciler" in text
+    assert "trap cleanup EXIT INT TERM" in text
+
+
+def test_stack_stop_uses_pid_file_not_process_name_patterns() -> None:
+    text = (ROOT / "scripts/live-stack/stop.sh").read_text()
+    assert "KDIVE_STACK_PID_FILE" in text
+    assert "pkill" not in text
