@@ -18,10 +18,16 @@ from kdive.mcp.tools.lifecycle.systems.admin import (
     teardown_system as _teardown_system,
 )
 from kdive.mcp.tools.lifecycle.systems.provision import (
+    DEFAULT_LIST_LIMIT as _DEFAULT_LIST_LIMIT,
+)
+from kdive.mcp.tools.lifecycle.systems.provision import (
     SystemProvisionHandlers as _SystemProvisionHandlers,
 )
 from kdive.mcp.tools.lifecycle.systems.provision import (
     get_system as _get_system,
+)
+from kdive.mcp.tools.lifecycle.systems.provision import (
+    list_systems as _list_systems,
 )
 from kdive.profiles.types import ProvisioningProfileInput
 from kdive.providers.runtime import ProviderRuntime
@@ -121,6 +127,47 @@ def register(
     ) -> ToolResponse:
         """Return a System the caller can view."""
         return await _get_system(pool, current_context(), system_id)
+
+    @app.tool(
+        name="systems.list",
+        annotations=_docmeta.read_only(),
+        meta={"maturity": "implemented"},
+    )
+    async def systems_list(
+        allocation_id: Annotated[
+            str | None, Field(description="Only Systems under this Allocation id.")
+        ] = None,
+        state: Annotated[
+            str | None, Field(description="Only Systems in this lifecycle state.")
+        ] = None,
+        shape: Annotated[
+            str | None,
+            Field(
+                description="Only Systems with this named shape, or '__custom__' for "
+                "full-custom (no shape)."
+            ),
+        ] = None,
+        pcie: Annotated[
+            str | None,
+            Field(
+                description="Only Systems whose Allocation claims a device matching this "
+                "'<vendor>:<device>' spec."
+            ),
+        ] = None,
+        limit: Annotated[
+            int, Field(description="Maximum rows returned (capped at 200).")
+        ] = _DEFAULT_LIST_LIMIT,
+    ) -> ToolResponse:
+        """List the caller's Systems, filterable by allocation/state/shape/PCIe. Requires viewer."""
+        return await _list_systems(
+            pool,
+            current_context(),
+            allocation_id=allocation_id,
+            state=state,
+            shape=shape,
+            pcie=pcie,
+            limit=limit,
+        )
 
     @app.tool(
         name="systems.teardown",

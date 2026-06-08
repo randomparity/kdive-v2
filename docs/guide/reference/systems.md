@@ -23,6 +23,20 @@ Return a System the caller can view.
 |---|---|---|---|
 | `system_id` | `string` | yes | The System to render. |
 
+## `systems.list`
+
+`implemented` · `read-only`
+
+List the caller's Systems, filterable by allocation/state/shape/PCIe. Requires viewer.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `allocation_id` | `any` | no | Only Systems under this Allocation id. |
+| `limit` | `integer` | no | Maximum rows returned (capped at 200). |
+| `pcie` | `any` | no | Only Systems whose Allocation claims a device matching this '<vendor>:<device>' spec. |
+| `shape` | `any` | no | Only Systems with this named shape, or '__custom__' for full-custom (no shape). |
+| `state` | `any` | no | Only Systems in this lifecycle state. |
+
 ## `systems.provision`
 
 `partial`
