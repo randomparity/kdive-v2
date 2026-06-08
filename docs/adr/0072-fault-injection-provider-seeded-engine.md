@@ -49,17 +49,49 @@ every decision is a **pure function of stable inputs**.
 **Decision-keyed draw (the load-bearing rule).** A fault decision is
 
 ```
-fault_for(seed, system_id, plane, attempt) -> {latency_s, failure: ErrorCategory | None}
+fault_for(seed, system_id, plane, attempt, facet) -> draw in [0,1)
 ```
 
-computed by hashing `(seed, system_id, plane, attempt)` to a stable `[0,1)` draw and
-comparing against the resource's `fault_rate` — **not** by advancing a shared PRNG stream.
-Because the decision for "`connect`, attempt 2, system X" is a deterministic function of
-stable inputs, it is **identical every run regardless of worker concurrency or call order**.
+— a stable draw, **not** a step of a shared PRNG stream. Each facet *interprets* its draw
+differently: the **`fail`** draw is compared against the plane's `fault_rate`; the
+**`category`** draw buckets among that plane's ≥2 `ErrorCategory` options; the **`latency`**
+draw scales to a delay (see below). Because the decision for "`connect`, attempt 2, system
+X, facet `fail`" is a deterministic function of stable inputs, it is **identical every run
+regardless of worker concurrency or call order**.
 A CI test pins a `seed` known to fail a chosen plane; a soak run sweeps `seed` values to
-widen coverage. The `seed` and `fault_rate` are **configured on the fault-inject resource's
-`capabilities` jsonb** by discovery — **never** read from wall-clock or `os.urandom`, or
-reproducibility is lost (a unit test asserts no nondeterministic seeding source is reachable).
+widen coverage. Three details are load-bearing and an implementer must not skip them:
+
+- **The hash must be process-independent.** Python's builtin `hash()` salts `str`/`bytes`
+  per process (`PYTHONHASHSEED`), so `hash((seed, plane, …))` yields *different* draws across
+  processes and across the concurrent workers M1.5 runs — silently breaking reproducibility.
+  The draw is computed with an explicit stable hash (`hashlib.blake2b`/`sha256` over a
+  canonical byte encoding of the key), never builtin `hash()`. The determinism guard test
+  asserts the draw is identical across two subprocesses launched with **different**
+  `PYTHONHASHSEED`.
+- **`attempt` derives from durable state, never a process-local counter.** "attempt 2" is
+  read from persisted state — the Run's boot ordinal, the DebugSession's attach ordinal, or
+  the job's persisted retry count — **not** an in-memory call count, or a retry /
+  worker-death-redispatch / concurrent attach would assign different `attempt` values to the
+  same physical op across runs and reintroduce the order-dependence decision-keying exists to
+  kill.
+- **Each `facet` is its own keyed draw.** A plane decides up to three independent things —
+  *fail?*, *which `ErrorCategory`* (e.g. `install → INSTALL_FAILURE` vs `BOOT_TIMEOUT`), and
+  *how much latency* — so `facet` discriminates the key (`fail` / `category` / `latency`).
+  Reusing one draw for all three would correlate them; advancing a stream would make them
+  order-dependent. Three keyed draws keep them independent **and** reproducible.
+- **The `latency` draw scales against a configured bound, or it can't move the lever.** The
+  `latency` draw is in `[0,1)` — sub-second on its own, so it would never outlast a lease or
+  hold an op open for a cancel. It scales against a per-plane **`max_latency_s`** in
+  `capabilities` (draw × bound). The lease-expiry-mid-job (issue 5) and cancel-mid-op (issue
+  7) tests set a plane's `max_latency_s` **above** the test's deliberately short lease /
+  cancel window, so the delay reliably outlasts it. Without this bound "latency is the
+  reconciler/cancel lever" (below) is empty.
+
+The `seed` and `fault_rate` are **configured on the fault-inject resource's `capabilities`
+jsonb** by discovery — **never** read from wall-clock or `os.urandom` (the guard test asserts
+no nondeterministic seeding source is reachable). `fault_rate` is a **per-plane map**
+(`{provision: 0.3, connect: 0.5, …}`), not a single scalar, so a test can raise one plane's
+rate without perturbing the others; an absent plane defaults to 0.
 
 **Per-plane fault catalog → existing `ErrorCategory`.** Each plane injects faults from the
 **existing** taxonomy (the spec forbids inventing strings):
@@ -69,12 +101,17 @@ reproducibility is lost (a unit test asserts no nondeterministic seeding source 
 | `provision` | configurable delay | `PROVISIONING_FAILURE` |
 | `install` | delay | `INSTALL_FAILURE` / `BOOT_TIMEOUT` |
 | `boot` | delay | `READINESS_FAILURE` / `BOOT_TIMEOUT` |
-| `connect` | delay | `TRANSPORT_FAILURE` (e.g. drop on attempt N) |
+| `connect` | delay | `TRANSPORT_FAILURE` (a transport drop on some attach) |
 | `control` | delay | `CONTROL_FAILURE` |
 | `retrieve` | delay | `INFRASTRUCTURE_FAILURE` |
 
-**Latency is the reconciler/cancel lever.** A configurable provision/install delay is what
-lets a **short lease** expire *mid-job* (ADR-0036 lease-expiry → `failed(lease_expired)`),
+There is **no separately-configured "fail on attempt N" knob**: the seed (with the plane's
+`fault_rate`) selects *which* `(plane, attempt)` draws fail, and a test pins a seed known to
+fail the attempt it wants to exercise. Targeting is by seed selection, not by a configured N.
+
+**Latency is the reconciler/cancel lever.** A provision/install delay (the `latency` facet
+scaled to `max_latency_s`) is what lets a **short lease** expire *mid-job* (ADR-0036
+lease-expiry → `failed(lease_expired)`),
 what lets `jobs.cancel` land *mid-op* deterministically (ADR-0072 §cancel below), and what
 keeps allocations active long enough for the admission-race tests to contend a real
 resource. So "slow provision" is not a separate fault — it is the same engine emitting a
@@ -101,12 +138,16 @@ can be made to pause mid-op (via injected latency) on demand, not merely asserte
 - **A real reconciler/admission bug surfaced by the engine is a finding, not a test fixture
   failure** — surfaced now, on a mock, before M2 makes the same bug a remote-provider
   incident. This is the milestone's purpose.
-- **New obligation: the engine must have no nondeterministic seeding path.** A reachable
-  `os.urandom`/wall-clock seed would silently break every downstream assertion; an explicit
-  test guards that the only seed source is resource config.
-- The fault-inject resource's `capabilities` jsonb carries `seed`, `fault_rate`, and the
-  `secret_ref` (ADR-0073) — **no new DDL** beyond migration `0018`'s CHECK widen (ADR-0071);
-  these are jsonb keys like the existing `vcpus`/`concurrent_allocation_cap`.
+- **New obligation: the engine must have no nondeterministic draw path.** Two leaks would
+  silently break every downstream assertion — a reachable `os.urandom`/wall-clock *seed*, and
+  a process-salted *hash* (builtin `hash()`). The guard test covers both: the only seed
+  source is resource config, and the draw is identical across two subprocesses with different
+  `PYTHONHASHSEED`. `attempt` reading from durable state is the third leg (invariant in the
+  spec).
+- The fault-inject resource's `capabilities` jsonb carries `seed`, the per-plane `fault_rate`
+  map, the per-plane `max_latency_s` bound, and the `secret_ref` (ADR-0073) — **no new DDL**
+  beyond migration `0018`'s CHECK widen (ADR-0071); these are jsonb keys like the existing
+  `vcpus`/`concurrent_allocation_cap`.
 - Soak coverage (sweep seeds) and CI assertion (pin a seed) are the **same** engine at two
   `fault_rate`/seed settings — no second code path, so the chaos breadth the milestone
   wanted and the determinism its tests need are not in tension.

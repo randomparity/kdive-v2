@@ -44,8 +44,9 @@ deliberately shelved, with no second *capability shape* to justify it.
 ## Decision
 
 We will replace the single global `ProviderRuntime` with a **static `ResourceKind →
-ProviderRuntime` registry**, resolved at the worker and MCP boundaries from the **target
-Resource's `kind`**.
+ProviderRuntime` registry**, resolved for **post-System ops** at the worker and MCP
+boundaries from the **System's Resource `kind`** (the pre-grant allocation plane and
+discovery do not key on a Resource — see below).
 
 - `providers.composition` becomes the assembly point for a **map** of runtimes
   (`{local-libvirt: build_local_runtime(), fault-inject: build_faultinject_runtime()}`),
@@ -54,11 +55,31 @@ Resource's `kind`**.
 - A new **`ResourceKind.FAULT_INJECT = "fault-inject"`** enum member, and a forward-only
   migration (`0018`, ADR-0072 §schema) widening the `resources_kind_check` CHECK to admit it
   — mirroring how `0003` widened `jobs_kind_check`.
-- Worker handlers and MCP tools that today receive *the* runtime instead receive a
-  **resolver** keyed by `kind`; each resolves the runtime from the job/tool's target
-  Resource. local-libvirt's resolved runtime is **byte-identical** to today's — the
-  `local-libvirt` branch builds the same ports — so M1.5 changes the *selection*, not the
-  *behavior*, of the shipped provider.
+- **Runtime resolution is scoped to post-System ops, and the key source is named — not
+  "the target Resource" in general.** Only ops that act on a provisioned System
+  (provision/reprovision/teardown, build/install/boot, connect, control, retrieve, debug)
+  resolve a runtime, and they key on the **System's Resource `kind`**
+  (`job → system → allocation → resource.kind`), which is non-null by then. The
+  **pre-grant allocation plane does not resolve a runtime**: `allocations.request` /
+  `.release` are core admission logic, a `requested` queued allocation has a **null
+  `resource_id`** (ADR-0069) and so has no resolvable kind, and a selector names a kind or a
+  resource *for admission*, not a runtime. **Discovery** keys on the **map entry's own
+  kind** (the fan-out below), not on a Resource that does not yet exist. An implementer must
+  not hang the resolver on a boundary that can run before a System's Resource is fixed.
+- Worker handlers and post-System MCP tools that today close over *the* runtime instead
+  receive a `kind`-keyed **resolver**. local-libvirt's resolved runtime is **byte-identical**
+  to today's — the `local-libvirt` branch builds the same ports. This is a **checkable**
+  claim split across two gates: the **CI-enforceable** half — issue 1 diffs **no** behavior
+  under `providers/local_libvirt/*` and the CI-run local-libvirt unit/integration tests are
+  untouched and green (only wiring changes) — and the **operator-run** half — the live-stack
+  e2e suite (operator-run, not CI, per ADR-0042) passes unchanged out of band. So M1.5
+  changes the *selection*, not the *behavior*, of the shipped provider.
+- **The `fault-inject` entry is opt-in, absent from the default production composition.**
+  The map is assembled per deployment: production composition registers only `local-libvirt`;
+  the `fault-inject` entry **and its discovery registrar** are added only under an explicit
+  config/env opt-in (the same gate the CI/operator fault-injection stack sets). A default
+  production deployment therefore has **no** bookable fault-inject Resource — a tenant cannot
+  allocate one, pass admission against it, or receive injected failures in prod.
 - Selection is **static and exhaustive**: an unknown `kind` is a `configuration_error` at
   resolution, never a silent fallthrough to local-libvirt. There is **no capability
   matching, no `BoundOp`, no dynamic registration** — the registry is a `dict` populated at
@@ -82,12 +103,22 @@ Resource's `kind`**.
 - **Migration `0018`** widens `resources_kind_check`; no other DDL (the fault-inject
   resource's `seed`/`fault_rate`/`secret_ref` ride the existing `capabilities` jsonb,
   ADR-0072).
-- **Discovery stays per-kind.** Each runtime keeps its own `discovery_registrar`
-  (local-libvirt registers the local host; fault-inject registers a synthetic resource), so
-  startup registration fans out over the map rather than calling one registrar.
+- **Discovery stays per-kind and fans out only over the *registered* map.** Each runtime
+  keeps its own `discovery_registrar` (local-libvirt registers the local host; fault-inject
+  registers a synthetic resource), so startup registration fans out over whatever entries the
+  deployment composed. Because `fault-inject` is opt-in (Decision), the synthetic resource is
+  registered **only** in a fault-injection deployment — startup in default production
+  registers no fault-inject row to begin with.
 - **An unknown kind fails closed.** Because resolution is exhaustive, a Resource row whose
   `kind` has no registered runtime raises `configuration_error` rather than being silently
   served by the wrong provider — the fail-fast posture the project standard requires.
+- **CHECK↔registry parity is pinned by a test, not by convention.** The DB
+  `resources_kind_check` allow-list and the composition map can drift across milestones — a
+  migration could widen the CHECK to a kind the map lacks (rows admit, every op on them
+  throws) or the map could gain a kind the CHECK forbids (discovery insert fails). A test
+  asserts every `resources_kind_check`-allowed kind has a registered, reachable runtime (and
+  the reverse), so the two cannot silently diverge. Note the parity is over the **set of
+  buildable kinds**, independent of which a given deployment opts to compose.
 
 ## Alternatives considered
 

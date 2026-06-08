@@ -40,25 +40,46 @@ We will give the fault-injection provider a **secret reference it must resolve**
 **emit the resolved value into a captured transcript**, and **assert the value comes back
 redacted** — exercising the full register→mask→persist loop, not just half 1.
 
-- The fault-inject resource's `capabilities` jsonb carries a **`secret_ref`** (a synthetic
-  "BMC password" / SSH key, a file under the allowlisted `KDIVE_SECRETS_ROOT`). The mock's
-  `connect` (and/or `provision`) **resolves it through the runtime's `SecretBackend`**, which
-  registers the value into the scoped registry before returning it (ADR-0027).
+- The fault-inject resource's `capabilities` jsonb carries a **`secret_ref`** pointing at a
+  **unique, high-entropy sentinel** value (a synthetic "BMC password" / SSH key, a file under
+  the allowlisted `KDIVE_SECRETS_ROOT`). High-entropy is load-bearing: masking is exact-value
+  `str`-replacement, so a short or common value would collaterally mask unrelated text **and**
+  let the "raw value absent" assertion pass *spuriously* (the string was absent for unrelated
+  reasons). The mock's `connect` (and/or `provision`) **resolves it through the runtime's
+  `SecretBackend`**, which registers the value into the scoped registry before returning it
+  (ADR-0027).
 - The mock then **emits the resolved value into a captured console/gdb transcript** — the
   realistic failure mode: a real provider's console echoes a credential it just used. The
   transcript flows through the **normal persistence path** (the `Redactor` built from the
   same registry), so the test asserts the persisted artifact **and** any response snippet
-  contain the **redaction placeholder**, never the raw value — proving **exact-value**
-  masking end to end.
-- The resolution runs at the **worker boundary** under a **scoped** registration (the op's
-  lifetime), and the test also asserts the value is **released** from the registry when the
-  scope ends (`registry.release(scope)`), so a resolved secret does not linger as a global
-  redaction needle past the op that needed it.
-- **Quarantine-before-redaction** (top-level design): output captured *before* registration
-  completes is marked sensitive until redacted. The mock's emit-after-resolve ordering means
-  the value is always registered first; a test that emits a *pre-resolution* line asserts it
-  is **not** masked (there was no secret to mask yet) — pinning that registration ordering is
-  what makes the masking sound, not incidental.
+  **both** lack the raw sentinel **and** carry the **redaction placeholder** at the expected
+  position — proving **exact-value** masking end to end (asserting only absence would be
+  satisfiable by a value that was never emitted).
+- **Release follows redact-and-persist, never precedes it (the load-bearing ordering).** The
+  registry is refcounted and snapshot-versioned: `release(scope)` drops a value at refcount
+  zero, and a `Redactor` masks only values still in the snapshot. So the op **redacts and
+  persists every artifact/snippet that could contain the value first, and releases the scope
+  only after** — release-before-persist would evict the value and write the artifact
+  **unredacted**, the exact leak this test exists to catch. The resolution runs at the
+  **worker boundary** under a **per-op unique scope identity** (e.g. the job id; register and
+  release use the *same* identity, and no two in-flight ops share a scope — so a concurrent
+  op's release cannot evict this op's value early). The test asserts the value is gone from
+  the snapshot after release, so a resolved secret does not linger as a global redaction
+  needle past the op that needed it.
+- **Quarantine-before-redaction** (top-level design): redaction is a **time-agnostic** text
+  scan at persist time — once the value is registered, every occurrence in the
+  redacted-then-persisted transcript is masked, regardless of when each line was emitted. The
+  hazard the quarantine rule addresses is therefore **not** a line emitted earlier in the
+  *same* transcript (that transcript is redacted as a whole *after* resolution); it is an
+  artifact **persisted in a separate write before registration completes** — that write has no
+  value to mask yet, so it *should* be stored **raw and flagged sensitive** (quarantined), to
+  be redacted on access, never served clean. **But quarantine is design intent, not code** —
+  it is unimplemented in `src/` today. So the mandated M1.5 test is the **in-line masking
+  loop** above (resolve → emit-after-resolve → masked on persist); the separate-
+  pre-registration-write case is a **diagnostic probe**, not a mandated assertion: finding no
+  quarantine path, it records the missing mask-before-persist coverage as an M1.5 **finding**
+  routed to a follow-up. M1.5 **surfaces** this seam gap (its whole purpose, before M2); it
+  does **not** expand to implement object-store quarantine.
 
 ## Consequences
 
@@ -68,9 +89,11 @@ redacted** — exercising the full register→mask→persist loop, not just half
 - **A redaction gap is a finding surfaced now.** If any persistence path bypasses the
   `Redactor` (a snippet built before masking, an artifact stored raw), the mock's
   emit-and-assert catches it on a synthetic secret — before a real credential leaks.
-- **New obligation: the worker must thread a per-op registry scope** to the
-  `SecretBackend`, and release it at op end. local-libvirt is unaffected (it resolves
-  nothing), but the seam (resolver carries a scope) is now exercised, de-risking M2.
+- **New obligation: the worker must thread a per-op-unique registry scope** to the
+  `SecretBackend`, redact-and-persist all output under it, and release it **only after** that
+  persist — not at a generic "op end." local-libvirt is unaffected (it resolves nothing), but
+  the seam (resolver carries a scope; release is ordered after persist) is now exercised,
+  de-risking M2. This ordering is a carried invariant in the spec.
 - **No new DDL** — `secret_ref` is a `capabilities` jsonb key (ADR-0072); the secret file
   lives under the existing allowlisted secrets root (ADR-0027), so the test fixture writes a
   file, it is not a schema or API surface.
