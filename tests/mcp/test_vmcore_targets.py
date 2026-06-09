@@ -9,8 +9,8 @@ from contextlib import asynccontextmanager
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._vmcore_targets import (
     RunVmcoreTarget,
     resolve_run_vmcore_target,
@@ -75,11 +75,10 @@ def test_resolve_run_vmcore_target_returns_port_inputs(migrated_url: str) -> Non
 def test_resolve_run_vmcore_target_rejects_bad_run_id(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool, pool.connection() as conn:
-            resolved = await resolve_run_vmcore_target(conn, _ctx(), "not-a-uuid")
+            with pytest.raises(CategorizedError) as exc:
+                await resolve_run_vmcore_target(conn, _ctx(), "not-a-uuid")
 
-        assert isinstance(resolved, ToolResponse)
-        assert resolved.status == "error"
-        assert resolved.error_category == "configuration_error"
+        assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
     asyncio.run(_run())
 
@@ -96,11 +95,10 @@ def test_resolve_run_vmcore_target_requires_recorded_build_id(migrated_url: str)
             )
             await _seed_vmcore_row(pool, system_id)
             async with pool.connection() as conn:
-                resolved = await resolve_run_vmcore_target(conn, _ctx(), run_id)
+                with pytest.raises(CategorizedError) as exc:
+                    await resolve_run_vmcore_target(conn, _ctx(), run_id)
 
-        assert isinstance(resolved, ToolResponse)
-        assert resolved.status == "error"
-        assert resolved.error_category == "configuration_error"
+        assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
     asyncio.run(_run())
 

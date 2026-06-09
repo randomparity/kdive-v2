@@ -9,9 +9,8 @@ from psycopg import AsyncConnection
 
 from kdive.db.artifact_queries import raw_vmcore_key
 from kdive.db.repositories import RUNS
-from kdive.mcp.responses import ToolResponse
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.mcp.tools._common import as_uuid as _as_uuid
-from kdive.mcp.tools._common import config_error as _config_error
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 from kdive.services.runs.steps import existing_build_result
@@ -27,24 +26,31 @@ class RunVmcoreTarget(NamedTuple):
 
 async def resolve_run_vmcore_target(
     conn: AsyncConnection, ctx: RequestContext, run_id: str
-) -> RunVmcoreTarget | ToolResponse:
+) -> RunVmcoreTarget:
     """Resolve debuginfo ref, build-id, and raw vmcore key for a viewer-authorized Run."""
     uid = _as_uuid(run_id)
     if uid is None:
-        return _config_error(run_id)
+        raise _target_config_error()
     run = await RUNS.get(conn, uid)
     if run is None or run.project not in ctx.projects:
-        return _config_error(run_id)
+        raise _target_config_error()
     require_role(ctx, run.project, Role.VIEWER)
     if run.debuginfo_ref is None:
-        return _config_error(run_id)
+        raise _target_config_error()
     build_id = await _build_id_for_run(conn, uid)
     if build_id is None:
-        return _config_error(run_id)
+        raise _target_config_error()
     vmcore_ref = await raw_vmcore_key(conn, run.system_id)
     if vmcore_ref is None:
-        return _config_error(run_id)
+        raise _target_config_error()
     return RunVmcoreTarget(run.debuginfo_ref, build_id, vmcore_ref)
+
+
+def _target_config_error() -> CategorizedError:
+    return CategorizedError(
+        "run does not resolve to a captured vmcore target",
+        category=ErrorCategory.CONFIGURATION_ERROR,
+    )
 
 
 async def _build_id_for_run(conn: AsyncConnection, run_id: UUID) -> str | None:

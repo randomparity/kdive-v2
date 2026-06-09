@@ -15,7 +15,7 @@ drgn-backed seams disabled; the live runner injects them only on hosts prepared 
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated
+from typing import Annotated, NamedTuple
 from uuid import UUID
 
 from fastmcp import FastMCP
@@ -24,7 +24,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
 from kdive.db.repositories import DEBUG_SESSIONS
-from kdive.domain.errors import CategorizedError
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.state import DebugSessionState
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
@@ -62,9 +62,10 @@ async def introspect_from_vmcore(
     """
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
-            resolved = await resolve_run_vmcore_target(conn, ctx, run_id)
-        if isinstance(resolved, ToolResponse):
-            return resolved
+            try:
+                resolved = await resolve_run_vmcore_target(conn, ctx, run_id)
+            except CategorizedError as exc:
+                return ToolResponse.failure_from_error(run_id, exc)
         try:
             output = await asyncio.to_thread(
                 introspector.from_vmcore,
@@ -83,26 +84,41 @@ async def introspect_from_vmcore(
         )
 
 
-async def _live_ssh_session(
+class LiveSshSession(NamedTuple):
+    """The resolved inputs needed to run live ssh introspection."""
+
+    project: str
+    transport_handle: str
+    session_id: UUID
+
+
+async def resolve_live_ssh_session(
     conn: AsyncConnection, ctx: RequestContext, session_id: str
-) -> tuple[str, str, UUID] | ToolResponse:
-    """Resolve a `live` ssh DebugSession, returning its (project, transport_handle), or a failure.
+) -> LiveSshSession:
+    """Resolve a `live` ssh DebugSession to the domain inputs required by the port.
 
     Gates on UUID shape, project scope, ``operator`` role, ``live`` state, and an ``ssh``
     transport (a live `introspect.run` requires the ssh transport, not gdbstub; ADR-0039 §4).
     """
     uid = _as_uuid(session_id)
     if uid is None:
-        return _config_error(session_id)
+        raise _session_config_error()
     session = await DEBUG_SESSIONS.get(conn, uid)
     if session is None or session.project not in ctx.projects:
-        return _config_error(session_id)
+        raise _session_config_error()
     require_role(ctx, session.project, Role.OPERATOR)
     if session.state is not DebugSessionState.LIVE or session.transport != _SSH:
-        return _config_error(session_id)
+        raise _session_config_error()
     if session.transport_handle is None:
-        return _config_error(session_id)
-    return session.project, session.transport_handle, uid
+        raise _session_config_error()
+    return LiveSshSession(session.project, session.transport_handle, uid)
+
+
+def _session_config_error() -> CategorizedError:
+    return CategorizedError(
+        "debug session does not resolve to a live ssh session",
+        category=ErrorCategory.CONFIGURATION_ERROR,
+    )
 
 
 async def introspect_run(
@@ -126,13 +142,15 @@ async def introspect_run(
         return _config_error(session_id)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
-            resolved = await _live_ssh_session(conn, ctx, session_id)
-        if isinstance(resolved, ToolResponse):
-            return resolved
-        _project, transport_handle, _session_uid = resolved
+            try:
+                resolved = await resolve_live_ssh_session(conn, ctx, session_id)
+            except CategorizedError as exc:
+                return ToolResponse.failure_from_error(session_id, exc)
         try:
             output = await asyncio.to_thread(
-                introspector.introspect_live, transport_handle=transport_handle, helper=helper
+                introspector.introspect_live,
+                transport_handle=resolved.transport_handle,
+                helper=helper,
             )
         except CategorizedError as exc:
             return ToolResponse.failure_from_error(session_id, exc)
@@ -204,13 +222,13 @@ def register(
     ) -> ToolResponse:
         """Run live drgn introspection over a live ssh DebugSession. Requires operator."""
         async with pool.connection() as conn:
-            resolved = await _live_ssh_session(conn, current_context(), session_id)
-        if isinstance(resolved, ToolResponse):
-            return resolved
-        _project, _transport_handle, session_uid = resolved
+            try:
+                resolved = await resolve_live_ssh_session(conn, current_context(), session_id)
+            except CategorizedError as exc:
+                return ToolResponse.failure_from_error(session_id, exc)
         async with pool.connection() as conn:
             try:
-                runtime = await resolver.runtime_for_session(conn, session_uid)
+                runtime = await resolver.runtime_for_session(conn, resolved.session_id)
             except CategorizedError as exc:
                 return ToolResponse.failure_from_error(session_id, exc)
         return await introspect_run(

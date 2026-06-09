@@ -302,9 +302,10 @@ async def _postmortem_crash(
             if crash_command_rejection_reason(command, _CRASH_ALLOWLIST) is not None:
                 return _config_error(run_id)
         async with pool.connection() as conn:
-            resolved = await resolve_run_vmcore_target(conn, ctx, run_id)
-        if isinstance(resolved, ToolResponse):
-            return resolved
+            try:
+                resolved = await resolve_run_vmcore_target(conn, ctx, run_id)
+            except CategorizedError as exc:
+                return ToolResponse.failure_from_error(run_id, exc)
         try:
             output = await asyncio.to_thread(
                 crash.run_crash_postmortem,
