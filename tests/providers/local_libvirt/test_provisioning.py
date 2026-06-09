@@ -22,6 +22,7 @@ from kdive.providers.local_libvirt import discovery
 from kdive.providers.local_libvirt.lifecycle import provisioning as provisioning_module
 from kdive.providers.local_libvirt.lifecycle.provisioning import (
     LocalLibvirtProvisioning,
+    ProvisioningFiles,
     console_log_path,
     domain_name_for,
     overlay_path,
@@ -243,13 +244,15 @@ def _prov(
     # The default "overlay absent" makes provision create one, matching a fresh provision.
     return LocalLibvirtProvisioning(
         connect=lambda: conn,
-        make_overlay=make_overlay,
-        remove_overlay=remove_overlay,
-        overlay_exists=overlay_exists,
+        files=ProvisioningFiles(
+            make_overlay=make_overlay,
+            remove_overlay=remove_overlay,
+            overlay_exists=overlay_exists,
+            prepare_console_log=lambda _path: None,
+        ),
         materialize_rootfs=lambda rootfs, _system_id: (
             rootfs.path if rootfs.kind == "local" else "/var/lib/kdive/rootfs/upload.qcow2"
         ),
-        prepare_console_log=lambda _path: None,
     )
 
 
@@ -358,10 +361,12 @@ def test_provision_prepares_console_log_before_define() -> None:
     conn = RecordingConn()
     LocalLibvirtProvisioning(
         connect=lambda: conn,
-        make_overlay=lambda _base, _overlay: None,
-        overlay_exists=lambda _overlay: False,
+        files=ProvisioningFiles(
+            make_overlay=lambda _base, _overlay: None,
+            overlay_exists=lambda _overlay: False,
+            prepare_console_log=prepare,
+        ),
         materialize_rootfs=lambda _rootfs, _system_id: "/var/lib/kdive/rootfs/base.qcow2",
-        prepare_console_log=prepare,
     ).provision(_SYS, _profile())
 
     assert calls == [("prepare", f"{_SYS}.log"), ("define", "xml")]
@@ -514,11 +519,13 @@ def test_provision_console_log_failure_removes_the_overlay() -> None:
     with pytest.raises(CategorizedError) as caught:
         LocalLibvirtProvisioning(
             connect=lambda: conn,
-            make_overlay=lambda _base, _overlay: None,
-            remove_overlay=removed.append,
-            overlay_exists=lambda _overlay: False,
+            files=ProvisioningFiles(
+                make_overlay=lambda _base, _overlay: None,
+                remove_overlay=removed.append,
+                overlay_exists=lambda _overlay: False,
+                prepare_console_log=fail_prepare,
+            ),
             materialize_rootfs=lambda _rootfs, _system_id: "/var/lib/kdive/rootfs/base.qcow2",
-            prepare_console_log=fail_prepare,
         ).provision(_SYS, _profile())
 
     assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE

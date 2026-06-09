@@ -306,20 +306,12 @@ class LocalLibvirtProvisioning:
         self,
         *,
         connect: Connect,
-        make_overlay: MakeOverlay = _real_make_overlay,
-        remove_overlay: RemoveOverlay = _real_remove_overlay,
-        overlay_exists: OverlayExists = _real_overlay_exists,
+        files: ProvisioningFiles | None = None,
         allowed_roots: list[Path] | None = None,
         materialize_rootfs: MaterializeRootfs | None = None,
-        prepare_console_log: PrepareConsoleLog = _prepare_console_log,
     ) -> None:
         self._connect = connect
-        self._files = ProvisioningFiles(
-            make_overlay=make_overlay,
-            remove_overlay=remove_overlay,
-            overlay_exists=overlay_exists,
-            prepare_console_log=prepare_console_log,
-        )
+        self._files = files or ProvisioningFiles()
         self._allowed_roots = allowed_roots or [Path(_ROOTFS_DIR)]
         self._materialize_rootfs = materialize_rootfs or self._materialize_rootfs_base
 
