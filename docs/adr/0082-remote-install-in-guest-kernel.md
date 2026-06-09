@@ -59,23 +59,41 @@ fixed program. It exposes three subcommands the worker composes argv for:
 
 - `install --url <presigned-get> --cmdline <cmdline> --method <method>` — `curl` the bundle from
   the presigned URL, `tar xzf` it (`boot/vmlinuz` → `/boot`, `lib/modules/<ver>` → `/lib/modules`,
-  matching the ADR-0081 bundle layout), add a grub entry whose kernel cmdline is `<cmdline>`
-  verbatim, and select that entry for the **next** boot only (grub one-shot). For
-  `--method kdump` it also enables the in-guest kdump capture service; for other methods it does
-  not. Exit non-zero on any step's failure.
+  matching the ADR-0081 bundle layout), and **add-or-replace a single deterministic grub entry**
+  (the `kdive` slot) whose kernel cmdline is `<cmdline>` verbatim. It does **not** change the
+  boot selection. For `--method kdump` it also enables the in-guest kdump capture service; for
+  other methods it does not. Exit non-zero on any step's failure.
 - `boot-id` — print `/proc/sys/kernel/random/boot_id` (the kernel-minted per-boot UUID).
-- `reboot` — trigger the reboot/kexec into the selected entry.
+- `boot` — select the `kdive` slot for the **next** boot only (grub one-shot) **and** trigger a
+  **detached** reboot/kexec into it, atomically: the selection and the reboot are one in-guest
+  action, so an intervening reboot cannot consume the selection before the reboot it pairs with.
+  The reboot is detached (scheduled so the helper returns before the agent is torn down) — but
+  the worker does not depend on a clean exit (see §3).
 
 The worker **never** sends a shell string: each subcommand is a fixed argv whose `argv[0]` is the
 helper path, so the in-guest program is allowlisted and arguments cannot be reinterpreted by a
 shell (the ADR-0078 §2 / issue-3 constraint).
 
+**Single-slot, last-install-wins.** The `install` subcommand replaces one deterministic
+per-System grub slot rather than appending a per-Run entry. This is required, not incidental:
+the `boot(system_id)` port carries **no `run_id`** (only the System id), so `boot()` cannot name a
+per-Run entry — exactly as the local plane's `boot()` power-cycles whatever kernel the domain XML
+names. "The `kdive` slot = the most recently installed kernel" is the same last-install-wins
+semantics, and the per-System advisory lock the boot handler already holds
+(`jobs/handlers/runs.py`) serializes install/boot for a System, so the single slot is race-safe.
+Replacing (not appending) the slot also makes `install` **idempotent**: a re-run after an
+abandoned step claim converges to the same `/boot` + grub state instead of duplicating entries.
+
 ### 2. `install()` pulls + installs in-guest via the registered-URL seam
 
 `install(request)`:
 
-1. Mints a **single** presigned GET for `request.kernel_ref` (one object, ADR-0081 §Consequences),
-   bounded to the op's lifetime.
+1. Mints a **single** presigned GET for `request.kernel_ref` (one object, ADR-0081 §Consequences).
+   The expiry is sized to cover a **worst-case in-guest bundle download** (the bundle is commonly
+   hundreds of MB before gzip, ADR-0081), not the shortest possible window — a deliberate
+   exception to "shortest expiry," still one object and one capability. If the URL expires
+   mid-download the in-guest `curl` fails and the helper exits non-zero → `INSTALL_FAILURE`, which
+   is recoverable: a re-run mints a fresh URL.
 2. Runs `install --url … --cmdline <request.cmdline> --method <request.method>` through the
    issue-3 **`InTargetArtifactChannel`**, which registers the URL in the redaction registry
    **before** the exec, redacts+persists the captured transcript by exact value, and releases the
@@ -86,17 +104,23 @@ shell (the ADR-0078 §2 / issue-3 constraint).
    the seam's `TRANSPORT_FAILURE`; a vanished `kernel_ref` object surfaces as the store's
    `STALE_HANDLE`.
 
-`install()` does **not** reboot — staging only, mirroring the local plane's split so the install
-handler's `install` step records "kernel staged" and the boot handler's `boot` step owns the
-power transition.
+`install()` does **not** reboot or change the boot selection — it stages the bundle and replaces
+the `kdive` grub slot, mirroring the local plane's split so the install handler's `install` step
+records "kernel staged" and the boot handler's `boot` step owns the select+power transition.
 
 ### 3. `boot()` proves a fresh boot by boot-id change
 
 With no shared console, `boot(system_id)` proves the reboot happened and reached usable userspace
 by watching the kernel-minted **boot_id** change:
 
-1. Read the pre-reboot `boot-id` through the guest agent (a baseline).
-2. Run `reboot` through the guest agent.
+1. Read the pre-reboot `boot-id` through the guest agent (a baseline; a clean round-trip, no
+   reboot yet).
+2. Run `boot` (select the `kdive` slot + detached reboot) through the guest agent. The reboot
+   tears down the guest agent, so this command may **not** return a clean exit — its
+   guest-exec-status poll can hit an unreachable agent (`TRANSPORT_FAILURE`). That is the
+   **expected** signal the reboot took effect, **not** a failure: `boot()` swallows a transport
+   error / non-clean exit from the `boot` command and proceeds to the poll. Readiness never
+   depends on the reboot command's exit status — only on the boot_id change below.
 3. Poll `boot-id`: while the agent is unreachable (the expected window while the guest is down),
    keep waiting; once it answers with a boot_id **different** from the baseline, the System
    rebooted and the guest agent is back up — **ready**.
@@ -107,6 +131,24 @@ boot_id change is the readiness signal because it is falsifiable (a stale agent 
 survived cannot fake a new boot_id) and self-contained (no cross-call state, no expected-kernel
 identity — which the `boot(system_id)` port does not carry). boot() persists no transcript,
 matching the local plane (its readiness poll is host-observational, not an artifact).
+
+### 4. Verification (distinct from the readiness gate)
+
+The boot_id readiness gate proves *a fresh boot reached agent-up*, which is necessary but does not
+by itself verify the issue's acceptance criterion ("a built kernel becomes the booted kernel … the
+crashkernel cmdline is present for kdump-method installs only"). That criterion is verified
+separately:
+
+- **Unit (no host):** assert `install()` composes the helper argv carrying `request.cmdline`, and
+  that the cmdline carries the `crashkernel=` token **iff** `request.method` is `kdump` (the
+  upstream `cmdline_for` composition is exercised at the install boundary), plus every error-path
+  mapping (`INSTALL_FAILURE` / `TRANSPORT_FAILURE` / `STALE_HANDLE`, lost-agent-on-reboot tolerated,
+  `BOOT_TIMEOUT`).
+- **`live_vm` (real host):** after install+boot, read the guest's `/proc/cmdline` and confirm the
+  `crashkernel=` token is present for a kdump-method install and absent otherwise, and confirm the
+  running kernel is the built one (kernel version / build-id match). This closes the
+  "boot_id changed ≠ our kernel" gap at the live tier; the in-guest single-slot last-install-wins
+  selection is what makes the fresh boot our kernel.
 
 All slow/host seams — the TLS connection opener, the guest-agent round-trip, the clock, and sleep
 — are injected, so unit tests drive the full install/boot orchestration and every error path with
@@ -133,6 +175,10 @@ no libvirt host; the real curl/tar/grub/reboot mechanics run only under the `liv
 - **One presigned GET, one bearer capability.** Because the bundle is one object (ADR-0081), the
   installer registers and redacts exactly one URL per install — the ADR-0078 one-object capability
   shape — not two.
+- **`install` is idempotent and `boot` is selection-atomic.** Replacing the single `kdive` grub
+  slot (not appending) makes a re-run after an abandoned step claim converge to the same state; the
+  `boot` subcommand selecting the slot and rebooting as one in-guest action means readiness cannot
+  be confused by a reboot that occurred between two separate worker jobs.
 - **Cost: more in-guest moving parts than a host copy** (pull, decompress, grub edit, reboot,
   boot-id poll). Accepted: it is the model ADR-0078 fixes for every later provider.
 
@@ -149,6 +195,17 @@ no libvirt host; the real curl/tar/grub/reboot mechanics run only under the `liv
   the seam") so the one mechanism carries forward to M3–M5, where there is no libvirt control
   channel to reboot through. A control-channel reboot would be a libvirt-only path discarded one
   milestone later.
+- **Select the boot entry in `install()` (one-shot) and reboot in `boot()`** as two separate
+  in-guest actions. Rejected: the selection and the reboot land in two separate worker jobs, so an
+  intervening reboot (a crash, a kdump cycle, an operator reset) between them can consume a
+  one-shot selection booting our kernel once, after which `boot()`'s own reboot boots the *old*
+  default while boot_id still changes — the System runs the wrong kernel but the Run reads
+  "booted." Making the `boot` subcommand select-and-reboot atomically removes the window. (This is
+  why selection lives in `boot`, not `install`.)
+- **A persistent default-selection** (set the new entry as the permanent grub default) so the
+  selection survives across calls. Rejected: a kernel that panics on boot would then boot-loop the
+  System on every subsequent power event. A one-shot selection set atomically with the reboot is
+  "try this kernel once" — a bad kernel falls back to the previous default on the next boot.
 - **Confirm readiness by polling the guest-agent channel state alone** (as provisioning does,
   ADR-0080). Rejected: the agent is already connected before the reboot, so a bare "agent
   connected" poll can return immediately on the pre-reboot connection and never prove the new
