@@ -277,4 +277,4 @@ def test_register_resolves_upload_store_off_without_s3_env(monkeypatch: pytest.M
     # rather than raising, so the on-demand pass repairs the same set as the periodic one.
     monkeypatch.delenv("KDIVE_S3_ENDPOINT_URL", raising=False)
     monkeypatch.delenv("KDIVE_S3_BUCKET", raising=False)
-    assert ops_reconcile._resolve_upload_store() is None
+    assert ops_reconcile.resolve_upload_store() is None

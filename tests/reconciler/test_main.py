@@ -43,9 +43,16 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
         async def register_all_discovery(self, pool: object) -> None:
             events.append("discover")
 
-    monkeypatch.setattr(composition, "build_provider_resolver", lambda **kw: _FakeResolver())
     expected_reaper = object()
-    monkeypatch.setattr(composition, "build_reconciler_reaper", lambda **kw: expected_reaper)
+
+    class _FakeProviderComposition:
+        def build_provider_resolver(self) -> _FakeResolver:
+            return _FakeResolver()
+
+        def build_reconciler_reaper(self) -> object:
+            return expected_reaper
+
+    monkeypatch.setattr(composition, "ProviderComposition", _FakeProviderComposition)
 
     constructed: dict[str, object] = {}
 

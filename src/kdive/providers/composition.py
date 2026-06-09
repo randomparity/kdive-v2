@@ -72,7 +72,6 @@ _FAULTINJECT_POOL = "fault-inject"
 # resolves (cost resolution fails closed on an unseeded class) without new seed DDL.
 _FAULTINJECT_COST_CLASS = "local"
 _FAULTINJECT_ENABLE_ENV = "KDIVE_FAULT_INJECT"
-_FAULTINJECT_INVENTORY = FaultInjectInventory()
 
 
 def _local_component_sources() -> ComponentSourceCapabilities:
@@ -205,6 +204,35 @@ class _CompositeReaper:
             await reaper.destroy(name)
 
 
+class ProviderComposition:
+    """Own provider assembly state that must be shared across constructed ports."""
+
+    def __init__(self, *, faultinject_inventory: FaultInjectInventory | None = None) -> None:
+        self._faultinject_inventory = faultinject_inventory or FaultInjectInventory()
+
+    def build_provider_resolver(
+        self, *, enable_fault_inject: bool | None = None
+    ) -> ProviderResolver:
+        """Assemble the per-deployment ``ResourceKind -> ProviderRuntime`` registry."""
+        runtimes = {ResourceKind.LOCAL_LIBVIRT: build_local_runtime()}
+        if _fault_inject_enabled(enable_fault_inject):
+            runtimes[ResourceKind.FAULT_INJECT] = build_faultinject_runtime(
+                inventory=self._faultinject_inventory
+            )
+        return ProviderResolver(runtimes)
+
+    def build_reconciler_reaper(self, *, enable_fault_inject: bool | None = None) -> InfraReaper:
+        """Assemble the provider-aware leaked-infra reaper for reconciliation."""
+        reapers: list[InfraReaper] = []
+        if _fault_inject_enabled(enable_fault_inject):
+            reapers.append(FaultInjectReaper(self._faultinject_inventory))
+        if not reapers:
+            return NullReaper()
+        if len(reapers) == 1:
+            return reapers[0]
+        return _CompositeReaper(tuple(reapers))
+
+
 def build_provider_resolver(*, enable_fault_inject: bool | None = None) -> ProviderResolver:
     """Assemble the per-deployment ``ResourceKind -> ProviderRuntime`` registry.
 
@@ -214,29 +242,17 @@ def build_provider_resolver(*, enable_fault_inject: bool | None = None) -> Provi
     ``KDIVE_FAULT_INJECT`` env var. A default production deployment has no bookable
     fault-inject Resource.
     """
-    runtimes = {ResourceKind.LOCAL_LIBVIRT: build_local_runtime()}
-    if _fault_inject_enabled(enable_fault_inject):
-        runtimes[ResourceKind.FAULT_INJECT] = build_faultinject_runtime(
-            inventory=_FAULTINJECT_INVENTORY
-        )
-    return ProviderResolver(runtimes)
+    return ProviderComposition().build_provider_resolver(enable_fault_inject=enable_fault_inject)
 
 
 def build_reconciler_reaper(*, enable_fault_inject: bool | None = None) -> InfraReaper:
     """Assemble the provider-aware leaked-infra reaper for reconciliation.
 
-    Providers without a reaper simply contribute nothing. The fault-inject provider uses
-    the same composition-owned inventory as ``build_provider_resolver`` so on-demand and
-    periodic reconciliation see domains created through that configured runtime.
+    Providers without a reaper simply contribute nothing. Callers that need a resolver and
+    reaper over the same fault-inject inventory should construct one :class:`ProviderComposition`
+    and call both methods on it.
     """
-    reapers: list[InfraReaper] = []
-    if _fault_inject_enabled(enable_fault_inject):
-        reapers.append(FaultInjectReaper(_FAULTINJECT_INVENTORY))
-    if not reapers:
-        return NullReaper()
-    if len(reapers) == 1:
-        return reapers[0]
-    return _CompositeReaper(tuple(reapers))
+    return ProviderComposition().build_reconciler_reaper(enable_fault_inject=enable_fault_inject)
 
 
 async def ensure_local_host_registered(pool: AsyncConnectionPool) -> None:
@@ -273,4 +289,5 @@ __all__ = [
     "build_reconciler_reaper",
     "ensure_faultinject_resource_registered",
     "ensure_local_host_registered",
+    "ProviderComposition",
 ]

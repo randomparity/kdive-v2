@@ -46,19 +46,24 @@ from kdive.mcp.tools.ops import queue as ops_queue_tools
 from kdive.mcp.tools.ops import reconcile as ops_reconcile_tools
 from kdive.mcp.tools.ops import resources as ops_resources_tools
 from kdive.mcp.tools.ops import tuning as ops_tuning_tools
-from kdive.providers.composition import build_provider_resolver
+from kdive.providers.composition import ProviderComposition, build_provider_resolver
+from kdive.providers.reaping import InfraReaper
 from kdive.providers.resolver import ProviderResolver
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 type PlaneRegistrar = Callable[
-    [FastMCP, AsyncConnectionPool, ProviderResolver, SecretRegistry], None
+    [FastMCP, AsyncConnectionPool, ProviderResolver, SecretRegistry, InfraReaper], None
 ]
 type HandlerRegistrar = Callable[[HandlerRegistry, ProviderResolver], None]
 
 
 def _plain(register: Callable[[FastMCP, AsyncConnectionPool], None]) -> PlaneRegistrar:
     def _register(
-        app: FastMCP, pool: AsyncConnectionPool, _: ProviderResolver, __: SecretRegistry
+        app: FastMCP,
+        pool: AsyncConnectionPool,
+        _: ProviderResolver,
+        __: SecretRegistry,
+        ___: InfraReaper,
     ) -> None:
         register(app, pool)
 
@@ -75,23 +80,32 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _plain(register_accounting_usage),
     _plain(register_accounting_reports),
     _plain(register_accounting_admin),
-    _plain(ops_reconcile_tools.register),
+    lambda app, pool, resolver, registry, reaper: ops_reconcile_tools.register_with_reaper(
+        app,
+        pool,
+        reaper=reaper,
+        upload_store=ops_reconcile_tools.resolve_upload_store(),
+    ),
     _plain(ops_resources_tools.register),
     _plain(allocations.register),
     _plain(ops_breakglass_tools.register),
-    lambda app, pool, resolver, registry: systems_tools.register(app, pool, resolver=resolver),
+    lambda app, pool, resolver, registry, reaper: systems_tools.register(
+        app, pool, resolver=resolver
+    ),
     _plain(investigations.register),
-    lambda app, pool, resolver, registry: runs_tools.register(app, pool, resolver=resolver),
+    lambda app, pool, resolver, registry, reaper: runs_tools.register(app, pool, resolver=resolver),
     _plain(control_tools.register),
     _plain(artifacts.register),
-    lambda app, pool, resolver, registry: vmcore_tools.register(app, pool, resolver=resolver),
-    lambda app, pool, resolver, registry: debug_tools.register(
+    lambda app, pool, resolver, registry, reaper: vmcore_tools.register(
+        app, pool, resolver=resolver
+    ),
+    lambda app, pool, resolver, registry, reaper: debug_tools.register(
         app,
         pool,
         resolver=resolver,
         secret_registry=registry,
     ),
-    lambda app, pool, resolver, registry: introspect.register(app, pool, resolver=resolver),
+    lambda app, pool, resolver, registry, reaper: introspect.register(app, pool, resolver=resolver),
     _plain(ops_queue_tools.register),
     _plain(ops_tuning_tools.register),
     _plain(audit_tools.register),
@@ -118,6 +132,7 @@ def build_app(
     *,
     verifier: JWTVerifier | None = None,
     provider_resolver: ProviderResolver | None = None,
+    provider_composition: ProviderComposition | None = None,
     secret_registry: SecretRegistry,
 ) -> FastMCP:
     """Construct the FastMCP app and register every plane's tools.
@@ -128,13 +143,17 @@ def build_app(
             ``None``, built from the OIDC env vars via :func:`build_verifier`.
         provider_resolver: Injected per-kind provider resolver passed to provider-aware
             tool registrars; when ``None``, built from the default provider composition.
+        provider_composition: Provider assembly owner used when the app constructs its own
+            resolver/reaper pair.
         secret_registry: App-owned registry shared by secret backends and logging.
     """
     app: FastMCP = FastMCP(name="kdive", auth=verifier or build_verifier())
     app.add_middleware(DenialAuditMiddleware(pool))
-    resolver = provider_resolver or build_provider_resolver()
+    composition = provider_composition or ProviderComposition()
+    resolver = provider_resolver or composition.build_provider_resolver()
+    reaper = composition.build_reconciler_reaper()
     for register in _PLANE_REGISTRARS:
-        register(app, pool, resolver, secret_registry)
+        register(app, pool, resolver, secret_registry, reaper)
     return app
 
 

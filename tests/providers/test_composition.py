@@ -287,8 +287,9 @@ def test_configured_fault_inject_runtime_is_visible_to_reconciler_reaper() -> No
 
     from kdive.domain.models import ResourceKind
 
-    resolver = composition.build_provider_resolver(enable_fault_inject=True)
-    reaper = composition.build_reconciler_reaper(enable_fault_inject=True)
+    owner = composition.ProviderComposition()
+    resolver = owner.build_provider_resolver(enable_fault_inject=True)
+    reaper = owner.build_reconciler_reaper(enable_fault_inject=True)
     system_id = UUID("44444444-4444-4444-4444-444444444444")
 
     domain = resolver.resolve(ResourceKind.FAULT_INJECT).provisioner.provision(

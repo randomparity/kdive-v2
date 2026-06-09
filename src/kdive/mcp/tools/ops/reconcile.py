@@ -119,7 +119,7 @@ def _reconcile_response(report: ReconcileReport) -> ToolResponse:
     )
 
 
-def _resolve_upload_store() -> UploadStore | None:
+def resolve_upload_store() -> UploadStore | None:
     """Resolve the upload store from the ``KDIVE_S3_*`` env, or ``None`` if unconfigured.
 
     Mirrors the periodic reconciler's wiring (``kdive.__main__._run_reconciler``): no S3
@@ -144,7 +144,18 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     from kdive.providers.composition import build_reconciler_reaper
 
     reaper = build_reconciler_reaper()
-    upload_store = _resolve_upload_store()
+    upload_store = resolve_upload_store()
+    register_with_reaper(app, pool, reaper=reaper, upload_store=upload_store)
+
+
+def register_with_reaper(
+    app: FastMCP,
+    pool: AsyncConnectionPool,
+    *,
+    reaper: InfraReaper,
+    upload_store: UploadStore | None,
+) -> None:
+    """Register ``ops.reconcile_now`` with explicitly assembled repair ports."""
 
     @app.tool(
         name=_RECONCILE_TOOL,
