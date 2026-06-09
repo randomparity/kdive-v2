@@ -42,7 +42,7 @@ from kdive.mcp.tools._common import (
 from kdive.mcp.tools._common import (
     job_envelope,
 )
-from kdive.mcp.tools._runtime_resolution import runtime_for_run, runtime_for_system
+from kdive.mcp.tools._runtime_resolution import with_runtime_for_run, with_runtime_for_system
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.providers.ports import CrashPostmortem
 from kdive.providers.resolver import ProviderResolver
@@ -120,17 +120,24 @@ class VmcoreHandlers:
     ) -> ToolResponse:
         if self.resolver is None:
             supported_methods = self.supported_methods or frozenset()
-        else:
-            runtime = await runtime_for_system(pool, self.resolver, system_id)
-            if isinstance(runtime, ToolResponse):
-                return runtime
-            supported_methods = runtime.supported_capture_methods
-        return await _fetch_vmcore(
+            return await _fetch_vmcore(
+                pool,
+                ctx,
+                system_id=system_id,
+                method=method,
+                supported_methods=supported_methods,
+            )
+        return await with_runtime_for_system(
             pool,
-            ctx,
-            system_id=system_id,
-            method=method,
-            supported_methods=supported_methods,
+            self.resolver,
+            system_id,
+            lambda runtime: _fetch_vmcore(
+                pool,
+                ctx,
+                system_id=system_id,
+                method=method,
+                supported_methods=runtime.supported_capture_methods,
+            ),
         )
 
     async def postmortem_crash(
@@ -145,20 +152,30 @@ class VmcoreHandlers:
             if self.crash is None:
                 raise RuntimeError("vmcore handler requires crash port or resolver")
             crash = self.crash
-        else:
-            runtime = await runtime_for_run(pool, self.resolver, run_id)
-            if isinstance(runtime, ToolResponse):
-                return runtime
-            crash = runtime.crash_postmortem
         if self.secret_registry is None:
             raise RuntimeError("vmcore handler requires an injected secret registry")
+        secret_registry = self.secret_registry
+        if self.resolver is not None:
+            return await with_runtime_for_run(
+                pool,
+                self.resolver,
+                run_id,
+                lambda runtime: _postmortem_crash(
+                    pool,
+                    ctx,
+                    run_id=run_id,
+                    commands=commands,
+                    crash=runtime.crash_postmortem,
+                    secret_registry=secret_registry,
+                ),
+            )
         return await _postmortem_crash(
             pool,
             ctx,
             run_id=run_id,
             commands=commands,
             crash=crash,
-            secret_registry=self.secret_registry,
+            secret_registry=secret_registry,
         )
 
     async def postmortem_triage(
@@ -168,19 +185,28 @@ class VmcoreHandlers:
             if self.crash is None:
                 raise RuntimeError("vmcore handler requires crash port or resolver")
             crash = self.crash
-        else:
-            runtime = await runtime_for_run(pool, self.resolver, run_id)
-            if isinstance(runtime, ToolResponse):
-                return runtime
-            crash = runtime.crash_postmortem
         if self.secret_registry is None:
             raise RuntimeError("vmcore handler requires an injected secret registry")
+        secret_registry = self.secret_registry
+        if self.resolver is not None:
+            return await with_runtime_for_run(
+                pool,
+                self.resolver,
+                run_id,
+                lambda runtime: _postmortem_triage(
+                    pool,
+                    ctx,
+                    run_id=run_id,
+                    crash=runtime.crash_postmortem,
+                    secret_registry=secret_registry,
+                ),
+            )
         return await _postmortem_triage(
             pool,
             ctx,
             run_id=run_id,
             crash=crash,
-            secret_registry=self.secret_registry,
+            secret_registry=secret_registry,
         )
 
 

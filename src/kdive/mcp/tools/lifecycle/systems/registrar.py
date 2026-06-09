@@ -12,7 +12,7 @@ from pydantic import Field
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools._runtime_resolution import runtime_for_allocation, runtime_for_system
+from kdive.mcp.tools._runtime_resolution import with_runtime_for_allocation, with_runtime_for_system
 from kdive.mcp.tools.lifecycle.systems.admin import (
     SystemAdminHandlers as _SystemAdminHandlers,
 )
@@ -44,11 +44,11 @@ class _SystemRuntimeFactory:
     pool: AsyncConnectionPool
     resolver: ProviderResolver
 
-    async def for_allocation(self, allocation_id: str) -> ProviderRuntime | ToolResponse:
-        return await runtime_for_allocation(self.pool, self.resolver, allocation_id)
+    async def with_allocation(self, allocation_id: str, handle) -> ToolResponse:
+        return await with_runtime_for_allocation(self.pool, self.resolver, allocation_id, handle)
 
-    async def for_system(self, system_id: str) -> ProviderRuntime | ToolResponse:
-        return await runtime_for_system(self.pool, self.resolver, system_id)
+    async def with_system(self, system_id: str, handle) -> ToolResponse:
+        return await with_runtime_for_system(self.pool, self.resolver, system_id, handle)
 
     def provision_handlers(self, runtime: ProviderRuntime) -> _SystemProvisionHandlers:
         return _SystemProvisionHandlers(runtime.component_sources, self._rootfs_validator(runtime))
@@ -99,14 +99,14 @@ def _register_systems_define(
         ],
     ) -> ToolResponse:
         """Create a System in 'defined' for a granted Allocation (upload window). Operator only."""
-        runtime = await runtime_factory.for_allocation(allocation_id)
-        if isinstance(runtime, ToolResponse):
-            return runtime
-        return await runtime_factory.provision_handlers(runtime).define_system(
-            pool,
-            current_context(),
-            allocation_id=allocation_id,
-            profile=profile,
+        return await runtime_factory.with_allocation(
+            allocation_id,
+            lambda runtime: runtime_factory.provision_handlers(runtime).define_system(
+                pool,
+                current_context(),
+                allocation_id=allocation_id,
+                profile=profile,
+            ),
         )
 
 
@@ -128,14 +128,14 @@ def _register_systems_provision(
         ],
     ) -> ToolResponse:
         """Mint a System for a granted Allocation and enqueue provision. Operator only."""
-        runtime = await runtime_factory.for_allocation(allocation_id)
-        if isinstance(runtime, ToolResponse):
-            return runtime
-        return await runtime_factory.provision_handlers(runtime).provision_system(
-            pool,
-            current_context(),
-            allocation_id=allocation_id,
-            profile=profile,
+        return await runtime_factory.with_allocation(
+            allocation_id,
+            lambda runtime: runtime_factory.provision_handlers(runtime).provision_system(
+                pool,
+                current_context(),
+                allocation_id=allocation_id,
+                profile=profile,
+            ),
         )
 
 
@@ -154,13 +154,13 @@ def _register_systems_provision_defined(
         ],
     ) -> ToolResponse:
         """Admit a DEFINED System after its upload window is complete. Requires operator."""
-        runtime = await runtime_factory.for_system(system_id)
-        if isinstance(runtime, ToolResponse):
-            return runtime
-        return await runtime_factory.provision_handlers(runtime).provision_defined_system(
-            pool,
-            current_context(),
-            system_id=system_id,
+        return await runtime_factory.with_system(
+            system_id,
+            lambda runtime: runtime_factory.provision_handlers(runtime).provision_defined_system(
+                pool,
+                current_context(),
+                system_id=system_id,
+            ),
         )
 
 
@@ -252,12 +252,12 @@ def _register_systems_reprovision(
         ],
     ) -> ToolResponse:
         """Enqueue in-place reprovision for a ready System. Requires operator and opt-in."""
-        runtime = await runtime_factory.for_system(system_id)
-        if isinstance(runtime, ToolResponse):
-            return runtime
-        return await runtime_factory.admin_handlers(runtime).reprovision_system(
-            pool,
-            current_context(),
-            system_id=system_id,
-            profile=profile,
+        return await runtime_factory.with_system(
+            system_id,
+            lambda runtime: runtime_factory.admin_handlers(runtime).reprovision_system(
+                pool,
+                current_context(),
+                system_id=system_id,
+                profile=profile,
+            ),
         )

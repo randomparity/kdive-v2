@@ -17,13 +17,21 @@ from kdive.mcp.tools._runtime_resolution import (
     runtime_for_allocation,
     runtime_for_run,
     runtime_for_system,
+    with_runtime_for_allocation,
+    with_runtime_for_run,
+    with_runtime_for_system,
 )
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 
 type _RuntimeHelper = Callable[
     [AsyncConnectionPool, ProviderResolver, str],
-    Coroutine[Any, Any, ProviderRuntime | ToolResponse],
+    Coroutine[Any, Any, ProviderRuntime],
+]
+type _RuntimeResponseHandler = Callable[[ProviderRuntime], Coroutine[Any, Any, ToolResponse]]
+type _RuntimeWrapper = Callable[
+    [AsyncConnectionPool, ProviderResolver, str, _RuntimeResponseHandler],
+    Coroutine[Any, Any, ToolResponse],
 ]
 
 _OBJECT_ID = "11111111-1111-1111-1111-111111111111"
@@ -32,6 +40,11 @@ _HELPERS: tuple[tuple[str, _RuntimeHelper], ...] = (
     ("allocation", runtime_for_allocation),
     ("system", runtime_for_system),
     ("run", runtime_for_run),
+)
+_WRAPPERS: tuple[tuple[str, _RuntimeWrapper], ...] = (
+    ("allocation", with_runtime_for_allocation),
+    ("system", with_runtime_for_system),
+    ("run", with_runtime_for_run),
 )
 
 
@@ -102,12 +115,9 @@ def test_runtime_resolution_rejects_malformed_id_before_opening_connection(
     pool = _FakePool()
     resolver = _FakeResolver()
 
-    result = asyncio.run(helper(_pool(pool), _resolver(resolver), "not-a-uuid"))
+    with pytest.raises(ValueError, match="invalid provider runtime object id"):
+        asyncio.run(helper(_pool(pool), _resolver(resolver), "not-a-uuid"))
 
-    assert isinstance(result, ToolResponse)
-    assert result.object_id == "not-a-uuid"
-    assert result.status == "error"
-    assert result.error_category == "configuration_error"
     assert pool.connections == 0
     assert resolver.calls == []
 
@@ -125,8 +135,47 @@ def test_runtime_resolution_returns_resolved_runtime(kind: str, helper: _Runtime
 
 
 @pytest.mark.parametrize(("kind", "helper"), _HELPERS)
-def test_runtime_resolution_maps_categorized_error_to_failure_response(
-    kind: str, helper: _RuntimeHelper
+def test_runtime_resolution_propagates_categorized_error(kind: str, helper: _RuntimeHelper) -> None:
+    del kind
+    error = CategorizedError(
+        "runtime unavailable",
+        category=ErrorCategory.MISSING_DEPENDENCY,
+        details={
+            "resource_kind": "local_libvirt",
+            "retryable": False,
+            "nested": {"not": "surfaced"},
+        },
+    )
+    pool = _FakePool()
+    resolver = _FakeResolver(error=error)
+
+    with pytest.raises(CategorizedError) as caught:
+        asyncio.run(helper(_pool(pool), _resolver(resolver), _OBJECT_ID))
+
+    assert caught.value is error
+    assert pool.connections == 1
+
+
+@pytest.mark.parametrize(("kind", "wrapper"), _WRAPPERS)
+def test_runtime_wrapper_maps_malformed_id_to_failure_response(
+    kind: str, wrapper: _RuntimeWrapper
+) -> None:
+    del kind
+    pool = _FakePool()
+    resolver = _FakeResolver()
+
+    result = asyncio.run(wrapper(_pool(pool), _resolver(resolver), "not-a-uuid", _success_response))
+
+    assert result.object_id == "not-a-uuid"
+    assert result.status == "error"
+    assert result.error_category == "configuration_error"
+    assert pool.connections == 0
+    assert resolver.calls == []
+
+
+@pytest.mark.parametrize(("kind", "wrapper"), _WRAPPERS)
+def test_runtime_wrapper_maps_categorized_error_to_failure_response(
+    kind: str, wrapper: _RuntimeWrapper
 ) -> None:
     del kind
     error = CategorizedError(
@@ -141,11 +190,15 @@ def test_runtime_resolution_maps_categorized_error_to_failure_response(
     pool = _FakePool()
     resolver = _FakeResolver(error=error)
 
-    result = asyncio.run(helper(_pool(pool), _resolver(resolver), _OBJECT_ID))
+    result = asyncio.run(wrapper(_pool(pool), _resolver(resolver), _OBJECT_ID, _success_response))
 
-    assert isinstance(result, ToolResponse)
     assert result.object_id == _OBJECT_ID
     assert result.status == "error"
     assert result.error_category == "missing_dependency"
     assert result.data == {"resource_kind": "local_libvirt", "retryable": False}
     assert pool.connections == 1
+
+
+async def _success_response(runtime: ProviderRuntime) -> ToolResponse:
+    assert runtime is _RUNTIME
+    return ToolResponse.success(_OBJECT_ID, "succeeded")

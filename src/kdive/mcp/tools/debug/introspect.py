@@ -28,7 +28,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
-from kdive.mcp.tools._runtime_resolution import runtime_for_run
+from kdive.mcp.tools._runtime_resolution import with_runtime_for_run
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.providers.ports import LiveIntrospector, VmcoreIntrospector
 from kdive.providers.resolver import ProviderResolver
@@ -160,11 +160,16 @@ def register(
         ],
     ) -> ToolResponse:
         """Run offline drgn introspection over a Run's captured core; returns redacted report."""
-        runtime = await runtime_for_run(pool, resolver, run_id)
-        if isinstance(runtime, ToolResponse):
-            return runtime
-        return await introspect_from_vmcore(
-            pool, current_context(), run_id=run_id, introspector=runtime.vmcore_introspector
+        return await with_runtime_for_run(
+            pool,
+            resolver,
+            run_id,
+            lambda runtime: introspect_from_vmcore(
+                pool,
+                current_context(),
+                run_id=run_id,
+                introspector=runtime.vmcore_introspector,
+            ),
         )
 
     @app.tool(

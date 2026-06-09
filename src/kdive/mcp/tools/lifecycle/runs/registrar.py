@@ -12,7 +12,7 @@ from pydantic import Field
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools._runtime_resolution import runtime_for_run
+from kdive.mcp.tools._runtime_resolution import with_runtime_for_run
 from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers as _RunBuildHandlers
 from kdive.mcp.tools.lifecycle.runs.create import (
     RunCreateRequest as _RunCreateRequest,
@@ -34,8 +34,8 @@ class _RunRuntimeFactory:
     pool: AsyncConnectionPool
     resolver: ProviderResolver
 
-    async def for_run(self, run_id: str) -> ProviderRuntime | ToolResponse:
-        return await runtime_for_run(self.pool, self.resolver, run_id)
+    async def with_run(self, run_id: str, handle) -> ToolResponse:
+        return await with_runtime_for_run(self.pool, self.resolver, run_id, handle)
 
     def build_handlers(self, runtime: ProviderRuntime) -> _RunBuildHandlers:
         return _RunBuildHandlers(
@@ -137,14 +137,14 @@ def _register_runs_build(
         ] = None,
     ) -> ToolResponse:
         """Enqueue the kernel build job for a Run; poll jobs.* for completion. Requires operator."""
-        runtime = await runtime_factory.for_run(run_id)
-        if isinstance(runtime, ToolResponse):
-            return runtime
-        return await runtime_factory.build_handlers(runtime).build_run(
-            pool,
-            current_context(),
+        return await runtime_factory.with_run(
             run_id,
-            cmdline=cmdline,
+            lambda runtime: runtime_factory.build_handlers(runtime).build_run(
+                pool,
+                current_context(),
+                run_id,
+                cmdline=cmdline,
+            ),
         )
 
 
@@ -175,11 +175,11 @@ def _register_runs_complete_build(
         ] = None,
     ) -> ToolResponse:
         """Validate an external Run's uploads and finalize it to succeeded. Operator only."""
-        runtime = await runtime_factory.for_run(run_id)
-        if isinstance(runtime, ToolResponse):
-            return runtime
-        return await runtime_factory.build_handlers(runtime).complete_build(
-            pool, current_context(), run_id, build_id=build_id, cmdline=cmdline
+        return await runtime_factory.with_run(
+            run_id,
+            lambda runtime: runtime_factory.build_handlers(runtime).complete_build(
+                pool, current_context(), run_id, build_id=build_id, cmdline=cmdline
+            ),
         )
 
 
