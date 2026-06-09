@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -37,46 +38,62 @@ from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 
 
+@dataclass(frozen=True, slots=True)
+class _SystemRuntimeFactory:
+    pool: AsyncConnectionPool
+    resolver: ProviderResolver
+
+    async def for_allocation(self, allocation_id: str) -> ProviderRuntime | ToolResponse:
+        uid = _as_uuid(allocation_id)
+        if uid is None:
+            return _config_error(allocation_id)
+        async with self.pool.connection() as conn:
+            try:
+                return await self.resolver.runtime_for_allocation(conn, uid)
+            except CategorizedError as exc:
+                return ToolResponse.failure(allocation_id, exc.category)
+
+    async def for_system(self, system_id: str) -> ProviderRuntime | ToolResponse:
+        uid = _as_uuid(system_id)
+        if uid is None:
+            return _config_error(system_id)
+        async with self.pool.connection() as conn:
+            try:
+                return await self.resolver.runtime_for_system(conn, uid)
+            except CategorizedError as exc:
+                return ToolResponse.failure(system_id, exc.category)
+
+    def provision_handlers(self, runtime: ProviderRuntime) -> _SystemProvisionHandlers:
+        return _SystemProvisionHandlers(runtime.component_sources, self._rootfs_validator(runtime))
+
+    def admin_handlers(self, runtime: ProviderRuntime) -> _SystemAdminHandlers:
+        return _SystemAdminHandlers(runtime.component_sources, self._rootfs_validator(runtime))
+
+    def _rootfs_validator(self, runtime: ProviderRuntime):
+        if runtime.rootfs_validator is None:
+            raise RuntimeError("systems registrar requires an injected rootfs validator")
+        return runtime.rootfs_validator
+
+
 def register(
     app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResolver | None = None
 ) -> None:
     """Register the `systems.*` tools on ``app``, bound to ``pool``."""
     if resolver is None:
         raise RuntimeError("systems registrar requires an injected provider resolver")
+    runtime_factory = _SystemRuntimeFactory(pool, resolver)
+    _register_systems_define(app, pool, runtime_factory)
+    _register_systems_provision(app, pool, runtime_factory)
+    _register_systems_provision_defined(app, pool, runtime_factory)
+    _register_systems_get(app, pool)
+    _register_systems_list(app, pool)
+    _register_systems_teardown(app, pool)
+    _register_systems_reprovision(app, pool, runtime_factory)
 
-    async def _runtime_for_allocation(allocation_id: str) -> ProviderRuntime | ToolResponse:
-        uid = _as_uuid(allocation_id)
-        if uid is None:
-            return _config_error(allocation_id)
-        async with pool.connection() as conn:
-            try:
-                return await resolver.runtime_for_allocation(conn, uid)
-            except CategorizedError as exc:
-                return ToolResponse.failure(allocation_id, exc.category)
 
-    async def _runtime_for_system(system_id: str) -> ProviderRuntime | ToolResponse:
-        uid = _as_uuid(system_id)
-        if uid is None:
-            return _config_error(system_id)
-        async with pool.connection() as conn:
-            try:
-                return await resolver.runtime_for_system(conn, uid)
-            except CategorizedError as exc:
-                return ToolResponse.failure(system_id, exc.category)
-
-    def _provision_handlers(runtime: ProviderRuntime) -> _SystemProvisionHandlers:
-        rootfs_validator = _rootfs_validator(runtime)
-        return _SystemProvisionHandlers(runtime.component_sources, rootfs_validator)
-
-    def _admin_handlers(runtime: ProviderRuntime) -> _SystemAdminHandlers:
-        rootfs_validator = _rootfs_validator(runtime)
-        return _SystemAdminHandlers(runtime.component_sources, rootfs_validator)
-
-    def _rootfs_validator(runtime: ProviderRuntime):
-        if runtime.rootfs_validator is None:
-            raise RuntimeError("systems registrar requires an injected rootfs validator")
-        return runtime.rootfs_validator
-
+def _register_systems_define(
+    app: FastMCP, pool: AsyncConnectionPool, runtime_factory: _SystemRuntimeFactory
+) -> None:
     @app.tool(
         name="systems.define",
         annotations=_docmeta.mutating(),
@@ -95,16 +112,20 @@ def register(
         ],
     ) -> ToolResponse:
         """Create a System in 'defined' for a granted Allocation (upload window). Operator only."""
-        runtime = await _runtime_for_allocation(allocation_id)
+        runtime = await runtime_factory.for_allocation(allocation_id)
         if isinstance(runtime, ToolResponse):
             return runtime
-        return await _provision_handlers(runtime).define_system(
+        return await runtime_factory.provision_handlers(runtime).define_system(
             pool,
             current_context(),
             allocation_id=allocation_id,
             profile=profile,
         )
 
+
+def _register_systems_provision(
+    app: FastMCP, pool: AsyncConnectionPool, runtime_factory: _SystemRuntimeFactory
+) -> None:
     @app.tool(
         name="systems.provision",
         annotations=_docmeta.mutating(),
@@ -120,16 +141,20 @@ def register(
         ],
     ) -> ToolResponse:
         """Mint a System for a granted Allocation and enqueue provision. Operator only."""
-        runtime = await _runtime_for_allocation(allocation_id)
+        runtime = await runtime_factory.for_allocation(allocation_id)
         if isinstance(runtime, ToolResponse):
             return runtime
-        return await _provision_handlers(runtime).provision_system(
+        return await runtime_factory.provision_handlers(runtime).provision_system(
             pool,
             current_context(),
             allocation_id=allocation_id,
             profile=profile,
         )
 
+
+def _register_systems_provision_defined(
+    app: FastMCP, pool: AsyncConnectionPool, runtime_factory: _SystemRuntimeFactory
+) -> None:
     @app.tool(
         name="systems.provision_defined",
         annotations=_docmeta.mutating(),
@@ -142,15 +167,17 @@ def register(
         ],
     ) -> ToolResponse:
         """Admit a DEFINED System after its upload window is complete. Requires operator."""
-        runtime = await _runtime_for_system(system_id)
+        runtime = await runtime_factory.for_system(system_id)
         if isinstance(runtime, ToolResponse):
             return runtime
-        return await _provision_handlers(runtime).provision_defined_system(
+        return await runtime_factory.provision_handlers(runtime).provision_defined_system(
             pool,
             current_context(),
             system_id=system_id,
         )
 
+
+def _register_systems_get(app: FastMCP, pool: AsyncConnectionPool) -> None:
     @app.tool(
         name="systems.get",
         annotations=_docmeta.read_only(),
@@ -162,6 +189,8 @@ def register(
         """Return a System the caller can view."""
         return await _get_system(pool, current_context(), system_id)
 
+
+def _register_systems_list(app: FastMCP, pool: AsyncConnectionPool) -> None:
     @app.tool(
         name="systems.list",
         annotations=_docmeta.read_only(),
@@ -203,6 +232,8 @@ def register(
             limit=limit,
         )
 
+
+def _register_systems_teardown(app: FastMCP, pool: AsyncConnectionPool) -> None:
     @app.tool(
         name="systems.teardown",
         annotations=_docmeta.destructive(),
@@ -214,6 +245,10 @@ def register(
         """Enqueue teardown for a System. Requires admin and destructive-op opt-in."""
         return await _teardown_system(pool, current_context(), system_id)
 
+
+def _register_systems_reprovision(
+    app: FastMCP, pool: AsyncConnectionPool, runtime_factory: _SystemRuntimeFactory
+) -> None:
     @app.tool(
         name="systems.reprovision",
         annotations=_docmeta.destructive(),
@@ -227,10 +262,10 @@ def register(
         ],
     ) -> ToolResponse:
         """Enqueue in-place reprovision for a ready System. Requires operator and opt-in."""
-        runtime = await _runtime_for_system(system_id)
+        runtime = await runtime_factory.for_system(system_id)
         if isinstance(runtime, ToolResponse):
             return runtime
-        return await _admin_handlers(runtime).reprovision_system(
+        return await runtime_factory.admin_handlers(runtime).reprovision_system(
             pool,
             current_context(),
             system_id=system_id,

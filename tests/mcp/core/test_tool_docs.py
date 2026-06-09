@@ -140,6 +140,8 @@ def _reaches_symbol(fn: Callable[..., Any], target: str) -> bool:
         attr: str,
         nonlocals: Mapping[str, Any],
     ) -> Callable[..., Any] | None:
+        if inspect.ismethod(factory):
+            factory = factory.__func__
         if not inspect.isfunction(factory):
             return None
         try:
@@ -180,6 +182,15 @@ def _reaches_symbol(fn: Callable[..., Any], target: str) -> bool:
                     factory_call = callee.value.func
                     if isinstance(factory_call, ast.Name):
                         factory = nonlocals.get(factory_call.id, glb.get(factory_call.id))
+                        if callable(factory):
+                            delegate = _method_from_factory_return(factory, callee.attr, nonlocals)
+                            if delegate is not None:
+                                attribute_calls.append(delegate)
+                    elif isinstance(factory_call, ast.Attribute) and isinstance(
+                        factory_call.value, ast.Name
+                    ):
+                        owner = nonlocals.get(factory_call.value.id, glb.get(factory_call.value.id))
+                        factory = getattr(owner, factory_call.attr, None)
                         if callable(factory):
                             delegate = _method_from_factory_return(factory, callee.attr, nonlocals)
                             if delegate is not None:

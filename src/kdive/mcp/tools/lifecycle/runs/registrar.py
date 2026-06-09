@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -30,6 +31,28 @@ from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 
 
+@dataclass(frozen=True, slots=True)
+class _RunRuntimeFactory:
+    pool: AsyncConnectionPool
+    resolver: ProviderResolver
+
+    async def for_run(self, run_id: str) -> ProviderRuntime | ToolResponse:
+        uid = _as_uuid(run_id)
+        if uid is None:
+            return _config_error(run_id)
+        async with self.pool.connection() as conn:
+            try:
+                return await self.resolver.runtime_for_run(conn, uid)
+            except CategorizedError as exc:
+                return ToolResponse.failure(run_id, exc.category)
+
+    def build_handlers(self, runtime: ProviderRuntime) -> _RunBuildHandlers:
+        return _RunBuildHandlers(
+            runtime.component_sources,
+            config_validator=runtime.build_config_validator,
+        )
+
+
 def register(
     app: FastMCP,
     pool: AsyncConnectionPool,
@@ -39,23 +62,16 @@ def register(
     """Register the `runs.*` tools on ``app``, bound to ``pool``."""
     if resolver is None:
         raise RuntimeError("runs registrar requires an injected provider resolver")
+    runtime_factory = _RunRuntimeFactory(pool, resolver)
+    _register_runs_get(app, pool)
+    _register_runs_create(app, pool)
+    _register_runs_build(app, pool, runtime_factory)
+    _register_runs_complete_build(app, pool, runtime_factory)
+    _register_runs_install(app, pool)
+    _register_runs_boot(app, pool)
 
-    async def _runtime_for_run(run_id: str) -> ProviderRuntime | ToolResponse:
-        uid = _as_uuid(run_id)
-        if uid is None:
-            return _config_error(run_id)
-        async with pool.connection() as conn:
-            try:
-                return await resolver.runtime_for_run(conn, uid)
-            except CategorizedError as exc:
-                return ToolResponse.failure(run_id, exc.category)
 
-    def _build_handlers(runtime: ProviderRuntime) -> _RunBuildHandlers:
-        return _RunBuildHandlers(
-            runtime.component_sources,
-            config_validator=runtime.build_config_validator,
-        )
-
+def _register_runs_get(app: FastMCP, pool: AsyncConnectionPool) -> None:
     @app.tool(
         name="runs.get",
         annotations=_docmeta.read_only(),
@@ -67,6 +83,8 @@ def register(
         """Render a Run; a failed Run maps to a failure envelope. Requires viewer."""
         return await _get_run(pool, current_context(), run_id)
 
+
+def _register_runs_create(app: FastMCP, pool: AsyncConnectionPool) -> None:
     @app.tool(
         name="runs.create",
         annotations=_docmeta.mutating(),
@@ -133,12 +151,12 @@ def register(
             expected_boot_failure=expected_boot_failure,
             reuse_requirement=reuse_requirement,
         )
-        return await _create_run(
-            pool,
-            current_context(),
-            request,
-        )
+        return await _create_run(pool, current_context(), request)
 
+
+def _register_runs_build(
+    app: FastMCP, pool: AsyncConnectionPool, runtime_factory: _RunRuntimeFactory
+) -> None:
     @app.tool(
         name="runs.build",
         annotations=_docmeta.mutating(),
@@ -156,16 +174,20 @@ def register(
         ] = None,
     ) -> ToolResponse:
         """Enqueue the kernel build job for a Run; poll jobs.* for completion. Requires operator."""
-        runtime = await _runtime_for_run(run_id)
+        runtime = await runtime_factory.for_run(run_id)
         if isinstance(runtime, ToolResponse):
             return runtime
-        return await _build_handlers(runtime).build_run(
+        return await runtime_factory.build_handlers(runtime).build_run(
             pool,
             current_context(),
             run_id,
             cmdline=cmdline,
         )
 
+
+def _register_runs_complete_build(
+    app: FastMCP, pool: AsyncConnectionPool, runtime_factory: _RunRuntimeFactory
+) -> None:
     @app.tool(
         name="runs.complete_build",
         annotations=_docmeta.mutating(),
@@ -190,13 +212,15 @@ def register(
         ] = None,
     ) -> ToolResponse:
         """Validate an external Run's uploads and finalize it to succeeded. Operator only."""
-        runtime = await _runtime_for_run(run_id)
+        runtime = await runtime_factory.for_run(run_id)
         if isinstance(runtime, ToolResponse):
             return runtime
-        return await _build_handlers(runtime).complete_build(
+        return await runtime_factory.build_handlers(runtime).complete_build(
             pool, current_context(), run_id, build_id=build_id, cmdline=cmdline
         )
 
+
+def _register_runs_install(app: FastMCP, pool: AsyncConnectionPool) -> None:
     @app.tool(
         name="runs.install",
         annotations=_docmeta.mutating(),
@@ -208,6 +232,8 @@ def register(
         """Enqueue the install job for a built Run; poll jobs.* for completion. Operator only."""
         return await _install_run(pool, current_context(), run_id)
 
+
+def _register_runs_boot(app: FastMCP, pool: AsyncConnectionPool) -> None:
     @app.tool(
         name="runs.boot",
         annotations=_docmeta.mutating(),
