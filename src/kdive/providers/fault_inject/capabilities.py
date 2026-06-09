@@ -19,6 +19,3 @@ SEED_KEY: Final = "seed"
 FAULT_RATE_KEY: Final = "fault_rate"
 MAX_LATENCY_S_KEY: Final = "max_latency_s"
 SECRET_REF_KEY: Final = "secret_ref"
-
-# The planes a per-plane fault_rate / max_latency_s map may key on (ADR-0072 catalog).
-FAULT_PLANES: Final = ("provision", "install", "boot", "connect", "control", "retrieve")

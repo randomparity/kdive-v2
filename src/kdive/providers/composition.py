@@ -203,6 +203,9 @@ async def ensure_local_host_registered(pool: AsyncConnectionPool) -> None:
 
 
 async def ensure_faultinject_resource_registered(pool: AsyncConnectionPool) -> None:
+    # Insert-if-absent (like local): the happy path's capabilities are inert, so this never
+    # needs to update an existing row. When #182 makes seed/fault_rate live config, a change
+    # to an already-registered resource needs the upsert path or a fresh row, not a restart.
     discovery = FaultInjectDiscovery.from_env()
     await ensure_discovered_resource_registered(
         pool,
