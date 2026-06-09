@@ -70,9 +70,9 @@ from kdive.providers.remote_libvirt.planes import (
     UnimplementedController,
     UnimplementedInstaller,
     UnimplementedIntrospector,
-    UnimplementedProvisioner,
     UnimplementedRetriever,
 )
+from kdive.providers.remote_libvirt.provisioning import RemoteLibvirtProvision
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.redaction import Redactor
@@ -234,7 +234,7 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
         )
 
     return ProviderRuntime(
-        provisioner=UnimplementedProvisioner(),
+        provisioner=RemoteLibvirtProvision(secret_registry=secret_registry),
         builder=UnimplementedBuilder(),
         installer=installer,
         booter=installer,
