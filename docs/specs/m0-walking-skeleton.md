@@ -321,11 +321,13 @@ taxonomy below.
 
 The active M0/M1 provider seam is typed `ProviderRuntime` ports
 ([0063](../adr/0063-typed-provider-runtime.md), refined by
-[0066](../adr/0066-remove-capability-registry-prototype-from-src.md)). Startup constructs
-the concrete local-libvirt ports once in `providers.composition`; MCP tools and worker
-handlers receive those typed ports directly. Capability-registry dispatch from ADR-0009 and
-ADR-0022 is historical design context for a future multi-provider milestone, not runtime
-infrastructure in this implementation.
+[0066](../adr/0066-remove-capability-registry-prototype-from-src.md)). Startup constructs a
+`ProviderResolver` in `providers.composition`; the default production resolver registers
+local-libvirt, while the fault-inject provider is a concrete opt-in runtime registered through
+the same `ProviderRuntime` seam. MCP tools and worker handlers resolve the typed ports for
+post-System operations. Capability-registry dispatch from ADR-0009 and ADR-0022 is historical
+design context for a future multi-provider milestone, not runtime infrastructure in this
+implementation.
 
 See [top-level design](top-level-design.md) for the current extension path. The source of
 truth for the contract is `src/kdive/providers/runtime.py`; the default local-libvirt

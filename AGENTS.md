@@ -77,15 +77,17 @@ its Allocation. See the design doc's "Domain model" section for the precise life
 ### The provider runtime seam
 
 The active M0/M1 provider seam is `ProviderRuntime` typed ports (ADR-0063). Production
-assembly happens in `providers/composition.py`, which constructs the concrete local-libvirt
-provider ports once and injects them into MCP tools and worker handlers. A provider still
-implements narrow port protocols for the planes it supports (Discovery, Provisioning,
-Build, Install, Connect, Debug, Control, Retrieve; Allocation is core, not a provider
-plane), but runtime code calls those typed ports directly.
+assembly happens in `providers/composition.py`, which builds a `ProviderResolver` over the
+registered runtimes. The default production resolver registers local-libvirt; fault-inject is
+a concrete opt-in provider registered through the same resolver/runtime seam. A provider
+still implements narrow port protocols for the planes it supports (Discovery, Provisioning,
+Build, Install, Connect, Debug, Control, Retrieve; Allocation is core, not a provider plane),
+but runtime code calls those typed ports directly.
 
 The old `CapabilityRegistry` / `OpContract` dispatch design now exists only in historical
 ADRs and planning records (ADR-0066 removed the in-tree prototype). It is not the current
-production assembly path. The only provider today is `providers/local_libvirt/`.
+production assembly path. Production defaults to `providers/local_libvirt/`; fault-injection
+deployments also register `providers/fault_inject/`.
 
 The falsifiable design hypothesis: adding a new provider (e.g. remote libvirt in M2)
 is mostly a provider implementation plus `ProviderRuntime` wiring; broader registry-based

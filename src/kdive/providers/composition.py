@@ -1,8 +1,9 @@
 """Active provider composition boundary.
 
-This module is the only place the MCP and worker assembly path constructs local-libvirt
-providers. It exposes typed runtime ports for the single local-libvirt provider shipped today;
-ADR-0066 removed the superseded capability-registry prototype from production source.
+This module is the only place the MCP and worker assembly path constructs concrete provider
+ports. The default production resolver registers local-libvirt; the fault-inject provider is
+an opt-in runtime behind the same ProviderRuntime/ProviderResolver seam. ADR-0066 removed the
+superseded capability-registry prototype from production source.
 """
 
 from __future__ import annotations
