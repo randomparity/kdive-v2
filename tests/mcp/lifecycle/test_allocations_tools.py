@@ -7,7 +7,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -19,6 +18,7 @@ from kdive.domain.models import Allocation, Budget, Quota
 from kdive.domain.state import AllocationState, IllegalTransition
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tool_payloads import AllocationRequestPayload
 from kdive.mcp.tools.lifecycle import allocations as alloc_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.authz.rbac import AuthorizationError, Role
@@ -87,7 +87,7 @@ async def _request(
     window: object | None = None,
     idempotency_key: str | None = None,
 ) -> ToolResponse:
-    request: dict[str, Any] = {
+    request: dict[str, object] = {
         "window": window,
         "resource": {"mode": "kind", "kind": "local-libvirt"},
     }
@@ -101,7 +101,7 @@ async def _request(
         pool,
         ctx,
         project=project,
-        request=request,
+        request=AllocationRequestPayload.model_validate(request),
         idempotency_key=idempotency_key,
     )
 
@@ -113,13 +113,15 @@ async def _request_by_id(
         pool,
         ctx,
         project=project,
-        request={
-            "vcpus": 1,
-            "memory_gb": 0,
-            "disk_gb": 10,
-            "window": None,
-            "resource": {"mode": "id", "resource_id": resource_id},
-        },
+        request=AllocationRequestPayload.model_validate(
+            {
+                "vcpus": 1,
+                "memory_gb": 0,
+                "disk_gb": 10,
+                "window": None,
+                "resource": {"mode": "id", "resource_id": resource_id},
+            }
+        ),
     )
 
 

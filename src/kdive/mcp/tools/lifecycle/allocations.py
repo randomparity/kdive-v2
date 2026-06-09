@@ -220,7 +220,7 @@ async def request_allocation(
     ctx: RequestContext,
     *,
     project: str,
-    request: AllocationRequestPayload | dict[str, Any],
+    request: AllocationRequestPayload,
     idempotency_key: str | None = None,
 ) -> ToolResponse:
     """Admit an allocation against the project budget/quota and the selected host's cap.
@@ -238,16 +238,8 @@ async def request_allocation(
     require_project(ctx, project)
     require_role(ctx, project, Role.OPERATOR)
     with bind_context(principal=ctx.principal):
-        try:
-            payload = (
-                request
-                if isinstance(request, AllocationRequestPayload)
-                else AllocationRequestPayload.model_validate(request)
-            )
-        except ValueError:
-            return _config_error(project)
         async with pool.connection() as conn:
-            prepared = await _prepare_admission_request(conn, payload)
+            prepared = await _prepare_admission_request(conn, request)
             if isinstance(prepared, ToolResponse):
                 return prepared
             selection = await _select_target(
@@ -483,11 +475,15 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         ] = None,
     ) -> ToolResponse:
         """Admit an allocation against project budget, quota, and host cap. Requires operator."""
+        try:
+            payload = AllocationRequestPayload.model_validate(request)
+        except ValueError:
+            return _config_error(project)
         return await request_allocation(
             pool,
             current_context(),
             project=project,
-            request=request,
+            request=payload,
             idempotency_key=idempotency_key,
         )
 

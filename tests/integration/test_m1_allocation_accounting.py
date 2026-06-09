@@ -50,6 +50,7 @@ from kdive.domain.state import (
 )
 from kdive.jobs.handlers import systems as systems_handlers
 from kdive.mcp.auth import AuthError
+from kdive.mcp.tool_payloads import AllocationRequestPayload, EstimateRequestPayload
 from kdive.mcp.tools.accounting.admin import QuotaSetRequest, set_budget, set_quota
 from kdive.mcp.tools.accounting.estimate import estimate
 from kdive.mcp.tools.accounting.usage import usage_investigation, usage_project
@@ -116,13 +117,15 @@ async def _request_allocation(
         pool,
         ctx,
         project=project,
-        request={
-            "vcpus": vcpus,
-            "memory_gb": memory_gb,
-            "disk_gb": disk_gb,
-            "window": window,
-            "resource": resource,
-        },
+        request=AllocationRequestPayload.model_validate(
+            {
+                "vcpus": vcpus,
+                "memory_gb": memory_gb,
+                "disk_gb": disk_gb,
+                "window": window,
+                "resource": resource,
+            }
+        ),
         idempotency_key=idempotency_key,
     )
 
@@ -450,7 +453,9 @@ def test_c3_estimate_equals_reserved_row(migrated_url: str) -> None:
                 pool,
                 _viewer_ctx(),
                 project="proj",
-                request={"vcpus": 2, "memory_gb": 4, "window": 3},
+                request=EstimateRequestPayload.model_validate(
+                    {"vcpus": 2, "memory_gb": 4, "window": 3}
+                ),
             )
             assert est.status != "error"
             grant = await _request_allocation(

@@ -14,7 +14,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 from uuid import UUID
 
 from psycopg_pool import AsyncConnectionPool
@@ -24,6 +23,7 @@ from kdive.domain.models import Budget, Quota
 from kdive.domain.pcie import PCIeClaim
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tool_payloads import AllocationRequestPayload
 from kdive.mcp.tools.lifecycle import allocations as alloc_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.authz.rbac import Role
@@ -92,7 +92,7 @@ async def _request(
     pcie_devices: list[str],
     on_capacity: str = "deny",
 ) -> ToolResponse:
-    request: dict[str, Any] = {
+    request: dict[str, object] = {
         "vcpus": 1,
         "memory_gb": 0,
         "disk_gb": 10,
@@ -101,7 +101,12 @@ async def _request(
         "pcie_devices": pcie_devices,
         "on_capacity": on_capacity,
     }
-    return await alloc_tools.request_allocation(pool, ctx, project="proj", request=request)
+    return await alloc_tools.request_allocation(
+        pool,
+        ctx,
+        project="proj",
+        request=AllocationRequestPayload.model_validate(request),
+    )
 
 
 async def _claim_of(pool: AsyncConnectionPool, alloc_id: str) -> list[PCIeClaim]:

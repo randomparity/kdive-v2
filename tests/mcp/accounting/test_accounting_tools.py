@@ -11,9 +11,12 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import pytest
 from psycopg_pool import AsyncConnectionPool
+from pydantic import ValidationError
 
 from kdive.mcp.auth import AuthError, RequestContext
+from kdive.mcp.tool_payloads import EstimateRequestPayload
 from kdive.mcp.tools.accounting.estimate import estimate
 from kdive.security.authz.rbac import AuthorizationError, Role
 
@@ -27,8 +30,10 @@ def _ctx(
 
 def _request(
     *, vcpus: int = 1, memory_gb: int = 1, window: object = 1, cost_class: str = "local"
-) -> dict[str, object]:
-    return {"vcpus": vcpus, "memory_gb": memory_gb, "window": window, "cost_class": cost_class}
+) -> EstimateRequestPayload:
+    return EstimateRequestPayload.model_validate(
+        {"vcpus": vcpus, "memory_gb": memory_gb, "window": window, "cost_class": cost_class}
+    )
 
 
 @asynccontextmanager
@@ -97,20 +102,9 @@ def test_estimate_unknown_cost_class_is_config_error(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_estimate_malformed_payload_shape_is_config_error(migrated_url: str) -> None:
-    async def _run() -> None:
-        async with _pool(migrated_url) as pool:
-            resp = await estimate(
-                pool,
-                _ctx(),
-                project="proj",
-                request={"vcpus": 1, "memory_gb": 1, "unexpected": "value"},
-            )
-        assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
-        assert resp.suggested_next_actions == ["accounting.estimate"]
-
-    asyncio.run(_run())
+def test_estimate_payload_model_rejects_malformed_shape() -> None:
+    with pytest.raises(ValidationError):
+        EstimateRequestPayload.model_validate({"vcpus": 1, "memory_gb": 1, "unexpected": "value"})
 
 
 def test_estimate_negative_memory_is_config_error(migrated_url: str) -> None:

@@ -38,22 +38,17 @@ async def estimate(
     ctx: RequestContext,
     *,
     project: str,
-    request: EstimateRequestPayload | dict[str, Any],
+    request: EstimateRequestPayload,
 ) -> ToolResponse:
     """Price a hypothetical ``selector`` over ``window`` hours, without writing anything."""
     require_project(ctx, project)
     require_role(ctx, project, Role.VIEWER)
     with bind_context(principal=ctx.principal):
         try:
-            payload = (
-                request
-                if isinstance(request, EstimateRequestPayload)
-                else EstimateRequestPayload.model_validate(request)
-            )
             return await _estimate_inner(
                 pool,
                 project=project,
-                request=payload,
+                request=request,
             )
         except ValueError:
             return ToolResponse.failure(
@@ -124,9 +119,17 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         ],
     ) -> ToolResponse:
         """Price a hypothetical selector over a window without writing anything. Requires viewer."""
+        try:
+            payload = EstimateRequestPayload.model_validate(request)
+        except ValueError:
+            return ToolResponse.failure(
+                _ESTIMATE_OBJECT_ID,
+                ErrorCategory.CONFIGURATION_ERROR,
+                suggested_next_actions=["accounting.estimate"],
+            )
         return await estimate(
             pool,
             current_context(),
             project=project,
-            request=request,
+            request=payload,
         )
