@@ -858,11 +858,13 @@ def test_provision_handler_commits_uploaded_rootfs_artifact(
             async with pool.connection() as conn:
                 await upload_manifest.replace_manifest(
                     conn,
-                    owner_kind="systems",
-                    owner_id=UUID(sys_id),
-                    prefix=f"local/systems/{sys_id}/",
-                    entries=[ManifestEntry("rootfs", "sha256:x", 18)],
-                    ttl=timedelta(hours=1),
+                    upload_manifest.UploadManifestReplaceRequest(
+                        owner_kind="systems",
+                        owner_id=UUID(sys_id),
+                        prefix=f"local/systems/{sys_id}/",
+                        entries=[ManifestEntry("rootfs", "sha256:x", 18)],
+                        ttl=timedelta(hours=1),
+                    ),
                 )
             job = await _enqueue_provision(pool, sys_id, alloc_id)
             async with pool.connection() as conn:

@@ -4,16 +4,37 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import psycopg
 
 from kdive.components.uploads import ManifestEntry
-from kdive.db.upload_manifest import delete_manifest, get_manifest, replace_manifest
+from kdive.db.upload_manifest import (
+    UploadManifestReplaceRequest,
+    delete_manifest,
+    get_manifest,
+    replace_manifest,
+)
 
 
 async def _connect(url: str) -> psycopg.AsyncConnection:
     return await psycopg.AsyncConnection.connect(url, autocommit=True)
+
+
+def _request(
+    owner_id: UUID,
+    entries: list[ManifestEntry],
+    *,
+    prefix: str | None = None,
+    ttl: timedelta = timedelta(hours=1),
+) -> UploadManifestReplaceRequest:
+    return UploadManifestReplaceRequest(
+        owner_kind="runs",
+        owner_id=owner_id,
+        prefix=prefix or f"local/runs/{owner_id}/",
+        entries=entries,
+        ttl=ttl,
+    )
 
 
 def test_round_trip(migrated_url: str) -> None:
@@ -23,14 +44,7 @@ def test_round_trip(migrated_url: str) -> None:
         owner_id = uuid4()
         entries = [ManifestEntry("kernel", "Zm9v", 10), ManifestEntry("vmlinux", "YmFy", 20)]
         async with await _connect(migrated_url) as conn:
-            await replace_manifest(
-                conn,
-                owner_kind="runs",
-                owner_id=owner_id,
-                prefix=f"local/runs/{owner_id}/",
-                entries=entries,
-                ttl=timedelta(hours=1),
-            )
+            await replace_manifest(conn, _request(owner_id, entries))
             got = await get_manifest(conn, "runs", owner_id)
         assert got is not None
         assert got.entries == tuple(entries)
@@ -51,21 +65,9 @@ def test_full_set_replacement(migrated_url: str) -> None:
         ]
         second_entries = [ManifestEntry("kernel", "bmV3", 30)]
         async with await _connect(migrated_url) as conn:
+            await replace_manifest(conn, _request(owner_id, first_entries))
             await replace_manifest(
-                conn,
-                owner_kind="runs",
-                owner_id=owner_id,
-                prefix=f"local/runs/{owner_id}/",
-                entries=first_entries,
-                ttl=timedelta(hours=1),
-            )
-            await replace_manifest(
-                conn,
-                owner_kind="runs",
-                owner_id=owner_id,
-                prefix=f"local/runs/{owner_id}/v2/",
-                entries=second_entries,
-                ttl=timedelta(hours=2),
+                conn, _request(owner_id, second_entries, prefix=f"local/runs/{owner_id}/v2/")
             )
             got = await get_manifest(conn, "runs", owner_id)
         assert got is not None
@@ -81,24 +83,13 @@ def test_remint_updates_deadline(migrated_url: str) -> None:
     async def _run_test() -> None:
         owner_id = uuid4()
         async with await _connect(migrated_url) as conn:
-            await replace_manifest(
-                conn,
-                owner_kind="runs",
-                owner_id=owner_id,
-                prefix=f"local/runs/{owner_id}/",
-                entries=[ManifestEntry("kernel", "Zm9v", 10)],
-                ttl=timedelta(hours=1),
-            )
+            await replace_manifest(conn, _request(owner_id, [ManifestEntry("kernel", "Zm9v", 10)]))
             got1 = await get_manifest(conn, "runs", owner_id)
             assert got1 is not None
             first_deadline = got1.deadline
             await replace_manifest(
                 conn,
-                owner_kind="runs",
-                owner_id=owner_id,
-                prefix=f"local/runs/{owner_id}/",
-                entries=[ManifestEntry("kernel", "Zm9v", 10)],
-                ttl=timedelta(hours=5),
+                _request(owner_id, [ManifestEntry("kernel", "Zm9v", 10)], ttl=timedelta(hours=5)),
             )
             got2 = await get_manifest(conn, "runs", owner_id)
         assert got2 is not None
@@ -126,14 +117,7 @@ def test_delete_removes_row(migrated_url: str) -> None:
         owner_id = uuid4()
         entries = [ManifestEntry("kernel", "Zm9v", 10)]
         async with await _connect(migrated_url) as conn:
-            await replace_manifest(
-                conn,
-                owner_kind="runs",
-                owner_id=owner_id,
-                prefix=f"local/runs/{owner_id}/",
-                entries=entries,
-                ttl=timedelta(hours=1),
-            )
+            await replace_manifest(conn, _request(owner_id, entries))
             await delete_manifest(conn, "runs", owner_id)
             got = await get_manifest(conn, "runs", owner_id)
         assert got is None

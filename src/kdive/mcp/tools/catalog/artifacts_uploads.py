@@ -227,11 +227,13 @@ async def _create_upload(
                     )
                     await upload_manifest.replace_manifest(
                         conn,
-                        owner_kind=spec.owner_kind,
-                        owner_id=uid,
-                        prefix=prefix,
-                        entries=entries,
-                        ttl=_upload_ttl(),
+                        upload_manifest.UploadManifestReplaceRequest(
+                            owner_kind=spec.owner_kind,
+                            owner_id=uid,
+                            prefix=prefix,
+                            entries=entries,
+                            ttl=_upload_ttl(),
+                        ),
                     )
             except CategorizedError as exc:
                 _log.warning("create_upload failed for %s %s: %s", spec.owner_kind, owner_id, exc)

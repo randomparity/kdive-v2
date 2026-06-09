@@ -139,11 +139,13 @@ async def seed_external_run_with_manifest(
     async with conn_pool.connection() as conn:
         await upload_manifest.replace_manifest(
             conn,
-            owner_kind="runs",
-            owner_id=run_id,
-            prefix=f"local/runs/{run_id}/",
-            entries=entries or [ManifestEntry("kernel", "c", 1)],
-            ttl=timedelta(hours=1),
+            upload_manifest.UploadManifestReplaceRequest(
+                owner_kind="runs",
+                owner_id=run_id,
+                prefix=f"local/runs/{run_id}/",
+                entries=entries or [ManifestEntry("kernel", "c", 1)],
+                ttl=timedelta(hours=1),
+            ),
         )
     return run_id
 

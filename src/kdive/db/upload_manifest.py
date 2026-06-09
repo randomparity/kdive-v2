@@ -10,6 +10,7 @@ reaped. It is not the write-once ``artifacts`` row.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NamedTuple
 from uuid import UUID
@@ -29,14 +30,20 @@ class UploadManifest(NamedTuple):
     deadline: datetime
 
 
+@dataclass(frozen=True)
+class UploadManifestReplaceRequest:
+    """A full replacement for one owner's upload manifest."""
+
+    owner_kind: str
+    owner_id: UUID
+    prefix: str
+    entries: Sequence[ManifestEntry]
+    ttl: timedelta
+
+
 async def replace_manifest(
     conn: AsyncConnection,
-    *,
-    owner_kind: str,
-    owner_id: UUID,
-    prefix: str,
-    entries: Sequence[ManifestEntry],
-    ttl: timedelta,
+    request: UploadManifestReplaceRequest,
 ) -> None:
     """Upsert the owner's manifest, stamping ``deadline = now() + ttl`` in Postgres.
 
@@ -44,19 +51,17 @@ async def replace_manifest(
 
     Args:
         conn: An async connection (autocommit or within a transaction).
-        owner_kind: The owning table name — ``'runs'`` or ``'systems'``.
-        owner_id: The owning row's primary key.
-        prefix: The object-key prefix the reaper will list.
-        entries: The declared artifact set for this upload.
-        ttl: How long from now until the manifest (and its upload window) expires.
+        request: Owner, prefix, entries, and upload-window TTL for the replacement.
     """
-    payload = [{"name": e.name, "sha256": e.sha256, "size_bytes": e.size_bytes} for e in entries]
+    payload = [
+        {"name": e.name, "sha256": e.sha256, "size_bytes": e.size_bytes} for e in request.entries
+    ]
     await conn.execute(
         "INSERT INTO upload_manifests (owner_kind, owner_id, prefix, manifest, deadline) "
         "VALUES (%s, %s, %s, %s, now() + %s) "
         "ON CONFLICT (owner_kind, owner_id) DO UPDATE SET "
         "  prefix = EXCLUDED.prefix, manifest = EXCLUDED.manifest, deadline = EXCLUDED.deadline",
-        (owner_kind, owner_id, prefix, Jsonb(payload), ttl),
+        (request.owner_kind, request.owner_id, request.prefix, Jsonb(payload), request.ttl),
     )
 
 
