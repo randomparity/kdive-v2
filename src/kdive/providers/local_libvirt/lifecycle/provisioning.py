@@ -51,7 +51,6 @@ _URI_ENV = "KDIVE_LIBVIRT_URI"
 _DEFAULT_URI = "qemu:///system"
 _DEFAULT_MACHINE = "q35"
 _ROOTFS_DIR = "/var/lib/kdive/rootfs"
-_ROOTFS_CACHE_DIR = f"{_ROOTFS_DIR}/cache"
 _QEMU_IMG_TIMEOUT_S = 5 * 60
 
 
@@ -311,7 +310,6 @@ class LocalLibvirtProvisioning:
         remove_overlay: RemoveOverlay = _real_remove_overlay,
         overlay_exists: OverlayExists = _real_overlay_exists,
         allowed_roots: list[Path] | None = None,
-        cache_dir: Path = Path(_ROOTFS_CACHE_DIR),
         materialize_rootfs: MaterializeRootfs | None = None,
         prepare_console_log: PrepareConsoleLog = _prepare_console_log,
     ) -> None:
@@ -323,7 +321,6 @@ class LocalLibvirtProvisioning:
             prepare_console_log=prepare_console_log,
         )
         self._allowed_roots = allowed_roots or [Path(_ROOTFS_DIR)]
-        self._cache_dir = cache_dir
         self._materialize_rootfs = materialize_rootfs or self._materialize_rootfs_base
 
     @classmethod
