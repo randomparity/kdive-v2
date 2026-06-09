@@ -40,17 +40,17 @@ from kdive.db.repositories import ALLOCATIONS
 from kdive.domain.cost import Selector
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Resource
-from kdive.domain.pcie import MatchOutcome, PCIeClaim
+from kdive.domain.pcie import PCIeClaim, parse_match_spec
 from kdive.domain.state import AllocationState, ensure_transition
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.services.accounting import ledger as accounting
-from kdive.services.allocation import pcie_claim
 from kdive.services.allocation.admission import (
     AllocationRequest,
     capacity_gate,
     price_window_and_estimate,
 )
+from kdive.services.allocation.placement import PlacementRequest, resolve_placement_candidates
 
 _log = logging.getLogger(__name__)
 
@@ -275,58 +275,33 @@ async def _candidate_hosts(conn: AsyncConnection, alloc: Allocation) -> list[Res
     host of the kind, oldest-first, so selection routes around a busy/cordoned host. A
     non-schedulable target yields no candidate, so the request stays ``requested``.
     """
-    if alloc.requested_resource_id is not None:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                "SELECT * FROM resources WHERE id = %s AND status = 'available' AND NOT cordoned",
-                (alloc.requested_resource_id,),
-            )
-            row = await cur.fetchone()
-        return [Resource.model_validate(row)] if row else []
-    if alloc.requested_kind is None:
-        return []
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT * FROM resources WHERE kind = %s AND status = 'available' AND NOT cordoned "
-            "ORDER BY created_at, id",
-            (alloc.requested_kind.value,),
+    try:
+        for spec in alloc.requested_pcie_specs:
+            parse_match_spec(spec)
+    except CategorizedError as exc:
+        unfiltered = await resolve_placement_candidates(
+            conn,
+            PlacementRequest(resource_id=alloc.requested_resource_id, kind=alloc.requested_kind),
         )
-        rows = await cur.fetchall()
-    candidates = [Resource.model_validate(row) for row in rows]
-    if not alloc.requested_pcie_specs:
-        return candidates
-    return await _pcie_filtered(conn, alloc, candidates)
-
-
-async def _pcie_filtered(
-    conn: AsyncConnection, alloc: Allocation, candidates: list[Resource]
-) -> list[Resource]:
-    """Best-effort pre-lock filter: keep hosts with a free matching device for every spec.
-
-    Mirrors the synchronous selector's pre-lock PCIe filter; the in-lock
-    :func:`capacity_gate` re-resolves authoritatively, so a host that frees a device between
-    this filter and the lock is still claimed correctly.
-    """
-    specs = list(alloc.requested_pcie_specs)
-    kept: list[Resource] = []
-    for candidate in candidates:
-        descriptors = pcie_claim.descriptors_for(candidate)
-        claims = await pcie_claim.active_claims(conn, candidate.id)
-        try:
-            resolution = pcie_claim.resolve_union(specs, descriptors, claims=claims)
-        except CategorizedError as exc:
+        for resource in unfiltered.resources:
             _log.warning(
                 "reconciler: skipping PCIe promotion candidate after %s for allocation %s "
                 "on resource %s",
                 exc.category.value,
                 alloc.id,
-                candidate.id,
+                resource.id,
                 exc_info=True,
             )
-            continue
-        if resolution.outcome is MatchOutcome.MATCHED:
-            kept.append(candidate)
-    return kept
+        return []
+    candidates = await resolve_placement_candidates(
+        conn,
+        PlacementRequest(
+            resource_id=alloc.requested_resource_id,
+            kind=alloc.requested_kind,
+            pcie_specs=tuple(alloc.requested_pcie_specs),
+        ),
+    )
+    return candidates.resources
 
 
 def _request_from_queued(alloc: Allocation, resource: Resource) -> AllocationRequest:

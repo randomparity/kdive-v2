@@ -22,13 +22,13 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
-from kdive.db.repositories import ALLOCATIONS, RESOURCES
+from kdive.db.repositories import ALLOCATIONS
 from kdive.domain.cost import Selector
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Resource, ResourceKind
-from kdive.domain.pcie import MatchOutcome, parse_match_spec
+from kdive.domain.pcie import parse_match_spec
 from kdive.domain.shapes import ResolvedSizing
-from kdive.domain.state import AllocationState, ResourceStatus
+from kdive.domain.state import AllocationState
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
@@ -38,7 +38,6 @@ from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.security.authz.context import RequestContext, require_project
 from kdive.security.authz.rbac import Role, require_role
-from kdive.services.allocation import pcie_claim
 from kdive.services.allocation.admission import (
     AdmissionOutcome,
     admit,
@@ -46,6 +45,7 @@ from kdive.services.allocation.admission import (
 from kdive.services.allocation.admission import (
     AllocationRequest as DomainAllocationRequest,
 )
+from kdive.services.allocation.placement import PlacementRequest, resolve_placement_candidates
 from kdive.services.allocation.release import (
     ReleaseOutcome,
     ctx_audit_writer,
@@ -74,32 +74,6 @@ def _envelope_for_allocation(alloc: Allocation) -> ToolResponse:
         suggested_next_actions=["allocations.get", "allocations.release"],
         data={"project": alloc.project},
     )
-
-
-async def _resolve_resource(
-    conn: AsyncConnection, resource_id: UUID | None, kind: ResourceKind
-) -> Resource | None:
-    """Resolve the placement target, schedulability-aware on both paths (ADR-0062 §3).
-
-    Pick-by-kind selects only a schedulable host (``status='available' AND NOT cordoned``).
-    An explicit ``resource_id`` is also held to the same schedulability bar: a cordoned or
-    non-``available`` host named by id is **rejected** (returns ``None``) — naming the host
-    by id is not a cordon escape hatch. A non-schedulable target is indistinguishable from a
-    missing one, so the caller surfaces the same ``configuration_error``.
-    """
-    if resource_id is not None:
-        resource = await RESOURCES.get(conn, resource_id)
-        if resource is None or resource.cordoned or resource.status is not ResourceStatus.AVAILABLE:
-            return None
-        return resource
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT * FROM resources WHERE kind = %s AND status = 'available' AND NOT cordoned "
-            "ORDER BY created_at, id LIMIT 1",
-            (kind.value,),
-        )
-        row = await cur.fetchone()
-    return Resource.model_validate(row) if row else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,45 +148,14 @@ async def _select_target(
     enqueue path. Only a spec that **no candidate host's descriptors match at all** returns a
     ``configuration_error`` here.
     """
-    if not specs:
-        return _Selection(await _resolve_resource(conn, resource_id, kind))
-    candidates = await _schedulable_candidates(conn, resource_id, kind)
-    if not candidates:
-        return _Selection(None, ErrorCategory.CONFIGURATION_ERROR)
-    capacity_candidate: Resource | None = None
-    for candidate in candidates:
-        descriptors = pcie_claim.descriptors_for(candidate)
-        claims = await pcie_claim.active_claims(conn, candidate.id)
-        resolution = pcie_claim.resolve_union(list(specs), descriptors, claims=claims)
-        if resolution.outcome is MatchOutcome.MATCHED:
-            return _Selection(candidate)
-        if resolution.outcome is MatchOutcome.CAPACITY:
-            capacity_candidate = candidate
-    if capacity_candidate is not None:
-        return _Selection(capacity_candidate)
+    candidates = await resolve_placement_candidates(
+        conn, PlacementRequest(resource_id=resource_id, kind=kind, pcie_specs=specs)
+    )
+    if candidates.resources:
+        return _Selection(candidates.resources[0])
+    if candidates.capacity_candidate is not None:
+        return _Selection(candidates.capacity_candidate)
     return _Selection(None, ErrorCategory.CONFIGURATION_ERROR)
-
-
-async def _schedulable_candidates(
-    conn: AsyncConnection, resource_id: UUID | None, kind: ResourceKind
-) -> list[Resource]:
-    """Return the schedulable placement candidates for the PCIe-aware selection.
-
-    A by-id request yields the single host if it is schedulable (the same bar
-    :func:`_resolve_resource` holds it to); a by-kind request yields every schedulable
-    host of the kind, oldest first, so selection can route around a busy card.
-    """
-    if resource_id is not None:
-        resource = await _resolve_resource(conn, resource_id, kind)
-        return [resource] if resource is not None else []
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT * FROM resources WHERE kind = %s AND status = 'available' AND NOT cordoned "
-            "ORDER BY created_at, id",
-            (kind.value,),
-        )
-        rows = await cur.fetchall()
-    return [Resource.model_validate(row) for row in rows]
 
 
 async def request_allocation(
