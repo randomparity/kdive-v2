@@ -43,12 +43,48 @@ class GdbBreakpointRef(ProviderModel):
 class GdbController(Protocol):
     """Controller operations a gdb/MI attachment exposes."""
 
-    def write(self, command: str, *, timeout_sec: float) -> list[dict[str, object]]: ...
-    def read(self, *, timeout_sec: float) -> list[dict[str, object]]: ...
+    def write(self, command: str, *, timeout_sec: float) -> list[dict[str, object]]:
+        """Write one gdb/MI command and return records emitted before the prompt.
+
+        Raises:
+            CategorizedError: ``INFRASTRUCTURE_FAILURE`` when the prompt does not arrive
+                before ``timeout_sec``. Callers that interpret error records should surface
+                gdb/MI command failures as ``DEBUG_ATTACH_FAILURE``.
+        """
+        ...
+
+    def read(self, *, timeout_sec: float) -> list[dict[str, object]]:
+        """Read pending gdb/MI records without sending a command.
+
+        A read timeout is non-fatal and returns an empty list; this lets polling callers
+        distinguish "no records yet" from a command timeout.
+        """
+        ...
+
     def get_gdb_response(
         self, *, timeout_sec: float, raise_error_on_timeout: bool = True
-    ) -> list[dict[str, object]]: ...
-    def exit(self) -> None: ...
+    ) -> list[dict[str, object]]:
+        """Read records until the prompt or timeout.
+
+        Args:
+            timeout_sec: Maximum wait for a prompt.
+            raise_error_on_timeout: If true, timeout raises; if false, timeout returns
+                an empty list.
+
+        Raises:
+            CategorizedError: ``INFRASTRUCTURE_FAILURE`` when ``raise_error_on_timeout``
+                is true and no prompt arrives before ``timeout_sec``.
+        """
+        ...
+
+    def exit(self) -> None:
+        """Terminate the underlying gdb/MI controller.
+
+        Raises:
+            CategorizedError: ``INFRASTRUCTURE_FAILURE`` if the controller cannot be
+                terminated cleanly.
+        """
+        ...
 
 
 @dataclass
