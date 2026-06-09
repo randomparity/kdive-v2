@@ -27,10 +27,12 @@ import libvirt
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 
-# qemuAgentCommand timeout sentinel: block until the agent answers one round-trip
-# (libvirt's VIR_DOMAIN_QEMU_AGENT_COMMAND_BLOCK == -2). Overall command-exit timeout
-# is owned by this seam's monotonic deadline, not the per-call agent timeout.
-_AGENT_BLOCK = -2
+# Each guest-agent round-trip (guest-exec spawn, guest-exec-status poll) is itself a fast
+# operation — it never blocks on the in-guest command's completion. A positive per-call
+# timeout (NOT libvirt's BLOCK==-2) bounds each call so a disconnected agent surfaces as a
+# libvirtError -> transport_failure instead of wedging the worker thread; the overall
+# command-exit bound is owned by this seam's monotonic deadline across many fast polls.
+_DEFAULT_AGENT_CALL_TIMEOUT_S = 30
 _DEFAULT_TIMEOUT_S = 300.0
 _DEFAULT_POLL_S = 1.0
 
@@ -57,6 +59,22 @@ def qemu_agent_command(domain: Any, command: str, timeout: int, flags: int) -> s
     import libvirt_qemu
 
     return libvirt_qemu.qemuAgentCommand(domain, command, timeout, flags)
+
+
+def _exit_status(payload: dict[str, Any]) -> int:
+    """Derive the exit status from a guest-exec-status payload.
+
+    qemu-guest-agent reports ``exitcode`` for a normal exit but, when the process was
+    **killed** (OOM, timeout-kill, SIGSEGV), omits ``exitcode`` and sets ``signal``. A
+    signaled kill must not read as success, so it maps to ``128 + signal`` (the shell
+    convention); a payload with neither field is treated as a clean exit (0).
+    """
+    if "exitcode" in payload:
+        return int(payload["exitcode"])
+    signal = payload.get("signal")
+    if signal is not None:
+        return 128 + int(signal)
+    return 0
 
 
 def _decode_capture(payload: dict[str, Any], field: str) -> bytes:
@@ -86,6 +104,7 @@ class GuestAgentExec:
         allowed_programs: frozenset[str],
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         poll_s: float = _DEFAULT_POLL_S,
+        agent_call_timeout_s: int = _DEFAULT_AGENT_CALL_TIMEOUT_S,
         sleep: Sleep = time.sleep,
         monotonic: Monotonic = time.monotonic,
     ) -> None:
@@ -93,6 +112,7 @@ class GuestAgentExec:
         self._allowed_programs = allowed_programs
         self._timeout_s = timeout_s
         self._poll_s = poll_s
+        self._agent_call_timeout_s = agent_call_timeout_s
         self._sleep = sleep
         self._monotonic = monotonic
 
@@ -155,7 +175,7 @@ class GuestAgentExec:
                 ) from exc
             if exited:
                 return AgentExecResult(
-                    exit_status=int(payload.get("exitcode", 0)),
+                    exit_status=_exit_status(payload),
                     stdout=_decode_capture(payload, "out-data"),
                     stderr=_decode_capture(payload, "err-data"),
                 )
@@ -169,7 +189,7 @@ class GuestAgentExec:
 
     def _agent(self, domain: Any, command: str) -> dict[str, Any]:
         try:
-            raw = self._agent_command(domain, command, _AGENT_BLOCK, 0)
+            raw = self._agent_command(domain, command, self._agent_call_timeout_s, 0)
         except libvirt.libvirtError as exc:
             raise CategorizedError(
                 "qemu-guest-agent command failed (agent unreachable or not connected)",

@@ -34,28 +34,36 @@ class _FakeAgent:
     def __init__(
         self,
         *,
-        exitcode: int = 0,
+        exitcode: int | None = 0,
+        signal: int | None = None,
         out: bytes = b"",
         err: bytes = b"",
         status_sequence: list[bool] | None = None,
     ) -> None:
         self._exitcode = exitcode
+        self._signal = signal
         self._out = out
         self._err = err
         # Each False is a not-yet-exited poll before the final exited=True.
         self._status_sequence = list(status_sequence or [True])
         self.commands: list[dict[str, Any]] = []
+        self.timeouts: list[int] = []
 
     def __call__(self, domain: object, command: str, timeout: int, flags: int) -> str:
         parsed = json.loads(command)
         self.commands.append(parsed)
+        self.timeouts.append(timeout)
         if parsed["execute"] == "guest-exec":
             return json.dumps({"return": {"pid": 4242}})
         if parsed["execute"] == "guest-exec-status":
             exited = self._status_sequence.pop(0) if self._status_sequence else True
             payload: dict[str, object] = {"exited": exited}
             if exited:
-                payload["exitcode"] = self._exitcode
+                # qemu-guest-agent reports exitcode on a normal exit OR signal on a kill.
+                if self._signal is not None:
+                    payload["signal"] = self._signal
+                elif self._exitcode is not None:
+                    payload["exitcode"] = self._exitcode
                 if self._out:
                     payload["out-data"] = base64.b64encode(self._out).decode()
                 if self._err:
@@ -138,6 +146,25 @@ def test_malformed_agent_response_maps_to_infrastructure_failure() -> None:
     with pytest.raises(CategorizedError) as excinfo:
         exc.run(object(), ["/usr/bin/curl", "https://store/obj"])
     assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+def test_agent_calls_use_a_bounded_positive_timeout() -> None:
+    # A blocking (-2) timeout would let a disconnected agent wedge the worker; each
+    # call must carry a positive bound so the seam's deadline governs total time.
+    agent = _FakeAgent(out=b"ok")
+    _exec(agent).run(object(), ["/usr/bin/curl", "https://store/obj"])
+    assert agent.timeouts  # at least one round-trip happened
+    assert all(timeout > 0 for timeout in agent.timeouts)
+
+
+def test_signal_killed_command_is_not_reported_as_success() -> None:
+    # guest-exec-status returns `signal` (no exitcode) when the process is killed
+    # (OOM, timeout-kill, SIGSEGV); defaulting a missing exitcode to 0 would read
+    # a killed install as success.
+    agent = _FakeAgent(exitcode=None, signal=9, out=b"partial")
+    result = _exec(agent).run(object(), ["/usr/bin/curl", "https://store/obj"])
+    assert result.exit_status != 0
+    assert result.exit_status == 128 + 9
 
 
 def test_run_times_out_when_the_command_never_exits() -> None:
