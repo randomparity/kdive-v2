@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from kdive.mcp.auth import AuthError, RequestContext
@@ -46,6 +48,16 @@ def test_roles_from_claims_rejects_unknown_role() -> None:
 def test_roles_from_claims_rejects_non_string_value() -> None:
     with pytest.raises(AuthError):
         roles_from_claims({"roles": {"a": 1}})
+
+
+def test_roles_from_claims_rejects_empty_project_key() -> None:
+    with pytest.raises(AuthError):
+        roles_from_claims({"roles": {"": "admin"}})
+
+
+def test_roles_from_claims_rejects_non_string_project_key() -> None:
+    with pytest.raises(AuthError):
+        roles_from_claims({"roles": cast(Any, {7: "admin"})})
 
 
 def test_require_role_admin_satisfies_operator() -> None:

@@ -10,6 +10,8 @@ A hypothesis counterexample here is a privilege-boundary defect.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -59,6 +61,15 @@ def test_roles_from_claims_non_string_value_fails_closed(data: st.DataObject) ->
     non_string = data.draw(st.one_of(st.integers(), st.none(), st.lists(st.text())))
     with pytest.raises(AuthError):
         roles_from_claims({"roles": {project: non_string}})
+
+
+@given(
+    bad_project=st.one_of(st.integers(), st.none(), st.booleans(), st.just("")),
+    value=st.sampled_from(_ROLE_NAMES),
+)
+def test_roles_from_claims_bad_project_key_fails_closed(bad_project: object, value: str) -> None:
+    with pytest.raises(AuthError):
+        roles_from_claims({"roles": cast(Any, {bad_project: value})})
 
 
 def test_roles_from_claims_absent_is_empty() -> None:

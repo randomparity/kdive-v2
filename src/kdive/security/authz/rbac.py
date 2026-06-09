@@ -111,6 +111,8 @@ def roles_from_claims(claims: Mapping[str, object]) -> dict[str, Role]:
         raise AuthError("roles claim is not an object")
     roles: dict[str, Role] = {}
     for project, value in raw.items():
+        if not isinstance(project, str) or not project:
+            raise AuthError(f"roles claim project key {project!r} is not a non-empty string")
         if not isinstance(value, str):
             raise AuthError(f"roles claim value for project {project!r} is not a string")
         try:
@@ -119,7 +121,7 @@ def roles_from_claims(claims: Mapping[str, object]) -> dict[str, Role]:
             raise AuthError(
                 f"roles claim has unknown role {value!r} for project {project!r}"
             ) from None
-        roles[str(project)] = role
+        roles[project] = role
     return roles
 
 
