@@ -52,6 +52,7 @@ import pytest
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.providers.ports import InstallRequest
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
 from kdive.providers.remote_libvirt.guest_agent import AgentExecResult
@@ -105,42 +106,41 @@ class _ScriptedAgent:
         raise AssertionError(payload)
 
 
-class _FakeStore:
-    """Mints a fixed presigned GET and records the persisted redacted transcript."""
-
-    def __init__(self) -> None:
-        self.writes: list[object] = []
-        self.presigned: list[tuple[str, int]] = []
-
-    def presign_get(self, key: str, *, expires_in: int) -> str:
-        self.presigned.append((key, expires_in))
-        return _URL
-
-    def put_artifact(self, request: object) -> object:
-        self.writes.append(request)
-        from kdive.provider_components.artifacts import StoredArtifact
-
-        req = request  # ArtifactWriteRequest
-        return StoredArtifact(req.key(), "etag", req.sensitivity, req.retention_class)  # type: ignore[attr-defined]
-
-
-class _FakeConn:
-    def __init__(self) -> None:
-        self.closed = False
-
-    def lookupByName(self, name: str) -> object:  # noqa: N802 - libvirt binding name
-        return _FakeDomain(name)
-
-    def close(self) -> None:
-        self.closed = True
-
-
 class _FakeDomain:
     def __init__(self, name: str) -> None:
         self._name = name
 
     def name(self) -> str:
         return self._name
+
+
+class _FakeStore:
+    """Mints a fixed presigned GET and records the persisted redacted transcript."""
+
+    def __init__(self) -> None:
+        self.writes: list[ArtifactWriteRequest] = []
+        self.presigned: list[tuple[str, int]] = []
+
+    def presign_get(self, key: str, *, expires_in: int) -> str:
+        self.presigned.append((key, expires_in))
+        return _URL
+
+    def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact:
+        self.writes.append(request)
+        return StoredArtifact(
+            request.key(), "etag", request.sensitivity, request.retention_class
+        )
+
+
+class _FakeConn:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def lookupByName(self, name: str) -> _FakeDomain:  # noqa: N802 - libvirt binding name
+        return _FakeDomain(name)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _config() -> RemoteLibvirtConfig:
@@ -308,6 +308,7 @@ from uuid import UUID
 import libvirt
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.providers.ports import InstallRequest
 from kdive.providers.remote_libvirt.artifact_channel import InTargetArtifactChannel
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
@@ -343,7 +344,10 @@ _REBOOT_EXPECTED = frozenset(
 
 
 class _StorePort(Protocol):
+    # Both methods: install() mints the GET and the InTargetArtifactChannel persists the
+    # redacted transcript via put_artifact, and the one injected factory serves both.
     def presign_get(self, key: str, *, expires_in: int) -> str: ...
+    def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact: ...
 
 
 class _Domain(Protocol):
@@ -760,20 +764,37 @@ with:
 
 The existing `installer=installer, booter=installer` lines in the `ProviderRuntime(...)` constructor are unchanged (one object realizes both ports, as local does).
 
-- [ ] **Step 5: Run guardrails + the composition/runtime tests**
+- [ ] **Step 5: Add a positive wiring test in `tests/providers/test_composition.py`**
+
+Mirror the existing `test_remote_runtime_has_real_builder` / `_has_real_provisioner` pattern. Add the import `from kdive.providers.remote_libvirt.install import RemoteLibvirtInstall` and this test (the env vars match the sibling tests' opt-in setup):
+
+```python
+def test_remote_runtime_has_real_installer_and_booter(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KDIVE_REMOTE_LIBVIRT_URI", "qemu+tls://host.example/system")
+    monkeypatch.setenv("KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF", "cc")
+    monkeypatch.setenv("KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF", "ck")
+    monkeypatch.setenv("KDIVE_REMOTE_LIBVIRT_CA_CERT_REF", "ca")
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+    assert isinstance(runtime.installer, RemoteLibvirtInstall)
+    assert runtime.booter is runtime.installer  # one object realizes both ports, as local does
+```
+
+Verify the exact env-var setup against the sibling tests (`test_remote_runtime_has_real_builder` at `tests/providers/test_composition.py`) and copy whatever opt-in fixture they use; `build_remote_runtime` itself is buildable without config, so the setenv may be unnecessary — match the siblings.
+
+- [ ] **Step 6: Run guardrails + the composition/runtime tests**
 
 Run:
 ```bash
 just lint && just type
 uv run python -m pytest tests/providers -q
-uv run python -m pytest tests/providers/test_composition.py tests/providers/test_runtime.py -q  # if present
 ```
-Expected: PASS. If a composition test asserted the remote installer was the stub raising `MISSING_DEPENDENCY`, update it to assert the real `RemoteLibvirtInstall` is wired (grep `tests/` for `UnimplementedInstaller`).
+Expected: PASS. Also grep `tests/` for `UnimplementedInstaller` to confirm no remaining reference to the removed stub: `grep -rn UnimplementedInstaller tests/` → no hits.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/kdive/providers/composition.py src/kdive/providers/remote_libvirt/planes.py tests/providers/remote_libvirt/test_planes.py
+git add src/kdive/providers/composition.py src/kdive/providers/remote_libvirt/planes.py \
+        tests/providers/remote_libvirt/test_planes.py tests/providers/test_composition.py
 git commit -m "feat: wire RemoteLibvirtInstall into the remote runtime; drop install stub"
 ```
 
