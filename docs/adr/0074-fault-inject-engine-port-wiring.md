@@ -61,8 +61,8 @@ This keeps the *fault decision* and the *latency magnitude* real (seed-derived, 
 while removing real wall-time from CI — the engine math is exercised, only the blocking is
 stubbed.
 
-**Two distinct levers, two distinct repair paths — keep them separate.** The five drift cases
-split into a `fail`-draw lever and a `latency`-only lever, and they reach *different* failure
+**The five drift cases map to distinct triggers — keep them separate.** They are driven by a
+`fail`-draw lever, a `latency`-only lever, **or** the inventory seam, and they reach *different*
 states, so the plan must not conflate them:
 
 - A drawn **`fail`** raises `CategorizedError(decision.category)` **iff `decision.fail`** is
@@ -87,6 +87,22 @@ states, so the plan must not conflate them:
   reaches `failed(**lease_expired**)` **only** through the reconciler's `_repair_abandoned_jobs`
   compensation — `lease_expired` is the reconciler's category, **not** a fault-catalog category,
   and is distinct from `canceled`. This case asserts no catalog `fail` was drawn for the op.
+- The **abandoned-job** case (worker death) is the same `_repair_abandoned_jobs` sweep on a
+  job with a lapsed lease and `attempt >= max_attempts`; the slow op (latency) or a simulated
+  worker death lapses the lease, and the run-bearing job's owning Run is compensated to
+  `failed(lease_expired)`. It shares the lease-expiry mechanism; the distinction is framing
+  (worker-death vs lease-window), not a different repair path.
+- The **dead-DebugSession** case is a `connect` **`TRANSPORT_FAILURE`** `fail` draw, but its
+  reconciler trigger is **indirect**: the dropped transport means the worker stops beating, so
+  `worker_heartbeat_at` goes stale, and `_repair_dead_sessions` detaches the `live` session on
+  the **stale heartbeat** (`worker_heartbeat_at < now() - stale_after`), **not** on the fault
+  category. The fault is the upstream *cause* of the staleness, which is the actual trigger; the
+  test seeds the stale-heartbeat state the dropped transport would have produced.
+- The **leaked-provider-infra** case uses **no engine draw at all**: it is driven by the
+  **inventory seam** (`FaultInjectInventory` / `FaultInjectReaper`) reporting an owned domain
+  whose `systems` row is absent or `torn_down`; `_repair_leaked_domains` reaps it via the
+  `InfraReaper` port. This is the one case orthogonal to the fault engine — it exercises the
+  mock's infra-inventory seam (ADR-0072), not a `fail`/`latency` decision.
 
 No handler changes are required for issue 5: the provision `fail` path and the lease-expiry
 latency path both terminate in *already-shipped* transitions.
