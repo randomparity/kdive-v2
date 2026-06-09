@@ -44,8 +44,8 @@ from kdive.mcp.tools._common import (
 )
 from kdive.mcp.tools.lifecycle.systems.common import (
     RootfsValidator,
-    _validate_profile_for_provider,
-    _validate_rootfs_for_provider,
+    validate_profile_for_provider,
+    validate_rootfs_for_provider,
 )
 from kdive.mcp.tools.lifecycle.systems.view import defined_system_envelope
 from kdive.profiles.provisioning import (
@@ -204,7 +204,7 @@ class SystemProvisionHandlers:
             return _config_error(allocation_id)
         try:
             parsed = ProvisioningProfile.parse(profile)
-            _validate_profile_for_provider(parsed, self.component_sources)
+            validate_profile_for_provider(parsed, self.component_sources)
         except CategorizedError as exc:
             return ToolResponse.failure(allocation_id, exc.category)
         with bind_context(principal=ctx.principal):
@@ -441,8 +441,8 @@ async def _provision_defined_response(
         return _config_error(str(system.id), data={"current_status": system.state.value})
     try:
         parsed = ProvisioningProfile.parse(system.provisioning_profile)
-        _validate_profile_for_provider(parsed, component_sources)
-        _validate_rootfs_for_provider(parsed, rootfs_validator)
+        validate_profile_for_provider(parsed, component_sources)
+        validate_rootfs_for_provider(parsed, rootfs_validator)
     except CategorizedError as exc:
         return ToolResponse.failure(str(system.id), exc.category)
     if system.state is SystemState.DEFINED:
@@ -477,7 +477,7 @@ async def _new_system_allowed(
             suggested_next_actions=["systems.get", "allocations.list"],
         )
     try:
-        _validate_rootfs_for_provider(profile, rootfs_validator)
+        validate_rootfs_for_provider(profile, rootfs_validator)
     except CategorizedError as exc:
         return ToolResponse.failure(str(alloc.id), exc.category)
     return None

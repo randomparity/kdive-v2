@@ -20,7 +20,7 @@ from kdive.providers.component_validation import (
 type RootfsValidator = Callable[[RootfsSource], None]
 
 
-def _validate_profile_for_provider(
+def validate_profile_for_provider(
     profile: ProvisioningProfile,
     capabilities: ComponentSourceCapabilities,
 ) -> None:
@@ -37,7 +37,7 @@ def _validate_profile_for_provider(
     )
 
 
-def _validate_rootfs_for_provider(
+def validate_rootfs_for_provider(
     profile: ProvisioningProfile,
     rootfs_validator: RootfsValidator,
 ) -> None:

@@ -26,8 +26,8 @@ from kdive.mcp.tools._common import job_envelope
 from kdive.mcp.tools._common import stale_handle as _stale_handle
 from kdive.mcp.tools.lifecycle.systems.common import (
     RootfsValidator,
-    _validate_profile_for_provider,
-    _validate_rootfs_for_provider,
+    validate_profile_for_provider,
+    validate_rootfs_for_provider,
 )
 from kdive.profiles.provisioning import (
     ProvisioningProfile,
@@ -69,7 +69,7 @@ class SystemAdminHandlers:
             return _config_error(system_id)
         try:
             parsed = ProvisioningProfile.parse(profile)
-            _validate_profile_for_provider(parsed, self.component_sources)
+            validate_profile_for_provider(parsed, self.component_sources)
             reject_rootfs_upload_without_window(parsed)
         except CategorizedError as exc:
             return ToolResponse.failure(system_id, exc.category)
@@ -119,7 +119,7 @@ async def _reprovision_locked(
         if await _has_live_run(conn, system_id):
             return _stale_handle(str(system_id), current_status=system.state.value)
         try:
-            _validate_rootfs_for_provider(profile, rootfs_validator)
+            validate_rootfs_for_provider(profile, rootfs_validator)
         except CategorizedError as exc:
             return ToolResponse.failure(str(system_id), exc.category)
         return await _admit_reprovision(conn, ctx, system, profile, digest, dedup_key)
