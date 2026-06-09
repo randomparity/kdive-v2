@@ -26,6 +26,12 @@ from kdive.components.artifacts import (
     PresignPutRequest,
     StoredArtifact,
 )
+from kdive.components.artifacts import (
+    artifact_key as artifact_key,
+)
+from kdive.components.artifacts import (
+    owner_prefix as owner_prefix,
+)
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Artifact, Sensitivity
 
@@ -44,54 +50,6 @@ _STALE_STATUSES = frozenset({404, 412})
 
 def _normalize_etag(raw: str) -> str:
     return raw.strip('"')
-
-
-def _validate_component(label: str, value: str) -> str:
-    """Return ``value`` if it is a safe single key segment, else raise.
-
-    Raises:
-        CategorizedError: ``value`` is empty or contains ``/`` or a control
-            character (:attr:`ErrorCategory.CONFIGURATION_ERROR`).
-    """
-    if not value:
-        raise CategorizedError(
-            f"artifact key component {label!r} must not be empty",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    if "/" in value or any(ord(char) < 0x20 for char in value):
-        raise CategorizedError(
-            f"artifact key component {label!r} has an illegal character: {value!r}",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    return value
-
-
-def _artifact_key(tenant: str, kind: str, object_id: str, name: str) -> str:
-    return "/".join(
-        (
-            _validate_component("tenant", tenant),
-            _validate_component("kind", kind),
-            _validate_component("object_id", object_id),
-            _validate_component("name", name),
-        )
-    )
-
-
-def artifact_key(tenant: str, kind: str, object_id: str, name: str) -> str:
-    """Public, validated ``{tenant}/{kind}/{object_id}/{name}`` key (ingestion + reaper)."""
-    return _artifact_key(tenant, kind, object_id, name)
-
-
-def owner_prefix(tenant: str, kind: str, object_id: str) -> str:
-    """The validated ``{tenant}/{kind}/{object_id}/`` key prefix for an owner's objects."""
-    base = "/".join(
-        (
-            _validate_component("tenant", tenant),
-            _validate_component("kind", kind),
-            _validate_component("object_id", object_id),
-        )
-    )
-    return base + "/"
 
 
 def _infrastructure_error(op: str, key: str, err: BotoCoreError | ClientError) -> CategorizedError:

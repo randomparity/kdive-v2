@@ -23,7 +23,8 @@ def _validate_component(label: str, value: str) -> str:
     return value
 
 
-def _artifact_key(tenant: str, kind: str, object_id: str, name: str) -> str:
+def artifact_key(tenant: str, kind: str, object_id: str, name: str) -> str:
+    """Public, validated ``{tenant}/{kind}/{object_id}/{name}`` key."""
     parts = [
         _validate_component("tenant", tenant),
         _validate_component("kind", kind),
@@ -31,6 +32,16 @@ def _artifact_key(tenant: str, kind: str, object_id: str, name: str) -> str:
         _validate_component("name", name),
     ]
     return "/".join(parts)
+
+
+def owner_prefix(tenant: str, kind: str, object_id: str) -> str:
+    """The validated ``{tenant}/{kind}/{object_id}/`` key prefix for an owner's objects."""
+    parts = [
+        _validate_component("tenant", tenant),
+        _validate_component("kind", kind),
+        _validate_component("object_id", object_id),
+    ]
+    return "/".join(parts) + "/"
 
 
 class StoredArtifact(NamedTuple):
@@ -55,7 +66,7 @@ class ArtifactWriteRequest:
     retention_class: str
 
     def key(self) -> str:
-        return _artifact_key(self.tenant, self.owner_kind, self.owner_id, self.name)
+        return artifact_key(self.tenant, self.owner_kind, self.owner_id, self.name)
 
 
 class FetchedArtifact(NamedTuple):
