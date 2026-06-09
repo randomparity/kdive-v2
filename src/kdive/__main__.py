@@ -104,8 +104,8 @@ async def _run_worker(secret_registry: SecretRegistry) -> None:
 
 async def _run_reconciler(secret_registry: SecretRegistry) -> None:
     from kdive.domain.errors import CategorizedError
-    from kdive.providers.composition import build_provider_resolver
-    from kdive.reconciler.loop import NullReaper, Reconciler
+    from kdive.providers.composition import build_provider_resolver, build_reconciler_reaper
+    from kdive.reconciler.loop import Reconciler
     from kdive.store.objectstore import object_store_from_env
 
     pool = create_pool(min_size=1)
@@ -120,7 +120,7 @@ async def _run_reconciler(secret_registry: SecretRegistry) -> None:
         upload_store = None  # no S3 env: the upload reaper stays off, like NullReaper
     await _register_provider_resources(pool, build_provider_resolver())
     try:
-        reconciler = Reconciler(pool, NullReaper(), upload_store=upload_store)
+        reconciler = Reconciler(pool, build_reconciler_reaper(), upload_store=upload_store)
         await reconciler.run(stop)
     finally:
         secret_registry.clear()

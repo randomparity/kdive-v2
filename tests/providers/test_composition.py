@@ -281,6 +281,35 @@ def test_fault_inject_runtime_provision_is_visible_to_a_reaper_on_the_same_inven
     assert [d.name for d in owned] == [domain]
 
 
+def test_configured_fault_inject_runtime_is_visible_to_reconciler_reaper() -> None:
+    import asyncio
+    from uuid import UUID
+
+    from kdive.domain.models import ResourceKind
+
+    resolver = composition.build_provider_resolver(enable_fault_inject=True)
+    reaper = composition.build_reconciler_reaper(enable_fault_inject=True)
+    system_id = UUID("44444444-4444-4444-4444-444444444444")
+
+    domain = resolver.resolve(ResourceKind.FAULT_INJECT).provisioner.provision(
+        system_id, _provisioning_profile()
+    )
+
+    owned = asyncio.run(reaper.list_owned())
+    assert domain in [item.name for item in owned]
+    asyncio.run(reaper.destroy(domain))
+
+
+def test_reconciler_reaper_defaults_to_null_when_fault_inject_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kdive.reconciler.loop import NullReaper
+
+    monkeypatch.delenv("KDIVE_FAULT_INJECT", raising=False)
+
+    assert isinstance(composition.build_reconciler_reaper(), NullReaper)
+
+
 def test_fault_inject_opt_in_reads_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     from kdive.domain.models import ResourceKind
 
