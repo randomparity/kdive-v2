@@ -239,9 +239,12 @@ async def finalize_component_upload(
 ) -> UUID:
     """Validate an upload intent and return the finalized provider component id.
 
+    A previously finalized upload that already carries ``component_id`` is idempotent and
+    returns that existing component id.
+
     Raises:
-        CategorizedError: The upload is absent, expired, already non-pending, or its object
-            metadata does not match the intent.
+        CategorizedError: The upload is absent, expired, non-pending without a component id,
+            or its object metadata does not match the intent.
     """
     async with pool.connection() as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:
