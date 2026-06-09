@@ -22,8 +22,8 @@ from kdive.domain.models import Allocation, JobKind, Resource, ResourceKind, Sys
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState, ResourceStatus, SystemState
 from kdive.jobs import queue
+from kdive.jobs.handlers import systems as systems_handlers
 from kdive.jobs.payloads import Authorizing, SystemPayload
-from kdive.planes import systems as systems_handlers
 from kdive.providers.composition import build_provider_resolver
 from tests.integration._seed import provisioning_profile
 

@@ -37,8 +37,8 @@ src/kdive/
   mcp/tools/lifecycle/allocations.py      # + renew
   mcp/tools/lifecycle/systems/{admin,provision,registrar}.py # + reprovision; + system-quota check on provision
   mcp/tools/debug/{sessions,ops,introspect}.py # + transport="ssh"; + introspect.run (live)
-  planes/systems.py                       # provision/teardown/reprovision worker handlers
-  planes/control.py · planes/vmcore.py    # control and retrieve worker handlers
+  jobs/handlers/systems.py                       # provision/teardown/reprovision worker handlers
+  jobs/handlers/control.py · jobs/handlers/vmcore.py    # control and retrieve worker handlers
   providers/local_libvirt/provisioning.py # + reprovision op + handler
   providers/local_libvirt/connect.py      # + ssh transport backend + capability
   providers/local_libvirt/introspect_drgn.py # + live introspect (drgn over ssh)
@@ -180,7 +180,7 @@ Each wave's issues are independent and dispatch in parallel; the next wave waits
 - **Depends on:** ① (state edge), M0 #16 (provisioning plane)
 - **Goal:** Reprovision a System in place under the same Allocation.
 - **Files:** Extend `providers/local_libvirt/provisioning.py` (reprovision op),
-  `mcp/tools/lifecycle/systems/admin.py` (reprovision), and `src/kdive/planes/systems.py`
+  `mcp/tools/lifecycle/systems/admin.py` (reprovision), and `src/kdive/jobs/handlers/systems.py`
   (handler); tests.
 - **Scope:**
   - `systems.reprovision(system_id, provisioning_profile)` → `reprovision` job, `dedup_key=(system_id,"reprovision",profile_digest)`; drives `ready → reprovisioning → ready`, updating `provisioning_profile`/`target_fingerprint` on the **same** row and re-defining the domain re-tagged with the same `system_id`.

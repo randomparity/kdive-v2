@@ -37,7 +37,7 @@ object-store adapter, `uv`, `ruff`, `ty`, `pytest`.
   - Adds `artifacts.search_text`.
   - Uses object-store `head()` before `get_artifact()`.
   - Keeps System-owned redacted-only access rules.
-- Modify `src/kdive/planes/runs.py`
+- Modify `src/kdive/jobs/handlers/runs.py`
   - Refactors console capture into a helper returning artifact id/key.
   - Suppresses `readiness_failure` only when Run expectation matches redacted console evidence.
 - Modify `src/kdive/mcp/tools/debug/sessions.py`
@@ -999,7 +999,7 @@ git commit -m "feat: add redacted artifact text search"
 ### Task 5: Expected-Crash Boot Outcome
 
 **Files:**
-- Modify: `src/kdive/planes/runs.py`
+- Modify: `src/kdive/jobs/handlers/runs.py`
 - Test: `tests/mcp/lifecycle/test_runs_tools.py`
 - Test: `tests/mcp/debug/test_debug_tools.py`
 
@@ -1147,7 +1147,7 @@ uv run python -m pytest tests/mcp/debug/test_debug_tools.py::test_start_session_
 
 - [ ] **Step 3: Refactor console capture into a helper**
 
-In `src/kdive/planes/runs.py`, add imports:
+In `src/kdive/jobs/handlers/runs.py`, add imports:
 
 ```python
 from kdive.security.artifact_search import ArtifactSearchInputError, search_text
@@ -1363,7 +1363,7 @@ attach mechanism.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/kdive/planes/runs.py src/kdive/mcp/tools/debug/sessions.py tests/mcp/lifecycle/test_runs_tools.py tests/mcp/debug/test_debug_tools.py
+git add src/kdive/jobs/handlers/runs.py src/kdive/mcp/tools/debug/sessions.py tests/mcp/lifecycle/test_runs_tools.py tests/mcp/debug/test_debug_tools.py
 git commit -m "feat: record expected boot crash outcomes"
 ```
 

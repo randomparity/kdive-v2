@@ -3,7 +3,7 @@
 `control.power` (``on`` → operator; ``off``/``cycle``/``reset`` → three-check gated,
 admin, ADR-0037 §1/§2) and `control.force_crash` (three-check gated, admin) admit
 synchronously and enqueue a durable job. Worker-owned execution lives in
-``kdive.planes.control``; `power` moves no System state (a domain restart is not a
+``kdive.jobs.handlers.control``; `power` moves no System state (a domain restart is not a
 reprovision), while `force_crash` drives System ``ready -> crashed`` and every non-terminal
 DebugSession of the System ``-> detached`` (joined through ``runs``).
 

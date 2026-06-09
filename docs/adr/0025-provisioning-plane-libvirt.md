@@ -130,7 +130,7 @@ owns no XML. The real `libvirt.open` path is `live_vm`-gated, as for discovery.
 
 **Current implementation note.** The historical flat `mcp/tools/systems.py` boundary is now
 split under `src/kdive/mcp/tools/lifecycle/systems/` for MCP admission and
-`src/kdive/planes/systems.py` for worker job handlers. The ownership split above still
+`src/kdive/jobs/handlers/systems.py` for worker job handlers. The ownership split above still
 applies: MCP/worker code owns database state, and the provider owns libvirt XML/runtime work.
 
 ### 5. `teardown` is idempotent and best-effort over an already-absent domain

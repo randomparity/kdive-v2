@@ -30,13 +30,13 @@ from kdive.domain.models import (
 )
 from kdive.domain.state import AllocationState, InvestigationState, RunState, SystemState
 from kdive.jobs import queue
+from kdive.jobs.handlers import systems as systems_handlers
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import ReprovisionPayload, SystemPayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers, teardown_system
 from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers
 from kdive.mcp.tools.lifecycle.systems.view import get_system
-from kdive.planes import systems as systems_handlers
 from kdive.profiles.provisioning import RootfsSource
 from kdive.providers.local_libvirt.lifecycle.materialize import (
     RootfsMaterializationContext,

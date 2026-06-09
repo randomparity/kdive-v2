@@ -16,6 +16,7 @@ from fastmcp import FastMCP
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.jobs.handlers import control, runs, systems, vmcore
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import build_verifier
 from kdive.mcp.middleware import DenialAuditMiddleware
@@ -45,7 +46,6 @@ from kdive.mcp.tools.ops import queue as ops_queue_tools
 from kdive.mcp.tools.ops import reconcile as ops_reconcile_tools
 from kdive.mcp.tools.ops import resources as ops_resources_tools
 from kdive.mcp.tools.ops import tuning as ops_tuning_tools
-from kdive.planes import control, runs, systems, vmcore
 from kdive.providers.composition import build_provider_resolver
 from kdive.providers.resolver import ProviderResolver
 from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry

@@ -48,6 +48,7 @@ from kdive.domain.state import (
     RunState,
     SystemState,
 )
+from kdive.jobs.handlers import systems as systems_handlers
 from kdive.mcp.auth import AuthError
 from kdive.mcp.tools.accounting.admin import set_budget, set_quota
 from kdive.mcp.tools.accounting.estimate import estimate
@@ -56,7 +57,6 @@ from kdive.mcp.tools.lifecycle import allocations as alloc_tools
 from kdive.mcp.tools.lifecycle import control as control_tools
 from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers, teardown_system
 from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers
-from kdive.planes import systems as systems_handlers
 from kdive.providers.local_libvirt.lifecycle.provisioning import domain_name_for
 from kdive.reconciler import loop
 from kdive.security.authz.rbac import AuthorizationError, Role

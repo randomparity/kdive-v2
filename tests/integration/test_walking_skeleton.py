@@ -28,13 +28,13 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
+from kdive.jobs.handlers import runs as runs_handlers
+from kdive.jobs.handlers import vmcore as vmcore_plane
 from kdive.jobs.payloads import Authorizing, BuildPayload, CaptureVmcorePayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog.artifacts_reads import artifacts_get, artifacts_list
 from kdive.mcp.tools.lifecycle import control as control_tools
 from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
-from kdive.planes import runs as runs_handlers
-from kdive.planes import vmcore as vmcore_plane
 from kdive.providers.ports import BuildOutput, CaptureOutput, CrashOutput
 from kdive.security.authz.rbac import Role
 from tests.integration._seed import (

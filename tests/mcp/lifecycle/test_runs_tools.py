@@ -39,6 +39,7 @@ from kdive.domain.state import (
     RunState,
     SystemState,
 )
+from kdive.jobs.handlers import runs as runs_handlers
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle.runs import common as runs_common
 from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers
@@ -49,7 +50,6 @@ from kdive.mcp.tools.lifecycle.runs.create import (
 )
 from kdive.mcp.tools.lifecycle.runs.steps import boot_run, install_run
 from kdive.mcp.tools.lifecycle.runs.view import get_run
-from kdive.planes import runs as runs_handlers
 from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.services.runs import steps as run_steps

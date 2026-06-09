@@ -35,7 +35,7 @@ src/kdive/
                debug/{sessions,ops,introspect}.py
                accounting/{admin,estimate,reports,usage}.py
                ops/{audit,breakglass,inventory,queue,reconcile,tuning}.py
-  planes/      runs.py · systems.py · control.py · vmcore.py
+  jobs/handlers/{runs.py · systems.py · control.py · vmcore.py}
   services/    allocation_admission.py · allocation_idempotency.py · resource_discovery.py
   security/    rbac.py · audit.py · gate.py · redaction.py · secret_registry.py · paths.py · secrets.py
   reconciler/  loop.py
@@ -269,7 +269,7 @@ only ADR history.
 - **Depends on:** #11, #13
 - **Goal:** Provision and tear down a libvirt System as a job.
 - **Files:** Create `src/kdive/providers/local_libvirt/lifecycle/provisioning.py`,
-  `src/kdive/mcp/tools/lifecycle/systems/`, `src/kdive/planes/systems.py`; register
+  `src/kdive/mcp/tools/lifecycle/systems/`, `src/kdive/jobs/handlers/systems.py`; register
   `provision`/`teardown` job handlers; tests.
 - **Scope:**
   - Create the `systems` row (`provisioning`) **first**, then render domain XML from the profile + rootfs and `defineXML`/`create`, tagging the domain with `system_id` metadata (ADR-0009/reconciler ordering).
@@ -295,7 +295,7 @@ only ADR history.
 - **Goal:** Build a kernel from source as an idempotent job.
 - **Files:** Create `src/kdive/providers/local_libvirt/build.py`,
   `src/kdive/profiles/build.py`, `mcp/tools/lifecycle/runs/build.py`; register
-  `build` handler in `src/kdive/planes/runs.py`; tests.
+  `build` handler in `src/kdive/jobs/handlers/runs.py`; tests.
 - **Scope:**
   - `BuildProfile` (kernel source ref, config, patch ref); `build()` runs `make` in a workspace, ensuring `CONFIG_CRASH_DUMP`/`crashkernel` + `CONFIG_DEBUG_INFO(_DWARF)`/BTF for the kdump and symbolization prerequisites; stores **two** artifacts on the Run — the bootable kernel image (`kernel_ref`) **and a build-id-keyed `vmlinux`/debuginfo artifact (`debuginfo_ref`)** that #20/#22 load to symbolize the vmcore (port v1 `symbols/`).
   - To bound wall-clock, M0 builds **incrementally from a warm source tree** (base tree + the profile's patch), not a cold from-scratch build; the warm tree is part of the build-workspace setup.
@@ -308,7 +308,7 @@ only ADR history.
 - **Goal:** Install the built kernel onto the System and boot it, with kdump in effect.
 - **Files:** Create `src/kdive/providers/local_libvirt/lifecycle/install.py`,
   `mcp/tools/lifecycle/runs/steps.py` (add `runs.install`, `runs.boot`); register
-  handlers in `src/kdive/planes/runs.py`; tests.
+  handlers in `src/kdive/jobs/handlers/runs.py`; tests.
 - **Scope:**
   - `install()`: stage kernel/initrd for direct-kernel boot with a `crashkernel=` reservation; ensure the kdump capture service/initramfs is present (kdump prerequisite).
   - `boot()`: boot the installed kernel; run-readiness preflight (port v1 `prereqs/`) before declaring boot ready; `boot_timeout`/`readiness_failure` on failure.
@@ -354,7 +354,7 @@ only ADR history.
 - **Depends on:** #11, #14, #9
 - **Goal:** Power/reset and force_crash, behind the destructive-op gate.
 - **Files:** Create `src/kdive/providers/local_libvirt/lifecycle/control.py`,
-  `mcp/tools/lifecycle/control.py`, `src/kdive/planes/control.py`; register
+  `mcp/tools/lifecycle/control.py`, `src/kdive/jobs/handlers/control.py`; register
   `force_crash`/power job handlers; tests.
 - **Scope:**
   - `power(on|off|cycle|reset)` via `virsh`/libvirt API; `force_crash` via `sysrq-c` (or QEMU monitor `nmi`), driving System `ready → crashed` and the DebugSession `live → detached`.
@@ -367,7 +367,7 @@ only ADR history.
 - **Goal:** Capture the kdump vmcore, store it (raw + redacted), and port crash postmortem.
 - **Files:** Create `src/kdive/providers/local_libvirt/retrieve.py` (port subset of
   `~/src/kdive-v1/.../postmortem/*`), `mcp/tools/lifecycle/vmcore.py`,
-  `mcp/tools/catalog/artifacts.py`, `src/kdive/planes/vmcore.py`; register
+  `mcp/tools/catalog/artifacts.py`, `src/kdive/jobs/handlers/vmcore.py`; register
   `capture_vmcore` handler; tests.
 - **Scope:**
   - `capture_vmcore` waits for kdump to finish, writes the **raw** vmcore (`sensitive`) and a **redacted** derivative to the object store (object before row, #6), returns an artifact ref; if no core within the capture window → `readiness_failure`. The job is enqueued with `dedup_key=(system_id, "capture_vmcore")`.

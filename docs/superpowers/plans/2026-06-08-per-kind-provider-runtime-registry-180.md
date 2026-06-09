@@ -31,7 +31,7 @@
 - `src/kdive/mcp/app.py` — thread `ProviderResolver` through both registrar seams; resolve `local-libvirt` for MCP tool registrars; (Task 4) pass the resolver to worker handler registrars; rename the `provider_runtime=` kwarg to `provider_resolver=`.
 - `src/kdive/__main__.py` — `_run_reconciler`/`_register_provider_resources` use `build_provider_resolver().register_all_discovery(pool)`.
 - `src/kdive/admin/bootstrap.py` — `register_local_resource` uses `build_provider_resolver().register_all_discovery(pool)`.
-- `src/kdive/planes/systems.py` / `runs.py` / `control.py` / `vmcore.py` (Task 4) — handlers gain `*, resolver=None`, lazy resolve after existence check; `register_handlers(*, <port>=None, resolver=None)`; drop the now-unused `ProviderRuntime` import from `systems.py`/`control.py`/`vmcore.py` (`runs.py` keeps it — used as a return type).
+- `src/kdive/jobs/handlers/systems.py` / `runs.py` / `control.py` / `vmcore.py` (Task 4) — handlers gain `*, resolver=None`, lazy resolve after existence check; `register_handlers(*, <port>=None, resolver=None)`; drop the now-unused `ProviderRuntime` import from `systems.py`/`control.py`/`vmcore.py` (`runs.py` keeps it — used as a return type).
 - `tests/providers/test_composition.py`, `tests/providers/test_capture_capabilities.py` — `build_default_provider_runtime` → `build_local_runtime`; add default-resolver + gate assertions.
 - `tests/reconciler/test_main.py` — monkeypatch `build_provider_resolver` returning a fake resolver whose `register_all_discovery` records the `discover` event.
 
@@ -676,8 +676,8 @@ Expected: PASS (Docker-gated suites skip cleanly without Docker; `test_app.py` a
 
 ```bash
 just lint && just type
-git add src/kdive/planes/systems.py src/kdive/planes/runs.py src/kdive/planes/control.py \
-        src/kdive/planes/vmcore.py src/kdive/mcp/app.py
+git add src/kdive/jobs/handlers/systems.py src/kdive/jobs/handlers/runs.py src/kdive/jobs/handlers/control.py \
+        src/kdive/jobs/handlers/vmcore.py src/kdive/mcp/app.py
 git commit -m "feat(providers): resolve worker handler provider per System/Run kind"
 ```
 

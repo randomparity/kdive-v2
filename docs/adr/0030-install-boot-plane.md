@@ -168,7 +168,7 @@ the existing helper unchanged.
 
 **Current implementation note.** The historical flat `mcp/tools/runs.py` boundary is now
 split under `src/kdive/mcp/tools/lifecycle/runs/` for MCP admission/read handlers and
-`src/kdive/planes/runs.py` for worker job handlers. Registration remains centralized through
+`src/kdive/jobs/handlers/runs.py` for worker job handlers. Registration remains centralized through
 the lifecycle runs registrar and the worker handler registry.
 
 ## Considered & rejected

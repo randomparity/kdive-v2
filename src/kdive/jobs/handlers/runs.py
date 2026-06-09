@@ -17,9 +17,9 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, Run, Sensitivity
 from kdive.domain.state import IllegalTransition, RunState
 from kdive.jobs.context import context_from_job as job_context_from_job
+from kdive.jobs.handlers.runs_shared import finalize_build
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
-from kdive.planes.runs_shared import finalize_build
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.providers.ports import Booter, Builder, BuildOutput, Installer
 from kdive.providers.resolver import ProviderResolver

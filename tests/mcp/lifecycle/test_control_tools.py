@@ -40,11 +40,11 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.jobs import queue
+from kdive.jobs.handlers import control as control_plane
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import PowerPayload, SystemPayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import control as control_tools
-from kdive.planes import control as control_plane
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.audit import args_digest
 from kdive.security.authz.rbac import AuthorizationError, Role

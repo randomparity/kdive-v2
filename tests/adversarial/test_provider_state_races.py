@@ -28,9 +28,9 @@ from kdive.db.repositories import SYSTEMS
 from kdive.domain.models import Job, JobKind, PowerAction, System
 from kdive.domain.state import AllocationState, SystemState
 from kdive.jobs import queue
+from kdive.jobs.handlers import control as control_plane
+from kdive.jobs.handlers import systems as systems_handlers
 from kdive.jobs.payloads import SystemPayload
-from kdive.planes import control as control_plane
-from kdive.planes import systems as systems_handlers
 from tests.adversarial.conftest import seed_allocation, seed_resource
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

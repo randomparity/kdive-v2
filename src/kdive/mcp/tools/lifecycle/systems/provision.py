@@ -4,7 +4,7 @@
 Allocation from a submitted profile, flips the Allocation ``granted -> active``, and enqueues a
 ``provision`` job. `systems.provision_defined` admits a `defined` System by System id after its
 upload window is complete. Worker-owned ``provision``/``teardown``/``reprovision`` execution lives
-in ``kdive.planes.systems``.
+in ``kdive.jobs.handlers.systems``.
 """
 
 from __future__ import annotations
