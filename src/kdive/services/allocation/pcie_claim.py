@@ -114,10 +114,10 @@ def resolve_union(
 ) -> MultisetResolution:
     """Resolve the requested spec union to distinct free devices (the matcher's multiset).
 
-    The union is the explicit ``pcie_devices`` plus (when #161 lands) a shape's
-    ``pcie_match``; the caller composes it before calling. An empty union resolves to
-    ``MATCHED`` with no devices — a non-PCIe request claims nothing. Returns the matcher's
-    ``MATCHED`` / ``CONFIG`` / ``CAPACITY`` outcome; only malformed grammar raises.
+    ``specs`` is the already-composed union of explicit ``pcie_devices`` plus any resolved
+    shape ``pcie_match``. An empty union resolves to ``MATCHED`` with no devices — a
+    non-PCIe request claims nothing. Returns the matcher's ``MATCHED`` / ``CONFIG`` /
+    ``CAPACITY`` outcome; only malformed grammar raises.
 
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` if any spec is malformed grammar.
