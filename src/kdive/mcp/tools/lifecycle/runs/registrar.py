@@ -12,6 +12,12 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers as _RunBuildHandlers
+from kdive.mcp.tools.lifecycle.runs.create import (
+    RunCreateRequest as _RunCreateRequest,
+)
+from kdive.mcp.tools.lifecycle.runs.create import (
+    RunReuseRequirementInput as _RunReuseRequirementInput,
+)
 from kdive.mcp.tools.lifecycle.runs.create import create_run as _create_run
 from kdive.mcp.tools.lifecycle.runs.steps import boot_run as _boot_run
 from kdive.mcp.tools.lifecycle.runs.steps import install_run as _install_run
@@ -99,17 +105,23 @@ def register(
         ] = None,
     ) -> ToolResponse:
         """Bind a Run to a ready System and Investigation in one transaction. Requires operator."""
-        return await _create_run(
-            pool,
-            current_context(),
+        reuse_requirement = _RunReuseRequirementInput(
+            vcpus=require_vcpus,
+            memory_gb=require_memory_gb,
+            disk_gb=require_disk_gb,
+            pcie=require_pcie,
+        )
+        request = _RunCreateRequest(
             investigation_id=investigation_id,
             system_id=system_id,
             build_profile=build_profile,
             expected_boot_failure=expected_boot_failure,
-            require_vcpus=require_vcpus,
-            require_memory_gb=require_memory_gb,
-            require_disk_gb=require_disk_gb,
-            require_pcie=require_pcie,
+            reuse_requirement=reuse_requirement,
+        )
+        return await _create_run(
+            pool,
+            current_context(),
+            request,
         )
 
     @app.tool(

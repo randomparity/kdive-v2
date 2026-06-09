@@ -42,7 +42,11 @@ from kdive.domain.state import (
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle.runs import common as runs_common
 from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers
-from kdive.mcp.tools.lifecycle.runs.create import create_run
+from kdive.mcp.tools.lifecycle.runs.create import (
+    RunCreateRequest,
+    RunReuseRequirementInput,
+    create_run,
+)
 from kdive.mcp.tools.lifecycle.runs.steps import boot_run, install_run
 from kdive.mcp.tools.lifecycle.runs.view import get_run
 from kdive.planes import runs as runs_handlers
@@ -388,10 +392,23 @@ def test_get_run_exposes_expected_boot_failure(migrated_url: str) -> None:
 
 
 async def _create(
-    pool: AsyncConnectionPool, ctx: RequestContext, inv_id: str, sys_id: str, profile=None
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    inv_id: str,
+    sys_id: str,
+    *,
+    profile=None,
+    reuse_requirement: RunReuseRequirementInput | None = None,
 ):
     return await create_run(
-        pool, ctx, investigation_id=inv_id, system_id=sys_id, build_profile=profile or _profile()
+        pool,
+        ctx,
+        RunCreateRequest(
+            investigation_id=inv_id,
+            system_id=sys_id,
+            build_profile=profile or _profile(),
+            reuse_requirement=reuse_requirement,
+        ),
     )
 
 
@@ -434,7 +451,9 @@ def test_create_rejects_empty_build_profile(migrated_url: str) -> None:
             # Call create_run directly: the _create helper's `profile or _profile()` would
             # coalesce a falsy {} away, so it cannot exercise the empty-profile path.
             resp = await create_run(
-                pool, _ctx(), investigation_id=inv_id, system_id=sys_id, build_profile={}
+                pool,
+                _ctx(),
+                RunCreateRequest(investigation_id=inv_id, system_id=sys_id, build_profile={}),
             )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT count(*) AS n FROM runs")
@@ -459,10 +478,12 @@ def test_create_run_persists_expected_boot_failure(migrated_url: str) -> None:
             resp = await create_run(
                 pool,
                 _ctx(),
-                investigation_id=inv_id,
-                system_id=sys_id,
-                build_profile=_profile(),
-                expected_boot_failure=expected,
+                RunCreateRequest(
+                    investigation_id=inv_id,
+                    system_id=sys_id,
+                    build_profile=_profile(),
+                    expected_boot_failure=expected,
+                ),
             )
             assert resp.status == "created"
             assert resp.data["expected_boot_failure"] == "console_crash"
@@ -486,10 +507,12 @@ def test_create_run_rejects_bad_expected_boot_failure(migrated_url: str) -> None
             resp = await create_run(
                 pool,
                 _ctx(),
-                investigation_id=inv_id,
-                system_id=sys_id,
-                build_profile=_profile(),
-                expected_boot_failure={"kind": "console_crash", "pattern": ""},
+                RunCreateRequest(
+                    investigation_id=inv_id,
+                    system_id=sys_id,
+                    build_profile=_profile(),
+                    expected_boot_failure={"kind": "console_crash", "pattern": ""},
+                ),
             )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT count(*) AS n FROM runs")
@@ -597,7 +620,13 @@ def test_create_cross_project_join_is_config_error(migrated_url: str) -> None:
                 roles={"proj": Role.OPERATOR, "p2": Role.OPERATOR},
             )
             resp = await create_run(
-                pool, ctx, investigation_id=other_inv, system_id=sys_id, build_profile=_profile()
+                pool,
+                ctx,
+                RunCreateRequest(
+                    investigation_id=other_inv,
+                    system_id=sys_id,
+                    build_profile=_profile(),
+                ),
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
@@ -611,7 +640,9 @@ def test_create_non_dict_build_profile_is_config_error(migrated_url: str) -> Non
             sys_id = await _seed_system(pool)
             bad: Any = "nope"
             resp = await create_run(
-                pool, _ctx(), investigation_id=inv_id, system_id=sys_id, build_profile=bad
+                pool,
+                _ctx(),
+                RunCreateRequest(investigation_id=inv_id, system_id=sys_id, build_profile=bad),
             )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT count(*) AS n FROM runs")
@@ -735,15 +766,12 @@ def test_reuse_optional_assertion_satisfied_creates(migrated_url: str) -> None:
             sys_id = await _seed_system(
                 pool, requested_vcpus=8, requested_memory_gb=16, requested_disk_gb=100
             )
-            resp = await create_run(
+            resp = await _create(
                 pool,
                 _ctx(),
-                investigation_id=inv_id,
-                system_id=sys_id,
-                build_profile=_profile(),
-                require_vcpus=4,
-                require_memory_gb=8,
-                require_disk_gb=40,
+                inv_id,
+                sys_id,
+                reuse_requirement=RunReuseRequirementInput(vcpus=4, memory_gb=8, disk_gb=40),
             )
         assert resp.status == "created"
 
@@ -771,15 +799,16 @@ def test_reuse_assertion_miss_is_config_error_no_run(
             sys_id = await _seed_system(
                 pool, requested_vcpus=8, requested_memory_gb=16, requested_disk_gb=100
             )
-            resp = await create_run(
+            resp = await _create(
                 pool,
                 _ctx(),
-                investigation_id=inv_id,
-                system_id=sys_id,
-                build_profile=_profile(),
-                require_vcpus=req_vcpus,
-                require_memory_gb=req_memory_gb,
-                require_disk_gb=req_disk_gb,
+                inv_id,
+                sys_id,
+                reuse_requirement=RunReuseRequirementInput(
+                    vcpus=req_vcpus,
+                    memory_gb=req_memory_gb,
+                    disk_gb=req_disk_gb,
+                ),
             )
             n = await _count(pool, "SELECT count(*) AS n FROM runs", ())
         assert resp.status == "error" and resp.error_category == "configuration_error"
@@ -796,13 +825,12 @@ def test_reuse_pcie_assertion_contained_creates(migrated_url: str) -> None:
                 pool,
                 pcie_claim=[{"bdf": "0000:01:00.0", "vendor_id": "8086", "device_id": "1572"}],
             )
-            resp = await create_run(
+            resp = await _create(
                 pool,
                 _ctx(),
-                investigation_id=inv_id,
-                system_id=sys_id,
-                build_profile=_profile(),
-                require_pcie=["8086:1572"],
+                inv_id,
+                sys_id,
+                reuse_requirement=RunReuseRequirementInput(pcie=["8086:1572"]),
             )
         assert resp.status == "created"
 
@@ -817,13 +845,12 @@ def test_reuse_pcie_assertion_missing_device_is_config_error(migrated_url: str) 
                 pool,
                 pcie_claim=[{"bdf": "0000:01:00.0", "vendor_id": "8086", "device_id": "1572"}],
             )
-            resp = await create_run(
+            resp = await _create(
                 pool,
                 _ctx(),
-                investigation_id=inv_id,
-                system_id=sys_id,
-                build_profile=_profile(),
-                require_pcie=["10de:1eb8"],
+                inv_id,
+                sys_id,
+                reuse_requirement=RunReuseRequirementInput(pcie=["10de:1eb8"]),
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
@@ -838,13 +865,12 @@ def test_reuse_pcie_class_spec_is_config_error(migrated_url: str) -> None:
                 pool,
                 pcie_claim=[{"bdf": "0000:01:00.0", "vendor_id": "8086", "device_id": "1572"}],
             )
-            resp = await create_run(
+            resp = await _create(
                 pool,
                 _ctx(),
-                investigation_id=inv_id,
-                system_id=sys_id,
-                build_profile=_profile(),
-                require_pcie=["class=02"],
+                inv_id,
+                sys_id,
+                reuse_requirement=RunReuseRequirementInput(pcie=["class=02"]),
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
@@ -857,13 +883,12 @@ def test_reuse_empty_pcie_list_is_a_no_op(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             inv_id = await _seed_investigation(pool)
             sys_id = await _seed_system(pool)  # no pcie_claim at all
-            resp = await create_run(
+            resp = await _create(
                 pool,
                 _ctx(),
-                investigation_id=inv_id,
-                system_id=sys_id,
-                build_profile=_profile(),
-                require_pcie=[],
+                inv_id,
+                sys_id,
+                reuse_requirement=RunReuseRequirementInput(pcie=[]),
             )
         assert resp.status == "created"
 
@@ -890,15 +915,12 @@ def test_reuse_full_custom_profile_only_sizing_assertion(migrated_url: str) -> N
             sys_id = await _seed_system(
                 pool, provisioning_profile=_profile_dump_sized(vcpu=8, memory_mb=16384, disk_gb=100)
             )
-            ok = await create_run(
+            ok = await _create(
                 pool,
                 _ctx(),
-                investigation_id=inv_id,
-                system_id=sys_id,
-                build_profile=_profile(),
-                require_vcpus=4,
-                require_memory_gb=8,
-                require_disk_gb=40,
+                inv_id,
+                sys_id,
+                reuse_requirement=RunReuseRequirementInput(vcpus=4, memory_gb=8, disk_gb=40),
             )
         assert ok.status == "created"
 
@@ -912,13 +934,12 @@ def test_reuse_full_custom_profile_only_sizing_miss_is_config_error(migrated_url
             sys_id = await _seed_system(
                 pool, provisioning_profile=_profile_dump_sized(vcpu=2, memory_mb=2048, disk_gb=10)
             )
-            resp = await create_run(
+            resp = await _create(
                 pool,
                 _ctx(),
-                investigation_id=inv_id,
-                system_id=sys_id,
-                build_profile=_profile(),
-                require_vcpus=8,
+                inv_id,
+                sys_id,
+                reuse_requirement=RunReuseRequirementInput(vcpus=8),
             )
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
@@ -964,13 +985,12 @@ def test_reuse_precondition_beats_assertion_miss(migrated_url: str) -> None:
                 requested_memory_gb=2,
                 requested_disk_gb=10,
             )
-            resp = await create_run(
+            resp = await _create(
                 pool,
                 _ctx(),
-                investigation_id=inv_id,
-                system_id=sys_id,
-                build_profile=_profile(),
-                require_vcpus=99,
+                inv_id,
+                sys_id,
+                reuse_requirement=RunReuseRequirementInput(vcpus=99),
             )
         assert resp.status == "error" and resp.error_category == "stale_handle"
 

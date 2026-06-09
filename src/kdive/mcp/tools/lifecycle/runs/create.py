@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID, uuid4
@@ -37,44 +38,65 @@ from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 
 
+@dataclass(frozen=True, slots=True)
+class RunReuseRequirementInput:
+    """Optional System snapshot assertions for reusing an existing System."""
+
+    vcpus: int | None = None
+    memory_gb: int | None = None
+    disk_gb: int | None = None
+    pcie: list[str] | None = None
+
+    def to_domain(self) -> ReuseRequirement:
+        return ReuseRequirement(
+            vcpus=self.vcpus,
+            memory_gb=self.memory_gb,
+            disk_gb=self.disk_gb,
+            pcie=self.pcie or [],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RunCreateRequest:
+    """Validated transport input for creating a Run."""
+
+    investigation_id: str
+    system_id: str
+    build_profile: BuildProfileInput
+    expected_boot_failure: ExpectedBootFailureInput | None = None
+    reuse_requirement: RunReuseRequirementInput | None = None
+
+    def domain_reuse_requirement(self) -> ReuseRequirement:
+        if self.reuse_requirement is None:
+            return ReuseRequirement()
+        return self.reuse_requirement.to_domain()
+
+
 async def create_run(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
-    *,
-    investigation_id: str,
-    system_id: str,
-    build_profile: BuildProfileInput,
-    expected_boot_failure: ExpectedBootFailureInput | None = None,
-    require_vcpus: int | None = None,
-    require_memory_gb: int | None = None,
-    require_disk_gb: int | None = None,
-    require_pcie: list[str] | None = None,
+    request: RunCreateRequest,
 ) -> ToolResponse:
     """Bind a Run to a `ready` System and an Investigation (ADR-0070 reuse path).
 
-    The optional ``require_*`` params let an agent re-assert, under the lock, the sizing /
+    ``request.reuse_requirement`` lets an agent re-assert, under the lock, the sizing /
     PCIe requirements it discovered via ``systems.list`` — closing the list→create TOCTOU.
-    Omitted (all ``None`` / empty) ⇒ only the three unconditional preconditions apply.
+    Omitted or empty requirements mean only the unconditional preconditions apply.
     """
-    inv_uid = _as_uuid(investigation_id)
+    inv_uid = _as_uuid(request.investigation_id)
     if inv_uid is None:
-        return _config_error(investigation_id)
-    sys_uid = _as_uuid(system_id)
+        return _config_error(request.investigation_id)
+    sys_uid = _as_uuid(request.system_id)
     if sys_uid is None:
-        return _config_error(system_id)
+        return _config_error(request.system_id)
     try:
-        parsed_build_profile = BuildProfile.parse(build_profile)
+        parsed_build_profile = BuildProfile.parse(request.build_profile)
     except CategorizedError as exc:
-        return ToolResponse.failure(system_id, exc.category)
-    parsed_expected = _parse_expected_boot_failure(system_id, expected_boot_failure)
+        return ToolResponse.failure(request.system_id, exc.category)
+    parsed_expected = _parse_expected_boot_failure(request.system_id, request.expected_boot_failure)
     if isinstance(parsed_expected, ToolResponse):
         return parsed_expected
-    requirement = ReuseRequirement(
-        vcpus=require_vcpus,
-        memory_gb=require_memory_gb,
-        disk_gb=require_disk_gb,
-        pcie=require_pcie or [],
-    )
+    requirement = request.domain_reuse_requirement()
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             resolved = await _resolve_targets(conn, ctx, inv_uid, sys_uid)
