@@ -62,6 +62,17 @@ from kdive.providers.local_libvirt.lifecycle.provisioning import (
 )
 from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
 from kdive.providers.reaping import InfraReaper, NullReaper, OwnedDomain
+from kdive.providers.remote_libvirt.config import is_remote_libvirt_configured
+from kdive.providers.remote_libvirt.discovery import RemoteLibvirtDiscovery
+from kdive.providers.remote_libvirt.planes import (
+    UnimplementedBuilder,
+    UnimplementedConnector,
+    UnimplementedController,
+    UnimplementedInstaller,
+    UnimplementedIntrospector,
+    UnimplementedProvisioner,
+    UnimplementedRetriever,
+)
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.redaction import Redactor
@@ -76,6 +87,10 @@ _FAULTINJECT_POOL = "fault-inject"
 # resolves (cost resolution fails closed on an unseeded class) without new seed DDL.
 _FAULTINJECT_COST_CLASS = "local"
 _FAULTINJECT_ENABLE_ENV = "KDIVE_FAULT_INJECT"
+_REMOTE_POOL = "remote-libvirt"
+# Reuses the seeded `local` coefficient: a `remote` seed row would be core DDL beyond
+# migration 0020 (the ADR-0076 portability gate firing). Same precedent as fault-inject.
+_REMOTE_COST_CLASS = "local"
 
 
 def _local_component_sources() -> ComponentSourceCapabilities:
@@ -184,11 +199,72 @@ def build_faultinject_runtime(
     )
 
 
+def _remote_component_sources() -> ComponentSourceCapabilities:
+    # Empty until the remote build/install issues define what the provider accepts.
+    return ComponentSourceCapabilities(
+        provider=ResourceKind.REMOTE_LIBVIRT.value, accepted_component_sources={}
+    )
+
+
+def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
+    """Build the remote-libvirt ports; buildable without operator config (ADR-0076).
+
+    Construction wires the fail-fast stub planes and the discovery registrar; the
+    ``KDIVE_REMOTE_LIBVIRT_*`` config gates discovery/connection and is read only when
+    the registrar runs.
+    """
+    installer = UnimplementedInstaller()
+    retriever = UnimplementedRetriever()
+    introspector = UnimplementedIntrospector()
+
+    async def register_remote_host(pool: AsyncConnectionPool) -> None:
+        # Known limitation: ensure_discovered_resource_registered calls
+        # discovery.list_resources() synchronously inside its async transaction, and
+        # the remote TLS connect has no pre-connect timeout — an unreachable host
+        # stalls startup for the TCP timeout. Async offload is a core change deferred
+        # to the M2 milestone-end report (the ADR-0076 allowlist excludes services/).
+        discovery = RemoteLibvirtDiscovery.from_env(secret_registry=secret_registry)
+        await ensure_discovered_resource_registered(
+            pool,
+            discovery,
+            kind=ResourceKind.REMOTE_LIBVIRT,
+            resource_id=discovery.host_uri,
+            pool_name=_REMOTE_POOL,
+            cost_class=_REMOTE_COST_CLASS,
+        )
+
+    return ProviderRuntime(
+        provisioner=UnimplementedProvisioner(),
+        builder=UnimplementedBuilder(),
+        installer=installer,
+        booter=installer,
+        connector=UnimplementedConnector(),
+        controller=UnimplementedController(),
+        retriever=retriever,
+        crash_postmortem=retriever,
+        vmcore_introspector=introspector,
+        live_introspector=introspector,
+        # No capture plane yet: advertise nothing rather than admit a capture request
+        # that dies in a stub (vmcore.get validates against this set). The M2 retrieve
+        # issue widens it with the real two-phase kdump path (ADR-0078).
+        supported_capture_methods=frozenset(),
+        discovery_registrar=register_remote_host,
+        component_sources=_remote_component_sources(),
+    )
+
+
 def _fault_inject_enabled(enable_fault_inject: bool | None) -> bool:
     """Resolve the opt-in gate: an explicit flag wins, else read the env (default off)."""
     if enable_fault_inject is not None:
         return enable_fault_inject
     return os.environ.get(_FAULTINJECT_ENABLE_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _remote_libvirt_enabled(enable_remote_libvirt: bool | None) -> bool:
+    """Resolve the opt-in gate: an explicit flag wins, else operator config presence."""
+    if enable_remote_libvirt is not None:
+        return enable_remote_libvirt
+    return is_remote_libvirt_configured()
 
 
 class _CompositeReaper:
@@ -221,7 +297,10 @@ class ProviderComposition:
         self._secret_registry = secret_registry or SecretRegistry()
 
     def build_provider_resolver(
-        self, *, enable_fault_inject: bool | None = None
+        self,
+        *,
+        enable_fault_inject: bool | None = None,
+        enable_remote_libvirt: bool | None = None,
     ) -> ProviderResolver:
         """Assemble the per-deployment ``ResourceKind -> ProviderRuntime`` registry."""
         runtimes = {
@@ -230,6 +309,10 @@ class ProviderComposition:
         if _fault_inject_enabled(enable_fault_inject):
             runtimes[ResourceKind.FAULT_INJECT] = build_faultinject_runtime(
                 inventory=self._faultinject_inventory
+            )
+        if _remote_libvirt_enabled(enable_remote_libvirt):
+            runtimes[ResourceKind.REMOTE_LIBVIRT] = build_remote_runtime(
+                secret_registry=self._secret_registry
             )
         return ProviderResolver(runtimes)
 
@@ -246,18 +329,24 @@ class ProviderComposition:
 
 
 def build_provider_resolver(
-    *, enable_fault_inject: bool | None = None, secret_registry: SecretRegistry | None = None
+    *,
+    enable_fault_inject: bool | None = None,
+    enable_remote_libvirt: bool | None = None,
+    secret_registry: SecretRegistry | None = None,
 ) -> ProviderResolver:
     """Assemble the per-deployment ``ResourceKind -> ProviderRuntime`` registry.
 
     The default production composition registers only ``local-libvirt``. The
     ``fault-inject`` provider is opt-in (ADR-0071): it is registered only when the gate is
     on — an explicit ``enable_fault_inject`` argument when given, otherwise the
-    ``KDIVE_FAULT_INJECT`` env var. A default production deployment has no bookable
-    fault-inject Resource.
+    ``KDIVE_FAULT_INJECT`` env var. The ``remote-libvirt`` provider is opt-in the same way
+    (ADR-0076): an explicit ``enable_remote_libvirt`` argument when given, otherwise the
+    presence of the operator's ``KDIVE_REMOTE_LIBVIRT_URI``. A default production
+    deployment has no bookable fault-inject or remote-libvirt Resource.
     """
     return ProviderComposition(secret_registry=secret_registry).build_provider_resolver(
-        enable_fault_inject=enable_fault_inject
+        enable_fault_inject=enable_fault_inject,
+        enable_remote_libvirt=enable_remote_libvirt,
     )
 
 
@@ -292,6 +381,7 @@ __all__ = [
     "build_faultinject_runtime",
     "build_local_runtime",
     "build_provider_resolver",
+    "build_remote_runtime",
     "ensure_faultinject_resource_registered",
     "ensure_local_host_registered",
     "ProviderComposition",

@@ -10,7 +10,7 @@ import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.capture import CaptureMethod
-from kdive.domain.models import Sensitivity
+from kdive.domain.models import ResourceKind, Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.provider_components.artifacts import StoredArtifact
@@ -230,9 +230,8 @@ def test_provider_runtime_discovery_hook_noops_when_absent() -> None:
 
 
 def test_default_resolver_registers_only_local_libvirt(monkeypatch: pytest.MonkeyPatch) -> None:
-    from kdive.domain.models import ResourceKind
-
     monkeypatch.delenv("KDIVE_FAULT_INJECT", raising=False)  # default = opt-in OFF
+    monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)  # same for remote
     resolver = composition.build_provider_resolver()
     assert resolver.registered_kinds() == frozenset({ResourceKind.LOCAL_LIBVIRT})
     local = resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
@@ -340,3 +339,46 @@ def test_fault_inject_runtime_with_engine_wraps_ports_in_faulting_decorators() -
     assert isinstance(runtime.provisioner, FaultedProvision)
     assert isinstance(runtime.installer, FaultedInstall)
     assert isinstance(runtime.booter, FaultedInstall)
+
+
+def test_remote_libvirt_registers_via_env_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KDIVE_REMOTE_LIBVIRT_URI", "qemu+tls://host.example/system")
+
+    resolver = composition.build_provider_resolver()
+
+    assert ResourceKind.REMOTE_LIBVIRT in resolver.registered_kinds()
+
+
+def test_remote_libvirt_explicit_flag_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KDIVE_REMOTE_LIBVIRT_URI", "qemu+tls://host.example/system")
+
+    resolver = composition.build_provider_resolver(enable_remote_libvirt=False)
+
+    assert ResourceKind.REMOTE_LIBVIRT not in resolver.registered_kinds()
+
+
+def test_remote_libvirt_absent_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
+
+    resolver = composition.build_provider_resolver()
+
+    assert ResourceKind.REMOTE_LIBVIRT not in resolver.registered_kinds()
+
+
+def test_remote_runtime_buildable_without_operator_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
+
+    # Buildability gates only construction (ADR-0076); config gates discovery/connection.
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert runtime.discovery_registrar is not None
+
+
+def test_remote_runtime_advertises_no_capture_methods_yet() -> None:
+    # vmcore.get admits capture requests against this set; the skeleton has no capture
+    # plane, so it must advertise none (the M2 retrieve issue widens it).
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert runtime.supported_capture_methods == frozenset()
