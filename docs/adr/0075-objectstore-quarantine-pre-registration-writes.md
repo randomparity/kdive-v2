@@ -53,8 +53,11 @@ redact-and-persist) and means the value is registered at the exact moment the he
 - **The quarantine seam has a live, asserted caller for the first time**, on a synthetic
   sentinel — so a redaction gap in the pre-registration-write path is a finding surfaced now,
   before M2's remote provider emits a real credential into an early boot artifact.
-- **New DDL**: migration `0019` adds `quarantined` to the sensitivity constraint. `Sensitivity`
-  gains a value; the serve gates need no change (they already allow-list `redacted`).
+- **New DDL**: migration `0019` adds `quarantined` to the sensitivity constraint. A quarantined
+  artifact is a real `artifacts` row carrying that value (not object metadata alone), so the
+  row `INSERT` is what exercises the widened constraint, and the serve gates exclude it without
+  change (they already allow-list `redacted`). `Sensitivity` gains a value; no `match` is
+  exhaustive over it today, so no call site is forced to branch.
 - **New obligation**: a provider that performs a pre-registration write must flag it
   `quarantined` and heal it before releasing its op scope; a raw write left un-healed is
   unservable (fail-closed), not leaked. local-libvirt is unaffected (it resolves nothing).

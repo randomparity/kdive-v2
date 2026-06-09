@@ -52,22 +52,35 @@ arrived **before registration** and therefore carries an **unfulfilled redaction
 
 ### Never served clean (structural)
 
+A quarantined artifact is a real, queryable row: it gets an `artifacts` **row** with
+`sensitivity = 'quarantined'` (the same column the serve gates filter on), in addition to the
+`quarantined` value on the object metadata. The row is what makes the guarantee testable and
+the migration load-bearing — the row `INSERT` itself fails unless migration `0019` has widened
+the `artifacts_sensitivity_check` constraint, so the serve-gate test below *is* the migration's
+test.
+
 Every artifact serve/list/search gate is an **allow-list** for `sensitivity = 'redacted'`:
 
 - `mcp/tools/catalog/artifacts_reads.py` `_GET_SQL` (`… AND sensitivity = 'redacted'`),
-- `services/artifact_listing.py` `_LIST_REDACTED_SYSTEM_SQL` (same predicate),
-- the defense-in-depth fetch-time check in `_artifacts_search_text`
-  (`if fetched.sensitivity is not Sensitivity.REDACTED: return _config_error(...)`).
+- `services/artifact_listing.py` `_LIST_REDACTED_SYSTEM_SQL` (same predicate).
 
-A `quarantined` artifact is excluded by all three **by construction** — no gate admits
-"anything not redacted." A behavioral test pins this so a later gate change cannot silently
-begin serving a quarantined object.
+A `quarantined` row is excluded by both **by construction** — no gate admits "anything not
+redacted." A DB serve-gate test inserts a `quarantined` row and asserts `artifacts.get`,
+`artifacts_list`, and `artifacts_search_text` each refuse it, while a `redacted` control row on
+the same System is served — pinning the exclusion so a later gate change cannot silently begin
+serving a quarantined object. (The separate fetch-time check in `_artifacts_search_text` —
+`if fetched.sensitivity is not Sensitivity.REDACTED` — is defense-in-depth for a *redacted*-keyed
+row whose object metadata disagrees; the quarantine path never reaches it because `_GET_SQL`
+excludes the row first. It is not the gate this design relies on.)
 
 ### The fault-inject quarantine loop (test vehicle)
 
 A new fault-inject-only module `providers/fault_inject/quarantine_console.py`, mirroring the
-structure of `secret_console.py` (#183). It exercises the full mechanism on a synthetic
-sentinel under a per-op-unique scope:
+structure of `secret_console.py` (#183). It operates at the **object-store layer** (store-only,
+no DB pool — like `secret_console`), so it proves the masking/heal mechanism as a fast unit
+test; the **row-level** serve-gate exclusion and the migration are proven by the separate DB
+test in §"Never served clean". It exercises the full mechanism on a synthetic sentinel under a
+per-op-unique scope:
 
 1. **Pre-registration write.** Read the sentinel **raw** (confined to the allowlisted secrets
    root, size-capped) — *not* registered — modelling a provider that already holds the
@@ -78,8 +91,11 @@ sentinel under a per-op-unique scope:
 3. **Heal.** Re-fetch the quarantined object **from the store** (`get_artifact`), redact its
    bytes with a `Redactor` built from the now-seeded registry, and `put_artifact(...,
    sensitivity=REDACTED)` under a sibling key (the object store is write-once; this mirrors the
-   existing raw + `-redacted` vmcore pattern). The quarantined raw object is **retained** for
-   provenance; it stays unservable.
+   existing raw + `-redacted` vmcore pattern). Both objects carry `retention_class = "console"`
+   (as `secret_console` does). The quarantined raw object is **retained** for provenance; it
+   stays unservable. Lifecycle/reaping of the retained raw is unchanged by this design — it is
+   subject to the same retention policy as any `sensitive` raw (e.g. the raw vmcore) and is out
+   of scope here.
 4. **Release after persist.** Release the per-op scope only in a `finally`, after the heal
    persist — so the value is registered at the moment the heal redacts, and evicted only once
    the loop returns. A failed heal still releases the scope, so a crash cannot leak a global
@@ -97,10 +113,10 @@ to both callers.
 
 | unit | responsibility | depends on |
 |------|----------------|------------|
-| `Sensitivity.QUARANTINED` + migration `0019` | the third, distinct flag | `domain/models.py`, schema |
-| serve-gate test | pin "quarantined is never served clean" | existing read gates |
+| `Sensitivity.QUARANTINED` + migration `0019` | the third, distinct flag (column + metadata) | `domain/models.py`, schema |
+| DB serve-gate test | insert a `quarantined` row; assert get/list/search exclude it (and serve a `redacted` control) — also the migration's load-bearing test | read gates, `artifacts` table |
 | `read_secret_file` | confined, capped, unregistered read | `security/secrets/paths.py` |
-| `quarantine_console.py` | the store-raw → resolve → heal → release loop | `objectstore`, registry, `Redactor`, backend |
+| `quarantine_console.py` | object-layer store-raw → resolve → heal → release loop | `objectstore`, registry, `Redactor`, backend |
 
 ## Failure modes and edges (all under test)
 
@@ -115,10 +131,19 @@ to both callers.
   leaves the bare sentinel present (the transcript echoes the value bare, not as
   `password=<value>`), proving the heal masked via exact-value registration, not the key/value
   regex (same guard #183 uses).
-- **Serve gate rejects quarantined** — a `quarantined`-sensitivity fetch is refused by the
-  read path.
-- **Migration** — the widened constraint accepts `'quarantined'` and still rejects an
-  out-of-set value.
+- **Concurrent-op scope isolation** (carried from ADR-0073's implementation binding) — two ops
+  resolve **distinct** high-entropy sentinels under **distinct** scopes; op B releases first;
+  op A's value is still registered at op A's heal write (so op A's redact masks it) and is
+  evicted only on op A's own release. Distinct values prove isolation by scope, not by
+  shared-value refcounting.
+- **Serve gate rejects quarantined (DB test)** — insert an `artifacts` row with
+  `sensitivity = 'quarantined'` for a System plus a `redacted` control row; assert
+  `artifacts.get` on the quarantined id returns the not-found-shaped config error,
+  `artifacts_list` omits it, and `artifacts_search_text` on it returns the config error — while
+  the `redacted` control row is served by each. The quarantined-row `INSERT` succeeding is
+  itself the proof migration `0019` widened the constraint.
+- **Migration rejects out-of-set** — an `INSERT` with a sensitivity value outside
+  `('sensitive','redacted','quarantined')` still violates `artifacts_sensitivity_check`.
 
 ## Out of scope
 
