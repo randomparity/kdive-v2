@@ -63,9 +63,10 @@ def test_persisted_transcript_is_masked_and_carries_placeholder(tmp_path: Path) 
         registry=registry,
         store_factory=lambda: store,
         secret_ref=ref,
+        scope=scope,
     )
 
-    output = console.emit_and_persist(system_id=system_id, scope=scope)
+    output = console.emit_and_persist(system_id=system_id)
 
     assert isinstance(output, SecretConsoleOutput)
     persisted = store.requests[-1].data.decode("utf-8")
@@ -100,9 +101,10 @@ def test_value_is_registered_at_persist_time_and_gone_after(tmp_path: Path) -> N
         registry=registry,
         store_factory=lambda: store,
         secret_ref=ref,
+        scope=scope,
     )
 
-    console.emit_and_persist(system_id=uuid4(), scope=scope)
+    console.emit_and_persist(system_id=uuid4())
 
     # Release-after-persist: the value was still registered at the moment of the write
     # (so the Redactor could mask it), and is evicted only after the loop returns.
@@ -125,10 +127,11 @@ def test_scope_is_released_even_when_persist_raises(tmp_path: Path) -> None:
         registry=registry,
         store_factory=lambda: _FailingStore(),
         secret_ref=ref,
+        scope=scope,
     )
 
     with pytest.raises(RuntimeError):
-        console.emit_and_persist(system_id=uuid4(), scope=scope)
+        console.emit_and_persist(system_id=uuid4())
     # The finally-release still evicts the value so a failed persist does not leak a
     # global redaction needle that outlives the op.
     assert _SENTINEL not in registry.snapshot()
@@ -175,7 +178,7 @@ def test_for_op_binds_backend_to_the_op_scope(
         secret_ref=ref,
         scope=scope,
     )
-    output = console.emit_and_persist(system_id=uuid4(), scope=scope)
+    output = console.emit_and_persist(system_id=uuid4())
 
     assert _SENTINEL not in output.transcript_snippet
     assert REDACTION in output.transcript_snippet

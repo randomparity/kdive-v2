@@ -62,11 +62,25 @@ class FaultInjectSecretConsole:
         registry: SecretRegistry,
         store_factory: Callable[[], _StorePort],
         secret_ref: str,
+        scope: object,
     ) -> None:
+        """Build the loop.
+
+        Args:
+            backend: The secret backend, already bound to ``registry`` under ``scope`` so the
+                value it resolves is registered under the same scope this loop releases.
+            registry: The registry the backend registers into and the ``Redactor`` masks from.
+            store_factory: Builds the object store the redacted transcript is persisted to.
+            secret_ref: The absolute path of the secret under the allowlisted secrets root.
+            scope: The per-op-unique registry scope identity. It is **single-sourced** here —
+                the backend must register under this same scope and the loop releases it — so
+                registration and release cannot diverge and leave the value un-evicted.
+        """
         self._backend = backend
         self._registry = registry
         self._store_factory = store_factory
         self._secret_ref = secret_ref
+        self._scope = scope
 
     @classmethod
     def for_op(
@@ -80,7 +94,9 @@ class FaultInjectSecretConsole:
         """Build the loop with a ``FileRefBackend`` bound to ``registry`` under ``scope``.
 
         The backend resolves under the allowlisted ``KDIVE_SECRETS_ROOT`` (ADR-0027) and
-        registers each resolved value under the per-op ``scope`` the worker boundary owns.
+        registers each resolved value under the per-op ``scope`` the worker boundary owns —
+        the same scope this loop releases after persist (single-sourced, so they cannot
+        diverge).
         """
         backend = secret_backend_from_env(registry=registry, scope=scope)
         return cls(
@@ -88,15 +104,20 @@ class FaultInjectSecretConsole:
             registry=registry,
             store_factory=store_factory,
             secret_ref=secret_ref,
+            scope=scope,
         )
 
-    def emit_and_persist(self, *, system_id: UUID, scope: object) -> SecretConsoleOutput:
-        """Run the full loop under ``scope``; release the scope only after the persist.
+    def emit_and_persist(self, *, system_id: UUID) -> SecretConsoleOutput:
+        """Run the full loop; release the op's scope only after the persist.
+
+        Resolves the secret (registered under the op scope before return), emits it into a
+        synthetic transcript, redacts that transcript with a ``Redactor`` over the same
+        registry, persists the redacted bytes, and releases the scope **only after** the
+        persist — never before, so no resolved value reaches the store or the returned
+        snippet unmasked and none lingers in the registry past the op.
 
         Args:
             system_id: The System the synthetic console belongs to (the artifact owner).
-            scope: The per-op-unique registry scope identity the backend registered under;
-                released here, after redact-and-persist, never before.
 
         Returns:
             The persisted redacted ``StoredArtifact`` and the redacted transcript snippet.
@@ -119,4 +140,4 @@ class FaultInjectSecretConsole:
             )
             return SecretConsoleOutput(artifact=artifact, transcript_snippet=redacted)
         finally:
-            self._registry.release(scope)
+            self._registry.release(self._scope)
