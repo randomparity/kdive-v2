@@ -56,7 +56,7 @@ _DEFAULT_BUILD_HANDLERS = RunBuildHandlers(_TEST_COMPONENT_SOURCES)
 
 
 def _build_handlers(validator) -> RunBuildHandlers:
-    return RunBuildHandlers(_TEST_COMPONENT_SOURCES, complete_validator=validator)
+    return RunBuildHandlers(_TEST_COMPONENT_SOURCES, validate_complete_build=validator)
 
 
 class _UploadStore:
@@ -83,7 +83,7 @@ class _RealValidator:
     def __init__(self, store: _ValidationStore) -> None:
         self._store = store
 
-    def validate(self, *, manifest, keys, declared_build_id, profile_requirements=None):
+    def __call__(self, manifest, keys, declared_build_id, profile_requirements):
         return validate_external_artifacts(
             self._store,
             manifest=manifest,

@@ -165,14 +165,14 @@ class FakeValidator:
         self._output = output
         self.calls = 0
 
-    def validate(
+    def __call__(
         self,
-        *,
         manifest,
         keys,
         declared_build_id,
-        profile_requirements=None,
+        profile_requirements,
     ) -> ValidatedUpload:
+        _ = (manifest, declared_build_id, profile_requirements)
         self.calls += 1
         if isinstance(self._output, Exception):
             raise self._output

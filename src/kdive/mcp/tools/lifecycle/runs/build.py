@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
-from typing import Protocol
+from dataclasses import dataclass
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -55,6 +54,10 @@ from kdive.store.objectstore import (
 )
 
 type ConfigValidator = Callable[[ComponentRef], None]
+type CompleteBuildValidation = Callable[
+    [Sequence[ManifestEntry], Mapping[str, str], str | None, ConfigRequirements | None],
+    ValidatedUpload,
+]
 
 
 async def _build_locked(
@@ -103,38 +106,20 @@ async def _enqueue_build(
     )
 
 
-class CompleteBuildValidator(Protocol):
-    """Validator seam for external build uploads."""
-
-    def validate(
-        self,
-        *,
-        manifest: Sequence[ManifestEntry],
-        keys: Mapping[str, str],
-        declared_build_id: str | None,
-        profile_requirements: ConfigRequirements | None = None,
-    ) -> ValidatedUpload: ...
-
-
-class StoreBackedValidator:
-    """Default validator: builds an ObjectStore from env and runs the provider validator."""
-
-    def validate(
-        self,
-        *,
-        manifest: Sequence[ManifestEntry],
-        keys: Mapping[str, str],
-        declared_build_id: str | None,
-        profile_requirements: ConfigRequirements | None = None,
-    ) -> ValidatedUpload:
-        store = object_store_from_env()
-        return validate_external_artifacts(
-            store,
-            manifest=manifest,
-            keys=keys,
-            declared_build_id=declared_build_id,
-            profile_requirements=profile_requirements,
-        )
+def validate_external_build_upload(
+    manifest: Sequence[ManifestEntry],
+    keys: Mapping[str, str],
+    declared_build_id: str | None,
+    profile_requirements: ConfigRequirements | None,
+) -> ValidatedUpload:
+    store = object_store_from_env()
+    return validate_external_artifacts(
+        store,
+        manifest=manifest,
+        keys=keys,
+        declared_build_id=declared_build_id,
+        profile_requirements=profile_requirements,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,7 +128,7 @@ class RunBuildHandlers:
 
     component_sources: ComponentSourceCapabilities
     config_validator: ConfigValidator | None = None
-    complete_validator: CompleteBuildValidator = field(default_factory=StoreBackedValidator)
+    validate_complete_build: CompleteBuildValidation = validate_external_build_upload
 
     async def build_run(
         self,
@@ -236,11 +221,11 @@ class RunBuildHandlers:
                 try:
                     requirements = _external_config_requirements(profile)
                     validated = await asyncio.to_thread(
-                        self.complete_validator.validate,
-                        manifest=list(manifest_row.entries),
-                        keys=keys,
-                        declared_build_id=build_id,
-                        profile_requirements=requirements,
+                        self.validate_complete_build,
+                        list(manifest_row.entries),
+                        keys,
+                        build_id,
+                        requirements,
                     )
                 except CategorizedError as exc:
                     return ToolResponse.failure(run_id, exc.category)

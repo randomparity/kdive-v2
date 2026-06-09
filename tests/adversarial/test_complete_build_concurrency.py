@@ -32,20 +32,15 @@ _TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
 
 
 class _CountingValidator:
-    """Wraps the Task 8 fake validator; tracks total validate() invocations."""
+    """Wraps the fake validator and tracks total invocations."""
 
     def __init__(self, output: BuildOutput) -> None:
         self._inner = FakeValidator(output)
         self.calls = 0
 
-    def validate(self, *, manifest, keys, declared_build_id, profile_requirements=None):
+    def __call__(self, manifest, keys, declared_build_id, profile_requirements):
         self.calls += 1
-        return self._inner.validate(
-            manifest=manifest,
-            keys=keys,
-            declared_build_id=declared_build_id,
-            profile_requirements=profile_requirements,
-        )
+        return self._inner(manifest, keys, declared_build_id, profile_requirements)
 
 
 def test_concurrent_complete_build_yields_one_ledger_row(migrated_url: str) -> None:
@@ -55,7 +50,7 @@ def test_concurrent_complete_build_yields_one_ledger_row(migrated_url: str) -> N
             validator = _CountingValidator(BuildOutput(f"local/runs/{run_id}/kernel", "", ""))
             handlers = RunBuildHandlers(
                 _TEST_COMPONENT_SOURCES,
-                complete_validator=validator,
+                validate_complete_build=validator,
             )
             results = await asyncio.gather(
                 handlers.complete_build(conn_pool, ctx(), str(run_id), build_id=None, cmdline="c"),
