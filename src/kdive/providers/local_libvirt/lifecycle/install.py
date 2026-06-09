@@ -80,6 +80,14 @@ class ReadinessResult(NamedTuple):
 
     answered: bool
     ok: bool
+    probe_error: str | None = None
+
+
+class _DomainExitProbe(NamedTuple):
+    """The domstate probe result plus a bounded probe-failure diagnostic."""
+
+    exited: bool
+    error: str | None = None
 
 
 class _LibvirtDomain(Protocol):
@@ -271,22 +279,31 @@ class LocalLibvirtInstall:
 
     def _await_ready(self, system_id: UUID) -> None:
         answered = False
+        first_probe_error: str | None = None
         for _ in range(self._boot_window_polls):
             result = self._readiness(system_id)
+            if first_probe_error is None and result.probe_error is not None:
+                first_probe_error = result.probe_error
             if result.answered:
                 answered = True
                 if result.ok:
                     return
+                details: dict[str, object] = {"system_id": str(system_id)}
+                if first_probe_error is not None:
+                    details["probe_error"] = first_probe_error
                 raise CategorizedError(
                     "System booted but a run-readiness check failed",
                     category=ErrorCategory.READINESS_FAILURE,
-                    details={"system_id": str(system_id)},
+                    details=details,
                 )
         category = ErrorCategory.READINESS_FAILURE if answered else ErrorCategory.BOOT_TIMEOUT
+        details: dict[str, object] = {"system_id": str(system_id)}
+        if first_probe_error is not None:
+            details["probe_error"] = first_probe_error
         raise CategorizedError(
             "System did not become ready within the boot window",
             category=category,
-            details={"system_id": str(system_id)},
+            details=details,
         )
 
     def _open(self, purpose: str) -> _LibvirtConn:
@@ -384,12 +401,18 @@ def _kdump_capture_present(initrd_path: Path | None) -> bool:
     return initrd_path is not None and initrd_path.exists()
 
 
-def _domain_exited(domain_name: str) -> bool:  # pragma: no cover - live_vm
-    """True only if ``virsh domstate`` reports a terminal state (shut off / crashed).
+def _bounded_probe_error(message: str) -> str:
+    return message[:200]
+
+
+def _domain_exit_probe(domain_name: str) -> _DomainExitProbe:  # pragma: no cover - live_vm
+    """Return whether ``virsh domstate`` reports terminal state plus probe diagnostics.
 
     A probe error/timeout or a transient non-running state (``paused``, ``in shutdown``)
-    is not proof of exit (v1: a flaky/slow probe keeps waiting), so it returns ``False``
-    and the caller keeps polling (ADR-0055 §7).
+    is not proof of exit (v1: a flaky/slow probe keeps waiting), so ``exited`` is
+    ``False`` and the caller keeps polling (ADR-0055 §7). Probe failures keep a bounded
+    diagnostic so a final boot timeout can distinguish a silent guest from a broken host
+    probe.
     """
     uri = os.environ.get(_URI_ENV, _DEFAULT_URI)
     try:
@@ -400,16 +423,34 @@ def _domain_exited(domain_name: str) -> bool:  # pragma: no cover - live_vm
             timeout=_DOMSTATE_PROBE_TIMEOUT,
             check=False,
         )
-    except (subprocess.SubprocessError, OSError):
-        return False
+    except subprocess.TimeoutExpired as exc:
+        return _DomainExitProbe(
+            False,
+            f"virsh domstate timed out after {exc.timeout:g}s",
+        )
+    except FileNotFoundError:
+        return _DomainExitProbe(False, "virsh executable not found")
+    except (subprocess.SubprocessError, OSError) as exc:
+        return _DomainExitProbe(False, _bounded_probe_error(f"virsh domstate probe failed: {exc}"))
     if proc.stdout.strip().lower() in _TERMINAL_DOMSTATES:
-        return True
+        return _DomainExitProbe(True)
     stderr = proc.stderr.strip().lower()
-    return (
+    exited = (
         proc.returncode != 0
         and domain_name.startswith("kdive-")
         and "failed to get domain" in stderr
     )
+    if exited:
+        return _DomainExitProbe(True)
+    if proc.returncode != 0:
+        error = stderr or f"virsh domstate exited {proc.returncode}"
+        return _DomainExitProbe(False, _bounded_probe_error(error))
+    return _DomainExitProbe(False)
+
+
+def _domain_exited(domain_name: str) -> bool:  # pragma: no cover - live_vm
+    """True only if ``virsh domstate`` reports a terminal state (shut off / crashed)."""
+    return _domain_exit_probe(domain_name).exited
 
 
 def _verdict_to_result(verdict: ConsoleVerdict, *, exited: bool) -> ReadinessResult | None:
@@ -446,12 +487,13 @@ def _real_readiness(system_id: UUID) -> ReadinessResult:  # pragma: no cover - l
     result = _verdict_to_result(classify_console(read_console_log(log_path)), exited=False)
     if result is not None:
         return result
-    if _domain_exited(domain_name_for(system_id)):
+    probe = _domain_exit_probe(domain_name_for(system_id))
+    if probe.exited:
         return _verdict_to_result(
             classify_console(read_console_log(log_path)), exited=True
         ) or ReadinessResult(answered=True, ok=False)
     time.sleep(_POLL_INTERVAL_SECONDS)
-    return ReadinessResult(answered=False, ok=False)
+    return ReadinessResult(answered=False, ok=False, probe_error=probe.error)
 
 
 __all__ = [

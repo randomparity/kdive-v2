@@ -55,9 +55,10 @@ class _Readiness:
 
     answered: bool = True
     ok: bool = True
+    probe_error: str | None = None
 
     def readiness(self, system_id: UUID) -> ReadinessResult:
-        return ReadinessResult(answered=self.answered, ok=self.ok)
+        return ReadinessResult(answered=self.answered, ok=self.ok, probe_error=self.probe_error)
 
 
 def _existing_domain() -> FakeDomain:
@@ -218,6 +219,19 @@ def test_boot_never_answered_is_boot_timeout(tmp_path: Path) -> None:
     with pytest.raises(CategorizedError) as caught:
         inst.boot(_SYS)
     assert caught.value.category is ErrorCategory.BOOT_TIMEOUT
+
+
+def test_boot_timeout_includes_first_readiness_probe_error(tmp_path: Path) -> None:
+    domain = _domain()
+    conn = FakeLibvirtConn(lookup={domain.domain_name: domain})
+    seam = _Readiness(answered=False, probe_error="virsh domstate timed out after 2s")
+    inst = _install(conn=conn, seam=seam, staging_root=tmp_path)
+
+    with pytest.raises(CategorizedError) as caught:
+        inst.boot(_SYS)
+
+    assert caught.value.category is ErrorCategory.BOOT_TIMEOUT
+    assert caught.value.details["probe_error"] == "virsh domstate timed out after 2s"
 
 
 def test_boot_answered_but_failed_is_readiness_failure(tmp_path: Path) -> None:
@@ -504,7 +518,7 @@ def test_real_readiness_treats_missing_domain_as_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(install, "read_console_log", lambda path: b"")
-    monkeypatch.setattr(install, "_domain_exited", lambda name: True)
+    monkeypatch.setattr(install, "_domain_exit_probe", lambda name: install._DomainExitProbe(True))
 
     result = install._real_readiness(UUID("22222222-2222-2222-2222-222222222222"))
 
@@ -526,6 +540,22 @@ def test_domain_exited_treats_missing_kdive_domain_as_terminal(
     monkeypatch.setattr(install.subprocess, "run", domstate_missing)
 
     assert install._domain_exited("kdive-22222222-2222-2222-2222-222222222222") is True
+
+
+def test_real_readiness_reports_domstate_probe_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def domstate_timeout(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(["virsh"], timeout=2)
+
+    monkeypatch.setattr(install, "read_console_log", lambda path: b"")
+    monkeypatch.setattr(install.time, "sleep", lambda _: None)
+    monkeypatch.setattr(install.subprocess, "run", domstate_timeout)
+
+    result = install._real_readiness(UUID("22222222-2222-2222-2222-222222222222"))
+
+    assert result.answered is False
+    assert result.probe_error == "virsh domstate timed out after 2s"
 
 
 def test_crash_fixture_classifies_crashed() -> None:
