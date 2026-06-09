@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -11,6 +12,7 @@ from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import Job, JobKind, PowerAction
 from kdive.domain.state import JobState
 from kdive.jobs.payloads import (
+    Authorizing,
     BuildPayload,
     CaptureVmcorePayload,
     PayloadValidationError,
@@ -132,7 +134,7 @@ def test_power_payload_dumps_json_and_loads_enum() -> None:
 
 def test_authorizing_requires_project_at_enqueue_boundary() -> None:
     auth = dump_authorizing(
-        {"principal": "alice", "agent_session": "sess-1", "project": "kernel-team"}
+        Authorizing(principal="alice", agent_session="sess-1", project="kernel-team")
     )
 
     assert auth == {
@@ -144,4 +146,4 @@ def test_authorizing_requires_project_at_enqueue_boundary() -> None:
 
 def test_authorizing_rejects_missing_project() -> None:
     with pytest.raises(PayloadValidationError, match="invalid job authorizing"):
-        dump_authorizing({"principal": "alice"})
+        dump_authorizing(cast(Any, {"principal": "alice"}))

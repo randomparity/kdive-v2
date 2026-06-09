@@ -109,7 +109,7 @@ def _validation_error(label: str, exc: ValidationError) -> PayloadValidationErro
     return PayloadValidationError(f"invalid {label}: {exc.errors()[0]['msg']}")
 
 
-def dump_authorizing(authorizing: Authorizing | JobAuthorizing | dict[str, Any]) -> JobAuthorizing:
+def dump_authorizing(authorizing: Authorizing | JobAuthorizing) -> JobAuthorizing:
     """Validate and serialize the authorizing tuple for JSONB persistence."""
     try:
         model = (

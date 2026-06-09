@@ -14,7 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.models import JobKind
 from kdive.jobs import queue
-from kdive.jobs.payloads import BuildPayload
+from kdive.jobs.payloads import Authorizing, BuildPayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog import jobs as jobs_tools
 from kdive.security.authz.rbac import AuthorizationError, Role
@@ -46,7 +46,11 @@ async def _enqueue_in(pool: AsyncConnectionPool, dedup: str, project: str) -> st
     """Enqueue a job whose authorizing tuple is owned by ``project``."""
     async with pool.connection() as conn:
         job = await queue.enqueue(
-            conn, JobKind.BUILD, _build_payload(), {"principal": "p", "project": project}, dedup
+            conn,
+            JobKind.BUILD,
+            _build_payload(),
+            Authorizing(principal="p", project=project),
+            dedup,
         )
     return str(job.id)
 

@@ -28,7 +28,7 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import SystemState
 from kdive.jobs import queue
-from kdive.jobs.payloads import BuildPayload, CaptureVmcorePayload
+from kdive.jobs.payloads import Authorizing, BuildPayload, CaptureVmcorePayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog.artifacts_reads import artifacts_get, artifacts_list
 from kdive.mcp.tools.lifecycle import control as control_tools
@@ -45,7 +45,7 @@ from tests.integration._seed import (
 )
 from tests.integration.conftest import open_pool, request_context
 
-_AUTH = {"principal": "user-1", "agent_session": "sess-1", "project": "proj"}
+_AUTH = Authorizing(principal="user-1", agent_session="sess-1", project="proj")
 
 
 def _admin_ctx() -> RequestContext:

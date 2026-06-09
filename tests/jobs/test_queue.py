@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from typing import Any, cast
 from uuid import uuid4
 
 import psycopg
@@ -15,9 +16,9 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
 from kdive.jobs import queue
-from kdive.jobs.payloads import BuildPayload, SystemPayload
+from kdive.jobs.payloads import Authorizing, BuildPayload, SystemPayload
 
-_AUTHORIZING = {"principal": "p", "agent_session": None, "project": "a"}
+_AUTHORIZING = Authorizing(principal="p", agent_session=None, project="a")
 
 
 def _build_payload() -> BuildPayload:
@@ -43,13 +44,13 @@ def test_enqueue_inserts_queued_job(migrated_url: str) -> None:
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
             payload = _build_payload()
-            authorizing = {"principal": "alice", "agent_session": None, "project": "kernel-team"}
+            authorizing = Authorizing(principal="alice", agent_session=None, project="kernel-team")
             job = await queue.enqueue(conn, JobKind.BUILD, payload, authorizing, "dk-1")
             assert isinstance(job, Job)
             assert job.state is JobState.QUEUED
             assert job.attempt == 0
             assert job.payload == payload.model_dump(mode="json", exclude_none=True)
-            assert job.authorizing == authorizing
+            assert job.authorizing == authorizing.model_dump(mode="json")
             assert job.dedup_key == "dk-1"
             assert await _count_jobs(conn) == 1
 
@@ -66,7 +67,7 @@ def test_enqueue_same_dedup_key_returns_same_job(migrated_url: str) -> None:
                 conn,
                 JobKind.PROVISION,
                 _system_payload(),
-                {"principal": "p", "project": "b"},
+                Authorizing(principal="p", project="b"),
                 "dk-dup",
             )
             assert second.id == first.id
@@ -119,7 +120,14 @@ async def _insert_running_job(
             "    lease_expires_at, authorizing, dedup_key) "
             "VALUES ('build', '{}', 'running', %s, %s, %s, now() + make_interval(secs => %s), "
             "    %s, %s) RETURNING *",
-            (attempt, max_attempts, worker_id, lease_seconds, Jsonb(_AUTHORIZING), dedup_key),
+            (
+                attempt,
+                max_attempts,
+                worker_id,
+                lease_seconds,
+                Jsonb(_AUTHORIZING.model_dump(mode="json")),
+                dedup_key,
+            ),
         )
         row = await cur.fetchone()
     return Job.model_validate(row)
@@ -308,7 +316,7 @@ def test_recent_jobs_newest_first_and_capped(migrated_url: str) -> None:
                     conn,
                     JobKind.BUILD,
                     _build_payload(),
-                    {"principal": "p", "project": "proj"},
+                    cast(Any, {"principal": "p", "project": "proj"}),
                     f"d{i}",
                 )
             recent = await queue.recent_jobs(conn, limit=2, projects=["proj"])
@@ -336,7 +344,7 @@ def test_recent_jobs_filters_by_project(migrated_url: str) -> None:
                 conn,
                 JobKind.BUILD,
                 _build_payload(),
-                {"principal": "p", "project": "b"},
+                Authorizing(principal="p", project="b"),
                 "jb",
             )
             await conn.execute(

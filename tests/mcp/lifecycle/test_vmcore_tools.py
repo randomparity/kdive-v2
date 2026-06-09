@@ -16,7 +16,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind, Sensitivity
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
-from kdive.jobs.payloads import CaptureVmcorePayload
+from kdive.jobs.payloads import Authorizing, CaptureVmcorePayload
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
 from kdive.planes import vmcore as vmcore_plane
@@ -25,7 +25,7 @@ from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.store.objectstore import StoredArtifact
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
 
-_AUTH = {"principal": "u", "agent_session": "s", "project": "proj"}
+_AUTH = Authorizing(principal="u", agent_session="s", project="proj")
 _TEST_CAPTURE_METHODS = frozenset({CaptureMethod.HOST_DUMP})
 
 

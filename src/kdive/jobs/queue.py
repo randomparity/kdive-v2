@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
-from typing import Any
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -38,7 +37,7 @@ async def enqueue(
     conn: AsyncConnection,
     kind: JobKind,
     payload: PayloadModel,
-    authorizing: Authorizing | JobAuthorizing | dict[str, Any],
+    authorizing: Authorizing | JobAuthorizing,
     dedup_key: str,
     *,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
