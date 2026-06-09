@@ -146,26 +146,43 @@ async def introspect_run(
                 resolved = await resolve_live_ssh_session(conn, ctx, session_id)
             except CategorizedError as exc:
                 return ToolResponse.failure_from_error(session_id, exc)
-        try:
-            output = await asyncio.to_thread(
-                introspector.introspect_live,
-                transport_handle=resolved.transport_handle,
-                helper=helper,
-            )
-        except CategorizedError as exc:
-            return ToolResponse.failure_from_error(session_id, exc)
-        sections = {"tasks": output.tasks, "modules": output.modules, "sysinfo": output.sysinfo}
-        report = {helper: sections[helper]}
-        return ToolResponse.success(
+        return await _introspect_live_session(
             session_id,
-            "succeeded",
-            suggested_next_actions=["introspect.run", "debug.end_session"],
-            data={
-                "report": report,
-                "truncated": str(output.truncated).lower(),
-                "transcript_sensitivity": "sensitive",
-            },
+            resolved=resolved,
+            helper=helper,
+            introspector=introspector,
         )
+
+
+async def _introspect_live_session(
+    response_id: str,
+    *,
+    resolved: LiveSshSession,
+    helper: str,
+    introspector: LiveIntrospector,
+) -> ToolResponse:
+    if helper not in _LIVE_HELPERS:
+        return _config_error(response_id)
+    try:
+        output = await asyncio.to_thread(
+            introspector.introspect_live,
+            transport_handle=resolved.transport_handle,
+            helper=helper,
+        )
+    except CategorizedError as exc:
+        return ToolResponse.failure_from_error(response_id, exc)
+    sections = {"tasks": output.tasks, "modules": output.modules, "sysinfo": output.sysinfo}
+    report = {helper: sections[helper]}
+    return ToolResponse.success(
+        response_id,
+        "succeeded",
+        suggested_next_actions=["introspect.run", "debug.end_session"],
+        data={
+            "report": report,
+            "truncated": str(output.truncated).lower(),
+            "transcript_sensitivity": "sensitive",
+        },
+    )
 
 
 def register(
@@ -231,10 +248,9 @@ def register(
                 runtime = await resolver.runtime_for_session(conn, resolved.session_id)
             except CategorizedError as exc:
                 return ToolResponse.failure_from_error(session_id, exc)
-        return await introspect_run(
-            pool,
-            current_context(),
-            session_id=session_id,
+        return await _introspect_live_session(
+            session_id,
+            resolved=resolved,
             helper=helper,
             introspector=runtime.live_introspector,
         )

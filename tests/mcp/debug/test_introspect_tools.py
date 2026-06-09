@@ -11,6 +11,8 @@ from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
+from fastmcp import Client, FastMCP
+from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import DEBUG_SESSIONS
@@ -18,6 +20,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import DebugSession, ResourceKind
 from kdive.domain.state import DebugSessionState
 from kdive.mcp.auth import RequestContext
+from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.debug import introspect as introspect_tools
 from kdive.providers.ports import IntrospectOutput
 from kdive.providers.resolver import ProviderResolver
@@ -287,6 +290,18 @@ class _FakeLiveIntrospector:
         return self._output
 
 
+class _CountingResolver(ProviderResolver):
+    def __init__(self, runtime: ProviderRuntime) -> None:
+        super().__init__({ResourceKind.LOCAL_LIBVIRT: runtime})
+        self.calls: list[UUID] = []
+        self._runtime = runtime
+
+    async def runtime_for_session(self, conn: AsyncConnection, session_id: UUID) -> ProviderRuntime:
+        del conn
+        self.calls.append(session_id)
+        return self._runtime
+
+
 async def _seed_live_ssh_session(
     pool: AsyncConnectionPool,
     *,
@@ -332,6 +347,51 @@ def test_run_live_happy_path_returns_redacted_report(migrated_url: str) -> None:
         assert port.kwargs == {"transport_handle": "ssh://127.0.0.1:22", "helper": "tasks"}
 
     asyncio.run(_run())
+
+
+def test_run_tool_uses_already_resolved_live_session(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> tuple[ToolResponse, _CountingResolver, _FakeLiveIntrospector, int]:
+        async with _pool(migrated_url) as pool:
+            session_id = await _seed_live_ssh_session(pool)
+            port = _FakeLiveIntrospector()
+            runtime = cast(
+                ProviderRuntime,
+                SimpleNamespace(
+                    vmcore_introspector=_FakeIntrospector(),
+                    live_introspector=port,
+                ),
+            )
+            resolver = _CountingResolver(runtime)
+            original_resolve = introspect_tools.resolve_live_ssh_session
+            resolve_calls = 0
+
+            async def counted_resolve(conn, ctx, session_id: str):
+                nonlocal resolve_calls
+                resolve_calls += 1
+                return await original_resolve(conn, ctx, session_id)
+
+            monkeypatch.setattr(introspect_tools, "current_context", lambda: _live_ctx())
+            monkeypatch.setattr(introspect_tools, "resolve_live_ssh_session", counted_resolve)
+            app: FastMCP = FastMCP(name="t")
+            introspect_tools.register(app, pool, resolver=resolver)
+            async with Client(app) as client:
+                result = await client.call_tool(
+                    "introspect.run",
+                    {"session_id": session_id, "helper": "tasks"},
+                    raise_on_error=False,
+                )
+            assert result.structured_content is not None
+            response = ToolResponse.model_validate(result.structured_content)
+            return response, resolver, port, resolve_calls
+
+    resp, resolver, port, resolve_calls = asyncio.run(_run())
+
+    assert resp.status != "error"
+    assert resolve_calls == 1
+    assert len(resolver.calls) == 1
+    assert port.kwargs == {"transport_handle": "ssh://127.0.0.1:22", "helper": "tasks"}
 
 
 def test_run_live_masks_planted_secret_in_response(migrated_url: str) -> None:
