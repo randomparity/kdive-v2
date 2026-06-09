@@ -62,6 +62,20 @@ async def _seed_system_with_artifacts(pool: AsyncConnectionPool) -> tuple[str, s
     return sys_id, ids[0], ids[1]
 
 
+async def _seed_quarantined_artifact(pool: AsyncConnectionPool, sys_id: str) -> str:
+    """Insert a quarantined artifact owned by an existing System; return its id."""
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "INSERT INTO artifacts (owner_kind, owner_id, object_key, etag, sensitivity, "
+            "retention_class) VALUES ('systems', %s, %s, 'e', 'quarantined', 'console') "
+            "RETURNING id",
+            (sys_id, f"k/systems/{sys_id}/console-quarantined"),
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        return str(row["id"])
+
+
 class _SearchStore:
     def __init__(
         self,
@@ -356,5 +370,50 @@ def test_artifacts_list_malformed_system_id_is_empty(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             resp = await artifacts_list(pool, _ctx(), system_id="not-a-uuid")
         assert resp.items == []
+
+    asyncio.run(_run())
+
+
+def test_artifacts_get_excludes_quarantined(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id, _, red_id = await _seed_system_with_artifacts(pool)
+            quar_id = await _seed_quarantined_artifact(pool, sys_id)
+            quar_resp = await artifacts_get(pool, _ctx(), artifact_id=quar_id)
+            red_resp = await artifacts_get(pool, _ctx(), artifact_id=red_id)
+        # Positive control: a redacted artifact in the same DB state IS served, so the
+        # quarantined error is specifically the sensitivity gate, not a not-found/authz miss.
+        assert red_resp.status == "available"
+        assert quar_resp.status == "error"
+        assert quar_resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_artifacts_list_excludes_quarantined(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id, _, red_id = await _seed_system_with_artifacts(pool)
+            quar_id = await _seed_quarantined_artifact(pool, sys_id)
+            resp = await artifacts_list(pool, _ctx(), system_id=sys_id)
+        ids = {r.object_id for r in resp.items}
+        assert quar_id not in ids
+        assert red_id in ids
+
+    asyncio.run(_run())
+
+
+def test_artifacts_search_text_quarantined_is_not_found(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            sys_id, _, _ = await _seed_system_with_artifacts(pool)
+            quar_id = await _seed_quarantined_artifact(pool, sys_id)
+            store = _SearchStore(b"panic")
+            resp = await _artifact_read_handlers(store).artifacts_search_text(
+                pool, _ctx(), request=_search_request(quar_id, "panic")
+            )
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert store.got is False  # excluded by SQL before any object fetch
 
     asyncio.run(_run())

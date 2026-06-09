@@ -104,6 +104,7 @@ def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
         "0016",
         "0017",
         "0018",
+        "0019",
     ]
     assert second == []
 
@@ -148,6 +149,21 @@ def test_state_check_rejects_unknown_value(pg_conn: psycopg.Connection) -> None:
             "INSERT INTO allocations (resource_id, state, principal, project) "
             "VALUES (%s, 'bogus', 'alice', 'proj')",
             (resource_id,),
+        )
+
+
+def test_artifacts_sensitivity_check_admits_quarantined(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    pg_conn.execute(
+        "INSERT INTO artifacts (owner_kind, owner_id, object_key, etag, sensitivity, "
+        "retention_class) VALUES ('systems', gen_random_uuid(), 'k', 'e', 'quarantined', "
+        "'console')"
+    )
+    with pytest.raises(psycopg.errors.CheckViolation):
+        pg_conn.execute(
+            "INSERT INTO artifacts (owner_kind, owner_id, object_key, etag, sensitivity, "
+            "retention_class) VALUES ('systems', gen_random_uuid(), 'k2', 'e', 'bogus', "
+            "'console')"
         )
 
 
@@ -511,6 +527,7 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
         "0016",
         "0017",
         "0018",
+        "0019",
     ]
 
 

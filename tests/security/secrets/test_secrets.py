@@ -9,13 +9,27 @@ import pytest
 from kdive.security.secrets.paths import PathSafetyError
 from kdive.security.secrets.redaction import REDACTION, Redactor
 from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
-from kdive.security.secrets.secrets import FileRefBackend, secret_backend_from_env
+from kdive.security.secrets.secrets import (
+    FileRefBackend,
+    read_secret_file,
+    secret_backend_from_env,
+)
 
 
 def _write(root: Path, name: str, content: str) -> Path:
     target = root / name
     target.write_text(content, encoding="utf-8")
     return target
+
+
+def test_read_secret_file_returns_value_without_registering(tmp_path: Path) -> None:
+    secret = _write(tmp_path, "cred", "s3kret-value\n")
+    registry = SecretRegistry()
+
+    value = read_secret_file(tmp_path, str(secret))
+
+    assert value == "s3kret-value"  # trailing newline stripped
+    assert "s3kret-value" not in registry.snapshot()  # read does NOT register
 
 
 def test_resolve_returns_file_content(tmp_path: Path) -> None:
