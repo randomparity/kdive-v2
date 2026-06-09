@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+import libvirt
+
+
+def libvirt_error(code: int) -> libvirt.libvirtError:
+    """Build a libvirtError whose get_error_code() returns ``code``.
+
+    Duplicated from the local-libvirt fakes deliberately — no shared layer
+    (ADR-0076).
+    """
+    err = libvirt.libvirtError("synthetic")
+    # get_error_code() reads self.err[0]; libvirtError leaves err=None with no live error.
+    err.err = (code, 0, "synthetic", 0, "", None, None, 0, 0)
+    return err
+
 
 class RecordingBackend:
     """SecretBackend test double returning a distinct PEM body per ref."""

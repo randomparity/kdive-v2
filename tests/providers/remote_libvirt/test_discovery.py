@@ -77,3 +77,39 @@ def test_from_env_without_uri_raises_configuration_error(
     with pytest.raises(CategorizedError) as excinfo:
         RemoteLibvirtDiscovery.from_env(secret_registry=SecretRegistry())
     assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_capabilities_advertise_provisioning_knobs(tmp_path: Path) -> None:
+    discovery = RemoteLibvirtDiscovery(
+        config=RemoteLibvirtConfig(
+            uri="qemu+tls://host.example/system",
+            cert_refs=_REFS,
+            concurrent_allocation_cap=2,
+            storage_pool="kdive-pool",
+            gdb_addr="10.0.0.5",
+            gdb_port_min=48000,
+            gdb_port_max=48010,
+        ),
+        secret_backend=RecordingBackend(),
+        open_connection=lambda _uri: FakeConn(),
+        pki_base_dir=tmp_path,
+    )
+    caps = discovery.list_resources()[0]["capabilities"]
+    assert caps["storage_pool"] == "kdive-pool"
+    assert caps["gdbstub_addr"] == "10.0.0.5"
+    assert caps["gdbstub_port_min"] == 48000
+    assert caps["gdbstub_port_max"] == 48010
+
+
+def test_capabilities_omit_gdb_addr_when_unset(tmp_path: Path) -> None:
+    discovery = RemoteLibvirtDiscovery(
+        config=_config(),
+        secret_backend=RecordingBackend(),
+        open_connection=lambda _uri: FakeConn(),
+        pki_base_dir=tmp_path,
+    )
+    caps = discovery.list_resources()[0]["capabilities"]
+    assert "gdbstub_addr" not in caps
+    assert caps["storage_pool"] == "default"
+    assert caps["gdbstub_port_min"] == 47000
+    assert caps["gdbstub_port_max"] == 47099

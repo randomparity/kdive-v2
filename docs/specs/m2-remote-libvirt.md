@@ -40,7 +40,10 @@ baseline and the M1.2 / M1.5 scaffolding standing on local-libvirt is undisturbe
   [ADR-0078](../adr/0078-object-store-in-target-install-seam.md) (object-store +
   presigned-URL **in-target install/retrieve seam**; direct-kernel boot retired as a
   carry-forward), [ADR-0079](../adr/0079-remote-live-debug-transport.md) (remote live-debug
-  reachability — direct-TCP gdbstub, in-guest drgn, worker-side vmcore postmortem). All build
+  reachability — direct-TCP gdbstub, in-guest drgn, worker-side vmcore postmortem),
+  [ADR-0080](../adr/0080-remote-provisioning-disk-image-profile.md) (issue 2's provisioning
+  plane: the disk-image profile section, the domain-XML gdbstub port registry, the
+  storage-pool overlay, and the guest-agent readiness gate). All build
   on [ADR-0071](../adr/0071-per-kind-provider-runtime-registry.md) (the per-kind
   `ProviderRuntime` registry this plugs into), [ADR-0063](../adr/0063-typed-provider-runtime.md)
   (the typed port seam the package satisfies), [ADR-0012](../adr/0012-secret-backend.md) /

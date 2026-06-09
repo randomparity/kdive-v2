@@ -23,6 +23,13 @@ _CLIENT_KEY_REF_ENV = "KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF"  # pragma: allowlist
 _CA_CERT_REF_ENV = "KDIVE_REMOTE_LIBVIRT_CA_CERT_REF"
 _CAP_ENV = "KDIVE_REMOTE_LIBVIRT_ALLOCATION_CAP"
 _DEFAULT_CAP = 1
+_STORAGE_POOL_ENV = "KDIVE_REMOTE_LIBVIRT_STORAGE_POOL"
+_DEFAULT_STORAGE_POOL = "default"
+_GDB_ADDR_ENV = "KDIVE_REMOTE_LIBVIRT_GDB_ADDR"
+_GDB_PORT_MIN_ENV = "KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN"
+_GDB_PORT_MAX_ENV = "KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX"
+_DEFAULT_GDB_PORT_MIN = 47000
+_DEFAULT_GDB_PORT_MAX = 47099
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,11 +43,21 @@ class TlsCertRefs:
 
 @dataclass(frozen=True, slots=True)
 class RemoteLibvirtConfig:
-    """The operator-supplied remote host: validated URI, cert refs, allocation cap."""
+    """The operator-supplied remote host: validated URI, cert refs, host-level knobs.
+
+    ``storage_pool`` and the gdbstub address/port-range are host topology, not
+    per-System profile data (ADR-0080 §5). ``gdb_addr`` has **no default** — the
+    listen address is the ACL'd security boundary (ADR-0079) and must be named
+    explicitly; provisioning fails closed when it is unset.
+    """
 
     uri: str
     cert_refs: TlsCertRefs
     concurrent_allocation_cap: int
+    storage_pool: str = _DEFAULT_STORAGE_POOL
+    gdb_addr: str | None = None
+    gdb_port_min: int = _DEFAULT_GDB_PORT_MIN
+    gdb_port_max: int = _DEFAULT_GDB_PORT_MAX
 
 
 def is_remote_libvirt_configured() -> bool:
@@ -58,13 +75,37 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise CategorizedError(
+            f"{name}={raw!r} is not an integer",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        ) from None
+
+
+def _gdb_port_env(name: str, default: int) -> int:
+    port = _int_env(name, default)
+    if port < 1 or port > 65535:
+        raise CategorizedError(
+            f"{name}={port} is outside 1..65535",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    return port
+
+
 def remote_config_from_env() -> RemoteLibvirtConfig:
     """Read and validate the ``KDIVE_REMOTE_LIBVIRT_*`` operator config.
 
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` for a missing/blank variable, a
-            non-integer allocation cap, or a URI that is not mutual-TLS-safe
-            (wrong scheme, ``no_verify``, or an operator-set ``pkipath``).
+            non-integer allocation cap, a URI that is not mutual-TLS-safe (wrong
+            scheme, ``no_verify``, or an operator-set ``pkipath``), or a gdbstub
+            port range that is non-integer, outside 1..65535, or inverted.
     """
     uri = _required_env(_URI_ENV)
     validate_remote_uri(uri)
@@ -73,15 +114,20 @@ def remote_config_from_env() -> RemoteLibvirtConfig:
         client_key_ref=_required_env(_CLIENT_KEY_REF_ENV),
         ca_cert_ref=_required_env(_CA_CERT_REF_ENV),
     )
-    raw_cap = os.environ.get(_CAP_ENV)
-    if raw_cap is None:
-        cap = _DEFAULT_CAP
-    else:
-        try:
-            cap = int(raw_cap)
-        except ValueError:
-            raise CategorizedError(
-                f"{_CAP_ENV}={raw_cap!r} is not an integer",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-            ) from None
-    return RemoteLibvirtConfig(uri=uri, cert_refs=refs, concurrent_allocation_cap=cap)
+    cap = _int_env(_CAP_ENV, _DEFAULT_CAP)
+    gdb_port_min = _gdb_port_env(_GDB_PORT_MIN_ENV, _DEFAULT_GDB_PORT_MIN)
+    gdb_port_max = _gdb_port_env(_GDB_PORT_MAX_ENV, _DEFAULT_GDB_PORT_MAX)
+    if gdb_port_min > gdb_port_max:
+        raise CategorizedError(
+            f"{_GDB_PORT_MIN_ENV}={gdb_port_min} exceeds {_GDB_PORT_MAX_ENV}={gdb_port_max}",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    return RemoteLibvirtConfig(
+        uri=uri,
+        cert_refs=refs,
+        concurrent_allocation_cap=cap,
+        storage_pool=os.environ.get(_STORAGE_POOL_ENV) or _DEFAULT_STORAGE_POOL,
+        gdb_addr=os.environ.get(_GDB_ADDR_ENV) or None,
+        gdb_port_min=gdb_port_min,
+        gdb_port_max=gdb_port_max,
+    )

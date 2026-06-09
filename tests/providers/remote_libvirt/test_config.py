@@ -83,3 +83,57 @@ def test_uri_with_no_verify_is_rejected_at_config_time(
     with pytest.raises(CategorizedError) as excinfo:
         remote_config_from_env()
     assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_provisioning_knob_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(monkeypatch)
+    config = remote_config_from_env()
+    assert config.storage_pool == "default"
+    assert config.gdb_addr is None
+    assert config.gdb_port_min == 47000
+    assert config.gdb_port_max == 47099
+
+
+def test_provisioning_knobs_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(
+        monkeypatch,
+        KDIVE_REMOTE_LIBVIRT_STORAGE_POOL="kdive-pool",
+        KDIVE_REMOTE_LIBVIRT_GDB_ADDR="10.0.0.5",
+        KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN="48000",
+        KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX="48010",
+    )
+    config = remote_config_from_env()
+    assert config.storage_pool == "kdive-pool"
+    assert config.gdb_addr == "10.0.0.5"
+    assert config.gdb_port_min == 48000
+    assert config.gdb_port_max == 48010
+
+
+def test_non_integer_gdb_port_is_configuration_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(monkeypatch, KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN="low")
+    with pytest.raises(CategorizedError) as excinfo:
+        remote_config_from_env()
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+@pytest.mark.parametrize("port", ["0", "65536", "-1"])
+def test_out_of_range_gdb_port_is_configuration_error(
+    monkeypatch: pytest.MonkeyPatch, port: str
+) -> None:
+    _set_env(monkeypatch, KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX=port)
+    with pytest.raises(CategorizedError) as excinfo:
+        remote_config_from_env()
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_inverted_gdb_port_range_is_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_env(
+        monkeypatch,
+        KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN="48010",
+        KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX="48000",
+    )
+    with pytest.raises(CategorizedError) as excinfo:
+        remote_config_from_env()
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR

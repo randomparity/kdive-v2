@@ -108,7 +108,14 @@ class RemoteLibvirtDiscovery:
             "tls_client_key_ref": refs.client_key_ref,
             "tls_ca_cert_ref": refs.ca_cert_ref,
             CONCURRENT_ALLOCATION_CAP_KEY: self._config.concurrent_allocation_cap,
+            # Provisioning host topology (ADR-0080 §5); advisory, like the rest of
+            # the row — the env config stays authoritative for ops.
+            "storage_pool": self._config.storage_pool,
+            "gdbstub_port_min": self._config.gdb_port_min,
+            "gdbstub_port_max": self._config.gdb_port_max,
         }
+        if self._config.gdb_addr is not None:
+            capabilities["gdbstub_addr"] = self._config.gdb_addr
         return [
             ResourceRecord(
                 resource_id=self.host_uri,

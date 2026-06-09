@@ -12,12 +12,10 @@ from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction
 from kdive.profiles.build import ServerBuildProfile
-from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.ports import InstallRequest, SystemHandle, TransportHandle
 from kdive.providers.remote_libvirt import planes
 
 # The stubs raise before touching any argument, so typed sentinels suffice.
-_PROFILE = cast(ProvisioningProfile, None)
 _BUILD = cast(ServerBuildProfile, None)
 _INSTALL = cast(InstallRequest, None)
 _SYSTEM = cast(SystemHandle, None)
@@ -29,9 +27,6 @@ _METHOD = cast(CaptureMethod, None)
 @pytest.mark.parametrize(
     "invoke",
     [
-        lambda: planes.UnimplementedProvisioner().provision(uuid4(), _PROFILE),
-        lambda: planes.UnimplementedProvisioner().teardown("dom"),
-        lambda: planes.UnimplementedProvisioner().reprovision(uuid4(), _PROFILE),
         lambda: planes.UnimplementedBuilder().build(uuid4(), _BUILD),
         lambda: planes.UnimplementedInstaller().install(_INSTALL),
         lambda: planes.UnimplementedInstaller().boot(uuid4()),

@@ -38,8 +38,14 @@ _CA_CERT_NAME = "cacert.pem"
 _log = logging.getLogger(__name__)
 
 
+class ClosableConn(Protocol):
+    """The minimum any plane's connection slice must satisfy: per-op close."""
+
+    def close(self) -> None: ...
+
+
 class _LibvirtConn(Protocol):
-    """The slice of a libvirt connection the remote provider uses (duck-typed seam)."""
+    """The slice of a libvirt connection discovery uses (duck-typed seam)."""
 
     def getInfo(self) -> list[Any]: ...  # noqa: N802 - libvirt binding name
     def getCapabilities(self) -> str: ...  # noqa: N802 - libvirt binding name
@@ -171,14 +177,18 @@ def materialized_pkipath(
 
 
 @contextmanager
-def remote_connection(
+def remote_connection[C: ClosableConn](
     config: RemoteLibvirtConfig,
     secret_backend: SecretBackend,
     *,
-    open_connection: OpenConnection,
+    open_connection: Callable[[str], C],
     pki_base_dir: Path | None = None,
-) -> Iterator[_LibvirtConn]:
+) -> Iterator[C]:
     """Open a mutual-TLS libvirt connection for one op; close it and the pkipath after.
+
+    Generic over the connection slice: each plane injects an opener typed to the
+    protocol it needs (discovery's ``_LibvirtConn``, provisioning's wider slice) and
+    gets the same materialize→connect→cleanup lifecycle.
 
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` for an unsafe URI or unresolvable

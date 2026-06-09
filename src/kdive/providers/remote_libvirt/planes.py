@@ -1,11 +1,11 @@
 """Unimplemented remote-libvirt planes — buildable, fail-fast stubs (ADR-0076).
 
-The M2 foundation lands the package, kind, transport, and discovery; provisioning,
-the artifact seam, build, install, connect/debug, and control/retrieve land in the
-later M2 issues. Until then each plane raises a typed ``MISSING_DEPENDENCY`` (the
-ports' documented category for an unavailable provider seam) so the runtime is
-buildable — the ADR-0071 CHECK↔registry parity invariant — without pretending the
-plane works.
+The M2 foundation lands the package, kind, transport, and discovery; provisioning is
+real (``remote_libvirt.provisioning``, ADR-0080); the artifact seam, build, install,
+connect/debug, and control/retrieve land in the later M2 issues. Until then each
+remaining plane raises a typed ``MISSING_DEPENDENCY`` (the ports' documented category
+for an unavailable provider seam) so the runtime is buildable — the ADR-0071
+CHECK↔registry parity invariant — without pretending the plane works.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction
 from kdive.profiles.build import ServerBuildProfile
-from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.ports import (
     BuildOutput,
     CaptureOutput,
@@ -35,19 +34,6 @@ def _unimplemented(plane: str) -> NoReturn:
         category=ErrorCategory.MISSING_DEPENDENCY,
         details={"plane": plane},
     )
-
-
-class UnimplementedProvisioner:
-    """Provisioner port stub (lands with the remote provisioning issue)."""
-
-    def provision(self, system_id: UUID, profile: ProvisioningProfile) -> str:
-        _unimplemented("provisioning")
-
-    def teardown(self, domain_name: str) -> None:
-        _unimplemented("provisioning")
-
-    def reprovision(self, system_id: UUID, profile: ProvisioningProfile) -> str:
-        _unimplemented("provisioning")
 
 
 class UnimplementedBuilder:

@@ -25,6 +25,7 @@ from kdive.providers.ports import (
     SystemHandle,
     TransportHandle,
 )
+from kdive.providers.remote_libvirt.provisioning import RemoteLibvirtProvision
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.secret_registry import SecretRegistry
 
@@ -382,3 +383,24 @@ def test_remote_runtime_advertises_no_capture_methods_yet() -> None:
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
     assert runtime.supported_capture_methods == frozenset()
+
+
+def test_remote_runtime_has_real_provisioner(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The provisioning plane is real from this issue on; it must construct without
+    # any operator config (config is read per op, ADR-0076/0080).
+    monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
+
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert isinstance(runtime.provisioner, RemoteLibvirtProvision)
+
+
+def test_remote_runtime_has_noop_rootfs_validator(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The systems registrar hard-fails on rootfs_validator=None, so the remote runtime
+    # must supply the no-op contract (a remote profile has no rootfs; it is never
+    # invoked) - the fault-inject precedent.
+    monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
+
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert runtime.rootfs_validator is not None
