@@ -54,12 +54,14 @@ So the modules cannot be carried as a *third ref*. They must travel **inside an 
    (ADR-0076: no shared layer with the doomed provider).
 2. Run `make modules_install INSTALL_MOD_PATH=<staging>` to materialize `/lib/modules/<ver>`
    under a private per-build staging root.
-3. **Package one bundle**: a deterministic tar containing `boot/vmlinuz` (the built image) and
-   `lib/modules/<ver>/…` (the installed modules). This bundle is stored under the run-keyed
-   `kernel` object (`{tenant}/runs/{run_id}/kernel`, ADR-0013) and its key is returned as
-   `kernel_ref`. For `remote_libvirt`, `kernel_ref` therefore names a **vmlinuz+modules install
-   bundle**, not a raw image — a provider-private payload format the paired remote Installer
-   (issue 5) extracts in-guest.
+3. **Package one bundle**: a **gzip-compressed tar** (`.tar.gz`) containing `boot/vmlinuz` (the
+   built image) and `lib/modules/<ver>/…` (the installed modules). This bundle is stored under
+   the run-keyed `kernel` object (`{tenant}/runs/{run_id}/kernel`, ADR-0013) and its key is
+   returned as `kernel_ref`. For `remote_libvirt`, `kernel_ref` therefore names a
+   **gzip-compressed vmlinuz+modules install bundle**, not a raw image — a provider-private
+   payload format the paired remote Installer (issue 5) pulls and **decompresses** in-guest
+   (`tar xzf`). Compression is part of the build→install contract: the bundle is always
+   `.tar.gz`, so issue 5 always gunzips.
 4. Extract the GNU build-id from the produced `vmlinux` (the unit-tested note parser, not a
    locale-fragile `readelf` scrape) and store `vmlinux` as `debuginfo_ref`. `build_id` is
    returned in `BuildOutput` and recorded in the ledger for later vmcore↔debuginfo matching.
@@ -78,6 +80,17 @@ plane's job (issue 5), not the build's; build only writes the object.
 - **One object, one presigned GET at install.** Because vmlinuz and modules share one bundle
   object, the Installer mints a **single** presigned GET — matching the ADR-0078 "scoped to one
   object" capability shape — instead of two bearer URLs to register and redact.
+- **The bundle is gzip-compressed, and its whole-object size is a build-time concern.** A
+  `make modules_install` tree is far larger than local's raw `bzImage` — commonly hundreds of
+  MB uncompressed for a kdump/debug `.config`, against a ~10 MB `bzImage`. `store/objectstore.py`
+  records a 5 GiB single-object PUT ceiling, and `put_artifact(data: bytes)` holds the entire
+  object in worker memory for the PUT. Gzip is therefore not a nicety: module `.ko` files
+  compress heavily, which keeps the stored object, the worker's PUT memory, and the guest's
+  presigned-GET download all an order of magnitude smaller, and keeps a fat debug build well
+  under the single-PUT ceiling. The build path reads/compresses the bundle into one in-memory
+  buffer (the same whole-object model local already uses for its `bzImage`/`vmlinux` puts), so
+  per-concurrent-build worker RSS scales with the **compressed** bundle size — a known, bounded
+  cost, not a streaming PUT (streaming would be a `store/` core change beyond the M2 allowlist).
 - **`kernel_ref` is provider-format-private.** Its bytes mean "raw `bzImage`" for local and
   "vmlinuz+modules tar" for remote. This is coherent because the Builder and Installer are
   paired per provider: each provider's Installer consumes only its own provider's boot-artifact
@@ -88,10 +101,11 @@ plane's job (issue 5), not the build's; build only writes the object.
   `providers.build_validation` helpers). This is the deliberate cost of ADR-0076 independence —
   `local_libvirt` stays deletable in isolation. The rule-of-three is not yet met (this is the
   second real `make` builder), so extraction to a shared module is not warranted now.
-- **New obligation on issue 5 (Install).** The remote Installer must extract the bundle in-guest
-  (`boot/vmlinuz` → `/boot`, `lib/modules/<ver>` → `/lib/modules`) before the grub entry +
-  crashkernel-cmdline composition and reboot. This ADR fixes the build→install payload contract
-  that issue 5 consumes.
+- **New obligation on issue 5 (Install).** The remote Installer must pull the `.tar.gz` bundle
+  in-guest and **decompress + extract** it (`boot/vmlinuz` → `/boot`, `lib/modules/<ver>` →
+  `/lib/modules`) before the grub entry + crashkernel-cmdline composition and reboot. This ADR
+  fixes the build→install payload contract — a single gzip-compressed object — that issue 5
+  consumes.
 
 ## Alternatives considered
 
