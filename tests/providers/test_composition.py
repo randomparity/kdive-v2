@@ -19,6 +19,7 @@ from kdive.providers.ports import (
     BuildOutput,
     CaptureOutput,
     CrashOutput,
+    InstallRequest,
     IntrospectOutput,
     SystemHandle,
     TransportHandle,
@@ -84,17 +85,8 @@ class _ProvisionProvider:
 
 
 class _InstallProvider:
-    def install(
-        self,
-        system_id: UUID,
-        run_id: UUID,
-        kernel_ref: str,
-        *,
-        cmdline: str,
-        method: CaptureMethod = CaptureMethod.HOST_DUMP,
-        initrd_ref: str | None = None,
-    ) -> None:
-        self.installed = (system_id, run_id, kernel_ref, cmdline, method, initrd_ref)
+    def install(self, request: InstallRequest) -> None:
+        self.installed = request
 
     def boot(self, system_id: UUID) -> None:
         self.booted = system_id

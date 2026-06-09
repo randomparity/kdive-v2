@@ -28,6 +28,7 @@ from kdive.providers.ports import (
     GdbBreakpointRef,
     GdbMiAttachment,
     GdbStopRecord,
+    InstallRequest,
     IntrospectOutput,
     SystemHandle,
     TransportHandle,
@@ -109,16 +110,8 @@ class FaultInjectBuild:
 
 
 class FaultInjectInstall:
-    def install(
-        self,
-        system_id: UUID,
-        run_id: UUID,
-        kernel_ref: str,
-        *,
-        cmdline: str,
-        method: CaptureMethod = CaptureMethod.HOST_DUMP,
-        initrd_ref: str | None = None,
-    ) -> None:
+    def install(self, request: InstallRequest) -> None:
+        del request
         return None
 
     def boot(self, system_id: UUID) -> None:

@@ -23,10 +23,10 @@ import time
 from collections.abc import Callable
 from uuid import UUID
 
-from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError
 from kdive.providers.fault_inject.faulting.engine import FaultDecision, FaultEngine, FaultPlane
 from kdive.providers.fault_inject.lifecycle.provider import FaultInjectInstall, FaultInjectProvision
+from kdive.providers.ports import InstallRequest
 
 _FIRST_ATTEMPT: Callable[[UUID], int] = lambda _system_id: 1  # noqa: E731 - a tiny default port
 _SyncSleep = Callable[[float], None]
@@ -101,20 +101,9 @@ class FaultedInstall:
         self._attempt_for = attempt_for
         self._sleep_s = sleep_s
 
-    def install(
-        self,
-        system_id: UUID,
-        run_id: UUID,
-        kernel_ref: str,
-        *,
-        cmdline: str,
-        method: CaptureMethod = CaptureMethod.HOST_DUMP,
-        initrd_ref: str | None = None,
-    ) -> None:
-        self._draw(system_id, FaultPlane.INSTALL)
-        self._inner.install(
-            system_id, run_id, kernel_ref, cmdline=cmdline, method=method, initrd_ref=initrd_ref
-        )
+    def install(self, request: InstallRequest) -> None:
+        self._draw(request.system_id, FaultPlane.INSTALL)
+        self._inner.install(request)
 
     def boot(self, system_id: UUID) -> None:
         self._draw(system_id, FaultPlane.BOOT)

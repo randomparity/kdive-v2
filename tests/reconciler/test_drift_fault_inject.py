@@ -37,6 +37,7 @@ from kdive.providers.fault_inject.faulting.engine import FaultEngine, FaultPlane
 from kdive.providers.fault_inject.inventory import FaultInjectInventory, FaultInjectReaper
 from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvision
 from kdive.providers.fault_inject.lifecycle.provider import FaultInjectInstall, FaultInjectProvision
+from kdive.providers.ports import InstallRequest
 from kdive.reconciler import loop
 from tests.reconciler.conftest import (
     connect,
@@ -261,7 +262,12 @@ def test_lease_expiry_mid_install_fails_run_lease_expired_not_canceled(migrated_
 
         recorded: list[float] = []
         FaultedInstall(FaultInjectInstall(), engine, sleep_s=recorded.append).install(
-            system_id, uuid4(), "kernel-ref", cmdline="console=ttyS0"
+            InstallRequest(
+                system_id=system_id,
+                run_id=uuid4(),
+                kernel_ref="kernel-ref",
+                cmdline="console=ttyS0",
+            )
         )
         assert recorded == [latency_s]  # the wrapper would block install for exactly this delay
 

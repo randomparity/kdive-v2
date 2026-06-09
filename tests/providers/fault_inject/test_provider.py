@@ -22,7 +22,7 @@ from kdive.providers.fault_inject.lifecycle.provider import (
     FaultInjectRetrieve,
     fault_inject_attach_seam,
 )
-from kdive.providers.ports import SystemHandle
+from kdive.providers.ports import InstallRequest, SystemHandle
 from kdive.providers.ports.lifecycle import TransportHandleData
 from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact
 
@@ -95,7 +95,14 @@ def test_install_and_boot_succeed_on_the_happy_path() -> None:
     install = FaultInjectInstall()
 
     # No fault drawn → the synthetic install/boot reach a ready state without raising.
-    install.install(_SYSTEM, _RUN, "kernel-ref", cmdline="console=ttyS0")
+    install.install(
+        InstallRequest(
+            system_id=_SYSTEM,
+            run_id=_RUN,
+            kernel_ref="kernel-ref",
+            cmdline="console=ttyS0",
+        )
+    )
     install.boot(_SYSTEM)
 
 

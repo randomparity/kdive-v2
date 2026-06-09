@@ -1694,7 +1694,7 @@ def test_register_handlers_requires_resolver_or_run_ports() -> None:
 # --- runs.install / runs.boot (install + boot plane, #19) ----------------------------
 
 from kdive.domain.capture import CaptureMethod  # noqa: E402
-from kdive.providers.ports import Booter, Installer  # noqa: E402
+from kdive.providers.ports import Booter, Installer, InstallRequest  # noqa: E402
 
 _SUCCEEDED_BUILD: dict[str, Any] = {
     **_VALID_BUILD,
@@ -1706,20 +1706,11 @@ class _FakeInstaller:
     """Records install() calls (incl. method/initrd_ref); returns or raises a canned category."""
 
     def __init__(self, *, error: ErrorCategory | None = None) -> None:
-        self.calls: list[tuple[UUID, UUID, str, str, CaptureMethod, str | None]] = []
+        self.calls: list[InstallRequest] = []
         self._error = error
 
-    def install(
-        self,
-        system_id: UUID,
-        run_id: UUID,
-        kernel_ref: str,
-        *,
-        cmdline: str,
-        method: CaptureMethod = CaptureMethod.HOST_DUMP,
-        initrd_ref: str | None = None,
-    ) -> None:
-        self.calls.append((system_id, run_id, kernel_ref, cmdline, method, initrd_ref))
+    def install(self, request: InstallRequest) -> None:
+        self.calls.append(request)
         if self._error is not None:
             raise CategorizedError("boom", category=self._error)
 
@@ -2152,17 +2143,8 @@ class _SlowInstaller:
         self.entered = threading.Event()
         self.release = threading.Event()
 
-    def install(
-        self,
-        system_id: UUID,
-        run_id: UUID,
-        kernel_ref: str,
-        *,
-        cmdline: str,
-        method: CaptureMethod = CaptureMethod.HOST_DUMP,
-        initrd_ref: str | None = None,
-    ) -> None:
-        self.calls.append(run_id)
+    def install(self, request: InstallRequest) -> None:
+        self.calls.append(request.run_id)
         self.entered.set()
         assert self.release.wait(timeout=5), "test did not release the installer"
 
@@ -2824,8 +2806,8 @@ def test_install_handler_forwards_console_method_for_bare_system(migrated_url: s
             installer = _FakeInstaller()
             async with pool.connection() as conn:
                 await runs_handlers.install_handler(conn, job, installer)
-        assert installer.calls[0][4] is CaptureMethod.CONSOLE
-        assert installer.calls[0][5] is None  # no initrd
+        assert installer.calls[0].method is CaptureMethod.CONSOLE
+        assert installer.calls[0].initrd_ref is None  # no initrd
 
     asyncio.run(_run())
 
@@ -2840,7 +2822,7 @@ def test_install_handler_forwards_host_dump_for_preserve_on_crash(migrated_url: 
             installer = _FakeInstaller()
             async with pool.connection() as conn:
                 await runs_handlers.install_handler(conn, job, installer)
-        assert installer.calls[0][4] is CaptureMethod.HOST_DUMP
+        assert installer.calls[0].method is CaptureMethod.HOST_DUMP
 
     asyncio.run(_run())
 
@@ -2856,7 +2838,7 @@ def test_install_handler_forwards_initrd_ref_from_build_ledger(migrated_url: str
             installer = _FakeInstaller()
             async with pool.connection() as conn:
                 await runs_handlers.install_handler(conn, job, installer)
-        assert installer.calls[0][5] == "local/runs/x/initrd"
+        assert installer.calls[0].initrd_ref == "local/runs/x/initrd"
 
     asyncio.run(_run())
 
@@ -2870,7 +2852,7 @@ def test_install_handler_no_initrd_when_ledger_initrd_blank(migrated_url: str) -
             installer = _FakeInstaller()
             async with pool.connection() as conn:
                 await runs_handlers.install_handler(conn, job, installer)
-        assert installer.calls[0][5] is None
+        assert installer.calls[0].initrd_ref is None
 
     asyncio.run(_run())
 
@@ -2887,7 +2869,7 @@ def test_install_handler_forwards_ledger_cmdline_to_installer(migrated_url: str)
             installer = _FakeInstaller()
             async with pool.connection() as conn:
                 await runs_handlers.install_handler(conn, job, installer)
-        assert installer.calls[0][3] == "console=ttyS0 root=/dev/vda dhash_entries=1"
+        assert installer.calls[0].cmdline == "console=ttyS0 root=/dev/vda dhash_entries=1"
 
     asyncio.run(_run())
 
@@ -2905,7 +2887,7 @@ def test_install_handler_forwards_default_cmdline_when_ledger_has_none(migrated_
             installer = _FakeInstaller()
             async with pool.connection() as conn:
                 await runs_handlers.install_handler(conn, job, installer)
-        assert installer.calls[0][3] == "console=ttyS0 root=/dev/vda"  # required base only
+        assert installer.calls[0].cmdline == "console=ttyS0 root=/dev/vda"  # required base only
 
     asyncio.run(_run())
 

@@ -3,7 +3,7 @@
 `LocalLibvirtInstall` realizes two handler-facing ports keyed on the System-tagged libvirt
 domain (`kdive-{system_id}`, minted by the provisioning plane, ADR-0025):
 
-- `install(system_id, run_id, kernel_ref, *, cmdline, method, initrd_ref)` stages the kernel
+- `install(request)` stages the kernel
   (and optionally an initrd) to a **per-Run** host-local path
   (`{staging_root}/{system_id}/{run_id}/{kernel[,initrd]}`) via a temp-then-rename fetch.
   The kdump capture prerequisite check fires only for `method=CaptureMethod.KDUMP`; non-kdump
@@ -46,6 +46,7 @@ from kdive.providers.local_libvirt.lifecycle.constants import (
     DEFAULT_LIBVIRT_URI,
     LIBVIRT_URI_ENV,
 )
+from kdive.providers.ports import InstallRequest
 from kdive.providers.runtime_paths import console_log_path, domain_name_for, read_console_log
 from kdive.store.objectstore import FetchedArtifact, object_store_from_env
 
@@ -159,16 +160,7 @@ class LocalLibvirtInstall:
             staging_root=staging_root,
         )
 
-    def install(
-        self,
-        system_id: UUID,
-        run_id: UUID,
-        kernel_ref: str,
-        *,
-        cmdline: str,
-        method: CaptureMethod = CaptureMethod.HOST_DUMP,
-        initrd_ref: str | None = None,
-    ) -> None:
+    def install(self, request: InstallRequest) -> None:
         """Stage the kernel (and optionally initrd) and redefine the domain for direct-kernel boot.
 
         The initrd fetch and ``<initrd>`` element are omitted when ``initrd_ref`` is ``None``
@@ -181,7 +173,7 @@ class LocalLibvirtInstall:
                 libvirt redefine error; ``INFRASTRUCTURE_FAILURE`` if the per-Run staging
                 directory cannot be created; any fetch error category propagated from the seam.
         """
-        staging_dir = self._staging_root / str(system_id) / str(run_id)
+        staging_dir = self._staging_root / str(request.system_id) / str(request.run_id)
         try:
             staging_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -191,22 +183,22 @@ class LocalLibvirtInstall:
                 details={"op": "mkdir", "dest": str(staging_dir)},
             ) from exc
         kernel_path = staging_dir / "kernel"
-        self._fetch_kernel(kernel_ref, kernel_path)
+        self._fetch_kernel(request.kernel_ref, kernel_path)
         initrd_path: Path | None = None
-        if initrd_ref is not None:
+        if request.initrd_ref is not None:
             initrd_path = staging_dir / "initrd"
-            self._fetch_initrd(initrd_ref, initrd_path)
-        if method is CaptureMethod.KDUMP and not _kdump_capture_present(initrd_path):
+            self._fetch_initrd(request.initrd_ref, initrd_path)
+        if request.method is CaptureMethod.KDUMP and not _kdump_capture_present(initrd_path):
             raise CategorizedError(
                 "kdump capture initramfs not staged (a separate initrd is required for kdump)",
                 category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"system_id": str(system_id)},
+                details={"system_id": str(request.system_id)},
             )
-        domain_name = domain_name_for(system_id)
+        domain_name = domain_name_for(request.system_id)
         conn = self._open("for install")
         try:
             xml = self._render_direct_kernel_xml(
-                conn, domain_name, kernel_path, initrd_path, cmdline
+                conn, domain_name, kernel_path, initrd_path, request.cmdline
             )
             try:
                 conn.defineXML(xml)

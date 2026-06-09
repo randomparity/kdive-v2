@@ -25,6 +25,7 @@ from kdive.providers.ports.lifecycle import (
     Connector,
     Controller,
     Installer,
+    InstallRequest,
     Provisioner,
     TransportHandleData,
 )
@@ -56,6 +57,7 @@ __all__ = [
     "GdbMiAttachment",
     "GdbMiEngine",
     "GdbStopRecord",
+    "InstallRequest",
     "Installer",
     "IntrospectOutput",
     "LiveIntrospector",

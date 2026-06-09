@@ -21,7 +21,7 @@ from kdive.jobs.handlers.runs_shared import finalize_build
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
-from kdive.providers.ports import Booter, Builder, BuildOutput, Installer
+from kdive.providers.ports import Booter, Builder, BuildOutput, Installer, InstallRequest
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.providers.runtime_paths import console_log_path, read_console_log
@@ -184,12 +184,14 @@ async def install_handler(
     try:
         await asyncio.to_thread(
             installer.install,
-            run.system_id,
-            run_id,
-            kernel_ref,
-            cmdline=cmdline,
-            method=method,
-            initrd_ref=initrd_ref,
+            InstallRequest(
+                system_id=run.system_id,
+                run_id=run_id,
+                kernel_ref=kernel_ref,
+                cmdline=cmdline,
+                method=method,
+                initrd_ref=initrd_ref,
+            ),
         )
     except Exception:
         await _abandon_run_step_best_effort(conn, run_id, "install")

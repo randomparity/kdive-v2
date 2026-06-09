@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import NamedTuple, Protocol
 from uuid import UUID
 
@@ -43,6 +44,18 @@ class TransportHandleData(NamedTuple):
         return cls(scheme, host, port)
 
 
+@dataclass(frozen=True, slots=True)
+class InstallRequest:
+    """Inputs for staging a built kernel into a System for one Run."""
+
+    system_id: UUID
+    run_id: UUID
+    kernel_ref: str
+    cmdline: str
+    method: CaptureMethod = CaptureMethod.HOST_DUMP
+    initrd_ref: str | None = None
+
+
 class Provisioner(Protocol):
     """Provisioning port keyed on the already-minted System id."""
 
@@ -80,16 +93,7 @@ class Provisioner(Protocol):
 class Installer(Protocol):
     """Install port keyed on System and Run ids."""
 
-    def install(
-        self,
-        system_id: UUID,
-        run_id: UUID,
-        kernel_ref: str,
-        *,
-        cmdline: str,
-        method: CaptureMethod = CaptureMethod.HOST_DUMP,
-        initrd_ref: str | None = None,
-    ) -> None:
+    def install(self, request: InstallRequest) -> None:
         """Install a built kernel into a System and confirm guest readiness.
 
         Raises:

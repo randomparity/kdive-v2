@@ -18,9 +18,16 @@ from kdive.providers.fault_inject.faulting.engine import FaultEngine, FaultPlane
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
 from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvision
 from kdive.providers.fault_inject.lifecycle.provider import FaultInjectInstall, FaultInjectProvision
+from kdive.providers.ports import InstallRequest
 
 _SYSTEM = UUID("00000000-0000-0000-0000-0000000000aa")
 _RUN = UUID("00000000-0000-0000-0000-0000000000bb")
+_INSTALL_REQUEST = InstallRequest(
+    system_id=_SYSTEM,
+    run_id=_RUN,
+    kernel_ref="kernel-ref",
+    cmdline="console=ttyS0",
+)
 
 
 def _noop_sleep(_delay: float) -> None:
@@ -135,7 +142,7 @@ def test_install_fail_draw_raises_categorized_error() -> None:
     engine = _seed_that_fails(FaultPlane.INSTALL)
     wrapper = FaultedInstall(FaultInjectInstall(), engine, sleep_s=lambda _s: None)
     with pytest.raises(CategorizedError) as exc:
-        wrapper.install(_SYSTEM, _RUN, "kernel-ref", cmdline="console=ttyS0")
+        wrapper.install(_INSTALL_REQUEST)
     assert exc.value.category in {ErrorCategory.INSTALL_FAILURE, ErrorCategory.BOOT_TIMEOUT}
 
 
@@ -143,7 +150,7 @@ def test_install_latency_sleeps_for_the_engine_computed_delay() -> None:
     engine = _seed_that_never_fails(FaultPlane.INSTALL, max_latency_s=1000.0)
     recorded: list[float] = []
     wrapper = FaultedInstall(FaultInjectInstall(), engine, sleep_s=recorded.append)
-    wrapper.install(_SYSTEM, _RUN, "kernel-ref", cmdline="console=ttyS0")
+    wrapper.install(_INSTALL_REQUEST)
     expected = engine.decide(system_id=_SYSTEM, plane=FaultPlane.INSTALL, attempt=1).latency_s
     assert recorded == [expected]
     assert expected > 0.0

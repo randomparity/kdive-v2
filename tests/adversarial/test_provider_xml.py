@@ -9,8 +9,7 @@ Two surfaces:
     `defusedxml`, neutralizing entity-expansion (billion-laughs). The install plane
     reads the same source (`domain.XMLDesc()`); it must defend it the same way.
 
-The install-plane entity-expansion test is the falsifying case for Finding (XXE) — it
-fails until install parses `XMLDesc` with `defusedxml`.
+The install-plane entity-expansion test guards the provider boundary against XXE.
 """
 
 from __future__ import annotations
@@ -29,10 +28,16 @@ from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.local_libvirt.discovery import _parse_arch, _parse_system_id
 from kdive.providers.local_libvirt.lifecycle.install import LocalLibvirtInstall, ReadinessResult
 from kdive.providers.local_libvirt.lifecycle.provisioning import render_domain_xml
+from kdive.providers.ports import InstallRequest
 from tests.providers.local_libvirt.fakes import FakeDomain, FakeLibvirtConn
 
 _SYS = UUID("11111111-1111-1111-1111-111111111111")
 _RUN = UUID("22222222-2222-2222-2222-222222222222")
+
+
+def _request(*, cmdline: str) -> InstallRequest:
+    return InstallRequest(system_id=_SYS, run_id=_RUN, kernel_ref="kref", cmdline=cmdline)
+
 
 # A DOCTYPE + nested-entity document: the seed of a billion-laughs expansion. stdlib
 # ElementTree expands it; defusedxml refuses it.
@@ -131,7 +136,7 @@ def test_install_rejects_entity_expansion_in_domain_xmldesc(tmp_path: Path) -> N
     conn = FakeLibvirtConn(lookup={domain.domain_name: domain})
     inst = _installer(conn, tmp_path)
     with pytest.raises(CategorizedError) as exc:
-        inst.install(_SYS, _RUN, "kref", cmdline="console=ttyS0")
+        inst.install(_request(cmdline="console=ttyS0"))
     assert exc.value.category is ErrorCategory.INSTALL_FAILURE
     # And it never reached defineXML with an expanded document.
     assert conn.defined_xml == []
@@ -142,7 +147,7 @@ def test_install_still_accepts_a_benign_xmldesc(tmp_path: Path) -> None:
     domain = FakeDomain(domain_name=f"kdive-{_SYS}", system_id=str(_SYS))  # default benign XML
     conn = FakeLibvirtConn(lookup={domain.domain_name: domain})
     inst = _installer(conn, tmp_path)
-    inst.install(_SYS, _RUN, "kref", cmdline="console=ttyS0 crashkernel=256M")
+    inst.install(_request(cmdline="console=ttyS0 crashkernel=256M"))
     assert len(conn.defined_xml) == 1
     os_el = ET.fromstring(conn.defined_xml[0]).find("os")  # noqa: S314 - self-rendered
     assert os_el is not None and os_el.find("kernel") is not None
