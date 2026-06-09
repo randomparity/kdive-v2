@@ -392,6 +392,20 @@ def test_real_build_bundle_is_valid_gzip(tmp_path: Path) -> None:
     assert data[:2] == b"\x1f\x8b"  # gzip magic
 
 
+def test_real_build_bundle_missing_bzimage_is_build_failure(tmp_path: Path) -> None:
+    # A zero-exit make that left no bzImage must surface as a typed BUILD_FAILURE, not a bare
+    # OSError that escapes the provider error contract (the local-libvirt parity guard).
+    workspace = tmp_path / "ws"
+    mod_root = tmp_path / "stage"
+    (mod_root / "lib" / "modules" / "6.9.0").mkdir(parents=True)  # modules exist, bzImage absent
+
+    with pytest.raises(CategorizedError) as caught:
+        build_module._real_build_bundle(workspace, mod_root)
+
+    assert caught.value.category is ErrorCategory.BUILD_FAILURE
+    assert caught.value.details == {"output": "bzImage"}
+
+
 # --- live_vm real make ---------------------------------------------------------------
 
 

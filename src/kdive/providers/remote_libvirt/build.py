@@ -307,12 +307,28 @@ def _real_build_bundle(workspace: Path, mod_root: Path) -> bytes:
     """
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        tar.add(workspace / "arch/x86/boot/bzImage", arcname="boot/vmlinuz")
+        # A zero-exit make can still leave no bzImage, and a module file can vanish mid-pack;
+        # both must surface as a typed BUILD_FAILURE, not a bare OSError that escapes the
+        # provider error contract (the local-libvirt parity guard).
+        _add_bundle_member(tar, workspace / "arch/x86/boot/bzImage", "boot/vmlinuz", "bzImage")
         modules_root = mod_root / "lib" / "modules"
         for path in _build_bundle_member_dirs(modules_root):
             arcname = "lib/modules/" + str(path.relative_to(modules_root))
-            tar.add(path, arcname=arcname, recursive=False)
+            _add_bundle_member(tar, path, arcname, "module bundle", recursive=False)
     return buf.getvalue()
+
+
+def _add_bundle_member(
+    tar: tarfile.TarFile, path: Path, arcname: str, output: str, *, recursive: bool = True
+) -> None:
+    try:
+        tar.add(path, arcname=arcname, recursive=recursive)
+    except OSError as exc:
+        raise CategorizedError(
+            "kernel bundle could not be packaged",
+            category=ErrorCategory.BUILD_FAILURE,
+            details={"output": output},
+        ) from exc
 
 
 def _real_staging_factory() -> Path:  # pragma: no cover - live_vm
