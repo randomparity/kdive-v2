@@ -7,10 +7,11 @@ ADR-0066 removed the superseded capability-registry prototype from production so
 
 from __future__ import annotations
 
+import os
+
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.capture import CaptureMethod
-from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
 from kdive.providers.component_validation import (
     CONFIG_COMPONENT,
@@ -22,6 +23,19 @@ from kdive.providers.component_validation import (
     ComponentKind,
     ComponentSourceCapabilities,
     ComponentSourceKind,
+)
+from kdive.providers.fault_inject.discovery import FaultInjectDiscovery
+from kdive.providers.fault_inject.inventory import FaultInjectInventory
+from kdive.providers.fault_inject.provider import (
+    FaultInjectBuild,
+    FaultInjectConnect,
+    FaultInjectControl,
+    FaultInjectDebugEngine,
+    FaultInjectInstall,
+    FaultInjectIntrospect,
+    FaultInjectProvision,
+    FaultInjectRetrieve,
+    fault_inject_attach_seam,
 )
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.providers.local_libvirt.debug.debug_gdbmi import (
@@ -45,9 +59,15 @@ from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.services.resource_discovery import ensure_discovered_resource_registered
+from kdive.store.objectstore import object_store_from_env
 
 _LOCAL_POOL = "local-libvirt"
 _LOCAL_COST_CLASS = "local"
+_FAULTINJECT_POOL = "fault-inject"
+# The mock's cost is synthetic; it reuses the seeded `local` coefficient so accounting
+# resolves (cost resolution fails closed on an unseeded class) without new seed DDL.
+_FAULTINJECT_COST_CLASS = "local"
+_FAULTINJECT_ENABLE_ENV = "KDIVE_FAULT_INJECT"
 
 
 def _local_component_sources() -> ComponentSourceCapabilities:
@@ -98,22 +118,75 @@ def build_local_runtime() -> ProviderRuntime:
     )
 
 
-def build_provider_resolver(*, enable_fault_inject: bool = False) -> ProviderResolver:
+def _faultinject_component_sources() -> ComponentSourceCapabilities:
+    accepted: dict[ComponentKind, frozenset[ComponentSourceKind]] = {
+        ROOTFS_COMPONENT: frozenset({"catalog", "local"}),
+        KERNEL_COMPONENT: frozenset({"local"}),
+        INITRD_COMPONENT: frozenset({"local"}),
+        CONFIG_COMPONENT: frozenset({"local"}),
+        PATCH_COMPONENT: frozenset({"local"}),
+        VMLINUX_COMPONENT: frozenset({"local"}),
+    }
+    return ComponentSourceCapabilities(
+        provider=ResourceKind.FAULT_INJECT.value,
+        accepted_component_sources=accepted,
+    )
+
+
+def build_faultinject_runtime(*, inventory: FaultInjectInventory | None = None) -> ProviderRuntime:
+    """Build the fault-inject mock provider ports (ADR-0072, happy path).
+
+    Args:
+        inventory: The shared infra-inventory the provisioner records synthetic domains
+            into. Pass an inventory the caller also holds to build a matching
+            :class:`~kdive.providers.fault_inject.inventory.FaultInjectReaper` over the
+            same state (the reconciler leaked-domain seam); omit it for a standalone
+            runtime with its own inventory.
+    """
+    inventory = inventory if inventory is not None else FaultInjectInventory()
+    install = FaultInjectInstall()
+    retrieve = FaultInjectRetrieve(store_factory=object_store_from_env)
+    introspect = FaultInjectIntrospect()
+    return ProviderRuntime(
+        provisioner=FaultInjectProvision(inventory),
+        builder=FaultInjectBuild(store_factory=object_store_from_env),
+        installer=install,
+        booter=install,
+        connector=FaultInjectConnect(),
+        controller=FaultInjectControl(),
+        retriever=retrieve,
+        crash_postmortem=retrieve,
+        vmcore_introspector=introspect,
+        live_introspector=introspect,
+        supported_capture_methods=frozenset(
+            {CaptureMethod.CONSOLE, CaptureMethod.HOST_DUMP, CaptureMethod.GDBSTUB}
+        ),
+        discovery_registrar=ensure_faultinject_resource_registered,
+        attach_seam=fault_inject_attach_seam,
+        debug_engine=FaultInjectDebugEngine(),
+        component_sources=_faultinject_component_sources(),
+    )
+
+
+def _fault_inject_enabled(enable_fault_inject: bool | None) -> bool:
+    """Resolve the opt-in gate: an explicit flag wins, else read the env (default off)."""
+    if enable_fault_inject is not None:
+        return enable_fault_inject
+    return os.environ.get(_FAULTINJECT_ENABLE_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def build_provider_resolver(*, enable_fault_inject: bool | None = None) -> ProviderResolver:
     """Assemble the per-deployment ``ResourceKind -> ProviderRuntime`` registry.
 
     The default production composition registers only ``local-libvirt``. The
-    ``fault-inject`` provider is opt-in (ADR-0071) and its runtime lands in M1.5
-    issue 2; enabling the gate before then is a configuration error, never a
-    silent no-op.
+    ``fault-inject`` provider is opt-in (ADR-0071): it is registered only when the gate is
+    on — an explicit ``enable_fault_inject`` argument when given, otherwise the
+    ``KDIVE_FAULT_INJECT`` env var. A default production deployment has no bookable
+    fault-inject Resource.
     """
     runtimes = {ResourceKind.LOCAL_LIBVIRT: build_local_runtime()}
-    if enable_fault_inject:
-        raise CategorizedError(
-            "fault-inject provider is not yet registered (M1.5 issue 2); "
-            "do not enable the gate before its runtime exists",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"enable_fault_inject": True},
-        )
+    if _fault_inject_enabled(enable_fault_inject):
+        runtimes[ResourceKind.FAULT_INJECT] = build_faultinject_runtime()
     return ProviderResolver(runtimes)
 
 
@@ -129,8 +202,25 @@ async def ensure_local_host_registered(pool: AsyncConnectionPool) -> None:
     )
 
 
+async def ensure_faultinject_resource_registered(pool: AsyncConnectionPool) -> None:
+    # Insert-if-absent (like local): the happy path's capabilities are inert, so this never
+    # needs to update an existing row. When #182 makes seed/fault_rate live config, a change
+    # to an already-registered resource needs the upsert path or a fresh row, not a restart.
+    discovery = FaultInjectDiscovery.from_env()
+    await ensure_discovered_resource_registered(
+        pool,
+        discovery,
+        kind=ResourceKind.FAULT_INJECT,
+        resource_id=discovery.host_uri,
+        pool_name=_FAULTINJECT_POOL,
+        cost_class=_FAULTINJECT_COST_CLASS,
+    )
+
+
 __all__ = [
+    "build_faultinject_runtime",
     "build_local_runtime",
     "build_provider_resolver",
+    "ensure_faultinject_resource_registered",
     "ensure_local_host_registered",
 ]

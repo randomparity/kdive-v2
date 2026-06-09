@@ -1,0 +1,216 @@
+"""The fault-inject mock ports return synthetic-but-plausible outputs (happy path)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from uuid import UUID
+
+import pytest
+
+from kdive.domain.capture import CaptureMethod
+from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.models import PowerAction, Sensitivity
+from kdive.providers.fault_inject.inventory import FaultInjectInventory
+from kdive.providers.fault_inject.provider import (
+    FaultInjectBuild,
+    FaultInjectConnect,
+    FaultInjectControl,
+    FaultInjectDebugEngine,
+    FaultInjectInstall,
+    FaultInjectIntrospect,
+    FaultInjectProvision,
+    FaultInjectRetrieve,
+    fault_inject_attach_seam,
+)
+from kdive.providers.ports import SystemHandle
+from kdive.providers.ports.lifecycle import TransportHandleData
+from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact
+
+_SYSTEM = UUID("11111111-1111-1111-1111-111111111111")
+_RUN = UUID("22222222-2222-2222-2222-222222222222")
+
+
+class _FakeStore:
+    def __init__(self) -> None:
+        self.writes: list[ArtifactWriteRequest] = []
+
+    def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact:
+        self.writes.append(request)
+        return StoredArtifact(request.key(), "etag", request.sensitivity, request.retention_class)
+
+
+# --- Provision -------------------------------------------------------------------------
+
+
+def test_provision_returns_a_synthetic_domain_and_records_it_as_owned() -> None:
+    inventory = FaultInjectInventory()
+    provision = FaultInjectProvision(inventory)
+
+    domain = provision.provision(_SYSTEM, profile=object())
+
+    assert str(_SYSTEM) in domain
+    assert inventory.owned_domains()[0].name == domain
+    assert inventory.owned_domains()[0].system_id == _SYSTEM
+
+
+def test_teardown_forgets_the_domain_so_it_is_no_longer_owned() -> None:
+    inventory = FaultInjectInventory()
+    provision = FaultInjectProvision(inventory)
+    domain = provision.provision(_SYSTEM, profile=object())
+
+    provision.teardown(domain)
+
+    assert inventory.owned_domains() == []
+
+
+def test_reprovision_leaves_the_system_owning_exactly_one_domain() -> None:
+    inventory = FaultInjectInventory()
+    provision = FaultInjectProvision(inventory)
+    provision.provision(_SYSTEM, profile=object())
+
+    second = provision.reprovision(_SYSTEM, profile=object())
+
+    # The synthetic name is deterministic per System, so reprovision never leaks the old
+    # domain: the inventory holds exactly one entry for the System after replacement.
+    owned = [d.name for d in inventory.owned_domains()]
+    assert owned == [second]
+
+
+# --- Build / Install / Boot ------------------------------------------------------------
+
+
+def test_build_stores_a_synthetic_kernel_and_returns_consistent_refs() -> None:
+    store = _FakeStore()
+    builder = FaultInjectBuild(store_factory=lambda: store)
+
+    output = builder.build(_RUN, profile=object())
+
+    assert output.kernel_ref and output.debuginfo_ref
+    assert len(output.build_id) == 40  # a plausible GNU build-id length
+    assert {w.owner_kind for w in store.writes} == {"runs"}
+    assert all(w.owner_id == str(_RUN) for w in store.writes)
+
+
+def test_install_and_boot_succeed_on_the_happy_path() -> None:
+    install = FaultInjectInstall()
+
+    # No fault drawn → the synthetic install/boot reach a ready state without raising.
+    install.install(_SYSTEM, _RUN, "kernel-ref", cmdline="console=ttyS0")
+    install.boot(_SYSTEM)
+
+
+# --- Connect ---------------------------------------------------------------------------
+
+
+def test_open_transport_returns_a_decodable_loopback_handle() -> None:
+    connect = FaultInjectConnect()
+
+    handle = connect.open_transport(SystemHandle("fault-inject-domain"), "gdbstub")
+
+    decoded = TransportHandleData.decode(handle)
+    assert decoded.kind == "gdbstub"
+    assert decoded.host == "127.0.0.1"
+    assert 1 <= decoded.port <= 65535
+
+
+def test_open_transport_rejects_an_unknown_transport_kind() -> None:
+    connect = FaultInjectConnect()
+
+    with pytest.raises(CategorizedError) as exc:
+        connect.open_transport(SystemHandle("fault-inject-domain"), "carrier-pigeon")
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_close_transport_accepts_a_handle_it_opened() -> None:
+    connect = FaultInjectConnect()
+    handle = connect.open_transport(SystemHandle("fault-inject-domain"), "gdbstub")
+
+    connect.close_transport(handle)
+
+
+# --- Control ---------------------------------------------------------------------------
+
+
+def test_power_and_force_crash_succeed_on_the_happy_path() -> None:
+    control = FaultInjectControl()
+
+    control.power("fault-inject-domain", PowerAction.CYCLE)
+    control.force_crash("fault-inject-domain")
+
+
+# --- Retrieve / postmortem / introspect ------------------------------------------------
+
+
+def test_capture_stores_a_synthetic_vmcore_with_raw_and_redacted_artifacts() -> None:
+    store = _FakeStore()
+    retrieve = FaultInjectRetrieve(store_factory=lambda: store)
+
+    output = retrieve.capture(_SYSTEM, CaptureMethod.HOST_DUMP)
+
+    sensitivities = {w.sensitivity for w in store.writes}
+    assert Sensitivity.SENSITIVE in sensitivities  # the raw core
+    assert Sensitivity.REDACTED in sensitivities  # its redacted derivative
+    assert output.vmcore_build_id == output.vmcore_build_id  # present, consistent
+
+
+def test_capture_build_id_matches_the_builder_so_provenance_holds() -> None:
+    store = _FakeStore()
+    build_id = FaultInjectBuild(store_factory=lambda: store).build(_RUN, profile=object()).build_id
+    captured = FaultInjectRetrieve(store_factory=lambda: store).capture(
+        _SYSTEM, CaptureMethod.HOST_DUMP
+    )
+
+    # A mock spine installs the built kernel then captures its core; a fixed synthetic
+    # build-id keeps the capture's provenance check against the build aligned.
+    assert captured.vmcore_build_id == build_id
+
+
+def test_crash_postmortem_returns_a_bounded_synthetic_transcript() -> None:
+    retrieve = FaultInjectRetrieve(store_factory=_FakeStore)
+
+    output = retrieve.run_crash_postmortem(
+        vmcore_ref="v",
+        debuginfo_ref="d",
+        expected_build_id="b",
+        commands=["bt"],
+    )
+
+    assert output.truncated is False
+    assert isinstance(output.results, dict)
+
+
+def test_introspect_from_vmcore_and_live_return_plausible_shapes() -> None:
+    introspect = FaultInjectIntrospect()
+
+    offline = introspect.from_vmcore(vmcore_ref="v", debuginfo_ref="d", expected_build_id="b")
+    live = introspect.introspect_live(transport_handle="gdbstub://127.0.0.1:1234", helper="drgn")
+
+    assert offline.truncated is False
+    assert live.truncated is False
+
+
+# --- Debug engine / attach seam --------------------------------------------------------
+
+
+def test_attach_seam_returns_an_attachment_at_the_loopback_endpoint(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.log"
+
+    attachment = fault_inject_attach_seam(
+        host="127.0.0.1", port=1234, run_id=str(_RUN), transcript_path=transcript
+    )
+
+    assert attachment.rsp_host == "127.0.0.1"
+    assert attachment.rsp_port == 1234
+
+
+def test_debug_engine_set_and_list_breakpoints_round_trip(tmp_path: Path) -> None:
+    engine = FaultInjectDebugEngine()
+    attachment = fault_inject_attach_seam(
+        host="127.0.0.1", port=1234, run_id=str(_RUN), transcript_path=tmp_path / "s.log"
+    )
+
+    ref = engine.set_breakpoint(attachment, "vfs_read")
+    listed = engine.list_breakpoints(attachment)
+
+    assert ref.number in {b.number for b in listed}

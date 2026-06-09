@@ -13,6 +13,7 @@ from kdive.components.references import LocalComponentRef
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
+from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers import composition
 from kdive.providers.ports import (
     BuildOutput,
@@ -39,6 +40,25 @@ def _build_profile() -> ServerBuildProfile:
     )
     assert isinstance(profile, ServerBuildProfile)
     return profile
+
+
+def _provisioning_profile() -> ProvisioningProfile:
+    return ProvisioningProfile.parse(
+        {
+            "schema_version": 1,
+            "arch": "x86_64",
+            "vcpu": 1,
+            "memory_mb": 1024,
+            "disk_gb": 10,
+            "boot_method": "direct-kernel",
+            "kernel_source_ref": "git+https://git.kernel.org/pub/scm/linux.git#v6.9",
+            "provider": {
+                "local-libvirt": {
+                    "rootfs": {"kind": "local", "path": "/var/lib/kdive/rootfs/x.qcow2"},
+                }
+            },
+        }
+    )
 
 
 class _BuildProvider:
@@ -216,18 +236,56 @@ def test_provider_runtime_discovery_hook_noops_when_absent() -> None:
     asyncio.run(runtime.register_discovery(cast(AsyncConnectionPool, object())))
 
 
-def test_default_resolver_registers_only_local_libvirt() -> None:
+def test_default_resolver_registers_only_local_libvirt(monkeypatch: pytest.MonkeyPatch) -> None:
     from kdive.domain.models import ResourceKind
 
+    monkeypatch.delenv("KDIVE_FAULT_INJECT", raising=False)  # default = opt-in OFF
     resolver = composition.build_provider_resolver()
     assert resolver.registered_kinds() == frozenset({ResourceKind.LOCAL_LIBVIRT})
     local = resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
     assert local.component_sources.provider == "local-libvirt"
 
 
-def test_enabling_fault_inject_before_it_exists_fails_closed() -> None:
-    from kdive.domain.errors import CategorizedError, ErrorCategory
+def test_enabling_fault_inject_registers_both_kinds() -> None:
+    from kdive.domain.models import ResourceKind
 
-    with pytest.raises(CategorizedError) as exc:
-        composition.build_provider_resolver(enable_fault_inject=True)
-    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    resolver = composition.build_provider_resolver(enable_fault_inject=True)
+
+    assert resolver.registered_kinds() == frozenset(
+        {ResourceKind.LOCAL_LIBVIRT, ResourceKind.FAULT_INJECT}
+    )
+
+
+def test_fault_inject_runtime_advertises_its_provider_identity() -> None:
+    runtime = composition.build_faultinject_runtime()
+
+    assert runtime.component_sources.provider == "fault-inject"
+    assert runtime.discovery_registrar is not None
+
+
+def test_fault_inject_runtime_provision_is_visible_to_a_reaper_on_the_same_inventory() -> None:
+    import asyncio
+    from uuid import UUID
+
+    from kdive.providers.fault_inject.inventory import FaultInjectInventory, FaultInjectReaper
+
+    inventory = FaultInjectInventory()
+    runtime = composition.build_faultinject_runtime(inventory=inventory)
+    system_id = UUID("33333333-3333-3333-3333-333333333333")
+
+    domain = runtime.provisioner.provision(system_id, _provisioning_profile())
+
+    # The shared-inventory seam: a domain the runtime provisions is reapable through a
+    # FaultInjectReaper built over the same inventory (the reconciler leaked-domain seam).
+    owned = asyncio.run(FaultInjectReaper(inventory).list_owned())
+    assert [d.name for d in owned] == [domain]
+
+
+def test_fault_inject_opt_in_reads_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kdive.domain.models import ResourceKind
+
+    monkeypatch.setenv("KDIVE_FAULT_INJECT", "1")
+
+    resolver = composition.build_provider_resolver()
+
+    assert ResourceKind.FAULT_INJECT in resolver.registered_kinds()
