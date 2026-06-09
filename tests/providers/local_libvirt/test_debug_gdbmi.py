@@ -23,7 +23,9 @@ from kdive.providers.local_libvirt.debug.debug_gdbmi import (
     PygdbmiController,
     parse_mi_records,
 )
-from kdive.providers.ports import GdbMiAttachment
+from kdive.providers.local_libvirt.debug.execution import ExecutionControl
+from kdive.providers.local_libvirt.debug.transcript import append_transcript
+from kdive.providers.ports import GdbMiAttachment, GdbStopRecord
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY
 
@@ -97,6 +99,40 @@ def _attachment(controller: _FakeMiController, tmp_path: Path) -> GdbMiAttachmen
 
 def _engine(redactor: Redactor | None = None) -> GdbMiEngine:
     return GdbMiEngine(redactor=redactor or Redactor())
+
+
+class _ExecutionEngine:
+    """Minimal engine fake for ExecutionControl's direct helper behavior."""
+
+    def __init__(self) -> None:
+        self.executed: list[str] = []
+        self.transcript_commands: list[str] = []
+
+    def records_from(self, raw: list[dict[str, object]]) -> list[MiRecord]:
+        return [MiRecord.from_raw(record) for record in raw]
+
+    def append_transcript(
+        self, transcript_path: Path, command: str, records: list[MiRecord]
+    ) -> None:
+        del transcript_path, records
+        self.transcript_commands.append(command)
+
+    def execute_mi_command(self, attachment: GdbMiAttachment, command: str) -> list[MiRecord]:
+        del attachment
+        self.executed.append(command)
+        return [MiRecord(type="result", message="running")]
+
+    def stop_record_from(self, record: MiRecord) -> GdbStopRecord:
+        payload = record.payload if isinstance(record.payload, dict) else {}
+        reason = payload.get("reason")
+        bkptno = payload.get("bkptno")
+        return GdbStopRecord(
+            reason=reason if isinstance(reason, str) else None,
+            bkptno=bkptno if isinstance(bkptno, str) else None,
+        )
+
+    def redact_stop(self, stop: GdbStopRecord) -> GdbStopRecord:
+        return stop
 
 
 # --- parsing -------------------------------------------------------------------------------
@@ -442,7 +478,97 @@ def test_transcript_redactor_sees_secrets_registered_after_engine_creation(
     assert "[REDACTED]" in transcript
 
 
+def test_append_transcript_creates_parent_and_redacts_jsonl(tmp_path: Path) -> None:
+    secret = "helpertranscriptsecret"  # pragma: allowlist secret - fake test value
+    transcript_path = tmp_path / "nested" / "debug" / "transcript.jsonl"
+
+    append_transcript(
+        transcript_path=transcript_path,
+        command="<read>",
+        records=[MiRecord(type="console", payload=f"loaded {secret}")],
+        redactor=Redactor(secret_values=[secret]),
+    )
+
+    line = transcript_path.read_text(encoding="utf-8").strip()
+    entry = json.loads(line)
+    assert entry["command"] == "<read>"
+    assert secret not in line
+    assert "[REDACTED]" in line
+
+
 # --- continue / interrupt ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("timeout_sec", [-1.0, math.inf, math.nan])
+def test_execution_control_rejects_bad_timeout_before_resume(
+    timeout_sec: float, tmp_path: Path
+) -> None:
+    engine = _ExecutionEngine()
+    control = ExecutionControl(engine, command_timeout_sec=1.0)
+
+    with pytest.raises(CategorizedError) as exc:
+        control.resume(
+            _attachment(_FakeMiController(), tmp_path),
+            "-exec-continue",
+            timeout_sec=timeout_sec,
+        )
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert exc.value.details["code"] == "bad_continue_timeout"
+    assert engine.executed == []
+
+
+def test_execution_control_wait_for_stop_records_reads_and_transcript(
+    tmp_path: Path,
+) -> None:
+    engine = _ExecutionEngine()
+    control = ExecutionControl(engine, command_timeout_sec=1.0)
+    attachment = _attachment(
+        _FakeMiController(
+            reads=[
+                [{"type": "notify", "message": "running", "payload": None}],
+                [
+                    {
+                        "type": "notify",
+                        "message": "stopped",
+                        "payload": {"reason": "breakpoint-hit", "bkptno": "1"},
+                    }
+                ],
+            ]
+        ),
+        tmp_path,
+    )
+
+    stop = control.wait_for_stop(attachment, timeout_sec=1.0)
+
+    assert stop is not None
+    assert stop.reason == "breakpoint-hit"
+    assert stop.bkptno == "1"
+    messages = [record.message for record in attachment.records if isinstance(record, MiRecord)]
+    assert messages == ["running", "stopped"]
+    assert engine.transcript_commands == ["<read>", "<read>"]
+
+
+def test_execution_control_resume_raises_transport_stall_after_interrupt_timeout(
+    tmp_path: Path,
+) -> None:
+    engine = _ExecutionEngine()
+    control = ExecutionControl(engine, command_timeout_sec=1.0)
+    controller = _FakeMiController(
+        responses={"-exec-interrupt": [{"type": "result", "message": "done"}]},
+    )
+    attachment = _attachment(
+        controller,
+        tmp_path,
+    )
+
+    with pytest.raises(CategorizedError) as exc:
+        control.resume(attachment, "-exec-continue", timeout_sec=1.0)
+
+    assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert exc.value.details["code"] == "transport_stall"
+    assert engine.executed == ["-exec-continue"]
+    assert controller.written == ["-exec-interrupt"]
 
 
 def test_continue_returns_stop_on_breakpoint_hit(tmp_path: Path) -> None:
