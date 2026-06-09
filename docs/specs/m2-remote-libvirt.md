@@ -111,7 +111,11 @@ baseline and the M1.2 / M1.5 scaffolding standing on local-libvirt is undisturbe
   TLS-tunneled proxy is the hardening path where the ACL cannot be guaranteed.
 - **Build stays on the worker** — `RemoteLibvirtBuild` runs `make` on the worker exactly as
   `local_libvirt` does, then publishes vmlinuz+modules to the object store via the artifact
-  channel. "Remote build host / GitHub Actions" (`top-level-design.md` line 232) is a later
+  channel. Because the in-guest install model (ADR-0078) needs the kernel's `/lib/modules`
+  tree that direct-kernel boot never required, the modules travel **inside** the existing
+  `kernel_ref` object as a single vmlinuz+modules install bundle, leaving `BuildOutput`, the
+  `Builder` port, and the `runs` ledger unchanged ([ADR-0081](../adr/0081-remote-build-kernel-bundle.md)).
+  "Remote build host / GitHub Actions" (`top-level-design.md` line 232) is a later
   optimization, **not** M2.
 
 ## Non-goals (scoped out)
