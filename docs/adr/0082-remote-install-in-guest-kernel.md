@@ -101,8 +101,11 @@ abandoned step claim converges to the same `/boot` + grub state instead of dupli
    the method-conditional crashkernel was already composed upstream (`cmdline_for`), so the
    crashkernel token is present iff `request.method` is `kdump`.
 3. Maps a non-zero helper exit to `INSTALL_FAILURE`; a guest-agent/transport fault propagates as
-   the seam's `TRANSPORT_FAILURE`; a vanished `kernel_ref` object surfaces as the store's
-   `STALE_HANDLE`.
+   the seam's `TRANSPORT_FAILURE`. Note the worker **only mints** the presigned GET — it never
+   fetches the object — so a **vanished `kernel_ref`** is not worker-observable (unlike the local
+   plane, which fetches and raises `STALE_HANDLE`); it surfaces as the in-guest `curl` failing
+   (HTTP 403/404) → a non-zero helper exit → `INSTALL_FAILURE`. `presign_get` itself only signs a
+   URL and does not validate object existence.
 
 `install()` does **not** reboot or change the boot selection — it stages the bundle and replaces
 the `kdive` grub slot, mirroring the local plane's split so the install handler's `install` step
@@ -142,8 +145,8 @@ separately:
 - **Unit (no host):** assert `install()` composes the helper argv carrying `request.cmdline`, and
   that the cmdline carries the `crashkernel=` token **iff** `request.method` is `kdump` (the
   upstream `cmdline_for` composition is exercised at the install boundary), plus every error-path
-  mapping (`INSTALL_FAILURE` / `TRANSPORT_FAILURE` / `STALE_HANDLE`, lost-agent-on-reboot tolerated,
-  `BOOT_TIMEOUT`).
+  mapping (non-zero helper exit → `INSTALL_FAILURE`, unreachable agent → `TRANSPORT_FAILURE`,
+  lost-agent-on-reboot tolerated, never-fresh-boot → `BOOT_TIMEOUT`).
 - **`live_vm` (real host):** after install+boot, read the guest's `/proc/cmdline` and confirm the
   `crashkernel=` token is present for a kdump-method install and absent otherwise, and confirm the
   running kernel is the built one (kernel version / build-id match). This closes the
@@ -169,9 +172,9 @@ no libvirt host; the real curl/tar/grub/reboot mechanics run only under the `liv
 - **Readiness is "a fresh boot reached agent-up," not "the expected kernel is running."** The
   `boot(system_id)` port carries no expected build-id, and a DB read would make a provider plane
   stateful, so M2 confirms a real reboot (boot_id change) into a guest whose agent answers; the
-  install step's one-shot grub selection is what makes that fresh boot our kernel. Verifying the
-  running kernel's identity against the build-id is a follow-up that would need a port field, not
-  an M2 widening.
+  boot step's atomic one-shot grub selection (of the slot `install` replaced) is what makes that
+  fresh boot our kernel. Verifying the running kernel's identity against the build-id is a
+  follow-up that would need a port field, not an M2 widening.
 - **One presigned GET, one bearer capability.** Because the bundle is one object (ADR-0081), the
   installer registers and redacts exactly one URL per install — the ADR-0078 one-object capability
   shape — not two.
