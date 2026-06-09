@@ -47,7 +47,7 @@ from kdive.mcp.tools._runtime_resolution import with_runtime_for_run, with_runti
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.providers.ports import CrashPostmortem
 from kdive.providers.resolver import ProviderResolver
-from kdive.security.artifacts.crash_commands import crash_command_rejection_reason
+from kdive.security.artifacts.crash_commands import validate_crash_commands
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 from kdive.security.secrets.redaction import Redactor
@@ -56,40 +56,6 @@ from kdive.services.artifacts.listing import RedactedArtifact, list_redacted_sys
 
 _log = logging.getLogger(__name__)
 
-# The ported v1 crash-command allowlist (read-only crash verbs).
-_CRASH_ALLOWLIST: frozenset[str] = frozenset(
-    {
-        "bt",
-        "ps",
-        "log",
-        "kmem",
-        "sys",
-        "mod",
-        "struct",
-        "union",
-        "p",
-        "rd",
-        "vtop",
-        "task",
-        "files",
-        "vm",
-        "net",
-        "dev",
-        "irq",
-        "mach",
-        "runq",
-        "mount",
-        "swap",
-        "timer",
-        "dis",
-        "sym",
-        "list",
-        "tree",
-        "search",
-        "foreach",
-        "help",
-    }
-)
 _TRIAGE_COMMANDS: tuple[str, ...] = ("log", "bt")
 
 
@@ -297,11 +263,10 @@ async def _postmortem_crash(
     crash: CrashPostmortem,
     secret_registry: SecretRegistry,
 ) -> ToolResponse:
-    """Run the crash command batch over the Run's captured core; redact and return (ungated)."""
+    """Run the crash command batch over the viewer-authorized Run's captured core."""
     with bind_context(principal=ctx.principal):
-        for command in commands:
-            if crash_command_rejection_reason(command, _CRASH_ALLOWLIST) is not None:
-                return _config_error(run_id)
+        if validate_crash_commands(commands) is not None:
+            return _config_error(run_id)
         async with pool.connection() as conn:
             try:
                 resolved = await resolve_run_vmcore_target(conn, ctx, run_id)

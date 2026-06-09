@@ -206,6 +206,20 @@ def test_crash_postmortem_returns_a_bounded_synthetic_transcript() -> None:
     assert isinstance(output.results, dict)
 
 
+def test_crash_postmortem_rejects_disallowed_commands() -> None:
+    retrieve = FaultInjectRetrieve(store_factory=_FakeStore)
+
+    with pytest.raises(CategorizedError) as exc:
+        retrieve.run_crash_postmortem(
+            vmcore_ref="v",
+            debuginfo_ref="d",
+            expected_build_id="b",
+            commands=["bt | sh"],
+        )
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
 def test_introspect_from_vmcore_and_live_return_plausible_shapes() -> None:
     introspect = FaultInjectIntrospect()
 

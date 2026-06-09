@@ -20,6 +20,7 @@ from uuid import UUID
 
 from kdive.components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.domain.capture import CaptureMethod
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction, Sensitivity
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
 from kdive.providers.ports import (
@@ -36,6 +37,7 @@ from kdive.providers.ports import (
 )
 from kdive.providers.ports._common import config_error
 from kdive.providers.ports.lifecycle import TransportHandleData
+from kdive.security.artifacts.crash_commands import validate_crash_commands
 
 _TENANT = "fault-inject"
 _RETENTION_CLASS = "vmcore"
@@ -159,6 +161,13 @@ class FaultInjectRetrieve:
         expected_build_id: str,
         commands: list[str],
     ) -> CrashOutput:
+        rejected = validate_crash_commands(commands)
+        if rejected is not None:
+            raise CategorizedError(
+                "crash command batch rejected",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"reason": rejected},
+            )
         results: dict[str, object] = {command: "synthetic" for command in commands}
         return CrashOutput(results=results, transcript="fault-inject postmortem", truncated=False)
 

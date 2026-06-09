@@ -7,8 +7,8 @@
 `debuginfo_ref` over an injected `crash` subprocess. The slow, host-bound operations are
 `live_vm`-gated seams, so the orchestration and the full error contract are unit-tested with
 fakes. The crash-command
-validator is the load-bearing security control: the postmortem path is never gated, so every
-caller command is sanitized and allowlist-checked before any `crash` invocation.
+validator is the load-bearing security control at the port boundary: every caller command is
+sanitized and allowlist-checked before any `crash` invocation.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from kdive.providers.ports import (
     CrashOutput,
     CrashResult,
 )
-from kdive.security.artifacts.crash_commands import crash_command_rejection_reason
+from kdive.security.artifacts.crash_commands import validate_crash_commands
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.store.objectstore import object_store_from_env
@@ -150,8 +150,9 @@ class LocalLibvirtRetrieve:
         returns the parsed, **redacted** transcript.
 
         Raises:
-            CategorizedError: ``CONFIGURATION_ERROR`` for a malformed ref rejected by an
-                injected fetch/build-id seam or a build-id provenance mismatch;
+            CategorizedError: ``CONFIGURATION_ERROR`` for a rejected crash command,
+                malformed ref rejected by an injected fetch/build-id seam, or a build-id
+                provenance mismatch;
                 ``MISSING_DEPENDENCY`` if the crash seams were not configured;
                 ``STALE_HANDLE`` when a referenced object is missing; or
                 ``INFRASTRUCTURE_FAILURE`` for object-store IO failures.
@@ -160,6 +161,13 @@ class LocalLibvirtRetrieve:
             raise CategorizedError(
                 "crash seams not configured on this Retriever",
                 category=ErrorCategory.MISSING_DEPENDENCY,
+            )
+        rejected = validate_crash_commands(commands)
+        if rejected is not None:
+            raise CategorizedError(
+                "crash command batch rejected",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"reason": rejected},
             )
         vmcore_bytes = self._fetch_object(vmcore_ref)
         observed = self._read_vmcore_build_id(vmcore_bytes)
@@ -239,5 +247,4 @@ def _real_run_crash(  # pragma: no cover - live_vm
 
 __all__ = [
     "LocalLibvirtRetrieve",
-    "crash_command_rejection_reason",
 ]

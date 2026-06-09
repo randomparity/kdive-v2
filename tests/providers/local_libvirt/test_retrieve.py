@@ -10,11 +10,9 @@ import pytest
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
-from kdive.providers.local_libvirt.retrieve import (
-    LocalLibvirtRetrieve,
-    crash_command_rejection_reason,
-)
+from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
 from kdive.providers.ports import CaptureOutput, CrashOutput, CrashResult
+from kdive.security.artifacts.crash_commands import crash_command_rejection_reason
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact
 
@@ -139,6 +137,34 @@ def test_run_build_id_mismatch_is_configuration_error() -> None:
             commands=["log"],
         )
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_run_rejects_bad_command_before_fetching_or_running_crash() -> None:
+    fetched: list[str] = []
+
+    retriever = LocalLibvirtRetrieve(
+        tenant=_TENANT,
+        store_factory=_FakeStore,
+        wait_for_vmcore=lambda s: None,
+        read_vmcore_build_id=lambda data: "deadbeef",
+        extract_redacted=lambda data: b"",
+        host_dump_capture=lambda s: None,
+        secret_registry=SecretRegistry(),
+        fetch_object=lambda ref: fetched.append(ref) or b"BYTES",
+        run_crash=lambda vmlinux, vmcore, script: pytest.fail("crash seam should not run"),
+    )
+
+    with pytest.raises(CategorizedError) as exc:
+        retriever.run_crash_postmortem(
+            vmcore_ref="v",
+            debuginfo_ref="d",
+            expected_build_id="deadbeef",
+            commands=["bt | sh"],
+        )
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert exc.value.details["reason"] == "disallowed metacharacter '|'"
+    assert fetched == []
 
 
 def test_capture_host_dump_uses_dump_seam() -> None:

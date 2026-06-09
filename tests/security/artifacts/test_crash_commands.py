@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from kdive.security.artifacts.crash_commands import crash_command_rejection_reason
+from kdive.security.artifacts.crash_commands import (
+    crash_command_rejection_reason,
+    validate_crash_commands,
+)
 
 _ALLOW = frozenset({"bt", "log", "ps", "p", "rd", "kmem", "sys"})
 
@@ -60,3 +63,11 @@ def test_allowed_verbs_are_case_insensitive(command: str) -> None:
 @pytest.mark.parametrize("command", ["bt", "log", "ps -A", "p jiffies", "rd -x ffff", "sys"])
 def test_allowed_read_only_commands_pass(command: str) -> None:
     assert crash_command_rejection_reason(command, _ALLOW) is None
+
+
+def test_default_batch_validator_returns_first_rejection() -> None:
+    assert validate_crash_commands(["log", "bt | sh"]) == "disallowed metacharacter '|'"
+
+
+def test_default_batch_validator_accepts_read_only_batch() -> None:
+    assert validate_crash_commands(["log", "bt", "sys"]) is None
