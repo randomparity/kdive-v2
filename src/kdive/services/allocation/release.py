@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -17,6 +18,7 @@ from kdive.domain.state import AllocationState, IllegalTransition
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.services.accounting import ledger as accounting
+from kdive.services.allocation.error_details import categorized_details
 
 AuditWriter = Callable[[AsyncConnection, audit.AuditEvent], Awaitable[None]]
 
@@ -31,6 +33,7 @@ class ReleaseOutcome:
     released: bool
     category: ErrorCategory | None = None
     current_status: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 def ctx_audit_writer(ctx: RequestContext) -> AuditWriter:
@@ -62,7 +65,11 @@ async def release_with_backstops(
                 current_status=latest.state.value if latest else None,
             )
         except CategorizedError as exc:
-            return ReleaseOutcome(released=False, category=exc.category)
+            return ReleaseOutcome(
+                released=False,
+                category=exc.category,
+                details=categorized_details(exc),
+            )
 
 
 async def _transition_and_audit(

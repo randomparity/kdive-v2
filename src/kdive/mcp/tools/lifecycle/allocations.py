@@ -307,7 +307,7 @@ def _grant_or_enqueue_response(
 def _denial_response(resource_id: UUID, project: str, outcome: AdmissionOutcome) -> ToolResponse:
     """Map a denial outcome to its typed failure envelope (category-specific)."""
     category = outcome.category or ErrorCategory.ALLOCATION_DENIED
-    data: dict[str, str] = {}
+    data: dict[str, Any] = dict(outcome.details)
     if outcome.reason is not None:
         data["reason"] = outcome.reason
     if outcome.cap is not None:
@@ -363,7 +363,9 @@ def _release_response(uid: UUID, outcome: ReleaseOutcome) -> ToolResponse:
     """Map release service outcome to the allocations MCP envelope."""
     if outcome.released:
         return ToolResponse.success(str(uid), "released")
-    data = {"current_status": outcome.current_status} if outcome.current_status else {}
+    data: dict[str, Any] = dict(outcome.details)
+    if outcome.current_status:
+        data["current_status"] = outcome.current_status
     category = outcome.category or ErrorCategory.CONFIGURATION_ERROR
     return ToolResponse.failure(
         str(uid),
@@ -418,7 +420,9 @@ def _renew_response(uid: UUID, outcome: RenewOutcome) -> ToolResponse:
             data={"project": outcome.allocation.project},
         )
     category = outcome.category or ErrorCategory.ALLOCATION_DENIED
-    data = {"current_status": outcome.current_status} if outcome.current_status else {}
+    data: dict[str, Any] = dict(outcome.details)
+    if outcome.current_status:
+        data["current_status"] = outcome.current_status
     return ToolResponse.failure(
         str(uid),
         category,

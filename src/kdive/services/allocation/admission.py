@@ -26,10 +26,10 @@ rule). The ``cost_class`` is resolved admission-side from the chosen Resource (u
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 from psycopg import AsyncConnection
@@ -54,6 +54,7 @@ from kdive.domain.state import AllocationState
 from kdive.security import audit
 from kdive.services.accounting import ledger as accounting
 from kdive.services.allocation import pcie_claim
+from kdive.services.allocation.error_details import categorized_details
 from kdive.services.allocation.idempotency import (
     record_key,
     resolve_replay,
@@ -152,6 +153,7 @@ class AdmissionOutcome:
     cap: int | None = None
     in_use: int | None = None
     queueable: bool = False
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 async def admit(
@@ -175,7 +177,12 @@ async def admit(
     try:
         window_hours, estimate = await price_window_and_estimate(conn, request)
     except CategorizedError as exc:
-        return AdmissionOutcome(granted=False, allocation=None, category=exc.category)
+        return AdmissionOutcome(
+            granted=False,
+            allocation=None,
+            category=exc.category,
+            details=categorized_details(exc),
+        )
     try:
         async with conn.transaction(), advisory_xact_lock(conn, LockScope.PROJECT, request.project):
             return await _admit_under_project_lock(
@@ -187,7 +194,12 @@ async def admit(
     except CategorizedError as exc:
         # The M0 host-cap resolve (decision 5) fails closed on an invalid cap; the
         # transaction rolled back, so no durable write survived.
-        return AdmissionOutcome(granted=False, allocation=None, category=exc.category)
+        return AdmissionOutcome(
+            granted=False,
+            allocation=None,
+            category=exc.category,
+            details=categorized_details(exc),
+        )
 
 
 async def price_window_and_estimate(

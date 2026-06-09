@@ -14,6 +14,7 @@ import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import ALLOCATIONS, BUDGETS, QUOTAS
+from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Allocation, Budget, Quota
 from kdive.domain.state import AllocationState, IllegalTransition
 from kdive.mcp.auth import RequestContext
@@ -352,6 +353,33 @@ def test_release_illegal_transition_backstop_returns_failure(
         assert resp.data["current_status"] == "granted"  # re-read on a fresh connection
 
     asyncio.run(_run())
+
+
+def test_release_response_includes_service_error_details() -> None:
+    uid = uuid4()
+    outcome = alloc_tools.ReleaseOutcome(
+        released=False,
+        category=ErrorCategory.CONFIGURATION_ERROR,
+        details={"field": "state"},
+    )
+
+    resp = alloc_tools._release_response(uid, outcome)
+
+    assert resp.data["field"] == "state"
+
+
+def test_renew_response_includes_service_error_details() -> None:
+    uid = uuid4()
+    outcome = alloc_tools.RenewOutcome(
+        renewed=False,
+        allocation=None,
+        category=ErrorCategory.CONFIGURATION_ERROR,
+        details={"window": "0"},
+    )
+
+    resp = alloc_tools._renew_response(uid, outcome)
+
+    assert resp.data["window"] == "0"
 
 
 def test_list_returns_project_allocations(migrated_url: str) -> None:

@@ -27,10 +27,10 @@ charge. ``spent_kcu`` correctness rides on the held ``PROJECT`` lock, the same a
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -51,6 +51,7 @@ from kdive.domain.models import Allocation
 from kdive.domain.state import AllocationState
 from kdive.security import audit
 from kdive.services.accounting import ledger as accounting
+from kdive.services.allocation.error_details import categorized_details
 from kdive.services.allocation.idempotency import (
     record_key,
     resolve_replay,
@@ -83,6 +84,7 @@ class RenewOutcome:
     allocation: Allocation | None
     category: ErrorCategory | None = None
     current_status: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 async def renew(
@@ -113,7 +115,12 @@ async def renew(
     try:
         extend_hours = _validate_extend(extend)
     except CategorizedError as exc:
-        return RenewOutcome(renewed=False, allocation=None, category=exc.category)
+        return RenewOutcome(
+            renewed=False,
+            allocation=None,
+            category=exc.category,
+            details=categorized_details(exc),
+        )
     alloc = await ALLOCATIONS.get(conn, allocation_id)
     if alloc is None:
         return RenewOutcome(
@@ -131,7 +138,12 @@ async def renew(
     except CategorizedError as exc:
         # A pricing/charge failure (e.g. no budget row, value-too-large) fails closed; the
         # transaction rolled back, so no extend, reserved row, or spent_kcu write survived.
-        return RenewOutcome(renewed=False, allocation=None, category=exc.category)
+        return RenewOutcome(
+            renewed=False,
+            allocation=None,
+            category=exc.category,
+            details=categorized_details(exc),
+        )
 
 
 def _validate_extend(extend: object) -> Decimal:

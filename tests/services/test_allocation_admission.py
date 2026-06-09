@@ -233,6 +233,8 @@ def test_admit_bad_cap_fails_closed(migrated_url: str, cap: object) -> None:
             outcome = await _admit(conn, res)
             assert outcome.granted is False
             assert outcome.category is ErrorCategory.CONFIGURATION_ERROR
+            assert outcome.details["resource_id"] == str(res.id)
+            assert outcome.details["cap"] == repr(cap)
             assert await _count_allocs(conn) == 0
 
     asyncio.run(_run())
