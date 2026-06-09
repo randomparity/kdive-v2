@@ -49,7 +49,7 @@ from kdive.mcp.tools.debug.ops import (
 )
 from kdive.profiles.provisioning import ProvisioningProfile, ssh_credential_ref
 from kdive.providers.ports import Connector, SystemHandle, TransportHandle
-from kdive.providers.resolver import ProviderResolver
+from kdive.providers.resolver import ProviderBinding, ProviderResolver
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
@@ -266,7 +266,7 @@ class DebugSessionHandlers:
         if uid is None:
             return _config_error(session_id)
         with bind_context(principal=ctx.principal):
-            provider_runtime = None
+            provider_binding: ProviderBinding | None = None
             async with pool.connection() as conn:
                 session = await DEBUG_SESSIONS.get(conn, uid)
                 if session is None or session.project not in ctx.projects:
@@ -278,21 +278,21 @@ class DebugSessionHandlers:
                 _, system_id = resolved
                 if isinstance(self._connector_source, ProviderResolver):
                     try:
-                        provider_runtime = await self._connector_source.runtime_for_session(
+                        provider_binding = await self._connector_source.binding_for_session(
                             conn, uid
                         )
                     except CategorizedError as exc:
                         return ToolResponse.failure_from_error(session_id, exc)
-                    connector = provider_runtime.connector
+                    connector = provider_binding.runtime.connector
                 else:
                     connector = self._connector_source
                 envelope = await _detach_locked(conn, ctx, uid, system_id, connector)
             if self._runtime is not None:
                 runtime = self._runtime
                 if isinstance(runtime, DebugRuntimeResolver):
-                    if provider_runtime is None:
+                    if provider_binding is None:
                         raise RuntimeError("provider-aware debug runtime requires resolver")
-                    runtime = runtime.runtime_for_provider(provider_runtime)
+                    runtime = runtime.runtime_for_binding(provider_binding)
                 async with runtime.lock_for(session_id):
                     runtime.reap(session_id)
             self._secret_registry.release(_secret_scope(uid))

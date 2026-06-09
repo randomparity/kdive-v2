@@ -47,8 +47,7 @@ from kdive.providers.ports import (
     GdbMiEngine,
     TransportHandleData,
 )
-from kdive.providers.resolver import ProviderResolver
-from kdive.providers.runtime import ProviderRuntime
+from kdive.providers.resolver import ProviderBinding, ProviderResolver
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 
@@ -134,22 +133,21 @@ class DebugRuntimeResolver:
     ) -> DebugEngineRuntime | ToolResponse:
         async with pool.connection() as conn:
             try:
-                provider = await self._resolver.runtime_for_session(conn, session_id)
+                binding = await self._resolver.binding_for_session(conn, session_id)
             except CategorizedError as exc:
                 return ToolResponse.failure_from_error(str(session_id), exc)
-        return self.runtime_for_provider(provider)
+        return self.runtime_for_binding(binding)
 
-    def runtime_for_provider(self, provider: ProviderRuntime) -> DebugEngineRuntime:
-        kind = ResourceKind(provider.component_sources.provider)
+    def runtime_for_binding(self, binding: ProviderBinding) -> DebugEngineRuntime:
         with self._guard:
-            runtime = self._runtimes.get(kind)
+            runtime = self._runtimes.get(binding.kind)
             if runtime is None:
                 runtime = DebugEngineRuntime(
-                    engine=provider.debug_engine,
-                    attach=provider.attach_seam,
+                    engine=binding.runtime.debug_engine,
+                    attach=binding.runtime.attach_seam,
                     transcript_dir=self._transcript_dir,
                 )
-                self._runtimes[kind] = runtime
+                self._runtimes[binding.kind] = runtime
             return runtime
 
 

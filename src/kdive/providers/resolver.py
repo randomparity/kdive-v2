@@ -10,6 +10,7 @@ Concrete runtimes are still constructed only in :mod:`kdive.providers.compositio
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import LiteralString
 from uuid import UUID
 
@@ -47,6 +48,14 @@ _KIND_FOR_SESSION: LiteralString = (
     "JOIN resources res ON res.id = a.resource_id "
     "WHERE ds.id = %s"
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderBinding:
+    """A resolved provider runtime paired with the Resource kind that selected it."""
+
+    kind: ResourceKind
+    runtime: ProviderRuntime
 
 
 class ProviderResolver:
@@ -104,7 +113,11 @@ class ProviderResolver:
         return self.resolve(kind)
 
     async def runtime_for_session(self, conn: AsyncConnection, session_id: UUID) -> ProviderRuntime:
-        return self.resolve(await self._kind(conn, _KIND_FOR_SESSION, session_id, "session"))
+        return (await self.binding_for_session(conn, session_id)).runtime
+
+    async def binding_for_session(self, conn: AsyncConnection, session_id: UUID) -> ProviderBinding:
+        kind = await self._kind(conn, _KIND_FOR_SESSION, session_id, "session")
+        return ProviderBinding(kind=kind, runtime=self.resolve(kind))
 
     async def _kind(
         self, conn: AsyncConnection, sql: LiteralString, object_id: UUID, object_kind: str

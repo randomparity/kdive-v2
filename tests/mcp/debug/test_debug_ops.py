@@ -16,7 +16,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -24,7 +25,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import ALLOCATIONS, DEBUG_SESSIONS, INVESTIGATIONS, RUNS, SYSTEMS
-from kdive.domain.models import Allocation, DebugSession, Investigation, Run, System
+from kdive.domain.models import Allocation, DebugSession, Investigation, ResourceKind, Run, System
 from kdive.domain.state import (
     AllocationState,
     DebugSessionState,
@@ -42,6 +43,8 @@ from kdive.mcp.tools.debug.ops import (
 from kdive.providers.local_libvirt.debug.debug_gdbmi import GdbMiEngine
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.providers.ports import GdbMiAttachment, TransportHandleData
+from kdive.providers.resolver import ProviderBinding, ProviderResolver
+from kdive.providers.runtime import ProviderRuntime
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.resources.discovery import register_discovered_resource
@@ -517,6 +520,28 @@ def test_attach_runs_once_for_concurrent_ops(migrated_url: str) -> None:
         assert attach.calls == 1  # the per-session lock serializes; only one op attaches
 
     asyncio.run(_run())
+
+
+def test_provider_debug_runtime_cache_uses_binding_kind() -> None:
+    resolver = debug_ops.DebugRuntimeResolver(cast(ProviderResolver, object()))
+    first_attach = _CountingAttach()
+    first_provider = cast(
+        ProviderRuntime,
+        SimpleNamespace(debug_engine=GdbMiEngine(), attach_seam=first_attach),
+    )
+    runtime = resolver.runtime_for_binding(
+        ProviderBinding(kind=ResourceKind.LOCAL_LIBVIRT, runtime=first_provider)
+    )
+
+    second_provider = cast(
+        ProviderRuntime,
+        SimpleNamespace(debug_engine=GdbMiEngine(), attach_seam=_CountingAttach()),
+    )
+    same_runtime = resolver.runtime_for_binding(
+        ProviderBinding(kind=ResourceKind.LOCAL_LIBVIRT, runtime=second_provider)
+    )
+
+    assert same_runtime is runtime
 
 
 def test_end_session_reaps_engine(migrated_url: str) -> None:
