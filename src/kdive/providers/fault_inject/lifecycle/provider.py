@@ -1,11 +1,10 @@
-"""The fault-inject mock ports (ADR-0072, M1.5 issue 2 — happy path).
+"""Fault-inject provider ports for deterministic local-stack exercises (ADR-0072).
 
 Each port satisfies the typed provider contract with synthetic-but-plausible output: a
 synthetic domain name from ``provision``, a loopback ``TransportHandle`` from
-``open_transport``, and a stored synthetic vmcore from ``capture`` — so the happy path
-(no drawn fault) drives the full spine to a real terminal state. The seeded fault engine
-(issue 3) and forced secret resolution (issue 4) layer onto these ports later; issue 2
-draws no faults and resolves no secrets.
+``open_transport``, and a stored synthetic vmcore from ``capture``. The provider drives
+the full server/worker/reconciler spine without requiring libvirt while still exercising
+artifact writes, transport handles, debug operations, and crash retrieval.
 
 A single fixed synthetic build-id keeps ``build`` and ``capture`` aligned, so the mock
 spine's build-id provenance check passes end to end.

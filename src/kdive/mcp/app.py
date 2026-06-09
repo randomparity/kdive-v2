@@ -1,11 +1,10 @@
-"""FastMCP application assembly and the two plane registrar seams (issue #10).
+"""FastMCP application assembly and the two plane registrar seams.
 
-A plane issue (#11+) ships a tool surface *and* a job handler. The skeleton exposes
-two symmetric seams so a plane is added by appending to a tuple here and never edits
-the entrypoint: `_PLANE_REGISTRARS` (tools, called by :func:`build_app`) and
-`_HANDLER_REGISTRARS` (worker job handlers, called by :func:`build_handler_registry`).
-Provider-aware registrars receive the injected provider resolver (ADR-0071), while
-`jobs.*` register tools but no job handler (they are read/cancel tools, not job kinds).
+Tool registration and worker-handler registration are both table-driven. A plane adds
+tool registrars to ``_PLANE_REGISTRARS`` and long-running job handlers to
+``_HANDLER_REGISTRARS``; the entrypoint stays stable. Provider-aware registrars receive
+the injected provider resolver (ADR-0071), while read-only/cancel-only tool groups
+register no job handler because they do not own a ``JobKind``.
 """
 
 from __future__ import annotations
@@ -112,13 +111,10 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _plain(inventory_tools.register),
 )
 
-# Handler seam: each concrete worker module exposes register_handlers(registry).
-# jobs.* register no JobHandler; the provisioning plane (#16) registers the provision/teardown
-# handlers, the build plane (#18) registers the build handler, the control plane (#23)
-# registers the power/force_crash handlers, and the retrieve plane (#24) registers the
-# capture_vmcore handler (each builds its provider/builder lazily from env — no libvirt/
-# toolchain connection at registration). The Connect plane (#20) registers tools only — its
-# debug.start_session/end_session are synchronous, so they have no JobKind and no handler.
+# Handler seam: worker modules expose register_handlers(registry). Long-running lifecycle,
+# build, control, and retrieval operations register JobKind handlers here; synchronous tools
+# register only in _PLANE_REGISTRARS. Handler construction receives the provider resolver and
+# redaction registry without opening provider or toolchain connections at registration time.
 _HANDLER_REGISTRARS: tuple[HandlerRegistrar, ...] = (
     lambda registry, resolver, secret_registry: systems.register_handlers(
         registry, resolver=resolver

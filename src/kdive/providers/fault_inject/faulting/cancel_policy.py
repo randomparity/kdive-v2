@@ -1,11 +1,9 @@
-"""Per-op cancel/compensation policy declaration (ADR-0072, M1.5 issue 3).
+"""Per-operation cancel and compensation policy declarations (ADR-0072).
 
-"Cancel is never undefined" (top-level design §Reconciliation & teardown) is tested
-(issue 7) against a **declaration**, not asserted in prose: every fault-inject op states
-whether a ``jobs.cancel`` landing mid-flight yields clean-rollback, best-effort, or
-orphan-flagged state. Issue 7 pauses an op mid-flight (via injected latency) and exercises
-the declared policy. This module owns only the declaration; the engine (``engine.py``) owns
-the fault draws.
+Every fault-inject operation declares whether a ``jobs.cancel`` landing mid-flight yields
+clean rollback, best-effort cleanup, or orphan-flagged state. Tests use this table as the
+source of truth for cancel behavior; this module owns only the declaration, while
+``engine.py`` owns fault draws and latency injection.
 """
 
 from __future__ import annotations

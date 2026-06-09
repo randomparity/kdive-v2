@@ -1,9 +1,9 @@
 """The gdb-MI tier: a persistent ``gdb --interpreter=mi3`` engine over the gdbstub (ADR-0034).
 
-Ported (trimmed) from v1 ``providers/local/debug/gdb_mi.py`` to the seven Debug-plane ops
-issue #21 scopes: breakpoints (set/clear/list), ``read_registers``, ``read_memory`` (4096-byte
-cap, **bytes verbatim**), ``continue_``, ``interrupt``. The attach/symbol-resolution/module-
-loading/stack/watchpoint/evaluate surface is intentionally **not** ported (out of #21 scope).
+The supported command surface is intentionally narrow: breakpoints (set/clear/list),
+``read_registers``, ``read_memory`` with a 4096-byte cap, ``continue_``, and
+``interrupt``. Attach and symbol resolution are separate seams; module loading, stack
+walking, watchpoints, and expression evaluation are outside this engine's contract.
 
 All **textual** MI transcript/record output passes through the :class:`Redactor` before it is
 persisted to the per-session transcript or returned in a response. The exception is
@@ -460,9 +460,9 @@ def _redactor_factory(
 def _resolve_debuginfo_ref(run_id: str) -> str:  # pragma: no cover - live_vm
     """Resolve the Run's debuginfo (vmlinux) object key, mirroring the Retrieve plane's lookup.
 
-    Raises ``MISSING_DEPENDENCY`` in M0 (no live host); the handler re-tags it
-    ``DEBUG_ATTACH_FAILURE`` so a Debug-plane op without a reachable host fails as an attach
-    failure rather than leaking the gate seam.
+    Raises ``MISSING_DEPENDENCY`` when the live-VM gate has not supplied the object-store
+    lookup seam; the handler re-tags it ``DEBUG_ATTACH_FAILURE`` so a Debug-plane op without
+    a reachable host fails as an attach failure rather than leaking the gate seam.
     """
     raise CategorizedError(
         "resolving a Run's debuginfo object runs only under the live_vm gate",
