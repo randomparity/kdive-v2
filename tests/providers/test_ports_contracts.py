@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -12,6 +13,12 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.providers.ports._common import ProviderModel, config_error
 from kdive.providers.ports.build import BuildOutput, ValidatedUpload
+from kdive.providers.ports.debug import (
+    GdbBreakpointRef,
+    GdbFrame,
+    GdbMiAttachment,
+    GdbStopRecord,
+)
 from kdive.providers.ports.retrieve import (
     CaptureOutput,
     CrashOutput,
@@ -24,6 +31,25 @@ class _ProviderRecord(ProviderModel):
     name: str
 
 
+class _NoopGdbController:
+    def write(self, command: str, *, timeout_sec: float) -> list[dict[str, object]]:
+        del command, timeout_sec
+        return []
+
+    def read(self, *, timeout_sec: float) -> list[dict[str, object]]:
+        del timeout_sec
+        return []
+
+    def get_gdb_response(
+        self, *, timeout_sec: float, raise_error_on_timeout: bool = True
+    ) -> list[dict[str, object]]:
+        del timeout_sec, raise_error_on_timeout
+        return []
+
+    def exit(self) -> None:
+        return None
+
+
 def test_provider_model_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError):
         _ProviderRecord.model_validate({"name": "domain", "ignored": True})
@@ -34,6 +60,49 @@ def test_config_error_uses_provider_configuration_taxonomy() -> None:
 
     assert error.category is ErrorCategory.CONFIGURATION_ERROR
     assert str(error) == "bad provider input"
+
+
+def test_debug_port_records_reject_extra_fields_and_serialize_defaults() -> None:
+    frame = GdbFrame(level=0, func="panic", addr="0xffffffff81000000", file="panic.c", line=42)
+    stop = GdbStopRecord(reason="breakpoint-hit", bkptno="1", frame=frame)
+    breakpoint = GdbBreakpointRef(number="1", type="hw breakpoint", func="panic", enabled=True)
+
+    assert stop.model_dump(mode="json") == {
+        "reason": "breakpoint-hit",
+        "bkptno": "1",
+        "stopped_thread": None,
+        "frame": {
+            "level": 0,
+            "func": "panic",
+            "addr": "0xffffffff81000000",
+            "file": "panic.c",
+            "line": 42,
+        },
+        "timed_out": False,
+    }
+    assert breakpoint.enabled is True
+    with pytest.raises(ValidationError):
+        GdbStopRecord.model_validate({"reason": "stopped", "unknown": "field"})
+
+
+def test_gdb_mi_attachment_records_are_not_shared_between_instances(tmp_path: Path) -> None:
+    first = GdbMiAttachment(
+        controller=_NoopGdbController(),
+        rsp_host="127.0.0.1",
+        rsp_port=1234,
+        transcript_path=tmp_path / "first.jsonl",
+    )
+    second = GdbMiAttachment(
+        controller=_NoopGdbController(),
+        rsp_host="127.0.0.1",
+        rsp_port=1235,
+        transcript_path=tmp_path / "second.jsonl",
+    )
+
+    first.records.append({"type": "result"})
+
+    assert first.records == [{"type": "result"}]
+    assert second.records == []
 
 
 def test_build_output_and_validated_upload_are_stable_namedtuples() -> None:
