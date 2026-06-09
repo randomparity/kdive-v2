@@ -65,8 +65,10 @@ class Provisioner(Protocol):
         Raises:
             CategorizedError: ``CONFIGURATION_ERROR`` for invalid provider-specific profile
                 data, ``MISSING_DEPENDENCY`` for unavailable provider tools or materialization
-                seams, ``PROVISIONING_FAILURE`` for domain/rootfs creation failures, or
-                ``INFRASTRUCTURE_FAILURE`` for provider-control-plane faults.
+                seams, ``PROVISIONING_FAILURE`` for domain/rootfs creation failures,
+                ``INFRASTRUCTURE_FAILURE`` for provider-control-plane faults, or
+                ``TRANSPORT_FAILURE`` when a remote provider's control channel cannot
+                connect (the spec's documented mapping for remote planes).
         """
         ...
 
@@ -75,7 +77,8 @@ class Provisioner(Protocol):
 
         Raises:
             CategorizedError: ``INFRASTRUCTURE_FAILURE`` when the provider cannot complete
-                or verify teardown.
+                or verify teardown, or ``TRANSPORT_FAILURE`` when a remote provider's
+                control channel cannot connect.
         """
         ...
 
@@ -84,8 +87,10 @@ class Provisioner(Protocol):
 
         Raises:
             CategorizedError: ``CONFIGURATION_ERROR`` for invalid provider-specific profile
-                data, ``PROVISIONING_FAILURE`` for replacement-domain creation failures, or
-                ``INFRASTRUCTURE_FAILURE`` for teardown/control-plane faults.
+                data, ``PROVISIONING_FAILURE`` for replacement-domain creation failures,
+                ``INFRASTRUCTURE_FAILURE`` for teardown/control-plane faults, or
+                ``TRANSPORT_FAILURE`` when a remote provider's control channel cannot
+                connect.
         """
         ...
 
