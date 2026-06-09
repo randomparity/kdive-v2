@@ -3,9 +3,10 @@
 `vmcore.fetch(system_id, method)` admits a `capture_vmcore` job on a `crashed` System
 (dedup `{system_id}:capture_vmcore:{method}`). Worker-owned capture execution lives in
 ``kdive.jobs.handlers.vmcore``; `vmcore.list` is a `redacted`-only read.
-`postmortem.crash`/`.triage` are synchronous, ungated offline reads that load the Run's
-`debuginfo_ref`, validate caller commands against the allowlist, run the `CrashPostmortem`
-port over the captured core, and redact output before returning it.
+`postmortem.crash`/`.triage` are synchronous, viewer-gated offline reads over an
+authorized Run. They resolve the Run's `debuginfo_ref` and captured vmcore through the
+shared target resolver, validate caller commands against the allowlist, run the
+`CrashPostmortem` port over the captured core, and redact output before returning it.
 """
 
 from __future__ import annotations
