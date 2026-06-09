@@ -1,6 +1,6 @@
 # ADR 0073 — Forced secret resolution + end-to-end redaction validation (M1.5)
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-08
 - **Deciders:** kdive maintainers
 - **Builds on (does not supersede):** [ADR-0027](0027-safety-modules-secret-backend-impl.md) /
@@ -99,6 +99,33 @@ redacted** — exercising the full register→mask→persist loop, not just half
   file, it is not a schema or API surface.
 - The synthetic secret is **never a real credential** — it is fixture data under the test
   secrets root, so emitting it into a transcript to prove masking carries no disclosure risk.
+
+## Implementation binding (the seam this ADR mandates but did not pin)
+
+The decision above names *what* the loop must do but deferred *where the seam lives* to
+implementation. To keep carried-invariant 1 ("the provider seam is unchanged") and to make
+both mandated assertions falsifiable, the implementation is bound to these refinements
+(surfaced by the design review for issue #183):
+
+- **The loop is a fault-inject-only entry point, not a change to a shared port.** The generic
+  `Provisioner`/`Connector`/`Retriever` signatures (`provision(system_id, profile)`,
+  `open_transport(system, kind)`, `capture(system_id, method)`) carry no secret and stay
+  byte-identical, so local-libvirt is untouched. The mock exposes a dedicated method that
+  receives an **injected** `SecretBackend`, `SecretRegistry`, `secret_ref`, an object-store
+  factory, and a **per-op-unique scope identity** (the op/job id). `ProviderRuntime` gains no
+  `SecretBackend` field — the seam is local to the fault-inject package, exercised at the
+  worker boundary, and absent from the default production composition.
+- **"Response snippet" is a concrete return field, not the `CaptureOutput` tuple.** `capture`
+  returns `StoredArtifact` keys/etags that structurally cannot hold transcript text, so the
+  loop's result carries an explicit **redacted transcript snippet** field (the text a caller
+  would surface). The assertion masks that field by exact value; it is not satisfied by a
+  field that cannot contain the sentinel.
+- **The concurrency test uses distinct per-op sentinel values.** The registry is refcounted
+  **by value**: `release(scope)` evicts a value only at refcount zero. Two concurrent ops
+  therefore resolve **distinct** high-entropy sentinels under **distinct** scope identities, so
+  "a concurrent op's release does not evict this op's value early" is proven by scope
+  isolation (distinct value still present after the other scope's release), not masked by
+  shared-value refcounting.
 
 ## Alternatives considered
 
