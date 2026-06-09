@@ -18,10 +18,11 @@ The criterion → test-function map (acceptance: each criterion has an assertion
 * #5 renewal → ``test_c5_renew_extends`` / ``test_c5_over_budget_renew_denied``
 * #6 role separation → ``test_c6_*``
 * #7 reprovision-in-place → ``test_c7_reprovision_in_place_cycle``
-* #8 live introspection (``live_vm``-gated) → ``test_c8_live_introspect_over_ssh``
+* #8 live introspection contract → non-live fake-backed introspection/redaction tests
 
-Real libvirt/SSH/drgn stay behind the ``live_vm`` marker (criterion 8); the non-gated
-redaction contract is already covered by ``tests/mcp/test_introspect_tools.py``.
+Real libvirt/SSH/drgn acceptance remains deferred until a runnable harness exists; this
+module does not keep ``live_vm`` placeholders that would fail a correctly prepared runner.
+The non-gated redaction contract is covered by ``tests/mcp/test_introspect_tools.py``.
 """
 
 from __future__ import annotations
@@ -1078,27 +1079,3 @@ def test_c7_reprovision_in_place_cycle(migrated_url: str) -> None:
             assert alloc_n is not None and alloc_n["n"] == 1  # no new Allocation row
 
     asyncio.run(_run())
-
-
-# === Criterion 8: live introspection (live_vm-gated) =======================================
-
-
-_LIVE_SSH_ENV = "KDIVE_LIVE_SSH_TARGET"
-
-
-@pytest.mark.live_vm
-def test_c8_live_introspect_over_ssh(migrated_url: str) -> None:  # pragma: no cover - live_vm
-    """#8: live drgn over SSH returns task/module/sysinfo, secret redacted, transcript sensitive.
-
-    SKIPs in CI: the body is wired by the live_vm runner against an operator-provided
-    SSH-reachable kdump guest (the same fixtures as the M0 full-path test, plus
-    ``KDIVE_LIVE_SSH_TARGET``). On a real host it asserts: ``debug.start_session(transport=
-    "ssh")`` then ``introspect.run`` returns a live report; a planted secret is ``[REDACTED]``
-    in the response; and the raw transcript is marked ``sensitive``. The non-gated redaction
-    contract is already covered by ``tests/mcp/test_introspect_tools.py`` against a fake live
-    introspector, so CI retains a real signal for the redaction invariant.
-    """
-    from tests.integration.conftest import live_vm_preflight
-
-    live_vm_preflight(require_ssh=True)
-    raise NotImplementedError("live_vm SSH/introspect harness wired by the live_vm runner")

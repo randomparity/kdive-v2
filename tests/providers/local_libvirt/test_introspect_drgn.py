@@ -469,17 +469,3 @@ def test_live_from_env_real_seam_raises_missing_dependency() -> None:
     with pytest.raises(CategorizedError) as exc:
         introspector.introspect_live(transport_handle="ssh://127.0.0.1:22", helper="tasks")
     assert exc.value.category is ErrorCategory.MISSING_DEPENDENCY
-
-
-# --- live_vm-gated real drgn smoke (deselected in CI via -m "not live_vm") ------------------
-
-
-@pytest.mark.live_vm
-def test_live_vm_real_drgn_from_vmcore() -> None:  # pragma: no cover - live_vm
-    import os
-
-    vmcore = os.environ.get("KDIVE_VMCORE")
-    vmlinux = os.environ.get("KDIVE_VMLINUX")
-    if not vmcore or not vmlinux:
-        pytest.skip("KDIVE_VMCORE/KDIVE_VMLINUX unavailable")
-    raise NotImplementedError("live_vm real drgn introspection harness wired by the live_vm runner")
