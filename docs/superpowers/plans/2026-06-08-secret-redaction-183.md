@@ -114,6 +114,21 @@ def test_persisted_transcript_is_masked_and_carries_placeholder(tmp_path: Path) 
     assert _SENTINEL not in output.transcript_snippet
     assert REDACTION in output.transcript_snippet
     assert output.artifact.sensitivity is Sensitivity.REDACTED
+
+
+def test_masking_is_the_registry_exact_value_path_not_the_pattern(tmp_path: Path) -> None:
+    # Guard against a spurious pass: a control Redactor built from an EMPTY registry must
+    # leave the bare sentinel PRESENT, proving the persisted masking came from the
+    # register->exact-value path (ADR-0073), not the Redactor's independent key=value regex.
+    from kdive.providers.fault_inject.secret_console import _synthetic_transcript
+    from kdive.security.secrets.redaction import Redactor
+
+    control = Redactor(registry=SecretRegistry())  # empty registry, no value seeded
+    assert _SENTINEL in control.redact_text(_synthetic_transcript(_SENTINEL))
+
+    seeded = SecretRegistry()
+    seeded.register(_SENTINEL, scope="probe")
+    assert _SENTINEL not in Redactor(registry=seeded).redact_text(_synthetic_transcript(_SENTINEL))
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -166,10 +181,16 @@ class SecretConsoleOutput(NamedTuple):
 
 
 def _synthetic_transcript(value: str) -> str:
-    """A console transcript that echoes the resolved credential, as a real console would."""
+    """A console transcript that echoes the resolved credential, as a real console would.
+
+    The value is emitted **bare** (not as ``password=<value>``) so that *only* the
+    registry's exact-value masking — not the ``Redactor``'s independent key=value regex —
+    can mask it. This keeps the mask-before-persist assertion a real test of the
+    register->mask path (ADR-0073), not a coincidence of pattern matching.
+    """
     return (
         "fault-inject console boot\n"
-        f"[bmc] login: using password={value}\n"
+        f"[bmc] handshake echoed credential {value} to the console\n"
         "fault-inject console ready\n"
     )
 
@@ -472,7 +493,7 @@ gh issue create \
 
 ## Self-review
 
-- **Spec coverage:** §Validation surface "Secret register→redact end-to-end" → Tasks 1-4. Acceptance "persisted artifact AND response snippet both masked + placeholder" → Task 1. "value gone after release" → Task 2. "concurrent op's release does not evict early" → Task 3. "release only after redact-and-persist" → Task 2 (ordering probe) + the `finally` placement. Quarantine follow-up → Task 5.
+- **Spec coverage:** §Validation surface "Secret register→redact end-to-end" → Tasks 1-4. Acceptance "persisted artifact AND response snippet both masked + placeholder" → Task 1, with a control test proving the masking is the registry exact-value path (an empty-registry `Redactor` leaves the bare sentinel present) and not the `Redactor`'s independent key=value regex. "value gone after release" → Task 2. "concurrent op's release does not evict early" → Task 3. "release only after redact-and-persist" → Task 2 (ordering probe) + the `finally` placement. Quarantine follow-up → Task 5.
 - **Carried-invariant 1 (provider seam unchanged):** no generic port signature touched; `provider.py` untouched (avoids #182 collision).
 - **Placeholder scan:** every code step shows full code; no TBD/TODO.
 - **Type consistency:** `SecretConsoleOutput(artifact, transcript_snippet)`, `emit_and_persist(system_id=, scope=)`, `for_op(registry=, store_factory=, secret_ref=, scope=)` used identically across tasks. `_StorePort.put_artifact` matches the spy and `FaultInjectRetrieve` store shape.
