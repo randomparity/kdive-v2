@@ -655,6 +655,12 @@ def _ssh_profile() -> dict[str, Any]:
     return profile
 
 
+def _fault_inject_profile() -> dict[str, Any]:
+    profile = copy.deepcopy(_PROFILE)
+    profile["provider"] = {"fault-inject": {}}
+    return profile
+
+
 async def _seed_ssh_system(pool: AsyncConnectionPool, alloc_id: str) -> str:
     return await _seed_profiled_system(pool, alloc_id, _ssh_profile())
 
@@ -787,6 +793,32 @@ def test_start_session_ssh_missing_credential_ref_is_config_error(migrated_url: 
         assert resp.status == "error" and resp.error_category == "configuration_error"
         assert count == 0
         assert connector.opened == []  # no transport opened without a credential
+
+    asyncio.run(_run())
+
+
+def test_start_session_ssh_fault_inject_profile_is_missing_credential_ref(
+    migrated_url: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_profiled_system(pool, alloc_id, _fault_inject_profile())
+            run_id = await _seed_run(pool, sys_id)
+            connector = _FakeConnector()
+            resp = await _start_session(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="ssh",
+                connector=connector,
+                secret_backend=_OrderRecordingBackend([]),
+            )
+            count = await _session_count(pool)
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.data == {"reason": "ssh_credential_ref_missing"}
+        assert count == 0
+        assert connector.opened == []
 
     asyncio.run(_run())
 

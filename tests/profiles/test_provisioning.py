@@ -23,6 +23,7 @@ from kdive.profiles.provisioning import (
     reject_rootfs_upload_without_window,
     require_concrete_sizing,
     rootfs_upload_window_allowed,
+    ssh_credential_ref,
 )
 
 _VALID: dict[str, Any] = {
@@ -121,6 +122,15 @@ def test_ssh_credential_ref_parses_when_present() -> None:
     data["provider"]["local-libvirt"]["ssh_credential_ref"] = "ssh/guest-key"
     profile = ProvisioningProfile.parse(data)
     assert profile.provider.local_libvirt.ssh_credential_ref == "ssh/guest-key"
+    assert ssh_credential_ref(profile) == "ssh/guest-key"
+
+
+def test_ssh_credential_ref_returns_none_for_provider_without_ssh_credentials() -> None:
+    data = _valid()
+    data["provider"] = {"fault-inject": {}}
+    profile = ProvisioningProfile.parse(data)
+
+    assert ssh_credential_ref(profile) is None
 
 
 def test_ssh_credential_ref_rejects_blank() -> None:

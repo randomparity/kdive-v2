@@ -368,6 +368,12 @@ def rootfs_source(profile: ProvisioningProfile) -> RootfsSource | None:
     return section.rootfs if section is not None else None
 
 
+def ssh_credential_ref(profile: ProvisioningProfile) -> str | None:
+    """Return the SSH credential reference for providers with credential-backed SSH."""
+    section = profile.provider.local_libvirt_section
+    return section.ssh_credential_ref if section is not None else None
+
+
 def validate_profile(profile: ProvisioningProfile) -> None:
     """Reject unsupported provider params and unresolvable rootfs references."""
     section = profile.provider.local_libvirt_section

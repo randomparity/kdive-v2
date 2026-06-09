@@ -43,7 +43,7 @@ from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.debug.ops import DebugEngineRuntime, register_debug_ops
-from kdive.profiles.provisioning import ProvisioningProfile
+from kdive.profiles.provisioning import ProvisioningProfile, ssh_credential_ref
 from kdive.providers.ports import Connector, SystemHandle, TransportHandle
 from kdive.providers.resolver import ProviderResolver
 from kdive.security import audit
@@ -305,7 +305,7 @@ def _resolve_credential(
         profile = ProvisioningProfile.parse(system.provisioning_profile)
     except CategorizedError as exc:
         return ToolResponse.failure_from_error(str(system.id), exc)
-    ref = profile.provider.local_libvirt.ssh_credential_ref
+    ref = ssh_credential_ref(profile)
     if ref is None:
         return _config_error(str(system.id), data={"reason": "ssh_credential_ref_missing"})
     if secret_backend is None:
