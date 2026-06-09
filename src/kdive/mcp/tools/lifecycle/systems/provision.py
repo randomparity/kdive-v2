@@ -70,6 +70,13 @@ _NON_TERMINAL_SYSTEM = (
     SystemState.REPROVISIONING,
     SystemState.CRASHED,
 )
+_PROVISION_CURRENT_STATUS_ONLY = frozenset(
+    {
+        SystemState.READY,
+        SystemState.REPROVISIONING,
+        SystemState.CRASHED,
+    }
+)
 
 type LockedAllocationSystem = tuple[AsyncConnection, Allocation, System | None]
 type CreateSystemMode = Literal["provision", "define"]
@@ -330,14 +337,17 @@ async def _provision_create_response(
                 "reason": "use_systems.provision_defined",
             },
         )
-    job = await queue.enqueue(
+    if existing.state in _PROVISION_CURRENT_STATUS_ONLY:
+        return _config_error(str(existing.id), data={"current_status": existing.state.value})
+    if existing.state is not SystemState.PROVISIONING:
+        return _config_error(str(existing.id), data={"current_status": existing.state.value})
+    return await _provision_job_envelope(
         conn,
-        JobKind.PROVISION,
-        SystemPayload(system_id=str(existing.id)),
-        job_authorizing(ctx, alloc.project),
-        f"{alloc.id}:provision",
+        ctx,
+        project=alloc.project,
+        allocation_id=alloc.id,
+        system_id=existing.id,
     )
-    return job_envelope(job, "system_id", existing.id)
 
 
 async def _define_create_response(
@@ -381,14 +391,31 @@ async def _admit_defined(
             project=alloc.project,
         ),
     )
+    return await _provision_job_envelope(
+        conn,
+        ctx,
+        project=alloc.project,
+        allocation_id=alloc.id,
+        system_id=system.id,
+    )
+
+
+async def _provision_job_envelope(
+    conn: AsyncConnection,
+    ctx: RequestContext,
+    *,
+    project: str,
+    allocation_id: UUID,
+    system_id: UUID,
+) -> ToolResponse:
     job = await queue.enqueue(
         conn,
         JobKind.PROVISION,
-        SystemPayload(system_id=str(system.id)),
-        job_authorizing(ctx, alloc.project),
-        f"{alloc.id}:provision",
+        SystemPayload(system_id=str(system_id)),
+        job_authorizing(ctx, project),
+        f"{allocation_id}:provision",
     )
-    return job_envelope(job, "system_id", system.id)
+    return job_envelope(job, "system_id", system_id)
 
 
 async def _provision_defined_locked(
@@ -439,24 +466,27 @@ async def _provision_defined_response(
 ) -> ToolResponse:
     if system.state in _TERMINAL_SYSTEM:
         return _config_error(str(system.id), data={"current_status": system.state.value})
+    if system.state in _PROVISION_CURRENT_STATUS_ONLY:
+        return _config_error(str(system.id), data={"current_status": system.state.value})
+    if system.state is SystemState.PROVISIONING:
+        return await _provision_job_envelope(
+            conn,
+            ctx,
+            project=system.project,
+            allocation_id=system.allocation_id,
+            system_id=system.id,
+        )
+    if system.state is not SystemState.DEFINED:
+        return _config_error(str(system.id), data={"current_status": system.state.value})
     try:
         parsed = ProvisioningProfile.parse(system.provisioning_profile)
         validate_profile_for_provider(parsed, component_sources)
         validate_rootfs_for_provider(parsed, rootfs_validator)
     except CategorizedError as exc:
         return ToolResponse.failure_from_error(str(system.id), exc)
-    if system.state is SystemState.DEFINED:
-        if alloc.state is not AllocationState.ACTIVE:
-            return _config_error(str(alloc.id), data={"current_status": alloc.state.value})
-        return await _admit_defined(conn, ctx, alloc, system)
-    job = await queue.enqueue(
-        conn,
-        JobKind.PROVISION,
-        SystemPayload(system_id=str(system.id)),
-        job_authorizing(ctx, system.project),
-        f"{system.allocation_id}:provision",
-    )
-    return job_envelope(job, "system_id", system.id)
+    if alloc.state is not AllocationState.ACTIVE:
+        return _config_error(str(alloc.id), data={"current_status": alloc.state.value})
+    return await _admit_defined(conn, ctx, alloc, system)
 
 
 async def _new_system_allowed(

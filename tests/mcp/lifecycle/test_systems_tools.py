@@ -1947,6 +1947,33 @@ def test_provision_defined_refuses_released_allocation(migrated_url: str) -> Non
     asyncio.run(_run())
 
 
+@pytest.mark.parametrize(
+    "state",
+    [SystemState.READY, SystemState.REPROVISIONING, SystemState.CRASHED],
+)
+def test_provision_defined_reports_existing_system_state(
+    migrated_url: str, state: SystemState
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, state)
+            resp = await _provision_defined(pool, _ctx(), sys_id)
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE dedup_key = %s",
+                    (f"{alloc_id}:provision",),
+                )
+                job_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.object_id == sys_id
+        assert resp.data["current_status"] == state.value
+        assert job_row is not None and job_row["n"] == 0
+
+    asyncio.run(_run())
+
+
 def test_provision_defined_revalidates_stored_profile_against_provider(
     migrated_url: str,
 ) -> None:
@@ -2078,6 +2105,33 @@ def test_provision_create_lane_refuses_defined_system(migrated_url: str) -> None
         assert resp.error_category == "configuration_error"
         assert resp.object_id == sys_id
         assert resp.data["reason"] == "use_systems.provision_defined"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    "state",
+    [SystemState.READY, SystemState.REPROVISIONING, SystemState.CRASHED],
+)
+def test_provision_create_lane_reports_existing_system_state(
+    migrated_url: str, state: SystemState
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, state)
+            resp = await _provision(pool, _ctx(), alloc_id, _profile())
+            async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE dedup_key = %s",
+                    (f"{alloc_id}:provision",),
+                )
+                job_row = await cur.fetchone()
+        assert resp.status == "error"
+        assert resp.error_category == "configuration_error"
+        assert resp.object_id == sys_id
+        assert resp.data["current_status"] == state.value
+        assert job_row is not None and job_row["n"] == 0
 
     asyncio.run(_run())
 
