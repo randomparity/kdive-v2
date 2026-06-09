@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
+from psycopg_pool import AsyncConnectionPool
 
 from kdive.admin.default_compose import LOCAL_COMPOSE
 from kdive.admin.default_fixtures import LOCAL_LIBVIRT_FIXTURES
@@ -140,7 +141,7 @@ async def seed_demo(
         await pool.close()
 
 
-async def register_local_resource(pool: Any) -> None:
+async def register_local_resource(pool: AsyncConnectionPool) -> None:
     from kdive.providers.composition import build_provider_resolver
 
     await build_provider_resolver().register_all_discovery(pool)
