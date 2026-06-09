@@ -40,9 +40,9 @@ We will scope remote live-debug by what must cross the network:
   pool's source addresses** (not "a port range open to the network"), and one System's gdbstub
   is **unreachable by other tenants or guests** (multi-tenant isolation). Each running System
   gets a **distinct gdbstub port**: the provisioning profile (spec issue 2) enables the gdbstub
-  and **allocates + records** the port (in System state / `capabilities`, collision-free across
-  concurrent Systems on one host); the Connect port (issue 6) reads it and hands the worker's
-  gdb a `host:port`. Bare metal later swaps the gdbstub for KGDB-over-SoL **behind the same
+  and **allocates + records** the port (recorded in the domain definition itself, collision-free
+  across concurrent Systems on one host — ADR-0080 refines the recording location); the Connect
+  port (issue 6) reads it and hands the worker's gdb a `host:port`. Bare metal later swaps the gdbstub for KGDB-over-SoL **behind the same
   Connect port**. Where a deployment cannot guarantee the ACL, the TLS-tunneled proxy
   (Alternatives) is the hardening path — M2 assumes an operator-controlled worker↔host segment.
 - **drgn live introspection: in-guest, via the qemu-guest-agent seam** (ADR-0078) — the worker

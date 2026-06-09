@@ -69,17 +69,30 @@ domain XML as QEMU passthrough arguments (`<qemu:commandline><qemu:arg value='-g
 `undefine`, survives worker crashes (it lives on the host, beside the domain it describes),
 and is readable over the same TLS connection by the Connect plane (issue 6).
 
+This **refines ADR-0079's recording sketch** ("in System state / `capabilities`"): a
+`systems` column is core DDL outside the gate allowlist, and the `capabilities` row is
+resource-scoped and insert-if-absent — neither write is atomic with domain creation. The
+domain XML is the **registry of record**; the Connect plane reads it over TLS, not the DB.
+
 Allocation: enumerate all **defined** `kdive-`prefixed domains on the host (running or not —
 a stopped System still owns its port), parse each one's recorded port, and pick the **lowest
-free port** in the operator-configured range. If the System's own domain already records an
-in-range port (a provision retry), **reuse it** — the port is stable across retries. An
-exhausted range is a `PROVISIONING_FAILURE` naming the range and the count in use.
+free port** in the operator-configured range. A domain that vanishes between listing and
+reading (a concurrent teardown) is **skipped** — its port is being released. If the System's
+own domain already records an in-range port (a provision retry), **reuse it** — the port is
+stable across retries. An exhausted range is a `PROVISIONING_FAILURE` naming the range and
+the count in use.
 
-Two workers provisioning concurrently can both pick the same lowest-free port; the loser's
-QEMU fails to bind at `create()`, which the transactional define/start path (Decision 4)
-rolls back, and the retry re-enumerates against the winner's now-visible record. The race
-window is the define→start gap; the backstop is QEMU's own bind exclusivity, so a collision
-can never produce two Systems sharing a port (the acceptance invariant).
+The range is **reserved for kdive** — an operator obligation recorded alongside the ACL
+obligation (ADR-0079): enumeration sees only kdive domains, so a foreign listener inside the
+range is invisible to allocation and surfaces only as a bind failure at start. Two workers
+provisioning concurrently can also both pick the same lowest-free port; the loser's QEMU
+fails to bind at `create()`. Either way the backstop is QEMU's own bind exclusivity — a
+collision can never produce two Systems sharing a port (the acceptance invariant) — and a
+start failure **advances to the next free candidate port within the same provision attempt**
+(bounded by a small fixed retry count, then by the range) rather than re-picking the same
+"free" port deterministically forever. The advance is unconditional on the failure's cause
+(libvirt does not surface bind-vs-other distinctly enough to sniff messages): if the real
+fault is elsewhere, the next attempt fails the same way and the bounded retry stops.
 
 ### 3. The overlay: a storage-pool volume with a qcow2 backing store
 
@@ -93,7 +106,10 @@ pool + overlay volume.
 
 Idempotency mirrors ADR-0060: provision creates the overlay only when **absent** (a present
 overlay may be held open by a running QEMU; recreating it would corrupt the live disk);
-teardown deletes it, an already-absent volume being the achieved post-state.
+teardown deletes it, an already-absent volume being the achieved post-state. A present
+overlay is reused **without** checking its backing store against the profile — provision
+retries carry the same profile (the handler re-reads the stored profile), and a profile
+*change* goes through `reprovision`, whose teardown deletes the old overlay first.
 
 ### 4. Provision/teardown semantics: ADR-0025 transactionality + a guest-agent readiness gate
 
@@ -156,10 +172,14 @@ reads the config at op time, exactly as the discovery registrar does.
 - The agent-readiness gate makes provision slower (up to the poll timeout on a broken image)
   but makes `ready` mean *reachable through the seam every later plane uses* — the issue's
   acceptance criterion ("the guest agent responds") is enforced at the boundary that owns it.
-- An agent-timeout leaves a running domain behind by design; the System row goes `failed`,
-  and release/teardown reaps the domain. Until the remote reaper lands (deferred from the
-  discovery foundation, with PCIe enumeration), a leaked domain after a worker crash is
-  reclaimed only by teardown/release — recorded as a known M2 gap, not silently.
+- An agent-timeout leaves a running domain behind by design; the System row goes `failed`
+  (the provision handler records the failure and does **not** tear down — verified in
+  `jobs/handlers/systems.py`), and the domain is reclaimed by an explicit
+  `systems.teardown` or by allocation release (including break-glass and lease expiry),
+  both of which call the provider's idempotent `teardown`. Nothing reclaims it
+  *automatically* before then: the reconciler's provider reaper composes no remote reaper
+  yet (deferred from the discovery foundation, with PCIe enumeration) — recorded as a known
+  M2 gap, not silently.
 - The operator-staged base volume is a manual prerequisite (documented in the e2e runbook,
   issue 8); issue 3's artifact channel does not replace it (kernels flow through the object
   store; the base OS image does not).
