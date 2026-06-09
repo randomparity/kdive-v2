@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import TypedDict
 
 MAX_PATTERN_CHARS = 256
 MAX_TERMS = 16
@@ -17,11 +17,20 @@ class ArtifactSearchInputError(ValueError):
     """The requested search is malformed or outside the ADR-0064 bounds."""
 
 
+class SearchMatch(TypedDict):
+    """One bounded literal match window."""
+
+    line: int
+    text: str
+    before: list[str]
+    after: list[str]
+
+
 @dataclass(frozen=True)
 class SearchResult:
     """A bounded search result suitable for ``ToolResponse.data``."""
 
-    matches: list[dict[str, Any]]
+    matches: list[SearchMatch]
     match_count: int
     truncated: bool
 
@@ -69,14 +78,14 @@ def search_text(
     after_lines = _bounded_int(after_lines, low=0, high=20, label="after_lines")
     max_matches = _bounded_int(max_matches, low=1, high=50, label="max_matches")
     lines = data.decode("utf-8", errors="replace").splitlines()
-    matches: list[dict[str, Any]] = []
+    matches: list[SearchMatch] = []
     truncated = False
     for idx, line in enumerate(lines):
         if not any(term in line for term in terms):
             continue
         start = max(0, idx - before_lines)
         end = min(len(lines), idx + after_lines + 1)
-        candidate = {
+        candidate: SearchMatch = {
             "line": idx + 1,
             "text": _clip(line),
             "before": [_clip(item) for item in lines[start:idx]],
