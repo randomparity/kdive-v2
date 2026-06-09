@@ -8,19 +8,24 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastmcp import Client
 from fastmcp.server.auth.providers.jwt import JWTVerifier
+from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.db.repositories import BUDGETS, QUOTAS
-from kdive.domain.models import Budget, Quota
+from kdive.db.repositories import ALLOCATIONS, BUDGETS, INVESTIGATIONS, QUOTAS, SYSTEMS
+from kdive.domain.models import Allocation, Budget, Investigation, Quota, System
+from kdive.domain.state import AllocationState, InvestigationState, SystemState
 from kdive.mcp.app import build_app
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools.catalog import artifacts as artifacts_tools
+from kdive.mcp.tools.catalog import artifacts_uploads
 from kdive.mcp.tools.catalog import resources as resources_tools
 from kdive.mcp.tools.lifecycle import allocations as allocations_tools
+from kdive.mcp.tools.lifecycle.runs import registrar as runs_tools
 from kdive.mcp.tools.lifecycle.systems import registrar as systems_tools
 from kdive.mcp.tools.ops import resources as ops_resources_tools
 from kdive.providers import composition
@@ -29,11 +34,17 @@ from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole, Role
 from kdive.services.resources.discovery import register_discovered_resource
+from kdive.store.objectstore import PresignedUpload
 from tests.mcp.conftest import AUDIENCE, ISSUER, make_keypair
-from tests.mcp.systems_support import fault_inject_profile
+from tests.mcp.systems_support import fault_inject_profile, granted_allocation, upload_profile
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
+_RUN_BUILD_PROFILE: dict[str, Any] = {
+    "schema_version": 1,
+    "kernel_source_ref": "git+https://git.kernel.org#v6.9",
+    "config": {"kind": "local", "path": "/configs/kdump.config"},
+}
 
 
 def _verifier() -> JWTVerifier:
@@ -127,6 +138,75 @@ async def _seed_fault_inject_resource_and_limits(pool: AsyncConnectionPool) -> s
             ),
         )
     return str(resource.id)
+
+
+async def _seed_ready_system_and_investigation(pool: AsyncConnectionPool) -> tuple[str, str]:
+    resource_id = await _seed_resource_and_limits(pool)
+    async with pool.connection() as conn:
+        allocation = await ALLOCATIONS.insert(
+            conn,
+            Allocation(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="wrapper-user",
+                project="proj",
+                resource_id=UUID(resource_id),
+                state=AllocationState.ACTIVE,
+            ),
+        )
+        system = await SYSTEMS.insert(
+            conn,
+            System(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="wrapper-user",
+                project="proj",
+                allocation_id=allocation.id,
+                state=SystemState.READY,
+                provisioning_profile=upload_profile(),
+            ),
+        )
+        investigation = await INVESTIGATIONS.insert(
+            conn,
+            Investigation(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="wrapper-user",
+                project="proj",
+                title="wrapper",
+                state=InvestigationState.OPEN,
+            ),
+        )
+    return str(system.id), str(investigation.id)
+
+
+async def _run_count(pool: AsyncConnectionPool) -> int:
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT count(*) AS n FROM runs")
+        row = await cur.fetchone()
+    assert row is not None
+    return int(row["n"])
+
+
+class _UploadStore:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, int]] = []
+
+    def presign_put(
+        self,
+        key: str,
+        *,
+        sha256: str,
+        size_bytes: int,
+        sensitivity: object,
+        retention_class: str,
+        expires_in: int,
+    ) -> PresignedUpload:
+        self.calls.append((key, sha256, size_bytes))
+        return PresignedUpload(url=f"https://store/{key}", required_headers={"x-test": "ok"})
 
 
 async def _call_tool(client: Client, name: str, args: dict[str, Any] | None = None) -> ToolResponse:
@@ -237,3 +317,101 @@ def test_systems_provision_resolves_fault_inject_runtime(
     granted, provisioned = asyncio.run(_run())
     assert granted.status == "granted", granted
     assert provisioned.status == "queued", provisioned
+
+
+def test_runs_wrappers_roundtrip_create_and_validation_through_fastmcp(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> tuple[ToolResponse, ToolResponse, int]:
+        async with _pool(migrated_url) as pool:
+            system_id, investigation_id = await _seed_ready_system_and_investigation(pool)
+            monkeypatch.setattr(runs_tools, "current_context", _ctx)
+            app = build_app(pool, verifier=_verifier())
+            async with Client(app) as client:
+                created = await _call_tool(
+                    client,
+                    "runs.create",
+                    {
+                        "investigation_id": investigation_id,
+                        "system_id": system_id,
+                        "build_profile": _RUN_BUILD_PROFILE,
+                    },
+                )
+                invalid = await _call_tool(client, "runs.get", {"run_id": "not-a-uuid"})
+            count = await _run_count(pool)
+        return created, invalid, count
+
+    created, invalid, count = asyncio.run(_run())
+    assert created.status == "created", created
+    assert created.data["project"] == "proj"
+    assert invalid.status == "error"
+    assert invalid.error_category == "configuration_error"
+    assert count == 1
+
+
+def test_systems_wrappers_roundtrip_define_and_validation_through_fastmcp(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> tuple[ToolResponse, ToolResponse]:
+        async with _pool(migrated_url) as pool:
+            allocation_id = await granted_allocation(pool)
+            monkeypatch.setattr(systems_tools, "current_context", _ctx)
+            app = build_app(pool, verifier=_verifier())
+            async with Client(app) as client:
+                defined = await _call_tool(
+                    client,
+                    "systems.define",
+                    {"allocation_id": allocation_id, "profile": upload_profile()},
+                )
+                invalid = await _call_tool(client, "systems.list", {"state": "bogus"})
+        return defined, invalid
+
+    defined, invalid = asyncio.run(_run())
+    assert defined.status == "defined", defined
+    assert defined.suggested_next_actions == [
+        "artifacts.create_system_upload",
+        "systems.provision_defined",
+    ]
+    assert invalid.status == "error"
+    assert invalid.error_category == "configuration_error"
+
+
+def test_artifact_upload_wrapper_roundtrips_and_validates_through_fastmcp(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> tuple[ToolResponse, ToolResponse, _UploadStore]:
+        async with _pool(migrated_url) as pool:
+            allocation_id = await granted_allocation(pool)
+            store = _UploadStore()
+            monkeypatch.setattr(systems_tools, "current_context", _ctx)
+            monkeypatch.setattr(artifacts_tools, "current_context", _ctx)
+            monkeypatch.setattr(artifacts_uploads, "object_store_from_env", lambda: store)
+            app = build_app(pool, verifier=_verifier())
+            async with Client(app) as client:
+                defined = await _call_tool(
+                    client,
+                    "systems.define",
+                    {"allocation_id": allocation_id, "profile": upload_profile()},
+                )
+                upload = await _call_tool(
+                    client,
+                    "artifacts.create_system_upload",
+                    {
+                        "system_id": defined.object_id,
+                        "artifacts": [{"name": "rootfs", "sha256": "checksum", "size_bytes": 10}],
+                    },
+                )
+                invalid = await _call_tool(
+                    client,
+                    "artifacts.create_system_upload",
+                    {"system_id": defined.object_id, "artifacts": []},
+                )
+        return upload, invalid, store
+
+    upload, invalid, store = asyncio.run(_run())
+    assert upload.status == "upload_ready", upload
+    assert upload.items[0].object_id.endswith("/rootfs")
+    assert upload.items[0].refs["upload_url"].startswith("https://store/")
+    assert invalid.status == "error"
+    assert invalid.error_category == "configuration_error"
+    assert store.calls == [(upload.items[0].object_id, "checksum", 10)]
