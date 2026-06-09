@@ -735,7 +735,7 @@ report it missing until the operator builds, imports, or links it.
 
 - [ ] **Step 5: Run focused tests**
 
-Run: `uv run python -m pytest tests/components/test_catalog.py tests/rootfs/test_catalog.py -q`
+Run: `uv run python -m pytest tests/components/test_catalog.py -q`
 
 Expected: PASS.
 

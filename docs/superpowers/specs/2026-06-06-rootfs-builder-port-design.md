@@ -10,9 +10,9 @@
 
 `scripts/live-vm/build-guest-image.sh` is a placeholder. It `qemu-img create`s an **empty**
 qcow2 and pins a base image by an all-zeros digest
-(`docker://quay.io/kdive/fedora-kdump@sha256:0000…`). The rootfs catalog
-(`src/kdive/rootfs/catalog_data.json`) points only at a raw Fedora Cloud image with **no
-kdive-ready service and no SSH key** — it boots to a bare `login:` marker. There is therefore
+(`docker://quay.io/kdive/fedora-kdump@sha256:0000…`). The provider fixture catalog still
+needs a kdive-ready rootfs entry rather than a bare Fedora Cloud image with **no
+kdive-ready service and no SSH key**. There is therefore
 no image the vulnerable Linux 7.0 kernel can boot into to reach a userspace path lookup and
 trigger the `__d_lookup()` OOB read that drives the demo
 (`docs/test-cases/05-dcache-dhash-entries-oob-read.md`).

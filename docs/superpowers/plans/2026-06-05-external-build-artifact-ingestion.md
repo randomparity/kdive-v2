@@ -24,7 +24,8 @@ Implement against these refs (already read during planning; re-open as needed):
 - Schema/migrations: `src/kdive/db/schema/0001_init.sql` (tables `runs`, `run_steps`, `systems`, `artifacts`), `src/kdive/db/migrate.py` (forward-only, checksum-immutable, `NNNN_*.sql`).
 - Domain: `src/kdive/domain/models.py` (`Run`, `Artifact`, `System`), `src/kdive/domain/state.py` (`RunState`), `src/kdive/domain/errors.py` (`ErrorCategory`).
 - Envelope: `src/kdive/mcp/responses.py` (`ToolResponse`, `refs`/`data` are `dict[str,str]`).
-- v1 catalog to port: `~/src/kdive-v1/src/kdive/rootfs/catalog.py`, `~/src/kdive-v1/src/kdive/rootfs/catalog_data.json`.
+- Rootfs catalog note: the standalone v1 catalog port was superseded by the provider fixture
+  catalog in `fixtures/local-libvirt/manifest.yaml` and `kdive.components.catalog`.
 
 **Error taxonomy (existing `ErrorCategory` only — never invent strings):** missing/skipped upload → `CONFIGURATION_ERROR`; defective uploaded artifact (checksum/size mismatch, bad magic, `build_id` mismatch) → `BUILD_FAILURE`; object-store/presign failure → `INFRASTRUCTURE_FAILURE`.
 
@@ -135,14 +136,16 @@ TTL/cap come from env with defaults (Task 6): `KDIVE_UPLOAD_TTL_SECONDS` (defaul
 **Create:**
 - `src/kdive/db/upload_manifest.py` — owner-scoped manifest read/replace/delete (Task 5).
 - `src/kdive/db/schema/0006_upload_manifests.sql` — the `upload_manifests` table (Task 5).
-- `src/kdive/rootfs/__init__.py`, `src/kdive/rootfs/catalog.py`, `src/kdive/rootfs/catalog_data.json` — ported catalog (Task 9).
+- `fixtures/local-libvirt/manifest.yaml`, `fixtures/local-libvirt/rootfs/*.yaml`, and
+  `src/kdive/components/catalog.py` — provider fixture catalog for rootfs references.
 - `tests/store/test_objectstore_ingestion.py` — pure + MinIO tests for the new store methods (Tasks 1–3, 12).
 - `tests/profiles/test_build_profile_source.py` — discriminated profile (Task 4).
 - `tests/db/test_upload_manifest.py` — manifest storage (Task 5).
 - `tests/mcp/test_create_upload_tool.py` — `artifacts.create_upload` (Task 6).
 - `tests/providers/local_libvirt/test_validate_external_artifacts.py` — validator (Task 7).
 - `tests/mcp/test_complete_build_tool.py` — `runs.complete_build` + source gate (Task 8).
-- `tests/rootfs/__init__.py`, `tests/rootfs/test_catalog.py` — catalog (Task 9).
+- `tests/components/test_catalog.py`, `tests/components/test_default_fixture_catalog.py` —
+  provider fixture catalog coverage.
 - `tests/profiles/test_rootfs_source.py` — `RootfsSource` schema (Task 10).
 - `tests/providers/local_libvirt/test_rootfs_resolve.py` — provisioning resolver (Task 10).
 - `tests/reconciler/test_upload_reaper.py` — prefix reaper (Task 11).
@@ -2412,199 +2415,12 @@ Produces a working capability on its own: a System can be provisioned from a `pa
 
 ---
 
-### Task 9: Port the rootfs catalog
+### Task 9: Provider fixture catalog
 
-**Files:**
-- Create: `src/kdive/rootfs/__init__.py`, `src/kdive/rootfs/catalog.py`, `src/kdive/rootfs/catalog_data.json`, `tests/rootfs/__init__.py`, `tests/rootfs/test_catalog.py`
-
-The v1 catalog (`~/src/kdive-v1/src/kdive/rootfs/catalog.py`) uses v1-only deps (`kdive.model.Model`, `kdive.config._SHA256`, `kdive.domain.ErrorCategory`). Adapt to current conventions: Pydantic `BaseModel` directly, a local `_SHA256` regex, and `kdive.domain.errors.ErrorCategory`/`CategorizedError`. Keep `CatalogEntry`, `RootfsCatalog`, `load_catalog`, `lookup`; **drop** the `cache_dir`/`cache_path_for*` host-path policy (that is fetch — next spec, out of scope here).
-
-- [ ] **Step 1: Write the failing tests**
-
-Create `tests/rootfs/__init__.py` (empty) and `tests/rootfs/test_catalog.py`:
-
-```python
-"""Ported rootfs catalog (ADR-0048 §3/§5)."""
-
-from __future__ import annotations
-
-import pytest
-
-from kdive.rootfs.catalog import RootfsCatalog, load_catalog
-
-
-def test_bundled_catalog_loads_and_validates() -> None:
-    catalog = load_catalog()
-    assert isinstance(catalog, RootfsCatalog)
-    assert catalog.entries  # at least one curated image
-
-
-def test_lookup_known_and_unknown() -> None:
-    catalog = load_catalog()
-    first = catalog.entries[0]
-    assert catalog.lookup(first.name) is first
-    assert catalog.lookup("no-such-image") is None
-
-
-def test_entry_rejects_non_https_url() -> None:
-    from kdive.rootfs.catalog import CatalogEntry
-    with pytest.raises(ValueError):
-        CatalogEntry.model_validate(
-            {
-                "name": "x", "distro": "fedora", "release": "43", "architecture": "x86_64",
-                "url": "http://insecure/img.qcow2",
-                "checksum": "sha256:" + "0" * 64, "size_bytes": 1, "image_format": "qcow2",
-                "readiness_marker": "login:", "ssh_user": "fedora",
-            }
-        )
-
-
-def test_entry_rejects_bad_checksum() -> None:
-    from kdive.rootfs.catalog import CatalogEntry
-    with pytest.raises(ValueError):
-        CatalogEntry.model_validate(
-            {
-                "name": "x", "distro": "fedora", "release": "43", "architecture": "x86_64",
-                "url": "https://h/img.qcow2", "checksum": "deadbeef", "size_bytes": 1,
-                "image_format": "qcow2", "readiness_marker": "login:", "ssh_user": "fedora",
-            }
-        )
-```
-
-- [ ] **Step 2: Run to verify it fails**
-
-Run: `uv run pytest tests/rootfs/test_catalog.py -v`
-Expected: FAIL (`ModuleNotFoundError: kdive.rootfs`).
-
-- [ ] **Step 3: Implement the port**
-
-Create `src/kdive/rootfs/__init__.py` (empty). Copy `~/src/kdive-v1/src/kdive/rootfs/catalog_data.json` to `src/kdive/rootfs/catalog_data.json` verbatim (the Fedora Cloud Base 43 entry).
-
-Create `src/kdive/rootfs/catalog.py` (adapted — full file):
-
-```python
-"""Prebuilt rootfs image catalog: models + bundled-data loader (ADR-0048 §3, ported from v1).
-
-A curated, per-distro list of known-good images selectable by a stable name. The data
-lives in ``catalog_data.json`` beside this module and is validated on load. Fetch/caching
-to a libvirt-readable path is the next spec's install/boot work and is not here.
-"""
-
-from __future__ import annotations
-
-import json
-import re
-from pathlib import Path
-from typing import Literal
-
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
-from kdive.domain.errors import CategorizedError, ErrorCategory
-
-DEFAULT_CATALOG_PATH = Path(__file__).with_name("catalog_data.json")
-_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}\Z")
-_SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
-
-
-class CatalogEntry(BaseModel):
-    """One curated image; ``name`` is the value a ``catalog``-kind rootfs ref carries."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    name: str
-    distro: str
-    release: str
-    architecture: str
-    url: str
-    checksum: str
-    size_bytes: int = Field(gt=0)
-    image_format: Literal["qcow2"]
-    readiness_marker: str
-    ssh_user: str
-    ssh_port: int = Field(default=22, ge=1, le=65535)
-    access_method: Literal["ssh", "serial", "ssh_and_serial", "none"] = "ssh"
-    description: str | None = None
-
-    @field_validator("name")
-    @classmethod
-    def _validate_name(cls, value: str) -> str:
-        if not _SAFE_NAME.match(value):
-            raise ValueError("catalog entry name must be filesystem safe")
-        return value
-
-    @field_validator("checksum")
-    @classmethod
-    def _validate_checksum(cls, value: str) -> str:
-        if not _SHA256.match(value):
-            raise ValueError("checksum must be 'sha256:' followed by 64 lowercase hex chars")
-        return value
-
-    @field_validator("url")
-    @classmethod
-    def _validate_url(cls, value: str) -> str:
-        if not value.startswith("https://"):
-            raise ValueError("catalog url must be https://")
-        return value
-
-    @field_validator("readiness_marker", "ssh_user", "distro", "release", "architecture")
-    @classmethod
-    def _validate_nonempty(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("field must be non-empty")
-        return value
-
-
-class RootfsCatalog(BaseModel):
-    """A validated set of curated entries with unique names."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    entries: list[CatalogEntry]
-
-    @model_validator(mode="after")
-    def _validate_unique_names(self) -> RootfsCatalog:
-        names = [entry.name for entry in self.entries]
-        if len(names) != len(set(names)):
-            raise ValueError("catalog entry names must be unique")
-        return self
-
-    def lookup(self, name: str) -> CatalogEntry | None:
-        """Return the entry with ``name``, or ``None``."""
-        for entry in self.entries:
-            if entry.name == name:
-                return entry
-        return None
-
-
-def load_catalog(path: Path = DEFAULT_CATALOG_PATH) -> RootfsCatalog:
-    """Read and validate the bundled catalog JSON.
-
-    Raises:
-        CategorizedError: ``INFRASTRUCTURE_FAILURE`` if the data file is unreadable,
-            not JSON, or fails validation (a packaging defect).
-    """
-    try:
-        raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-        return RootfsCatalog.model_validate(data)
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        raise CategorizedError(
-            f"rootfs catalog data is unusable: {path}",
-            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-        ) from exc
-```
-
-- [ ] **Step 4: Run, lint, type, commit**
-
-```bash
-uv run pytest tests/rootfs/test_catalog.py -v
-uv run ruff check src/kdive/rootfs/ tests/rootfs/
-uv run ty check
-git add src/kdive/rootfs/ tests/rootfs/
-git commit -m "feat(rootfs): port the prebuilt rootfs catalog from v1"
-```
-
----
+Superseded by ADR-0065. Rootfs catalog references are provider-scoped component references
+backed by `fixtures/local-libvirt/manifest.yaml`, `fixtures/local-libvirt/rootfs/*.yaml`,
+and `kdive.components.catalog`. The removed standalone rootfs catalog package must not be
+reintroduced.
 
 ### Task 10: Rootfs source-kind resolution in provisioning
 
@@ -2721,7 +2537,9 @@ Expected: PASS.
 
 - [ ] **Step 5: Update the renderer + existing provisioning tests + write the resolver**
 
-In `src/kdive/providers/local_libvirt/provisioning.py`, add a resolver that turns a `RootfsSource` into a libvirt disk path, and use it in `render_domain_xml`. Add imports: `from kdive.rootfs.catalog import load_catalog`, `import re`, the `RootfsSource` types.
+In `src/kdive/providers/local_libvirt/provisioning.py`, add a resolver that turns a
+`RootfsSource` into a libvirt disk path, and use it in `render_domain_xml`. Catalog
+references resolve through `kdive.components.catalog`.
 
 ```python
 _ROOTFS_DIR = "/var/lib/kdive/rootfs"
