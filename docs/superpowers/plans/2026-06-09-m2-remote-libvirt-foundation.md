@@ -30,7 +30,9 @@
 | `justfile` (modify) | `m2-gate` recipe; appended to `ci` |
 | Tests | `tests/providers/remote_libvirt/` (new), `tests/store/test_objectstore.py`, `tests/providers/test_composition.py`, `tests/db/test_resource_kind_parity.py`, `tests/db/test_migrate.py`, `tests/scripts/test_m2_portability_gate.py` |
 
-**Commit-ordering invariant:** migration 0020 and the composition registration land in the *same commit* (Task 7) so the parity test never sees a CHECK-admitted kind without a buildable runtime. The enum value alone (Task 1) is safe earlier: nothing registers or admits it yet.
+**Commit-ordering invariant:** migration 0020 and the composition registration land in the *same commit* (Task 6) so the parity test never sees a CHECK-admitted kind without a buildable runtime. The enum value alone (Task 1) is safe earlier: nothing registers or admits it yet.
+
+**Every commit must be guardrail-green:** before each task's commit step, run `just lint && just type` plus the task's test subset (full `just test` runs at Tasks 6 and 9). A formatting or cross-module type error must never be committed and discovered tasks later.
 
 **Decisions pinned for this plan** (from spec/ADRs; do not relitigate):
 
@@ -42,6 +44,7 @@
 - pkipath cleanup failure on an otherwise-successful op: log at error level, do not raise over an in-flight exception (raising would replace the op's typed error; the exposure is bounded by worker-local storage per ADR-0077).
 - ADR statuses stay `Proposed` (ADR-0071 precedent: implementation does not flip the field).
 - No PCIe enumeration and no `list_owned` reaping for remote in this issue — both need domains/host introspection that issue 2 creates.
+- **Documented limitation (not silently absorbed):** `ensure_discovered_resource_registered` (core, `services/resources/discovery.py:76`) calls `discovery.list_resources()` synchronously inside an async transaction while holding an advisory lock. For remote-libvirt that is a network TLS connect with no pre-connect timeout, so an unreachable host can stall server/worker startup for the TCP timeout with the event loop blocked. The fix (async offload or a timeout seam) is a core change outside this issue's allowlist; state the assumption in the registrar docstring (Task 6) and record it in the issue-8 portability report as a known core follow-up.
 
 ---
 
@@ -49,7 +52,7 @@
 
 **Files:**
 - Modify: `src/kdive/domain/models.py:53-62`
-- Test: `tests/db/test_resource_kind_parity.py` (no change yet — parity still `{local-libvirt, fault-inject}` until Task 7)
+- Test: `tests/db/test_resource_kind_parity.py` (no change yet — parity still `{local-libvirt, fault-inject}` until Task 6)
 
 - [ ] **Step 1: Add the enum value with docstring**
 
@@ -157,13 +160,17 @@ def test_presign_get_maps_client_error_to_infrastructure_failure() -> None:
 - [ ] **Step 4: Run** — `uv run python -m pytest tests/store/test_objectstore.py -q` — Expected: PASS
 - [ ] **Step 5: Commit** — `git commit -m "feat: add presign_get object-store primitive"`
 
-### Task 3: remote-libvirt operator config
+### Task 3: operator config + qemu+tls transport (one task, one commit)
+
+`config.py` imports `validate_remote_uri` from `transport.py` at runtime, and `transport.py`'s
+tests construct `TlsCertRefs`/`RemoteLibvirtConfig` — the two modules are one dependency
+cluster, so they are written, tested, and committed together.
 
 **Files:**
-- Create: `src/kdive/providers/remote_libvirt/__init__.py`, `src/kdive/providers/remote_libvirt/config.py`
-- Test: `tests/providers/remote_libvirt/__init__.py`, `tests/providers/remote_libvirt/test_config.py`
+- Create: `src/kdive/providers/remote_libvirt/__init__.py`, `src/kdive/providers/remote_libvirt/config.py`, `src/kdive/providers/remote_libvirt/transport.py`
+- Test: `tests/providers/remote_libvirt/__init__.py`, `tests/providers/remote_libvirt/test_config.py`, `tests/providers/remote_libvirt/test_transport.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing config tests**
 
 ```python
 """Operator config for the remote-libvirt provider (ADR-0076, ADR-0077)."""
@@ -243,7 +250,7 @@ def test_explicit_cap_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
     assert remote_config_from_env().concurrent_allocation_cap == 4
 ```
 
-URI-shape rejections (scheme, `no_verify`, operator-set `pkipath`) are tested in Task 4 against `validate_remote_uri`, which `remote_config_from_env` calls — add one integration check here:
+URI-shape rejections (scheme, `no_verify`, operator-set `pkipath`) are tested below against `validate_remote_uri`, which `remote_config_from_env` calls — add one integration check here:
 
 ```python
 def test_uri_with_no_verify_is_rejected_at_config_time(
@@ -258,9 +265,11 @@ def test_uri_with_no_verify_is_rejected_at_config_time(
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 ```
 
-- [ ] **Step 2: Run to verify failure** — `uv run python -m pytest tests/providers/remote_libvirt/ -q` — Expected: FAIL (module missing)
+- [ ] **Step 2: Write the failing transport tests** — see Step 5 below for the test file content (`tests/providers/remote_libvirt/test_transport.py`); write it now, alongside the config tests.
 
-- [ ] **Step 3: Implement `config.py`** (and an `__init__.py` with a docstring citing ADR-0076/0077)
+- [ ] **Step 3: Run to verify failure** — `uv run python -m pytest tests/providers/remote_libvirt/ -q` — Expected: FAIL (modules missing)
+
+- [ ] **Step 4: Implement `config.py`** (and an `__init__.py` with a docstring citing ADR-0076/0077)
 
 ```python
 """Operator configuration for the remote-libvirt provider (ADR-0076, ADR-0077).
@@ -349,18 +358,11 @@ def remote_config_from_env() -> RemoteLibvirtConfig:
     return RemoteLibvirtConfig(uri=uri, cert_refs=refs, concurrent_allocation_cap=cap)
 ```
 
-Note: `config.py` imports `validate_remote_uri` from `transport.py`, so Task 4's `transport.py` must exist before this module imports cleanly. Implement Task 4 Step 3's `validate_remote_uri` together with this step (the tests for it run in Task 4); keep the commits separate only if both stay green — otherwise fold Tasks 3+4 into one commit.
+Note: `config.py` imports `validate_remote_uri` from `transport.py` at runtime; `transport.py`
+imports config types only under `TYPE_CHECKING`, so there is no import cycle. Both modules land
+in this task's single commit.
 
-- [ ] **Step 4: Run** — `uv run python -m pytest tests/providers/remote_libvirt/test_config.py -q` — Expected: PASS
-- [ ] **Step 5: Commit** — `git commit -m "feat: add remote-libvirt operator config module"`
-
-### Task 4: transport — URI validation, pkipath lifecycle, connection context
-
-**Files:**
-- Create: `src/kdive/providers/remote_libvirt/transport.py`
-- Test: `tests/providers/remote_libvirt/test_transport.py`
-
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 5: the transport test file** (`tests/providers/remote_libvirt/test_transport.py`, written at Step 2):
 
 ```python
 """qemu+tls transport: URI validation, pkipath lifecycle, connection context (ADR-0077)."""
@@ -429,7 +431,9 @@ def test_compose_appends_pkipath_preserving_query() -> None:
     uri = compose_pkipath_uri(
         "qemu+tls://host.example/system?keepalive_interval=5", Path("/tmp/pki")
     )
-    assert uri == "qemu+tls://host.example/system?keepalive_interval=5&pkipath=%2Ftmp%2Fpki"
+    # `/` stays literal (safe="/"): the URI works whether or not the consumer
+    # percent-unescapes query values; mkdtemp paths contain no reserved characters.
+    assert uri == "qemu+tls://host.example/system?keepalive_interval=5&pkipath=/tmp/pki"
 
 
 def test_pkipath_materializes_private_files_and_cleans_up(tmp_path: Path) -> None:
@@ -527,9 +531,7 @@ def test_remote_connection_closes_conn_when_body_raises(tmp_path: Path) -> None:
 
 (Note: `libvirt.libvirtError("...")` is constructible with a message in libvirt-python; if the binding refuses, raise it via `libvirt.libvirtError` subclass instantiation in the test — check at implementation time.)
 
-- [ ] **Step 2: Run to verify failure** — Expected: FAIL (module missing)
-
-- [ ] **Step 3: Implement `transport.py`**
+- [ ] **Step 6: Implement `transport.py`**
 
 ```python
 """qemu+tls:// connection lifecycle for the remote-libvirt provider (ADR-0077).
@@ -612,9 +614,14 @@ def validate_remote_uri(uri: str) -> None:
 
 
 def compose_pkipath_uri(uri: str, pkipath: Path) -> str:
-    """Append ``pkipath=<dir>`` to the URI query, preserving existing parameters."""
+    """Append ``pkipath=<dir>`` to the URI query, preserving existing parameters.
+
+    ``/`` stays literal (``safe='/'``) so the value is valid whether or not the
+    consumer percent-unescapes query parameters; ``mkdtemp`` paths contain no
+    reserved characters that would need escaping.
+    """
     parsed = urlsplit(uri)
-    pki_param = f"pkipath={quote(str(pkipath), safe='')}"
+    pki_param = f"pkipath={quote(str(pkipath), safe='/')}"
     query = f"{parsed.query}&{pki_param}" if parsed.query else pki_param
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
 
@@ -696,10 +703,10 @@ def open_libvirt(uri: str) -> _LibvirtConn:
 
 (The exact `ty` ignore code may differ — run `just type` and use the reported code, mirroring `local_libvirt/discovery.py:175`.)
 
-- [ ] **Step 4: Run** — `uv run python -m pytest tests/providers/remote_libvirt/ -q` — Expected: PASS
-- [ ] **Step 5: Commit** — `git commit -m "feat: add remote-libvirt qemu+tls transport with pkipath lifecycle"`
+- [ ] **Step 7: Run** — `uv run python -m pytest tests/providers/remote_libvirt/ -q && just lint && just type` — Expected: PASS / clean
+- [ ] **Step 8: Commit (one commit for config + transport)** — `git commit -m "feat: add remote-libvirt config and qemu+tls transport"`
 
-### Task 5: discovery over TLS
+### Task 4: discovery over TLS
 
 **Files:**
 - Create: `src/kdive/providers/remote_libvirt/discovery.py`
@@ -767,8 +774,15 @@ def test_malformed_capabilities_xml_yields_unknown_arch(tmp_path: Path) -> None:
         def getCapabilities(self) -> str:  # noqa: N802
             return "<not-xml"
 
+    refs = TlsCertRefs(
+        client_cert_ref="remote/clientcert.pem",
+        client_key_ref="remote/clientkey.pem",  # pragma: allowlist secret
+        ca_cert_ref="remote/cacert.pem",
+    )
     discovery = RemoteLibvirtDiscovery(
-        config=...,  # as above
+        config=RemoteLibvirtConfig(
+            uri="qemu+tls://host.example/system", cert_refs=refs, concurrent_allocation_cap=1
+        ),
         secret_backend=_RecordingBackend(),
         open_connection=lambda _uri: _BadXmlConn(),
         pki_base_dir=tmp_path,
@@ -788,7 +802,7 @@ def test_from_env_without_uri_raises_configuration_error(
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 ```
 
-Move `_FakeConn` / `_RecordingBackend` into `tests/providers/remote_libvirt/conftest.py` as plain importable classes (or fixtures) shared by the transport and discovery tests; update Task 4's test imports accordingly.
+Move `_FakeConn` / `_RecordingBackend` into `tests/providers/remote_libvirt/conftest.py` as plain importable classes (or fixtures) shared by the transport and discovery tests; update Task 3's transport-test imports accordingly.
 
 - [ ] **Step 2: Run to verify failure** — Expected: FAIL
 
@@ -899,10 +913,10 @@ class RemoteLibvirtDiscovery:
 
 (If `os` ends up unused, drop the import. PCIe enumeration and `list_owned` reaping are deferred to M2 issue 2, which creates the domains they would inspect.)
 
-- [ ] **Step 4: Run** — `uv run python -m pytest tests/providers/remote_libvirt/ -q` — Expected: PASS
+- [ ] **Step 4: Run** — `uv run python -m pytest tests/providers/remote_libvirt/ -q && just lint && just type` — Expected: PASS / clean
 - [ ] **Step 5: Commit** — `git commit -m "feat: add remote-libvirt discovery over qemu+tls"`
 
-### Task 6: stub planes (buildable, fail-fast)
+### Task 5: stub planes (buildable, fail-fast)
 
 **Files:**
 - Create: `src/kdive/providers/remote_libvirt/planes.py`
@@ -923,19 +937,26 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.remote_libvirt import planes
 
 
+_PROFILE = cast(ProvisioningProfile, None)  # the stubs raise before touching arguments
+_BUILD = cast(ServerBuildProfile, None)
+_INSTALL = cast(InstallRequest, None)
+_SYSTEM = cast(SystemHandle, None)
+_TRANSPORT = cast(TransportHandle, None)
+_ACTION = cast(PowerAction, None)
+_METHOD = cast(CaptureMethod, None)
+
+
 @pytest.mark.parametrize(
     "invoke",
     [
-        lambda: planes.UnimplementedProvisioner().provision(uuid4(), None),
-        lambda: planes.UnimplementedProvisioner().teardown(uuid4()),
-        lambda: planes.UnimplementedBuilder().build(uuid4(), None),
-        lambda: planes.UnimplementedInstaller().install(None),
+        lambda: planes.UnimplementedProvisioner().provision(uuid4(), _PROFILE),
+        lambda: planes.UnimplementedBuilder().build(uuid4(), _BUILD),
+        lambda: planes.UnimplementedInstaller().install(_INSTALL),
         lambda: planes.UnimplementedInstaller().boot(uuid4()),
-        lambda: planes.UnimplementedConnector().open_transport(None, "gdbstub"),
-        lambda: planes.UnimplementedConnector().close_transport(None),
-        lambda: planes.UnimplementedController().power("dom", None),
+        lambda: planes.UnimplementedConnector().open_transport(_SYSTEM, "gdbstub"),
+        lambda: planes.UnimplementedController().power("dom", _ACTION),
         lambda: planes.UnimplementedController().force_crash("dom"),
-        lambda: planes.UnimplementedRetriever().capture(uuid4(), None),
+        lambda: planes.UnimplementedRetriever().capture(uuid4(), _METHOD),
         lambda: planes.UnimplementedRetriever().run_crash_postmortem(
             vmcore_ref="v", debuginfo_ref="d", expected_build_id="b", commands=[]
         ),
@@ -947,14 +968,14 @@ from kdive.providers.remote_libvirt import planes
         ),
     ],
 )
-def test_every_stub_plane_raises_missing_dependency(invoke) -> None:
+def test_every_stub_plane_raises_missing_dependency(invoke: Callable[[], object]) -> None:
     with pytest.raises(CategorizedError) as exc:
         invoke()
     assert exc.value.category is ErrorCategory.MISSING_DEPENDENCY
     assert "remote-libvirt" in str(exc.value)
 ```
 
-Adjust the lambda arguments to the real port signatures in `src/kdive/providers/ports/` (read `lifecycle.py`, `build.py`, `retrieve.py` first — e.g. `Provisioner.teardown` may differ; mirror exactly, passing typed `None`/sentinels via `cast` where ty needs it).
+(Imports for the casts: `from typing import cast`, `from collections.abc import Callable`, plus the profile/handle types from `kdive.profiles.*` and `kdive.providers.ports` — mirror `tests/providers/test_composition.py`. The parametrize list must cover **every** method of **every** protocol the stubs satisfy; read `src/kdive/providers/ports/lifecycle.py`, `build.py`, `retrieve.py` and add a lambda per method — e.g. if `Provisioner` or `Connector` has teardown/close methods, include them with cast sentinels in the same pattern.)
 
 - [ ] **Step 2: Run to verify failure** — Expected: FAIL
 
@@ -996,10 +1017,10 @@ class UnimplementedProvisioner:
 
 …and likewise `UnimplementedBuilder` (Builder), `UnimplementedInstaller` (Installer + Booter), `UnimplementedConnector` (Connector), `UnimplementedController` (Controller), `UnimplementedRetriever` (Retriever + CrashPostmortem), `UnimplementedIntrospector` (VmcoreIntrospector + LiveIntrospector). Match each protocol's full method set and signatures (with type annotations) so `ProviderRuntime(...)` type-checks structurally under `just type`.
 
-- [ ] **Step 4: Run** — `uv run python -m pytest tests/providers/remote_libvirt/ -q` — Expected: PASS
+- [ ] **Step 4: Run** — `uv run python -m pytest tests/providers/remote_libvirt/ -q && just lint && just type` — Expected: PASS / clean
 - [ ] **Step 5: Commit** — `git commit -m "feat: add remote-libvirt fail-fast stub planes"`
 
-### Task 7: composition registration + migration 0020 + parity (one commit)
+### Task 6: composition registration + migration 0020 + parity (one commit)
 
 **Files:**
 - Create: `src/kdive/db/schema/0020_resources_kind_remote_libvirt.sql`
@@ -1105,6 +1126,11 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
     introspector = UnimplementedIntrospector()
 
     async def register_remote_host(pool: AsyncConnectionPool) -> None:
+        # Known limitation: ensure_discovered_resource_registered calls
+        # discovery.list_resources() synchronously inside its async transaction, and the
+        # remote TLS connect has no pre-connect timeout — an unreachable host stalls
+        # startup for the TCP timeout. Async offload is a core change deferred to the
+        # M2 issue-8 report (this issue's allowlist excludes services/).
         discovery = RemoteLibvirtDiscovery.from_env(secret_registry=secret_registry)
         await ensure_discovered_resource_registered(
             pool,
@@ -1165,7 +1191,7 @@ Extend `ProviderComposition.build_provider_resolver` and the module-level `build
 
 …pass the parameter through the module-level function, extend its docstring, and add `build_remote_runtime` to `__all__`.
 
-- [ ] **Step 5: Run** — `uv run python -m pytest tests/providers tests/db -q` — Expected: PASS (db suite needs Docker)
+- [ ] **Step 5: Run** — `uv run python -m pytest tests/providers tests/db -q && just lint && just type && just test` — Expected: PASS / clean (db suite needs Docker)
 - [ ] **Step 6: Commit (single commit — the parity invariant)**
 
 ```bash
@@ -1174,7 +1200,7 @@ git add src/kdive/db/schema/0020_resources_kind_remote_libvirt.sql \
 git commit -m "feat: register remote-libvirt runtime + migration 0020 CHECK widen"
 ```
 
-### Task 8: portability gate script
+### Task 7: portability gate script
 
 **Files:**
 - Create: `scripts/m2_portability_gate.py`
@@ -1440,9 +1466,9 @@ if __name__ == "__main__":
 Run: `uv run python -m pytest tests/scripts/test_m2_portability_gate.py -q` — Expected: PASS
 Run: `uv run python scripts/m2_portability_gate.py` — Expected: exit 0, allowlisted lines reported for `models.py`, `0020_…sql`, `objectstore.py`
 
-- [ ] **Step 5: Commit** — `git commit -m "feat: add M2 portability gate script"`
+- [ ] **Step 5: Commit** (after `just lint && just type`) — `git commit -m "feat: add M2 portability gate script"`
 
-### Task 9: CI job + justfile recipe
+### Task 8: CI job + justfile recipe
 
 **Files:**
 - Modify: `.github/workflows/ci.yml`, `justfile`
@@ -1471,16 +1497,20 @@ and change `ci: lint type lock-check lint-shell lint-workflows check-mermaid doc
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Set up just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+
       - name: Run the portability gate (ADR-0076)
-        # Stdlib-only script; no uv sync needed.
-        run: python3 scripts/m2_portability_gate.py
+        # Same recipe a developer runs (justfile is the single source of truth);
+        # the script is stdlib-only, so no uv sync is needed.
+        run: just m2-gate
 ```
 
 - [ ] **Step 3: Lint the workflow + scripts** — `just lint-workflows` (actionlint + zizmor) and `just lint` — Expected: clean
 - [ ] **Step 4: Run the gate locally once more** — `just m2-gate` — Expected: exit 0
 - [ ] **Step 5: Commit** — `git commit -m "ci: run the M2 portability gate per PR"`
 
-### Task 10: full guardrails
+### Task 9: full guardrails
 
 - [ ] **Step 1: Run the suite** — `just lint && just type && just test` — Expected: clean, zero warnings
 - [ ] **Step 2: Run `just docs-check`** — Expected: no drift (M2 adds no tools)
@@ -1491,6 +1521,6 @@ and change `ci: lint type lock-check lint-shell lint-workflows check-mermaid doc
 
 ## Self-review checklist (run after writing code)
 
-- Spec coverage: enum+0020 (Task 1/7), package skeleton + ports (3–7), TLS factory + mutual TLS + `no_verify` forbidden (4), pkipath lifecycle on every exit path (4), `presign_get` (2), opt-in composition + discovery→capabilities jsonb (5/7), per-PR CI gate incl. running on this PR (8/9). Acceptance: parity test (7), byte-identical local-libvirt (no local_libvirt file touched — verify with `git diff main..HEAD --stat | grep local_libvirt` → empty), injected-factory TLS tests (4/5), gate passes on this PR (9).
-- The parity invariant: migration 0020 and composition registration are one commit (Task 7).
+- Spec coverage: enum+0020 (Task 1/6), package skeleton + ports (3–6), TLS factory + mutual TLS + `no_verify` forbidden (3), pkipath lifecycle on every exit path (3), `presign_get` (2), opt-in composition + discovery→capabilities jsonb (4/6), per-PR CI gate incl. running on this PR (7/8). Acceptance: parity test (6), byte-identical local-libvirt (no local_libvirt file touched — verify with `git diff main..HEAD --stat | grep local_libvirt` → empty), injected-factory TLS tests (3/4), gate passes on this PR (8).
+- The parity invariant: migration 0020 and composition registration are one commit (Task 6).
 - No placeholder steps; every code step shows the code.
