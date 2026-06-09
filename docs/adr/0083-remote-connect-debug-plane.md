@@ -69,22 +69,28 @@ provider is provider-specific wiring over shared seams, not a copy of them.
 
 The engine's `attach` and the connectors take a **host-reachability policy** — a callable that
 validates the resolved RSP host or raises `CONFIGURATION_ERROR`. Local wires the loopback-only
-policy (unchanged SSRF control). Remote wires an ACL-remote policy: the host must be a valid IP
-literal (no DNS, no SSRF amplification) but need not be loopback — the operator ACL restricting
-the unauthenticated gdbstub to the worker-pool source is the security boundary (ADR-0079), not a
-loopback assertion. The policy is the *only* behavioral difference between the local and remote
-gdb-MI attach.
+policy (unchanged SSRF control). Remote wires an ACL-remote policy: the host must be a non-empty,
+syntactically well-formed host but **need not be loopback**. The local loopback gate is an SSRF
+control because local resolves the endpoint from a libvirt domain; the remote host is **not** a
+resolved value — it is `RemoteLibvirtConfig.gdb_addr`, the operator-supplied gdbstub listen
+address (config.py: "the ACL'd security boundary … must be named explicitly; provisioning fails
+closed when unset"). It is operator-trusted config, exactly like the `qemu+tls://` URI, so the
+SSRF threat the loopback gate addresses does not apply; the operator ACL restricting the
+unauthenticated gdbstub to the worker-pool source is the security boundary (ADR-0079). The
+policy is the *only* behavioral difference between the local and remote gdb-MI attach.
 
-### 3. Remote gdbstub connector reads the port from the domain XML
+### 3. Remote gdbstub connector composes the endpoint from operator config + the domain XML
 
-`RemoteLibvirtConnect.open_transport(system, "gdbstub")` resolves the gdbstub `host:port` from
-the running domain's definition over the qemu+tls connection — the port recorded by provisioning
-(ADR-0080), the host being the remote host's reachable address — applies the ACL-remote policy,
-probes RSP reachability with the shared probe, and returns the same `TransportHandleData`
-encoded handle the gdb-MI tier already consumes. The slow seams (XML resolve, socket probe) are
-injected and `live_vm`-gated; orchestration and the full error contract are unit-tested with
-fakes. `close_transport` validates the handle and no-ops (connectionless RSP). The remote
-`attach_seam` spawns the worker's gdb against the remote `host:port` with the ACL-remote policy.
+`RemoteLibvirtConnect.open_transport(system, "gdbstub")` composes the gdbstub endpoint from two
+sources: the **host is `RemoteLibvirtConfig.gdb_addr`** (operator config, the bind/ACL address),
+and the **per-System port is read from the running domain's definition** over the qemu+tls
+connection (the port provisioning allocated from `[gdb_port_min, gdb_port_max]` and recorded in
+the domain XML, ADR-0080). It applies the ACL-remote policy, probes RSP reachability with the
+shared probe, and returns the same `TransportHandleData`-encoded handle the gdb-MI tier already
+consumes. The slow seams (XML port read, socket probe) are injected and `live_vm`-gated;
+orchestration and the full error contract are unit-tested with fakes. `close_transport`
+validates the handle and no-ops (connectionless RSP). The remote `attach_seam` spawns the
+worker's gdb against `gdb_addr:port` with the ACL-remote policy.
 
 ### 4. In-guest drgn-live runs through the guest-agent seam, not ssh
 
@@ -93,25 +99,52 @@ fixed in-tree set **worker-side** (never an in-guest shell), composes the constr
 invocation, and runs it inside the guest through the ADR-0078 guest-agent exec seam (the same
 seam install uses), reusing the shared `assemble_report` for the single redaction + byte-cap
 boundary. The base image carries drgn + matching vmlinux (a provisioning-profile obligation,
-ADR-0079). The port is implemented and unit-tested in #205 and wired into the remote runtime's
-`live_introspector`; the **end-to-end MCP routing is deferred** (see Consequences).
+ADR-0079).
+
+**Input contract (pinned now so the unit tests assert the real shape).** Remote drgn-live does
+not ride the gdbstub transport — it reaches the guest agent keyed by **domain**. So for remote,
+`transport_handle` carries the **guest domain name** (the same `SystemHandle` value
+`debug.start_session`'s `_open_transport` derives, `system.domain_name or str(system.id)`); the
+port resolves the qemu+tls connection from `RemoteLibvirtConfig` and runs the agent exec against
+that domain. The port is implemented and unit-tested against this contract in #205 and wired
+into the remote runtime's `live_introspector`; the **end-to-end MCP routing is deferred** — the
+deferred follow-up's job is to make `start_session`/`introspect.run` open and pass exactly this
+domain-carrying handle (see Consequences).
 
 ### 5. Worker-side vmcore postmortem reuses the offline drgn path
 
 `RemoteVmcoreIntrospect.from_vmcore` fetches the vmcore + vmlinux from the object store on the
 worker, verifies the core's build-id against the Run's recorded build-id, and runs the shared
 drgn helpers locally — no live reachability (ADR-0079). Its tool (`introspect.from_vmcore`) is
-keyed on `run_id` with no ssh coupling, so it wires end-to-end in #205.
+keyed on `run_id` with no ssh coupling, so the **port + run-keyed tool wiring land in #205**.
+The tool resolves the Run's System's *captured* vmcore key, and remote capture is the
+still-stubbed Retrieve plane (issue 7 / #206) — so a remote Run has no core to introspect until
+#206 lands. In #205 the only signal is unit tests driving the port with a fake-fetched core; an
+actual remote vmcore postmortem is exercisable once issue 7 supplies the capture path.
 
 ## Consequences
 
-- **gdb-MI direct-TCP and worker-side vmcore postmortem land end-to-end in #205**, exercising
-  the real gdb-MI tier and the real offline drgn path on the remote provider (acceptance
-  criterion 1 and the vmcore half of criterion 2). Both are entirely within `providers/` and
-  `tests/providers/`, so the portability gate stays green with no allowlist change.
+- **gdb-MI direct-TCP lands end-to-end in #205**, exercising the real gdb-MI tier on the remote
+  provider (acceptance criterion 1). It is entirely within `providers/` and `tests/providers/`,
+  so the portability gate stays green with no allowlist change.
+- **Worker-side vmcore postmortem lands as a wired port + run-keyed tool in #205, but is not
+  end-to-end-exercisable until issue 7.** The from_vmcore port and `introspect.from_vmcore`
+  routing land here; an actual remote core to introspect requires the issue-7 capture plane
+  (the Retrieve plane is the still-stubbed `UnimplementedRetriever`). #205's signal is port unit
+  tests with a fake-fetched core.
 - **In-guest drgn-live is delivered at the port + composition level in #205**, unit-tested
-  through the guest-agent seam; the in-guest-drgn half of acceptance criterion 2 is met at the
-  port boundary and verified live in the operator e2e (issue 8).
+  through the guest-agent seam against the pinned domain-carrying handle contract (§4). It has
+  **no end-to-end verification — neither an MCP tool nor the issue-8 e2e — until the deferred
+  MCP routing lands** (the e2e drives the spine through `introspect.run`, which is part of the
+  deferral). #205's only signal for the in-guest-drgn half of acceptance criterion 2 is the port
+  unit tests.
+- **Interim limitation: a single-client gdbstub wedged by a dead worker has no automated
+  recovery in #205.** ADR-0079's reconciler reset is deferred (below), so between #205 and the
+  follow-up a worker that dies mid-debug can leave its stale TCP connection holding the
+  System's single-client gdbstub, and the next attach fails (`transport_conflict` /
+  `debug_attach_failure`) until the System is torn down and reprovisioned. `close_transport` is
+  a no-op (connectionless RSP) and the holding connection belongs to the dead worker, so the
+  provider cannot break it without the core reconciler reset.
 - **Two pieces are deferred to a follow-up** because they are core coupling the ADR-0076 gate
   deliberately blocks, not provider work:
   - **drgn-live MCP routing** — generalizing `start_session`/`introspect.run` off the
