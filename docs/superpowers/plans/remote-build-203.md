@@ -30,7 +30,14 @@ Touch only `providers/` + `providers/composition.py` (allowlisted) + docs + test
 - **Injected seams** (Callables defaulting to real impls), so unit tests run without a
   toolchain; real subprocess/ELF seams are `# pragma: no cover - live_vm`.
 - **`make modules_install` non-zero → `BUILD_FAILURE`** (a fakeable seam, unit-tested).
+- **Strip the `build`/`source` back-reference symlinks** that `make modules_install` plants in
+  `<staging>/lib/modules/<ver>/` — they are absolute paths into the worker's build tree and
+  would extract in-guest as dangling links. Packaging removes them before taring; a test
+  asserts neither is a bundle member (ADR-0081 build→install contract).
 - **Staging dir cleanup on every exit path** (the `INSTALL_MOD_PATH` tree).
+- **from_env reads the shared worker build env** — `KDIVE_BUILD_WORKSPACE`, `KDIVE_KERNEL_SRC`,
+  `KDIVE_BUILD_COMPONENT_ROOTS` (the worker's build-host config, not provider-specific; same
+  vars local-libvirt reads) + lazy `object_store_from_env` for S3.
 - **kdump/debuginfo `.config` preflight** stays (remote does kdump too) → `CONFIGURATION_ERROR`.
 - **Bundle is `.tar.gz`**; whole-object in-memory PUT (same model local uses).
 
@@ -64,8 +71,15 @@ local-libvirt import):
 - real-seam argv: `_real_run_modules_install` passes `INSTALL_MOD_PATH=<mod_root>` and
   `-C <workspace>`; timeout → BUILD_FAILURE; missing make → MISSING_DEPENDENCY.
 - `_real_build_bundle` produces a gzip tar whose members include `boot/vmlinuz` and a
-  `lib/modules/...` entry (host-free: write a fake workspace+mod_root, assert tar membership
-  via `tarfile`).
+  `lib/modules/...` entry, and **exclude** `build`/`source` symlinks (host-free: write a fake
+  workspace + a mod_root containing planted `build`/`source` symlinks, assert membership via
+  `tarfile` — present: vmlinuz + a real module; absent: the two symlinks).
+- **`live_vm`-gated real build** (`@pytest.mark.live_vm`, `# pragma: no cover - live_vm`):
+  mirrors local's `test_live_vm_real_make_build_id_matches_readelf`. Runs the real seams when
+  `KDIVE_KERNEL_SRC` + a toolchain are present (skips cleanly otherwise), and asserts the
+  produced object is a valid gzip tar containing `boot/vmlinuz` and a non-empty
+  `lib/modules/<ver>` set. This is the only in-repo check that real `make`/`modules_install`
+  output bundles correctly; the full remote spine stays operator-run (#207).
 
 ### T2 — Wire into composition (`providers/composition.py`)
 

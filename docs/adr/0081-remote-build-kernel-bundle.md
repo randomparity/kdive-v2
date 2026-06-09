@@ -53,7 +53,9 @@ So the modules cannot be carried as a *third ref*. They must travel **inside an 
    plumbing is **duplicated** into `remote_libvirt/build.py`, not shared with `local_libvirt`
    (ADR-0076: no shared layer with the doomed provider).
 2. Run `make modules_install INSTALL_MOD_PATH=<staging>` to materialize `/lib/modules/<ver>`
-   under a private per-build staging root.
+   under a private per-build staging root, then **drop the `build`/`source` symlinks** it plants
+   there (they are absolute paths into the worker's build tree and would extract in-guest as
+   dangling links), so the bundle carries only real module files.
 3. **Package one bundle**: a **gzip-compressed tar** (`.tar.gz`) containing `boot/vmlinuz` (the
    built image) and `lib/modules/<ver>/…` (the installed modules). This bundle is stored under
    the run-keyed `kernel` object (`{tenant}/runs/{run_id}/kernel`, ADR-0013) and its key is
