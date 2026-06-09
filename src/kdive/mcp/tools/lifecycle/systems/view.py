@@ -27,6 +27,17 @@ CUSTOM_SHAPE_SENTINEL = "__custom__"
 """The ``shape`` filter value selecting full-custom Systems (``shape IS NULL``)."""
 
 
+@dataclass(frozen=True, slots=True)
+class SystemsListRequest:
+    """Filter payload for ``systems.list``."""
+
+    allocation_id: str | None = None
+    state: str | None = None
+    shape: str | None = None
+    pcie: str | None = None
+    limit: int = DEFAULT_LIST_LIMIT
+
+
 def system_envelope(system: System) -> ToolResponse:
     """Render a System; ``failed`` becomes a failure envelope."""
     if system.state is SystemState.FAILED:
@@ -138,21 +149,21 @@ def _pcie_clause(pcie: str, params: list[object]) -> Composable | ToolResponse:
 async def list_systems(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
-    *,
-    allocation_id: str | None = None,
-    state: str | None = None,
-    shape: str | None = None,
-    pcie: str | None = None,
-    limit: int = DEFAULT_LIST_LIMIT,
+    request: SystemsListRequest | None = None,
 ) -> ToolResponse:
     """List the caller's Systems, filterable by allocation, state, shape, and PCIe match."""
+    request = request or SystemsListRequest()
     viewer_projects = _viewer_projects(ctx)
     filters = _build_filters(
-        viewer_projects, allocation_id=allocation_id, state=state, shape=shape, pcie=pcie
+        viewer_projects,
+        allocation_id=request.allocation_id,
+        state=request.state,
+        shape=request.shape,
+        pcie=request.pcie,
     )
     if isinstance(filters, ToolResponse):
         return filters
-    capped = max(1, min(limit, MAX_LIST_LIMIT))
+    capped = max(1, min(request.limit, MAX_LIST_LIMIT))
     with bind_context(principal=ctx.principal):
         if not viewer_projects:
             return _systems_collection([])

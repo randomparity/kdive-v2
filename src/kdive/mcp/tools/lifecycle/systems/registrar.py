@@ -26,6 +26,9 @@ from kdive.mcp.tools.lifecycle.systems.view import (
     DEFAULT_LIST_LIMIT as _DEFAULT_LIST_LIMIT,
 )
 from kdive.mcp.tools.lifecycle.systems.view import (
+    SystemsListRequest as _SystemsListRequest,
+)
+from kdive.mcp.tools.lifecycle.systems.view import (
     get_system as _get_system,
 )
 from kdive.mcp.tools.lifecycle.systems.view import (
@@ -206,14 +209,17 @@ def _register_systems_list(app: FastMCP, pool: AsyncConnectionPool) -> None:
         ] = _DEFAULT_LIST_LIMIT,
     ) -> ToolResponse:
         """List the caller's Systems, filterable by allocation/state/shape/PCIe. Requires viewer."""
-        return await _list_systems(
-            pool,
-            current_context(),
+        request = _SystemsListRequest(
             allocation_id=allocation_id,
             state=state,
             shape=shape,
             pcie=pcie,
             limit=limit,
+        )
+        return await _list_systems(
+            pool,
+            current_context(),
+            request,
         )
 
 
