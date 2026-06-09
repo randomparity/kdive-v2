@@ -36,7 +36,7 @@ _log = logging.getLogger(__name__)
 _MAX_SEARCHABLE_ARTIFACT_BYTES = 1024 * 1024
 _GET_SQL: LiteralString = (
     "SELECT id, object_key, owner_id FROM artifacts "
-    "WHERE id = %s AND owner_kind = 'systems' AND sensitivity = 'redacted'"
+    "WHERE id = %s AND owner_kind = 'systems' AND sensitivity = %s"
 )
 _PROJECT_SQL: LiteralString = "SELECT project FROM systems WHERE id = %s"
 
@@ -94,7 +94,7 @@ async def _authorized_redacted_artifact(
         return _config_error(artifact_id)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(_GET_SQL, (uid,))
+            await cur.execute(_GET_SQL, (uid, Sensitivity.REDACTED.value))
             row = await cur.fetchone()
             if row is None:
                 return _config_error(artifact_id)

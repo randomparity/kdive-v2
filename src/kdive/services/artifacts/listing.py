@@ -8,13 +8,14 @@ from uuid import UUID
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.domain.models import Sensitivity
 from kdive.log import bind_context
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 
 _LIST_REDACTED_SYSTEM_SQL = (
     "SELECT id, object_key FROM artifacts "
-    "WHERE owner_kind = 'systems' AND owner_id = %s AND sensitivity = 'redacted' "
+    "WHERE owner_kind = 'systems' AND owner_id = %s AND sensitivity = %s "
     "ORDER BY created_at DESC"
 )
 _SYSTEM_PROJECT_SQL = "SELECT project FROM systems WHERE id = %s"
@@ -40,6 +41,6 @@ async def list_redacted_system_artifacts(
             if owner is None or owner["project"] not in ctx.projects:
                 return []
             require_role(ctx, owner["project"], Role.VIEWER)
-            await cur.execute(_LIST_REDACTED_SYSTEM_SQL, (uid,))
+            await cur.execute(_LIST_REDACTED_SYSTEM_SQL, (uid, Sensitivity.REDACTED.value))
             rows = await cur.fetchall()
     return [RedactedArtifact(id=str(row["id"]), object_key=str(row["object_key"])) for row in rows]
