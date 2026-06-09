@@ -15,7 +15,7 @@ from kdive.mcp.tools.catalog.artifacts_uploads import create_run_upload
 from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers
 from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.providers.ports import BuildOutput
-from kdive.store.objectstore import HeadResult, PresignedUpload
+from kdive.store.objectstore import HeadResult, PresignedUpload, PresignPutRequest
 from tests.mcp.complete_build_support import (
     FakeValidator as _FakeValidator,
 )
@@ -59,10 +59,10 @@ def _build_handlers(validator) -> RunBuildHandlers:
 
 
 class _UploadStore:
-    def presign_put(self, key, *, sha256, size_bytes, sensitivity, retention_class, expires_in):
-        _ = (sensitivity, retention_class, expires_in)
+    def presign_put(self, request: PresignPutRequest) -> PresignedUpload:
         return PresignedUpload(
-            url=f"https://store/{key}", required_headers={"x-amz-checksum-sha256": sha256}
+            url=f"https://store/{request.key}",
+            required_headers={"x-amz-checksum-sha256": request.sha256},
         )
 
 

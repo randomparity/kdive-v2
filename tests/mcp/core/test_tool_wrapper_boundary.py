@@ -38,7 +38,7 @@ from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole, Role
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.resources.discovery import register_discovered_resource
-from kdive.store.objectstore import PresignedUpload
+from kdive.store.objectstore import PresignedUpload, PresignPutRequest
 from tests.mcp.conftest import AUDIENCE, ISSUER, make_keypair
 from tests.mcp.systems_support import fault_inject_profile, granted_allocation, upload_profile
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
@@ -262,18 +262,11 @@ class _UploadStore:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, int]] = []
 
-    def presign_put(
-        self,
-        key: str,
-        *,
-        sha256: str,
-        size_bytes: int,
-        sensitivity: object,
-        retention_class: str,
-        expires_in: int,
-    ) -> PresignedUpload:
-        self.calls.append((key, sha256, size_bytes))
-        return PresignedUpload(url=f"https://store/{key}", required_headers={"x-test": "ok"})
+    def presign_put(self, request: PresignPutRequest) -> PresignedUpload:
+        self.calls.append((request.key, request.sha256, request.size_bytes))
+        return PresignedUpload(
+            url=f"https://store/{request.key}", required_headers={"x-test": "ok"}
+        )
 
 
 async def _call_tool(client: Client, name: str, args: dict[str, Any] | None = None) -> ToolResponse:

@@ -35,7 +35,7 @@ from kdive.domain.state import (
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog.artifacts_uploads import create_run_upload, create_system_upload
 from kdive.security.authz.rbac import AuthorizationError, Role
-from kdive.store.objectstore import PresignedUpload
+from kdive.store.objectstore import PresignedUpload, PresignPutRequest
 from tests.mcp.systems_support import SYSTEM_PROVISION_HANDLERS
 from tests.mcp.systems_support import granted_allocation as _granted_allocation
 
@@ -54,16 +54,18 @@ class _FakeStore:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, int]] = []
 
-    def presign_put(self, key, *, sha256, size_bytes, sensitivity, retention_class, expires_in):
-        self.calls.append((key, sha256, size_bytes))
-        assert sensitivity is Sensitivity.SENSITIVE and retention_class == "build"
+    def presign_put(self, request: PresignPutRequest) -> PresignedUpload:
+        self.calls.append((request.key, request.sha256, request.size_bytes))
+        assert request.sensitivity is Sensitivity.SENSITIVE and request.retention_class == "build"
         return PresignedUpload(
-            url=f"https://store/{key}", required_headers={"x-amz-checksum-sha256": sha256}
+            url=f"https://store/{request.key}",
+            required_headers={"x-amz-checksum-sha256": request.sha256},
         )
 
 
 class _FailingStore:
-    def presign_put(self, key, *, sha256, size_bytes, sensitivity, retention_class, expires_in):
+    def presign_put(self, request: PresignPutRequest) -> PresignedUpload:
+        del request
         raise CategorizedError("presign failed", category=ErrorCategory.INFRASTRUCTURE_FAILURE)
 
 

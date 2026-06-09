@@ -13,6 +13,7 @@ import hashlib
 import httpx
 
 from kdive.domain.models import Sensitivity
+from kdive.store.objectstore import PresignPutRequest
 
 
 def _b64_sha256(data: bytes) -> str:
@@ -24,12 +25,14 @@ def test_presigned_put_rejects_checksum_mismatch(minio_store, key_ns: str) -> No
     wrong = _b64_sha256(b"different")
     key = f"{key_ns}/runs/r1/kernel"
     presigned = minio_store.presign_put(
-        key,
-        sha256=wrong,
-        size_bytes=len(payload),
-        sensitivity=Sensitivity.SENSITIVE,
-        retention_class="build",
-        expires_in=300,
+        PresignPutRequest(
+            key=key,
+            sha256=wrong,
+            size_bytes=len(payload),
+            sensitivity=Sensitivity.SENSITIVE,
+            retention_class="build",
+            expires_in=300,
+        )
     )
     resp = httpx.put(presigned.url, content=payload, headers=presigned.required_headers)
     assert resp.status_code >= 400  # the signed checksum disagrees with the body
@@ -40,12 +43,14 @@ def test_presigned_put_accepts_matching_upload(minio_store, key_ns: str) -> None
     checksum = _b64_sha256(payload)
     key = f"{key_ns}/runs/r1/kernel"
     presigned = minio_store.presign_put(
-        key,
-        sha256=checksum,
-        size_bytes=len(payload),
-        sensitivity=Sensitivity.SENSITIVE,
-        retention_class="build",
-        expires_in=300,
+        PresignPutRequest(
+            key=key,
+            sha256=checksum,
+            size_bytes=len(payload),
+            sensitivity=Sensitivity.SENSITIVE,
+            retention_class="build",
+            expires_in=300,
+        )
     )
     resp = httpx.put(presigned.url, content=payload, headers=presigned.required_headers)
     assert resp.status_code < 300

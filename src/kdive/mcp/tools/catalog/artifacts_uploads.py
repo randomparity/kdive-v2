@@ -31,6 +31,7 @@ from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 from kdive.store.objectstore import (
     PresignedUpload,
+    PresignPutRequest,
     artifact_key,
     object_store_from_env,
     owner_prefix,
@@ -62,16 +63,7 @@ def _presign_ttl_seconds() -> int:
 
 
 class _PresignStore(Protocol):
-    def presign_put(
-        self,
-        key: str,
-        *,
-        sha256: str,
-        size_bytes: int,
-        sensitivity: Sensitivity,
-        retention_class: str,
-        expires_in: int,
-    ) -> PresignedUpload: ...
+    def presign_put(self, request: PresignPutRequest) -> PresignedUpload: ...
 
 
 class _MaterializedUpload(NamedTuple):
@@ -131,12 +123,14 @@ def _materialize_uploads(
     for entry in entries:
         key = artifact_key(_TENANT, kind, str(owner_id), entry.name)
         presigned = store.presign_put(
-            key,
-            sha256=entry.sha256,
-            size_bytes=entry.size_bytes,
-            sensitivity=Sensitivity.SENSITIVE,
-            retention_class=_RETENTION_CLASS,
-            expires_in=expires_in,
+            PresignPutRequest(
+                key=key,
+                sha256=entry.sha256,
+                size_bytes=entry.size_bytes,
+                sensitivity=Sensitivity.SENSITIVE,
+                retention_class=_RETENTION_CLASS,
+                expires_in=expires_in,
+            )
         )
         uploads.append(_MaterializedUpload(entry, key, presigned))
     return uploads

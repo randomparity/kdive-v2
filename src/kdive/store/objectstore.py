@@ -83,6 +83,18 @@ class PresignedUpload(NamedTuple):
     required_headers: dict[str, str]
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class PresignPutRequest:
+    """Object-store presign identity, metadata, checksum, and expiry."""
+
+    key: str
+    sha256: str
+    size_bytes: int
+    sensitivity: Sensitivity
+    retention_class: str
+    expires_in: int
+
+
 def _normalize_etag(raw: str) -> str:
     return raw.strip('"')
 
@@ -282,16 +294,7 @@ class ObjectStore:
         except (BotoCoreError, ClientError) as err:
             raise _infrastructure_error("get_range", key, err) from err
 
-    def presign_put(
-        self,
-        key: str,
-        *,
-        sha256: str,
-        size_bytes: int,
-        sensitivity: Sensitivity,
-        retention_class: str,
-        expires_in: int,
-    ) -> PresignedUpload:
+    def presign_put(self, request: PresignPutRequest) -> PresignedUpload:
         """Mint a presigned PUT that signs the checksum + object metadata into the URL.
 
         The agent must send the returned ``required_headers`` (the signed
@@ -306,25 +309,28 @@ class ObjectStore:
             CategorizedError: presigning fails
                 (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
         """
-        metadata = {"sensitivity": sensitivity.value, "retention-class": retention_class}
+        metadata = {
+            "sensitivity": request.sensitivity.value,
+            "retention-class": request.retention_class,
+        }
         try:
             url = self._client.generate_presigned_url(
                 "put_object",
                 Params={
                     "Bucket": self._bucket,
-                    "Key": key,
-                    "ChecksumSHA256": sha256,
+                    "Key": request.key,
+                    "ChecksumSHA256": request.sha256,
                     "Metadata": metadata,
                 },
-                ExpiresIn=expires_in,
+                ExpiresIn=request.expires_in,
                 HttpMethod="PUT",
             )
         except (BotoCoreError, ClientError) as err:
-            raise _infrastructure_error("presign_put", key, err) from err
+            raise _infrastructure_error("presign_put", request.key, err) from err
         headers = {
-            "x-amz-checksum-sha256": sha256,
-            "x-amz-meta-sensitivity": sensitivity.value,
-            "x-amz-meta-retention-class": retention_class,
+            "x-amz-checksum-sha256": request.sha256,
+            "x-amz-meta-sensitivity": request.sensitivity.value,
+            "x-amz-meta-retention-class": request.retention_class,
         }
         return PresignedUpload(url=url, required_headers=headers)
 
