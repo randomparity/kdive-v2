@@ -34,7 +34,7 @@ from kdive.mcp.tools.lifecycle.runs.common import (
     run_job_envelope,
 )
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
-from kdive.providers.build_validation import validate_external_artifacts
+from kdive.providers.build_validation import ValidatorStore, validate_external_artifacts
 from kdive.providers.component_validation import (
     CONFIG_COMPONENT,
     ComponentSourceCapabilities,
@@ -58,6 +58,7 @@ type CompleteBuildValidation = Callable[
     [Sequence[ManifestEntry], Mapping[str, str], str | None, ConfigRequirements | None],
     ValidatedUpload,
 ]
+type ObjectStoreFactory = Callable[[], ValidatorStore]
 
 
 async def _build_locked(
@@ -106,29 +107,14 @@ async def _enqueue_build(
     )
 
 
-def validate_external_build_upload(
-    manifest: Sequence[ManifestEntry],
-    keys: Mapping[str, str],
-    declared_build_id: str | None,
-    profile_requirements: ConfigRequirements | None,
-) -> ValidatedUpload:
-    store = object_store_from_env()
-    return validate_external_artifacts(
-        store,
-        manifest=manifest,
-        keys=keys,
-        declared_build_id=declared_build_id,
-        profile_requirements=profile_requirements,
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class RunBuildHandlers:
     """Handlers with provider validation seams bound by the registrar or test fixture."""
 
     component_sources: ComponentSourceCapabilities
     config_validator: ConfigValidator | None = None
-    validate_complete_build: CompleteBuildValidation = validate_external_build_upload
+    validate_complete_build: CompleteBuildValidation | None = None
+    object_store_factory: ObjectStoreFactory = object_store_from_env
 
     async def build_run(
         self,
@@ -221,7 +207,7 @@ class RunBuildHandlers:
                 try:
                     requirements = _external_config_requirements(profile)
                     validated = await asyncio.to_thread(
-                        self.validate_complete_build,
+                        self._validate_complete_build,
                         list(manifest_row.entries),
                         keys,
                         build_id,
@@ -233,6 +219,25 @@ class RunBuildHandlers:
                 return await _finalize_external_build(
                     conn, ctx, run, validated.output, cmdline, keys, validated.heads
                 )
+
+    def _validate_complete_build(
+        self,
+        manifest: Sequence[ManifestEntry],
+        keys: Mapping[str, str],
+        declared_build_id: str | None,
+        profile_requirements: ConfigRequirements | None,
+    ) -> ValidatedUpload:
+        if self.validate_complete_build is not None:
+            return self.validate_complete_build(
+                manifest, keys, declared_build_id, profile_requirements
+            )
+        return validate_external_artifacts(
+            self.object_store_factory(),
+            manifest=manifest,
+            keys=keys,
+            declared_build_id=declared_build_id,
+            profile_requirements=profile_requirements,
+        )
 
 
 def _external_build_profile(run: Run) -> ExternalBuildProfile:

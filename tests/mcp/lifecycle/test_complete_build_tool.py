@@ -13,7 +13,6 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.state import RunState
 from kdive.mcp.tools.catalog.artifacts_uploads import create_run_upload
 from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers
-from kdive.providers.build_validation import validate_external_artifacts
 from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.providers.ports import BuildOutput
 from kdive.store.objectstore import HeadResult, PresignedUpload
@@ -77,20 +76,6 @@ class _ValidationStore:
 
     def get_range(self, key: str, *, start: int, length: int) -> bytes:
         return self._blobs[key][start : start + length]
-
-
-class _RealValidator:
-    def __init__(self, store: _ValidationStore) -> None:
-        self._store = store
-
-    def __call__(self, manifest, keys, declared_build_id, profile_requirements):
-        return validate_external_artifacts(
-            self._store,
-            manifest=manifest,
-            keys=keys,
-            declared_build_id=declared_build_id,
-            profile_requirements=profile_requirements,
-        )
 
 
 async def _artifact_keys(pool, run_id) -> set[str]:
@@ -274,17 +259,18 @@ def test_complete_build_writes_artifacts_after_effective_config_validation(
             assert await _artifact_keys(pool, run_id) == set()
             kernel_key = f"local/runs/{run_id}/kernel"
             config_key = f"local/runs/{run_id}/effective_config"
-            validator = _RealValidator(
-                _ValidationStore(
-                    {kernel_key: _BZIMAGE_HEAD, config_key: config},
-                    {
-                        kernel_key: HeadResult(len(_BZIMAGE_HEAD), "ck", "e-k"),
-                        config_key: HeadResult(len(config), "cc", "e-c"),
-                    },
-                )
+            store = _ValidationStore(
+                {kernel_key: _BZIMAGE_HEAD, config_key: config},
+                {
+                    kernel_key: HeadResult(len(_BZIMAGE_HEAD), "ck", "e-k"),
+                    config_key: HeadResult(len(config), "cc", "e-c"),
+                },
             )
 
-            resp = await _build_handlers(validator).complete_build(
+            resp = await RunBuildHandlers(
+                _TEST_COMPONENT_SOURCES,
+                object_store_factory=lambda: store,
+            ).complete_build(
                 pool,
                 _ctx(),
                 str(run_id),
@@ -316,14 +302,15 @@ def test_complete_build_rejects_missing_effective_config_without_artifacts(
             )
             assert {response.status for response in responses.items} == {"upload_ready"}
             kernel_key = f"local/runs/{run_id}/kernel"
-            validator = _RealValidator(
-                _ValidationStore(
-                    {kernel_key: _BZIMAGE_HEAD},
-                    {kernel_key: HeadResult(len(_BZIMAGE_HEAD), "ck", "e-k")},
-                )
+            store = _ValidationStore(
+                {kernel_key: _BZIMAGE_HEAD},
+                {kernel_key: HeadResult(len(_BZIMAGE_HEAD), "ck", "e-k")},
             )
 
-            resp = await _build_handlers(validator).complete_build(
+            resp = await RunBuildHandlers(
+                _TEST_COMPONENT_SOURCES,
+                object_store_factory=lambda: store,
+            ).complete_build(
                 pool,
                 _ctx(),
                 str(run_id),
