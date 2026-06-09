@@ -4,8 +4,8 @@
 "gdbstub")` resolves the System's gdbstub endpoint, enforces loopback-only **before any
 network IO** (the ported v1 "F2" SSRF control), probes RSP reachability over an injected
 seam, and returns an opaque `TransportHandle` (an encoded `TransportHandleData`) the session
-row persists; `close_transport(handle)` is a best-effort no-op (the M0 gdbstub is
-connectionless RSP). The slow/host-bound steps — resolving the libvirt domain's gdbstub
+row persists; `close_transport(handle)` validates the handle and then no-ops (the M0
+gdbstub is connectionless RSP). The slow/host-bound steps — resolving the libvirt domain's gdbstub
 host:port and the real socket probe — are **injected, `live_vm`-gated seams** that default to
 implementations raising `MISSING_DEPENDENCY` (resolver) / `# pragma: no cover - live_vm`
 (prober), so the orchestration and the full error contract are unit-tested with fakes.
@@ -174,8 +174,8 @@ class LocalLibvirtConnect:
         return TransportHandle(TransportHandleData(kind=_SSH, host=host, port=port).encode())
 
     def close_transport(self, handle: TransportHandle) -> None:
-        """Best-effort teardown — a no-op for these transports (never raises)."""
-        del handle
+        """Validate the handle, then no-op for these connectionless transports."""
+        TransportHandleData.decode(handle)
 
 
 def rsp_reachable(host: str, port: int) -> bool:  # pragma: no cover - live_vm
