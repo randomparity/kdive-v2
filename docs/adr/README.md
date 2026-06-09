@@ -101,3 +101,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0072](0072-fault-injection-provider-seeded-engine.md) | Fault-injection provider + seeded decision-keyed fault engine (M1.5) | Proposed |
 | [0073](0073-forced-secret-resolution-redaction.md) | Forced secret resolution + end-to-end redaction validation (M1.5) | Accepted |
 | [0074](0074-fault-inject-engine-port-wiring.md) | Wiring the seeded fault engine into the fault-inject ports (M1.5) | Proposed |
+| [0075](0075-objectstore-quarantine-pre-registration-writes.md) | Object-store quarantine for pre-registration writes (M1.5) | Proposed |
