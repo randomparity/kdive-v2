@@ -288,11 +288,11 @@ class DebugSessionHandlers:
         if run is None or run.project not in ctx.projects:
             return _config_error(str(run_id))
         require_role(ctx, run.project, Role.OPERATOR)
-        guard = await _attach_preconditions(conn, run, transport)
-        if isinstance(guard, ToolResponse):
-            return guard
+        system = await _attach_preconditions(conn, run, transport)
+        if isinstance(system, ToolResponse):
+            return system
         backend = self._credential_backend(session_id, transport)
-        resolved = _resolve_credential(guard, transport, backend)
+        resolved = _resolve_credential(system, transport, backend)
         if isinstance(resolved, ToolResponse):
             return resolved
         connector = await self._provider.connector_for_run(conn, run)
@@ -300,7 +300,7 @@ class DebugSessionHandlers:
             return connector
         return _AttachRequest(
             run=run,
-            system=guard,
+            system=system,
             session_id=session_id,
             transport=transport,
             connector=connector,
