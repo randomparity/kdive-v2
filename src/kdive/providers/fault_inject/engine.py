@@ -42,7 +42,14 @@ from kdive.providers.fault_inject.capabilities import (
 
 _KEY_SEPARATOR: Final = b"\x00"
 _DIGEST_BYTES: Final = 8
-_UNIT_SCALE: Final = float(1 << (8 * _DIGEST_BYTES))
+# Keep the top 53 bits (an IEEE-754 double's mantissa) and divide by 2**53: every value of
+# the numerator is exactly representable and strictly below the denominator, so the draw is
+# provably in [0, 1). Dividing the full 64-bit integer by 2**64 instead rounds the top values
+# up to exactly 1.0, which would break the [0, 1) contract (a fault_rate=1.0 plane could then
+# evaluate ``1.0 < 1.0`` False and silently not fail).
+_MANTISSA_BITS: Final = 53
+_DROPPED_BITS: Final = 8 * _DIGEST_BYTES - _MANTISSA_BITS
+_UNIT_SCALE: Final = float(1 << _MANTISSA_BITS)
 
 
 class FaultPlane(StrEnum):
@@ -92,8 +99,8 @@ def fault_for(
 
     The key's five fields are each encoded to a decimal/text byte form — none can contain a
     NUL byte — then joined with a single NUL separator, so the join is an injective encoding
-    of the 5-tuple (distinct keys never collide on the joined bytes). The
-    :func:`hashlib.blake2b` 64-bit digest divided by ``2**64`` lands in ``[0, 1)``.
+    of the 5-tuple (distinct keys never collide on the joined bytes). The top 53 bits of the
+    :func:`hashlib.blake2b` digest divided by ``2**53`` land provably in ``[0, 1)``.
 
     Args:
         seed: The resource-configured seed (part of every draw key).
@@ -119,7 +126,7 @@ def fault_for(
         facet.value.encode(),
     )
     digest = hashlib.blake2b(_KEY_SEPARATOR.join(fields), digest_size=_DIGEST_BYTES).digest()
-    return int.from_bytes(digest, "big") / _UNIT_SCALE
+    return (int.from_bytes(digest, "big") >> _DROPPED_BITS) / _UNIT_SCALE
 
 
 @dataclass(frozen=True, slots=True)
