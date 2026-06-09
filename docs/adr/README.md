@@ -102,3 +102,7 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0073](0073-forced-secret-resolution-redaction.md) | Forced secret resolution + end-to-end redaction validation (M1.5) | Accepted |
 | [0074](0074-fault-inject-engine-port-wiring.md) | Wiring the seeded fault engine into the fault-inject ports (M1.5) | Proposed |
 | [0075](0075-objectstore-quarantine-pre-registration-writes.md) | Object-store quarantine for pre-registration writes (M1.5) | Proposed |
+| [0076](0076-remote-libvirt-provider-package.md) | Independent remote-libvirt provider package + portability diff gate (M2) | Proposed |
+| [0077](0077-qemu-tls-control-transport.md) | qemu+tls:// control transport + x509 client-cert secret-by-reference (M2) | Proposed |
+| [0078](0078-object-store-in-target-install-seam.md) | Object-store + presigned-URL in-target install/retrieve seam (M2) | Proposed |
+| [0079](0079-remote-live-debug-transport.md) | Remote live-debug transport reachability — direct-TCP gdbstub, in-guest drgn, worker-side vmcore postmortem (M2) | Proposed |
