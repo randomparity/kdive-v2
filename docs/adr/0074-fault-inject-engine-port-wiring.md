@@ -26,8 +26,8 @@ Two wiring decisions ADR-0072 left open, both with viable alternatives:
 1. **Where does a port get `attempt` and the engine?** ADR-0072 mandates `attempt` derive
    from durable state (never a process-local counter) and the engine be built from the
    resource `capabilities`. The ports today take none of this.
-2. **How is `latency_s` realized without making CI tests slow or flaky?** A real
-   `asyncio.sleep(latency_s)` past a deliberately-short lease is the production behavior, but
+2. **How is `latency_s` realized without making CI tests slow or flaky?** A real blocking
+   sleep for `latency_s` past a deliberately-short lease is the production behavior, but
    `max_latency_s` is sized **above** the lease on purpose (ADR-0072), so a literal sleep in a
    unit test would block for that whole bound.
 
@@ -51,10 +51,12 @@ ordinal / job retry count is a later issue (not issue 5's scope — issue 5 asse
 already does). This honours "attempt derives from durable state, never a process-local
 counter": the wrapper holds **no** counter of its own.
 
-**`latency_s` is realized through an injected async-sleep seam, not wall-clock.** The wrapper
-takes a `sleep: Callable[[float], Awaitable[None]]` defaulting to `asyncio.sleep`. Production
-sleeps for real; a test injects a recording no-op sleep that captures the requested delay and
-returns immediately. The test then asserts the **engine-computed `latency_s` exceeds the
+**`latency_s` is realized through an injected sleep seam, not wall-clock.** The provider ports
+are **synchronous** (the handler offloads each call via `asyncio.to_thread`), so the wrapper
+takes a **sync** `sleep_s: Callable[[float], None]` defaulting to `time.sleep` — a blocking
+sleep on the worker thread, exactly how a real slow provider behaves, without stalling the event
+loop. Production sleeps for real; a test injects a recording no-op sleep that captures the
+requested delay and returns immediately. The test then asserts the **engine-computed `latency_s` exceeds the
 lease window** (the real, seed-derived value) and drives the already-proven reconciler
 lease-expiry repair against a job seeded with the lapsed lease that delay would have produced.
 This keeps the *fault decision* and the *latency magnitude* real (seed-derived, asserted)
@@ -124,7 +126,7 @@ latency path both terminate in *already-shipped* transitions.
 
 ## Considered & rejected
 
-- **Real `asyncio.sleep(latency_s)` in the validation tests.** Faithful to production but
+- **A real blocking sleep for `latency_s` in the validation tests.** Faithful to production but
   `max_latency_s` is deliberately sized above the lease, so a unit test would block for that
   bound (seconds-to-minutes) — slow and a flakiness vector under a loaded CI runner. Rejected:
   the seam changes only timing, and the lapsed-lease seed pattern is already the repo's
