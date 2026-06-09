@@ -69,12 +69,19 @@ states, so the plan must not conflate them:
   true (`decision.category` is guaranteed non-None in that branch; the wrapper never raises with
   a `None` category). The category is a **catalog** value (`PROVISIONING_FAILURE`,
   `INSTALL_FAILURE`, …), **never** `lease_expired`. On **provision**, the existing
-  `provision_handler` already turns this into `System → failed` via `_record_provision_failure`
-  — so the orphaned-System case needs no handler change. On **install/boot**, the existing
-  handler only abandons the run step and **re-raises** (`runs.py`); it does **not** transition
-  the owning Run — the worker's `queue.fail` dead-letters the *job*, and the *Run* is failed
-  only downstream. Issue 5's drift cases therefore do **not** assert a Run reaches `failed` from
-  an install/boot `fail` draw.
+  `provision_handler` turns this into `System → **failed**` via `_record_provision_failure`. On
+  **install/boot**, the existing handler only abandons the run step and **re-raises** (`runs.py`);
+  it does **not** transition the owning Run — the worker's `queue.fail` dead-letters the *job*,
+  and the *Run* is failed only downstream. Issue 5's drift cases therefore do **not** assert a
+  Run reaches `failed` from an install/boot `fail` draw.
+- The **orphaned-System** case is **not** a `fail` draw. It is a **successful** provision
+  (happy-path or latency-only — the System reaches a *non-terminal* live state) **followed by an
+  allocation release/expiry**, so the System outlives its Allocation. `_repair_orphaned_systems`
+  selects Systems whose state is **not** terminal (`_ORPHANED_SYSTEM_TERMINAL_STATES =
+  (TORN_DOWN, FAILED)`) and whose Allocation **is** terminal → enqueues teardown. A provision
+  `fail` draw drives the System to `failed`, which the orphan reaper **excludes**, so a `fail`
+  draw is the *wrong* trigger for this case — it demonstrates a different outcome (System→failed),
+  not the orphan repair.
 - The **lease-expiry-mid-job** case uses the **`latency` lever with no `fail` draw**: a slow
   op (`latency_s × …` > the short lease) whose job lease lapses while running. The owning Run
   reaches `failed(**lease_expired**)` **only** through the reconciler's `_repair_abandoned_jobs`
