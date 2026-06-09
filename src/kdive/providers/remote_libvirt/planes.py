@@ -1,11 +1,12 @@
 """Unimplemented remote-libvirt planes — buildable, fail-fast stubs (ADR-0076).
 
 The M2 foundation lands the package, kind, transport, and discovery; provisioning is
-real (``remote_libvirt.provisioning``, ADR-0080); the artifact seam, build, install,
-connect/debug, and control/retrieve land in the later M2 issues. Until then each
-remaining plane raises a typed ``MISSING_DEPENDENCY`` (the ports' documented category
-for an unavailable provider seam) so the runtime is buildable — the ADR-0071
-CHECK↔registry parity invariant — without pretending the plane works.
+real (``remote_libvirt.provisioning``, ADR-0080) and build is real
+(``remote_libvirt.build``, ADR-0081); the install, connect/debug, and control/retrieve
+planes land in the later M2 issues. Until then each remaining plane raises a typed
+``MISSING_DEPENDENCY`` (the ports' documented category for an unavailable provider seam)
+so the runtime is buildable — the ADR-0071 CHECK↔registry parity invariant — without
+pretending the plane works.
 """
 
 from __future__ import annotations
@@ -16,9 +17,7 @@ from uuid import UUID
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction
-from kdive.profiles.build import ServerBuildProfile
 from kdive.providers.ports import (
-    BuildOutput,
     CaptureOutput,
     CrashOutput,
     InstallRequest,
@@ -34,13 +33,6 @@ def _unimplemented(plane: str) -> NoReturn:
         category=ErrorCategory.MISSING_DEPENDENCY,
         details={"plane": plane},
     )
-
-
-class UnimplementedBuilder:
-    """Builder port stub (lands with the remote build issue)."""
-
-    def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput:
-        _unimplemented("build")
 
 
 class UnimplementedInstaller:

@@ -62,10 +62,10 @@ from kdive.providers.local_libvirt.lifecycle.provisioning import (
 )
 from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
 from kdive.providers.reaping import InfraReaper, NullReaper, OwnedDomain
+from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.config import is_remote_libvirt_configured
 from kdive.providers.remote_libvirt.discovery import RemoteLibvirtDiscovery
 from kdive.providers.remote_libvirt.planes import (
-    UnimplementedBuilder,
     UnimplementedConnector,
     UnimplementedController,
     UnimplementedInstaller,
@@ -200,9 +200,17 @@ def build_faultinject_runtime(
 
 
 def _remote_component_sources() -> ComponentSourceCapabilities:
-    # Empty until the remote build/install issues define what the provider accepts.
+    # The remote server build stages a local .config and applies an optional local patch on
+    # the worker (ADR-0081), exactly as local-libvirt's server build does; runs.build rejects
+    # any config source not advertised here, so CONFIG must be present or every remote build
+    # fails. No rootfs/kernel/initrd: the remote target is a disk-image base OS, not a
+    # component-provisioned guest.
+    accepted: dict[ComponentKind, frozenset[ComponentSourceKind]] = {
+        CONFIG_COMPONENT: frozenset({"local"}),
+        PATCH_COMPONENT: frozenset({"local"}),
+    }
     return ComponentSourceCapabilities(
-        provider=ResourceKind.REMOTE_LIBVIRT.value, accepted_component_sources={}
+        provider=ResourceKind.REMOTE_LIBVIRT.value, accepted_component_sources=accepted
     )
 
 
@@ -214,6 +222,7 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
     ``KDIVE_REMOTE_LIBVIRT_*`` config gates discovery/connection/provisioning and is
     read only when an op runs.
     """
+    builder = RemoteLibvirtBuild.from_env(secret_registry=secret_registry)
     installer = UnimplementedInstaller()
     retriever = UnimplementedRetriever()
     introspector = UnimplementedIntrospector()
@@ -236,7 +245,7 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
 
     return ProviderRuntime(
         provisioner=RemoteLibvirtProvision(secret_registry=secret_registry),
-        builder=UnimplementedBuilder(),
+        builder=builder,
         installer=installer,
         booter=installer,
         connector=UnimplementedConnector(),
@@ -251,6 +260,7 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
         supported_capture_methods=frozenset(),
         discovery_registrar=register_remote_host,
         component_sources=_remote_component_sources(),
+        build_config_validator=builder.validate_config_ref,
         # The systems registrar hard-fails on a None validator; a remote profile has
         # no rootfs, so the no-op contract applies (the fault-inject precedent).
         rootfs_validator=lambda _rootfs: None,
