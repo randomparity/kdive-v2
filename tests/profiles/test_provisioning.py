@@ -22,8 +22,10 @@ from kdive.profiles.provisioning import (
     reconcile_profile_sizing,
     reject_rootfs_upload_without_window,
     require_concrete_sizing,
+    rootfs_source,
     rootfs_upload_window_allowed,
     ssh_credential_ref,
+    validate_profile,
 )
 
 _VALID: dict[str, Any] = {
@@ -517,3 +519,94 @@ def test_require_concrete_sizing_rejects_missing() -> None:
 
 def test_require_concrete_sizing_accepts_full() -> None:
     require_concrete_sizing(ProvisioningProfile.parse(_valid()))
+
+
+_VALID_REMOTE: dict[str, Any] = {
+    "schema_version": 1,
+    "arch": "x86_64",
+    "vcpu": 4,
+    "memory_mb": 4096,
+    "disk_gb": 20,
+    "boot_method": "disk-image",
+    "kernel_source_ref": "git+https://git.kernel.org/pub/scm/linux.git#v6.9",
+    "provider": {
+        "remote-libvirt": {
+            "base_image_volume": "kdive-base-fedora-42.qcow2",
+            "crashkernel": "256M",
+            "destructive_ops": ["force_crash"],
+        }
+    },
+}
+
+
+def _valid_remote() -> dict[str, Any]:
+    """A fresh deep copy of the canonical valid remote profile, safe to mutate."""
+    return copy.deepcopy(_VALID_REMOTE)
+
+
+def test_valid_remote_profile_parses() -> None:
+    profile = ProvisioningProfile.parse(_valid_remote())
+
+    assert profile.boot_method is BootMethod.DISK_IMAGE
+    section = profile.provider.remote_libvirt
+    assert section.base_image_volume == "kdive-base-fedora-42.qcow2"
+    assert section.crashkernel == "256M"
+
+
+def test_remote_section_requires_disk_image_boot() -> None:
+    data = _valid_remote()
+    data["boot_method"] = "direct-kernel"
+
+    with pytest.raises(CategorizedError) as exc_info:
+        ProvisioningProfile.parse(data)
+
+    assert exc_info.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_disk_image_boot_requires_remote_section() -> None:
+    data = _valid()
+    data["boot_method"] = "disk-image"
+
+    with pytest.raises(CategorizedError) as exc_info:
+        ProvisioningProfile.parse(data)
+
+    assert exc_info.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_remote_profile_capture_method_kdump_with_crashkernel() -> None:
+    assert capture_method(ProvisioningProfile.parse(_valid_remote())) is CaptureMethod.KDUMP
+
+
+def test_remote_profile_capture_method_gdbstub_without_crashkernel() -> None:
+    data = _valid_remote()
+    del data["provider"]["remote-libvirt"]["crashkernel"]
+
+    assert capture_method(ProvisioningProfile.parse(data)) is CaptureMethod.GDBSTUB
+
+
+def test_remote_profile_destructive_opt_in() -> None:
+    profile = ProvisioningProfile.parse(_valid_remote())
+
+    assert destructive_opt_in(profile, JobKind.FORCE_CRASH) is True
+    assert destructive_opt_in(profile, JobKind.REPROVISION) is False
+
+
+def test_remote_profile_rootfs_and_ssh_are_none() -> None:
+    profile = ProvisioningProfile.parse(_valid_remote())
+
+    assert rootfs_source(profile) is None
+    assert ssh_credential_ref(profile) is None
+
+
+def test_remote_profile_rejects_unknown_fields() -> None:
+    data = _valid_remote()
+    data["provider"]["remote-libvirt"]["bogus"] = "x"
+
+    with pytest.raises(CategorizedError) as exc_info:
+        ProvisioningProfile.parse(data)
+
+    assert exc_info.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_remote_profile_validate_profile_accepts_remote_section() -> None:
+    validate_profile(ProvisioningProfile.parse(_valid_remote()))

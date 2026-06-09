@@ -53,9 +53,15 @@ SUPPORTED_DOMAIN_XML_PARAMS = frozenset({"machine"})
 
 
 class BootMethod(StrEnum):
-    """The provider-agnostic boot methods (ADR-0024 decision 2a)."""
+    """The provider-agnostic boot methods (ADR-0024 decision 2a, ADR-0080).
+
+    ``disk-image`` boots an operator-staged base-OS image and iterates kernels by
+    in-guest install + reboot (the remote-libvirt model, ADR-0078); ``direct-kernel``
+    stays the local-libvirt/fault-inject method.
+    """
 
     DIRECT_KERNEL = "direct-kernel"
+    DISK_IMAGE = "disk-image"
 
 
 class _ProfileBase(BaseModel):
@@ -128,6 +134,26 @@ class FaultInjectProfile(_ProfileBase):
     capture_method: CaptureMethod = CaptureMethod.CONSOLE
 
 
+class RemoteLibvirtProfile(_ProfileBase):
+    """The ``remote-libvirt`` provider section (ADR-0080).
+
+    ``base_image_volume`` names the **operator-staged** qcow2 volume on the remote
+    host's storage pool carrying the base OS (with qemu-guest-agent enabled, drgn,
+    and matching vmlinux/debuginfo — image-content obligations the operator owns,
+    ADR-0078/0079); provisioning verifies the volume exists, not its contents.
+    ``crashkernel`` mirrors the local section (the kdump prerequisite token; the
+    booted kernel is the arbiter of its grammar). ``destructive_ops`` is the
+    deny-by-default destructive-op opt-in factor (ADR-0028 §2). There is no rootfs,
+    SSH credential, or gdbstub flag: the base image is the rootfs, in-guest access
+    rides the guest-agent seam, and the gdbstub is unconditionally enabled with a
+    per-System port the provisioning plane allocates (ADR-0079/0080).
+    """
+
+    base_image_volume: NonEmptyStr
+    crashkernel: NonEmptyStr | None = None
+    destructive_ops: list[NonEmptyStr] = Field(default_factory=list)
+
+
 class ProviderSection(_ProfileBase):
     """The provider-specific section, keyed by provider name (ADR-0024 decision 1).
 
@@ -145,12 +171,18 @@ class ProviderSection(_ProfileBase):
         validation_alias=ResourceKind.FAULT_INJECT.value,
         serialization_alias=ResourceKind.FAULT_INJECT.value,
     )
+    remote_libvirt_section: RemoteLibvirtProfile | None = Field(
+        default=None,
+        validation_alias=ResourceKind.REMOTE_LIBVIRT.value,
+        serialization_alias=ResourceKind.REMOTE_LIBVIRT.value,
+    )
 
     @model_validator(mode="after")
     def _require_exactly_one_provider(self) -> ProviderSection:
         present = [
             self.local_libvirt_section is not None,
             self.fault_inject_section is not None,
+            self.remote_libvirt_section is not None,
         ]
         if sum(present) != 1:
             raise ValueError("profile provider must contain exactly one provider section")
@@ -169,6 +201,13 @@ class ProviderSection(_ProfileBase):
         if self.fault_inject_section is None:
             raise AttributeError("profile has no fault-inject provider section")
         return self.fault_inject_section
+
+    @property
+    def remote_libvirt(self) -> RemoteLibvirtProfile:
+        """Return the remote-libvirt section for remote-libvirt-specific callers."""
+        if self.remote_libvirt_section is None:
+            raise AttributeError("profile has no remote-libvirt provider section")
+        return self.remote_libvirt_section
 
 
 class ProvisioningProfile(_ProfileBase):
@@ -193,6 +232,18 @@ class ProvisioningProfile(_ProfileBase):
     provider: ProviderSection
 
     _reject_coerced_version = schema_version_validator
+
+    @model_validator(mode="after")
+    def _pair_boot_method_with_provider(self) -> ProvisioningProfile:
+        """``disk-image`` and the remote-libvirt section require each other (ADR-0080)."""
+        remote = self.provider.remote_libvirt_section is not None
+        disk_image = self.boot_method is BootMethod.DISK_IMAGE
+        if remote != disk_image:
+            raise ValueError(
+                "boot_method 'disk-image' and the remote-libvirt provider section "
+                "require each other (ADR-0080)"
+            )
+        return self
 
     @classmethod
     def parse(cls, data: ProvisioningProfileInput) -> ProvisioningProfile:
@@ -385,12 +436,21 @@ def destructive_opt_in(profile: ProvisioningProfile, op: DestructiveJobKind) -> 
     """Return whether the profile opts into a destructive operation."""
     if profile.provider.local_libvirt_section is not None:
         return op.value in profile.provider.local_libvirt_section.destructive_ops
+    if profile.provider.remote_libvirt_section is not None:
+        return op.value in profile.provider.remote_libvirt_section.destructive_ops
     return op.value in profile.provider.fault_inject.destructive_ops
 
 
 def capture_method(profile: ProvisioningProfile | Mapping[str, object]) -> CaptureMethod:
     """Resolve the crash-capture method a provisioning profile enables."""
     parsed = _parsed_profile(profile)
+    remote = parsed.provider.remote_libvirt_section
+    if remote is not None:
+        # The gdbstub is unconditionally enabled for every remote System (ADR-0079/0080),
+        # so kdump opts in via crashkernel and the gdbstub is the floor, never console.
+        if remote.crashkernel is not None:
+            return CaptureMethod.KDUMP
+        return CaptureMethod.GDBSTUB
     section = parsed.provider.local_libvirt_section
     if section is None:
         return parsed.provider.fault_inject.capture_method
