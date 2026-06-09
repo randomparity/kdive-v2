@@ -34,6 +34,9 @@ _NEXT_ACTIONS: dict[JobState, list[str]] = {
 # tool-level `error` status; both require an error category, all others forbid one.
 _FAILURE_STATUSES = frozenset({JobState.FAILED.value, "error"})
 
+JsonValue = str | int | float | bool | None | list[object] | dict[str, object]
+ResponseData = Mapping[str, object]
+
 
 def _validate_json_value(value: object, *, path: str) -> None:
     if value is None or isinstance(value, (str, bool, int)):
@@ -55,8 +58,16 @@ def _validate_json_value(value: object, *, path: str) -> None:
     raise ValueError(f"{path} contains non-JSON value {type(value).__name__}")
 
 
-def _safe_error_details(details: Mapping[str, object]) -> dict[str, Any]:
-    safe: dict[str, Any] = {}
+def current_status_data(current_status: str) -> dict[str, JsonValue]:
+    return {"current_status": current_status}
+
+
+def reason_data(reason: str) -> dict[str, JsonValue]:
+    return {"reason": reason}
+
+
+def _safe_error_details(details: Mapping[str, object]) -> dict[str, object]:
+    safe: dict[str, object] = {}
     for key, value in details.items():
         if isinstance(value, float):
             if math.isfinite(value):
@@ -108,7 +119,7 @@ class ToolResponse(BaseModel):
         *,
         suggested_next_actions: list[str] | None = None,
         refs: dict[str, str] | None = None,
-        data: Mapping[str, Any] | None = None,
+        data: ResponseData | None = None,
     ) -> ToolResponse:
         """Build a non-failure envelope.
 
@@ -132,7 +143,7 @@ class ToolResponse(BaseModel):
         *,
         suggested_next_actions: list[str] | None = None,
         refs: dict[str, str] | None = None,
-        data: Mapping[str, Any] | None = None,
+        data: ResponseData | None = None,
     ) -> ToolResponse:
         """Build one envelope for a collection-returning tool."""
         payload = dict(data or {})
@@ -153,7 +164,7 @@ class ToolResponse(BaseModel):
         category: ErrorCategory,
         *,
         suggested_next_actions: list[str] | None = None,
-        data: Mapping[str, Any] | None = None,
+        data: ResponseData | None = None,
     ) -> ToolResponse:
         return cls(
             object_id=object_id,
@@ -171,9 +182,9 @@ class ToolResponse(BaseModel):
         *,
         category: ErrorCategory | None = None,
         suggested_next_actions: list[str] | None = None,
-        data: Mapping[str, Any] | None = None,
+        data: ResponseData | None = None,
     ) -> ToolResponse:
-        payload = _safe_error_details(exc.details)
+        payload: dict[str, object] = _safe_error_details(exc.details)
         payload.update(data or {})
         return cls.failure(
             object_id,
@@ -185,7 +196,7 @@ class ToolResponse(BaseModel):
     @classmethod
     def from_job(cls, job: Job) -> ToolResponse:
         refs = {"result": job.result_ref} if job.result_ref else {}
-        data: dict[str, Any] = {"kind": job.kind.value}
+        data: dict[str, JsonValue] = {"kind": job.kind.value}
         if job.state is JobState.FAILED:
             data.update(job.failure_context)
         return cls(
