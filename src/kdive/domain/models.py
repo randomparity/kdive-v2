@@ -109,10 +109,16 @@ class JobAuthorizing(TypedDict):
 
 
 class Sensitivity(StrEnum):
-    """Artifact sensitivity — only a ``redacted`` derivative is response-eligible."""
+    """Artifact sensitivity — only a ``redacted`` derivative is response-eligible.
+
+    ``quarantined`` is a raw artifact written before secret registration completed
+    (ADR-0075): excluded from every serve gate exactly like ``sensitive``, but marking an
+    unfulfilled redaction obligation the op heals to a ``redacted`` sibling before release.
+    """
 
     SENSITIVE = "sensitive"
     REDACTED = "redacted"
+    QUARANTINED = "quarantined"
 
 
 class LedgerEventType(StrEnum):
