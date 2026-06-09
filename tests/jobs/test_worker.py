@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import JOBS
@@ -18,7 +19,7 @@ from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
-from kdive.jobs.payloads import Authorizing, BuildPayload
+from kdive.jobs.payloads import Authorizing, BuildPayload, load_payload
 from kdive.jobs.worker import Worker
 from kdive.security.secrets.secret_registry import SecretRegistry
 
@@ -214,6 +215,44 @@ def test_failed_job_persists_redacted_failure_context(
             assert records and records[0].exc_info is not None
 
     caplog.set_level(logging.WARNING, logger="kdive.jobs.worker")
+    asyncio.run(_run())
+
+
+def test_invalid_persisted_payload_fails_as_configuration_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:
+
+            async def handler(conn: psycopg.AsyncConnection, job: Job) -> str:
+                load_payload(job, BuildPayload)
+                raise AssertionError("malformed payload should not validate")
+
+            reg = HandlerRegistry()
+            reg.register(JobKind.BUILD, handler)
+            worker = _worker(pool, reg, worker_id="w1")
+            async with pool.connection() as conn, conn.transaction():
+                cur = await conn.execute(
+                    "INSERT INTO jobs "
+                    "(kind, payload, state, max_attempts, authorizing, dedup_key) "
+                    "VALUES (%s, %s, 'queued', 1, %s, %s) "
+                    "RETURNING id",
+                    (
+                        JobKind.BUILD,
+                        Jsonb({"run_id": "not-a-uuid"}),
+                        Jsonb(_AUTHORIZING.model_dump(mode="json")),
+                        "dk-invalid-payload",
+                    ),
+                )
+                row = await cur.fetchone()
+
+            assert row is not None
+            job_id = row[0]
+            await worker.run_once()
+
+            final = await _final_state(migrated_url, job_id)
+            assert final.state is JobState.FAILED
+            assert final.error_category is ErrorCategory.CONFIGURATION_ERROR
+            assert final.failure_context["failure_message"].startswith("invalid build payload:")
+
     asyncio.run(_run())
 
 

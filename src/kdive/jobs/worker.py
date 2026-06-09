@@ -25,6 +25,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry, JobHandler
+from kdive.jobs.payloads import PayloadValidationError
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
 
@@ -125,11 +126,7 @@ class Worker:
                 async with self._pool.connection() as conn:
                     result_ref = await handler(conn, job)
             except Exception as exc:  # noqa: BLE001 - the worker turns any handler failure into a dead-letter/requeue
-                category = (
-                    exc.category
-                    if isinstance(exc, CategorizedError)
-                    else ErrorCategory.INFRASTRUCTURE_FAILURE
-                )
+                category = _failure_category(exc)
                 async with self._pool.connection() as conn:
                     await queue.fail(
                         conn,
@@ -171,6 +168,14 @@ class Worker:
                 job_id,
                 exc_info=True,
             )
+
+
+def _failure_category(exc: Exception) -> ErrorCategory:
+    if isinstance(exc, CategorizedError):
+        return exc.category
+    if isinstance(exc, PayloadValidationError):
+        return ErrorCategory.CONFIGURATION_ERROR
+    return ErrorCategory.INFRASTRUCTURE_FAILURE
 
 
 def _failure_context(exc: Exception, registry: SecretRegistry) -> dict[str, str]:
