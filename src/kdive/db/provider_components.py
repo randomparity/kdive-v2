@@ -200,8 +200,7 @@ async def create_component_upload_intent(
     """Create a pending upload intent and return its object-store key.
 
     Raises:
-        CategorizedError: The eventual upload cannot be finalized if its object metadata does
-            not match this intent.
+        CategorizedError: The insert did not return the new upload id.
     """
     registration = request.registration
     async with pool.connection() as conn:
@@ -238,7 +237,12 @@ async def finalize_component_upload(
     *,
     object_store: UploadVerifier,
 ) -> UUID:
-    """Validate an upload intent and return the finalized provider component id."""
+    """Validate an upload intent and return the finalized provider component id.
+
+    Raises:
+        CategorizedError: The upload is absent, expired, already non-pending, or its object
+            metadata does not match the intent.
+    """
     async with pool.connection() as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
