@@ -15,7 +15,7 @@ from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 
 type _RuntimeResolver = Callable[[AsyncConnection, UUID], Awaitable[ProviderRuntime]]
-type _RuntimeHandler = Callable[[ProviderRuntime], Awaitable[ToolResponse]]
+type RuntimeHandler = Callable[[ProviderRuntime], Awaitable[ToolResponse]]
 
 
 class _InvalidRuntimeObjectId(ValueError):
@@ -40,7 +40,7 @@ async def _with_runtime_for_object(
     pool: AsyncConnectionPool,
     object_id: str,
     resolve: _RuntimeResolver,
-    handle: _RuntimeHandler,
+    handle: RuntimeHandler,
 ) -> ToolResponse:
     try:
         runtime = await _runtime_for_object(pool, object_id, resolve)
@@ -73,7 +73,7 @@ async def with_runtime_for_allocation(
     pool: AsyncConnectionPool,
     resolver: ProviderResolver,
     allocation_id: str,
-    handle: _RuntimeHandler,
+    handle: RuntimeHandler,
 ) -> ToolResponse:
     return await _with_runtime_for_object(
         pool, allocation_id, resolver.runtime_for_allocation, handle
@@ -84,7 +84,7 @@ async def with_runtime_for_system(
     pool: AsyncConnectionPool,
     resolver: ProviderResolver,
     system_id: str,
-    handle: _RuntimeHandler,
+    handle: RuntimeHandler,
 ) -> ToolResponse:
     return await _with_runtime_for_object(pool, system_id, resolver.runtime_for_system, handle)
 
@@ -93,6 +93,6 @@ async def with_runtime_for_run(
     pool: AsyncConnectionPool,
     resolver: ProviderResolver,
     run_id: str,
-    handle: _RuntimeHandler,
+    handle: RuntimeHandler,
 ) -> ToolResponse:
     return await _with_runtime_for_object(pool, run_id, resolver.runtime_for_run, handle)

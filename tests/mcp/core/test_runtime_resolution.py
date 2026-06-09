@@ -14,6 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._runtime_resolution import (
+    RuntimeHandler,
     runtime_for_allocation,
     runtime_for_run,
     runtime_for_system,
@@ -28,9 +29,8 @@ type _RuntimeHelper = Callable[
     [AsyncConnectionPool, ProviderResolver, str],
     Coroutine[Any, Any, ProviderRuntime],
 ]
-type _RuntimeResponseHandler = Callable[[ProviderRuntime], Coroutine[Any, Any, ToolResponse]]
 type _RuntimeWrapper = Callable[
-    [AsyncConnectionPool, ProviderResolver, str, _RuntimeResponseHandler],
+    [AsyncConnectionPool, ProviderResolver, str, RuntimeHandler],
     Coroutine[Any, Any, ToolResponse],
 ]
 
