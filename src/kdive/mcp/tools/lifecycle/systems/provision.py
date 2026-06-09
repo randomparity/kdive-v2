@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -23,7 +24,6 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.lifecycle_rules import TERMINAL_SYSTEM_STATES as _TERMINAL_SYSTEM
 from kdive.domain.models import Allocation, JobKind, System
 from kdive.domain.sizing import AllocationSizing
 from kdive.domain.state import AllocationState, IllegalTransition, SystemState
@@ -70,16 +70,22 @@ _NON_TERMINAL_SYSTEM = (
     SystemState.REPROVISIONING,
     SystemState.CRASHED,
 )
-_PROVISION_CURRENT_STATUS_ONLY = frozenset(
-    {
-        SystemState.READY,
-        SystemState.REPROVISIONING,
-        SystemState.CRASHED,
-    }
-)
-
 type LockedAllocationSystem = tuple[AsyncConnection, Allocation, System | None]
 type CreateSystemMode = Literal["provision", "define"]
+
+
+class _ProvisionAdmissionAction(StrEnum):
+    INSERT_NEW = "insert_new"
+    CONTINUE_DEFINED = "continue_defined"
+    RETRY_JOB = "retry_job"
+    USE_PROVISION_DEFINED_ERROR = "use_provision_defined_error"
+    CURRENT_STATUS_ERROR = "current_status_error"
+
+
+@dataclass(frozen=True, slots=True)
+class _ProvisionAdmission:
+    action: _ProvisionAdmissionAction
+    system: System | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +97,23 @@ class MissingAllocation:
 
 # Maps the Allocation's GB memory snapshot to the profile's MB sizing (ADR-0067 lossless).
 _MB_PER_GB = 1024
+
+
+def _classify_provision_admission(
+    system: System | None,
+    *,
+    defined_action: Literal[
+        _ProvisionAdmissionAction.CONTINUE_DEFINED,
+        _ProvisionAdmissionAction.USE_PROVISION_DEFINED_ERROR,
+    ],
+) -> _ProvisionAdmission:
+    if system is None:
+        return _ProvisionAdmission(_ProvisionAdmissionAction.INSERT_NEW)
+    if system.state is SystemState.DEFINED:
+        return _ProvisionAdmission(defined_action, system)
+    if system.state is SystemState.PROVISIONING:
+        return _ProvisionAdmission(_ProvisionAdmissionAction.RETRY_JOB, system)
+    return _ProvisionAdmission(_ProvisionAdmissionAction.CURRENT_STATUS_ERROR, system)
 
 
 def _stored_profile_for(
@@ -325,28 +348,33 @@ async def _provision_create_response(
     profile: ProvisioningProfile,
     rootfs_validator: RootfsValidator,
 ) -> ToolResponse:
-    if existing is None:
+    admission = _classify_provision_admission(
+        existing,
+        defined_action=_ProvisionAdmissionAction.USE_PROVISION_DEFINED_ERROR,
+    )
+    if admission.action is _ProvisionAdmissionAction.INSERT_NEW:
         return await _insert_provisioning_system(conn, ctx, alloc, profile, rootfs_validator)
-    if existing.state in _TERMINAL_SYSTEM:
-        return _config_error(str(existing.id), data={"current_status": existing.state.value})
-    if existing.state is SystemState.DEFINED:
+    if admission.system is None:
+        raise RuntimeError("provision admission without system")
+    if admission.action is _ProvisionAdmissionAction.USE_PROVISION_DEFINED_ERROR:
         return _config_error(
-            str(existing.id),
+            str(admission.system.id),
             data={
-                "current_status": existing.state.value,
+                "current_status": admission.system.state.value,
                 "reason": "use_systems.provision_defined",
             },
         )
-    if existing.state in _PROVISION_CURRENT_STATUS_ONLY:
-        return _config_error(str(existing.id), data={"current_status": existing.state.value})
-    if existing.state is not SystemState.PROVISIONING:
-        return _config_error(str(existing.id), data={"current_status": existing.state.value})
-    return await _provision_job_envelope(
-        conn,
-        ctx,
-        project=alloc.project,
-        allocation_id=alloc.id,
-        system_id=existing.id,
+    if admission.action is _ProvisionAdmissionAction.RETRY_JOB:
+        return await _provision_job_envelope(
+            conn,
+            ctx,
+            project=alloc.project,
+            allocation_id=alloc.id,
+            system_id=admission.system.id,
+        )
+    return _config_error(
+        str(admission.system.id),
+        data={"current_status": admission.system.state.value},
     )
 
 
@@ -464,11 +492,11 @@ async def _provision_defined_response(
     component_sources: ComponentSourceCapabilities,
     rootfs_validator: RootfsValidator,
 ) -> ToolResponse:
-    if system.state in _TERMINAL_SYSTEM:
-        return _config_error(str(system.id), data={"current_status": system.state.value})
-    if system.state in _PROVISION_CURRENT_STATUS_ONLY:
-        return _config_error(str(system.id), data={"current_status": system.state.value})
-    if system.state is SystemState.PROVISIONING:
+    admission = _classify_provision_admission(
+        system,
+        defined_action=_ProvisionAdmissionAction.CONTINUE_DEFINED,
+    )
+    if admission.action is _ProvisionAdmissionAction.RETRY_JOB:
         return await _provision_job_envelope(
             conn,
             ctx,
@@ -476,7 +504,7 @@ async def _provision_defined_response(
             allocation_id=system.allocation_id,
             system_id=system.id,
         )
-    if system.state is not SystemState.DEFINED:
+    if admission.action is _ProvisionAdmissionAction.CURRENT_STATUS_ERROR:
         return _config_error(str(system.id), data={"current_status": system.state.value})
     try:
         parsed = ProvisioningProfile.parse(system.provisioning_profile)
