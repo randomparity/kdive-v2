@@ -10,7 +10,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-from botocore.exceptions import EndpointConnectionError, ReadTimeoutError
+from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeoutError
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
@@ -295,4 +295,47 @@ def test_get_object_without_metadata_raises_infrastructure_failure(
 
     with pytest.raises(CategorizedError) as excinfo:
         minio_store.get_artifact(key, etag)
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+class _FakePresignClient:
+    """Records ``generate_presigned_url`` calls; pure unit seam (no MinIO needed)."""
+
+    def __init__(self, *, raises: Exception | None = None) -> None:
+        self.minted_url = "https://store.example/presigned"
+        self.calls: list[tuple[str, dict[str, str], int, str]] = []
+        self._raises = raises
+
+    def generate_presigned_url(
+        self, op: str, *, Params: dict[str, str], ExpiresIn: int, HttpMethod: str
+    ) -> str:
+        if self._raises is not None:
+            raise self._raises
+        self.calls.append((op, Params, ExpiresIn, HttpMethod))
+        return self.minted_url
+
+
+def test_presign_get_mints_time_boxed_url_for_one_key() -> None:
+    client = _FakePresignClient()
+    store = ObjectStore(client, "bucket")
+    url = store.presign_get("t/vmcore/abc/core", expires_in=600)
+    assert url == client.minted_url
+    assert client.calls == [
+        ("get_object", {"Bucket": "bucket", "Key": "t/vmcore/abc/core"}, 600, "GET")
+    ]
+
+
+@pytest.mark.parametrize("expires_in", [0, -1])
+def test_presign_get_rejects_non_positive_expiry(expires_in: int) -> None:
+    store = ObjectStore(_FakePresignClient(), "bucket")
+    with pytest.raises(CategorizedError) as excinfo:
+        store.presign_get("k", expires_in=expires_in)
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_presign_get_maps_client_error_to_infrastructure_failure() -> None:
+    err = ClientError({"Error": {"Code": "boom"}}, "presign")
+    store = ObjectStore(_FakePresignClient(raises=err), "bucket")
+    with pytest.raises(CategorizedError) as excinfo:
+        store.presign_get("k", expires_in=60)
     assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE

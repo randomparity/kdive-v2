@@ -236,6 +236,35 @@ class ObjectStore:
         }
         return artifact_types.PresignedUpload(url=url, required_headers=headers)
 
+    def presign_get(self, key: str, *, expires_in: int) -> str:
+        """Mint a time-boxed presigned GET URL for one object (ADR-0076, ADR-0078).
+
+        The URL is a bearer capability scoped to ``key`` alone, expiring after
+        ``expires_in`` seconds. Callers that hand it across a trust boundary must
+        register it in the redaction registry before it leaves the worker
+        (ADR-0078 §2 — the in-target seam).
+
+        Raises:
+            CategorizedError: ``expires_in`` is not positive
+                (:attr:`ErrorCategory.CONFIGURATION_ERROR`), or presigning fails
+                (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
+        """
+        if expires_in <= 0:
+            raise CategorizedError(
+                f"presign_get for {key!r} needs a positive expiry, got {expires_in}",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"key": key},
+            )
+        try:
+            return self._client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self._bucket, "Key": key},
+                ExpiresIn=expires_in,
+                HttpMethod="GET",
+            )
+        except (BotoCoreError, ClientError) as err:
+            raise _infrastructure_error("presign_get", key, err) from err
+
     def list_prefix(self, prefix: str) -> list[str]:
         """Return every object key under ``prefix`` (paginated), or ``[]``.
 
