@@ -24,7 +24,7 @@ from kdive.mcp.tools._common import authorizing as job_authorizing
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._common import job_envelope
 from kdive.mcp.tools._common import stale_handle as _stale_handle
-from kdive.mcp.tools.lifecycle.systems.provision import (
+from kdive.mcp.tools.lifecycle.systems.common import (
     RootfsValidator,
     _validate_profile_for_provider,
     _validate_rootfs_for_provider,

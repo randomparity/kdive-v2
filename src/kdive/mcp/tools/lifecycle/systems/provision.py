@@ -9,7 +9,7 @@ in ``kdive.planes.systems``.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -44,23 +44,21 @@ from kdive.mcp.tools._common import (
 from kdive.mcp.tools._common import (
     job_envelope,
 )
+from kdive.mcp.tools.lifecycle.systems.common import (
+    RootfsValidator,
+    _validate_profile_for_provider,
+    _validate_rootfs_for_provider,
+)
 from kdive.profiles.provisioning import (
     AllocationSizing,
     ProvisioningProfile,
-    RootfsSource,
-    _UploadRootfs,
     dump_profile,
     reconcile_profile_sizing,
     reject_rootfs_upload_without_window,
     require_concrete_sizing,
-    validate_profile,
 )
 from kdive.profiles.types import ProvisioningProfileInput
-from kdive.providers.component_validation import (
-    ROOTFS_COMPONENT,
-    ComponentSourceCapabilities,
-    reject_unsupported_component_source,
-)
+from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
@@ -255,7 +253,6 @@ _NON_TERMINAL_SYSTEM = (
     SystemState.CRASHED,
 )
 
-type RootfsValidator = Callable[[RootfsSource], None]
 type LockedAllocationSystem = tuple[AsyncConnection, Allocation, System | None]
 type CreateSystemMode = Literal["provision", "define"]
 
@@ -265,31 +262,6 @@ class MissingAllocation:
     """A not-found or out-of-scope Allocation encountered while acquiring locks."""
 
     allocation_id: UUID
-
-
-def _validate_profile_for_provider(
-    profile: ProvisioningProfile,
-    capabilities: ComponentSourceCapabilities,
-) -> None:
-    validate_profile(profile)
-    rootfs = profile.provider.local_libvirt.rootfs
-    if isinstance(rootfs, _UploadRootfs):
-        return
-    reject_unsupported_component_source(
-        capabilities,
-        component_kind=ROOTFS_COMPONENT,
-        ref=rootfs,
-    )
-
-
-def _validate_rootfs_for_provider(
-    profile: ProvisioningProfile,
-    rootfs_validator: RootfsValidator,
-) -> None:
-    rootfs = profile.provider.local_libvirt.rootfs
-    if isinstance(rootfs, _UploadRootfs):
-        return
-    rootfs_validator(rootfs)
 
 
 # Maps the Allocation's GB memory snapshot to the profile's MB sizing (ADR-0067 lossless).
