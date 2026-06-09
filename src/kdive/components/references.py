@@ -19,6 +19,7 @@ from pydantic import (
 from kdive.domain.errors import CategorizedError, ErrorCategory
 
 type NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+type ComponentSourceKind = Literal["local", "artifact", "component-upload", "catalog"]
 
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 

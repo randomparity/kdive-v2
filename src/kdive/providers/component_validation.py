@@ -6,11 +6,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from kdive.components.references import ComponentRef
+from kdive.components.references import ComponentRef, ComponentSourceKind
 from kdive.domain.errors import CategorizedError, ErrorCategory
 
 type ComponentKind = Literal["rootfs", "kernel", "initrd", "config", "patch", "vmlinux"]
-type ComponentSourceKind = Literal["local", "artifact", "component-upload", "catalog"]
 
 ROOTFS_COMPONENT: ComponentKind = "rootfs"
 KERNEL_COMPONENT: ComponentKind = "kernel"
