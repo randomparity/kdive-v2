@@ -51,24 +51,6 @@ async def _with_runtime_for_object(
     return await handle(runtime)
 
 
-async def runtime_for_allocation(
-    pool: AsyncConnectionPool, resolver: ProviderResolver, allocation_id: str
-) -> ProviderRuntime:
-    return await _runtime_for_object(pool, allocation_id, resolver.runtime_for_allocation)
-
-
-async def runtime_for_system(
-    pool: AsyncConnectionPool, resolver: ProviderResolver, system_id: str
-) -> ProviderRuntime:
-    return await _runtime_for_object(pool, system_id, resolver.runtime_for_system)
-
-
-async def runtime_for_run(
-    pool: AsyncConnectionPool, resolver: ProviderResolver, run_id: str
-) -> ProviderRuntime:
-    return await _runtime_for_object(pool, run_id, resolver.runtime_for_run)
-
-
 async def with_runtime_for_allocation(
     pool: AsyncConnectionPool,
     resolver: ProviderResolver,
