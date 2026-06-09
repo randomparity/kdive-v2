@@ -21,15 +21,15 @@ from kdive.mcp.tools.lifecycle.systems.admin import (
     teardown_system as _teardown_system,
 )
 from kdive.mcp.tools.lifecycle.systems.provision import (
-    DEFAULT_LIST_LIMIT as _DEFAULT_LIST_LIMIT,
-)
-from kdive.mcp.tools.lifecycle.systems.provision import (
     SystemProvisionHandlers as _SystemProvisionHandlers,
 )
-from kdive.mcp.tools.lifecycle.systems.provision import (
+from kdive.mcp.tools.lifecycle.systems.view import (
+    DEFAULT_LIST_LIMIT as _DEFAULT_LIST_LIMIT,
+)
+from kdive.mcp.tools.lifecycle.systems.view import (
     get_system as _get_system,
 )
-from kdive.mcp.tools.lifecycle.systems.provision import (
+from kdive.mcp.tools.lifecycle.systems.view import (
     list_systems as _list_systems,
 )
 from kdive.profiles.types import ProvisioningProfileInput

@@ -31,7 +31,7 @@ from kdive.domain.models import (
 )
 from kdive.domain.state import AllocationState, ResourceStatus, SystemState
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.lifecycle.systems.provision import CUSTOM_SHAPE_SENTINEL, list_systems
+from kdive.mcp.tools.lifecycle.systems.view import CUSTOM_SHAPE_SENTINEL, list_systems
 from kdive.security.authz.rbac import Role
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
