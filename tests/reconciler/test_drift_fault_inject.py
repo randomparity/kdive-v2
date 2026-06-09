@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from typing import cast
 from uuid import UUID, uuid4
 
 from psycopg_pool import AsyncConnectionPool
@@ -33,6 +34,7 @@ from kdive.domain.state import (
     RunState,
     SystemState,
 )
+from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.fault_inject.faulting.engine import FaultEngine, FaultPlane
 from kdive.providers.fault_inject.inventory import FaultInjectInventory, FaultInjectReaper
 from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvision
@@ -50,6 +52,7 @@ from tests.reconciler.conftest import (
 
 # A seed certain to fail / never fail the named plane (fault_rate boundary).
 _FAIL_SEED = 7
+_PROFILE = cast(ProvisioningProfile, object())
 
 
 def _no_fail_engine(plane: FaultPlane, *, max_latency_s: float = 0.0) -> FaultEngine:
@@ -75,7 +78,7 @@ def test_leaked_fault_inject_domain_is_reaped(migrated_url: str) -> None:
         inventory = FaultInjectInventory()
         orphan_system = uuid4()
         domain = f"fault-inject-{orphan_system}"
-        FaultInjectProvision(inventory).provision(orphan_system, object())
+        FaultInjectProvision(inventory).provision(orphan_system, _PROFILE)
         assert any(d.name == domain for d in inventory.owned_domains())
         reaper = FaultInjectReaper(inventory)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
@@ -93,7 +96,7 @@ def test_fault_inject_domain_with_live_row_not_reaped(migrated_url: str) -> None
             system_id = await seed_system(seed, system_state=SystemState.READY)
         inventory = FaultInjectInventory()
         domain = f"fault-inject-{system_id}"
-        FaultInjectProvision(inventory).provision(system_id, object())
+        FaultInjectProvision(inventory).provision(system_id, _PROFILE)
         reaper = FaultInjectReaper(inventory)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(pool, lambda conn: loop._repair_leaked_domains(conn, reaper))
@@ -120,7 +123,7 @@ def test_orphaned_system_after_successful_fault_inject_provision(migrated_url: s
             _no_fail_engine(FaultPlane.PROVISION),
             sleep_s=_noop_sleep,
         )
-        domain = wrapper.provision(system_id, object())  # no-fail draw -> delegates, records
+        domain = wrapper.provision(system_id, _PROFILE)  # no-fail draw -> delegates, records
         assert domain == f"fault-inject-{system_id}"
         async with await connect(migrated_url) as seed:
             await seed.execute(

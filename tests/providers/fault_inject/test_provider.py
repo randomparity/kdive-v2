@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -12,6 +13,8 @@ from kdive.components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction, Sensitivity
+from kdive.profiles.build import ServerBuildProfile
+from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
 from kdive.providers.fault_inject.lifecycle.provider import (
     FaultInjectBuild,
@@ -29,6 +32,8 @@ from kdive.providers.ports.lifecycle import TransportHandleData
 
 _SYSTEM = UUID("11111111-1111-1111-1111-111111111111")
 _RUN = UUID("22222222-2222-2222-2222-222222222222")
+_PROVISIONING_PROFILE = cast(ProvisioningProfile, object())
+_BUILD_PROFILE = cast(ServerBuildProfile, object())
 
 
 class _FakeStore:
@@ -47,7 +52,7 @@ def test_provision_returns_a_synthetic_domain_and_records_it_as_owned() -> None:
     inventory = FaultInjectInventory()
     provision = FaultInjectProvision(inventory)
 
-    domain = provision.provision(_SYSTEM, profile=object())
+    domain = provision.provision(_SYSTEM, profile=_PROVISIONING_PROFILE)
 
     assert str(_SYSTEM) in domain
     assert inventory.owned_domains()[0].name == domain
@@ -57,7 +62,7 @@ def test_provision_returns_a_synthetic_domain_and_records_it_as_owned() -> None:
 def test_teardown_forgets_the_domain_so_it_is_no_longer_owned() -> None:
     inventory = FaultInjectInventory()
     provision = FaultInjectProvision(inventory)
-    domain = provision.provision(_SYSTEM, profile=object())
+    domain = provision.provision(_SYSTEM, profile=_PROVISIONING_PROFILE)
 
     provision.teardown(domain)
 
@@ -67,9 +72,9 @@ def test_teardown_forgets_the_domain_so_it_is_no_longer_owned() -> None:
 def test_reprovision_leaves_the_system_owning_exactly_one_domain() -> None:
     inventory = FaultInjectInventory()
     provision = FaultInjectProvision(inventory)
-    provision.provision(_SYSTEM, profile=object())
+    provision.provision(_SYSTEM, profile=_PROVISIONING_PROFILE)
 
-    second = provision.reprovision(_SYSTEM, profile=object())
+    second = provision.reprovision(_SYSTEM, profile=_PROVISIONING_PROFILE)
 
     # The synthetic name is deterministic per System, so reprovision never leaks the old
     # domain: the inventory holds exactly one entry for the System after replacement.
@@ -84,7 +89,7 @@ def test_build_stores_a_synthetic_kernel_and_returns_consistent_refs() -> None:
     store = _FakeStore()
     builder = FaultInjectBuild(store_factory=lambda: store)
 
-    output = builder.build(_RUN, profile=object())
+    output = builder.build(_RUN, profile=_BUILD_PROFILE)
 
     assert output.kernel_ref and output.debuginfo_ref
     assert len(output.build_id) == 40  # a plausible GNU build-id length
@@ -182,7 +187,9 @@ def test_capture_stores_a_synthetic_vmcore_with_raw_and_redacted_artifacts() -> 
 
 def test_capture_build_id_matches_the_builder_so_provenance_holds() -> None:
     store = _FakeStore()
-    build_id = FaultInjectBuild(store_factory=lambda: store).build(_RUN, profile=object()).build_id
+    build_id = (
+        FaultInjectBuild(store_factory=lambda: store).build(_RUN, profile=_BUILD_PROFILE).build_id
+    )
     captured = FaultInjectRetrieve(store_factory=lambda: store).capture(
         _SYSTEM, CaptureMethod.HOST_DUMP
     )

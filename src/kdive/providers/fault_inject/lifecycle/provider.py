@@ -22,6 +22,8 @@ from kdive.components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction, Sensitivity
+from kdive.profiles.build import ServerBuildProfile
+from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
 from kdive.providers.ports import (
     BuildOutput,
@@ -68,7 +70,8 @@ class FaultInjectProvision:
     def __init__(self, inventory: FaultInjectInventory) -> None:
         self._inventory = inventory
 
-    def provision(self, system_id: UUID, profile: object) -> str:
+    def provision(self, system_id: UUID, profile: ProvisioningProfile) -> str:
+        del profile
         domain = _domain_name(system_id)
         self._inventory.record(system_id, domain)
         return domain
@@ -76,7 +79,7 @@ class FaultInjectProvision:
     def teardown(self, domain_name: str) -> None:
         self._inventory.forget(domain_name)
 
-    def reprovision(self, system_id: UUID, profile: object) -> str:
+    def reprovision(self, system_id: UUID, profile: ProvisioningProfile) -> str:
         self._inventory.forget(_domain_name(system_id))
         return self.provision(system_id, profile)
 
@@ -88,7 +91,8 @@ class FaultInjectBuild:
         self._store_factory = store_factory
         self._store: _StorePort | None = None
 
-    def build(self, run_id: UUID, profile: object) -> BuildOutput:
+    def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput:
+        del profile
         kernel = self._put(run_id, "kernel", b"fault-inject-kernel", Sensitivity.REDACTED)
         debuginfo = self._put(run_id, "vmlinux", b"fault-inject-vmlinux", Sensitivity.REDACTED)
         return BuildOutput(

@@ -24,6 +24,7 @@ from collections.abc import Callable
 from uuid import UUID
 
 from kdive.domain.errors import CategorizedError
+from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.fault_inject.faulting.engine import FaultDecision, FaultEngine, FaultPlane
 from kdive.providers.fault_inject.lifecycle.provider import FaultInjectInstall, FaultInjectProvision
 from kdive.providers.ports import InstallRequest
@@ -66,11 +67,11 @@ class FaultedProvision:
         self._attempt_for = attempt_for
         self._sleep_s = sleep_s
 
-    def provision(self, system_id: UUID, profile: object) -> str:
+    def provision(self, system_id: UUID, profile: ProvisioningProfile) -> str:
         self._draw(system_id, FaultPlane.PROVISION)
         return self._inner.provision(system_id, profile)
 
-    def reprovision(self, system_id: UUID, profile: object) -> str:
+    def reprovision(self, system_id: UUID, profile: ProvisioningProfile) -> str:
         self._draw(system_id, FaultPlane.PROVISION)
         return self._inner.reprovision(system_id, profile)
 

@@ -9,11 +9,13 @@ caller-supplied durable input (default 1), never a port-held counter.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.fault_inject.faulting.engine import FaultEngine, FaultPlane
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
 from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvision
@@ -22,6 +24,7 @@ from kdive.providers.ports import InstallRequest
 
 _SYSTEM = UUID("00000000-0000-0000-0000-0000000000aa")
 _RUN = UUID("00000000-0000-0000-0000-0000000000bb")
+_PROFILE = cast(ProvisioningProfile, object())
 _INSTALL_REQUEST = InstallRequest(
     system_id=_SYSTEM,
     run_id=_RUN,
@@ -61,14 +64,14 @@ def test_provision_fail_draw_raises_categorized_error_with_catalog_category() ->
     engine = _seed_that_fails(FaultPlane.PROVISION)
     wrapper = _provision(engine)
     with pytest.raises(CategorizedError) as exc:
-        wrapper.provision(_SYSTEM, object())
+        wrapper.provision(_SYSTEM, _PROFILE)
     assert exc.value.category is ErrorCategory.PROVISIONING_FAILURE
 
 
 def test_provision_no_fail_draw_delegates_and_returns_synthetic_domain() -> None:
     engine = _seed_that_never_fails(FaultPlane.PROVISION)
     wrapper = _provision(engine)
-    domain = wrapper.provision(_SYSTEM, object())
+    domain = wrapper.provision(_SYSTEM, _PROFILE)
     assert domain == f"fault-inject-{_SYSTEM}"
 
 
@@ -76,7 +79,7 @@ def test_provision_latency_sleeps_for_the_engine_computed_delay() -> None:
     engine = _seed_that_never_fails(FaultPlane.PROVISION, max_latency_s=1000.0)
     recorded: list[float] = []
     wrapper = _provision(engine, sleep_s=recorded.append)
-    wrapper.provision(_SYSTEM, object())
+    wrapper.provision(_SYSTEM, _PROFILE)
     expected = engine.decide(system_id=_SYSTEM, plane=FaultPlane.PROVISION, attempt=1).latency_s
     assert recorded == [expected]
     assert expected > 0.0  # a real seed-derived delay, not a no-op
@@ -91,7 +94,7 @@ def test_latency_and_fail_both_drawn_sleeps_before_raising() -> None:
     recorded: list[float] = []
     wrapper = _provision(engine, sleep_s=recorded.append)
     with pytest.raises(CategorizedError) as exc:
-        wrapper.provision(_SYSTEM, object())
+        wrapper.provision(_SYSTEM, _PROFILE)
     assert exc.value.category is ErrorCategory.PROVISIONING_FAILURE
     expected = engine.decide(system_id=_SYSTEM, plane=FaultPlane.PROVISION, attempt=1).latency_s
     assert recorded == [expected] and expected > 0.0  # the delay was spent before the raise
@@ -101,7 +104,7 @@ def test_provision_absent_plane_config_neither_sleeps_nor_raises() -> None:
     engine = FaultEngine(seed=7, fault_rate={}, max_latency_s={})
     recorded: list[float] = []
     wrapper = _provision(engine, sleep_s=recorded.append)
-    domain = wrapper.provision(_SYSTEM, object())
+    domain = wrapper.provision(_SYSTEM, _PROFILE)
     assert domain == f"fault-inject-{_SYSTEM}"
     assert recorded == []  # absent plane => zero latency => no sleep call
 
@@ -111,10 +114,10 @@ def test_attempt_for_is_threaded_into_the_draw() -> None:
     first: list[float] = []
     second: list[float] = []
     _provision(engine, attempt_for=lambda _sid: 1, sleep_s=first.append).provision(
-        _SYSTEM, object()
+        _SYSTEM, _PROFILE
     )
     _provision(engine, attempt_for=lambda _sid: 2, sleep_s=second.append).provision(
-        _SYSTEM, object()
+        _SYSTEM, _PROFILE
     )
     assert first != second  # a different durable attempt yields a different latency draw
 
@@ -122,7 +125,7 @@ def test_attempt_for_is_threaded_into_the_draw() -> None:
 def test_zero_latency_does_not_call_sleep() -> None:
     engine = _seed_that_never_fails(FaultPlane.PROVISION, max_latency_s=0.0)
     recorded: list[float] = []
-    _provision(engine, sleep_s=recorded.append).provision(_SYSTEM, object())
+    _provision(engine, sleep_s=recorded.append).provision(_SYSTEM, _PROFILE)
     assert recorded == []
 
 
@@ -135,7 +138,7 @@ def test_teardown_and_reprovision_delegate_unchanged() -> None:
     wrapper.teardown("fault-inject-x")
     # reprovision draws on the provision plane; a fail-certain engine raises.
     with pytest.raises(CategorizedError):
-        wrapper.reprovision(_SYSTEM, object())
+        wrapper.reprovision(_SYSTEM, _PROFILE)
 
 
 def test_install_fail_draw_raises_categorized_error() -> None:
@@ -169,6 +172,6 @@ def test_fresh_system_id_each_call_is_independent() -> None:
     a: list[float] = []
     b: list[float] = []
     sid_a, sid_b = uuid4(), uuid4()
-    _provision(engine, sleep_s=a.append).provision(sid_a, object())
-    _provision(engine, sleep_s=b.append).provision(sid_b, object())
+    _provision(engine, sleep_s=a.append).provision(sid_a, _PROFILE)
+    _provision(engine, sleep_s=b.append).provision(sid_b, _PROFILE)
     assert a != b  # the draw is keyed on system_id
