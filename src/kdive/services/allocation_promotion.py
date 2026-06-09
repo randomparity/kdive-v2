@@ -313,8 +313,16 @@ async def _pcie_filtered(
         claims = await pcie_claim.active_claims(conn, candidate.id)
         try:
             resolution = pcie_claim.resolve_union(specs, descriptors, claims=claims)
-        except CategorizedError:
-            continue  # malformed spec on this host's view — never a candidate
+        except CategorizedError as exc:
+            _log.warning(
+                "reconciler: skipping PCIe promotion candidate after %s for allocation %s "
+                "on resource %s",
+                exc.category.value,
+                alloc.id,
+                candidate.id,
+                exc_info=True,
+            )
+            continue
         if resolution.outcome is MatchOutcome.MATCHED:
             kept.append(candidate)
     return kept

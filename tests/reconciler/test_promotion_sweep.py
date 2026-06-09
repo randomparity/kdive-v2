@@ -12,13 +12,16 @@ not re-queue; a request never placeable past the max-wait window is reaped to
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
 import psycopg
+import pytest
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.locks import LockScope, advisory_xact_lock
@@ -369,6 +372,38 @@ def test_pcie_aware_promotion_claims_a_freed_device(migrated_url: str) -> None:
             assert await _state(check, queued) == "granted"
 
     asyncio.run(_run())
+
+
+def test_pcie_promotion_logs_malformed_persisted_spec(
+    migrated_url: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def _run() -> tuple[UUID, UUID]:
+        async with await connect(migrated_url) as seed:
+            res = await _seed_resource(seed, cap=1, pcie=True)
+            await _seed_quota(seed)
+            holder = await _seed_granted(seed, res.id)
+            queued = await _enqueue(seed, res)
+            await seed.execute(
+                "UPDATE allocations SET requested_pcie_specs = %s WHERE id = %s",
+                (Jsonb(["not-a-spec"]), queued),
+            )
+            await ALLOCATIONS.update_state(seed, holder.id, AllocationState.RELEASING)
+            await ALLOCATIONS.update_state(seed, holder.id, AllocationState.RELEASED)
+        caplog.set_level(logging.WARNING, logger="kdive.services.allocation_promotion")
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, loop._promote_pending)
+        assert count == 0
+        return queued, res.id
+
+    queued, resource_id = asyncio.run(_run())
+    assert any(
+        record.exc_info is not None
+        and "configuration_error" in record.message
+        and str(queued) in record.message
+        and str(resource_id) in record.message
+        for record in caplog.records
+    )
 
 
 def test_grant_audit_attributed_to_original_principal(migrated_url: str) -> None:
