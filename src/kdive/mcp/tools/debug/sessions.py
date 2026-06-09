@@ -149,13 +149,13 @@ class DebugSessionHandlers:
 
     def __init__(
         self,
-        resolver: ProviderResolver | Connector,
+        connector_source: ProviderResolver | Connector,
         *,
         runtime: DebugEngineRuntime | DebugRuntimeResolver | None = None,
         secret_backend_factory: Callable[[UUID], SecretBackend] | None = None,
         secret_registry: SecretRegistry,
     ) -> None:
-        self._resolver = resolver
+        self._connector_source = connector_source
         self._runtime = runtime
         self._secret_backend_factory = secret_backend_factory
         self._secret_registry = secret_registry
@@ -224,14 +224,14 @@ class DebugSessionHandlers:
         resolved = _resolve_credential(guard, transport, backend)
         if isinstance(resolved, ToolResponse):
             return resolved
-        if isinstance(self._resolver, ProviderResolver):
+        if isinstance(self._connector_source, ProviderResolver):
             try:
-                runtime = await self._resolver.runtime_for_run(conn, run.id)
+                runtime = await self._connector_source.runtime_for_run(conn, run.id)
             except CategorizedError as exc:
                 return ToolResponse.failure_from_error(str(run.id), exc)
             connector = runtime.connector
         else:
-            connector = self._resolver
+            connector = self._connector_source
         return _AttachRequest(
             run=run,
             system=guard,
@@ -272,14 +272,16 @@ class DebugSessionHandlers:
                 if resolved is None:
                     return _config_error(session_id)
                 _, system_id = resolved
-                if isinstance(self._resolver, ProviderResolver):
+                if isinstance(self._connector_source, ProviderResolver):
                     try:
-                        provider_runtime = await self._resolver.runtime_for_session(conn, uid)
+                        provider_runtime = await self._connector_source.runtime_for_session(
+                            conn, uid
+                        )
                     except CategorizedError as exc:
                         return ToolResponse.failure_from_error(session_id, exc)
                     connector = provider_runtime.connector
                 else:
-                    connector = self._resolver
+                    connector = self._connector_source
                 envelope = await _detach_locked(conn, ctx, uid, system_id, connector)
             if self._runtime is not None:
                 runtime = self._runtime
