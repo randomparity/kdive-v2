@@ -12,8 +12,8 @@ import hashlib
 
 import httpx
 
-from kdive.components.artifacts import PresignPutRequest
 from kdive.domain.models import Sensitivity
+from kdive.provider_components.artifacts import PresignPutRequest
 
 
 def _b64_sha256(data: bytes) -> str:

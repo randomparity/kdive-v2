@@ -12,10 +12,10 @@ from uuid import UUID
 import libvirt
 import pytest
 
-from kdive.components.artifacts import FetchedArtifact
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
+from kdive.provider_components.artifacts import FetchedArtifact
 from kdive.providers.local_libvirt.lifecycle import install
 from kdive.providers.local_libvirt.lifecycle.install import (
     LocalLibvirtInstall,

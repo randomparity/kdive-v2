@@ -18,15 +18,15 @@ from uuid import UUID, uuid4
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from kdive.components import artifacts as artifact_types
-from kdive.components.artifacts import (
-    artifact_key as artifact_key,
-)
-from kdive.components.artifacts import (
-    owner_prefix as owner_prefix,
-)
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Artifact, Sensitivity
+from kdive.provider_components import artifacts as artifact_types
+from kdive.provider_components.artifacts import (
+    artifact_key as artifact_key,
+)
+from kdive.provider_components.artifacts import (
+    owner_prefix as owner_prefix,
+)
 
 # boto3 ships no inline types and boto3-stubs is not a dependency; alias the S3
 # client type to Any at this single site rather than add a stubs package.

@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from kdive.components.references import (
+from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.provider_components.references import (
     ArtifactComponentRef,
     CatalogComponentRef,
     ComponentUploadRef,
     LocalComponentRef,
     parse_component_ref,
 )
-from kdive.domain.errors import CategorizedError, ErrorCategory
 
 
 def test_parse_local_ref_requires_absolute_path() -> None:

@@ -8,13 +8,13 @@ from uuid import UUID, uuid4
 
 import psycopg
 
-from kdive.components.uploads import ManifestEntry
 from kdive.db.upload_manifest import (
     UploadManifestReplaceRequest,
     delete_manifest,
     get_manifest,
     replace_manifest,
 )
+from kdive.provider_components.uploads import ManifestEntry
 
 
 async def _connect(url: str) -> psycopg.AsyncConnection:

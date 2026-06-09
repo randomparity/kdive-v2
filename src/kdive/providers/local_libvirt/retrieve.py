@@ -19,10 +19,10 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
-from kdive.components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
+from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.providers.ports import (
     CaptureOutput,
     CrashOutput,

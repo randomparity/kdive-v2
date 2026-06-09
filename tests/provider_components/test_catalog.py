@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kdive.components.catalog import load_fixture_catalog
+from kdive.provider_components.catalog import load_fixture_catalog
 
 
 def test_load_fixture_catalog_filters_provider(tmp_path: Path) -> None:

@@ -25,7 +25,7 @@ Implement against these refs (already read during planning; re-open as needed):
 - Domain: `src/kdive/domain/models.py` (`Run`, `Artifact`, `System`), `src/kdive/domain/state.py` (`RunState`), `src/kdive/domain/errors.py` (`ErrorCategory`).
 - Envelope: `src/kdive/mcp/responses.py` (`ToolResponse`, `refs`/`data` are `dict[str,str]`).
 - Rootfs catalog note: the standalone v1 catalog port was superseded by the provider fixture
-  catalog in `fixtures/local-libvirt/manifest.yaml` and `kdive.components.catalog`.
+  catalog in `fixtures/local-libvirt/manifest.yaml` and `kdive.provider_components.catalog`.
 
 **Error taxonomy (existing `ErrorCategory` only — never invent strings):** missing/skipped upload → `CONFIGURATION_ERROR`; defective uploaded artifact (checksum/size mismatch, bad magic, `build_id` mismatch) → `BUILD_FAILURE`; object-store/presign failure → `INFRASTRUCTURE_FAILURE`.
 
@@ -144,7 +144,7 @@ TTL/cap come from env with defaults (Task 6): `KDIVE_UPLOAD_TTL_SECONDS` (defaul
 - `tests/mcp/test_create_upload_tool.py` — `artifacts.create_upload` (Task 6).
 - `tests/providers/local_libvirt/test_validate_external_artifacts.py` — validator (Task 7).
 - `tests/mcp/test_complete_build_tool.py` — `runs.complete_build` + source gate (Task 8).
-- `tests/components/test_catalog.py`, `tests/components/test_default_fixture_catalog.py` —
+- `tests/provider_components/test_catalog.py`, `tests/provider_components/test_default_fixture_catalog.py` —
   provider fixture catalog coverage.
 - `tests/profiles/test_rootfs_source.py` — `RootfsSource` schema (Task 10).
 - `tests/providers/local_libvirt/test_rootfs_resolve.py` — provisioning resolver (Task 10).
@@ -2419,7 +2419,7 @@ Produces a working capability on its own: a System can be provisioned from a `pa
 
 Superseded by ADR-0065. Rootfs catalog references are provider-scoped component references
 backed by `fixtures/local-libvirt/manifest.yaml`, `fixtures/local-libvirt/rootfs/*.yaml`,
-and `kdive.components.catalog`. The removed standalone rootfs catalog package must not be
+and `kdive.provider_components.catalog`. The removed standalone rootfs catalog package must not be
 reintroduced.
 
 ### Task 10: Rootfs source-kind resolution in provisioning
@@ -2539,7 +2539,7 @@ Expected: PASS.
 
 In `src/kdive/providers/local_libvirt/provisioning.py`, add a resolver that turns a
 `RootfsSource` into a libvirt disk path, and use it in `render_domain_xml`. Catalog
-references resolve through `kdive.components.catalog`.
+references resolve through `kdive.provider_components.catalog`.
 
 ```python
 _ROOTFS_DIR = "/var/lib/kdive/rootfs"

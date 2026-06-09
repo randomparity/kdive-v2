@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from kdive.components.references import ComponentKind, ComponentRef, ComponentSourceKind
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.provider_components.references import ComponentKind, ComponentRef, ComponentSourceKind
 
 
 @dataclass(frozen=True, slots=True)

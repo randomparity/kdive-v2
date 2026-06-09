@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from kdive.components.artifacts import ArtifactWriteRequest, artifact_key, owner_prefix
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
+from kdive.provider_components.artifacts import ArtifactWriteRequest, artifact_key, owner_prefix
 
 
 def test_artifact_key_and_owner_prefix_share_layout() -> None:

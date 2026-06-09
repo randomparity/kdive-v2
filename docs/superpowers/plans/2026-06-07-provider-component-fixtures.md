@@ -33,7 +33,7 @@ modeled only as source-kind rejection and artifact-reference privacy rules.
 - **Create** `src/kdive/components/catalog.py`: provider-scoped rootfs/profile catalog loader for
   fixture YAML files.
 - **Modify** `pyproject.toml` and `uv.lock`: add direct `pyyaml==6.0.3` dependency because
-  `kdive.components.catalog` imports `yaml` directly.
+  `kdive.provider_components.catalog` imports `yaml` directly.
 - **Create** `src/kdive/components/validation.py`: component-source validation service
   that checks accepted component source kinds and dispatches profile requirement checks.
 - **Modify** `src/kdive/providers/composition.py`: expose local-libvirt component capabilities and
@@ -73,18 +73,18 @@ modeled only as source-kind rejection and artifact-reference privacy rules.
 **Files:**
 - Create: `src/kdive/components/__init__.py`
 - Create: `src/kdive/components/references.py`
-- Test: `tests/components/test_references.py`
+- Test: `tests/provider_components/test_references.py`
 
 - [ ] **Step 1: Write failing tests for the three reference kinds**
 
-Create `tests/components/test_references.py`:
+Create `tests/provider_components/test_references.py`:
 
 ```python
 from __future__ import annotations
 
 import pytest
 
-from kdive.components.references import (
+from kdive.provider_components.references import (
     ArtifactComponentRef,
     CatalogComponentRef,
     LocalComponentRef,
@@ -132,9 +132,9 @@ def test_parse_component_ref_maps_invalid_payloads_to_config_error(payload: dict
 
 - [ ] **Step 2: Run the tests and confirm the missing module failure**
 
-Run: `uv run python -m pytest tests/components/test_references.py -q`
+Run: `uv run python -m pytest tests/provider_components/test_references.py -q`
 
-Expected: FAIL with `ModuleNotFoundError: No module named 'kdive.components'`.
+Expected: FAIL with `ModuleNotFoundError: No module named 'kdive.provider_components'`.
 
 - [ ] **Step 3: Implement the reference models**
 
@@ -230,14 +230,14 @@ def parse_component_ref(data: Mapping[str, object]) -> ComponentRef:
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `uv run python -m pytest tests/components/test_references.py -q`
+Run: `uv run python -m pytest tests/provider_components/test_references.py -q`
 
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/kdive/components tests/components/test_references.py
+git add src/kdive/components tests/provider_components/test_references.py
 git commit -m "feat: add provider component reference models"
 ```
 
@@ -247,11 +247,11 @@ git commit -m "feat: add provider component reference models"
 
 **Files:**
 - Create: `src/kdive/components/local_paths.py`
-- Test: `tests/components/test_local_paths.py`
+- Test: `tests/provider_components/test_local_paths.py`
 
 - [ ] **Step 1: Write failing tests for provider-local paths**
 
-Create `tests/components/test_local_paths.py`:
+Create `tests/provider_components/test_local_paths.py`:
 
 ```python
 from __future__ import annotations
@@ -260,7 +260,7 @@ from pathlib import Path
 
 import pytest
 
-from kdive.components.local_paths import validate_local_component_path
+from kdive.provider_components.local_paths import validate_local_component_path
 from kdive.domain.errors import CategorizedError, ErrorCategory
 
 
@@ -309,7 +309,7 @@ def test_rejects_sha256_mismatch(tmp_path: Path) -> None:
 
 - [ ] **Step 2: Run the tests and confirm the missing function failure**
 
-Run: `uv run python -m pytest tests/components/test_local_paths.py -q`
+Run: `uv run python -m pytest tests/provider_components/test_local_paths.py -q`
 
 Expected: FAIL with `ModuleNotFoundError` or missing import for `validate_local_component_path`.
 
@@ -370,14 +370,14 @@ def _config_error(message: str) -> CategorizedError:
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `uv run python -m pytest tests/components/test_local_paths.py -q`
+Run: `uv run python -m pytest tests/provider_components/test_local_paths.py -q`
 
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/kdive/components/local_paths.py tests/components/test_local_paths.py
+git add src/kdive/components/local_paths.py tests/provider_components/test_local_paths.py
 git commit -m "feat: validate provider-local component paths"
 ```
 
@@ -387,18 +387,18 @@ git commit -m "feat: validate provider-local component paths"
 
 **Files:**
 - Create: `src/kdive/components/requirements.py`
-- Test: `tests/components/test_requirements.py`
+- Test: `tests/provider_components/test_requirements.py`
 
 - [ ] **Step 1: Write failing tests for config and command-line checks**
 
-Create `tests/components/test_requirements.py`:
+Create `tests/provider_components/test_requirements.py`:
 
 ```python
 from __future__ import annotations
 
 import pytest
 
-from kdive.components.requirements import (
+from kdive.provider_components.requirements import (
     CmdlineRequirements,
     ConfigRequirements,
     validate_cmdline_requirements,
@@ -440,9 +440,9 @@ def test_cmdline_requirements_rejects_protected_override() -> None:
 
 - [ ] **Step 2: Run the tests and confirm missing module failure**
 
-Run: `uv run python -m pytest tests/components/test_requirements.py -q`
+Run: `uv run python -m pytest tests/provider_components/test_requirements.py -q`
 
-Expected: FAIL with missing `kdive.components.requirements`.
+Expected: FAIL with missing `kdive.provider_components.requirements`.
 
 - [ ] **Step 3: Implement requirement models and validators**
 
@@ -537,14 +537,14 @@ def _first_token_with_prefix(cmdline: str, prefix: str) -> str | None:
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `uv run python -m pytest tests/components/test_requirements.py -q`
+Run: `uv run python -m pytest tests/provider_components/test_requirements.py -q`
 
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/kdive/components/requirements.py tests/components/test_requirements.py
+git add src/kdive/components/requirements.py tests/provider_components/test_requirements.py
 git commit -m "feat: validate provider profile requirements"
 ```
 
@@ -560,18 +560,18 @@ git commit -m "feat: validate provider profile requirements"
 - Create: `fixtures/local-libvirt/rootfs/fedora-kdive-ready-43.yaml`
 - Create: `fixtures/local-libvirt/profiles/console-ready-x86_64.yaml`
 - Create: `fixtures/local-libvirt/configs/console-ready.required.config`
-- Test: `tests/components/test_catalog.py`
+- Test: `tests/provider_components/test_catalog.py`
 
 - [ ] **Step 1: Write failing catalog tests**
 
-Create `tests/components/test_catalog.py`:
+Create `tests/provider_components/test_catalog.py`:
 
 ```python
 from __future__ import annotations
 
 from pathlib import Path
 
-from kdive.components.catalog import load_fixture_catalog
+from kdive.provider_components.catalog import load_fixture_catalog
 
 
 def test_load_fixture_catalog_filters_provider(tmp_path: Path) -> None:
@@ -626,9 +626,9 @@ def test_load_fixture_catalog_filters_provider(tmp_path: Path) -> None:
 
 - [ ] **Step 2: Run the test and confirm missing loader failure**
 
-Run: `uv run python -m pytest tests/components/test_catalog.py -q`
+Run: `uv run python -m pytest tests/provider_components/test_catalog.py -q`
 
-Expected: FAIL with missing `kdive.components.catalog`.
+Expected: FAIL with missing `kdive.provider_components.catalog`.
 
 - [ ] **Step 3: Implement YAML-backed fixture catalog models**
 
@@ -719,8 +719,8 @@ class FixtureCatalog(BaseModel):
 ```
 
 Import `ConfigRequirements` and `CmdlineRequirements` from
-`kdive.components.requirements`, and import `ComponentRef` from
-`kdive.components.references`. Use `yaml.safe_load`; map file-read, YAML, and
+`kdive.provider_components.requirements`, and import `ComponentRef` from
+`kdive.provider_components.references`. Use `yaml.safe_load`; map file-read, YAML, and
 model-validation failures to a `CategorizedError` with
 `category=ErrorCategory.INFRASTRUCTURE_FAILURE`
 because fixture data packaged in the repo is operator-owned configuration.
@@ -735,14 +735,14 @@ report it missing until the operator builds, imports, or links it.
 
 - [ ] **Step 5: Run focused tests**
 
-Run: `uv run python -m pytest tests/components/test_catalog.py -q`
+Run: `uv run python -m pytest tests/provider_components/test_catalog.py -q`
 
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/kdive/components/catalog.py tests/components/test_catalog.py fixtures/local-libvirt
+git add src/kdive/components/catalog.py tests/provider_components/test_catalog.py fixtures/local-libvirt
 git commit -m "feat: add provider-scoped fixture catalog"
 ```
 
@@ -753,21 +753,21 @@ git commit -m "feat: add provider-scoped fixture catalog"
 **Files:**
 - Create: `src/kdive/components/validation.py`
 - Modify: `src/kdive/providers/composition.py`
-- Test: `tests/components/test_validation.py`
+- Test: `tests/provider_components/test_validation.py`
 - Test: `tests/providers/test_composition.py`
 
 - [ ] **Step 1: Write failing tests for component/source support**
 
-Create `tests/components/test_validation.py`:
+Create `tests/provider_components/test_validation.py`:
 
 ```python
 from __future__ import annotations
 
 import pytest
 
-from kdive.components.references import ArtifactComponentRef, LocalComponentRef
+from kdive.provider_components.references import ArtifactComponentRef, LocalComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.components.validation import (
+from kdive.provider_components.validation import (
     ComponentSourceCapabilities,
     reject_unsupported_component_source,
 )
@@ -818,9 +818,9 @@ def test_rejects_unimplemented_local_libvirt_kernel_artifact_source() -> None:
 
 - [ ] **Step 2: Run the test and confirm missing module failure**
 
-Run: `uv run python -m pytest tests/components/test_validation.py -q`
+Run: `uv run python -m pytest tests/provider_components/test_validation.py -q`
 
-Expected: FAIL with missing `kdive.components.validation`.
+Expected: FAIL with missing `kdive.provider_components.validation`.
 
 - [ ] **Step 3: Implement capability models and rejection helper**
 
@@ -856,14 +856,14 @@ capability must not be a future promise.
 
 - [ ] **Step 5: Run focused tests**
 
-Run: `uv run python -m pytest tests/components/test_validation.py tests/providers/test_composition.py -q`
+Run: `uv run python -m pytest tests/provider_components/test_validation.py tests/providers/test_composition.py -q`
 
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/kdive/components/validation.py src/kdive/providers/composition.py tests/components
+git add src/kdive/components/validation.py src/kdive/providers/composition.py tests/provider_components
 git commit -m "feat: advertise provider component source support"
 ```
 
@@ -886,7 +886,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kdive.components.references import LocalComponentRef
+from kdive.provider_components.references import LocalComponentRef
 from kdive.providers.local_libvirt.materialize import materialize_rootfs_base
 
 
@@ -1479,8 +1479,8 @@ Run:
 
 ```bash
 uv run python -m pytest \
-  tests/components \
-  tests/components/test_validation.py \
+  tests/provider_components \
+  tests/provider_components/test_validation.py \
   tests/providers/local_libvirt/test_materialize.py \
   tests/mcp/catalog \
   tests/mcp/providers \

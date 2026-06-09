@@ -6,10 +6,10 @@ import struct
 
 import pytest
 
-from kdive.components.artifacts import HeadResult
-from kdive.components.requirements import ConfigRequirements
-from kdive.components.uploads import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.provider_components.artifacts import HeadResult
+from kdive.provider_components.requirements import ConfigRequirements
+from kdive.provider_components.uploads import ManifestEntry
 from kdive.providers.build_validation import (
     extract_build_id_ranged,
     validate_external_artifacts,

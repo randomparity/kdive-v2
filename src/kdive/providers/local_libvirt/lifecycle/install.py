@@ -40,9 +40,9 @@ import libvirt
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
-from kdive.components.artifacts import FetchedArtifact
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.provider_components.artifacts import FetchedArtifact
 from kdive.providers.local_libvirt.lifecycle.constants import (
     DEFAULT_LIBVIRT_URI,
     LIBVIRT_URI_ENV,

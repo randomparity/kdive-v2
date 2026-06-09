@@ -6,10 +6,10 @@ import struct
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
-from kdive.components.artifacts import HeadResult
-from kdive.components.requirements import ConfigRequirements, validate_config_requirements
-from kdive.components.uploads import ManifestEntry
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.provider_components.artifacts import HeadResult
+from kdive.provider_components.requirements import ConfigRequirements, validate_config_requirements
+from kdive.provider_components.uploads import ManifestEntry
 from kdive.providers.ports import BuildOutput, ValidatedUpload
 
 _NT_GNU_BUILD_ID = 3

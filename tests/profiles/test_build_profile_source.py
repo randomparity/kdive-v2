@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from kdive.components.references import LocalComponentRef
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.build import (
     BuildProfile,
     ExternalBuildProfile,
     ServerBuildProfile,
 )
+from kdive.provider_components.references import LocalComponentRef
 
 
 def test_parse_defaults_to_server() -> None:

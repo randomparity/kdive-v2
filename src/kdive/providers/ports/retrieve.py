@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import NamedTuple, Protocol
 from uuid import UUID
 
-from kdive.components.artifacts import StoredArtifact
 from kdive.domain.capture import CaptureMethod
+from kdive.provider_components.artifacts import StoredArtifact
 
 
 class CaptureOutput(NamedTuple):

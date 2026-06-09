@@ -15,8 +15,8 @@ from collections.abc import Callable
 from typing import NamedTuple, Protocol
 from uuid import UUID
 
-from kdive.components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.domain.models import Sensitivity
+from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env

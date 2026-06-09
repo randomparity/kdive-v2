@@ -9,12 +9,12 @@ from uuid import UUID
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.components.artifacts import StoredArtifact
-from kdive.components.references import LocalComponentRef
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile
+from kdive.provider_components.artifacts import StoredArtifact
+from kdive.provider_components.references import LocalComponentRef
 from kdive.providers import composition
 from kdive.providers.ports import (
     BuildOutput,

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from kdive.components.catalog import DEFAULT_FIXTURE_CATALOG_PATH, load_fixture_catalog
+from kdive.provider_components.catalog import DEFAULT_FIXTURE_CATALOG_PATH, load_fixture_catalog
 
 
 def test_default_catalog_exposes_expected_rootfs_entries() -> None:

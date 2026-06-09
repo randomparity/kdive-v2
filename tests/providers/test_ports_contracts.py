@@ -8,9 +8,9 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
-from kdive.components.artifacts import HeadResult, StoredArtifact
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Sensitivity
+from kdive.provider_components.artifacts import HeadResult, StoredArtifact
 from kdive.providers.ports._common import ProviderModel, config_error
 from kdive.providers.ports.build import BuildOutput, ValidatedUpload
 from kdive.providers.ports.debug import (

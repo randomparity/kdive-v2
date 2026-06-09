@@ -12,9 +12,9 @@ from uuid import uuid4
 import pytest
 from botocore.exceptions import EndpointConnectionError, ReadTimeoutError
 
-from kdive.components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
+from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.store.objectstore import (
     ObjectStore,
     _normalize_etag,

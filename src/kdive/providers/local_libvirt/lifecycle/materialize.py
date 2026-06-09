@@ -6,17 +6,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
-from kdive.components.catalog import load_fixture_catalog
-from kdive.components.local_paths import validate_local_component_path
-from kdive.components.references import (
+from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.profiles.provisioning import RootfsSource, _UploadRootfs
+from kdive.provider_components.catalog import load_fixture_catalog
+from kdive.provider_components.local_paths import validate_local_component_path
+from kdive.provider_components.references import (
     ArtifactComponentRef,
     CatalogComponentRef,
     ComponentRef,
     ComponentUploadRef,
     LocalComponentRef,
 )
-from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.profiles.provisioning import RootfsSource, _UploadRootfs
 
 
 @dataclass(frozen=True, slots=True)

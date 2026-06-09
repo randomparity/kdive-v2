@@ -26,14 +26,14 @@ from typing import Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from kdive.components.artifacts import ArtifactWriteRequest, StoredArtifact
-from kdive.components.catalog import load_fixture_catalog
-from kdive.components.local_paths import validate_local_component_path
-from kdive.components.references import ComponentRef, LocalComponentRef
-from kdive.components.requirements import ConfigRequirements, validate_config_requirements
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
+from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
+from kdive.provider_components.catalog import load_fixture_catalog
+from kdive.provider_components.local_paths import validate_local_component_path
+from kdive.provider_components.references import ComponentRef, LocalComponentRef
+from kdive.provider_components.requirements import ConfigRequirements, validate_config_requirements
 from kdive.providers.build_validation import (
     parse_gnu_build_id,
 )

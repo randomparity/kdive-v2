@@ -9,9 +9,9 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from kdive.components.references import ComponentRef
-from kdive.components.requirements import CmdlineRequirements, ConfigRequirements
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.provider_components.references import ComponentRef
+from kdive.provider_components.requirements import CmdlineRequirements, ConfigRequirements
 
 DEFAULT_FIXTURE_CATALOG_PATH = Path(__file__).parents[3] / "fixtures" / "local-libvirt"
 _FIXTURE_CATALOG_ENV = "KDIVE_FIXTURE_CATALOG_PATH"

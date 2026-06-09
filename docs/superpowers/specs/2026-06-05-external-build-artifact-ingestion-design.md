@@ -62,7 +62,7 @@ In scope:
   (a `created` Run or a `defined`/never-provisioned System) and deletes the uncommitted ones
   past the upload deadline (§6). No `artifacts`-row state change (the row stays write-once).
 - Rootfs `catalog`-kind references now resolve through the provider fixture catalog
-  (`fixtures/local-libvirt/manifest.yaml` and `kdive.components.catalog`).
+  (`fixtures/local-libvirt/manifest.yaml` and `kdive.provider_components.catalog`).
 
 Out of scope (next spec): install-plane fetch from the store (gap B2), serial-marker
 readiness (B4), the rootfs builder port (A1), and actually booting the uploaded kernel.

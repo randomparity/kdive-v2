@@ -17,7 +17,6 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.components.artifacts import PresignedUpload, PresignPutRequest
 from kdive.db.repositories import ALLOCATIONS, BUDGETS, INVESTIGATIONS, QUOTAS, RUNS, SYSTEMS
 from kdive.domain.models import Allocation, Budget, Investigation, Quota, Run, System
 from kdive.domain.state import AllocationState, InvestigationState, RunState, SystemState
@@ -32,6 +31,7 @@ from kdive.mcp.tools.lifecycle import allocations as allocations_tools
 from kdive.mcp.tools.lifecycle.runs import registrar as runs_tools
 from kdive.mcp.tools.lifecycle.systems import registrar as systems_tools
 from kdive.mcp.tools.ops import resources as ops_resources_tools
+from kdive.provider_components.artifacts import PresignedUpload, PresignPutRequest
 from kdive.providers import composition
 from kdive.providers.fault_inject.discovery import FaultInjectDiscovery
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery

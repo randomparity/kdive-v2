@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import NamedTuple, Protocol
 from uuid import UUID
 
-from kdive.components.artifacts import HeadResult
 from kdive.profiles.build import ServerBuildProfile
+from kdive.provider_components.artifacts import HeadResult
 
 
 class BuildOutput(NamedTuple):

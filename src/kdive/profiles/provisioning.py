@@ -32,8 +32,6 @@ from pydantic import (
     model_validator,
 )
 
-from kdive.components.catalog import load_fixture_catalog
-from kdive.components.references import ArtifactComponentRef, CatalogComponentRef, LocalComponentRef
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import DestructiveJobKind, ResourceKind
@@ -41,6 +39,12 @@ from kdive.domain.profile_documents import SerializedProvisioningProfile
 from kdive.domain.sizing import AllocationSizing
 from kdive.profiles._schema import schema_version_validator
 from kdive.profiles.types import ProvisioningProfileInput
+from kdive.provider_components.catalog import load_fixture_catalog
+from kdive.provider_components.references import (
+    ArtifactComponentRef,
+    CatalogComponentRef,
+    LocalComponentRef,
+)
 
 type NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 """A string that is non-empty after whitespace stripping; blank values fail validation."""

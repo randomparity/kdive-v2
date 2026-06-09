@@ -15,9 +15,9 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.components.local_paths import validate_local_component_path
-from kdive.components.references import ComponentKind, ComponentRef, parse_component_ref
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.provider_components.local_paths import validate_local_component_path
+from kdive.provider_components.references import ComponentKind, ComponentRef, parse_component_ref
 
 type Visibility = Literal["public", "project", "host-policy"]
 type UploadVisibility = Literal["public", "project"]

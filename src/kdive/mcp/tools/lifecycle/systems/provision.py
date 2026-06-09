@@ -13,7 +13,6 @@ from dataclasses import dataclass
 
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.components.validation import ComponentSourceCapabilities
 from kdive.log import bind_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import (
@@ -26,6 +25,7 @@ from kdive.mcp.tools.lifecycle.systems.common import (
     RootfsValidator,
 )
 from kdive.profiles.types import ProvisioningProfileInput
+from kdive.provider_components.validation import ComponentSourceCapabilities
 from kdive.security.authz.context import RequestContext
 from kdive.services.systems.admission import (
     CreateSystemRequest,

@@ -7,14 +7,14 @@ from typing import Any
 
 import pytest
 
-from kdive.components.references import ROOTFS_COMPONENT, ComponentSourceKind
-from kdive.components.validation import ComponentSourceCapabilities
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.mcp.tools.lifecycle.systems.common import (
     validate_profile_for_provider,
     validate_rootfs_for_provider,
 )
 from kdive.profiles.provisioning import ProvisioningProfile, RootfsSource
+from kdive.provider_components.references import ROOTFS_COMPONENT, ComponentSourceKind
+from kdive.provider_components.validation import ComponentSourceCapabilities
 
 _VALID_PROFILE: dict[str, Any] = {
     "schema_version": 1,

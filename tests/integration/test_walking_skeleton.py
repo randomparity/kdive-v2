@@ -79,8 +79,8 @@ class _SecretBearingRetriever:
         self.calls = 0
 
     def capture(self, system_id: UUID, method: CaptureMethod) -> CaptureOutput:
-        from kdive.components.artifacts import StoredArtifact
         from kdive.domain.models import Sensitivity
+        from kdive.provider_components.artifacts import StoredArtifact
 
         self.calls += 1
         raw = StoredArtifact(

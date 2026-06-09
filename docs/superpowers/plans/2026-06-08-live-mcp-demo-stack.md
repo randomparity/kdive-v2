@@ -44,7 +44,7 @@ mock OIDC, local libvirt, shell scripts checked by `shellcheck`/`shfmt`, pytest.
 - Create `fixtures/local-libvirt/rootfs/busybox-bare.yaml`: catalog entry for a bare busybox qcow2.
 - Create `scripts/live-vm/build-busybox-rootfs.sh`: build the bare busybox qcow2 image.
 - Create `scripts/live-vm/fetch-fedora-cloud-image.sh`: fetch/cache a Fedora cloud qcow2.
-- Create `tests/components/test_default_fixture_catalog.py`: verify the shipped catalog entries load.
+- Create `tests/provider_components/test_default_fixture_catalog.py`: verify the shipped catalog entries load.
 - Modify `src/kdive/components/catalog.py`: support `KDIVE_FIXTURE_CATALOG_PATH` so operators can
   provide their own rootfs catalog without patching the repo.
 - Modify `scripts/live-vm/build-guest-image.sh`: align its default output with the shipped catalog.
@@ -988,19 +988,19 @@ Expected: tests and shell lint pass.
 - Modify: `scripts/live-vm/build-guest-image.sh`
 - Create: `scripts/live-vm/build-busybox-rootfs.sh`
 - Modify: `src/kdive/components/catalog.py`
-- Test: `tests/components/test_default_fixture_catalog.py`
+- Test: `tests/provider_components/test_default_fixture_catalog.py`
 - Test: `tests/scripts/test_live_vm_fixtures.py`
 
 - [ ] **Step 1: Add catalog tests**
 
-Create `tests/components/test_default_fixture_catalog.py`:
+Create `tests/provider_components/test_default_fixture_catalog.py`:
 
 ```python
 from pathlib import Path
 
 import pytest
 
-from kdive.components.catalog import DEFAULT_FIXTURE_CATALOG_PATH, load_fixture_catalog
+from kdive.provider_components.catalog import DEFAULT_FIXTURE_CATALOG_PATH, load_fixture_catalog
 
 
 def test_default_catalog_exposes_expected_rootfs_entries() -> None:
@@ -1057,7 +1057,7 @@ def test_catalog_path_can_be_overridden_by_env(tmp_path: Path, monkeypatch: pyte
 Run:
 
 ```bash
-uv run python -m pytest tests/components/test_default_fixture_catalog.py -q
+uv run python -m pytest tests/provider_components/test_default_fixture_catalog.py -q
 ```
 
 Expected: fail until the new entries are added.
@@ -1277,7 +1277,7 @@ echo "busybox rootfs image ready at ${ROOTFS_PATH}" >&2
 Run:
 
 ```bash
-uv run python -m pytest tests/components/test_default_fixture_catalog.py tests/components/test_catalog.py -q
+uv run python -m pytest tests/provider_components/test_default_fixture_catalog.py tests/provider_components/test_catalog.py -q
 just lint-shell
 ```
 
@@ -1533,7 +1533,7 @@ Run:
 ```bash
 just lint
 just type
-uv run python -m pytest tests/scripts/test_live_stack_scripts.py tests/components/test_default_fixture_catalog.py tests/providers/local_libvirt/test_build.py -q
+uv run python -m pytest tests/scripts/test_live_stack_scripts.py tests/provider_components/test_default_fixture_catalog.py tests/providers/local_libvirt/test_build.py -q
 just lint-shell
 ```
 

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from kdive.components.requirements import (
+from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.provider_components.requirements import (
     CmdlineRequirements,
     ConfigRequirements,
     validate_cmdline_requirements,
     validate_config_requirements,
 )
-from kdive.domain.errors import CategorizedError, ErrorCategory
 
 
 def test_config_requirements_accept_matching_values() -> None:

@@ -19,7 +19,7 @@ from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from kdive.components.uploads import ManifestEntry
+from kdive.provider_components.uploads import ManifestEntry
 
 
 class UploadManifest(NamedTuple):

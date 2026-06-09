@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from kdive.components.local_paths import validate_local_component_path
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.provider_components.local_paths import validate_local_component_path
 
 
 def test_accepts_regular_file_under_allowed_root(tmp_path: Path) -> None:

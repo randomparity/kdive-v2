@@ -11,7 +11,6 @@ import pytest
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.components.artifacts import FetchedArtifact, HeadResult
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.mcp.auth import RequestContext
@@ -21,6 +20,7 @@ from kdive.mcp.tools.catalog.artifacts_reads import (
     artifacts_get,
     artifacts_list,
 )
+from kdive.provider_components.artifacts import FetchedArtifact, HeadResult
 from kdive.security.authz.rbac import AuthorizationError, Role
 from tests.mcp._seed import seed_crashed_system
 

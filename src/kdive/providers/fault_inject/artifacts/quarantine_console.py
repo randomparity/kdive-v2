@@ -19,8 +19,12 @@ from pathlib import Path
 from typing import NamedTuple, Protocol
 from uuid import UUID
 
-from kdive.components.artifacts import ArtifactWriteRequest, FetchedArtifact, StoredArtifact
 from kdive.domain.models import Sensitivity
+from kdive.provider_components.artifacts import (
+    ArtifactWriteRequest,
+    FetchedArtifact,
+    StoredArtifact,
+)
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import (

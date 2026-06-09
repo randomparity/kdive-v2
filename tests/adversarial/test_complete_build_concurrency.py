@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import asyncio
 
-from kdive.components.validation import ComponentSourceCapabilities
 from kdive.db.repositories import RUNS
 from kdive.domain.state import RunState
 from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers
+from kdive.provider_components.validation import ComponentSourceCapabilities
 from kdive.providers.ports import BuildOutput
 from tests.mcp.complete_build_support import (
     FakeValidator,
