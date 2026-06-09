@@ -92,6 +92,14 @@ _LEASE_EXPIRED_CATEGORY_VALUE = _LEASE_EXPIRED_CATEGORY.value
 # by this attribution rather than the owning user's.
 SYSTEM_RECONCILER_PRINCIPAL = "system:reconciler"
 
+type _RepairFn = Callable[[AsyncConnection], Awaitable[int]]
+
+
+@dataclass(frozen=True, slots=True)
+class _RepairSpec:
+    name: str
+    repair: _RepairFn
+
 
 @dataclass(frozen=True, slots=True)
 class ReconcileReport:
@@ -107,6 +115,40 @@ class ReconcileReport:
     abandoned_uploads: int = 0
     promoted_allocations: int = 0
     queue_timeouts: int = 0
+
+
+def _repair_plan(
+    *,
+    reaper: InfraReaper,
+    upload_store: UploadStore | None,
+    debug_session_stale_after: timedelta,
+    idempotency_retention: timedelta,
+    queue_max_wait: timedelta,
+) -> tuple[_RepairSpec, ...]:
+    repairs = [
+        _RepairSpec("expired_allocations", _sweep_expired_allocations),
+        _RepairSpec("promoted_allocations", _promote_pending),
+        _RepairSpec("queue_timeouts", _reap_queue_timeouts_for(queue_max_wait)),
+        _RepairSpec("orphaned_systems", _repair_orphaned_systems),
+        _RepairSpec("abandoned_jobs", _repair_abandoned_jobs),
+        _RepairSpec(
+            "dead_sessions",
+            lambda conn: _repair_dead_sessions(conn, debug_session_stale_after),
+        ),
+        _RepairSpec("leaked_domains", lambda conn: _repair_leaked_domains(conn, reaper)),
+        _RepairSpec(
+            "idempotency_keys_gc_count",
+            lambda conn: _gc_idempotency_keys(conn, idempotency_retention),
+        ),
+    ]
+    if upload_store is not None:
+        repairs.append(
+            _RepairSpec(
+                "abandoned_uploads",
+                lambda conn: _repair_abandoned_uploads(conn, upload_store),
+            )
+        )
+    return tuple(repairs)
 
 
 async def _promote_pending(conn: AsyncConnection) -> int:
@@ -420,44 +462,16 @@ async def reconcile_once(
     per-domain ``destroy`` in :func:`_repair_leaked_domains` is caught individually, so
     the irreversible case (a domain destroyed, then a later failure) keeps its count.
     """
-    counts: dict[str, int] = {
-        "expired_allocations": 0,
-        "promoted_allocations": 0,
-        "queue_timeouts": 0,
-        "orphaned_systems": 0,
-        "abandoned_jobs": 0,
-        "dead_sessions": 0,
-        "leaked_domains": 0,
-        "idempotency_keys_gc_count": 0,
-        "abandoned_uploads": 0,
-    }
-    failures: list[str] = []
-
-    async def _isolated(name: str, repair: Callable[[AsyncConnection], Awaitable[int]]) -> None:
-        try:
-            async with pool.connection() as conn:
-                counts[name] = await repair(conn)
-        except Exception:  # noqa: BLE001 - isolate each repair; one failure must not starve the rest
-            _log.warning("reconciler: repair %s failed this pass", name, exc_info=True)
-            failures.append(name)
-
-    await _isolated("expired_allocations", _sweep_expired_allocations)
-    await _isolated("promoted_allocations", _promote_pending)
-    await _isolated("queue_timeouts", _reap_queue_timeouts_for(queue_max_wait))
-    await _isolated("orphaned_systems", _repair_orphaned_systems)
-    await _isolated("abandoned_jobs", _repair_abandoned_jobs)
-    await _isolated(
-        "dead_sessions", lambda conn: _repair_dead_sessions(conn, debug_session_stale_after)
+    counts, failures = await _run_repair_plan(
+        pool,
+        _repair_plan(
+            reaper=reaper,
+            upload_store=upload_store,
+            debug_session_stale_after=debug_session_stale_after,
+            idempotency_retention=idempotency_retention,
+            queue_max_wait=queue_max_wait,
+        ),
     )
-    await _isolated("leaked_domains", lambda conn: _repair_leaked_domains(conn, reaper))
-    await _isolated(
-        "idempotency_keys_gc_count",
-        lambda conn: _gc_idempotency_keys(conn, idempotency_retention),
-    )
-    if upload_store is not None:
-        await _isolated(
-            "abandoned_uploads", lambda conn: _repair_abandoned_uploads(conn, upload_store)
-        )
 
     return ReconcileReport(
         expired_allocations=counts["expired_allocations"],
@@ -471,6 +485,22 @@ async def reconcile_once(
         promoted_allocations=counts["promoted_allocations"],
         queue_timeouts=counts["queue_timeouts"],
     )
+
+
+async def _run_repair_plan(
+    pool: AsyncConnectionPool, repairs: tuple[_RepairSpec, ...]
+) -> tuple[dict[str, int], list[str]]:
+    counts = {spec.name: 0 for spec in repairs}
+    counts.setdefault("abandoned_uploads", 0)
+    failures: list[str] = []
+    for spec in repairs:
+        try:
+            async with pool.connection() as conn:
+                counts[spec.name] = await spec.repair(conn)
+        except Exception:  # noqa: BLE001 - isolate each repair; one failure must not starve the rest
+            _log.warning("reconciler: repair %s failed this pass", spec.name, exc_info=True)
+            failures.append(spec.name)
+    return counts, failures
 
 
 class Reconciler:
