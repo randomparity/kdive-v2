@@ -24,7 +24,7 @@ from kdive.db import upload_manifest
 from kdive.db.locks import LockScope
 from kdive.db.upload_manifest import ManifestEntry
 from kdive.domain.state import RunState
-from kdive.reconciler.loop import _reap_one_owner, _repair_abandoned_uploads
+from kdive.reconciler.loop import _owner_pre_finalize, _reap_one_owner, _repair_abandoned_uploads
 from tests.mcp.systems_support import (
     SYSTEM_PROVISION_HANDLERS as _SYSTEM_PROVISION_HANDLERS,
 )
@@ -224,5 +224,19 @@ def test_reap_one_owner_declines_renewed_manifest(migrated_url: str) -> None:
             store = _FakeStore({prefix: [f"{prefix}kernel"]})
             assert await _reap_one_owner(conn, store, "runs", run_id, LockScope.RUN) is False
             assert store.deleted == []
+
+    asyncio.run(_run())
+
+
+def test_owner_pre_finalize_rejects_unknown_owner_kind_before_sql(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as conn:
+            system_id = await seed_system(conn)
+            try:
+                await _owner_pre_finalize(conn, "allocations", system_id)
+            except ValueError as exc:
+                assert str(exc) == "unsupported upload owner kind: allocations"
+            else:
+                raise AssertionError("unknown owner kind should fail before SQL dispatch")
 
     asyncio.run(_run())

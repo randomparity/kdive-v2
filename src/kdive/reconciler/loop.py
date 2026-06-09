@@ -569,8 +569,10 @@ async def _owner_pre_finalize(conn: AsyncConnection, owner_kind: str, owner_id: 
     """Report whether the owner is still in its pre-finalize state (locked re-read)."""
     if owner_kind == _UPLOAD_RUN_OWNER_KIND:
         table = _UPLOAD_RUN_OWNER_KIND
-    else:
+    elif owner_kind == _UPLOAD_SYSTEM_OWNER_KIND:
         table = _UPLOAD_SYSTEM_OWNER_KIND
+    else:
+        raise ValueError(f"unsupported upload owner kind: {owner_kind}")
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             f"SELECT 1 FROM {table} WHERE id = %s AND state = %s",  # noqa: S608 - 2-value whitelist
