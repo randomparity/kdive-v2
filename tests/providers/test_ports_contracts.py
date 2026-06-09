@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from typing import cast
 
+import pytest
+from pydantic import ValidationError
+
 from kdive.components.artifacts import HeadResult, StoredArtifact
+from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Sensitivity
+from kdive.providers.ports._common import ProviderModel, config_error
 from kdive.providers.ports.build import BuildOutput, ValidatedUpload
 from kdive.providers.ports.retrieve import (
     CaptureOutput,
@@ -13,6 +18,22 @@ from kdive.providers.ports.retrieve import (
     CrashResult,
     IntrospectOutput,
 )
+
+
+class _ProviderRecord(ProviderModel):
+    name: str
+
+
+def test_provider_model_rejects_extra_fields() -> None:
+    with pytest.raises(ValidationError):
+        _ProviderRecord.model_validate({"name": "domain", "ignored": True})
+
+
+def test_config_error_uses_provider_configuration_taxonomy() -> None:
+    error = config_error("bad provider input")
+
+    assert error.category is ErrorCategory.CONFIGURATION_ERROR
+    assert str(error) == "bad provider input"
 
 
 def test_build_output_and_validated_upload_are_stable_namedtuples() -> None:
