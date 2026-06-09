@@ -31,11 +31,11 @@ from typing import TYPE_CHECKING
 import psycopg
 import pytest
 
-import kdive.services.allocation_admission as admission
+import kdive.services.allocation.admission as admission
 from kdive.domain.errors import ErrorCategory
 from kdive.mcp.auth import RequestContext
-from kdive.services.allocation_admission import AllocationRequest, admit
-from kdive.services.allocation_idempotency import within_budget
+from kdive.services.allocation.admission import AllocationRequest, admit
+from kdive.services.allocation.idempotency import within_budget
 from tests.adversarial.conftest import (
     SMALL_SELECTOR,
     count_rows,

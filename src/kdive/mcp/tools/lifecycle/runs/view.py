@@ -12,8 +12,8 @@ from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.lifecycle.runs.common import envelope_for_run
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
-from kdive.services.run_steps import install_method_for as _install_method_for
-from kdive.services.run_steps import system_required_cmdline
+from kdive.services.runs.steps import install_method_for as _install_method_for
+from kdive.services.runs.steps import system_required_cmdline
 
 
 async def get_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> ToolResponse:

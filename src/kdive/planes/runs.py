@@ -29,7 +29,7 @@ from kdive.security import audit
 from kdive.security.artifacts.artifact_search import ArtifactSearchInputError, search_text
 from kdive.security.authz.context import RequestContext
 from kdive.security.secrets.redaction import Redactor
-from kdive.services.run_steps import (
+from kdive.services.runs.steps import (
     BuildStepResult,
     cmdline_for,
     existing_build_result,

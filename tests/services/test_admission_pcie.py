@@ -26,7 +26,7 @@ from kdive.domain.pcie import PCIE_DEVICES_KEY, PCIeClaim, PCIeDescriptor
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
-from kdive.services.allocation_admission import AllocationRequest, admit
+from kdive.services.allocation.admission import AllocationRequest, admit
 from tests.db_waits import wait_until_backend_waiting
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

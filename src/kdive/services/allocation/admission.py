@@ -52,8 +52,9 @@ from kdive.domain.pcie import MatchOutcome, PCIeClaim, PCIeDescriptor
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState
 from kdive.security import audit
-from kdive.services import accounting, pcie_claim
-from kdive.services.allocation_idempotency import (
+from kdive.services.accounting import ledger as accounting
+from kdive.services.allocation import pcie_claim
+from kdive.services.allocation.idempotency import (
     record_key,
     resolve_replay,
     within_budget,

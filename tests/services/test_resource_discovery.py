@@ -13,7 +13,7 @@ from kdive.domain.discovery import ResourceRecord
 from kdive.domain.models import ResourceKind
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import ResourceStatus
-from kdive.services.resource_discovery import (
+from kdive.services.resources.discovery import (
     ensure_discovered_resource_registered,
     register_discovered_resource,
 )

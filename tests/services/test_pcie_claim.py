@@ -21,7 +21,7 @@ from kdive.db.repositories import ALLOCATIONS, RESOURCES
 from kdive.domain.models import Allocation, Resource, ResourceKind
 from kdive.domain.pcie import PCIE_DEVICES_KEY, MatchOutcome, PCIeClaim, PCIeDescriptor
 from kdive.domain.state import AllocationState, ResourceStatus
-from kdive.services import pcie_claim
+from kdive.services.allocation import pcie_claim
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 

@@ -30,9 +30,9 @@ from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
 from kdive.reconciler import loop
 from kdive.security import audit
-from kdive.services import pcie_claim
-from kdive.services.allocation_admission import AllocationRequest, admit
-from kdive.services.allocation_release import release_with_backstops
+from kdive.services.allocation import pcie_claim
+from kdive.services.allocation.admission import AllocationRequest, admit
+from kdive.services.allocation.release import release_with_backstops
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 CTX = RequestContext(principal="alice", agent_session="s", projects=("proj",))

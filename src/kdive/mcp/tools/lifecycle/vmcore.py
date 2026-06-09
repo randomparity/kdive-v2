@@ -50,7 +50,7 @@ from kdive.security.artifacts.crash_commands import crash_command_rejection_reas
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 from kdive.security.secrets.redaction import Redactor
-from kdive.services.artifact_listing import RedactedArtifact, list_redacted_system_artifacts
+from kdive.services.artifacts.listing import RedactedArtifact, list_redacted_system_artifacts
 
 _log = logging.getLogger(__name__)
 

@@ -38,20 +38,20 @@ from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.security.authz.context import RequestContext, require_project
 from kdive.security.authz.rbac import Role, require_role
-from kdive.services import pcie_claim
-from kdive.services.allocation_admission import (
+from kdive.services.allocation import pcie_claim
+from kdive.services.allocation.admission import (
     AdmissionOutcome,
     admit,
 )
-from kdive.services.allocation_admission import (
+from kdive.services.allocation.admission import (
     AllocationRequest as DomainAllocationRequest,
 )
-from kdive.services.allocation_release import (
+from kdive.services.allocation.release import (
     ReleaseOutcome,
     ctx_audit_writer,
     release_with_backstops,
 )
-from kdive.services.allocation_renew import RenewOutcome, renew
+from kdive.services.allocation.renew import RenewOutcome, renew
 
 _log = logging.getLogger(__name__)
 

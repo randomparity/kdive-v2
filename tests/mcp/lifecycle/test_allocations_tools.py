@@ -21,7 +21,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.lifecycle import allocations as alloc_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.authz.rbac import AuthorizationError, Role
-from kdive.services.resource_discovery import register_discovered_resource
+from kdive.services.resources.discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

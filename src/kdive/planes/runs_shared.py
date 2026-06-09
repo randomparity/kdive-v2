@@ -11,7 +11,7 @@ from kdive.domain.models import Job, Run
 from kdive.domain.state import RunState
 from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.security import audit
-from kdive.services.run_steps import BuildStepResult
+from kdive.services.runs.steps import BuildStepResult
 
 
 async def finalize_build(

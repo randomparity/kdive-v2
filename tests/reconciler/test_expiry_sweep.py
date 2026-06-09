@@ -23,7 +23,7 @@ from kdive.db.repositories import ALLOCATIONS, BUDGETS, RESOURCES, SYSTEMS
 from kdive.domain.models import Allocation, Budget, Resource, ResourceKind, System
 from kdive.domain.state import AllocationState, ResourceStatus, SystemState
 from kdive.reconciler import loop
-from kdive.services import accounting
+from kdive.services.accounting import ledger as accounting
 from tests.db_waits import wait_until_any_backend_waiting
 from tests.reconciler.conftest import connect, run_repair
 

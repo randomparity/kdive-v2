@@ -24,7 +24,7 @@ import psycopg
 from kdive.domain.state import AllocationState
 from kdive.mcp.auth import RequestContext
 from kdive.reconciler.loop import _expire_one
-from kdive.services.allocation_renew import renew
+from kdive.services.allocation.renew import renew
 from tests.adversarial.conftest import (
     one,
     open_conn,

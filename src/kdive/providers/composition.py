@@ -60,7 +60,7 @@ from kdive.providers.local_libvirt.lifecycle.provisioning import (
 from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
-from kdive.services.resource_discovery import ensure_discovered_resource_registered
+from kdive.services.resources.discovery import ensure_discovered_resource_registered
 from kdive.store.objectstore import object_store_from_env
 
 _LOCAL_POOL = "local-libvirt"

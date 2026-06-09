@@ -44,7 +44,7 @@ from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandle
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.paths import PathSafetyError
 from kdive.security.secrets.secret_registry import SecretRegistry
-from kdive.services.resource_discovery import register_discovered_resource
+from kdive.services.resources.discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

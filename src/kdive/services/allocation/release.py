@@ -16,7 +16,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.state import AllocationState, IllegalTransition
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
-from kdive.services import accounting
+from kdive.services.accounting import ledger as accounting
 
 AuditWriter = Callable[[AsyncConnection, audit.AuditEvent], Awaitable[None]]
 

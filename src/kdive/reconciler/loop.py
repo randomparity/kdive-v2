@@ -34,7 +34,8 @@ from kdive.domain.state import AllocationState, DebugSessionState, JobState, Run
 from kdive.jobs import queue
 from kdive.jobs.payloads import PayloadValidationError, SystemPayload, run_id_from_payload
 from kdive.security import audit
-from kdive.services import accounting, allocation_promotion
+from kdive.services.accounting import ledger as accounting
+from kdive.services.allocation import promotion as allocation_promotion
 
 _log = logging.getLogger(__name__)
 
@@ -158,7 +159,7 @@ class ReconcileReport:
 async def _promote_pending(conn: AsyncConnection) -> int:
     """Promote the oldest placeable queued request per resource (ADR-0069, #165).
 
-    Delegates to :func:`kdive.services.allocation_promotion.promote_pending`, which replays
+    Delegates to :func:`kdive.services.allocation.promotion.promote_pending`, which replays
     the shared admission gate under ``PROJECT → RESOURCE → ALLOCATION`` — sharing admission's
     RESOURCE lock and the expiry sweep's ALLOCATION fence, so the sweep never double-grants
     against a synchronous admit nor promotes a released-while-queued row.

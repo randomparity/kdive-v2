@@ -30,7 +30,7 @@ from kdive.security.authz.rbac import (
     require_platform_role,
     require_role,
 )
-from kdive.services import accounting as accounting_domain
+from kdive.services.accounting import ledger as accounting_domain
 
 _REPORT_OBJECT_ID = "report"
 _REPORT_GRANTED_SET_TOOL = "accounting.report_granted_set"

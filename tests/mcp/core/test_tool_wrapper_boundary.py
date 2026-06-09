@@ -28,7 +28,7 @@ from kdive.providers.fault_inject.discovery import FaultInjectDiscovery
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole, Role
-from kdive.services.resource_discovery import register_discovered_resource
+from kdive.services.resources.discovery import register_discovered_resource
 from tests.mcp.conftest import AUDIENCE, ISSUER, make_keypair
 from tests.mcp.systems_support import fault_inject_profile
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn

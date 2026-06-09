@@ -44,7 +44,7 @@ from kdive.domain.state import (
     RunState,
     SystemState,
 )
-from kdive.services import accounting
+from kdive.services.accounting import ledger as accounting
 from tests.db_waits import wait_until_backend_waiting
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

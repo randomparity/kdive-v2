@@ -17,7 +17,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.security.authz.context import RequestContext, require_project
 from kdive.security.authz.rbac import Role, require_role
-from kdive.services import accounting as accounting_domain
+from kdive.services.accounting import ledger as accounting_domain
 
 _USAGE_OBJECT_ID = "usage"
 

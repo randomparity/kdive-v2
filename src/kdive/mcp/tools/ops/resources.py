@@ -36,7 +36,7 @@ from kdive.security.authz.rbac import (
     PlatformRole,
     require_platform_role,
 )
-from kdive.services.allocation_release import ReleaseOutcome
+from kdive.services.allocation.release import ReleaseOutcome
 
 _SET_STATUS_TOOL = "resources.set_status"
 _CORDON_TOOL = "resources.cordon"

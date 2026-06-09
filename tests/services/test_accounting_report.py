@@ -22,7 +22,7 @@ import psycopg
 from kdive.db.repositories import ALLOCATIONS, RESOURCES
 from kdive.domain.models import Allocation, Resource, ResourceKind
 from kdive.domain.state import AllocationState, ResourceStatus
-from kdive.services import accounting
+from kdive.services.accounting import ledger as accounting
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 

@@ -59,7 +59,7 @@ from kdive.planes import systems as systems_handlers
 from kdive.providers.local_libvirt.lifecycle.provisioning import domain_name_for
 from kdive.reconciler import loop
 from kdive.security.authz.rbac import AuthorizationError, Role
-from kdive.services import accounting
+from kdive.services.accounting import ledger as accounting
 from tests.integration._seed import (
     provisioning_profile,
     register_resource,

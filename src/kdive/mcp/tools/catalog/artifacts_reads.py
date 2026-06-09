@@ -25,7 +25,7 @@ from kdive.security.artifacts.artifact_search import (
 )
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
-from kdive.services.artifact_listing import RedactedArtifact, list_redacted_system_artifacts
+from kdive.services.artifacts.listing import RedactedArtifact, list_redacted_system_artifacts
 from kdive.store.objectstore import (
     FetchedArtifact,
     HeadResult,

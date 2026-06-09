@@ -35,7 +35,7 @@ from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
 from kdive.reconciler import loop
 from kdive.security.audit import args_digest
-from kdive.services.allocation_admission import AllocationRequest, admit
+from kdive.services.allocation.admission import AllocationRequest, admit
 from tests.db_waits import wait_until_any_backend_waiting
 from tests.reconciler.conftest import connect, run_repair
 
@@ -390,7 +390,7 @@ def test_pcie_promotion_logs_malformed_persisted_spec(
             )
             await ALLOCATIONS.update_state(seed, holder.id, AllocationState.RELEASING)
             await ALLOCATIONS.update_state(seed, holder.id, AllocationState.RELEASED)
-        caplog.set_level(logging.WARNING, logger="kdive.services.allocation_promotion")
+        caplog.set_level(logging.WARNING, logger="kdive.services.allocation.promotion")
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(pool, loop._promote_pending)
         assert count == 0

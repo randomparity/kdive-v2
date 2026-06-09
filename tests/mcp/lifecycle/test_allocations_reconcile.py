@@ -26,7 +26,7 @@ from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import allocations as alloc_tools
 from kdive.security.authz.rbac import Role
-from kdive.services import accounting
+from kdive.services.accounting import ledger as accounting
 from tests.db_waits import wait_until_any_backend_waiting
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

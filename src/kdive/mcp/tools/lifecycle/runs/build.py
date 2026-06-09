@@ -44,8 +44,8 @@ from kdive.providers.ports import BuildOutput, ValidatedUpload
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
-from kdive.services.run_steps import BuildStepResult, platform_owned_cmdline_token
-from kdive.services.run_steps import existing_build_result as _existing_build_result
+from kdive.services.runs.steps import BuildStepResult, platform_owned_cmdline_token
+from kdive.services.runs.steps import existing_build_result as _existing_build_result
 from kdive.store.objectstore import (
     HeadResult,
     StoredArtifact,

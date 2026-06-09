@@ -24,8 +24,8 @@ from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.lifecycle import allocations as alloc_tools
 from kdive.security.authz.rbac import AuthorizationError, Role
-from kdive.services import accounting
-from kdive.services.allocation_renew import _RENEW_KIND
+from kdive.services.accounting import ledger as accounting
+from kdive.services.allocation.renew import _RENEW_KIND
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 

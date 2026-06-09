@@ -44,7 +44,7 @@ from kdive.domain.state import (
 from kdive.mcp.auth import AuthError, RequestContext
 from kdive.mcp.tools.accounting.usage import usage_investigation, usage_project
 from kdive.security.authz.rbac import AuthorizationError, Role
-from kdive.services import accounting
+from kdive.services.accounting import ledger as accounting
 from tests.mcp.roles import PROJECT_A, PROJECT_B, make_role_fixture
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

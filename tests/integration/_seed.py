@@ -40,7 +40,7 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
-from kdive.services.resource_discovery import register_discovered_resource
+from kdive.services.resources.discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

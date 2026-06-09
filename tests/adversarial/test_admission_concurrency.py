@@ -17,7 +17,7 @@ import pytest
 from kdive.domain.models import Resource
 from kdive.domain.state import AllocationState
 from kdive.mcp.auth import RequestContext
-from kdive.services.allocation_admission import AllocationRequest, admit
+from kdive.services.allocation.admission import AllocationRequest, admit
 from tests.adversarial.conftest import (
     SMALL_SELECTOR,
     count_rows,

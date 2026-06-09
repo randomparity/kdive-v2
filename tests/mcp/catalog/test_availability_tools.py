@@ -24,7 +24,7 @@ from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.catalog import availability as availability_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
-from kdive.services.resource_discovery import register_discovered_resource
+from kdive.services.resources.discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 CTX = RequestContext(principal="user-1", agent_session="s", projects=("proj",))

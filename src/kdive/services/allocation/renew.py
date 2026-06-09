@@ -1,7 +1,7 @@
 """Lease renewal: extend a live allocation's window, re-charged and re-checked (ADR-0036 §3).
 
 ``renew`` is the M1 lease-extension counterpart of
-:func:`kdive.services.allocation_admission.admit`.
+:func:`kdive.services.allocation.admission.admit`.
 It extends a non-terminal allocation's ``lease_expiry`` by a validated ``extend`` window,
 clamped so the lease never reaches past ``now + KDIVE_LEASE_MAX`` (ADR-0036 §3), and bills
 the project for the *added* span only:
@@ -50,8 +50,8 @@ from kdive.domain.lease import LeaseExtension, clamp_extension_hours
 from kdive.domain.models import Allocation
 from kdive.domain.state import AllocationState
 from kdive.security import audit
-from kdive.services import accounting
-from kdive.services.allocation_idempotency import (
+from kdive.services.accounting import ledger as accounting
+from kdive.services.allocation.idempotency import (
     record_key,
     resolve_replay,
     within_budget,

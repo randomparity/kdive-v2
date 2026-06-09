@@ -27,7 +27,7 @@ from kdive.domain.models import Allocation, Budget, Quota, Resource, ResourceKin
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
-from kdive.services.allocation_admission import (
+from kdive.services.allocation.admission import (
     AllocationRequest,
     admit,
 )

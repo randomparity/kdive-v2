@@ -52,7 +52,7 @@ from kdive.mcp.tools.lifecycle.runs.view import get_run
 from kdive.planes import runs as runs_handlers
 from kdive.providers.component_validation import ComponentSourceCapabilities
 from kdive.security.authz.rbac import AuthorizationError, Role
-from kdive.services import run_steps
+from kdive.services.runs import steps as run_steps
 from tests.db_waits import wait_until_any_backend_waiting
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)

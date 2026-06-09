@@ -5,7 +5,7 @@ selection for each queued ``requested`` allocation from its persisted inputs (PC
 cordon-skipping — the host is chosen *at promotion*, never frozen at enqueue) and promotes
 the **oldest *placeable*** request per resource to ``granted``: under
 ``PROJECT → RESOURCE → ALLOCATION`` it replays the **shared** admission gate
-(:func:`kdive.services.allocation_admission.capacity_gate` — no forked grant path), stamps
+(:func:`kdive.services.allocation.admission.capacity_gate` — no forked grant path), stamps
 ``resource_id``, transitions ``requested → granted``, writes the ``reserved`` debit, and
 sets the lease window. Each candidate runs in its own committed transaction so a sibling's
 grant is observed by the next candidate's capacity replay — the per-host cap and the
@@ -44,8 +44,9 @@ from kdive.domain.pcie import MatchOutcome, PCIeClaim
 from kdive.domain.state import AllocationState, ensure_transition
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
-from kdive.services import accounting, pcie_claim
-from kdive.services.allocation_admission import (
+from kdive.services.accounting import ledger as accounting
+from kdive.services.allocation import pcie_claim
+from kdive.services.allocation.admission import (
     AllocationRequest,
     capacity_gate,
     price_window_and_estimate,

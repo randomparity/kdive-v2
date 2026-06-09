@@ -23,8 +23,8 @@ from kdive.mcp.tools.catalog import resources as catalog_resources_tools
 from kdive.mcp.tools.ops import resources as resources_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.authz.rbac import PlatformRole
-from kdive.services.allocation_release import ReleaseOutcome
-from kdive.services.resource_discovery import register_discovered_resource
+from kdive.services.allocation.release import ReleaseOutcome
+from kdive.services.resources.discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 CTX = RequestContext(principal="user-1", agent_session="s", projects=("proj",))
