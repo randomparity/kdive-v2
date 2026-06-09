@@ -43,7 +43,11 @@ baseline and the M1.2 / M1.5 scaffolding standing on local-libvirt is undisturbe
   reachability — direct-TCP gdbstub, in-guest drgn, worker-side vmcore postmortem),
   [ADR-0080](../adr/0080-remote-provisioning-disk-image-profile.md) (issue 2's provisioning
   plane: the disk-image profile section, the domain-XML gdbstub port registry, the
-  storage-pool overlay, and the guest-agent readiness gate). All build
+  storage-pool overlay, and the guest-agent readiness gate),
+  [ADR-0082](../adr/0082-remote-install-in-guest-kernel.md) (issue 5's Install plane: the
+  single allowlisted in-guest helper that pulls+installs the ADR-0081 bundle and writes the
+  method-conditional crashkernel cmdline into the guest grub, plus boot-id-change readiness
+  for a console-less remote target). All build
   on [ADR-0071](../adr/0071-per-kind-provider-runtime-registry.md) (the per-kind
   `ProviderRuntime` registry this plugs into), [ADR-0063](../adr/0063-typed-provider-runtime.md)
   (the typed port seam the package satisfies), [ADR-0012](../adr/0012-secret-backend.md) /
@@ -237,7 +241,7 @@ once it lands; issue 8 is the operator-run proving run.
 | 2 | **Provisioning**: remote disk-image base-OS profile (qemu-guest-agent + virtio-serial channel + gdbstub-enabled domain, with a **per-System gdbstub port allocated + recorded**; drgn + matching vmlinux/debuginfo in the image) + `RemoteLibvirtProvision` define/start over TLS + per-System overlay | 1 | provisioning |
 | 3 | **Artifact channel + presigned-URL + in-target (guest-agent) exec seam**: publish-to-object-store, mint presigned GET/PUT, **register the minted URL for redaction**, run a constrained in-guest command via guest-agent over TLS, with exact-value redaction on the captured transcript | 1 | providers + security |
 | 4 | **Build**: `RemoteLibvirtBuild` — worker `make`, publish vmlinuz+modules to the object store via the issue-3 channel | 3 | build-install |
-| 5 | **Install**: `RemoteLibvirtInstall` — in-guest presigned-GET pull + install + method-conditional crashkernel cmdline into the guest grub + reboot/kexec via the seam (needs a provisioned, running System) | 2, 3, 4 | build-install |
+| 5 | **Install**: `RemoteLibvirtInstall` ([ADR-0082](../adr/0082-remote-install-in-guest-kernel.md)) — in-guest presigned-GET pull + install (one allowlisted helper) + method-conditional crashkernel cmdline into the guest grub + reboot/kexec via the seam, with boot-id-change readiness (needs a provisioned, running System) | 2, 3, 4 | build-install |
 | 6 | **Connect + Debug**: direct-TCP gdbstub gdb-MI attach (worker-pool-ACL'd port) + in-guest drgn-live (guest-agent, worker-composed allowlist) + worker-side vmcore drgn/crash postmortem | 2, 3 | debug |
 | 7 | **Control + Retrieve**: `RemoteLibvirtControl` (power/reset/force-crash over TLS) + `RemoteLibvirtRetrieve` (two-phase: kdump→local, post-reboot agent presigned-PUT → worker reference) | 2, 3 | control-retrieve |
 | 8 | **Operator-run live-stack e2e** against a real remote TLS host (mirrors M1.2), and the **final portability report** from the gate landed in issue 1 (the gate runs per-PR; issue 8 records the milestone-end measurement) | all | core-platform |

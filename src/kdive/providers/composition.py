@@ -65,10 +65,10 @@ from kdive.providers.reaping import InfraReaper, NullReaper, OwnedDomain
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.config import is_remote_libvirt_configured
 from kdive.providers.remote_libvirt.discovery import RemoteLibvirtDiscovery
+from kdive.providers.remote_libvirt.install import RemoteLibvirtInstall
 from kdive.providers.remote_libvirt.planes import (
     UnimplementedConnector,
     UnimplementedController,
-    UnimplementedInstaller,
     UnimplementedIntrospector,
     UnimplementedRetriever,
 )
@@ -217,13 +217,14 @@ def _remote_component_sources() -> ComponentSourceCapabilities:
 def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
     """Build the remote-libvirt ports; buildable without operator config (ADR-0076).
 
-    Construction wires the real provisioning plane (ADR-0080), the discovery
-    registrar, and fail-fast stubs for the planes later M2 issues supply; the
+    Construction wires the real provisioning (ADR-0080), build (ADR-0081), and
+    install/boot (ADR-0082) planes, the discovery registrar, and fail-fast stubs for
+    the connect/debug and control/retrieve planes later M2 issues supply; the
     ``KDIVE_REMOTE_LIBVIRT_*`` config gates discovery/connection/provisioning and is
     read only when an op runs.
     """
     builder = RemoteLibvirtBuild.from_env(secret_registry=secret_registry)
-    installer = UnimplementedInstaller()
+    installer = RemoteLibvirtInstall.from_env(secret_registry=secret_registry)
     retriever = UnimplementedRetriever()
     introspector = UnimplementedIntrospector()
 

@@ -108,3 +108,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0079](0079-remote-live-debug-transport.md) | Remote live-debug transport reachability — direct-TCP gdbstub, in-guest drgn, worker-side vmcore postmortem (M2) | Proposed |
 | [0080](0080-remote-provisioning-disk-image-profile.md) | Remote provisioning: disk-image base-OS profile, domain-XML gdbstub port registry, storage-pool overlay (M2) | Proposed |
 | [0081](0081-remote-build-kernel-bundle.md) | Remote build publishes a single vmlinuz+modules install bundle as `kernel_ref` (M2) | Proposed |
+| [0082](0082-remote-install-in-guest-kernel.md) | Remote install: in-guest kernel install via one allowlisted helper + boot-id readiness (M2) | Proposed |
