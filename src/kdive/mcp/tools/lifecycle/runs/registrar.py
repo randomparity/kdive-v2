@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -29,21 +28,6 @@ from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 
 
-@dataclass(frozen=True, slots=True)
-class _RunRuntimeFactory:
-    pool: AsyncConnectionPool
-    resolver: ProviderResolver
-
-    async def with_run(self, run_id: str, handle) -> ToolResponse:
-        return await with_runtime_for_run(self.pool, self.resolver, run_id, handle)
-
-    def build_handlers(self, runtime: ProviderRuntime) -> _RunBuildHandlers:
-        return _RunBuildHandlers(
-            runtime.component_sources,
-            config_validator=runtime.build_config_validator,
-        )
-
-
 def register(
     app: FastMCP,
     pool: AsyncConnectionPool,
@@ -53,13 +37,19 @@ def register(
     """Register the `runs.*` tools on ``app``, bound to ``pool``."""
     if resolver is None:
         raise RuntimeError("runs registrar requires an injected provider resolver")
-    runtime_factory = _RunRuntimeFactory(pool, resolver)
     _register_runs_get(app, pool)
     _register_runs_create(app, pool)
-    _register_runs_build(app, pool, runtime_factory)
-    _register_runs_complete_build(app, pool, runtime_factory)
+    _register_runs_build(app, pool, resolver)
+    _register_runs_complete_build(app, pool, resolver)
     _register_runs_install(app, pool)
     _register_runs_boot(app, pool)
+
+
+def _build_handlers(runtime: ProviderRuntime) -> _RunBuildHandlers:
+    return _RunBuildHandlers(
+        runtime.component_sources,
+        config_validator=runtime.build_config_validator,
+    )
 
 
 def _register_runs_get(app: FastMCP, pool: AsyncConnectionPool) -> None:
@@ -118,7 +108,7 @@ def _register_runs_create(app: FastMCP, pool: AsyncConnectionPool) -> None:
 
 
 def _register_runs_build(
-    app: FastMCP, pool: AsyncConnectionPool, runtime_factory: _RunRuntimeFactory
+    app: FastMCP, pool: AsyncConnectionPool, resolver: ProviderResolver
 ) -> None:
     @app.tool(
         name="runs.build",
@@ -137,9 +127,11 @@ def _register_runs_build(
         ] = None,
     ) -> ToolResponse:
         """Enqueue the kernel build job for a Run; poll jobs.* for completion. Requires operator."""
-        return await runtime_factory.with_run(
+        return await with_runtime_for_run(
+            pool,
+            resolver,
             run_id,
-            lambda runtime: runtime_factory.build_handlers(runtime).build_run(
+            lambda runtime: _build_handlers(runtime).build_run(
                 pool,
                 current_context(),
                 run_id,
@@ -149,7 +141,7 @@ def _register_runs_build(
 
 
 def _register_runs_complete_build(
-    app: FastMCP, pool: AsyncConnectionPool, runtime_factory: _RunRuntimeFactory
+    app: FastMCP, pool: AsyncConnectionPool, resolver: ProviderResolver
 ) -> None:
     @app.tool(
         name="runs.complete_build",
@@ -175,9 +167,11 @@ def _register_runs_complete_build(
         ] = None,
     ) -> ToolResponse:
         """Validate an external Run's uploads and finalize it to succeeded. Operator only."""
-        return await runtime_factory.with_run(
+        return await with_runtime_for_run(
+            pool,
+            resolver,
             run_id,
-            lambda runtime: runtime_factory.build_handlers(runtime).complete_build(
+            lambda runtime: _build_handlers(runtime).complete_build(
                 pool, current_context(), run_id, build_id=build_id, cmdline=cmdline
             ),
         )

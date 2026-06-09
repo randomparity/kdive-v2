@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -39,47 +38,37 @@ from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 
 
-@dataclass(frozen=True, slots=True)
-class _SystemRuntimeFactory:
-    pool: AsyncConnectionPool
-    resolver: ProviderResolver
-
-    async def with_allocation(self, allocation_id: str, handle) -> ToolResponse:
-        return await with_runtime_for_allocation(self.pool, self.resolver, allocation_id, handle)
-
-    async def with_system(self, system_id: str, handle) -> ToolResponse:
-        return await with_runtime_for_system(self.pool, self.resolver, system_id, handle)
-
-    def provision_handlers(self, runtime: ProviderRuntime) -> _SystemProvisionHandlers:
-        return _SystemProvisionHandlers(runtime.component_sources, self._rootfs_validator(runtime))
-
-    def admin_handlers(self, runtime: ProviderRuntime) -> _SystemAdminHandlers:
-        return _SystemAdminHandlers(runtime.component_sources, self._rootfs_validator(runtime))
-
-    def _rootfs_validator(self, runtime: ProviderRuntime):
-        if runtime.rootfs_validator is None:
-            raise RuntimeError("systems registrar requires an injected rootfs validator")
-        return runtime.rootfs_validator
-
-
 def register(
     app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResolver | None = None
 ) -> None:
     """Register the `systems.*` tools on ``app``, bound to ``pool``."""
     if resolver is None:
         raise RuntimeError("systems registrar requires an injected provider resolver")
-    runtime_factory = _SystemRuntimeFactory(pool, resolver)
-    _register_systems_define(app, pool, runtime_factory)
-    _register_systems_provision(app, pool, runtime_factory)
-    _register_systems_provision_defined(app, pool, runtime_factory)
+    _register_systems_define(app, pool, resolver)
+    _register_systems_provision(app, pool, resolver)
+    _register_systems_provision_defined(app, pool, resolver)
     _register_systems_get(app, pool)
     _register_systems_list(app, pool)
     _register_systems_teardown(app, pool)
-    _register_systems_reprovision(app, pool, runtime_factory)
+    _register_systems_reprovision(app, pool, resolver)
+
+
+def _rootfs_validator(runtime: ProviderRuntime):
+    if runtime.rootfs_validator is None:
+        raise RuntimeError("systems registrar requires an injected rootfs validator")
+    return runtime.rootfs_validator
+
+
+def _provision_handlers(runtime: ProviderRuntime) -> _SystemProvisionHandlers:
+    return _SystemProvisionHandlers(runtime.component_sources, _rootfs_validator(runtime))
+
+
+def _admin_handlers(runtime: ProviderRuntime) -> _SystemAdminHandlers:
+    return _SystemAdminHandlers(runtime.component_sources, _rootfs_validator(runtime))
 
 
 def _register_systems_define(
-    app: FastMCP, pool: AsyncConnectionPool, runtime_factory: _SystemRuntimeFactory
+    app: FastMCP, pool: AsyncConnectionPool, resolver: ProviderResolver
 ) -> None:
     @app.tool(
         name="systems.define",
@@ -99,9 +88,11 @@ def _register_systems_define(
         ],
     ) -> ToolResponse:
         """Create a System in 'defined' for a granted Allocation (upload window). Operator only."""
-        return await runtime_factory.with_allocation(
+        return await with_runtime_for_allocation(
+            pool,
+            resolver,
             allocation_id,
-            lambda runtime: runtime_factory.provision_handlers(runtime).define_system(
+            lambda runtime: _provision_handlers(runtime).define_system(
                 pool,
                 current_context(),
                 allocation_id=allocation_id,
@@ -111,7 +102,7 @@ def _register_systems_define(
 
 
 def _register_systems_provision(
-    app: FastMCP, pool: AsyncConnectionPool, runtime_factory: _SystemRuntimeFactory
+    app: FastMCP, pool: AsyncConnectionPool, resolver: ProviderResolver
 ) -> None:
     @app.tool(
         name="systems.provision",
@@ -128,9 +119,11 @@ def _register_systems_provision(
         ],
     ) -> ToolResponse:
         """Mint a System for a granted Allocation and enqueue provision. Operator only."""
-        return await runtime_factory.with_allocation(
+        return await with_runtime_for_allocation(
+            pool,
+            resolver,
             allocation_id,
-            lambda runtime: runtime_factory.provision_handlers(runtime).provision_system(
+            lambda runtime: _provision_handlers(runtime).provision_system(
                 pool,
                 current_context(),
                 allocation_id=allocation_id,
@@ -140,7 +133,7 @@ def _register_systems_provision(
 
 
 def _register_systems_provision_defined(
-    app: FastMCP, pool: AsyncConnectionPool, runtime_factory: _SystemRuntimeFactory
+    app: FastMCP, pool: AsyncConnectionPool, resolver: ProviderResolver
 ) -> None:
     @app.tool(
         name="systems.provision_defined",
@@ -154,9 +147,11 @@ def _register_systems_provision_defined(
         ],
     ) -> ToolResponse:
         """Admit a DEFINED System after its upload window is complete. Requires operator."""
-        return await runtime_factory.with_system(
+        return await with_runtime_for_system(
+            pool,
+            resolver,
             system_id,
-            lambda runtime: runtime_factory.provision_handlers(runtime).provision_defined_system(
+            lambda runtime: _provision_handlers(runtime).provision_defined_system(
                 pool,
                 current_context(),
                 system_id=system_id,
@@ -237,7 +232,7 @@ def _register_systems_teardown(app: FastMCP, pool: AsyncConnectionPool) -> None:
 
 
 def _register_systems_reprovision(
-    app: FastMCP, pool: AsyncConnectionPool, runtime_factory: _SystemRuntimeFactory
+    app: FastMCP, pool: AsyncConnectionPool, resolver: ProviderResolver
 ) -> None:
     @app.tool(
         name="systems.reprovision",
@@ -252,9 +247,11 @@ def _register_systems_reprovision(
         ],
     ) -> ToolResponse:
         """Enqueue in-place reprovision for a ready System. Requires operator and opt-in."""
-        return await runtime_factory.with_system(
+        return await with_runtime_for_system(
+            pool,
+            resolver,
             system_id,
-            lambda runtime: runtime_factory.admin_handlers(runtime).reprovision_system(
+            lambda runtime: _admin_handlers(runtime).reprovision_system(
                 pool,
                 current_context(),
                 system_id=system_id,
