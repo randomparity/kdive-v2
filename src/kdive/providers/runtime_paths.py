@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
+from kdive.domain.errors import CategorizedError, ErrorCategory
+
 _CONSOLE_DIR = "/var/lib/kdive/console"
 
 
@@ -17,8 +19,18 @@ def console_log_path(system_id: UUID) -> Path:
 
 
 def read_console_log(path: Path) -> bytes:
-    """Read a System console log; absent or unreadable logs are treated as empty."""
+    """Read a System console log; absent logs are treated as empty."""
     try:
         return path.read_bytes()
-    except (FileNotFoundError, PermissionError):
+    except FileNotFoundError:
         return b""
+    except OSError as err:
+        raise CategorizedError(
+            "failed to read console log",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details={
+                "operation": "read_console_log",
+                "path": str(path),
+                "error": type(err).__name__,
+            },
+        ) from err

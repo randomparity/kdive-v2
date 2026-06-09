@@ -2575,6 +2575,49 @@ def test_boot_handler_skips_empty_console(
     asyncio.run(_run())
 
 
+def test_boot_handler_preserves_console_read_failure(
+    migrated_url: str,
+    minio_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runs_handlers, "object_store_from_env", lambda: minio_store)
+
+    def fail_read_console_log(_path: Path) -> bytes:
+        raise CategorizedError(
+            "failed to read console log",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details={
+                "operation": "read_console_log",
+                "path": "/var/lib/kdive/console/example.log",
+                "error": "PermissionError",
+            },
+        )
+
+    monkeypatch.setattr(runs_handlers, "read_console_log", fail_read_console_log)
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_succeeded_run(pool)
+            await _record_install_step(pool, run_id)
+            job = await _enqueue_job(pool, JobKind.BOOT, run_id, "boot")
+            booter = _FakeBooter()
+            async with pool.connection() as conn:
+                with pytest.raises(CategorizedError) as caught:
+                    await runs_handlers.boot_handler(
+                        conn, job, booter, secret_registry=SecretRegistry()
+                    )
+            nsteps = await _count(
+                pool,
+                "SELECT count(*) AS n FROM run_steps WHERE run_id=%s AND step='boot'",
+                (run_id,),
+            )
+        assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+        assert caught.value.details["operation"] == "read_console_log"
+        assert nsteps == 0
+
+    asyncio.run(_run())
+
+
 def test_boot_handler_console_is_readable_via_artifacts(
     migrated_url: str,
     minio_store: Any,

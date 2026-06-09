@@ -248,6 +248,15 @@ async def _capture_console_artifact(
             return None
         stored = await _store_console_artifact(system_id, redacted)
         return await _upsert_console_artifact_row(conn, system_id, stored, redacted)
+    except CategorizedError as exc:
+        if exc.details.get("operation") == "read_console_log":
+            raise
+        _log.warning(
+            "console artifact registration failed for system %s; boot outcome unaffected",
+            system_id,
+            exc_info=True,
+        )
+        return None
     except Exception:
         _log.warning(
             "console artifact registration failed for system %s; boot outcome unaffected",
