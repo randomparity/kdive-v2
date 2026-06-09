@@ -22,6 +22,11 @@ from kdive.domain.cost import Selector
 from kdive.domain.models import Allocation, Budget, Quota, Resource, ResourceKind
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState, ResourceStatus
+from kdive.providers.fault_inject.capabilities import (
+    FAULT_RATE_KEY,
+    MAX_LATENCY_S_KEY,
+    SEED_KEY,
+)
 from tests.db.conftest import migrated_url, pg_conn, postgres_url  # noqa: F401
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -85,6 +90,39 @@ async def seed_resource(conn: psycopg.AsyncConnection, *, cap: object) -> Resour
             cost_class="local",
             status=ResourceStatus.AVAILABLE,
             host_uri="qemu:///system",
+        ),
+    )
+
+
+async def seed_fault_inject_resource(conn: psycopg.AsyncConnection, *, cap: object) -> Resource:
+    """Insert a ``fault-inject`` resource carrying ``cap`` as its concurrent-alloc cap.
+
+    The fault-inject kind is a bookable Resource like any other (spec §Auth/RBAC delta); a
+    fault-inject row only differs from local-libvirt in its ``kind`` and the seeded fault
+    capability keys. A no-fault / no-latency seed (``fault_rate`` / ``max_latency_s`` empty,
+    ``seed=0``) keeps the admission-race tests deterministic — the race is in the locks, not
+    a drawn provider fault. ``cost_class='local'`` reuses the seeded coeff (1.0) so the small
+    selectors price to a 1.0-kcu estimate, making the budget-binding arithmetic exact.
+    """
+    return await RESOURCES.insert(
+        conn,
+        Resource(
+            id=uuid4(),
+            created_at=_DT,
+            updated_at=_DT,
+            kind=ResourceKind.FAULT_INJECT,
+            capabilities={
+                CONCURRENT_ALLOCATION_CAP_KEY: cap,
+                "vcpus": 64,
+                "memory_mb": 65536,
+                SEED_KEY: 0,
+                FAULT_RATE_KEY: {},
+                MAX_LATENCY_S_KEY: {},
+            },
+            pool="fault-inject",
+            cost_class="local",
+            status=ResourceStatus.AVAILABLE,
+            host_uri="fault-inject://local",
         ),
     )
 
