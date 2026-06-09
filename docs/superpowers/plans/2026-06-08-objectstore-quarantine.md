@@ -148,11 +148,15 @@ Add these three tests to the same file:
 def test_artifacts_get_excludes_quarantined(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            sys_id, _, _ = await _seed_system_with_artifacts(pool)
+            sys_id, _, red_id = await _seed_system_with_artifacts(pool)
             quar_id = await _seed_quarantined_artifact(pool, sys_id)
-            resp = await artifacts_get(pool, _ctx(), artifact_id=quar_id)
-        assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
+            quar_resp = await artifacts_get(pool, _ctx(), artifact_id=quar_id)
+            red_resp = await artifacts_get(pool, _ctx(), artifact_id=red_id)
+        # Positive control: a redacted artifact in the same DB state IS served, so the
+        # quarantined error is specifically the sensitivity gate, not a not-found/authz miss.
+        assert red_resp.status == "available"
+        assert quar_resp.status == "error"
+        assert quar_resp.error_category == "configuration_error"
 
     asyncio.run(_run())
 
