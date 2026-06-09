@@ -70,6 +70,16 @@ def test_fault_for_is_pure_repeated_calls_return_the_same_draw() -> None:
     assert _golden_value() == _golden_value()
 
 
+def test_the_largest_possible_digest_stays_strictly_below_one() -> None:
+    # The conversion must be provably < 1.0: dividing a full 64-bit digest by 2**64 rounds
+    # the top values up to exactly 1.0 (float(2**64-1) == float(2**64)), which would let a
+    # fault_rate=1.0 plane evaluate ``1.0 < 1.0`` False and silently not fail. Drive the
+    # all-ones digest (the maximum numerator) through the engine's own scaling constants.
+    max_numerator = (1 << (8 * engine_module._DIGEST_BYTES)) - 1
+    draw = (max_numerator >> engine_module._DROPPED_BITS) / engine_module._UNIT_SCALE
+    assert draw < 1.0
+
+
 def test_each_facet_is_an_independent_draw() -> None:
     draws = {
         facet: fault_for(
