@@ -8,9 +8,12 @@ from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
+from kdive.domain.errors import CategorizedError
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
+from kdive.mcp.tools._common import as_uuid as _as_uuid
+from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers as _RunBuildHandlers
 from kdive.mcp.tools.lifecycle.runs.create import (
     RunCreateRequest as _RunCreateRequest,
@@ -23,6 +26,7 @@ from kdive.mcp.tools.lifecycle.runs.steps import boot_run as _boot_run
 from kdive.mcp.tools.lifecycle.runs.steps import install_run as _install_run
 from kdive.mcp.tools.lifecycle.runs.view import get_run as _get_run
 from kdive.profiles.types import BuildProfileInput, ExpectedBootFailureInput
+from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 
 
@@ -30,16 +34,27 @@ def register(
     app: FastMCP,
     pool: AsyncConnectionPool,
     *,
-    provider_runtime: ProviderRuntime | None = None,
+    resolver: ProviderResolver | None = None,
 ) -> None:
     """Register the `runs.*` tools on ``app``, bound to ``pool``."""
-    if provider_runtime is None:
-        raise RuntimeError("runs registrar requires an injected provider runtime")
-    runtime = provider_runtime
-    build_handlers = _RunBuildHandlers(
-        runtime.component_sources,
-        config_validator=runtime.build_config_validator,
-    )
+    if resolver is None:
+        raise RuntimeError("runs registrar requires an injected provider resolver")
+
+    async def _runtime_for_run(run_id: str) -> ProviderRuntime | ToolResponse:
+        uid = _as_uuid(run_id)
+        if uid is None:
+            return _config_error(run_id)
+        async with pool.connection() as conn:
+            try:
+                return await resolver.runtime_for_run(conn, uid)
+            except CategorizedError as exc:
+                return ToolResponse.failure(run_id, exc.category)
+
+    def _build_handlers(runtime: ProviderRuntime) -> _RunBuildHandlers:
+        return _RunBuildHandlers(
+            runtime.component_sources,
+            config_validator=runtime.build_config_validator,
+        )
 
     @app.tool(
         name="runs.get",
@@ -141,7 +156,10 @@ def register(
         ] = None,
     ) -> ToolResponse:
         """Enqueue the kernel build job for a Run; poll jobs.* for completion. Requires operator."""
-        return await build_handlers.build_run(
+        runtime = await _runtime_for_run(run_id)
+        if isinstance(runtime, ToolResponse):
+            return runtime
+        return await _build_handlers(runtime).build_run(
             pool,
             current_context(),
             run_id,
@@ -172,7 +190,10 @@ def register(
         ] = None,
     ) -> ToolResponse:
         """Validate an external Run's uploads and finalize it to succeeded. Operator only."""
-        return await build_handlers.complete_build(
+        runtime = await _runtime_for_run(run_id)
+        if isinstance(runtime, ToolResponse):
+            return runtime
+        return await _build_handlers(runtime).complete_build(
             pool, current_context(), run_id, build_id=build_id, cmdline=cmdline
         )
 

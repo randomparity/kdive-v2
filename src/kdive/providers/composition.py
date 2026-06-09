@@ -174,6 +174,7 @@ def build_faultinject_runtime(
         attach_seam=fault_inject_attach_seam,
         debug_engine=FaultInjectDebugEngine(),
         component_sources=_faultinject_component_sources(),
+        rootfs_validator=lambda _rootfs: None,
     )
 
 

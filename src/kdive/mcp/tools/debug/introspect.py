@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Annotated
+from uuid import UUID
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
@@ -29,6 +30,7 @@ from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.providers.ports import LiveIntrospector, VmcoreIntrospector
+from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
@@ -75,9 +77,22 @@ async def introspect_from_vmcore(
         )
 
 
+async def _runtime_for_run(
+    pool: AsyncConnectionPool, resolver: ProviderResolver, run_id: str
+) -> ProviderRuntime | ToolResponse:
+    uid = _as_uuid(run_id)
+    if uid is None:
+        return _config_error(run_id)
+    async with pool.connection() as conn:
+        try:
+            return await resolver.runtime_for_run(conn, uid)
+        except CategorizedError as exc:
+            return ToolResponse.failure(run_id, exc.category)
+
+
 async def _live_ssh_session(
     conn: AsyncConnection, ctx: RequestContext, session_id: str
-) -> tuple[str, str] | ToolResponse:
+) -> tuple[str, str, UUID] | ToolResponse:
     """Resolve a `live` ssh DebugSession, returning its (project, transport_handle), or a failure.
 
     Gates on UUID shape, project scope, ``operator`` role, ``live`` state, and an ``ssh``
@@ -94,7 +109,7 @@ async def _live_ssh_session(
         return _config_error(session_id)
     if session.transport_handle is None:
         return _config_error(session_id)
-    return session.project, session.transport_handle
+    return session.project, session.transport_handle, uid
 
 
 async def introspect_run(
@@ -119,7 +134,7 @@ async def introspect_run(
             resolved = await _live_ssh_session(conn, ctx, session_id)
         if isinstance(resolved, ToolResponse):
             return resolved
-        _project, transport_handle = resolved
+        _project, transport_handle, _session_uid = resolved
         try:
             output = await asyncio.to_thread(
                 introspector.introspect_live, transport_handle=transport_handle, helper=helper
@@ -141,14 +156,11 @@ async def introspect_run(
 
 
 def register(
-    app: FastMCP, pool: AsyncConnectionPool, *, provider_runtime: ProviderRuntime | None = None
+    app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResolver | None = None
 ) -> None:
     """Register the `introspect.from_vmcore` and `introspect.run` tools on ``app``."""
-    if provider_runtime is None:
-        raise RuntimeError("introspect registrar requires an injected provider runtime")
-    runtime = provider_runtime
-    introspector = runtime.vmcore_introspector
-    live_introspector = runtime.live_introspector
+    if resolver is None:
+        raise RuntimeError("introspect registrar requires an injected provider resolver")
 
     @app.tool(
         name="introspect.from_vmcore",
@@ -161,8 +173,11 @@ def register(
         ],
     ) -> ToolResponse:
         """Run offline drgn introspection over a Run's captured core; returns redacted report."""
+        runtime = await _runtime_for_run(pool, resolver, run_id)
+        if isinstance(runtime, ToolResponse):
+            return runtime
         return await introspect_from_vmcore(
-            pool, current_context(), run_id=run_id, introspector=introspector
+            pool, current_context(), run_id=run_id, introspector=runtime.vmcore_introspector
         )
 
     @app.tool(
@@ -178,10 +193,20 @@ def register(
         ],
     ) -> ToolResponse:
         """Run live drgn introspection over a live ssh DebugSession. Requires operator."""
+        async with pool.connection() as conn:
+            resolved = await _live_ssh_session(conn, current_context(), session_id)
+        if isinstance(resolved, ToolResponse):
+            return resolved
+        _project, _transport_handle, session_uid = resolved
+        async with pool.connection() as conn:
+            try:
+                runtime = await resolver.runtime_for_session(conn, session_uid)
+            except CategorizedError as exc:
+                return ToolResponse.failure(session_id, exc.category)
         return await introspect_run(
             pool,
             current_context(),
             session_id=session_id,
             helper=helper,
-            introspector=live_introspector,
+            introspector=runtime.live_introspector,
         )

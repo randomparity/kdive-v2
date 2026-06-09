@@ -34,6 +34,19 @@ _KIND_FOR_RUN: LiteralString = (
     "JOIN resources r ON r.id = a.resource_id "
     "WHERE rn.id = %s"
 )
+_KIND_FOR_ALLOCATION: LiteralString = (
+    "SELECT r.kind AS kind FROM allocations a "
+    "JOIN resources r ON r.id = a.resource_id "
+    "WHERE a.id = %s"
+)
+_KIND_FOR_SESSION: LiteralString = (
+    "SELECT res.kind AS kind FROM debug_sessions ds "
+    "JOIN runs rn ON rn.id = ds.run_id "
+    "JOIN systems s ON s.id = rn.system_id "
+    "JOIN allocations a ON a.id = s.allocation_id "
+    "JOIN resources res ON res.id = a.resource_id "
+    "WHERE ds.id = %s"
+)
 
 
 class ProviderResolver:
@@ -83,6 +96,15 @@ class ProviderResolver:
 
     async def runtime_for_run(self, conn: AsyncConnection, run_id: UUID) -> ProviderRuntime:
         return self.resolve(await self._kind(conn, _KIND_FOR_RUN, run_id, "run"))
+
+    async def runtime_for_allocation(
+        self, conn: AsyncConnection, allocation_id: UUID
+    ) -> ProviderRuntime:
+        kind = await self._kind(conn, _KIND_FOR_ALLOCATION, allocation_id, "allocation")
+        return self.resolve(kind)
+
+    async def runtime_for_session(self, conn: AsyncConnection, session_id: UUID) -> ProviderRuntime:
+        return self.resolve(await self._kind(conn, _KIND_FOR_SESSION, session_id, "session"))
 
     async def _kind(
         self, conn: AsyncConnection, sql: LiteralString, object_id: UUID, object_kind: str

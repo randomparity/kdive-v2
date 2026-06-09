@@ -34,7 +34,7 @@ from pydantic import Field
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import DEBUG_SESSIONS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import DebugSession, Run, System
+from kdive.domain.models import DebugSession, ResourceKind, Run, System
 from kdive.domain.state import DebugSessionState, RunState, SystemState
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
@@ -45,7 +45,7 @@ from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.debug.ops import DebugEngineRuntime, register_debug_ops
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.ports import Connector, SystemHandle, TransportHandle
-from kdive.providers.runtime import ProviderRuntime
+from kdive.providers.resolver import ProviderResolver
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
@@ -77,6 +77,7 @@ class _AttachRequest:
     system: System
     session_id: UUID
     transport: str
+    connector: Connector
 
 
 def _secret_scope(session_id: UUID) -> str:
@@ -148,13 +149,13 @@ class DebugSessionHandlers:
 
     def __init__(
         self,
-        connector: Connector,
+        resolver: ProviderResolver | Connector,
         *,
         runtime: DebugEngineRuntime | None = None,
         secret_backend_factory: Callable[[UUID], SecretBackend] | None = None,
         secret_registry: SecretRegistry | None = None,
     ) -> None:
-        self._connector = connector
+        self._resolver = resolver
         self._runtime = runtime
         self._secret_backend_factory = secret_backend_factory
         self._secret_registry = (
@@ -188,7 +189,7 @@ class DebugSessionHandlers:
                 request = await self._prepare_attach_request(conn, ctx, uid, transport, session_id)
             if isinstance(request, ToolResponse):
                 return request
-            opened = await _open_transport(self._connector, request.system, request.transport)
+            opened = await _open_transport(request.connector, request.system, request.transport)
             _release_failed_attach_secret(self._secret_registry, secret_scope, opened)
             if isinstance(opened, ToolResponse):
                 return opened
@@ -199,7 +200,7 @@ class DebugSessionHandlers:
                     request.run,
                     request.system,
                     opened,
-                    self._connector,
+                    request.connector,
                     request.transport,
                     request.session_id,
                 )
@@ -225,7 +226,21 @@ class DebugSessionHandlers:
         resolved = _resolve_credential(guard, transport, backend)
         if isinstance(resolved, ToolResponse):
             return resolved
-        return _AttachRequest(run=run, system=guard, session_id=session_id, transport=transport)
+        if isinstance(self._resolver, ProviderResolver):
+            try:
+                runtime = await self._resolver.runtime_for_run(conn, run.id)
+            except CategorizedError as exc:
+                return ToolResponse.failure(str(run.id), exc.category)
+            connector = runtime.connector
+        else:
+            connector = self._resolver
+        return _AttachRequest(
+            run=run,
+            system=guard,
+            session_id=session_id,
+            transport=transport,
+            connector=connector,
+        )
 
     def _credential_backend(self, session_id: UUID, transport: str) -> SecretBackend | None:
         if transport != _SSH or self._secret_backend_factory is None:
@@ -258,7 +273,15 @@ class DebugSessionHandlers:
                 if resolved is None:
                     return _config_error(session_id)
                 _, system_id = resolved
-                envelope = await _detach_locked(conn, ctx, uid, system_id, self._connector)
+                if isinstance(self._resolver, ProviderResolver):
+                    try:
+                        runtime = await self._resolver.runtime_for_session(conn, uid)
+                    except CategorizedError as exc:
+                        return ToolResponse.failure(session_id, exc.category)
+                    connector = runtime.connector
+                else:
+                    connector = self._resolver
+                envelope = await _detach_locked(conn, ctx, uid, system_id, connector)
             if self._runtime is not None:
                 async with self._runtime.lock_for(session_id):
                     self._runtime.reap(session_id)
@@ -467,7 +490,7 @@ def register(
     app: FastMCP,
     pool: AsyncConnectionPool,
     *,
-    provider_runtime: ProviderRuntime | None = None,
+    resolver: ProviderResolver | None = None,
     secret_registry: SecretRegistry | None = None,
 ) -> None:
     """Register the `debug.*` tools on ``app``, bound to ``pool``.
@@ -478,16 +501,15 @@ def register(
     locks + the `live_vm`-gated attach seam); its seven tools register here too, so `app.py` is
     untouched. `end_session` reaps the lazy engine via the shared runtime.
     """
-    if provider_runtime is None:
-        raise RuntimeError("debug registrar requires an injected provider runtime")
-    provider = provider_runtime
-    connector: Connector = provider.connector
+    if resolver is None:
+        raise RuntimeError("debug registrar requires an injected provider resolver")
+    provider = resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
     attach = provider.attach_seam
     engine = provider.debug_engine
     runtime = DebugEngineRuntime(engine=engine, attach=attach)
     registry = PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
     handlers = DebugSessionHandlers(
-        connector,
+        resolver,
         runtime=runtime,
         secret_backend_factory=lambda session_id: secret_backend_from_env(
             registry=registry, scope=_secret_scope(session_id)

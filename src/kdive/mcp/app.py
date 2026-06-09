@@ -16,7 +16,6 @@ from fastmcp import FastMCP
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.domain.models import ResourceKind
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import build_verifier
 from kdive.mcp.middleware import DenialAuditMiddleware
@@ -65,9 +64,7 @@ def _plain(register: Callable[[FastMCP, AsyncConnectionPool], None]) -> PlaneReg
     return _register
 
 
-# Tool seam: each plane exposes register(app, pool); provider-aware planes receive the resolver
-# and resolve the local-libvirt runtime for their registration-time facets (per-target MCP
-# resolution lands with the second provider kind, M1.5 issues 2/4).
+# Tool seam: each plane exposes register(app, pool); provider-aware planes receive the resolver.
 _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _plain(jobs.register),
     _plain(resources.register),
@@ -80,27 +77,19 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _plain(ops_reconcile_tools.register),
     _plain(allocations.register),
     _plain(ops_breakglass_tools.register),
-    lambda app, pool, resolver, registry: systems_tools.register(
-        app, pool, provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
-    ),
+    lambda app, pool, resolver, registry: systems_tools.register(app, pool, resolver=resolver),
     _plain(investigations.register),
-    lambda app, pool, resolver, registry: runs_tools.register(
-        app, pool, provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
-    ),
+    lambda app, pool, resolver, registry: runs_tools.register(app, pool, resolver=resolver),
     _plain(control_tools.register),
     _plain(artifacts.register),
-    lambda app, pool, resolver, registry: vmcore_tools.register(
-        app, pool, provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
-    ),
+    lambda app, pool, resolver, registry: vmcore_tools.register(app, pool, resolver=resolver),
     lambda app, pool, resolver, registry: debug_tools.register(
         app,
         pool,
-        provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT),
+        resolver=resolver,
         secret_registry=registry,
     ),
-    lambda app, pool, resolver, registry: introspect.register(
-        app, pool, provider_runtime=resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
-    ),
+    lambda app, pool, resolver, registry: introspect.register(app, pool, resolver=resolver),
     _plain(ops_queue_tools.register),
     _plain(ops_tuning_tools.register),
     _plain(audit_tools.register),

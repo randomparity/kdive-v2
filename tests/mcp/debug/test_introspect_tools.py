@@ -15,11 +15,12 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import DEBUG_SESSIONS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import DebugSession
+from kdive.domain.models import DebugSession, ResourceKind
 from kdive.domain.state import DebugSessionState
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.debug import introspect as introspect_tools
 from kdive.providers.ports import IntrospectOutput
+from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.authz.rbac import AuthorizationError, Role
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
@@ -251,7 +252,8 @@ def test_register_adds_the_tool() -> None:
                 live_introspector=_FakeLiveIntrospector(),
             ),
         )
-        introspect_tools.register(app, pool, provider_runtime=runtime)
+        resolver = ProviderResolver({ResourceKind.LOCAL_LIBVIRT: runtime})
+        introspect_tools.register(app, pool, resolver=resolver)
         tools = await app.list_tools()
         names = {t.name for t in tools}
         assert "introspect.from_vmcore" in names

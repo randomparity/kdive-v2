@@ -44,6 +44,7 @@ from kdive.mcp.tools._common import (
 )
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.providers.ports import CrashPostmortem
+from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.artifacts.crash_commands import crash_command_rejection_reason
 from kdive.security.authz.context import RequestContext
@@ -103,8 +104,9 @@ _VMCORE_METHODS: frozenset[CaptureMethod] = frozenset(
 class VmcoreHandlers:
     """vmcore/postmortem MCP handlers with provider seams bound at construction."""
 
-    supported_methods: frozenset[CaptureMethod]
-    crash: CrashPostmortem
+    resolver: ProviderResolver | None = None
+    supported_methods: frozenset[CaptureMethod] | None = None
+    crash: CrashPostmortem | None = None
 
     async def fetch_vmcore(
         self,
@@ -114,12 +116,19 @@ class VmcoreHandlers:
         system_id: str,
         method: str = "host_dump",
     ) -> ToolResponse:
+        if self.resolver is None:
+            supported_methods = self.supported_methods or frozenset()
+        else:
+            runtime = await _runtime_for_system(pool, self.resolver, system_id)
+            if isinstance(runtime, ToolResponse):
+                return runtime
+            supported_methods = runtime.supported_capture_methods
         return await _fetch_vmcore(
             pool,
             ctx,
             system_id=system_id,
             method=method,
-            supported_methods=self.supported_methods,
+            supported_methods=supported_methods,
         )
 
     async def postmortem_crash(
@@ -130,14 +139,56 @@ class VmcoreHandlers:
         run_id: str,
         commands: list[str],
     ) -> ToolResponse:
-        return await _postmortem_crash(
-            pool, ctx, run_id=run_id, commands=commands, crash=self.crash
-        )
+        if self.resolver is None:
+            if self.crash is None:
+                raise RuntimeError("vmcore handler requires crash port or resolver")
+            crash = self.crash
+        else:
+            runtime = await _runtime_for_run(pool, self.resolver, run_id)
+            if isinstance(runtime, ToolResponse):
+                return runtime
+            crash = runtime.crash_postmortem
+        return await _postmortem_crash(pool, ctx, run_id=run_id, commands=commands, crash=crash)
 
     async def postmortem_triage(
         self, pool: AsyncConnectionPool, ctx: RequestContext, *, run_id: str
     ) -> ToolResponse:
-        return await _postmortem_triage(pool, ctx, run_id=run_id, crash=self.crash)
+        if self.resolver is None:
+            if self.crash is None:
+                raise RuntimeError("vmcore handler requires crash port or resolver")
+            crash = self.crash
+        else:
+            runtime = await _runtime_for_run(pool, self.resolver, run_id)
+            if isinstance(runtime, ToolResponse):
+                return runtime
+            crash = runtime.crash_postmortem
+        return await _postmortem_triage(pool, ctx, run_id=run_id, crash=crash)
+
+
+async def _runtime_for_system(
+    pool: AsyncConnectionPool, resolver: ProviderResolver, system_id: str
+) -> ProviderRuntime | ToolResponse:
+    uid = _as_uuid(system_id)
+    if uid is None:
+        return _config_error(system_id)
+    async with pool.connection() as conn:
+        try:
+            return await resolver.runtime_for_system(conn, uid)
+        except CategorizedError as exc:
+            return ToolResponse.failure(system_id, exc.category)
+
+
+async def _runtime_for_run(
+    pool: AsyncConnectionPool, resolver: ProviderResolver, run_id: str
+) -> ProviderRuntime | ToolResponse:
+    uid = _as_uuid(run_id)
+    if uid is None:
+        return _config_error(run_id)
+    async with pool.connection() as conn:
+        try:
+            return await resolver.runtime_for_run(conn, uid)
+        except CategorizedError as exc:
+            return ToolResponse.failure(run_id, exc.category)
 
 
 async def _fetch_vmcore(
@@ -273,16 +324,12 @@ async def _postmortem_triage(
 
 
 def register(
-    app: FastMCP, pool: AsyncConnectionPool, *, provider_runtime: ProviderRuntime | None = None
+    app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResolver | None = None
 ) -> None:
     """Register the `vmcore.*` / `postmortem.*` tools on ``app``, bound to ``pool``."""
-    if provider_runtime is None:
-        raise RuntimeError("vmcore registrar requires an injected provider runtime")
-    runtime = provider_runtime
-    handlers = VmcoreHandlers(
-        supported_methods=runtime.supported_capture_methods,
-        crash=runtime.crash_postmortem,
-    )
+    if resolver is None:
+        raise RuntimeError("vmcore registrar requires an injected provider resolver")
+    handlers = VmcoreHandlers(resolver)
 
     @app.tool(
         name="vmcore.fetch",

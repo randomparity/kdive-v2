@@ -21,11 +21,15 @@ from kdive.mcp.app import build_app
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.catalog import resources as resources_tools
 from kdive.mcp.tools.lifecycle import allocations as allocations_tools
+from kdive.mcp.tools.lifecycle.systems import registrar as systems_tools
+from kdive.providers import composition
+from kdive.providers.fault_inject.discovery import FaultInjectDiscovery
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole, Role
 from kdive.services.resource_discovery import register_discovered_resource
 from tests.mcp.conftest import AUDIENCE, ISSUER, make_keypair
+from tests.mcp.systems_support import provisioning_profile
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -68,6 +72,40 @@ async def _seed_resource_and_limits(pool: AsyncConnectionPool) -> str:
             discovery.list_resources()[0],
             pool="local-libvirt",
             cost_class="local",
+        )
+        await BUDGETS.upsert(
+            conn,
+            Budget(
+                project="proj",
+                limit_kcu=Decimal("1000000"),
+                spent_kcu=Decimal(0),
+                updated_at=_DT,
+            ),
+        )
+        await QUOTAS.upsert(
+            conn,
+            Quota(
+                project="proj",
+                max_concurrent_allocations=10,
+                max_concurrent_systems=10,
+                updated_at=_DT,
+            ),
+        )
+    return str(resource.id)
+
+
+async def _seed_fault_inject_resource_and_limits(pool: AsyncConnectionPool) -> str:
+    discovery = FaultInjectDiscovery.from_env()
+    async with pool.connection() as conn:
+        resource = await register_discovered_resource(
+            conn,
+            discovery.list_resources()[0],
+            pool="fault-inject",
+            cost_class="local",
+        )
+        await conn.execute(
+            "UPDATE resources SET capabilities = capabilities || %s::jsonb WHERE id = %s",
+            ('{"vcpus": 8, "memory_mb": 8192}', resource.id),
         )
         await BUDGETS.upsert(
             conn,
@@ -156,8 +194,44 @@ def test_lifecycle_allocation_wrappers_roundtrip_through_fastmcp(
         return granted, fetched
 
     granted, fetched = asyncio.run(_run())
-    assert granted.status == "granted"
+    assert granted.status == "granted", granted
     assert granted.data["project"] == "proj"
     assert fetched.object_id == granted.object_id
     assert fetched.status == "granted"
     assert fetched.data["project"] == "proj"
+
+
+def test_systems_provision_resolves_fault_inject_runtime(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> tuple[ToolResponse, ToolResponse]:
+        async with _pool(migrated_url) as pool:
+            resource_id = await _seed_fault_inject_resource_and_limits(pool)
+            monkeypatch.setattr(allocations_tools, "current_context", _ctx)
+            monkeypatch.setattr(systems_tools, "current_context", _ctx)
+            resolver = composition.build_provider_resolver(enable_fault_inject=True)
+            app = build_app(pool, verifier=_verifier(), provider_resolver=resolver)
+            async with Client(app) as client:
+                granted = await _call_tool(
+                    client,
+                    "allocations.request",
+                    {
+                        "project": "proj",
+                        "request": {
+                            "vcpus": 4,
+                            "memory_gb": 4,
+                            "disk_gb": 20,
+                            "resource": {"mode": "id", "resource_id": resource_id},
+                        },
+                    },
+                )
+                provisioned = await _call_tool(
+                    client,
+                    "systems.provision",
+                    {"allocation_id": granted.object_id, "profile": provisioning_profile()},
+                )
+        return granted, provisioned
+
+    granted, provisioned = asyncio.run(_run())
+    assert granted.status == "granted", granted
+    assert provisioned.status == "queued", provisioned
