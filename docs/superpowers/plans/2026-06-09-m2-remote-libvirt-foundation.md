@@ -40,7 +40,8 @@
 - pkipath file names are libvirt's fixed lookup names: `clientcert.pem`, `clientkey.pem`, `cacert.pem`.
 - Stub planes raise `CategorizedError` with `ErrorCategory.MISSING_DEPENDENCY` (the ports' documented category for unavailable provider seams). No new category (spec §Error taxonomy).
 - Cost class reuses the seeded `local` coefficient (a `remote` seed row would be new core DDL beyond migration 0020 — the gate firing). Same precedent as fault-inject.
-- `supported_capture_methods = frozenset({CaptureMethod.KDUMP, CaptureMethod.GDBSTUB})` — ADR-0078's two-phase kdump is the vmcore path; gdbstub is the debug tier. Later issues may widen.
+- `supported_capture_methods = frozenset()` — the skeleton has no capture plane, so it advertises none: `mcp/tools/lifecycle/vmcore.py:106` admits capture requests against this set, and admitting one that dies in a stub Retriever is worse than a clean unsupported-method rejection (kdump is also platform-wide unsupported until #115 — see `tests/providers/test_capture_capabilities.py`). M2 issue 7 (Retrieve) widens the set with the real two-phase kdump path (ADR-0078).
+- Env config is **authoritative** for remote connections in M2; the capabilities row (`connect_uri`, cert refs) is **advertisory**, written insert-if-absent and refreshed only by re-registration (same staleness posture as fault-inject, `composition.py:277-279`). Later issues must not read connection config from the row without an explicit upsert design.
 - pkipath cleanup failure on an otherwise-successful op: log at error level, do not raise over an in-flight exception (raising would replace the op's typed error; the exposure is bounded by worker-local storage per ADR-0077).
 - ADR statuses stay `Proposed` (ADR-0071 precedent: implementation does not flip the field).
 - No PCIe enumeration and no `list_owned` reaping for remote in this issue — both need domains/host introspection that issue 2 creates.
@@ -463,6 +464,22 @@ def test_pkipath_cleans_up_when_body_raises(tmp_path: Path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
+def test_pkipath_cleanup_failure_is_logged_and_never_masks_the_op_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The pinned behavior: a deletion failure is logged at error level and must not
+    # replace the op's in-flight typed error (nor break the success path).
+    def _refuse(path: object, *args: object, **kwargs: object) -> None:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("kdive.providers.remote_libvirt.transport.shutil.rmtree", _refuse)
+    with caplog.at_level("ERROR"):
+        with pytest.raises(RuntimeError, match="op error"):  # the op error survives
+            with materialized_pkipath(_RecordingBackend(), _REFS, base_dir=tmp_path):
+                raise RuntimeError("op error")
+    assert any("pkipath" in record.message for record in caplog.records)
+
+
 class _FakeConn:
     def __init__(self) -> None:
         self.closed = False
@@ -816,6 +833,10 @@ touch a real host; the real ``libvirt.open`` adapter is the production opener) a
 advertises arch/cpu/memory, the gdbstub transport, the connect URI + TLS secret refs,
 and the per-host concurrent-Allocation cap into ``resources.capabilities``.
 
+The env config is **authoritative** for connections; the capabilities row is
+advertisory (insert-if-absent, refreshed only by re-registration). Later issues must
+not read connection config from the row without an explicit upsert design.
+
 The XML parse is duplicated from local-libvirt deliberately: no shared
 ``libvirt_common`` layer (ADR-0076 — local-libvirt is headed for removal).
 """
@@ -1068,6 +1089,13 @@ def test_remote_runtime_buildable_without_operator_config(
     # Buildability gates only construction (ADR-0076); config gates discovery/connection.
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
     assert runtime.discovery_registrar is not None
+
+
+def test_remote_runtime_advertises_no_capture_methods_yet() -> None:
+    # vmcore.get admits capture requests against this set; the skeleton has no capture
+    # plane, so it must advertise none (the M2 Retrieve issue widens it).
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+    assert runtime.supported_capture_methods == frozenset()
 ```
 
 - [ ] **Step 2: Run to verify failure** — `uv run python -m pytest tests/providers/test_composition.py -q` — Expected: FAIL (`build_remote_runtime` missing); db tests fail on the CHECK set.
@@ -1152,7 +1180,10 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
         crash_postmortem=retriever,
         vmcore_introspector=introspector,
         live_introspector=introspector,
-        supported_capture_methods=frozenset({CaptureMethod.KDUMP, CaptureMethod.GDBSTUB}),
+        # No capture plane yet: advertise nothing rather than admit a capture request
+        # that dies in a stub (vmcore.get validates against this set). The M2 Retrieve
+        # issue widens it with the real two-phase kdump path (ADR-0078).
+        supported_capture_methods=frozenset(),
         discovery_registrar=register_remote_host,
         component_sources=_remote_component_sources(),
     )
