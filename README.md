@@ -62,6 +62,9 @@ Test environments
   - a **KVM / nested-virtualization-capable host** with libvirt installed and running;
   - a **kdump-enabled guest image** — one built with a `crashkernel=` reservation and
     the kdump capture service, so a forced crash produces a vmcore.
+  - **host kernel-debugging tools** for the gated debug surfaces, including operator-
+    provided `drgn`. `drgn` is intentionally not imported during normal service startup;
+    the real drgn seams stay disabled until the live runner injects them.
 
   These do **not** run on stock GitHub-hosted runners. CI marks `live_vm` as a
   separate, manually-triggered job on a self-hosted KVM runner.

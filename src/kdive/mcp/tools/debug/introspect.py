@@ -6,6 +6,10 @@ the Run's `debuginfo_ref` (the build-plane `vmlinux`), the build plane's recorde
 `mcp.tools._vmcore_targets` helper. It then runs the `VmcoreIntrospector` port and returns the
 **already-redacted** report (the port is the single redaction boundary, ADR-0033 §6) as
 structured data in `data["report"]`.
+
+Real drgn is an operator-provided live-host prerequisite. Normal service startup leaves the
+drgn-backed seams disabled; the live runner injects them only on hosts prepared for
+``live_vm`` debugging.
 """
 
 from __future__ import annotations
@@ -53,6 +57,8 @@ async def introspect_from_vmcore(
     Requires the viewer role. A Run with a null `debuginfo_ref`, no recorded `build` step, or a
     System with no captured core is a `configuration_error`; a provenance mismatch or a drgn
     open/decode fault surfaces as the port's typed `CategorizedError` category, never a 500.
+    Off a prepared live host, the provider seam reports ``missing_dependency`` instead of
+    importing drgn.
     """
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
@@ -113,6 +119,8 @@ async def introspect_run(
     in-tree helpers — there is no caller-supplied drgn script. The port is the single redaction
     boundary, so the returned report is already masked; the raw drgn-over-ssh transcript is
     ``sensitive`` and is never returned (the response only advertises that, ADR-0039 §2/§3).
+    Off a prepared live host, the provider seam reports ``missing_dependency`` instead of
+    importing drgn.
     """
     if helper not in _LIVE_HELPERS:
         return _config_error(session_id)
@@ -156,7 +164,12 @@ def register(
     )
     async def introspect_from_vmcore_tool(
         run_id: Annotated[
-            str, Field(description="The Run whose captured core to introspect with drgn.")
+            str,
+            Field(
+                description=(
+                    "The Run whose captured core to introspect with operator-provided drgn."
+                )
+            ),
         ],
     ) -> ToolResponse:
         """Run offline drgn introspection over a Run's captured core; returns redacted report."""
@@ -181,7 +194,12 @@ def register(
         session_id: Annotated[str, Field(description="A live ssh DebugSession to introspect.")],
         helper: Annotated[
             str,
-            Field(description="In-tree drgn helper to run: tasks, modules, or sysinfo."),
+            Field(
+                description=(
+                    "In-tree drgn helper to run with operator-provided drgn: tasks, modules, "
+                    "or sysinfo."
+                )
+            ),
         ],
     ) -> ToolResponse:
         """Run live drgn introspection over a live ssh DebugSession. Requires operator."""

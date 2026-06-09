@@ -7,7 +7,9 @@ object store, verifying the core's build-id against the Run's recorded build-id
 (tasks, modules, sysinfo). The drgn open/helper path is `live_vm`-gated, so the
 orchestration, provenance, dispatch, byte-cap, and redaction are unit-tested with a fake
 `_Program`. The assembled report is `Redactor`-scrubbed **inside the port** — the port is
-the single redaction boundary, so any later persistence is of already-redacted text.
+the single redaction boundary, so any later persistence is of already-redacted text. The
+real drgn package is an operator-provided live-host prerequisite, not a normal service
+dependency; these ports stay disabled until the live runner injects drgn-backed seams.
 """
 
 from __future__ import annotations
@@ -192,7 +194,7 @@ class LocalLibvirtVmcoreIntrospect:
 
         The drgn seams are left ``None``, so ``from_vmcore`` raises ``MISSING_DEPENDENCY``
         up front off-gate — it never reads the store or imports drgn. The ``live_vm`` runner
-        constructs the port with the real seams injected.
+        constructs the port with real seams on a host where the operator has provided drgn.
         """
         return cls(
             fetch_object=_real_fetch_object,
@@ -343,8 +345,9 @@ class LocalLibvirtLiveIntrospect:
 
     The drgn seams (``open_live_program``/``run_helper``) are ``None`` off-gate; ``run`` then
     raises ``MISSING_DEPENDENCY``, mirroring the offline port's seam guard. The ``live_vm``
-    runner injects the real ``open_live_program`` (which opens drgn against the live kernel
-    over the already-authenticated transport).
+    runner injects the real ``open_live_program`` on a host where the operator has provided
+    drgn; that seam opens drgn against the live kernel over the already-authenticated
+    transport.
     """
 
     def __init__(
