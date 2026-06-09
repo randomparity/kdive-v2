@@ -55,11 +55,13 @@ class ResourceKind(StrEnum):
 
     Production defaults to ``LOCAL_LIBVIRT``. ``FAULT_INJECT`` is a concrete opt-in mock
     provider behind the same ``ProviderResolver`` seam and is absent from default
-    production composition.
+    production composition. ``REMOTE_LIBVIRT`` (ADR-0076) is the M2 remote provider,
+    opt-in by operator config (a ``qemu+tls://`` host URI + TLS cert refs).
     """
 
     LOCAL_LIBVIRT = "local-libvirt"
     FAULT_INJECT = "fault-inject"
+    REMOTE_LIBVIRT = "remote-libvirt"
 
 
 class JobKind(StrEnum):
