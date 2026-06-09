@@ -63,7 +63,7 @@ from kdive.security.authz.rbac import Role, require_role
 
 # System states that occupy a per-project quota slot (terminal torn_down/failed do not).
 _NON_TERMINAL_SYSTEM = (
-    SystemState.DEFINED,  # the create-without-provision producer (systems.define, #111)
+    SystemState.DEFINED,  # the create-without-provision producer (systems.define)
     SystemState.PROVISIONING,
     SystemState.READY,
     SystemState.REPROVISIONING,
@@ -291,7 +291,7 @@ async def _locked_allocation_system(
     project = probe_alloc.project
     # PROJECT → ALLOCATION (the global lock order, ADR-0040 §1): the project lock so the
     # max_concurrent_systems count-then-create is race-free against a concurrent provision,
-    # the allocation lock so a release-mid-provision cannot leak a domain (the M0 invariant).
+    # the allocation lock so a release-mid-provision cannot leak a domain.
     async with (
         pool.connection() as conn,
         conn.transaction(),

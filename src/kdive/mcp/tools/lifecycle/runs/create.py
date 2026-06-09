@@ -237,7 +237,7 @@ async def _preconditions_block_response(
     Returns ``(failure, None)`` on a violation, else ``(None, (system, alloc))`` for the
     snapshot assertion and the insert to reuse. Order is fixed — System reachability, live
     allocation, single project, one-Run-per-System — so a stale/conflicting System returns
-    its precondition error, never a sizing error (no sizing leak, #166).
+    its precondition error, never a sizing error.
     """
     system = await SYSTEMS.get(conn, targets.sys_uid)
     blocked = _system_block_response(system, targets.sys_uid)

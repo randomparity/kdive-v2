@@ -1,9 +1,9 @@
 """The reconciler loop: periodic drift repair between Postgres and libvirt (ADR-0021).
 
 A :class:`Reconciler` owns an ``AsyncConnectionPool`` and an :class:`InfraReaper`, and
-runs :func:`reconcile_once` on an interval. Each pass runs the repairs — the M1
-``→expired`` allocation sweep, orphaned System, abandoned (zombie) job, dead
-DebugSession, leaked libvirt domain, and the M1 idempotency-key GC — each on a fresh
+runs :func:`reconcile_once` on an interval. Each pass runs the repairs — allocation
+expiry, orphaned System, abandoned (zombie) job, dead DebugSession, leaked libvirt domain,
+and idempotency-key GC — each on a fresh
 pooled connection, each fencing its writes, each isolated so one failing repair does not
 starve the others. The expiry sweep runs first so an allocation it reclaims orphans its
 System in the same pass. Time predicates use Postgres ``now()`` (never a Python clock).
@@ -152,7 +152,7 @@ def _repair_plan(
 
 
 async def _promote_pending(conn: AsyncConnection) -> int:
-    """Promote the oldest placeable queued request per resource (ADR-0069, #165).
+    """Promote the oldest placeable queued request per resource (ADR-0069).
 
     Delegates to :func:`kdive.services.allocation.promotion.promote_pending`, which replays
     the shared admission gate under ``PROJECT → RESOURCE → ALLOCATION`` — sharing admission's
@@ -188,7 +188,7 @@ async def _sweep_expired_allocations(conn: AsyncConnection) -> int:
     per-Allocation lock, the **same** lock ``allocations.release`` takes, so the two can
     never double-reconcile one allocation (ADR-0040 §4). The flip ``→ expired`` orphans
     the allocation's System; the existing :func:`_repair_orphaned_systems` pass (run after
-    this one) hands it to the M0 teardown, which honors the in-flight-job grace window — so
+    this one) hands it to teardown, which honors the in-flight-job grace window — so
     the ``→expired`` flip never bypasses the drain (ADR-0036 §4).
 
     Idempotent: a second pass selects no row already ``expired``, and the per-allocation
@@ -307,11 +307,11 @@ async def _repair_orphaned_systems(conn: AsyncConnection) -> int:
 
     A System is orphaned when it is non-terminal but its Allocation is terminal —
     ``released``, ``failed``, or ``expired`` ("a System never outlives its Allocation").
-    ``expired`` is the M1 lease-reclamation terminal (ADR-0036 §4): the ``→expired`` sweep
+    ``expired`` is the lease-reclamation terminal (ADR-0036 §4): the ``→expired`` sweep
     runs earlier in the same pass, so an allocation it reclaims orphans its System here.
     The teardown job carries the ``system:reconciler`` attribution and bypasses the
-    tool-layer destructive gate by design (ADR-0021); the teardown handler (#15) drives
-    the System to ``torn_down`` honoring the M0 in-flight-job grace window. Counts only a
+    tool-layer destructive gate by design (ADR-0021); the teardown handler drives
+    the System to ``torn_down`` honoring the in-flight-job grace window. Counts only a
     genuinely new enqueue (a re-pass on an already-queued teardown is 0).
     """
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
@@ -420,7 +420,7 @@ async def _repair_dead_sessions(conn: AsyncConnection, stale_after: timedelta) -
 
     A NULL heartbeat is never swept — it may be a session that just attached and has
     not beaten yet. ``stale_after`` is a provisional cadence contract (ADR-0021): the
-    debug plane (#16) must beat at most every ``stale_after / 3``.
+    debug plane must beat at most every ``stale_after / 3``.
     """
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(

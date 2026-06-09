@@ -1,7 +1,7 @@
 """Budget/quota + host-cap allocation admission (ADR-0007 §4-6, ADR-0040).
 
-``admit`` is the M1 fail-closed admission gate. It composes M0's per-**host** capacity
-cap (ADR-0023) with the M1 per-**project** invariant — a concurrency quota and a spend
+``admit`` is the fail-closed admission gate. It composes the per-**host** capacity cap
+(ADR-0023) with the per-**project** invariant — a concurrency quota and a spend
 budget — and reserves the lease estimate against budget in the same transaction it grants:
 
 1. **Validate first** (no lock, no write): the selector size, the lease window, and the
@@ -14,7 +14,7 @@ budget — and reserves the lease estimate against budget in the same transactio
 3. **Check then debit** under ``PROJECT`` → ``RESOURCE`` (the global lock order, ADR-0040
    §1): ``max_concurrent_allocations`` (→ ``quota_exceeded``), then ``(limit_kcu −
    spent_kcu) ≥ estimate`` read O(1) from the budget row (→ ``allocation_denied``), then
-   the M0 host cap (→ ``allocation_denied``). On success, **in one transaction**: insert
+   the host cap (→ ``allocation_denied``). On success, **in one transaction**: insert
    the ``granted`` Allocation (``lease_expiry``, ``requested_vcpus``/``requested_memory_gb``,
    ``active_started_at`` null), write the ``reserved`` ledger row and bump ``spent_kcu``
    (``accounting.reserve``), record the idempotency key, and write the audit row.
@@ -67,7 +67,7 @@ if TYPE_CHECKING:
 _SECONDS_PER_HOUR = 3600
 
 # The idempotency-store ``kind`` discriminator for a request grant (ADR-0040 §3); the
-# renewal path (#67) reuses the store under its own kind.
+# renewal path uses the same store under its own kind.
 _REQUEST_KIND = "allocations.request"
 
 # States that occupy a host-cap / grant-quota slot (ADR-0069, the load-bearing change). A
@@ -106,11 +106,11 @@ class AllocationRequest:
     non-PCIe request. The specs are resolved to distinct free devices and claimed inside the
     per-Resource lock (ADR-0068), never pre-lock.
 
-    ``on_capacity`` selects what a **capacity** denial does (ADR-0069): ``"deny"`` (default,
-    today's behavior) returns the denial; ``"queue"`` instead enqueues a ``requested``
+    ``on_capacity`` selects what a **capacity** denial does (ADR-0069): ``"deny"`` (default)
+    returns the denial; ``"queue"`` instead enqueues a ``requested``
     allocation holding only a queue position. ``requested_kind`` / ``requested_resource_id``
     are the original target descriptor persisted on the queued row so the promotion sweep
-    (#165) can re-resolve a host — exactly one is set, mirroring the by-kind / by-id selector.
+    can re-resolve a host — exactly one is set, mirroring the by-kind / by-id selector.
     """
 
     ctx: RequestContext
@@ -192,8 +192,8 @@ async def admit(
                 estimate=estimate,
             )
     except CategorizedError as exc:
-        # The M0 host-cap resolve (decision 5) fails closed on an invalid cap; the
-        # transaction rolled back, so no durable write survived.
+        # Host-cap resolution fails closed on an invalid cap; the transaction rolled back,
+        # so no durable write survived.
         return AdmissionOutcome(
             granted=False,
             allocation=None,
@@ -372,7 +372,7 @@ async def _resolve_pcie_claim(
     resolve the last free device. An empty union short-circuits to no devices. The matcher
     splits the two denial modes — ``CONFIG`` (no host descriptor matches; the card is not
     on this host) maps to ``configuration_error``; ``CAPACITY`` (matches exist but every
-    one is claimed) maps to ``allocation_denied``, the queueable case (#164). Malformed
+    one is claimed) maps to ``allocation_denied``, the queueable case. Malformed
     grammar raises a ``CategorizedError`` that ``admit`` catches and rolls back — no write.
 
     Raises:
@@ -466,7 +466,7 @@ async def _grant(
 
 
 async def _host_cap_check(conn: AsyncConnection, resource: Resource) -> AdmissionOutcome | None:
-    """The M0 per-host capacity check; return a denial outcome, or ``None`` if under cap.
+    """The per-host capacity check; return a denial outcome, or ``None`` if under cap.
 
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` if the resource has no valid cap.
@@ -551,7 +551,7 @@ async def _enqueue(conn: AsyncConnection, request: AllocationRequest) -> Admissi
 
     Holds only a queue position: ``resource_id`` NULL, no reserve, no lease, empty
     ``pcie_claim``; persists the original request inputs (size snapshot, shape, the requested
-    PCIe union, and the target descriptor) so the promotion sweep (#165) can re-admit. The
+    PCIe union, and the target descriptor) so the promotion sweep can re-admit. The
     pending-cap check, the insert, the idempotency-key record, and the audit all run inside
     the one PROJECT-locked transaction ``admit`` opened, so two concurrent enqueues cannot
     both pass the cap. Over the cap → ``quota_exceeded`` with no write.

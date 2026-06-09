@@ -1,4 +1,4 @@
-"""Queue-control `ops.*` MCP tools (#138, ADR-0062).
+"""Queue-control `ops.*` MCP tools (ADR-0062).
 
 ``ops.queue_pause`` / ``ops.queue_resume`` toggle the single-row ``ops_control``
 ``queue_paused`` flag the worker reads before each ``dequeue``; pausing freezes the

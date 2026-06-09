@@ -4,10 +4,10 @@
 "gdbstub")` resolves the System's gdbstub endpoint, enforces loopback-only **before any
 network IO** (the ported v1 "F2" SSRF control), probes RSP reachability over an injected
 seam, and returns an opaque `TransportHandle` (an encoded `TransportHandleData`) the session
-row persists; `close_transport(handle)` validates the handle and then no-ops (the M0
-gdbstub is connectionless RSP). The slow/host-bound steps — resolving the libvirt domain's gdbstub
-host:port and the real socket probe — are **injected, `live_vm`-gated seams** that default to
-implementations raising `MISSING_DEPENDENCY` (resolver) / `# pragma: no cover - live_vm`
+row persists; `close_transport(handle)` validates the handle and then no-ops (gdbstub is
+connectionless RSP). The slow/host-bound steps — resolving the libvirt domain's gdbstub
+host:port and the real socket probe — are **injected, `live_vm`-gated seams** that default
+to implementations raising `MISSING_DEPENDENCY` (resolver) / `# pragma: no cover - live_vm`
 (prober), so the orchestration and the full error contract are unit-tested with fakes.
 
 The RSP-framing codec (`rsp_frame`/`valid_rsp_frame`) and the bounded probe are ported from
@@ -82,7 +82,7 @@ def _is_loopback_literal(host: str) -> bool:
 
 
 class LocalLibvirtConnect:
-    """The realized `Connector` for local-libvirt transports: gdbstub (M0) and ssh (M1).
+    """The realized `Connector` for local-libvirt transports: gdbstub and ssh.
 
     Both transports enforce loopback-only **before any network IO** (the ported v1 "F2"
     SSRF control, ADR-0032 §5 / ADR-0039 §1) and probe reachability over an injected,

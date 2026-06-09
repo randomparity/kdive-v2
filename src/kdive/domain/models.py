@@ -119,7 +119,7 @@ class Sensitivity(StrEnum):
 
 
 class LedgerEventType(StrEnum):
-    """The two signed metering events on the M1 ledger (ADR-0007 §3).
+    """The two signed metering events on the ledger (ADR-0007 §3).
 
     ``reserved`` is the at-grant debit (`+estimate`); ``reconciled`` is the
     at-release/expiry adjustment (`actual − Σ reserved`, which may be negative — a

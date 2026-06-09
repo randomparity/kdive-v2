@@ -1,12 +1,10 @@
-"""M0 error taxonomy and the typed failure carrier (ADR-0001).
+"""Stable error taxonomy and the typed failure carrier (ADR-0001).
 
 The PoC's stable :class:`ErrorCategory` is reused so failure strings stay
-comparable across the rewrite; M0 curates it to the categories the walking
-skeleton can actually emit (see ``m0-walking-skeleton.md`` "Error taxonomy") and
-adds the six distributed categories the new async/provider seams introduce. The
-PoC's ``test_failure`` is intentionally dropped: M0 has no test plane, so carrying
-it would be a phantom category — it returns with the test plane in a later
-milestone, at its original stable string.
+comparable across the rewrite. This module carries the categories current tool and
+provider seams can emit, plus the distributed categories introduced by the service
+architecture. The PoC's ``test_failure`` is intentionally absent because there is no
+test plane emitting it.
 """
 
 from __future__ import annotations
@@ -15,13 +13,13 @@ from enum import StrEnum
 
 
 class ErrorCategory(StrEnum):
-    """The closed set of failure categories an M0 tool may report.
+    """The closed set of failure categories a tool may report.
 
     Values are stable wire strings — handlers pick the most specific category and
     never invent new strings (``m0-walking-skeleton.md``).
     """
 
-    # Reused from the PoC taxonomy (the subset M0 can emit).
+    # Reused from the PoC taxonomy.
     CONFIGURATION_ERROR = "configuration_error"
     MISSING_DEPENDENCY = "missing_dependency"
     BUILD_FAILURE = "build_failure"
@@ -33,7 +31,7 @@ class ErrorCategory(StrEnum):
     TRANSPORT_CONFLICT = "transport_conflict"
     NOT_IMPLEMENTED = "not_implemented"
 
-    # New distributed categories for the async worker / provider seams.
+    # Distributed categories for the async worker / provider seams.
     ALLOCATION_DENIED = "allocation_denied"
     QUOTA_EXCEEDED = "quota_exceeded"
     LEASE_EXPIRED = "lease_expired"

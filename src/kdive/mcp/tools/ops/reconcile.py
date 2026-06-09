@@ -1,4 +1,4 @@
-"""On-demand reconcile MCP tool (``ops.reconcile_now``) — ADR-0062 §reconcile, M1.3.
+"""On-demand reconcile MCP tool (``ops.reconcile_now``) — ADR-0062 §reconcile.
 
 ``ops.reconcile_now`` runs one :func:`kdive.reconciler.loop.reconcile_once` pass on
 demand and returns its per-class repair summary. It calls the **same** ``reconcile_once``

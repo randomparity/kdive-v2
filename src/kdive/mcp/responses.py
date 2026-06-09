@@ -19,8 +19,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job
 from kdive.domain.state import JobState
 
-# Literal next tool names by the job's state. Only `jobs.*` exist in M0; the
-# artifact-retrieval action joins the succeeded row when `artifacts.get` ships (#19).
+# Literal next tool names by the job's state.
 # See the design doc's suggested_next_actions table.
 _NEXT_ACTIONS: dict[JobState, list[str]] = {
     JobState.QUEUED: ["jobs.wait", "jobs.cancel"],

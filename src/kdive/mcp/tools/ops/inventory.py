@@ -1,4 +1,4 @@
-"""The ``inventory.list`` auditor-read tool (ADR-0062 §6, #141).
+"""The ``inventory.list`` auditor-read tool (ADR-0062 §6).
 
 A cross-project systems/allocations summary (host, status, project, lifecycle state) —
 the fleet-wide view the operator uses to confirm a drain has emptied a host. Gated

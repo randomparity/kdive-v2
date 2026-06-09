@@ -1,4 +1,4 @@
-"""Typed async CRUD over the M0 durable objects (ADR-0003, ADR-0016).
+"""Typed async CRUD over the durable objects (ADR-0003, ADR-0016).
 
 A base `Repository[M]` provides `insert` / `get`; `StatefulRepository[M, S]` adds
 `update_state`, guarded by `kdive.domain.state.can_transition` and bound to the
@@ -187,7 +187,7 @@ class StatefulRepository[M: DomainModel, S: StrEnum](Repository[M]):
 class KeyedRepository[M: BaseModel](Repository[M]):
     """A `Repository` for a natural-key table that supports `upsert`.
 
-    The M1 accounting tables (`budgets`, `quotas`, `cost_class_coefficients`) are keyed
+    The accounting tables (`budgets`, `quotas`, `cost_class_coefficients`) are keyed
     by `project` / `cost_class`, not a generated `id`, and admin re-sets overwrite an
     existing row. `upsert` writes the row or, on a primary-key conflict, updates only
     ``update_columns`` — letting `budgets` re-set `limit_kcu` without clobbering the
@@ -280,7 +280,7 @@ JOBS = StatefulRepository(
 )
 ARTIFACTS = Repository(Artifact, "artifacts")
 
-# M1 accounting tables. COST_CLASS_COEFFICIENTS/QUOTAS upsert every non-key column;
+# Accounting tables. COST_CLASS_COEFFICIENTS/QUOTAS upsert every non-key column;
 # BUDGETS upserts only `limit_kcu` so a re-set_budget never clobbers `spent_kcu` (the
 # DB-maintained running total). LEDGER is append-only with a DB-authoritative `ts`.
 COST_CLASS_COEFFICIENTS = KeyedRepository(

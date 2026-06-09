@@ -1,6 +1,6 @@
 """Project-scoped RBAC: roles, claim parsing, and enforcement (ADR-0006, ADR-0020).
 
-The three M0 roles form a total rank, so a higher role satisfies a lower requirement.
+The three project roles form a total rank, so a higher role satisfies a lower requirement.
 `roles_from_claims` turns a verified token's `roles` claim into the per-project role
 map carried on `RequestContext`; `require_role` is the enforcement point every plane
 tool calls before a privileged operation. A denial raises `AuthorizationError`
@@ -24,7 +24,7 @@ _PLATFORM_ROLES_CLAIM = "platform_roles"
 
 
 class Role(StrEnum):
-    """The three project-scoped M0 roles, ordered viewer < operator < admin."""
+    """The three project-scoped roles, ordered viewer < operator < admin."""
 
     VIEWER = "viewer"
     OPERATOR = "operator"

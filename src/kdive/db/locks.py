@@ -24,12 +24,12 @@ class LockScope(StrEnum):
 
     Operations that hold more than one scope at once acquire them in the fixed global
     total order ``PROJECT → RESOURCE → ALLOCATION → SYSTEM`` (and then
-    ``INVESTIGATION → RUN`` for the M0 run paths) to avoid deadlock; e.g. M1's
-    ``allocations.request`` takes ``PROJECT`` then ``RESOURCE`` (ADR-0040 §1), and M0's
+    ``INVESTIGATION → RUN`` for run creation) to avoid deadlock; e.g.
+    ``allocations.request`` takes ``PROJECT`` then ``RESOURCE`` (ADR-0040 §1), and
     ``runs.create`` takes ``SYSTEM`` then ``INVESTIGATION`` (ADR-0027).
 
-    ``PROJECT`` (added in M1) is keyed by the ``project`` string; every other scope is
-    keyed by an object :class:`~uuid.UUID`.
+    ``PROJECT`` is keyed by the ``project`` string; every other scope is keyed by an
+    object :class:`~uuid.UUID`.
     """
 
     PROJECT = "project"

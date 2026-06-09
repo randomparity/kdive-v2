@@ -49,7 +49,7 @@ SUPPORTED_DOMAIN_XML_PARAMS = frozenset({"machine"})
 
 
 class BootMethod(StrEnum):
-    """The provider-agnostic boot methods; M0 ships one (ADR-0024 decision 2a)."""
+    """The provider-agnostic boot methods (ADR-0024 decision 2a)."""
 
     DIRECT_KERNEL = "direct-kernel"
 
@@ -62,7 +62,7 @@ class _ProfileBase(BaseModel):
 
 class _UploadRootfs(_ProfileBase):
     # A System-owned uploaded qcow2; opened by systems.define + artifacts.create_system_upload and
-    # committed at provisioning->ready (ADR-0048 §5, #111). path/url/catalog are alternatives.
+    # committed at provisioning->ready (ADR-0048 §5). path/url/catalog are alternatives.
     kind: Literal["upload"]
 
 

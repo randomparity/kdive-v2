@@ -10,7 +10,7 @@ The domain XML is *constructed* with `xml.etree.ElementTree` (no string interpol
 profile value cannot inject XML; no untrusted-input parse here, so no XXE surface). It renders
 the domain shell, the rootfs disk, and the metadata tag — no `<kernel>`/`<cmdline>`: libvirt
 ignores `<os><cmdline>` without a `<kernel>` element, and the test kernel plus its
-`crashkernel=` kdump reservation are the install/boot plane's (#17).
+`crashkernel=` kdump reservation are the install/boot plane's.
 """
 
 from __future__ import annotations
@@ -129,7 +129,7 @@ def render_domain_xml(system_id: UUID, profile: ProvisioningProfile, *, disk_pat
 
     Renders the domain shell, the rootfs disk, the always-on serial console with a ``<log>``
     tee to ``_CONSOLE_DIR``, and the kdive metadata tag — no ``<kernel>``/``<cmdline>`` (the
-    kdump ``crashkernel=`` reservation is the install/boot plane's, #17, and is inert without a
+    kdump ``crashkernel=`` reservation is the install/boot plane's and is inert without a
     ``<kernel>`` element). ``disk_path`` is explicit so rootfs materialization policy stays in
     the materialization plane; production passes the per-System overlay (ADR-0060).
     """

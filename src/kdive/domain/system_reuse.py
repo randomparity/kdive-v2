@@ -1,4 +1,4 @@
-"""The system-reuse snapshot-≥ match predicate (ADR-0070, #166).
+"""The system-reuse snapshot-≥ match predicate (ADR-0070).
 
 Reuse attaches a Run to a ``ready`` System the agent did not self-provision. The
 *candidacy* predicate (ADR-0070 §Decision) is the persisted **sizing snapshot**, never the

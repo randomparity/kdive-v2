@@ -25,7 +25,7 @@ from kdive.providers.ports import IntrospectOutput, LiveIntrospector, VmcoreIntr
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
 
-# Fixed in-tree caps (no caller args in M0; ADR-0033 §"Output bounds").
+# Fixed in-tree caps (no caller args; ADR-0033 §"Output bounds").
 _TASK_LIMIT = 200
 _BLOCKED_STATES = frozenset({"D"})
 _REPORT_BYTE_CAP = 1 << 20  # 1 MiB serialized-report cap; tasks trimmed first.
@@ -67,7 +67,7 @@ class _Program(Protocol):
     def mem_total_pages(self) -> int: ...
 
 
-# --- helpers (M0 subset ported from v1 introspect/helpers/) --------------------------------
+# --- helpers (ported from v1 introspect/helpers/) -------------------------------------------
 
 
 def helper_tasks(prog: _Program) -> dict[str, object]:

@@ -3,8 +3,8 @@
 The cost ledger hits at **reserve-at-grant, reconcile-at-release** (ADR-0007 §3):
 
 * :func:`reserve` writes a signed ``reserved`` row (`+estimate`) **and** increments the
-  project's ``budgets.spent_kcu`` running total in one transaction. Admission (#66) calls
-  it under the ``PROJECT`` lock; a renewal (#67) writes an **additional** ``reserved`` row.
+  project's ``budgets.spent_kcu`` running total in one transaction. Admission calls it
+  under the ``PROJECT`` lock; renewal writes an **additional** ``reserved`` row.
 * :func:`reconcile` writes a ``reconciled`` row with ``kcu_delta = actual − Σ reserved``
   (summed over **all** of the allocation's reserved rows, so a renewed allocation is not
   over-debited) and applies the same delta to ``spent_kcu`` — again in one transaction.
@@ -237,7 +237,7 @@ async def reserve(conn: AsyncConnection, allocation: Allocation, estimate: Decim
 
     The reservation counts against budget immediately (ADR-0007 §3), so two concurrent
     grants cannot both pass a budget check before either debits. Both writes run in one
-    transaction; the caller holds the ``PROJECT`` lock (admission / renew, #66/#67).
+    transaction; the caller holds the ``PROJECT`` lock (admission / renew).
 
     Args:
         conn: An async connection (the transaction is opened here / nested as a savepoint).
@@ -263,8 +263,7 @@ async def reconcile(conn: AsyncConnection, allocation: Allocation) -> Decimal:
     transaction under the caller's per-allocation lock (ADR-0040 §4), so release and the
     ``→expired`` sweep can never double-reconcile one allocation.
 
-    An allocation whose project has **no budget row** was never metered (an M0-style
-    allocation, or any path that did not reserve against a budget): there is nothing to
+    An allocation whose project has **no budget row** was never metered: there is nothing to
     reconcile, so this is a no-op returning ``0`` with no ledger or ``spent_kcu`` write.
     This lets ``allocations.release`` call ``reconcile`` unconditionally without charging
     a phantom credit to a project that never opted into metering.
@@ -303,7 +302,7 @@ async def stamp_active_ended(
     stamped value off the returned model.
 
     The stamp decision reads **committed** DB state, not the caller's ``allocation``
-    snapshot (#84): the snapshot can predate a provision-ready ``active_started_at`` stamp
+    snapshot: the snapshot can predate a provision-ready ``active_started_at`` stamp
     that the first-System ``provisioning → ready`` edge commits in a separate, ``SYSTEM``-
     locked transaction. ``SELECT ... FOR UPDATE`` takes the allocation row's write lock by
     primary key — it always matches the row, so when that writer's stamp is **in flight**
@@ -526,8 +525,8 @@ async def _cost_class(conn: AsyncConnection, allocation: Allocation) -> str:
 
     The class is read from the persisted ``resources.cost_class`` of the Resource the
     allocation books, never from request data — the same fail-closed discipline as the
-    coefficient resolve. Carrying it on each ledger row lets a future provider's
-    allocations sum into ``by_cost_class`` with zero code change (M1 has only ``local``).
+    coefficient resolve. Carrying it on each ledger row lets each provider's allocations
+    sum into ``by_cost_class`` without cost-model branches.
 
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` if the booked Resource is missing.

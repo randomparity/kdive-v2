@@ -1,4 +1,4 @@
-"""The ``audit.query`` auditor-read tool (ADR-0062 §6, #141).
+"""The ``audit.query`` auditor-read tool (ADR-0062 §6).
 
 Reads ``audit_log`` in two explicit scopes:
 

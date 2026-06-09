@@ -11,7 +11,7 @@ two Runs on one System share the one stub, so a second attach is `transport_conf
 RSP probe runs **outside** the per-System advisory lock (it is multi-second network IO);
 the conflict + System-ready checks are re-evaluated authoritatively under the lock before the
 insert, and a lost race closes the just-opened transport (ADR-0032 §6a). The
-`force_crash`/reboot `live -> detached` path is the control plane's (#23, `control.py`
+`force_crash`/reboot `live -> detached` path is the control plane's
 `_detach_sessions`); this module owns only the agent-initiated start/end.
 """
 
@@ -324,7 +324,7 @@ def _resolve_credential(
         secret_backend.resolve(ref)
     except PathSafetyError:
         # A reference that escapes the secrets root / points at a non-file is a caller-config
-        # error (the M0 FileRefBackend's failure mode).
+        # error for the file-backed secret backend.
         return ToolResponse.failure(str(system.id), ErrorCategory.CONFIGURATION_ERROR)
     except CategorizedError as exc:
         # Preserve the backend's own category (e.g. a manager backend's MISSING_DEPENDENCY /

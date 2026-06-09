@@ -1,6 +1,6 @@
 """Lease renewal: extend a live allocation's window, re-charged and re-checked (ADR-0036 §3).
 
-``renew`` is the M1 lease-extension counterpart of
+``renew`` is the lease-extension counterpart of
 :func:`kdive.services.allocation.admission.admit`.
 It extends a non-terminal allocation's ``lease_expiry`` by a validated ``extend`` window,
 clamped so the lease never reaches past ``now + KDIVE_LEASE_MAX`` (ADR-0036 §3), and bills

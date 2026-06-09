@@ -1,4 +1,4 @@
-"""Admission-side PCIe resolve/claim helpers (ADR-0068, #162).
+"""Admission-side PCIe resolve/claim helpers (ADR-0068).
 
 The matcher (:mod:`kdive.domain.pcie`) is pure: it resolves a spec union against a list of
 descriptors minus a list of active claims. This module supplies the two admission-time

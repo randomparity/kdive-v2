@@ -1,7 +1,7 @@
-"""The shapes-catalog `shapes.*` MCP tools (M1.4 issue #160, ADR-0067).
+"""The shapes-catalog `shapes.*` MCP tools (ADR-0067).
 
 A `viewer` read plus two `platform_operator` knobs over the `system_shapes` catalog seeded
-by migration 0013 — the same authority class and audit seam as M1.3's `ops.set_host_capacity`
+by migration 0013 — the same authority class and audit seam as platform resource tuning
 (ADR-0062):
 
 * **``shapes.list()``** returns every preset, sorted by name. The catalog is shared fleet

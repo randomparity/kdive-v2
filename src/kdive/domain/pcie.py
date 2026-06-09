@@ -3,8 +3,8 @@
 PCIe is a **selection axis**: a host advertises a list of static descriptors
 (:data:`PCIE_DEVICES_KEY` on ``capabilities``) and a request references a device by a
 portable **match spec** — never a host-local BDF. This module owns the spec grammar and the
-matcher that three M1.4 surfaces reuse (admission resolution, fleet availability, systems
-filter). Occupancy is **derived**: the matcher subtracts the BDFs held by active claims; it
+matcher shared by admission resolution, fleet availability, and systems filters. Occupancy is
+**derived**: the matcher subtracts the BDFs held by active claims; it
 never reads or writes a ``free`` flag (a re-scan must not un-claim a booked device).
 
 The matcher distinguishes the two PCIe denial modes in its **return value**, never by

@@ -225,7 +225,7 @@ async def request_allocation(
 ) -> ToolResponse:
     """Admit an allocation against the project budget/quota and the selected host's cap.
 
-    Builds the request selector, resolves the target Resource, and runs the M1 admission
+    Builds the request selector, resolves the target Resource, and runs the admission
     gate (ADR-0007 §5). A grant returns the allocation id; a denial maps to the gate's
     most specific category — ``quota_exceeded`` (over the concurrency cap),
     ``allocation_denied`` (over budget or host cap), or ``configuration_error`` (a
@@ -376,7 +376,7 @@ async def renew_allocation(
 ) -> ToolResponse:
     """Extend an allocation's lease window, re-charged and re-checked (ADR-0036 §3).
 
-    Resolves the allocation, requires ``operator`` on its project, and runs the M1 renew
+    Resolves the allocation, requires ``operator`` on its project, and runs renew
     (under the ``PROJECT`` lock). A success returns the extended allocation id; a denial
     maps to the most specific category — ``configuration_error`` (``extend ≤ 0``, a bad
     id, or the lease already at ``KDIVE_LEASE_MAX``), ``stale_handle`` (a terminal

@@ -1,4 +1,4 @@
-"""The work-conserving FIFO promotion sweep + queue_timeout reaper (ADR-0069, #165).
+"""The work-conserving FIFO promotion sweep + queue_timeout reaper (ADR-0069).
 
 The reconciler half of the pending-queue scheduler. :func:`promote_pending` re-runs
 selection for each queued ``requested`` allocation from its persisted inputs (PCIe-aware,
@@ -333,7 +333,7 @@ def _request_from_queued(alloc: Allocation, resource: Resource) -> AllocationReq
     """Rebuild the admission request from the queued row's persisted inputs.
 
     Size is the at-enqueue ``requested_*`` snapshot; the PCIe spec union is
-    ``requested_pcie_specs``; the lease window was not persisted (#164), so promotion
+    ``requested_pcie_specs``; queued rows do not persist a lease window, so promotion
     resolves the default window via ``resolve_window_hours(None)`` inside pricing — the
     ``window=None`` here selects that default. The ``ctx`` carries the queued row's original
     ``(principal, agent_session)`` so the gate/grant attribute correctly.

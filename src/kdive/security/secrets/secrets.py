@@ -1,8 +1,7 @@
 """By-reference secret backend (ADR-0027 §5-6, refines ADR-0012).
 
-``SecretBackend`` is the pluggable interface; a manager backend (Vault, a cloud
-secret manager) drops in later behind it with no call-site change. M0 ships
-``FileRefBackend``: it resolves a file reference only within an allowlisted root and
+``SecretBackend`` is the pluggable interface for secret backends. ``FileRefBackend``
+resolves a file reference only within an allowlisted root and
 registers the resolved value into the redaction registry **before** returning it, so
 the register-before-return ordering is a structural invariant — there is no return
 path that yields the value without first registering it.
