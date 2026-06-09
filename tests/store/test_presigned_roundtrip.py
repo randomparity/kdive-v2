@@ -13,11 +13,35 @@ import hashlib
 import httpx
 
 from kdive.domain.models import Sensitivity
-from kdive.provider_components.artifacts import PresignPutRequest
+from kdive.provider_components.artifacts import ArtifactWriteRequest, PresignPutRequest
 
 
 def _b64_sha256(data: bytes) -> str:
     return base64.b64encode(hashlib.sha256(data).digest()).decode()
+
+
+def test_presigned_get_fetches_the_published_object(minio_store, key_ns: str) -> None:
+    """The in-target seam's pull half: publish an object, then fetch it by presigned GET.
+
+    Proves the publish→presign_get→in-guest-pull path the artifact channel relies on
+    (ADR-0078): a bounded GET URL retrieves exactly the published bytes from real MinIO.
+    """
+    payload = b"published-kernel-bytes"
+    stored = minio_store.put_artifact(
+        ArtifactWriteRequest(
+            tenant=key_ns,
+            owner_kind="runs",
+            owner_id="r1",
+            name="kernel",
+            data=payload,
+            sensitivity=Sensitivity.SENSITIVE,
+            retention_class="build",
+        )
+    )
+    url = minio_store.presign_get(stored.key, expires_in=300)
+    resp = httpx.get(url)
+    assert resp.status_code == 200
+    assert resp.content == payload
 
 
 def test_presigned_put_rejects_checksum_mismatch(minio_store, key_ns: str) -> None:
