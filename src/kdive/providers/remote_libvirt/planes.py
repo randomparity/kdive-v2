@@ -1,11 +1,11 @@
 """Unimplemented remote-libvirt planes — buildable, fail-fast stubs (ADR-0076).
 
-The M2 foundation lands the package, kind, transport, and discovery; provisioning is
-real (``remote_libvirt.provisioning``, ADR-0080) and build is real
-(``remote_libvirt.build``, ADR-0081); the install, connect/debug, and control/retrieve
-planes land in the later M2 issues. Until then each remaining plane raises a typed
-``MISSING_DEPENDENCY`` (the ports' documented category for an unavailable provider seam)
-so the runtime is buildable — the ADR-0071 CHECK↔registry parity invariant — without
+The M2 foundation lands the package, kind, transport, and discovery; provisioning
+(``remote_libvirt.provisioning``, ADR-0080), build (``remote_libvirt.build``, ADR-0081),
+and install/boot (``remote_libvirt.install``, ADR-0082) are real; the connect/debug and
+control/retrieve planes land in the later M2 issues. Until then each remaining plane raises
+a typed ``MISSING_DEPENDENCY`` (the ports' documented category for an unavailable provider
+seam) so the runtime is buildable — the ADR-0071 CHECK↔registry parity invariant — without
 pretending the plane works.
 """
 
@@ -20,7 +20,6 @@ from kdive.domain.models import PowerAction
 from kdive.providers.ports import (
     CaptureOutput,
     CrashOutput,
-    InstallRequest,
     IntrospectOutput,
     SystemHandle,
     TransportHandle,
@@ -33,16 +32,6 @@ def _unimplemented(plane: str) -> NoReturn:
         category=ErrorCategory.MISSING_DEPENDENCY,
         details={"plane": plane},
     )
-
-
-class UnimplementedInstaller:
-    """Installer + Booter port stub (lands with the remote install issue)."""
-
-    def install(self, request: InstallRequest) -> None:
-        _unimplemented("install")
-
-    def boot(self, system_id: UUID) -> None:
-        _unimplemented("boot")
 
 
 class UnimplementedConnector:

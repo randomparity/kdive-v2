@@ -11,11 +11,10 @@ import pytest
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction
-from kdive.providers.ports import InstallRequest, SystemHandle, TransportHandle
+from kdive.providers.ports import SystemHandle, TransportHandle
 from kdive.providers.remote_libvirt import planes
 
 # The stubs raise before touching any argument, so typed sentinels suffice.
-_INSTALL = cast(InstallRequest, None)
 _SYSTEM = cast(SystemHandle, None)
 _TRANSPORT = cast(TransportHandle, None)
 _ACTION = cast(PowerAction, None)
@@ -25,8 +24,6 @@ _METHOD = cast(CaptureMethod, None)
 @pytest.mark.parametrize(
     "invoke",
     [
-        lambda: planes.UnimplementedInstaller().install(_INSTALL),
-        lambda: planes.UnimplementedInstaller().boot(uuid4()),
         lambda: planes.UnimplementedConnector().open_transport(_SYSTEM, "gdbstub"),
         lambda: planes.UnimplementedConnector().close_transport(_TRANSPORT),
         lambda: planes.UnimplementedController().power("dom", _ACTION),

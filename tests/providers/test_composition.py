@@ -30,6 +30,7 @@ from kdive.providers.ports import (
     TransportHandle,
 )
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
+from kdive.providers.remote_libvirt.install import RemoteLibvirtInstall
 from kdive.providers.remote_libvirt.provisioning import RemoteLibvirtProvision
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -419,6 +420,17 @@ def test_remote_runtime_has_real_builder(monkeypatch: pytest.MonkeyPatch) -> Non
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
     assert isinstance(runtime.builder, RemoteLibvirtBuild)
+
+
+def test_remote_runtime_has_real_installer_and_booter(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The remote Install/Boot plane is real from this issue on (ADR-0082); it must construct
+    # without operator config, and one object realizes both ports (as local does).
+    monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
+
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert isinstance(runtime.installer, RemoteLibvirtInstall)
+    assert runtime.booter is runtime.installer
 
 
 def test_remote_runtime_wires_build_config_validator(monkeypatch: pytest.MonkeyPatch) -> None:
