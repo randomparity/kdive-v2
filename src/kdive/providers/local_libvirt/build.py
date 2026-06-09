@@ -26,6 +26,7 @@ from typing import Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from kdive.components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.components.catalog import load_fixture_catalog
 from kdive.components.local_paths import validate_local_component_path
 from kdive.components.references import ComponentRef, LocalComponentRef
@@ -39,11 +40,7 @@ from kdive.providers.build_validation import (
 from kdive.providers.ports import BuildOutput
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
-from kdive.store.objectstore import (
-    ArtifactWriteRequest,
-    StoredArtifact,
-    object_store_from_env,
-)
+from kdive.store.objectstore import object_store_from_env
 
 _WORKSPACE_ENV = "KDIVE_BUILD_WORKSPACE"
 _KERNEL_SRC_ENV = "KDIVE_KERNEL_SRC"

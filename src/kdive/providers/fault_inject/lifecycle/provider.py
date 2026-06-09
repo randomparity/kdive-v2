@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from kdive.components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import PowerAction, Sensitivity
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
@@ -35,7 +36,6 @@ from kdive.providers.ports import (
 )
 from kdive.providers.ports._common import config_error
 from kdive.providers.ports.lifecycle import TransportHandleData
-from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact
 
 _TENANT = "fault-inject"
 _RETENTION_CLASS = "vmcore"

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from kdive.components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
@@ -30,7 +31,7 @@ from kdive.providers.ports import (
 from kdive.security.artifacts.crash_commands import crash_command_rejection_reason
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
-from kdive.store.objectstore import ArtifactWriteRequest, StoredArtifact, object_store_from_env
+from kdive.store.objectstore import object_store_from_env
 
 _RETENTION_CLASS = "vmcore"
 

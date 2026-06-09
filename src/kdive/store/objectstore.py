@@ -11,14 +11,21 @@ returned sensitivity).
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, NamedTuple
+from typing import Any
 from uuid import UUID, uuid4
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
+from kdive.components.artifacts import (
+    ArtifactWriteRequest,
+    FetchedArtifact,
+    HeadResult,
+    PresignedUpload,
+    PresignPutRequest,
+    StoredArtifact,
+)
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Artifact, Sensitivity
 
@@ -33,66 +40,6 @@ _DEFAULT_REGION = "us-east-1"
 
 # A missing object (404) and an etag mismatch (412) are the one stale_handle case.
 _STALE_STATUSES = frozenset({404, 412})
-
-
-class StoredArtifact(NamedTuple):
-    """A put result: the row's ``key``/``etag`` plus the class written to the object."""
-
-    key: str
-    etag: str
-    sensitivity: Sensitivity
-    retention_class: str
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class ArtifactWriteRequest:
-    """Object-store write identity, metadata, and bytes."""
-
-    tenant: str
-    owner_kind: str
-    owner_id: str
-    name: str
-    data: bytes
-    sensitivity: Sensitivity
-    retention_class: str
-
-    def key(self) -> str:
-        return _artifact_key(self.tenant, self.owner_kind, self.owner_id, self.name)
-
-
-class FetchedArtifact(NamedTuple):
-    """A fetched object's bytes and the class read back from its metadata."""
-
-    data: bytes
-    sensitivity: Sensitivity
-    retention_class: str
-
-
-class HeadResult(NamedTuple):
-    """An object's stored size, base64 SHA-256 checksum (if any), and bare etag."""
-
-    size_bytes: int
-    checksum_sha256: str | None
-    etag: str
-
-
-class PresignedUpload(NamedTuple):
-    """A presigned PUT URL plus the headers the client must send for it to validate."""
-
-    url: str
-    required_headers: dict[str, str]
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class PresignPutRequest:
-    """Object-store presign identity, metadata, checksum, and expiry."""
-
-    key: str
-    sha256: str
-    size_bytes: int
-    sensitivity: Sensitivity
-    retention_class: str
-    expires_in: int
 
 
 def _normalize_etag(raw: str) -> str:
