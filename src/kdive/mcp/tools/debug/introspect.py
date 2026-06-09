@@ -28,10 +28,10 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
+from kdive.mcp.tools._runtime_resolution import runtime_for_run
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.providers.ports import LiveIntrospector, VmcoreIntrospector
 from kdive.providers.resolver import ProviderResolver
-from kdive.providers.runtime import ProviderRuntime
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 
@@ -75,19 +75,6 @@ async def introspect_from_vmcore(
             suggested_next_actions=["introspect.from_vmcore", "artifacts.list"],
             data={"report": report, "truncated": str(output.truncated).lower()},
         )
-
-
-async def _runtime_for_run(
-    pool: AsyncConnectionPool, resolver: ProviderResolver, run_id: str
-) -> ProviderRuntime | ToolResponse:
-    uid = _as_uuid(run_id)
-    if uid is None:
-        return _config_error(run_id)
-    async with pool.connection() as conn:
-        try:
-            return await resolver.runtime_for_run(conn, uid)
-        except CategorizedError as exc:
-            return ToolResponse.failure(run_id, exc.category)
 
 
 async def _live_ssh_session(
@@ -173,7 +160,7 @@ def register(
         ],
     ) -> ToolResponse:
         """Run offline drgn introspection over a Run's captured core; returns redacted report."""
-        runtime = await _runtime_for_run(pool, resolver, run_id)
+        runtime = await runtime_for_run(pool, resolver, run_id)
         if isinstance(runtime, ToolResponse):
             return runtime
         return await introspect_from_vmcore(
