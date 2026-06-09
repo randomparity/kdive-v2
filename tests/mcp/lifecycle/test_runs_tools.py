@@ -778,6 +778,28 @@ def test_reuse_optional_assertion_satisfied_creates(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_reuse_rejects_non_positive_sizing_requirement(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = await _seed_investigation(pool)
+            sys_id = await _seed_system(
+                pool, requested_vcpus=8, requested_memory_gb=16, requested_disk_gb=100
+            )
+            resp = await _create(
+                pool,
+                _ctx(),
+                inv_id,
+                sys_id,
+                reuse_requirement=RunReuseRequirementInput(vcpus=0),
+            )
+            n = await _count(pool, "SELECT count(*) AS n FROM runs", ())
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.data["field"] == "vcpus"
+        assert n == 0
+
+    asyncio.run(_run())
+
+
 @pytest.mark.parametrize(
     ("req_vcpus", "req_memory_gb", "req_disk_gb", "label"),
     [

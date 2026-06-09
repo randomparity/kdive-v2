@@ -430,6 +430,7 @@ def test_runs_wrappers_roundtrip_create_and_validation_through_fastmcp(
                         "investigation_id": investigation_id,
                         "system_id": system_id,
                         "build_profile": _RUN_BUILD_PROFILE,
+                        "reuse_requirement": {"vcpus": 1, "memory_gb": 1, "disk_gb": 1},
                     },
                 )
                 invalid = await _call_tool(client, "runs.get", {"run_id": "not-a-uuid"})

@@ -96,45 +96,17 @@ def _register_runs_create(app: FastMCP, pool: AsyncConnectionPool) -> None:
                 )
             ),
         ] = None,
-        require_vcpus: Annotated[
-            int | None,
+        reuse_requirement: Annotated[
+            _RunReuseRequirementInput | None,
             Field(
-                gt=0,
-                description="Optional reuse assertion: the System's persisted snapshot must have "
-                "at least this many vcpus, re-checked under the lock. Omit to skip.",
-            ),
-        ] = None,
-        require_memory_gb: Annotated[
-            int | None,
-            Field(
-                gt=0,
-                description="Optional reuse assertion: the System's snapshot must have at least "
-                "this much memory in GB. Omit to skip.",
-            ),
-        ] = None,
-        require_disk_gb: Annotated[
-            int | None,
-            Field(
-                gt=0,
-                description="Optional reuse assertion: the System's snapshot must have at least "
-                "this much disk in GB. Omit to skip.",
-            ),
-        ] = None,
-        require_pcie: Annotated[
-            list[str] | None,
-            Field(
-                description="Optional reuse assertion: the System's allocation pcie_claim must "
-                "contain each 'vendor:device' spec (e.g. ['8086:1572']). Omit or [] to skip."
+                description=(
+                    "Optional System reuse assertion payload with vcpus, memory_gb, "
+                    "disk_gb, and pcie fields. Omit to skip extra reuse matching."
+                )
             ),
         ] = None,
     ) -> ToolResponse:
         """Bind a Run to a ready System and Investigation in one transaction. Requires operator."""
-        reuse_requirement = _RunReuseRequirementInput(
-            vcpus=require_vcpus,
-            memory_gb=require_memory_gb,
-            disk_gb=require_disk_gb,
-            pcie=require_pcie,
-        )
         request = _RunCreateRequest(
             investigation_id=investigation_id,
             system_id=system_id,

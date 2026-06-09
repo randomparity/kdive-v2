@@ -48,6 +48,17 @@ class RunReuseRequirementInput:
     pcie: list[str] | None = None
 
     def to_domain(self) -> ReuseRequirement:
+        for field_name, value in (
+            ("vcpus", self.vcpus),
+            ("memory_gb", self.memory_gb),
+            ("disk_gb", self.disk_gb),
+        ):
+            if value is not None and value <= 0:
+                raise CategorizedError(
+                    "reuse requirement sizing values must be positive",
+                    category=ErrorCategory.CONFIGURATION_ERROR,
+                    details={"field": field_name},
+                )
         return ReuseRequirement(
             vcpus=self.vcpus,
             memory_gb=self.memory_gb,
@@ -96,7 +107,10 @@ async def create_run(
     parsed_expected = _parse_expected_boot_failure(request.system_id, request.expected_boot_failure)
     if isinstance(parsed_expected, ToolResponse):
         return parsed_expected
-    requirement = request.domain_reuse_requirement()
+    try:
+        requirement = request.domain_reuse_requirement()
+    except CategorizedError as exc:
+        return ToolResponse.failure_from_error(request.system_id, exc)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             resolved = await _resolve_targets(conn, ctx, inv_uid, sys_uid)
