@@ -27,6 +27,7 @@ from kdive.domain.cost import Selector
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Resource
 from kdive.domain.pcie import MatchOutcome, parse_match_spec
+from kdive.domain.shapes import ResolvedSizing
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
@@ -107,6 +108,56 @@ class _Selection:
 
     resource: Resource | None
     category: ErrorCategory = ErrorCategory.CONFIGURATION_ERROR
+
+
+@dataclass(frozen=True, slots=True)
+class _AdmissionPreparation:
+    payload: AllocationRequestPayload
+    object_id: str
+    resolved_id: UUID | None
+    kind: str
+    sizing: ResolvedSizing
+    specs: tuple[str, ...]
+
+
+async def _prepare_admission_request(
+    conn: AsyncConnection, payload: AllocationRequestPayload
+) -> _AdmissionPreparation | ToolResponse:
+    resolved_id: UUID | None = None
+    kind = ResourceByKind().kind
+    if isinstance(payload.resource, ResourceById):
+        resolved_id = _as_uuid(payload.resource.resource_id)
+        if resolved_id is None:
+            return _config_error(payload.resource.resource_id)
+    else:
+        kind = payload.resource.kind
+    object_id = str(resolved_id) if resolved_id is not None else kind
+    try:
+        sizing = await resolve_request_sizing(
+            conn,
+            shape=payload.shape,
+            vcpus=payload.vcpus,
+            memory_gb=payload.memory_gb,
+            disk_gb=payload.disk_gb,
+        )
+    except CategorizedError as exc:
+        return ToolResponse.failure_from_error(object_id, exc)
+    specs = tuple(payload.pcie_devices)
+    if sizing.pcie_match is not None:
+        specs = (*specs, sizing.pcie_match)
+    try:
+        for spec in specs:  # grammar validation only — pre-lock, no durable write
+            parse_match_spec(spec)
+    except CategorizedError:
+        return _config_error(object_id)
+    return _AdmissionPreparation(
+        payload=payload,
+        object_id=object_id,
+        resolved_id=resolved_id,
+        kind=kind,
+        sizing=sizing,
+        specs=specs,
+    )
 
 
 async def _select_target(
@@ -196,40 +247,15 @@ async def request_allocation(
             )
         except ValueError:
             return _config_error(project)
-        resolved_id: UUID | None = None
-        kind = ResourceByKind().kind
-        if isinstance(payload.resource, ResourceById):
-            resolved_id = _as_uuid(payload.resource.resource_id)
-            if resolved_id is None:
-                return _config_error(payload.resource.resource_id)
-        else:
-            kind = payload.resource.kind
-        object_id = str(resolved_id) if resolved_id is not None else kind
         async with pool.connection() as conn:
-            try:
-                sizing = await resolve_request_sizing(
-                    conn,
-                    shape=payload.shape,
-                    vcpus=payload.vcpus,
-                    memory_gb=payload.memory_gb,
-                    disk_gb=payload.disk_gb,
-                )
-            except CategorizedError as exc:
-                return ToolResponse.failure_from_error(object_id, exc)
-            # The PCIe spec union is the explicit pcie_devices plus a shape's pcie_match
-            # (ADR-0068/ADR-0067); resolved before host selection so a shape-required card
-            # filters the candidate hosts.
-            specs = tuple(payload.pcie_devices)
-            if sizing.pcie_match is not None:
-                specs = (*specs, sizing.pcie_match)
-            try:
-                for spec in specs:  # grammar validation only — pre-lock, no durable write
-                    parse_match_spec(spec)
-            except CategorizedError:
-                return _config_error(object_id)
-            selection = await _select_target(conn, resolved_id, kind, specs)
+            prepared = await _prepare_admission_request(conn, payload)
+            if isinstance(prepared, ToolResponse):
+                return prepared
+            selection = await _select_target(
+                conn, prepared.resolved_id, prepared.kind, prepared.specs
+            )
             if selection.resource is None:
-                return ToolResponse.failure(object_id, selection.category, data={})
+                return ToolResponse.failure(prepared.object_id, selection.category, data={})
             resource = selection.resource
             outcome = await admit(
                 conn,
@@ -237,15 +263,18 @@ async def request_allocation(
                     ctx=ctx,
                     resource=resource,
                     project=project,
-                    selector=Selector(vcpus=sizing.vcpus, memory_gb=sizing.memory_gb),
-                    window=payload.window,
+                    selector=Selector(
+                        vcpus=prepared.sizing.vcpus,
+                        memory_gb=prepared.sizing.memory_gb,
+                    ),
+                    window=prepared.payload.window,
                     idempotency_key=idempotency_key,
-                    disk_gb=sizing.disk_gb,
-                    shape=sizing.shape,
-                    pcie_specs=specs,
-                    on_capacity=payload.on_capacity,
-                    requested_kind=None if resolved_id is not None else kind,
-                    requested_resource_id=resolved_id,
+                    disk_gb=prepared.sizing.disk_gb,
+                    shape=prepared.sizing.shape,
+                    pcie_specs=prepared.specs,
+                    on_capacity=prepared.payload.on_capacity,
+                    requested_kind=None if prepared.resolved_id is not None else prepared.kind,
+                    requested_resource_id=prepared.resolved_id,
                 ),
             )
         if outcome.granted and outcome.allocation is not None:
