@@ -26,13 +26,20 @@ stable inputs over a process-independent hash. Three facets key three independen
 2. **`FaultFacet(StrEnum)`** — `FAIL = "fail"`, `CATEGORY = "category"`, `LATENCY = "latency"`.
 
 3. **`fault_for(*, seed, system_id, plane, attempt, facet) -> float`** — the load-bearing
-   pure draw. Canonical byte encoding of the key `(seed, system_id, plane, attempt, facet)`
-   joined with an unambiguous separator (NUL byte — absent from UUID/enum text and the int
-   decimal forms, so no two distinct keys collide on the joined bytes), hashed with
-   `hashlib.blake2b(digest_size=8)`, the 64-bit digest divided by `2**64` to land in `[0,1)`.
-   - `system_id` is a `UUID`; encoded as its canonical 36-char string.
-   - `attempt` is an `int` supplied by the caller from durable state (Run boot ordinal /
-     attach ordinal / persisted retry count). The engine never reads or increments a counter.
+   pure draw. The key is the **exact** per-field byte encoding below, joined by a single NUL
+   byte (`b"\x00"`), hashed with `hashlib.blake2b(digest_size=8)`, the 64-bit digest divided
+   by `2**64` to land in `[0,1)`. Each field is encoded to a **decimal/text** form so no field
+   can itself contain a NUL byte — that is what makes the join injective (a packed
+   `int.to_bytes` form is forbidden precisely because it can embed `\x00`):
+   - `seed: int` → `str(seed).encode()` (decimal digits + optional leading `-`; never NUL).
+   - `system_id: UUID` → `str(system_id).encode()` (the canonical 36-char hex-and-dash form).
+   - `plane: FaultPlane` → `plane.value.encode()` (lowercase ascii word).
+   - `attempt: int` → `str(attempt).encode()` (decimal digits; never NUL).
+   - `facet: FaultFacet` → `facet.value.encode()` (`fail`/`category`/`latency`).
+   Because none of the five fields can contain `\x00`, the NUL join is an injective encoding of
+   the 5-tuple — distinct keys never collide on the joined bytes.
+   - `attempt` is supplied by the caller from durable state (Run boot ordinal / attach ordinal /
+     persisted retry count). The engine never reads or increments a counter.
    - Validate `attempt >= 1` (durable ordinals are 1-based; a 0/negative attempt is a caller
      bug — raise `ValueError`, fail fast, do not silently draw).
 
@@ -52,8 +59,11 @@ stable inputs over a process-independent hash. Three facets key three independen
 
 6. **`FaultEngine` (frozen dataclass)** — holds `seed: int`, `fault_rate: Mapping[str, float]`,
    `max_latency_s: Mapping[str, float]` (the capability maps; absent plane ⇒ rate 0 / bound 0).
-   - `decide(*, system_id, plane, attempt) -> FaultDecision`:
-     - `fail = fault_for(... facet=FAIL) < fault_rate.get(plane, 0.0)`.
+   - `decide(*, system_id, plane, attempt) -> FaultDecision`: every `fault_for` call threads
+     **`self.seed`** as the `seed` argument (the engine's configured seed is part of every
+     draw key — two engines with different seeds draw differently for the same op, which is
+     what the soak-sweep-seeds coverage relies on).
+     - `fail = fault_for(seed=self.seed, ... facet=FAIL) < fault_rate.get(plane, 0.0)`.
      - `category` (only when `fail`): bucket `fault_for(... facet=CATEGORY)` across the plane's
        catalog tuple by `int(draw * len(catalog))` (clamped to the last index — `draw<1` so the
        clamp only guards a float-edge `draw==…`).
@@ -86,8 +96,13 @@ stable inputs over a process-independent hash. Three facets key three independen
 
 - **Determinism guard (acceptance):** launch two subprocesses via `subprocess.run` with
   `PYTHONHASHSEED=0` and `PYTHONHASHSEED=1`, each computing `fault_for` for a fixed key and
-  printing the float; assert byte-identical stdout. Proves the draw is process-independent
-  (the builtin-`hash()` trap). This is the headline acceptance criterion.
+  printing the float; assert byte-identical stdout **and** that the value equals a checked-in
+  known-answer golden for that key. The cross-process equality catches a process-salted hash;
+  the golden catches a degenerate/constant draw (a hardcoded-return bug would pass a pure
+  equality check). This is the headline acceptance criterion.
+- **Seed sensitivity:** two `FaultEngine`s with different `seed` (same op) draw different
+  `fail`/`latency` values — proves `decide` actually threads `self.seed`, so the soak
+  seed-sweep widens coverage rather than re-drawing identically.
 - **No nondeterministic seed source reachable:** assert the `engine` module source contains no
   `os.urandom` / `random.` / `time.` / `secrets.` reference (an AST/static guard so a future
   edit that reintroduces a wall-clock seed fails). Drives the ADR "no nondeterministic draw
