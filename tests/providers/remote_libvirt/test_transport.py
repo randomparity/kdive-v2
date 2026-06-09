@@ -46,6 +46,9 @@ def _config(uri: str = "qemu+tls://host.example/system") -> RemoteLibvirtConfig:
         "qemu+tls://host.example/system?NO_VERIFY=1",
         "qemu+tls://host.example/system?keepalive_interval=5;no_verify=1",
         "qemu+tls://host.example/system?PkiPath=/operator/pki",
+        # libvirt percent-unescapes parameter names before matching them.
+        "qemu+tls://host.example/system?no%5Fverify=1",
+        "qemu+tls://host.example/system?%70kipath=/operator/pki",
     ],
 )
 def test_validate_rejects_unsafe_uris(uri: str) -> None:

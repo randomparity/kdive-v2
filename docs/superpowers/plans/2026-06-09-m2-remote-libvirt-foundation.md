@@ -1584,6 +1584,21 @@ and change `ci: lint type lock-check lint-shell lint-workflows check-mermaid doc
 
 ---
 
+## Deviations during implementation review
+
+The branch-diff adversarial passes hardened the implementation beyond this plan's code
+blocks; the source is authoritative where they differ:
+
+- `validate_remote_uri` rejects `no_verify`/`pkipath` in any casing, across `;`
+  separators, and percent-encoded — libvirt parses query parameter names liberally
+  (case-insensitive, `&`/`;` separators, percent-unescaped), so the fail-closed check
+  matches every spelling libvirt would honor.
+- The gate unions a net `git diff pre-M2..HEAD` into the per-commit cumulative walk:
+  `--no-merges` numstat never sees a core change introduced only in a merge commit
+  (conflict resolution / evil merge).
+- `materialized_pkipath` maps `OSError` from mkdtemp/file writes to
+  `CategorizedError(INFRASTRUCTURE_FAILURE)` so worker-local IO failures stay typed.
+
 ## Self-review checklist (run after writing code)
 
 - Spec coverage: enum+0020 (Task 1/6), package skeleton + ports (3–6), TLS factory + mutual TLS + `no_verify` forbidden (3), pkipath lifecycle on every exit path (3), `presign_get` (2), opt-in composition + discovery→capabilities jsonb (4/6), per-PR CI gate incl. running on this PR (7/8). Acceptance: parity test (6), byte-identical local-libvirt (no local_libvirt file touched — verify with `git diff main..HEAD --stat | grep local_libvirt` → empty), injected-factory TLS tests (3/4), gate passes on this PR (8).

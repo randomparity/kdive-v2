@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import libvirt
 
@@ -52,15 +52,15 @@ type OpenConnection = Callable[[str], _LibvirtConn]
 def _query_param_names(query: str) -> set[str]:
     """The lowercased parameter names of a URI query, split the way libvirt splits it.
 
-    libvirt's URI parser treats both ``&`` and ``;`` as separators and matches
-    parameter names case-insensitively (``STRCASEEQ`` in the remote driver), so the
-    fail-closed check must see every spelling libvirt would honor.
+    libvirt's URI parser treats both ``&`` and ``;`` as separators, percent-unescapes
+    parameter names, and matches them case-insensitively (``STRCASEEQ`` in the remote
+    driver), so the fail-closed check must see every spelling libvirt would honor.
     """
     names: set[str] = set()
     for chunk in query.replace(";", "&").split("&"):
         if not chunk:
             continue
-        names.add(chunk.split("=", 1)[0].lower())
+        names.add(unquote(chunk.split("=", 1)[0]).lower())
     return names
 
 
