@@ -16,10 +16,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
+from kdive.reconciler.loop import OwnedDomain as ReconcilerOwnedDomain
+
 
 @dataclass(frozen=True, slots=True)
 class OwnedDomain:
-    """A synthetic domain the mock owns, in the reconciler ``OwnedDomain`` shape."""
+    """A synthetic domain the mock owns, in the reconciler ``OwnedDomain`` shape.
+
+    A concrete dataclass that structurally satisfies the reconciler's
+    :class:`~kdive.reconciler.loop.OwnedDomain` protocol (``name`` + ``system_id``), so a
+    :class:`FaultInjectReaper` plugs into the reconciler's leaked-domain pass directly.
+    """
 
     name: str
     system_id: UUID | None
@@ -66,9 +73,9 @@ class FaultInjectReaper:
     def __init__(self, inventory: FaultInjectInventory) -> None:
         self._inventory = inventory
 
-    async def list_owned(self) -> list[OwnedDomain]:
-        """Return the synthetic domains the mock currently owns."""
-        return self._inventory.owned_domains()
+    async def list_owned(self) -> list[ReconcilerOwnedDomain]:
+        """Return the synthetic domains the mock currently owns (the reconciler port shape)."""
+        return list(self._inventory.owned_domains())
 
     async def destroy(self, name: str) -> None:
         """Reap a synthetic domain; destroying an unknown name is a no-op (idempotent)."""
