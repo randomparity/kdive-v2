@@ -9,6 +9,7 @@ in ``kdive.jobs.handlers.systems``.
 
 from __future__ import annotations
 
+import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -23,27 +24,12 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Allocation, JobKind, System
+from kdive.domain.models import Allocation, Job, JobKind, System
 from kdive.domain.sizing import AllocationSizing
 from kdive.domain.state import AllocationState, IllegalTransition, SystemState
 from kdive.jobs import queue
+from kdive.jobs.context import authorizing as job_authorizing
 from kdive.jobs.payloads import SystemPayload
-from kdive.mcp.responses import ToolResponse
-from kdive.mcp.tools._common import (
-    authorizing as job_authorizing,
-)
-from kdive.mcp.tools._common import (
-    config_error as _config_error,
-)
-from kdive.mcp.tools._common import (
-    job_envelope,
-)
-from kdive.mcp.tools.lifecycle.systems.common import (
-    RootfsValidator,
-    validate_profile_for_provider,
-    validate_rootfs_for_provider,
-)
-from kdive.mcp.tools.lifecycle.systems.view import defined_system_envelope
 from kdive.profiles.provisioning import (
     ProvisioningProfile,
     dump_profile,
@@ -56,6 +42,11 @@ from kdive.provider_components.validation import ComponentSourceCapabilities
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
+from kdive.services.systems.validation import (
+    RootfsValidator,
+    validate_profile_for_provider,
+    validate_rootfs_for_provider,
+)
 
 # System states that occupy a per-project quota slot (terminal torn_down/failed do not).
 _NON_TERMINAL_SYSTEM = (
@@ -88,8 +79,61 @@ class ProvisionDefinedRequest:
     system_id: UUID
 
 
+@dataclass(frozen=True, slots=True)
+class AdmissionFailure:
+    object_id: str
+    category: ErrorCategory
+    data: dict[str, object]
+    suggested_next_actions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionJobAdmitted:
+    job: Job
+    system_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class DefinedSystemAdmitted:
+    system: System
+
+
+type AdmissionResult = AdmissionFailure | ProvisionJobAdmitted | DefinedSystemAdmitted
+
+
 # Maps the Allocation's GB memory snapshot to the profile's MB sizing (ADR-0067 lossless).
 _MB_PER_GB = 1024
+
+
+def _failure(
+    object_id: str | UUID,
+    category: ErrorCategory = ErrorCategory.CONFIGURATION_ERROR,
+    *,
+    data: dict[str, object] | None = None,
+    suggested_next_actions: tuple[str, ...] = (),
+) -> AdmissionFailure:
+    return AdmissionFailure(
+        object_id=str(object_id),
+        category=category,
+        data=data or {},
+        suggested_next_actions=suggested_next_actions,
+    )
+
+
+def _safe_error_details(details: dict[str, object]) -> dict[str, object]:
+    safe: dict[str, object] = {}
+    for key, value in details.items():
+        if isinstance(value, float):
+            if math.isfinite(value):
+                safe[key] = value
+            continue
+        if isinstance(value, (str, bool, int)):
+            safe[key] = value
+    return safe
+
+
+def _failure_from_error(object_id: str | UUID, exc: CategorizedError) -> AdmissionFailure:
+    return _failure(object_id, exc.category, data=_safe_error_details(exc.details))
 
 
 def _stored_profile_for(
@@ -139,7 +183,7 @@ class SystemAdmission:
         pool: AsyncConnectionPool,
         ctx: RequestContext,
         request: ProvisionDefinedRequest,
-    ) -> ToolResponse:
+    ) -> AdmissionResult:
         """Admit a ``defined`` System after its upload window is complete."""
         return await _provision_defined_locked(
             pool,
@@ -154,7 +198,7 @@ class SystemAdmission:
         pool: AsyncConnectionPool,
         ctx: RequestContext,
         request: CreateSystemRequest,
-    ) -> ToolResponse:
+    ) -> AdmissionResult:
         """Validate and lock the shared create-lane admission path.
 
         The submitted profile is structurally pre-parsed first (sizing now optional,
@@ -167,16 +211,16 @@ class SystemAdmission:
             parsed = ProvisioningProfile.parse(request.profile)
             validate_profile_for_provider(parsed, self.component_sources)
         except CategorizedError as exc:
-            return ToolResponse.failure_from_error(str(request.allocation_id), exc)
+            return _failure_from_error(request.allocation_id, exc)
         try:
             async with _locked_allocation_system(pool, ctx, request.allocation_id) as locked:
                 if isinstance(locked, MissingAllocation):
-                    return _config_error(str(locked.allocation_id))
+                    return _failure(locked.allocation_id)
                 conn, alloc, existing = locked
                 try:
                     stored = _stored_profile_for(request.profile, alloc)
                 except CategorizedError as exc:
-                    return ToolResponse.failure_from_error(str(alloc.id), exc)
+                    return _failure_from_error(alloc.id, exc)
                 if request.mode == "provision":
                     return await _provision_create_response(
                         conn,
@@ -197,8 +241,8 @@ class SystemAdmission:
         except IllegalTransition:
             async with pool.connection() as conn:
                 latest = await ALLOCATIONS.get(conn, request.allocation_id)
-            data = {"current_status": latest.state.value} if latest else {}
-            return _config_error(str(request.allocation_id), data=data)
+            data: dict[str, object] = {"current_status": latest.state.value} if latest else {}
+            return _failure(request.allocation_id, data=data)
 
 
 async def _within_system_quota(conn: AsyncConnection, project: str) -> bool:
@@ -277,29 +321,26 @@ async def _provision_create_response(
     *,
     profile: ProvisioningProfile,
     rootfs_validator: RootfsValidator,
-) -> ToolResponse:
+) -> AdmissionResult:
     if existing is None:
         return await _insert_provisioning_system(conn, ctx, alloc, profile, rootfs_validator)
     if existing.state is SystemState.DEFINED:
-        return _config_error(
-            str(existing.id),
+        return _failure(
+            existing.id,
             data={
                 "current_status": existing.state.value,
                 "reason": "use_systems.provision_defined",
             },
         )
     if existing.state is SystemState.PROVISIONING:
-        return await _provision_job_envelope(
+        return await _enqueue_provision_job(
             conn,
             ctx,
             project=alloc.project,
             allocation_id=alloc.id,
             system_id=existing.id,
         )
-    return _config_error(
-        str(existing.id),
-        data={"current_status": existing.state.value},
-    )
+    return _failure(existing.id, data={"current_status": existing.state.value})
 
 
 async def _define_create_response(
@@ -310,12 +351,12 @@ async def _define_create_response(
     *,
     profile: ProvisioningProfile,
     rootfs_validator: RootfsValidator,
-) -> ToolResponse:
+) -> AdmissionResult:
     if existing is None:
         return await _insert_defined_system(conn, ctx, alloc, profile, rootfs_validator)
     if existing.state is SystemState.DEFINED:
-        return defined_system_envelope(existing)  # idempotent re-define
-    return _config_error(str(existing.id), data={"current_status": existing.state.value})
+        return DefinedSystemAdmitted(existing)  # idempotent re-define
+    return _failure(existing.id, data={"current_status": existing.state.value})
 
 
 async def _admit_defined(
@@ -323,7 +364,7 @@ async def _admit_defined(
     ctx: RequestContext,
     alloc: Allocation,
     system: System,
-) -> ToolResponse:
+) -> AdmissionResult:
     """Drive a ``defined`` System ``defined -> provisioning`` and enqueue its provision job.
 
     The stored profile is provisioned (ADR-0025 decision 7); the Allocation is already
@@ -343,7 +384,7 @@ async def _admit_defined(
             project=alloc.project,
         ),
     )
-    return await _provision_job_envelope(
+    return await _enqueue_provision_job(
         conn,
         ctx,
         project=alloc.project,
@@ -352,14 +393,14 @@ async def _admit_defined(
     )
 
 
-async def _provision_job_envelope(
+async def _enqueue_provision_job(
     conn: AsyncConnection,
     ctx: RequestContext,
     *,
     project: str,
     allocation_id: UUID,
     system_id: UUID,
-) -> ToolResponse:
+) -> ProvisionJobAdmitted:
     job = await queue.enqueue(
         conn,
         JobKind.PROVISION,
@@ -367,7 +408,7 @@ async def _provision_job_envelope(
         job_authorizing(ctx, project),
         f"{allocation_id}:provision",
     )
-    return job_envelope(job, "system_id", system_id)
+    return ProvisionJobAdmitted(job=job, system_id=system_id)
 
 
 async def _provision_defined_locked(
@@ -377,11 +418,11 @@ async def _provision_defined_locked(
     *,
     component_sources: ComponentSourceCapabilities,
     rootfs_validator: RootfsValidator,
-) -> ToolResponse:
+) -> AdmissionResult:
     async with pool.connection() as probe:
         probe_system = await SYSTEMS.get(probe, system_id)
         if probe_system is None or probe_system.project not in ctx.projects:
-            return _config_error(str(system_id))
+            return _failure(system_id)
         project = probe_system.project
         allocation_id = probe_system.allocation_id
     async with (
@@ -392,11 +433,11 @@ async def _provision_defined_locked(
     ):
         system = await SYSTEMS.get(conn, system_id)
         if system is None or system.project not in ctx.projects:
-            return _config_error(str(system_id))
+            return _failure(system_id)
         require_role(ctx, system.project, Role.OPERATOR)
         alloc = await ALLOCATIONS.get(conn, system.allocation_id)
         if alloc is None or alloc.project != system.project:
-            return _config_error(str(system.allocation_id))
+            return _failure(system.allocation_id)
         return await _provision_defined_response(
             conn,
             ctx,
@@ -415,9 +456,9 @@ async def _provision_defined_response(
     *,
     component_sources: ComponentSourceCapabilities,
     rootfs_validator: RootfsValidator,
-) -> ToolResponse:
+) -> AdmissionResult:
     if system.state is SystemState.PROVISIONING:
-        return await _provision_job_envelope(
+        return await _enqueue_provision_job(
             conn,
             ctx,
             project=system.project,
@@ -425,15 +466,15 @@ async def _provision_defined_response(
             system_id=system.id,
         )
     if system.state is not SystemState.DEFINED:
-        return _config_error(str(system.id), data={"current_status": system.state.value})
+        return _failure(system.id, data={"current_status": system.state.value})
     try:
         parsed = ProvisioningProfile.parse(system.provisioning_profile)
         validate_profile_for_provider(parsed, component_sources)
         validate_rootfs_for_provider(parsed, rootfs_validator)
     except CategorizedError as exc:
-        return ToolResponse.failure_from_error(str(system.id), exc)
+        return _failure_from_error(system.id, exc)
     if alloc.state is not AllocationState.ACTIVE:
-        return _config_error(str(alloc.id), data={"current_status": alloc.state.value})
+        return _failure(alloc.id, data={"current_status": alloc.state.value})
     return await _admit_defined(conn, ctx, alloc, system)
 
 
@@ -442,22 +483,22 @@ async def _new_system_allowed(
     alloc: Allocation,
     profile: ProvisioningProfile,
     rootfs_validator: RootfsValidator,
-) -> ToolResponse | None:
+) -> AdmissionFailure | None:
     if alloc.state is not AllocationState.GRANTED:
-        return _config_error(str(alloc.id), data={"current_status": alloc.state.value})
+        return _failure(alloc.id, data={"current_status": alloc.state.value})
     # New System: enforce the per-project max_concurrent_systems quota under the held
     # project lock. Fail-closed — no quota row → denied (ADR-0007 §4); a denial writes
     # no System, no job, and leaves the allocation granted (the all-or-nothing rule).
     if not await _within_system_quota(conn, alloc.project):
-        return ToolResponse.failure(
-            str(alloc.id),
+        return _failure(
+            alloc.id,
             ErrorCategory.QUOTA_EXCEEDED,
-            suggested_next_actions=["systems.get", "allocations.list"],
+            suggested_next_actions=("systems.get", "allocations.list"),
         )
     try:
         validate_rootfs_for_provider(profile, rootfs_validator)
     except CategorizedError as exc:
-        return ToolResponse.failure_from_error(str(alloc.id), exc)
+        return _failure_from_error(alloc.id, exc)
     return None
 
 
@@ -521,7 +562,7 @@ async def _insert_defined_system(
     alloc: Allocation,
     profile: ProvisioningProfile,
     rootfs_validator: RootfsValidator,
-) -> ToolResponse:
+) -> AdmissionResult:
     blocked = await _new_system_allowed(conn, alloc, profile, rootfs_validator)
     if blocked is not None:
         return blocked
@@ -534,7 +575,7 @@ async def _insert_defined_system(
         tool="systems.define",
         transition="->defined",
     )
-    return defined_system_envelope(system)
+    return DefinedSystemAdmitted(system)
 
 
 async def _insert_provisioning_system(
@@ -543,11 +584,11 @@ async def _insert_provisioning_system(
     alloc: Allocation,
     profile: ProvisioningProfile,
     rootfs_validator: RootfsValidator,
-) -> ToolResponse:
+) -> AdmissionResult:
     try:
         reject_rootfs_upload_without_window(profile)
     except CategorizedError as exc:
-        return ToolResponse.failure_from_error(str(alloc.id), exc)
+        return _failure_from_error(alloc.id, exc)
     blocked = await _new_system_allowed(conn, alloc, profile, rootfs_validator)
     if blocked is not None:
         return blocked
@@ -567,4 +608,4 @@ async def _insert_provisioning_system(
         job_authorizing(ctx, alloc.project),
         f"{alloc.id}:provision",
     )
-    return job_envelope(job, "system_id", system.id)
+    return ProvisionJobAdmitted(job=job, system_id=system.id)

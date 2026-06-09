@@ -1,4 +1,4 @@
-"""Shared systems lifecycle validation helpers."""
+"""Provider-aware systems profile validation."""
 
 from __future__ import annotations
 

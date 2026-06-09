@@ -1,4 +1,4 @@
-"""Shared systems lifecycle validation helper tests."""
+"""Systems profile validation tests."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from typing import Any
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.mcp.tools.lifecycle.systems.common import (
-    validate_profile_for_provider,
-    validate_rootfs_for_provider,
-)
 from kdive.profiles.provisioning import ProvisioningProfile, RootfsSource
 from kdive.provider_components.references import ROOTFS_COMPONENT, ComponentSourceKind
 from kdive.provider_components.validation import ComponentSourceCapabilities
+from kdive.services.systems.validation import (
+    validate_profile_for_provider,
+    validate_rootfs_for_provider,
+)
 
 _VALID_PROFILE: dict[str, Any] = {
     "schema_version": 1,

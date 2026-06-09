@@ -21,17 +21,36 @@ from kdive.mcp.tools._common import (
 from kdive.mcp.tools._common import (
     config_error as _config_error,
 )
-from kdive.mcp.tools.lifecycle.systems.common import (
-    RootfsValidator,
-)
+from kdive.mcp.tools._common import job_envelope
+from kdive.mcp.tools.lifecycle.systems.view import defined_system_envelope
 from kdive.profiles.types import ProvisioningProfileInput
 from kdive.provider_components.validation import ComponentSourceCapabilities
 from kdive.security.authz.context import RequestContext
 from kdive.services.systems.admission import (
+    AdmissionFailure,
+    AdmissionResult,
     CreateSystemRequest,
+    DefinedSystemAdmitted,
     ProvisionDefinedRequest,
+    ProvisionJobAdmitted,
     SystemAdmission,
 )
+from kdive.services.systems.validation import RootfsValidator
+
+
+def _admission_response(result: AdmissionResult) -> ToolResponse:
+    if isinstance(result, AdmissionFailure):
+        return ToolResponse.failure(
+            result.object_id,
+            result.category,
+            suggested_next_actions=list(result.suggested_next_actions),
+            data=result.data,
+        )
+    if isinstance(result, ProvisionJobAdmitted):
+        return job_envelope(result.job, "system_id", result.system_id)
+    if isinstance(result, DefinedSystemAdmitted):
+        return defined_system_envelope(result.system)
+    raise TypeError(f"unknown system admission result: {type(result).__name__}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,11 +76,12 @@ class SystemProvisionHandlers:
         if uid is None:
             return _config_error(allocation_id)
         with bind_context(principal=ctx.principal):
-            return await self._admission().create_for_allocation(
+            result = await self._admission().create_for_allocation(
                 pool,
                 ctx,
                 CreateSystemRequest(allocation_id=uid, profile=profile, mode="provision"),
             )
+        return _admission_response(result)
 
     async def provision_defined_system(
         self,
@@ -75,11 +95,12 @@ class SystemProvisionHandlers:
         if uid is None:
             return _config_error(system_id)
         with bind_context(principal=ctx.principal):
-            return await self._admission().provision_defined(
+            result = await self._admission().provision_defined(
                 pool,
                 ctx,
                 ProvisionDefinedRequest(system_id=uid),
             )
+        return _admission_response(result)
 
     async def define_system(
         self,
@@ -94,8 +115,9 @@ class SystemProvisionHandlers:
         if uid is None:
             return _config_error(allocation_id)
         with bind_context(principal=ctx.principal):
-            return await self._admission().create_for_allocation(
+            result = await self._admission().create_for_allocation(
                 pool,
                 ctx,
                 CreateSystemRequest(allocation_id=uid, profile=profile, mode="define"),
             )
+        return _admission_response(result)

@@ -24,11 +24,6 @@ from kdive.mcp.tools._common import authorizing as job_authorizing
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._common import job_envelope
 from kdive.mcp.tools._common import stale_handle as _stale_handle
-from kdive.mcp.tools.lifecycle.systems.common import (
-    RootfsValidator,
-    validate_profile_for_provider,
-    validate_rootfs_for_provider,
-)
 from kdive.profiles.provisioning import (
     ProvisioningProfile,
     destructive_opt_in,
@@ -42,6 +37,11 @@ from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
 from kdive.security.authz.rbac import Role
+from kdive.services.systems.validation import (
+    RootfsValidator,
+    validate_profile_for_provider,
+    validate_rootfs_for_provider,
+)
 
 _NON_TERMINAL_RUN = frozenset({RunState.CREATED, RunState.RUNNING})
 _REPROVISION = JobKind.REPROVISION
