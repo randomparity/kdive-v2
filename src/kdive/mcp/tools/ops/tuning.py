@@ -65,8 +65,10 @@ async def set_cost_class_coeff(
             _validate_cost_class(cost_class)
             parsed = _parse_positive_coeff(coeff)
         except CategorizedError as exc:
-            return ToolResponse.failure(
-                _COEFF_OBJECT_ID, exc.category, suggested_next_actions=[_SET_COEFF_TOOL]
+            return ToolResponse.failure_from_error(
+                _COEFF_OBJECT_ID,
+                exc,
+                suggested_next_actions=[_SET_COEFF_TOOL],
             )
         async with pool.connection() as conn, conn.transaction():
             await _upsert_coeff(conn, cost_class, parsed)
@@ -101,8 +103,10 @@ async def set_host_capacity(
             target = _parse_resource_id(resource_id)
             cap = _parse_cap(concurrent_allocation_cap)
         except CategorizedError as exc:
-            return ToolResponse.failure(
-                _CAPACITY_OBJECT_ID, exc.category, suggested_next_actions=[_SET_CAPACITY_TOOL]
+            return ToolResponse.failure_from_error(
+                _CAPACITY_OBJECT_ID,
+                exc,
+                suggested_next_actions=[_SET_CAPACITY_TOOL],
             )
         async with pool.connection() as conn, conn.transaction():
             updated = await _update_host_cap(conn, target, cap)
@@ -133,6 +137,7 @@ def _validate_cost_class(cost_class: str) -> None:
         raise CategorizedError(
             "cost_class must be a non-blank string",
             category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"field": "cost_class", "value": cost_class},
         )
 
 
@@ -147,12 +152,15 @@ def _parse_positive_coeff(value: object) -> Decimal:
         parsed = Decimal(str(value))
     except (InvalidOperation, DecimalException, ValueError, TypeError):
         raise CategorizedError(
-            f"coeff {value!r} is not a number", category=ErrorCategory.CONFIGURATION_ERROR
+            f"coeff {value!r} is not a number",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"field": "coeff", "value": str(value)},
         ) from None
     if not parsed.is_finite() or parsed <= 0:
         raise CategorizedError(
             f"coeff {value!r} must be a finite number > 0",
             category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"field": "coeff", "value": str(value)},
         )
     return parsed
 
@@ -163,6 +171,7 @@ def _parse_cap(value: int) -> int:
         raise CategorizedError(
             f"{CONCURRENT_ALLOCATION_CAP_KEY} {value} must be >= 0",
             category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"field": CONCURRENT_ALLOCATION_CAP_KEY, "value": value},
         )
     return value
 
@@ -175,6 +184,7 @@ def _parse_resource_id(value: str) -> UUID:
         raise CategorizedError(
             f"resource_id {value!r} is not a UUID",
             category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"field": "resource_id", "value": value},
         ) from None
 
 

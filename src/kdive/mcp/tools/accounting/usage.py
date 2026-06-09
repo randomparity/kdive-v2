@@ -37,9 +37,9 @@ async def usage_project(
                 rollup = await accounting_domain.usage(conn, project)
             return _usage_response(project, rollup)
         except CategorizedError as exc:
-            return ToolResponse.failure(
+            return ToolResponse.failure_from_error(
                 _USAGE_OBJECT_ID,
-                exc.category,
+                exc,
                 suggested_next_actions=["accounting.usage_project"],
             )
 
@@ -59,6 +59,7 @@ async def usage_investigation(
                 raise CategorizedError(
                     f"investigation_id {investigation_id!r} is not a uuid",
                     category=ErrorCategory.CONFIGURATION_ERROR,
+                    details={"field": "investigation_id", "value": investigation_id},
                 ) from None
             async with pool.connection() as conn:
                 owning_project = await _resolve_investigation_project(conn, inv_uuid)
@@ -66,15 +67,16 @@ async def usage_investigation(
                     raise CategorizedError(
                         f"investigation {investigation_id} does not exist",
                         category=ErrorCategory.CONFIGURATION_ERROR,
+                        details={"field": "investigation_id", "value": investigation_id},
                     )
                 require_project(ctx, owning_project)
                 require_role(ctx, owning_project, Role.VIEWER)
                 rollup = await accounting_domain.usage(conn, owning_project)
                 investigation_kcu = await accounting_domain.usage_for_investigation(conn, inv_uuid)
         except CategorizedError as exc:
-            return ToolResponse.failure(
+            return ToolResponse.failure_from_error(
                 _USAGE_OBJECT_ID,
-                exc.category,
+                exc,
                 suggested_next_actions=["accounting.usage_investigation"],
             )
     response = _usage_response(owning_project, rollup)

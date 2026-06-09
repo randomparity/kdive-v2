@@ -62,9 +62,9 @@ async def estimate(
                 suggested_next_actions=["accounting.estimate"],
             )
         except CategorizedError as exc:
-            return ToolResponse.failure(
+            return ToolResponse.failure_from_error(
                 _ESTIMATE_OBJECT_ID,
-                exc.category,
+                exc,
                 suggested_next_actions=["accounting.estimate"],
             )
 

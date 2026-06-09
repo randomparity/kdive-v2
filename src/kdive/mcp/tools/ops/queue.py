@@ -118,9 +118,9 @@ async def jobs_list(
         try:
             parsed_states = _parse_states(states)
         except CategorizedError as exc:
-            return ToolResponse.failure(
+            return ToolResponse.failure_from_error(
                 _JOBS_OBJECT_ID,
-                exc.category,
+                exc,
                 suggested_next_actions=[_JOBS_LIST_TOOL],
             )
         capped = max(1, min(limit, _MAX_LIST_LIMIT))
@@ -166,6 +166,7 @@ def _parse_states(states: list[str] | None) -> list[JobState] | None:
             raise CategorizedError(
                 f"unknown job state {state!r}; expected one of {sorted(s.value for s in JobState)}",
                 category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"field": "states", "value": state},
             ) from None
     return parsed
 

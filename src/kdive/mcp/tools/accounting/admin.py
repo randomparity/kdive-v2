@@ -39,8 +39,10 @@ async def set_budget(
         try:
             limit = _parse_non_negative_kcu(limit_kcu)
         except CategorizedError as exc:
-            return ToolResponse.failure(
-                _BUDGET_OBJECT_ID, exc.category, suggested_next_actions=["accounting.set_budget"]
+            return ToolResponse.failure_from_error(
+                _BUDGET_OBJECT_ID,
+                exc,
+                suggested_next_actions=["accounting.set_budget"],
             )
         now = datetime.now(UTC)
         async with pool.connection() as conn, conn.transaction():
@@ -117,12 +119,15 @@ def _parse_non_negative_kcu(value: object) -> Decimal:
         parsed = Decimal(str(value))
     except (InvalidOperation, DecimalException, ValueError, TypeError):
         raise CategorizedError(
-            f"limit_kcu {value!r} is not a number", category=ErrorCategory.CONFIGURATION_ERROR
+            f"limit_kcu {value!r} is not a number",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"field": "limit_kcu", "value": str(value)},
         ) from None
     if not parsed.is_finite() or parsed < 0:
         raise CategorizedError(
             f"limit_kcu {value!r} must be a finite number >= 0",
             category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"field": "limit_kcu", "value": str(value)},
         )
     return parsed
 

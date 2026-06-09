@@ -53,9 +53,9 @@ async def report_granted_set(
             parsed_group_by = _parse_group_by(group_by)
             parsed_window = _parse_window(window)
         except CategorizedError as exc:
-            return ToolResponse.failure(
+            return ToolResponse.failure_from_error(
                 _REPORT_OBJECT_ID,
-                exc.category,
+                exc,
                 suggested_next_actions=[_REPORT_GRANTED_SET_TOOL],
             )
         return await _report_granted_set(pool, ctx, projects, parsed_group_by, parsed_window)
@@ -74,9 +74,9 @@ async def report_all_projects(
             parsed_group_by = _parse_group_by(group_by)
             parsed_window = _parse_window(window)
         except CategorizedError as exc:
-            return ToolResponse.failure(
+            return ToolResponse.failure_from_error(
                 _REPORT_OBJECT_ID,
-                exc.category,
+                exc,
                 suggested_next_actions=[_REPORT_ALL_PROJECTS_TOOL],
             )
         return await _report_all_projects(pool, ctx, parsed_group_by, parsed_window)
@@ -215,6 +215,7 @@ def _parse_group_by(group_by: str | None) -> Literal["principal"] | None:
     raise CategorizedError(
         f"group_by {group_by!r} is not supported (only 'principal')",
         category=ErrorCategory.CONFIGURATION_ERROR,
+        details={"field": "group_by", "value": group_by},
     )
 
 
