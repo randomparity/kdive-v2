@@ -51,11 +51,11 @@ from kdive.domain.state import (
 
 
 class ResourceKind(StrEnum):
-    """The provider resource kinds; M1.5 adds the fault-injection mock kind.
+    """The provider resource kinds.
 
-    ``FAULT_INJECT`` is a forward declaration: its runtime and the
-    ``resources_kind_check`` widen that admits it land with the mock provider
-    (M1.5 issue 2). The default production composition does not register it.
+    Production defaults to ``LOCAL_LIBVIRT``. ``FAULT_INJECT`` is a concrete opt-in mock
+    provider behind the same ``ProviderResolver`` seam and is absent from default
+    production composition.
     """
 
     LOCAL_LIBVIRT = "local-libvirt"
@@ -101,8 +101,6 @@ class PowerAction(StrEnum):
 
 
 class JobAuthorizing(TypedDict):
-    """The fixed authorizing tuple persisted with every durable job."""
-
     principal: str
     agent_session: str | None
     project: str
@@ -135,8 +133,6 @@ class LedgerEventType(StrEnum):
 
 
 class _DomainBase(BaseModel):
-    """Shared Pydantic config: reject unknown fields, validate on assignment."""
-
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
 

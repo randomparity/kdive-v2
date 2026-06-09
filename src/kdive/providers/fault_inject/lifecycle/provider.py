@@ -51,7 +51,6 @@ class _StorePort(Protocol):
 
 
 def _domain_name(system_id: UUID) -> str:
-    """Derive the deterministic synthetic domain name for a System."""
     return f"fault-inject-{system_id}"
 
 
@@ -111,8 +110,6 @@ class FaultInjectBuild:
 
 
 class FaultInjectInstall:
-    """Installer + Booter ports: synthetic install/boot reach ready without real infra."""
-
     def install(
         self,
         system_id: UUID,
@@ -143,8 +140,6 @@ class FaultInjectConnect:
 
 
 class FaultInjectControl:
-    """Controller port: synthetic power and crash-trigger that always succeed."""
-
     def power(self, domain_name: str, action: PowerAction) -> None:
         return None
 
@@ -224,7 +219,6 @@ class _SyntheticGdbController:
 def fault_inject_attach_seam(
     *, host: str, port: int, run_id: str, transcript_path: Path
 ) -> GdbMiAttachment:
-    """Return a synthetic gdb/MI attachment at the loopback endpoint."""
     return GdbMiAttachment(
         controller=_SyntheticGdbController(),
         rsp_host=host,

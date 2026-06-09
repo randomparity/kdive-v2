@@ -16,7 +16,7 @@ ALLOC_HOSTABLE = frozenset({AllocationState.ACTIVE})
 INVESTIGATION_OPEN_FOR_RUN = frozenset({InvestigationState.OPEN, InvestigationState.ACTIVE})
 RUN_BUILD_TERMINAL = frozenset({RunState.FAILED, RunState.CANCELED})
 RUN_NON_TERMINAL = frozenset({RunState.CREATED, RunState.RUNNING})
-"""A Run holds its System until terminal; at most one non-terminal Run per System (#166)."""
+# A Run holds its System until terminal; at most one non-terminal Run per System (#166).
 
 
 def envelope_for_run(run: Run, *, required_cmdline: str | None = None) -> ToolResponse:
@@ -42,5 +42,4 @@ def envelope_for_run(run: Run, *, required_cmdline: str | None = None) -> ToolRe
 
 
 def run_job_envelope(job: Job, run_id: UUID) -> ToolResponse:
-    """Render a run-scoped job envelope."""
     return job_envelope(job, "run_id", run_id)
