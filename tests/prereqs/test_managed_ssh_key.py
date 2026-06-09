@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from kdive.prereqs.managed_ssh_key import (
+    SSH_KEYGEN_TIMEOUT_SEC,
     ManagedKeyError,
     ensure_managed_keypair,
     main,
@@ -154,6 +156,22 @@ def test_run_keygen_wraps_non_filenotfound_oserror(
 
     monkeypatch.setattr("kdive.prereqs.managed_ssh_key.subprocess.run", _boom)
     with pytest.raises(ManagedKeyError, match="ssh-keygen"):
+        ensure_managed_keypair(env={"HOME": str(tmp_path)})
+
+
+def test_run_keygen_timeout_is_bounded_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("kdive.prereqs.managed_ssh_key._keygen_executable", lambda: "ssh-keygen")
+
+    def _timeout(argv: list[str], **kwargs: object) -> object:
+        timeout = kwargs["timeout"]
+        assert timeout == SSH_KEYGEN_TIMEOUT_SEC
+        assert isinstance(timeout, int | float)
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
+
+    monkeypatch.setattr("kdive.prereqs.managed_ssh_key.subprocess.run", _timeout)
+    with pytest.raises(ManagedKeyError, match=f"timed out after {SSH_KEYGEN_TIMEOUT_SEC}s"):
         ensure_managed_keypair(env={"HOME": str(tmp_path)})
 
 
