@@ -11,8 +11,8 @@ from pydantic import ValidationError
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import JobKind
+from kdive.domain.sizing import AllocationSizing
 from kdive.profiles.provisioning import (
-    AllocationSizing,
     BootMethod,
     ProvisioningProfile,
     capture_method,

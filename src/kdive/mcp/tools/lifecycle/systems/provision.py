@@ -25,6 +25,7 @@ from kdive.db.repositories import ALLOCATIONS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.lifecycle_rules import TERMINAL_SYSTEM_STATES as _TERMINAL_SYSTEM
 from kdive.domain.models import Allocation, JobKind, System
+from kdive.domain.sizing import AllocationSizing
 from kdive.domain.state import AllocationState, IllegalTransition, SystemState
 from kdive.jobs import queue
 from kdive.jobs.payloads import SystemPayload
@@ -49,7 +50,6 @@ from kdive.mcp.tools.lifecycle.systems.common import (
 )
 from kdive.mcp.tools.lifecycle.systems.view import defined_system_envelope
 from kdive.profiles.provisioning import (
-    AllocationSizing,
     ProvisioningProfile,
     dump_profile,
     reconcile_profile_sizing,

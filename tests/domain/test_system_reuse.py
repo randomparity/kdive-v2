@@ -10,13 +10,13 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, System
 from kdive.domain.pcie import PCIeClaim
+from kdive.domain.sizing import AllocationSizing
 from kdive.domain.state import AllocationState, SystemState
 from kdive.domain.system_reuse import (
     ReuseRequirement,
     read_system_sizing,
     snapshot_satisfies,
 )
-from kdive.profiles.provisioning import AllocationSizing
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -99,6 +99,30 @@ def test_read_sizing_partial_allocation_snapshot_falls_back_to_profile() -> None
     sizing = read_system_sizing(alloc, system)
 
     assert sizing == AllocationSizing(vcpu=4, memory_mb=8192, disk_gb=40)
+
+
+def test_read_sizing_fallback_rejects_missing_profile_sizing() -> None:
+    alloc = _alloc(vcpus=None, memory_gb=None, disk_gb=None)
+    profile = _profile()
+    del profile["memory_mb"]
+
+    with pytest.raises(CategorizedError) as exc:
+        read_system_sizing(alloc, _system(profile))
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert exc.value.details == {"missing": ["memory_mb"]}
+
+
+def test_read_sizing_fallback_rejects_non_integer_profile_sizing() -> None:
+    alloc = _alloc(vcpus=None, memory_gb=None, disk_gb=None)
+    profile = _profile()
+    profile["memory_mb"] = "8192"
+
+    with pytest.raises(CategorizedError) as exc:
+        read_system_sizing(alloc, _system(profile))
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert exc.value.details == {"invalid": ["memory_mb"]}
 
 
 # --- snapshot_satisfies: sizing -------------------------------------------------------

@@ -20,7 +20,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Literal, cast
 
@@ -39,6 +38,7 @@ from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import DestructiveJobKind, ResourceKind
 from kdive.domain.profile_documents import SerializedProvisioningProfile
+from kdive.domain.sizing import AllocationSizing
 from kdive.profiles._schema import schema_version_validator
 from kdive.profiles.types import ProvisioningProfileInput
 
@@ -218,20 +218,6 @@ class ProvisioningProfile(_ProfileBase):
                 category=ErrorCategory.CONFIGURATION_ERROR,
                 details=details,
             ) from exc
-
-
-@dataclass(frozen=True, slots=True)
-class AllocationSizing:
-    """The at-grant sizing snapshot a shape-sized allocation provisions at (ADR-0067).
-
-    These are the persisted ``requested_vcpus`` / ``requested_memory_gb`` (mapped to MB) /
-    ``requested_disk_gb`` of the Allocation — the authority a profile is reconciled against.
-    Read from persisted state, never re-resolved from the catalog.
-    """
-
-    vcpu: int
-    memory_mb: int
-    disk_gb: int
 
 
 def reconcile_profile_sizing(
