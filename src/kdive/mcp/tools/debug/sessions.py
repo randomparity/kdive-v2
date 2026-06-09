@@ -34,7 +34,7 @@ from pydantic import Field
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import DEBUG_SESSIONS, RUNS, SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import DebugSession, ResourceKind, Run, System
+from kdive.domain.models import DebugSession, Run, System
 from kdive.domain.state import DebugSessionState, RunState, SystemState
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
@@ -42,7 +42,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
-from kdive.mcp.tools.debug.ops import DebugEngineRuntime, register_debug_ops
+from kdive.mcp.tools.debug.ops import DebugEngineRuntime, DebugRuntimeResolver, register_debug_ops
 from kdive.profiles.provisioning import ProvisioningProfile, ssh_credential_ref
 from kdive.providers.ports import Connector, SystemHandle, TransportHandle
 from kdive.providers.resolver import ProviderResolver
@@ -151,7 +151,7 @@ class DebugSessionHandlers:
         self,
         resolver: ProviderResolver | Connector,
         *,
-        runtime: DebugEngineRuntime | None = None,
+        runtime: DebugEngineRuntime | DebugRuntimeResolver | None = None,
         secret_backend_factory: Callable[[UUID], SecretBackend] | None = None,
         secret_registry: SecretRegistry | None = None,
     ) -> None:
@@ -264,6 +264,7 @@ class DebugSessionHandlers:
         if uid is None:
             return _config_error(session_id)
         with bind_context(principal=ctx.principal):
+            provider_runtime = None
             async with pool.connection() as conn:
                 session = await DEBUG_SESSIONS.get(conn, uid)
                 if session is None or session.project not in ctx.projects:
@@ -275,16 +276,21 @@ class DebugSessionHandlers:
                 _, system_id = resolved
                 if isinstance(self._resolver, ProviderResolver):
                     try:
-                        runtime = await self._resolver.runtime_for_session(conn, uid)
+                        provider_runtime = await self._resolver.runtime_for_session(conn, uid)
                     except CategorizedError as exc:
                         return ToolResponse.failure_from_error(session_id, exc)
-                    connector = runtime.connector
+                    connector = provider_runtime.connector
                 else:
                     connector = self._resolver
                 envelope = await _detach_locked(conn, ctx, uid, system_id, connector)
             if self._runtime is not None:
-                async with self._runtime.lock_for(session_id):
-                    self._runtime.reap(session_id)
+                runtime = self._runtime
+                if isinstance(runtime, DebugRuntimeResolver):
+                    if provider_runtime is None:
+                        raise RuntimeError("provider-aware debug runtime requires resolver")
+                    runtime = runtime.runtime_for_provider(provider_runtime)
+                async with runtime.lock_for(session_id):
+                    runtime.reap(session_id)
             self._secret_registry.release(_secret_scope(uid))
             return envelope
 
@@ -495,18 +501,15 @@ def register(
 ) -> None:
     """Register the `debug.*` tools on ``app``, bound to ``pool``.
 
-    The `Connector` is resolved once from the provider runtime (no libvirt connection at
-    registration — the resolver/prober are lazy `live_vm` seams). The Debug-plane gdb-MI tier
-    (ADR-0034) shares one process-scoped :class:`DebugEngineRuntime` (registry + per-session
-    locks + the `live_vm`-gated attach seam); its seven tools register here too, so `app.py` is
-    untouched. `end_session` reaps the lazy engine via the shared runtime.
+    The connector and Debug-plane gdb-MI runtime are resolved from the owning provider at
+    session/op time (no libvirt connection at registration — the resolver/prober are lazy
+    `live_vm` seams). The Debug-plane gdb-MI tier (ADR-0034) caches one
+    :class:`DebugEngineRuntime` per provider kind; its seven tools register here too, so
+    `app.py` is untouched. `end_session` reaps the lazy engine via the same provider cache.
     """
     if resolver is None:
         raise RuntimeError("debug registrar requires an injected provider resolver")
-    provider = resolver.resolve(ResourceKind.LOCAL_LIBVIRT)
-    attach = provider.attach_seam
-    engine = provider.debug_engine
-    runtime = DebugEngineRuntime(engine=engine, attach=attach)
+    runtime = DebugRuntimeResolver(resolver)
     registry = PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
     handlers = DebugSessionHandlers(
         resolver,

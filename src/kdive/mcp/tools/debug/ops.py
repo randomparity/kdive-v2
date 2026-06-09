@@ -24,6 +24,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
+from uuid import UUID
 
 from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
@@ -31,7 +32,7 @@ from pydantic import Field
 
 from kdive.db.repositories import DEBUG_SESSIONS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import DebugSession
+from kdive.domain.models import DebugSession, ResourceKind
 from kdive.domain.state import DebugSessionState
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
@@ -45,6 +46,8 @@ from kdive.providers.ports import (
     GdbMiEngine,
     TransportHandleData,
 )
+from kdive.providers.resolver import ProviderResolver
+from kdive.providers.runtime import ProviderRuntime
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 
@@ -54,7 +57,7 @@ from kdive.security.authz.rbac import Role, require_role
 _TRANSCRIPT_DIR_ENV = "KDIVE_DEBUG_DIR"
 _DEFAULT_TRANSCRIPT_DIR = "/var/lib/kdive/debug"
 
-_EngineOp = Callable[[GdbMiAttachment], ToolResponse]
+_EngineOp = Callable[[GdbMiEngine, GdbMiAttachment], ToolResponse]
 
 
 def _default_transcript_dir() -> Path:
@@ -116,6 +119,39 @@ class DebugEngineRuntime:
             self._locks.pop(session_id, None)
 
 
+class DebugRuntimeResolver:
+    """Provider-aware cache of per-provider debug engine runtimes."""
+
+    def __init__(self, resolver: ProviderResolver, *, transcript_dir: Path | None = None) -> None:
+        self._resolver = resolver
+        self._transcript_dir = transcript_dir
+        self._runtimes: dict[ResourceKind, DebugEngineRuntime] = {}
+        self._guard = threading.Lock()
+
+    async def runtime_for_session(
+        self, pool: AsyncConnectionPool, session_id: UUID
+    ) -> DebugEngineRuntime | ToolResponse:
+        async with pool.connection() as conn:
+            try:
+                provider = await self._resolver.runtime_for_session(conn, session_id)
+            except CategorizedError as exc:
+                return ToolResponse.failure_from_error(str(session_id), exc)
+        return self.runtime_for_provider(provider)
+
+    def runtime_for_provider(self, provider: ProviderRuntime) -> DebugEngineRuntime:
+        kind = ResourceKind(provider.component_sources.provider)
+        with self._guard:
+            runtime = self._runtimes.get(kind)
+            if runtime is None:
+                runtime = DebugEngineRuntime(
+                    engine=provider.debug_engine,
+                    attach=provider.attach_seam,
+                    transcript_dir=self._transcript_dir,
+                )
+                self._runtimes[kind] = runtime
+            return runtime
+
+
 def _op_failure(session_id: str, exc: CategorizedError) -> ToolResponse:
     """Map an engine ``CategorizedError`` onto a failure envelope (with its ``code`` if any)."""
     category = exc.category
@@ -153,7 +189,7 @@ async def run_engine_op(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     session_id: str,
-    runtime: DebugEngineRuntime,
+    runtime: DebugEngineRuntime | DebugRuntimeResolver,
     op: _EngineOp,
 ) -> ToolResponse:
     """Gate the session, take the per-session lock, attach-or-reuse, and run ``op`` off-loop.
@@ -167,22 +203,35 @@ async def run_engine_op(
         if isinstance(gated, ToolResponse):
             return gated
         session = gated
-        async with runtime.lock_for(session_id):
+        resolved_runtime = await _runtime_for_op(pool, session, runtime)
+        if isinstance(resolved_runtime, ToolResponse):
+            return resolved_runtime
+        async with resolved_runtime.lock_for(session_id):
             try:
-                return await asyncio.to_thread(_attach_and_run, runtime, session, op)
+                return await asyncio.to_thread(_attach_and_run, resolved_runtime, session, op)
             except CategorizedError as exc:
                 return _op_failure(session_id, exc)
+
+
+async def _runtime_for_op(
+    pool: AsyncConnectionPool,
+    session: DebugSession,
+    runtime: DebugEngineRuntime | DebugRuntimeResolver,
+) -> DebugEngineRuntime | ToolResponse:
+    if isinstance(runtime, DebugRuntimeResolver):
+        return await runtime.runtime_for_session(pool, session.id)
+    return runtime
 
 
 def _attach_and_run(
     runtime: DebugEngineRuntime, session: DebugSession, op: _EngineOp
 ) -> ToolResponse:
-    return op(runtime.get_or_attach(session))
+    return op(runtime.engine, runtime.get_or_attach(session))
 
 
-def _set_breakpoint_op(runtime: DebugEngineRuntime, session_id: str, location: str) -> _EngineOp:
-    def op(attachment: GdbMiAttachment) -> ToolResponse:
-        ref = runtime.engine.set_breakpoint(attachment, location)
+def _set_breakpoint_op(session_id: str, location: str) -> _EngineOp:
+    def op(engine: GdbMiEngine, attachment: GdbMiAttachment) -> ToolResponse:
+        ref = engine.set_breakpoint(attachment, location)
         return ToolResponse.success(
             session_id,
             "set",
@@ -193,9 +242,9 @@ def _set_breakpoint_op(runtime: DebugEngineRuntime, session_id: str, location: s
     return op
 
 
-def _clear_breakpoint_op(runtime: DebugEngineRuntime, session_id: str, number: str) -> _EngineOp:
-    def op(attachment: GdbMiAttachment) -> ToolResponse:
-        runtime.engine.clear_breakpoint(attachment, number)
+def _clear_breakpoint_op(session_id: str, number: str) -> _EngineOp:
+    def op(engine: GdbMiEngine, attachment: GdbMiAttachment) -> ToolResponse:
+        engine.clear_breakpoint(attachment, number)
         return ToolResponse.success(
             session_id, "cleared", suggested_next_actions=["debug.list_breakpoints"]
         )
@@ -203,9 +252,9 @@ def _clear_breakpoint_op(runtime: DebugEngineRuntime, session_id: str, number: s
     return op
 
 
-def _list_breakpoints_op(runtime: DebugEngineRuntime, session_id: str) -> _EngineOp:
-    def op(attachment: GdbMiAttachment) -> ToolResponse:
-        refs = runtime.engine.list_breakpoints(attachment)
+def _list_breakpoints_op(session_id: str) -> _EngineOp:
+    def op(engine: GdbMiEngine, attachment: GdbMiAttachment) -> ToolResponse:
+        refs = engine.list_breakpoints(attachment)
         return ToolResponse.success(
             session_id,
             "listed",
@@ -216,11 +265,9 @@ def _list_breakpoints_op(runtime: DebugEngineRuntime, session_id: str) -> _Engin
     return op
 
 
-def _read_memory_op(
-    runtime: DebugEngineRuntime, session_id: str, address: int, byte_count: int
-) -> _EngineOp:
-    def op(attachment: GdbMiAttachment) -> ToolResponse:
-        blob = runtime.engine.read_memory(attachment, address=address, byte_count=byte_count)
+def _read_memory_op(session_id: str, address: int, byte_count: int) -> _EngineOp:
+    def op(engine: GdbMiEngine, attachment: GdbMiAttachment) -> ToolResponse:
+        blob = engine.read_memory(attachment, address=address, byte_count=byte_count)
         return ToolResponse.success(
             session_id,
             "read",
@@ -235,11 +282,9 @@ def _read_memory_op(
     return op
 
 
-def _read_registers_op(
-    runtime: DebugEngineRuntime, session_id: str, registers: list[str]
-) -> _EngineOp:
-    def op(attachment: GdbMiAttachment) -> ToolResponse:
-        values = runtime.engine.read_registers(attachment, registers)
+def _read_registers_op(session_id: str, registers: list[str]) -> _EngineOp:
+    def op(engine: GdbMiEngine, attachment: GdbMiAttachment) -> ToolResponse:
+        values = engine.read_registers(attachment, registers)
         rendered = {str(k): str(v) for k, v in values.items()}
         return ToolResponse.success(
             session_id,
@@ -251,9 +296,9 @@ def _read_registers_op(
     return op
 
 
-def _continue_op(runtime: DebugEngineRuntime, session_id: str, timeout_sec: float) -> _EngineOp:
-    def op(attachment: GdbMiAttachment) -> ToolResponse:
-        stop = runtime.engine.continue_(attachment, timeout_sec=timeout_sec)
+def _continue_op(session_id: str, timeout_sec: float) -> _EngineOp:
+    def op(engine: GdbMiEngine, attachment: GdbMiAttachment) -> ToolResponse:
+        stop = engine.continue_(attachment, timeout_sec=timeout_sec)
         return ToolResponse.success(
             session_id,
             "stopped",
@@ -268,9 +313,9 @@ def _continue_op(runtime: DebugEngineRuntime, session_id: str, timeout_sec: floa
     return op
 
 
-def _interrupt_op(runtime: DebugEngineRuntime, session_id: str) -> _EngineOp:
-    def op(attachment: GdbMiAttachment) -> ToolResponse:
-        stop = runtime.engine.interrupt(attachment)
+def _interrupt_op(session_id: str) -> _EngineOp:
+    def op(engine: GdbMiEngine, attachment: GdbMiAttachment) -> ToolResponse:
+        stop = engine.interrupt(attachment)
         reason = stop.reason if stop is not None else None
         return ToolResponse.success(
             session_id,
@@ -290,7 +335,7 @@ def _stop_data(reason: str | None, timed_out: bool) -> dict[str, str]:
 
 
 def register_debug_ops(
-    app: FastMCP, pool: AsyncConnectionPool, runtime: DebugEngineRuntime
+    app: FastMCP, pool: AsyncConnectionPool, runtime: DebugEngineRuntime | DebugRuntimeResolver
 ) -> None:
     """Register the seven gdb-MI `debug.*` tools on ``app``, sharing ``runtime`` (ADR-0034 §5)."""
 
@@ -311,7 +356,7 @@ def register_debug_ops(
             current_context(),
             session_id,
             runtime,
-            _set_breakpoint_op(runtime, session_id, location),
+            _set_breakpoint_op(session_id, location),
         )
 
     @app.tool(
@@ -334,7 +379,7 @@ def register_debug_ops(
             current_context(),
             session_id,
             runtime,
-            _clear_breakpoint_op(runtime, session_id, number),
+            _clear_breakpoint_op(session_id, number),
         )
 
     @app.tool(
@@ -349,7 +394,7 @@ def register_debug_ops(
     ) -> ToolResponse:
         """List all breakpoints on a live DebugSession. Requires operator."""
         return await run_engine_op(
-            pool, current_context(), session_id, runtime, _list_breakpoints_op(runtime, session_id)
+            pool, current_context(), session_id, runtime, _list_breakpoints_op(session_id)
         )
 
     @app.tool(
@@ -368,7 +413,7 @@ def register_debug_ops(
             current_context(),
             session_id,
             runtime,
-            _read_memory_op(runtime, session_id, address, byte_count),
+            _read_memory_op(session_id, address, byte_count),
         )
 
     @app.tool(
@@ -391,7 +436,7 @@ def register_debug_ops(
             current_context(),
             session_id,
             runtime,
-            _read_registers_op(runtime, session_id, registers),
+            _read_registers_op(session_id, registers),
         )
 
     @app.tool(
@@ -417,7 +462,7 @@ def register_debug_ops(
             current_context(),
             session_id,
             runtime,
-            _continue_op(runtime, session_id, timeout_sec),
+            _continue_op(session_id, timeout_sec),
         )
 
     @app.tool(
@@ -430,5 +475,5 @@ def register_debug_ops(
     ) -> ToolResponse:
         """Send an interrupt to halt a running live DebugSession. Requires operator."""
         return await run_engine_op(
-            pool, current_context(), session_id, runtime, _interrupt_op(runtime, session_id)
+            pool, current_context(), session_id, runtime, _interrupt_op(session_id)
         )

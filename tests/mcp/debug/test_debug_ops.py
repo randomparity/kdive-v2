@@ -233,6 +233,7 @@ async def _seed_live_session(pool: AsyncConnectionPool, *, state: DebugSessionSt
 
 
 def _op_for(name: str, runtime: DebugEngineRuntime, session_id: str, **kwargs: Any) -> Any:
+    del runtime
     factory = {
         "set_breakpoint": debug_ops._set_breakpoint_op,
         "clear_breakpoint": debug_ops._clear_breakpoint_op,
@@ -242,7 +243,7 @@ def _op_for(name: str, runtime: DebugEngineRuntime, session_id: str, **kwargs: A
         "continue": debug_ops._continue_op,
         "interrupt": debug_ops._interrupt_op,
     }[name]
-    return factory(runtime, session_id, **kwargs)
+    return factory(session_id, **kwargs)
 
 
 # --- happy paths ---------------------------------------------------------------------------

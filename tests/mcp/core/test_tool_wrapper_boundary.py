@@ -14,16 +14,19 @@ import pytest
 from fastmcp import Client
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.db.repositories import ALLOCATIONS, BUDGETS, INVESTIGATIONS, QUOTAS, SYSTEMS
-from kdive.domain.models import Allocation, Budget, Investigation, Quota, System
-from kdive.domain.state import AllocationState, InvestigationState, SystemState
+from kdive.db.repositories import ALLOCATIONS, BUDGETS, INVESTIGATIONS, QUOTAS, RUNS, SYSTEMS
+from kdive.domain.models import Allocation, Budget, Investigation, Quota, Run, System
+from kdive.domain.state import AllocationState, InvestigationState, RunState, SystemState
 from kdive.mcp.app import build_app
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.catalog import artifacts as artifacts_tools
 from kdive.mcp.tools.catalog import artifacts_uploads
 from kdive.mcp.tools.catalog import resources as resources_tools
+from kdive.mcp.tools.debug import ops as debug_ops_tools
+from kdive.mcp.tools.debug import sessions as debug_sessions_tools
 from kdive.mcp.tools.lifecycle import allocations as allocations_tools
 from kdive.mcp.tools.lifecycle.runs import registrar as runs_tools
 from kdive.mcp.tools.lifecycle.systems import registrar as systems_tools
@@ -183,6 +186,69 @@ async def _seed_ready_system_and_investigation(pool: AsyncConnectionPool) -> tup
     return str(system.id), str(investigation.id)
 
 
+async def _seed_fault_inject_run(pool: AsyncConnectionPool) -> str:
+    resource_id = await _seed_fault_inject_resource_and_limits(pool)
+    async with pool.connection() as conn:
+        allocation = await ALLOCATIONS.insert(
+            conn,
+            Allocation(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="wrapper-user",
+                project="proj",
+                resource_id=UUID(resource_id),
+                state=AllocationState.ACTIVE,
+            ),
+        )
+        system = await SYSTEMS.insert(
+            conn,
+            System(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="wrapper-user",
+                project="proj",
+                allocation_id=allocation.id,
+                state=SystemState.READY,
+                provisioning_profile=fault_inject_profile(),
+                domain_name="fault-inject-wrapper",
+            ),
+        )
+        investigation = await INVESTIGATIONS.insert(
+            conn,
+            Investigation(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="wrapper-user",
+                project="proj",
+                title="wrapper",
+                state=InvestigationState.ACTIVE,
+            ),
+        )
+        run = await RUNS.insert(
+            conn,
+            Run(
+                id=uuid4(),
+                created_at=_DT,
+                updated_at=_DT,
+                principal="wrapper-user",
+                project="proj",
+                investigation_id=investigation.id,
+                system_id=system.id,
+                state=RunState.SUCCEEDED,
+                build_profile=_RUN_BUILD_PROFILE,
+            ),
+        )
+        await conn.execute(
+            "INSERT INTO run_steps (run_id, step, state, result) "
+            "VALUES (%s, 'boot', 'succeeded', %s)",
+            (run.id, Jsonb({})),
+        )
+    return str(run.id)
+
+
 async def _run_count(pool: AsyncConnectionPool) -> int:
     async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT count(*) AS n FROM runs")
@@ -317,6 +383,35 @@ def test_systems_provision_resolves_fault_inject_runtime(
     granted, provisioned = asyncio.run(_run())
     assert granted.status == "granted", granted
     assert provisioned.status == "queued", provisioned
+
+
+def test_debug_ops_resolve_fault_inject_runtime_through_fastmcp(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> tuple[ToolResponse, ToolResponse]:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_fault_inject_run(pool)
+            monkeypatch.setattr(debug_sessions_tools, "current_context", _ctx)
+            monkeypatch.setattr(debug_ops_tools, "current_context", _ctx)
+            resolver = composition.build_provider_resolver(enable_fault_inject=True)
+            app = build_app(pool, verifier=_verifier(), provider_resolver=resolver)
+            async with Client(app) as client:
+                session = await _call_tool(
+                    client,
+                    "debug.start_session",
+                    {"run_id": run_id, "transport": "gdbstub"},
+                )
+                breakpoint = await _call_tool(
+                    client,
+                    "debug.set_breakpoint",
+                    {"session_id": session.object_id, "location": "panic"},
+                )
+        return session, breakpoint
+
+    session, breakpoint = asyncio.run(_run())
+    assert session.status == "live", session
+    assert breakpoint.status == "set", breakpoint
+    assert breakpoint.data["number"] == "1"
 
 
 def test_runs_wrappers_roundtrip_create_and_validation_through_fastmcp(
