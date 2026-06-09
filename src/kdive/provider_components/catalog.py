@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.provider_components.references import ComponentRef
 from kdive.provider_components.requirements import CmdlineRequirements, ConfigRequirements
+from kdive.provider_components.visibility import Visibility
 
 DEFAULT_FIXTURE_CATALOG_PATH = Path(__file__).parents[3] / "fixtures" / "local-libvirt"
 _FIXTURE_CATALOG_ENV = "KDIVE_FIXTURE_CATALOG_PATH"
@@ -60,7 +61,7 @@ class RootfsCatalogEntry(BaseModel):
     format: Literal["qcow2"]
     root_device: str
     source: ComponentRef
-    visibility: Literal["public", "project", "host-policy"]
+    visibility: Visibility
     capabilities: list[str] = Field(default_factory=list)
 
 

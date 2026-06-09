@@ -18,8 +18,8 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.provider_components.local_paths import validate_local_component_path
 from kdive.provider_components.references import ComponentKind, ComponentRef, parse_component_ref
+from kdive.provider_components.visibility import Visibility
 
-type Visibility = Literal["public", "project", "host-policy"]
 type UploadVisibility = Literal["public", "project"]
 
 

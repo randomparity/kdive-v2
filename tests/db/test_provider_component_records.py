@@ -7,7 +7,6 @@ import base64
 import hashlib
 from datetime import timedelta
 from pathlib import Path
-from typing import Literal
 from uuid import UUID
 
 import pytest
@@ -30,8 +29,7 @@ from kdive.db.provider_component_records import (
 )
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.provider_components.artifacts import HeadResult
-
-type TestVisibility = Literal["public", "project", "host-policy"]
+from kdive.provider_components.visibility import Visibility
 
 
 class _ObjectStore:
@@ -51,7 +49,7 @@ def _component_file(tmp_path: Path, name: str = "component.img") -> tuple[Path, 
 
 def _registration(
     *,
-    visibility: TestVisibility = "project",
+    visibility: Visibility = "project",
     project: str | None = "proj-a",
     principal: str = "alice",
 ) -> ComponentRegistration:
@@ -69,7 +67,7 @@ def _local_request(
     sha256: str,
     allowed_roots: list[Path],
     *,
-    visibility: TestVisibility = "project",
+    visibility: Visibility = "project",
     project: str | None = "proj-a",
 ) -> LinkLocalComponentRequest:
     return LinkLocalComponentRequest(
@@ -84,7 +82,7 @@ def _artifact_request(
     *,
     artifact_id: UUID,
     sha256: str,
-    visibility: TestVisibility = "project",
+    visibility: Visibility = "project",
     project: str | None = "proj-a",
 ) -> ArtifactComponentRequest:
     return ArtifactComponentRequest(
