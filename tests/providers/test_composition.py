@@ -14,7 +14,11 @@ from kdive.domain.models import ResourceKind, Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.provider_components.artifacts import StoredArtifact
-from kdive.provider_components.references import LocalComponentRef
+from kdive.provider_components.references import (
+    CONFIG_COMPONENT,
+    PATCH_COMPONENT,
+    LocalComponentRef,
+)
 from kdive.providers import composition
 from kdive.providers.ports import (
     BuildOutput,
@@ -25,6 +29,7 @@ from kdive.providers.ports import (
     SystemHandle,
     TransportHandle,
 )
+from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.provisioning import RemoteLibvirtProvision
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -404,3 +409,35 @@ def test_remote_runtime_has_noop_rootfs_validator(monkeypatch: pytest.MonkeyPatc
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
     assert runtime.rootfs_validator is not None
+
+
+def test_remote_runtime_has_real_builder(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The remote Build plane is real from this issue on (ADR-0081); it must construct
+    # without operator config (the build env is read per op).
+    monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
+
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert isinstance(runtime.builder, RemoteLibvirtBuild)
+
+
+def test_remote_runtime_wires_build_config_validator(monkeypatch: pytest.MonkeyPatch) -> None:
+    # runs.build runs the config validator after the component-source gate; without it a
+    # remote build's config ref goes unvalidated. It must be the builder's validator.
+    monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
+
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert runtime.build_config_validator is not None
+
+
+def test_remote_runtime_accepts_local_config_and_patch_sources() -> None:
+    # runs.build rejects a config whose source-kind is not advertised; an empty set rejects
+    # every remote build. The remote server build stages a local .config + optional local
+    # patch, so it advertises CONFIG/PATCH as {"local"} (ADR-0081).
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    accepted = runtime.component_sources.accepted_component_sources
+    assert accepted.get(CONFIG_COMPONENT) == frozenset({"local"})
+    assert accepted.get(PATCH_COMPONENT) == frozenset({"local"})
+    assert runtime.component_sources.provider == ResourceKind.REMOTE_LIBVIRT.value
