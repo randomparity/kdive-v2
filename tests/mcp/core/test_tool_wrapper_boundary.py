@@ -36,6 +36,7 @@ from kdive.providers.fault_inject.discovery import FaultInjectDiscovery
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole, Role
+from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.resources.discovery import register_discovered_resource
 from kdive.store.objectstore import PresignedUpload
 from tests.mcp.conftest import AUDIENCE, ISSUER, make_keypair
@@ -291,7 +292,7 @@ def test_catalog_resource_wrappers_roundtrip_through_fastmcp(
             resource_id = await _seed_resource_and_limits(pool)
             monkeypatch.setattr(resources_tools, "current_context", _ctx)
             monkeypatch.setattr(ops_resources_tools, "current_context", _ctx)
-            app = build_app(pool, verifier=_verifier())
+            app = build_app(pool, verifier=_verifier(), secret_registry=SecretRegistry())
             async with Client(app) as client:
                 listed = await _call_tool(client, "resources.list")
                 cordoned = await _call_tool(
@@ -321,7 +322,7 @@ def test_lifecycle_allocation_wrappers_roundtrip_through_fastmcp(
         async with _pool(migrated_url) as pool:
             await _seed_resource_and_limits(pool)
             monkeypatch.setattr(allocations_tools, "current_context", _ctx)
-            app = build_app(pool, verifier=_verifier())
+            app = build_app(pool, verifier=_verifier(), secret_registry=SecretRegistry())
             async with Client(app) as client:
                 granted = await _call_tool(
                     client,
@@ -358,7 +359,12 @@ def test_systems_provision_resolves_fault_inject_runtime(
             monkeypatch.setattr(allocations_tools, "current_context", _ctx)
             monkeypatch.setattr(systems_tools, "current_context", _ctx)
             resolver = composition.build_provider_resolver(enable_fault_inject=True)
-            app = build_app(pool, verifier=_verifier(), provider_resolver=resolver)
+            app = build_app(
+                pool,
+                verifier=_verifier(),
+                provider_resolver=resolver,
+                secret_registry=SecretRegistry(),
+            )
             async with Client(app) as client:
                 granted = await _call_tool(
                     client,
@@ -394,7 +400,12 @@ def test_debug_ops_resolve_fault_inject_runtime_through_fastmcp(
             monkeypatch.setattr(debug_sessions_tools, "current_context", _ctx)
             monkeypatch.setattr(debug_ops_tools, "current_context", _ctx)
             resolver = composition.build_provider_resolver(enable_fault_inject=True)
-            app = build_app(pool, verifier=_verifier(), provider_resolver=resolver)
+            app = build_app(
+                pool,
+                verifier=_verifier(),
+                provider_resolver=resolver,
+                secret_registry=SecretRegistry(),
+            )
             async with Client(app) as client:
                 session = await _call_tool(
                     client,
@@ -421,7 +432,7 @@ def test_runs_wrappers_roundtrip_create_and_validation_through_fastmcp(
         async with _pool(migrated_url) as pool:
             system_id, investigation_id = await _seed_ready_system_and_investigation(pool)
             monkeypatch.setattr(runs_tools, "current_context", _ctx)
-            app = build_app(pool, verifier=_verifier())
+            app = build_app(pool, verifier=_verifier(), secret_registry=SecretRegistry())
             async with Client(app) as client:
                 created = await _call_tool(
                     client,
@@ -452,7 +463,7 @@ def test_systems_wrappers_roundtrip_define_and_validation_through_fastmcp(
         async with _pool(migrated_url) as pool:
             allocation_id = await granted_allocation(pool)
             monkeypatch.setattr(systems_tools, "current_context", _ctx)
-            app = build_app(pool, verifier=_verifier())
+            app = build_app(pool, verifier=_verifier(), secret_registry=SecretRegistry())
             async with Client(app) as client:
                 defined = await _call_tool(
                     client,
@@ -482,7 +493,7 @@ def test_artifact_upload_wrapper_roundtrips_and_validates_through_fastmcp(
             monkeypatch.setattr(systems_tools, "current_context", _ctx)
             monkeypatch.setattr(artifacts_tools, "current_context", _ctx)
             monkeypatch.setattr(artifacts_uploads, "object_store_from_env", lambda: store)
-            app = build_app(pool, verifier=_verifier())
+            app = build_app(pool, verifier=_verifier(), secret_registry=SecretRegistry())
             async with Client(app) as client:
                 defined = await _call_tool(
                     client,

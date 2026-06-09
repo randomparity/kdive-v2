@@ -44,6 +44,7 @@ from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.debug import sessions as debug_tools
 from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
 from kdive.security.authz.rbac import Role
+from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.adversarial.conftest import seed_allocation, seed_resource
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -212,7 +213,7 @@ def test_concurrent_start_session_keeps_single_attach_and_leaks_no_transport(
                 run_a = await _seed_booted_run(pool, system_id)
                 run_b = await _seed_booted_run(pool, system_id)
                 conn = _TrackingConnector()
-                handlers = debug_tools.DebugSessionHandlers(conn)
+                handlers = debug_tools.DebugSessionHandlers(conn, secret_registry=SecretRegistry())
 
                 async def start(
                     run_id: str, handlers: debug_tools.DebugSessionHandlers = handlers
@@ -240,7 +241,7 @@ def test_concurrent_end_session_is_idempotent_and_closes_once(migrated_url: str)
                 run_id = await _seed_booted_run(pool, system_id)
                 session_id = await _seed_live_session(pool, run_id)
                 conn = _TrackingConnector()
-                handlers = debug_tools.DebugSessionHandlers(conn)
+                handlers = debug_tools.DebugSessionHandlers(conn, secret_registry=SecretRegistry())
 
                 async def end(
                     sid: str = session_id,

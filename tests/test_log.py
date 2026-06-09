@@ -107,9 +107,10 @@ def test_configure_logging_is_idempotent() -> None:
     root = logging.getLogger()
     before = list(root.handlers)
     try:
-        klog.configure_logging()
+        registry = SecretRegistry()
+        klog.configure_logging(secret_registry=registry)
         count_after_first = len(root.handlers)
-        klog.configure_logging()
+        klog.configure_logging(secret_registry=registry)
         count_after_second = len(root.handlers)
         assert count_after_first == count_after_second, "second call must not add a handler"
         json_handlers = [h for h in root.handlers if isinstance(h.formatter, klog.JsonFormatter)]

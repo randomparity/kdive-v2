@@ -10,6 +10,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.domain.models import JobKind
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.app import build_app, build_handler_registry
+from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.mcp.conftest import AUDIENCE, ISSUER, make_keypair
 
 
@@ -20,7 +21,7 @@ def _verifier() -> JWTVerifier:
 
 def test_build_app_registers_jobs_tools() -> None:
     pool = AsyncConnectionPool("postgresql://unused", open=False)
-    app = build_app(pool, verifier=_verifier())
+    app = build_app(pool, verifier=_verifier(), secret_registry=SecretRegistry())
 
     async def _run() -> None:
         # Verified against fastmcp 3.4.0: FastMCP.list_tools() is async and returns
@@ -93,7 +94,7 @@ def test_build_app_produces_a_streamable_http_asgi_app() -> None:
     # assert the ASGI app assembles (no DB/network needed) so the run path is covered
     # beyond tool registration.
     pool = AsyncConnectionPool("postgresql://unused", open=False)
-    app = build_app(pool, verifier=_verifier())
+    app = build_app(pool, verifier=_verifier(), secret_registry=SecretRegistry())
     asgi = app.http_app()
     assert callable(asgi)
 

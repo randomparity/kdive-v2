@@ -48,7 +48,7 @@ from kdive.mcp.tools.ops import resources as ops_resources_tools
 from kdive.mcp.tools.ops import tuning as ops_tuning_tools
 from kdive.providers.composition import build_provider_resolver
 from kdive.providers.resolver import ProviderResolver
-from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+from kdive.security.secrets.secret_registry import SecretRegistry
 
 type PlaneRegistrar = Callable[
     [FastMCP, AsyncConnectionPool, ProviderResolver, SecretRegistry], None
@@ -118,7 +118,7 @@ def build_app(
     *,
     verifier: JWTVerifier | None = None,
     provider_resolver: ProviderResolver | None = None,
-    secret_registry: SecretRegistry | None = None,
+    secret_registry: SecretRegistry,
 ) -> FastMCP:
     """Construct the FastMCP app and register every plane's tools.
 
@@ -128,15 +128,13 @@ def build_app(
             ``None``, built from the OIDC env vars via :func:`build_verifier`.
         provider_resolver: Injected per-kind provider resolver passed to provider-aware
             tool registrars; when ``None``, built from the default provider composition.
-        secret_registry: App-owned registry shared by secret backends and logging. When
-            ``None``, the process-global default is used for tests and CLI helpers.
+        secret_registry: App-owned registry shared by secret backends and logging.
     """
     app: FastMCP = FastMCP(name="kdive", auth=verifier or build_verifier())
     app.add_middleware(DenialAuditMiddleware(pool))
     resolver = provider_resolver or build_provider_resolver()
-    registry = PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
     for register in _PLANE_REGISTRARS:
-        register(app, pool, resolver, registry)
+        register(app, pool, resolver, secret_registry)
     return app
 
 

@@ -22,7 +22,7 @@ from collections.abc import Generator
 from contextvars import ContextVar, Token
 
 from kdive.security.secrets.redaction import SecretRedactionFilter
-from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+from kdive.security.secrets.secret_registry import SecretRegistry
 
 _FIELDS: tuple[str, ...] = ("request_id", "job_id", "principal", "object_id", "transition")
 
@@ -93,9 +93,7 @@ class _KdiveHandler(logging.StreamHandler):
     """Marker handler so :func:`configure_logging` can stay idempotent."""
 
 
-def configure_logging(
-    level: str = "INFO", *, secret_registry: SecretRegistry | None = None
-) -> None:
+def configure_logging(level: str = "INFO", *, secret_registry: SecretRegistry) -> None:
     """Install the JSON formatter + context filter on the root logger, idempotently.
 
     Safe to call from each entrypoint (server, worker, reconciler): a second call
@@ -104,20 +102,18 @@ def configure_logging(
     Args:
         level: A standard logging level name (e.g. ``"INFO"``, ``"DEBUG"``); an
             unknown name falls back to ``INFO``.
-        secret_registry: Registry used by the logging redaction filter. When omitted,
-            the process-global default is used for tests and CLI helpers.
+        secret_registry: Registry used by the logging redaction filter.
     """
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
-    registry = PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
     for handler in root.handlers:
         if isinstance(handler, _KdiveHandler):
-            _set_redaction_filter(handler, registry)
+            _set_redaction_filter(handler, secret_registry)
             return
     handler = _KdiveHandler(sys.stderr)
     handler.setFormatter(JsonFormatter())
     handler.addFilter(ContextFilter())
-    _set_redaction_filter(handler, registry)
+    _set_redaction_filter(handler, secret_registry)
     root.addHandler(handler)
 
 

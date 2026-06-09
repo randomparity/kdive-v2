@@ -50,7 +50,7 @@ from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 from kdive.security.secrets.paths import PathSafetyError
-from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
 
 _GDBSTUB = "gdbstub"
@@ -153,14 +153,12 @@ class DebugSessionHandlers:
         *,
         runtime: DebugEngineRuntime | DebugRuntimeResolver | None = None,
         secret_backend_factory: Callable[[UUID], SecretBackend] | None = None,
-        secret_registry: SecretRegistry | None = None,
+        secret_registry: SecretRegistry,
     ) -> None:
         self._resolver = resolver
         self._runtime = runtime
         self._secret_backend_factory = secret_backend_factory
-        self._secret_registry = (
-            PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
-        )
+        self._secret_registry = secret_registry
 
     async def start_session(
         self,
@@ -497,7 +495,7 @@ def register(
     pool: AsyncConnectionPool,
     *,
     resolver: ProviderResolver | None = None,
-    secret_registry: SecretRegistry | None = None,
+    secret_registry: SecretRegistry,
 ) -> None:
     """Register the `debug.*` tools on ``app``, bound to ``pool``.
 
@@ -510,14 +508,13 @@ def register(
     if resolver is None:
         raise RuntimeError("debug registrar requires an injected provider resolver")
     runtime = DebugRuntimeResolver(resolver)
-    registry = PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
     handlers = DebugSessionHandlers(
         resolver,
         runtime=runtime,
         secret_backend_factory=lambda session_id: secret_backend_from_env(
-            registry=registry, scope=_secret_scope(session_id)
+            registry=secret_registry, scope=_secret_scope(session_id)
         ),
-        secret_registry=registry,
+        secret_registry=secret_registry,
     )
 
     @app.tool(

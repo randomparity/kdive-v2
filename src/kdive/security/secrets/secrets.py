@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Protocol
 
 from kdive.security.secrets.paths import PathSafetyError, confine_to_root
-from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+from kdive.security.secrets.secret_registry import SecretRegistry
 
 _SECRETS_ROOT_ENV = "KDIVE_SECRETS_ROOT"  # pragma: allowlist secret - env var name, not a value
 _DEFAULT_SECRETS_ROOT = "/var/lib/kdive/secrets"
@@ -65,21 +65,19 @@ class FileRefBackend:
     """Resolve a file reference to its contents, confined to an allowlisted root.
 
     The value is registered into ``registry`` before it is returned, so any consumer
-    that builds a ``Redactor`` from that same registry next will mask it. If no
-    registry is supplied, the process-global default is used for tests and small CLI
-    helpers. A reference escaping ``root`` raises
-    ``PathSafetyError`` before any file is read.
+    that builds a ``Redactor`` from that same registry next will mask it. A reference
+    escaping ``root`` raises ``PathSafetyError`` before any file is read.
     """
 
     def __init__(
         self,
         root: Path,
-        registry: SecretRegistry | None = None,
+        registry: SecretRegistry,
         *,
         scope: object | None = None,
     ) -> None:
         self._root = root
-        self._registry = registry if registry is not None else PROCESS_SECRET_REGISTRY
+        self._registry = registry
         self._scope = scope
 
     def resolve(self, ref: str) -> str:
@@ -89,7 +87,7 @@ class FileRefBackend:
 
 
 def secret_backend_from_env(
-    *, registry: SecretRegistry | None = None, scope: object | None = None
+    *, registry: SecretRegistry, scope: object | None = None
 ) -> FileRefBackend:
     """Build the file-ref secret backend from ``KDIVE_SECRETS_ROOT``.
 

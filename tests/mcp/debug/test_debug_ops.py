@@ -43,6 +43,7 @@ from kdive.providers.local_libvirt.debug.debug_gdbmi import GdbMiEngine
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.providers.ports import GdbMiAttachment, TransportHandleData
 from kdive.security.authz.rbac import AuthorizationError, Role
+from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.resources.discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
@@ -527,7 +528,9 @@ def test_end_session_reaps_engine(migrated_url: str) -> None:
                 pool, _ctx(), session_id, runtime, _op_for("list_breakpoints", runtime, session_id)
             )
             # The engine is registered; end_session must exit + drop it.
-            handlers = debug_tools.DebugSessionHandlers(_FakeConnector(), runtime=runtime)
+            handlers = debug_tools.DebugSessionHandlers(
+                _FakeConnector(), runtime=runtime, secret_registry=SecretRegistry()
+            )
             resp = await handlers.end_session(pool, _ctx(), session_id)
             assert resp.status == "detached"
             assert attach.controller.exited is True
@@ -545,7 +548,9 @@ def test_end_session_reap_is_noop_without_engine(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             session_id = await _seed_live_session(pool, state=DebugSessionState.LIVE)
             runtime = _runtime(_CountingAttach())
-            handlers = debug_tools.DebugSessionHandlers(_FakeConnector(), runtime=runtime)
+            handlers = debug_tools.DebugSessionHandlers(
+                _FakeConnector(), runtime=runtime, secret_registry=SecretRegistry()
+            )
             resp = await handlers.end_session(pool, _ctx(), session_id)
         assert resp.status == "detached"  # reap of a never-attached session is a no-op
 

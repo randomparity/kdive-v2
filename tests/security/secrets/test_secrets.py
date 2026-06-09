@@ -118,10 +118,10 @@ def test_oversized_file_rejected(tmp_path: Path) -> None:
     assert registry.snapshot() == frozenset()
 
 
-def test_default_backend_registers_into_process_global(tmp_path: Path) -> None:
+def test_backend_can_explicitly_register_into_process_global(tmp_path: Path) -> None:
     scope = object()
     _write(tmp_path, "key", "default-global-value\n")
-    backend = FileRefBackend(tmp_path, scope=scope)
+    backend = FileRefBackend(tmp_path, PROCESS_SECRET_REGISTRY, scope=scope)
     try:
         value = backend.resolve(str(tmp_path / "key"))
         assert value in PROCESS_SECRET_REGISTRY.snapshot()
@@ -151,7 +151,7 @@ def test_secret_backend_from_env_confines_to_configured_root(
     _write(root, "guest-key", "env-rooted-secret\n")
     _write(tmp_path, "escape", "leak\n")
     monkeypatch.setenv("KDIVE_SECRETS_ROOT", str(root))
-    backend = secret_backend_from_env()
+    backend = secret_backend_from_env(registry=SecretRegistry())
     with pytest.raises(PathSafetyError):
         backend.resolve(str(tmp_path / "escape"))
     assert backend.resolve(str(root / "guest-key")) == "env-rooted-secret"

@@ -118,11 +118,12 @@ def _handlers(
             return secret_backend
 
         secret_backend_factory = _backend_factory
+    registry = secret_registry if secret_registry is not None else SecretRegistry()
     return debug_tools.DebugSessionHandlers(
         connector,
         runtime=runtime,
         secret_backend_factory=secret_backend_factory,
-        secret_registry=secret_registry,
+        secret_registry=registry,
     )
 
 

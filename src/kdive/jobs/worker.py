@@ -26,7 +26,7 @@ from kdive.domain.models import Job
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry, JobHandler
 from kdive.security.secrets.redaction import Redactor
-from kdive.security.secrets.secret_registry import PROCESS_SECRET_REGISTRY, SecretRegistry
+from kdive.security.secrets.secret_registry import SecretRegistry
 
 _log = logging.getLogger(__name__)
 _CONTEXT_VALUE_MAX = 1000
@@ -45,7 +45,7 @@ class Worker:
         lease: timedelta = queue.DEFAULT_LEASE,
         heartbeat_interval: timedelta = timedelta(seconds=30),
         poll_interval: timedelta = timedelta(seconds=1),
-        secret_registry: SecretRegistry | None = None,
+        secret_registry: SecretRegistry,
     ) -> None:
         """Build a worker.
 
@@ -73,9 +73,7 @@ class Worker:
         self._lease = lease
         self._heartbeat_interval = heartbeat_interval
         self._poll_interval = poll_interval
-        self._secret_registry = (
-            PROCESS_SECRET_REGISTRY if secret_registry is None else secret_registry
-        )
+        self._secret_registry = secret_registry
 
     async def run_once(self) -> Job | None:
         """Claim and dispatch one job; return it, or ``None`` if idle.
