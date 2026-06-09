@@ -43,6 +43,7 @@ from kdive.mcp.tools.ops import breakglass as ops_breakglass_tools
 from kdive.mcp.tools.ops import inventory as inventory_tools
 from kdive.mcp.tools.ops import queue as ops_queue_tools
 from kdive.mcp.tools.ops import reconcile as ops_reconcile_tools
+from kdive.mcp.tools.ops import resources as ops_resources_tools
 from kdive.mcp.tools.ops import tuning as ops_tuning_tools
 from kdive.planes import control, runs, systems, vmcore
 from kdive.providers.composition import build_provider_resolver
@@ -75,6 +76,7 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _plain(register_accounting_reports),
     _plain(register_accounting_admin),
     _plain(ops_reconcile_tools.register),
+    _plain(ops_resources_tools.register),
     _plain(allocations.register),
     _plain(ops_breakglass_tools.register),
     lambda app, pool, resolver, registry: systems_tools.register(app, pool, resolver=resolver),

@@ -22,6 +22,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.catalog import resources as resources_tools
 from kdive.mcp.tools.lifecycle import allocations as allocations_tools
 from kdive.mcp.tools.lifecycle.systems import registrar as systems_tools
+from kdive.mcp.tools.ops import resources as ops_resources_tools
 from kdive.providers import composition
 from kdive.providers.fault_inject.discovery import FaultInjectDiscovery
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
@@ -143,6 +144,7 @@ def test_catalog_resource_wrappers_roundtrip_through_fastmcp(
         async with _pool(migrated_url) as pool:
             resource_id = await _seed_resource_and_limits(pool)
             monkeypatch.setattr(resources_tools, "current_context", _ctx)
+            monkeypatch.setattr(ops_resources_tools, "current_context", _ctx)
             app = build_app(pool, verifier=_verifier())
             async with Client(app) as client:
                 listed = await _call_tool(client, "resources.list")

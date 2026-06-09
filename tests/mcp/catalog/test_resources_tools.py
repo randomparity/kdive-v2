@@ -19,7 +19,8 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Allocation, System
 from kdive.domain.state import AllocationState, SystemState
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.catalog import resources as resources_tools
+from kdive.mcp.tools.catalog import resources as catalog_resources_tools
+from kdive.mcp.tools.ops import resources as resources_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.authz.rbac import PlatformRole
 from kdive.services.allocation_release import ReleaseOutcome
@@ -59,7 +60,7 @@ def test_list_returns_host_with_flat_capability_projection(migrated_url: str) ->
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             res_id = await _register(pool)
-            responses = await resources_tools.list_resources_tool(pool, CTX, kind=None)
+            responses = await catalog_resources_tools.list_resources_tool(pool, CTX, kind=None)
         assert responses.object_id == "resources"
         assert responses.status == "ok"
         items = responses.items
@@ -81,7 +82,7 @@ def test_list_kind_filter_miss_is_configuration_error(migrated_url: str) -> None
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             await _register(pool)
-            responses = await resources_tools.list_resources_tool(pool, CTX, kind="nope")
+            responses = await catalog_resources_tools.list_resources_tool(pool, CTX, kind="nope")
         assert responses.status == "error"
         assert responses.error_category == "configuration_error"
 
@@ -97,8 +98,10 @@ def test_list_malformed_resource_row_degrades_to_infrastructure_failure(
             res_id = await _register(pool)
             async with pool.connection() as conn:
                 await conn.execute("UPDATE resources SET capabilities = '[]'::jsonb")
-            caplog.set_level(logging.WARNING, logger=resources_tools.__name__)
-            responses = await resources_tools.list_resources_tool(pool, CTX, kind="local-libvirt")
+            caplog.set_level(logging.WARNING, logger=catalog_resources_tools.__name__)
+            responses = await catalog_resources_tools.list_resources_tool(
+                pool, CTX, kind="local-libvirt"
+            )
         items = responses.items
         assert len(items) == 1
         assert items[0].object_id == res_id
@@ -116,7 +119,7 @@ def test_describe_adds_pool_cost_host(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             res_id = await _register(pool)
-            resp = await resources_tools.describe_resource(pool, CTX, res_id)
+            resp = await catalog_resources_tools.describe_resource(pool, CTX, res_id)
         assert resp.status == "available"
         assert resp.data["pool"] == "local-libvirt"
         assert resp.data["cost_class"] == "local"
@@ -128,7 +131,7 @@ def test_describe_adds_pool_cost_host(migrated_url: str) -> None:
 def test_describe_unknown_is_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await resources_tools.describe_resource(pool, CTX, str(uuid4()))
+            resp = await catalog_resources_tools.describe_resource(pool, CTX, str(uuid4()))
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
 
@@ -138,7 +141,7 @@ def test_describe_unknown_is_error(migrated_url: str) -> None:
 def test_describe_malformed_id_is_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await resources_tools.describe_resource(pool, CTX, "not-a-uuid")
+            resp = await catalog_resources_tools.describe_resource(pool, CTX, "not-a-uuid")
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
 

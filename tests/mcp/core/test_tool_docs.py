@@ -12,9 +12,9 @@ import ast
 import asyncio
 import inspect
 import textwrap
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_type_hints
 
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.tools.function_tool import FunctionTool
@@ -135,6 +135,21 @@ def _reaches_symbol(fn: Callable[..., Any], target: str) -> bool:
     """
     seen: set[int] = set()
 
+    def _method_from_factory_return(
+        factory: Callable[..., Any],
+        attr: str,
+        nonlocals: Mapping[str, Any],
+    ) -> Callable[..., Any] | None:
+        if not inspect.isfunction(factory):
+            return None
+        try:
+            hints = get_type_hints(factory, globalns=factory.__globals__, localns=nonlocals)
+        except (NameError, TypeError):
+            return None
+        owner_type = hints.get("return")
+        delegate = getattr(owner_type, attr, None)
+        return delegate if callable(delegate) else None
+
     def _walk(f: Callable[..., Any]) -> bool:
         try:
             tree = ast.parse(textwrap.dedent(inspect.getsource(f)))
@@ -161,6 +176,14 @@ def _reaches_symbol(fn: Callable[..., Any], target: str) -> bool:
                     delegate = getattr(owner, callee.attr, None)
                     if callable(delegate):
                         attribute_calls.append(delegate)
+                elif isinstance(callee, ast.Attribute) and isinstance(callee.value, ast.Call):
+                    factory_call = callee.value.func
+                    if isinstance(factory_call, ast.Name):
+                        factory = nonlocals.get(factory_call.id, glb.get(factory_call.id))
+                        if callable(factory):
+                            delegate = _method_from_factory_return(factory, callee.attr, nonlocals)
+                            if delegate is not None:
+                                attribute_calls.append(delegate)
         for name in local_calls:
             delegate = glb.get(name)
             if inspect.isfunction(delegate) and id(delegate) not in seen:
