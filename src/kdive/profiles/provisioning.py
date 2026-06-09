@@ -2,8 +2,9 @@
 
 A provisioning profile is a versioned, declarative document with a
 provider-agnostic core (target arch, vCPU, memory, disk, boot method, kernel-source
-reference) and a provider-specific section keyed by provider name. M0 ships the
-``local-libvirt`` variant only.
+reference) and a provider-specific section keyed by provider name. The production
+default is ``local-libvirt``; ``fault-inject`` is implemented as an opt-in provider
+behind ``ProviderResolver`` for test and failure-path coverage.
 
 The models are ``frozen`` (the immutable-request-inputs invariant, ADR-0003/0011)
 and reject unknown fields. :meth:`ProvisioningProfile.parse` is the sanctioned entry
