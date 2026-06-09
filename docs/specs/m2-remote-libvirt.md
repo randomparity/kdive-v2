@@ -7,20 +7,25 @@ drives the full spine — allocate → provision → build → install → boot 
 capture vmcore → release — against a **genuinely remote** libvirt/QEMU host the MCP server and
 worker tier do **not** share a filesystem with. It is the first provider that resolves a
 **real secret** (an x509 client cert reaching `qemu+tls://` libvirtd) and the first that moves
-artifacts across a network boundary, so it converts the secret-by-reference→redaction contract
-and the object-store distribution model from synthetic (M1.5) to production.
+artifacts across a network boundary, so it converts both halves of the secret contract —
+resolution+materialization+cleanup (the cert) and transcript exact-value redaction (the minted
+presigned URL) — and the object-store distribution model from synthetic (M1.5) to production.
 
 M2 has **two co-equal goals**, and a change to core counts as a design smell to refactor away,
 not a cost to accept:
 
 1. **Working remote capability** — an operator drives the whole spine on a real remote TLS host.
-2. **The portability hypothesis, made checkable** — the M2 merge touches **zero net lines** in
-   core (`domain` / `db` / `jobs` / `reconciler` / `services` / `store` / `security` and the
-   `mcp` server skeleton) and the MCP tool surface (`mcp/tools/*`), modulo a small explicit
-   allowlist (the `ResourceKind` enum value, `providers/composition.py` registration, the one
-   migration, regenerated docs). This is the top-level design's falsifiable hypothesis
-   (`top-level-design.md` §Roadmap), measured against a real second provider for the first
-   time.
+2. **The portability hypothesis, made checkable** — **no provider-specific logic enters** core
+   (`domain` / `db` / `jobs` / `reconciler` / `services` / `store` / `security` and the `mcp`
+   server skeleton) or the MCP tool surface (`mcp/tools/*`). The gate measures **cumulative
+   touched lines** (every added/removed line of the M2 commit set since a `pre-M2` tag cut at
+   milestone start — not a net a later revert can zero out) against a small explicit allowlist
+   of **named, provider-agnostic** touch-points: the `ResourceKind` enum value,
+   `providers/composition.py` registration, the one migration, regenerated docs, **and the one
+   additive object-store primitive `presign_get`** the in-target seam requires (ADR-0076 —
+   `store/` exposes only `presign_put` today). This is the top-level design's falsifiable
+   hypothesis (`top-level-design.md` §Roadmap), measured against a real second provider for the
+   first time. A second unplanned core change is the gate firing, not a new allowlist entry.
 
 `local_libvirt` is a bootstrap headed for removal once `remote_libvirt` is enabled in
 production (the MCP server runs separately from the libvirt-enabled development hosts). **M2
@@ -56,21 +61,31 @@ baseline and the M1.2 / M1.5 scaffolding standing on local-libvirt is undisturbe
   would create exactly the migration-shim the "replace, don't deprecate" standard forbids
   (ADR-0076). A new `ResourceKind.REMOTE_LIBVIRT = "remote-libvirt"` and migration `0020`
   (CHECK widen) register the third kind behind the per-kind `ProviderResolver` (ADR-0071).
-- **A `qemu+tls://` control transport** — discovery, provisioning (define/start), control
-  (power/reset/force-crash), and capability enumeration call libvirt over `qemu+tls://`. The
-  x509 client cert (and key) is a **secret-by-reference** resolved at the worker boundary
-  through the runtime's `SecretBackend`, which registers the resolved value before returning it
-  so any transcript capturing it is exact-value masked (ADR-0077). This is the first provider
-  resolving a real secret — the half of the secret contract local-libvirt (which resolves none)
-  never exercised, and which M1.5's fault-inject only exercised against a synthetic sentinel.
+- **A `qemu+tls://` control transport (mutual TLS)** — discovery, provisioning (define/start),
+  control (power/reset/force-crash), and capability enumeration call libvirt over `qemu+tls://`;
+  the worker presents a client cert **and** verifies the libvirtd server cert against a
+  configured CA + hostname (`no_verify` forbidden, fail-closed). The client cert, key, and CA
+  are **secrets-by-reference**. Because `SecretBackend.resolve()` returns a **string** but
+  libvirt TLS reads from **on-disk files**, the worker resolves the refs, **materializes** them
+  into a private per-op pkipath (`0700`/`0600`), points the URI at it via `?pkipath=`, and
+  **deletes it on every exit path** via a guaranteed `finally` — the private-key-on-disk
+  lifetime, not text masking, is the control for the cert (it is consumed by the TLS layer and
+  never echoed). This is the first provider resolving a real secret, so M2 proves the
+  resolve→materialize→use→cleanup path local-libvirt (no secrets) and fault-inject (a synthetic
+  sentinel) never ran (ADR-0077). The transcript exact-value redaction half is proved separately
+  by the presigned URL (below).
 - **The object store as the canonical artifact channel + a presigned-URL in-target seam** —
   the worker publishes the built kernel to the object store and mints a time-boxed **presigned
-  GET** URL; the **target** (not the host, not the worker) pulls and installs it. The vmcore
-  flows the other way: kdump in the guest uploads to a **presigned PUT** URL, and the worker
-  references the resulting object. No standing object-store credentials live in any guest, no
-  host-side agent is deployed, and `virStorageVolUpload` is not used for kernel artifacts
-  (ADR-0078). The in-target execution that triggers the pull/install/reboot is realized for M2
-  by **qemu-guest-agent over the same TLS connection** — no separate channel, no second secret.
+  GET** URL (a new `presign_get` primitive; `store/` has only `presign_put` today). The
+  **target** (not the host, not the worker) pulls and installs it. The vmcore flows the other
+  way **in two phases**: on crash, kdump writes the vmcore to the guest's **local dump storage**
+  (the capture kernel is a minimal initramfs, not assumed to reach S3); on the **next normal
+  boot** the in-guest agent uploads it to a **presigned PUT** URL whose lifetime covers the
+  crash→reboot→upload window, and the worker references the object. No standing object-store
+  credentials live in any guest, no host-side agent is deployed, and `virStorageVolUpload` is
+  not used for kernel artifacts (ADR-0078). The in-target execution that triggers the
+  pull/install/reboot is realized for M2 by **qemu-guest-agent over the same TLS connection** —
+  no separate channel, no second secret.
   **Direct-kernel boot is retired as a carry-forward**: `remote_libvirt` boots a disk-image base
   OS and iterates kernels by in-guest install + reboot/kexec, debugged via the QEMU gdbstub.
   `local_libvirt` keeps direct-kernel boot. This is the model M3 (cloud-init), M4 (SSH/SoL
@@ -80,12 +95,17 @@ baseline and the M1.2 / M1.5 scaffolding standing on local-libvirt is undisturbe
 - **Remote live-debug reachability** — three paths, scoped by what crosses the network
   (ADR-0079): the **gdb-MI tier** (breakpoints, single-step, live `read_memory` / `read_registers`,
   continue/interrupt) connects **directly over TCP** from the worker to the host's QEMU gdbstub
-  port (`qemu+tls://` does not tunnel it), under an explicit, documented operator network
-  assumption (routable worker→host TCP on a configured gdbstub port range); **drgn live
-  introspection** runs **inside the guest** via the qemu-guest-agent seam (constrained
-  allowlist, results streamed back); **vmcore postmortem** (drgn-from-vmcore, crash) runs **on
-  the worker** after fetching the vmcore object from S3 — no live reachability needed. Bare
-  metal later swaps the gdbstub for KGDB-over-SoL behind the same Connect port.
+  port (`qemu+tls://` does not tunnel it). The gdbstub is **unauthenticated and unencrypted**, so
+  this is a **security boundary, not a firewall note**: the gdbstub is bound + ACL'd to the
+  **worker pool's source only** (the ACL *is* the auth) and one System's port is unreachable by
+  other tenants/guests; each running System gets a **distinct port the provisioning profile
+  allocates + records**, which the Connect port reads. **drgn live introspection** runs **inside
+  the guest** via the qemu-guest-agent seam — the worker **composes** the constrained, allowlisted
+  drgn script (enforcement is worker-side, never trusted to an in-guest shell), and the base
+  image carries **drgn + matching vmlinux/debuginfo**. **vmcore postmortem** (drgn-from-vmcore,
+  crash) runs **on the worker** after fetching the vmcore object from S3 — no live reachability
+  needed. Bare metal later swaps the gdbstub for KGDB-over-SoL behind the same Connect port; the
+  TLS-tunneled proxy is the hardening path where the ACL cannot be guaranteed.
 - **Build stays on the worker** — `RemoteLibvirtBuild` runs `make` on the worker exactly as
   `local_libvirt` does, then publishes vmlinuz+modules to the object store via the artifact
   channel. "Remote build host / GitHub Actions" (`top-level-design.md` line 232) is a later
@@ -149,26 +169,31 @@ which is what keeps the falsifiability claim honest.
 The seam every later provider reuses. M2 fixes its **contract** (ADR-0078); the guest-agent
 realization is M2's implementation of it:
 
-1. **Publish** — the worker writes the built artifact to the object store under the
+1. **Publish + presign** — the worker writes the built artifact to the object store under the
    run/system-scoped key layout (ADR-0013) and mints a **presigned GET** URL bounded to the
-   op's lifetime.
-2. **Deliver the URL, not the bytes** — the worker hands the presigned URL to the target
-   through the in-target execution seam (M2: a qemu-guest-agent `exec` over the TLS connection;
-   M3: cloud-init / agent; M4/M5: SSH/SoL after netboot). No object-store credential ever
-   enters a guest.
+   op's lifetime (the new `presign_get` primitive).
+2. **Register, then deliver the URL, not the bytes** — a presigned URL is a **bearer
+   capability**, so the worker **registers the minted URL in the redaction registry**
+   (`registry.register`) *before* handing it to the target through the in-target execution seam
+   (M2: a qemu-guest-agent `exec` over the TLS connection; M3: cloud-init / agent; M4/M5: SSH/SoL
+   after netboot). No object-store credential ever enters a guest.
 3. **Install in-target** — the target pulls the kernel, installs it (boot entry + the
    method-conditional crashkernel cmdline, reusing the ADR-0051/ADR-0061 composition into the
    guest's grub), and reboots/kexecs into it.
-4. **Capture out** — kdump in the guest writes the vmcore and uploads it to a **presigned PUT**
-   URL; the worker references the resulting object and runs postmortem locally.
+4. **Capture out (two phases)** — on crash, kdump writes the vmcore to the guest's local dump
+   storage; on the **next normal boot** the in-guest agent uploads it to a **presigned PUT** URL
+   (lifetime covering the crash→reboot→upload window, scoped to one object+checksum); the worker
+   references the resulting object and runs postmortem locally.
 
-Two contract points are load-bearing and tested: **(a)** the presigned URL's lifetime is
-bounded and the seam never plants a standing credential in a guest; **(b)** any transcript the
-guest-agent `exec` captures (which can echo the presigned URL and, for the TLS path, the
-resolved cert material) flows the **normal redaction path** — the resolved cert `secret_ref` is
-registered before use (ADR-0077) and the scope is released **only after** redact-and-persist
-(ADR-0075's release-after-persist rule), so no resolved secret reaches the object store or a
-response snippet unmasked.
+Two contract points are load-bearing and tested: **(a)** every presigned URL's lifetime is
+bounded, it is scoped to one object, and the seam never plants a standing credential in a guest;
+**(b)** because the minted URL is registered before the `exec` (step 2), any transcript the
+guest-agent captures (which can echo the URL + in-guest command output — **not** the TLS cert,
+which the TLS layer consumes and never echoes) flows the **normal redaction path**, masked by
+exact value, with the scope released **only after** redact-and-persist (ADR-0075), so the
+bearer capability never reaches the object store or a response snippet unmasked. This is the
+**transcript exact-value redaction** half of the secret contract (the cert proves the
+resolve→materialize→cleanup half, §What M2 adds).
 
 ## MCP tool surface (M2 delta)
 
@@ -187,7 +212,8 @@ other. The destructive-op gate (control.power/force_crash/teardown) applies unch
 ## Error taxonomy (M2 delta)
 
 **None.** Remote failures map to existing categories: TLS-connect / gdbstub-unreachable /
-guest-agent-unreachable → `transport_failure`; presigned-URL / object-store / host-infra
+guest-agent-unreachable → `transport_failure`; a contended single-client gdbstub (stale
+dead-worker connection) → `transport_conflict`; presigned-URL / object-store / host-infra
 failures → `infrastructure_failure`; define/start failures → `provisioning_failure`; in-guest
 install failures → `install_failure` / `boot_timeout`; power/reset failures → `control_failure`;
 a reference invalidated by a reprovision/reboot → `stale_handle`. The rule is unchanged: most
@@ -196,22 +222,23 @@ specific existing value, no new strings.
 ## Decomposition into single-PR issues
 
 Each issue is one PR, dependency-ordered. Issue 1 is the serial foundation; the planes fan out
-once it lands; issue 8 is the proving gate.
+once it lands; issue 8 is the operator-run proving run.
 
 | # | Issue | Depends on | Area |
 |---|-------|-----------|------|
-| 1 | **Package foundation + control transport + discovery**: `ResourceKind.REMOTE_LIBVIRT` + migration `0020` (CHECK widen) + `remote_libvirt/` skeleton + injected `qemu+tls://` connection factory (unit-tested, no real host) + **TLS client-cert secret-by-reference** resolution (register-before-return) + composition registration (opt-in by operator config) + discovery over TLS (capabilities → `capabilities` jsonb) | — | providers + security |
-| 2 | **Provisioning**: remote disk-image base-OS provisioning profile (qemu-guest-agent + virtio-serial channel + gdbstub in the domain XML) + `RemoteLibvirtProvision` define/start over TLS + per-System overlay | 1 | provisioning |
-| 3 | **Artifact channel + presigned-URL + in-target (guest-agent) exec seam**: publish-to-object-store, mint presigned GET/PUT, run a constrained in-guest command via guest-agent over TLS, with secret-registration→redaction on the captured transcript | 1 | providers + security |
+| 1 | **Package foundation + control transport + discovery + the CI portability gate**: `ResourceKind.REMOTE_LIBVIRT` + migration `0020` (CHECK widen) + `remote_libvirt/` skeleton + injected `qemu+tls://` connection factory (unit-tested, no real host) + **mutual-TLS** secret-by-reference resolution (resolve→materialize-to-pkipath→`?pkipath=`→guaranteed-cleanup; server-cert verify, `no_verify` forbidden) + the new **`presign_get`** object-store primitive + composition registration (opt-in by operator config) + discovery over TLS (capabilities → `capabilities` jsonb) + the **per-PR CI diff gate** (cumulative touched lines vs the `pre-M2` tag; allowlist enforced) | — | providers + security |
+| 2 | **Provisioning**: remote disk-image base-OS profile (qemu-guest-agent + virtio-serial channel + gdbstub-enabled domain, with a **per-System gdbstub port allocated + recorded**; drgn + matching vmlinux/debuginfo in the image) + `RemoteLibvirtProvision` define/start over TLS + per-System overlay | 1 | provisioning |
+| 3 | **Artifact channel + presigned-URL + in-target (guest-agent) exec seam**: publish-to-object-store, mint presigned GET/PUT, **register the minted URL for redaction**, run a constrained in-guest command via guest-agent over TLS, with exact-value redaction on the captured transcript | 1 | providers + security |
 | 4 | **Build**: `RemoteLibvirtBuild` — worker `make`, publish vmlinuz+modules to the object store via the issue-3 channel | 3 | build-install |
-| 5 | **Install**: `RemoteLibvirtInstall` — in-guest presigned-GET pull + install + method-conditional crashkernel cmdline into the guest grub + reboot/kexec via the seam | 3, 4 | build-install |
-| 6 | **Connect + Debug**: direct-TCP gdbstub gdb-MI attach + in-guest drgn-live (guest-agent) + worker-side vmcore drgn/crash postmortem | 2, 3 | debug |
-| 7 | **Control + Retrieve**: `RemoteLibvirtControl` (power/reset/force-crash over TLS) + `RemoteLibvirtRetrieve` (in-guest kdump → presigned-PUT → worker reference) | 2, 3 | control-retrieve |
-| 8 | **Operator-run live-stack e2e** against a real remote TLS host (mirrors M1.2) + **falsifiability diff gate** (assert zero net core / `mcp/tools/*` lines vs the pre-M2 baseline, allowlisted touch-points) | all | core-platform |
+| 5 | **Install**: `RemoteLibvirtInstall` — in-guest presigned-GET pull + install + method-conditional crashkernel cmdline into the guest grub + reboot/kexec via the seam (needs a provisioned, running System) | 2, 3, 4 | build-install |
+| 6 | **Connect + Debug**: direct-TCP gdbstub gdb-MI attach (worker-pool-ACL'd port) + in-guest drgn-live (guest-agent, worker-composed allowlist) + worker-side vmcore drgn/crash postmortem | 2, 3 | debug |
+| 7 | **Control + Retrieve**: `RemoteLibvirtControl` (power/reset/force-crash over TLS) + `RemoteLibvirtRetrieve` (two-phase: kdump→local, post-reboot agent presigned-PUT → worker reference) | 2, 3 | control-retrieve |
+| 8 | **Operator-run live-stack e2e** against a real remote TLS host (mirrors M1.2), and the **final portability report** from the gate landed in issue 1 (the gate runs per-PR; issue 8 records the milestone-end measurement) | all | core-platform |
 
 **Merge wave:** `1` → `{2, 3}` → `{4, 6, 7}` → `5` → `8`. Issue 4 needs only the publish path
-(issue 3); issue 5 needs the built artifact (4) and the seam (3); issues 6/7 need a running
-System (2) and the seam (3).
+(issue 3); issue 5 needs a provisioned System (2), the built artifact (4), and the seam (3);
+issues 6/7 need a running System (2) and the seam (3). The CI portability gate ships in issue 1
+and runs on **every** M2 PR, so core leakage is caught as it lands, not at issue 8.
 
 ### Sequencing & shared seams (no separate plan)
 
@@ -223,8 +250,16 @@ here:
 - **One migration, claimed up front.** Issue **1** owns
   `0020_resources_kind_remote_libvirt.sql` (the only DDL this milestone) — the CHECK widen
   lands with the runtime registration it admits, so the ADR-0071 CHECK↔registry parity test
-  never sees a CHECK-allowed kind without a runtime. Single schema-touching issue → no
+  never sees a CHECK-allowed kind without a runtime. `remote_libvirt` is **buildable without
+  operator config** (construction builds ports; the host URI + cert ref gate discovery/connection),
+  so the parity test passes the moment 0020 lands. Single schema-touching issue → no
   renumber-on-rebase expected.
+- **The `pre-M2` baseline tag is cut before issue 1 merges**, and the CI portability gate
+  (shipped in issue 1) runs on every M2 PR against it. The gate enforces *no provider-specific
+  logic in core or `mcp/tools/*`* by cumulative touched lines, allowing only the named
+  touch-points (`ResourceKind` value, `composition.py`, migration 0020, regenerated docs,
+  `presign_get`). This answers the CI-vs-operator question: the **gate is CI**, the **e2e is
+  operator-run**.
 - **Land the foundation before its consumers.** Issue **1** is strictly first (the package,
   the transport, the kind, discovery). The artifact/guest-agent seam (issue **3**) and
   provisioning (issue **2**) parallel after it; build/install (4→5) and debug/control-retrieve
@@ -244,22 +279,25 @@ here:
    `ProviderRuntime` ports; M2 adds a registration in the composition map (the expected
    change-surface), not a port-interface change, so the falsifiability claim holds and is now
    tested against a real second provider (ADR-0076).
-2. **A resolved secret is registered before it can be emitted, and released only after
-   redact-and-persist** (ADR-0027, ADR-0073, ADR-0075) — the TLS client cert resolves through
-   the `SecretBackend` (register-before-return), the guest-agent transcript is redacted by
-   exact value on persist, and the per-op scope releases **after** every artifact/snippet that
-   could contain it is persisted, so no resolved secret reaches the object store or a snippet
-   unmasked (ADR-0077).
-3. **The object store is the only bulk artifact channel; the target pulls/pushes via bounded
-   presigned URLs** (ADR-0078) — no standing object-store credential in any guest, no host-side
-   agent, no `virStorageVolUpload` for kernel artifacts. The in-target install/retrieve seam's
+2. **Real secrets and bearer capabilities never leak** (ADR-0027, ADR-0073, ADR-0075, ADR-0077)
+   — the TLS cert/key resolves through `SecretBackend`, is materialized to a private per-op
+   pkipath and deleted on every exit path (its on-disk lifetime, not text masking, is the
+   control; it never enters a transcript); the minted presigned URL is **registered for
+   redaction before** the guest-agent `exec`, masked by exact value on persist, with the scope
+   released only after redact-and-persist. So neither the cert nor a bearer URL reaches the
+   object store or a snippet unmasked.
+3. **The object store is the only bulk artifact channel; the target pulls/pushes via bounded,
+   single-object presigned URLs** (ADR-0078) — no standing object-store credential in any guest,
+   no host-side agent, no `virStorageVolUpload` for kernel artifacts; vmcore retrieval is
+   two-phase (kdump→local, post-reboot agent upload). The in-target install/retrieve seam's
    contract is the M2→M5 carry-forward; direct-kernel boot is local-libvirt-only.
 4. **`remote_libvirt` is opt-in; the default deployment composes only `local-libvirt`**
    (ADR-0071, ADR-0076) — the remote entry and its discovery registrar are composed only when
    an operator configures a remote host URI + TLS cert ref, so a deployment without one has no
    bookable remote resource.
-5. **Portability is measured, not asserted** (ADR-0076) — the issue-8 diff gate checks the M2
-   range against the pre-M2 baseline tag and fails on any net change under core or `mcp/tools/*`
-   outside the explicit allowlist (the `ResourceKind` value, `composition.py` registration, the
-   migration, regenerated docs). A core change is a smell to refactor away, per the milestone's
-   co-equal goals.
+5. **Portability is measured, not asserted** (ADR-0076) — a **per-PR CI** gate (shipped in
+   issue 1) checks cumulative touched lines of each M2 PR against the `pre-M2` tag and fails on
+   any provider-specific logic entering core or `mcp/tools/*` outside the named allowlist (the
+   `ResourceKind` value, `composition.py` registration, migration 0020, regenerated docs, and
+   the additive `presign_get` primitive). A second unplanned core change is the gate firing, not
+   a new allowlist entry; issue 8 records the milestone-end measurement.

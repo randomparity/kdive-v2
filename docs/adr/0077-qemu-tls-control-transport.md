@@ -24,34 +24,54 @@ Bulk artifact movement is decided separately (ADR-0078: the object store, not th
 channel), which removes the main reason to prefer SSH (its file-transfer convenience). What
 remains is the control channel and its secret. M2 is also the **first** provider to resolve a
 real secret — local-libvirt resolves none, and M1.5's fault-inject resolved only a synthetic
-sentinel (ADR-0073) — so the choice must exercise the secret-by-reference→redaction contract
-against production-shaped credential material.
+sentinel (ADR-0073) — so the choice must exercise secret-by-reference resolution and the
+on-disk lifecycle that real credential material forces.
 
 ## Decision
 
 We will use **`qemu+tls://` for the remote-libvirt control plane** (discovery capability
-enumeration, provisioning define/start, control power/reset/force-crash). The **x509 client
-cert and key are a secret-by-reference**: the resource's `capabilities` jsonb carries a
-`secret_ref`, never the material itself; the worker resolves it through the runtime's
-`SecretBackend`, which **registers the resolved value into the redaction registry before
-returning it** (ADR-0027), and the per-op scope is **released only after** redact-and-persist
-(ADR-0075). Bulk files do **not** ride this channel (ADR-0078); the live gdbstub does **not**
-ride it either (ADR-0079).
+enumeration, provisioning define/start, control power/reset/force-crash), with **mutual TLS**:
+the worker presents an x509 client cert **and** verifies the libvirtd **server** cert against a
+configured CA and hostname — `?no_verify=1` is forbidden, so a misconfigured or spoofed host
+fails closed rather than connecting unverified.
+
+The **client cert, key, and CA are secrets-by-reference**: the resource's `capabilities` jsonb
+carries `secret_ref`s, never the material itself. Because `SecretBackend.resolve()` returns a
+**string** but libvirt's TLS client reads cert/key/CA from **on-disk files** in a pkipath, the
+worker must, per op: resolve the refs through the runtime's `SecretBackend`, **materialize** the
+resolved bytes into a **private, per-op pkipath directory** (mode `0700`, files `0600`), point
+the connection at it via the `?pkipath=` URI parameter, and **delete the directory when the op
+ends** (success or failure). The resolved values are registered in the redaction registry on
+resolution (ADR-0027) as **defense-in-depth** in case any reaches a log line, but the primary
+control for the private key is its **bounded on-disk lifetime + guaranteed cleanup**, not text
+masking — the key is consumed by the TLS layer and never echoed into a transcript, so masking
+alone would not protect it. Bulk files do **not** ride this channel (ADR-0078); the live
+gdbstub does **not** ride it either (ADR-0079).
 
 ## Consequences
 
 - **Control and bulk data are decoupled.** A large vmcore transfer cannot stall or be coupled
   to the libvirt control channel, and the control channel carries one credential kind (the TLS
   cert), not also an SSH key reused for sftp.
-- **M2 proves the real-secret half of the contract.** The TLS cert is the first production
-  secret the platform resolves; the register-before-emit / release-after-persist path
-  (ADR-0073/0075), previously exercised only by a synthetic sentinel, now runs against real
-  credential material, so any guest-agent transcript or console capture that echoes the cert is
-  exact-value masked.
+- **M2 proves the real-secret *resolution + materialization + cleanup* path.** The TLS cert is
+  the first production secret the platform resolves; M2 exercises resolve → materialize to a
+  private pkipath → use → delete against real credential material — a path local-libvirt (no
+  secrets) and fault-inject (a synthetic sentinel never written to disk) never ran. The
+  **transcript exact-value redaction** half of the contract is proved separately, by the
+  presigned URL that *does* flow into the guest-agent transcript (ADR-0078) — not by the TLS
+  cert, which the TLS layer consumes and never echoes.
+- **New obligation: a private-key-on-disk lifecycle.** Materializing the key to a pkipath
+  creates a window where it exists on the worker's filesystem. The op must create it `0700`,
+  restrict files `0600`, and delete the directory on every exit path via a guaranteed
+  `finally` / context manager (including exceptions and cancellation). The worker's pkipath is
+  not reconciler-visible state (the reconciler reconciles provider infrastructure, not
+  worker-local temp dirs), so cleanup must be local-and-guaranteed; a worker crash mid-op leaves
+  the exposure bounded by the worker's ephemeral storage lifetime. This is the cost of
+  `qemu+tls://` over an in-memory secret.
 - **Operational cost: TLS material management.** Each remote host needs a libvirtd TLS listener
-  and the platform needs a client cert per host (or CA-issued), provisioned into the secret
-  backend and referenced by `secret_ref`. This is heavier than an SSH key but is the standard
-  multi-tenant libvirt posture and avoids planting an SSH login on every host.
+  and the platform needs a client cert per host (or CA-issued) plus the CA, provisioned into the
+  secret backend and referenced by `secret_ref`. This is heavier than an SSH key but is the
+  standard multi-tenant libvirt posture and avoids planting an SSH login on every host.
 - **Reachability assumption (documented).** The worker must reach the host's libvirtd TLS port;
   this is an operator network responsibility, recorded with the gdbstub-port assumption
   (ADR-0079).

@@ -41,19 +41,39 @@ debug modules satisfying the same typed `ProviderRuntime` ports (ADR-0063) — *
 shared `libvirt_common` layer with `local_libvirt`. We will register it behind the per-kind
 `ProviderResolver` (ADR-0071) under a new `ResourceKind.REMOTE_LIBVIRT = "remote-libvirt"` and
 migration `0020` (CHECK widen), **opt-in** by operator config (a remote host `qemu+tls://` URI
-and a TLS-cert `secret_ref`). We will **keep `local_libvirt`** as the default and the
-falsifiability baseline; its removal is a follow-up milestone, not M2. And we will **measure
-the portability hypothesis with a diff gate**: M2 must touch zero net lines in core
+and a TLS-cert `secret_ref`). `remote_libvirt` is **buildable without that config** —
+construction builds the ports; the host URI and cert `secret_ref` gate *discovery and
+connection*, not construction — so the ADR-0071 CHECK↔registry parity test
+(`tests/db/test_resource_kind_parity.py`) still finds a buildable runtime for the
+CHECK-widened kind the moment migration 0020 lands, exactly as fault-inject is buildable via
+its env gate. We will **keep `local_libvirt`** as the default and the falsifiability baseline;
+its removal is a follow-up milestone, not M2.
+
+And we will **measure the portability hypothesis with a diff gate** whose subject is *code
+paths, not bytes*: **no provider-specific logic enters core**
 (`domain`/`db`/`jobs`/`reconciler`/`services`/`store`/`security` and the `mcp` server skeleton)
-and the MCP tool surface (`mcp/tools/*`), modulo an explicit allowlist (the `ResourceKind`
-value, the `providers/composition.py` registration, the one migration, regenerated docs).
+or the MCP tool surface (`mcp/tools/*`). The gate measures **cumulative touched lines** (every
+line added or removed by the M2 commit set since a `pre-M2` tag cut at milestone start,
+identified by milestone/label since sub-issues merge to `main` individually with no long-lived
+epic branch — not a net that a later revert can zero out) against an explicit allowlist of
+**named, provider-agnostic**
+touch-points: the `ResourceKind` enum value, the `providers/composition.py` registration, the
+one migration, regenerated docs, **and additive object-store primitives any provider reuses**.
+The last entry is load-bearing: ADR-0078's in-target seam needs a **presigned GET**, and the
+object store today exposes only `presign_put` (`store/objectstore.py`), so M2 adds a
+`presign_get` primitive to `store/`. That is a reusable platform primitive (M3/M4/M5 all pull
+artifacts the same way), **not** provider-specific logic — so it is an allowlisted touch-point,
+named here so it is a deliberate decision rather than a silent gate-widening during issue 3.
+A change that puts *remote-libvirt-aware branching* into any core module remains a smell to
+refactor away.
 
 ## Consequences
 
 - **The falsifiability hypothesis becomes a checked gate, not a claim.** Issue 8's diff gate
-  fails the milestone on any net change to core or `mcp/tools/*` outside the allowlist, so a
-  core change surfaces as a smell to refactor away (the milestone's co-equal goal) rather than
-  being silently absorbed. The gate runs against a stable baseline because local-libvirt stays.
+  fails the milestone on any cumulative-touched-line change to core or `mcp/tools/*` outside the
+  named allowlist, so provider-specific logic leaking into core surfaces as a smell to refactor
+  away (the milestone's co-equal goal) rather than being silently absorbed. The gate runs
+  against a stable baseline — a `pre-M2` tag cut at milestone start — because local-libvirt stays.
 - **Removal of local-libvirt later is a clean deletion.** Because remote-libvirt shares no code
   with local-libvirt, the follow-up that removes local-libvirt deletes a package and its
   composition entry — no shared layer to disentangle, no consumer to migrate.
@@ -64,7 +84,13 @@ value, the `providers/composition.py` registration, the one migration, regenerat
   serve a module being removed.
 - **No new resolver call sites.** Registration is a third entry in the composition map; the
   post-System resolution path (ADR-0071) already exists, so M2 threads no new resolver wiring —
-  which is what keeps the core diff at zero.
+  which is what keeps provider-specific logic out of core.
+- **One named additive core primitive: `presign_get`.** The in-target seam (ADR-0078) needs a
+  presigned GET the object store does not yet mint (`store/objectstore.py` has only
+  `presign_put`). Adding `presign_get` is the one expected, allowlisted core touch-point beyond
+  the enum/composition/migration set — provider-agnostic and reused by every later provider, so
+  it does not falsify the gate's spirit. An implementer who finds themselves adding a *second*
+  unplanned core change should treat that as the gate firing, not as a second allowlist entry.
 - **Migration `0020`** widens `resources_kind_check`; the ADR-0071 CHECK↔registry parity test
   now covers three kinds. No other DDL.
 - **Opt-in composition** means a deployment without a configured remote host registers no

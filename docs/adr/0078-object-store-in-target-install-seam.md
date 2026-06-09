@@ -44,15 +44,27 @@ later provider, and move artifacts via **bounded presigned URLs that the target 
 not credentials planted in the target:
 
 1. The worker **publishes** the built kernel to the object store (ADR-0013 layout) and mints a
-   **presigned GET** URL bounded to the op's lifetime.
-2. The worker delivers the **URL** (not the bytes, not a standing credential) to the target
-   through an **in-target execution seam** — realized for M2 by **qemu-guest-agent `exec` over
-   the `qemu+tls://` connection**; M3 re-realizes it via cloud-init/agent, M4/M5 via SSH/SoL
-   after netboot — behind the same Installer/Retriever port contract.
+   **presigned GET** URL bounded to the op's lifetime. The object store today exposes only
+   `presign_put` (`store/objectstore.py`), so M2 adds a **`presign_get`** primitive — the one
+   allowlisted, provider-agnostic core touch-point this seam requires (ADR-0076).
+2. The worker **registers the minted URL in the redaction registry** (`registry.register`, the
+   ADR-0073 contract applied to a *minted* capability, not a *resolved* secret) and then
+   delivers the **URL** (not the bytes, not a standing credential) to the target through an
+   **in-target execution seam** — realized for M2 by **qemu-guest-agent `exec` over the
+   `qemu+tls://` connection**; M3 re-realizes it via cloud-init/agent, M4/M5 via SSH/SoL after
+   netboot — behind the same Installer/Retriever port contract. Registration **before** the
+   exec is load-bearing: a presigned URL is a bearer capability, so an unregistered URL captured
+   into a persisted transcript would be a live read/write grant until expiry; registering it
+   makes the redactor mask it by exact value, and the scope releases only after redact-and-persist.
 3. The target **pulls and installs in-guest** (boot entry + the method-conditional crashkernel
    cmdline, reusing ADR-0051/ADR-0061 into the guest grub) and reboots/kexecs into the kernel.
-4. kdump in the guest uploads the vmcore to a **presigned PUT** URL; the worker references the
-   object and runs postmortem locally.
+4. On crash, kdump writes the vmcore to the guest's **local dump storage** (the capture kernel
+   is a minimal initramfs and is not assumed to reach the object store); on the **next normal
+   boot** the in-guest agent uploads it to a **presigned PUT** URL, and the worker references the
+   object and runs postmortem locally. The PUT URL is scoped to one object + checksum
+   (`PresignPutRequest`) with a lifetime that **covers the crash→reboot→upload window** (or is
+   re-minted post-reboot) — a deliberate exception to "shortest possible expiry," bounded to a
+   single write of a single object so the longer life is not a broad grant.
 
 **Direct-kernel boot is retired as a carry-forward**: `remote_libvirt` boots a disk-image base
 OS and iterates kernels by in-guest install + reboot, debugged via the QEMU gdbstub (ADR-0079).
@@ -63,9 +75,11 @@ OS and iterates kernels by in-guest install + reboot, debugged via the QEMU gdbs
 - **The mechanism survives to M5.** Cloud-init pulling a presigned URL is the cloud-image
   model; a netbooted machine pulling+installing a kernel is the bare-metal model; both reuse
   this seam's contract rather than replacing it — which is the portability the roadmap bets on.
-- **No standing credential in any guest, no host agent.** Presigned URLs are time-boxed and
-  capability-scoped to one object, so a guest never holds object-store creds, and no platform
-  daemon is deployed on a host that would not exist in cloud/bare-metal.
+- **No standing credential in any guest, no host agent.** Presigned URLs are capability-scoped
+  to one object and time-boxed (the GET to the op's lifetime; the vmcore PUT to the
+  crash→reboot→upload window, still one object + one checksum), so a guest never holds
+  object-store creds, and no platform daemon is deployed on a host that would not exist in
+  cloud/bare-metal.
 - **Install becomes in-guest, matching "many Runs against one persistent System."** A persistent
   base-OS System is provisioned once; each Run installs a kernel and reboots — cheap iteration,
   exactly the loop the domain model describes (`top-level-design.md` §Run).
@@ -73,8 +87,12 @@ OS and iterates kernels by in-guest install + reboot, debugged via the QEMU gdbs
   gdbstub-enabled domain**, set by the M2 provisioning profile (spec issue 2). The cloud/bare-
   metal equivalents (cloud-init, post-PXE SSH) are their milestones' obligation.
 - **Redaction contract on the seam.** A guest-agent `exec` transcript can echo the presigned
-  URL (and, on the TLS path, resolved cert material); it flows the normal redaction path and
-  the secret scope releases only after redact-and-persist (ADR-0075), so nothing leaks unmasked.
+  URL and in-guest command output (the TLS cert is consumed by the libvirt layer and never
+  reaches the guest agent — ADR-0077). Because the URL is registered before the exec (Decision
+  step 2), it flows the normal redaction path and the scope releases only after
+  redact-and-persist (ADR-0075), so the capability does not leak unmasked. **M2 proves the
+  transcript exact-value redaction half of the secret contract** — the half the TLS cert
+  (never transcript-visible) does not exercise.
 - **Cost: more moving parts than a host copy** (publish, presign, in-guest pull, in-guest
   install). Accepted: it is the only model that does not get rebuilt at M3.
 
