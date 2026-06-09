@@ -42,7 +42,11 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
-from kdive.mcp.tools.debug.ops import DebugEngineRuntime, DebugRuntimeResolver, register_debug_ops
+from kdive.mcp.tools.debug.ops import (
+    DebugEngineRuntime,
+    DebugRuntimeResolver,
+    _register_debug_ops,
+)
 from kdive.profiles.provisioning import ProvisioningProfile, ssh_credential_ref
 from kdive.providers.ports import Connector, SystemHandle, TransportHandle
 from kdive.providers.resolver import ProviderResolver
@@ -547,4 +551,4 @@ def register(
         """Drive a live/attach DebugSession to detached; close its transport. Requires operator."""
         return await handlers.end_session(pool, current_context(), session_id)
 
-    register_debug_ops(app, pool, runtime)
+    _register_debug_ops(app, pool, runtime)

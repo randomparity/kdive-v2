@@ -1,9 +1,10 @@
 """The Debug-plane gdb-MI tools — `debug.set_breakpoint/.clear/.list`, `.read_memory`,
 `.read_registers`, `.continue`, `.interrupt` (ADR-0034).
 
-These extend #20's `debug.*` session lifecycle (`debug.py`). A `live` `DebugSession` records an
-open single-attach gdbstub transport; the first Debug-plane op for a session lazily spawns a
-gdb/MI engine over the session's RSP endpoint, cached in a process-scoped
+These extend the `debug.*` session lifecycle tools registered by ``sessions.py``. A `live`
+`DebugSession` records an open single-attach gdbstub transport; the first Debug-plane op for
+a session lazily spawns a gdb/MI engine over the session's RSP endpoint, cached in a
+process-scoped
 :class:`DebugEngineRuntime` (registry + per-session ``asyncio.Lock`` table + the
 ``live_vm``-gated attach seam). Every op is gated (operator + project + ``live`` state), takes
 the per-session lock, attaches-or-reuses, and runs the blocking engine call via
@@ -334,7 +335,7 @@ def _stop_data(reason: str | None, timed_out: bool) -> dict[str, str]:
     return data
 
 
-def register_debug_ops(
+def _register_debug_ops(
     app: FastMCP, pool: AsyncConnectionPool, runtime: DebugEngineRuntime | DebugRuntimeResolver
 ) -> None:
     """Register the seven gdb-MI `debug.*` tools on ``app``, sharing ``runtime`` (ADR-0034 §5)."""
