@@ -1,7 +1,7 @@
 """Faulting wrappers that thread the seeded engine into the fault-inject ports (ADR-0074).
 
 The happy-path mock ports (ADR-0072 issue 2) stay synthetic and untouched; these thin
-decorators consult a :class:`~kdive.providers.fault_inject.engine.FaultEngine` before
+decorators consult a :class:`~kdive.providers.fault_inject.faulting.engine.FaultEngine` before
 delegating, so a seeded fault actually perturbs the spine op:
 
 - a drawn ``fail`` raises ``CategorizedError(decision.category)`` **iff** ``decision.fail``
@@ -25,8 +25,8 @@ from uuid import UUID
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError
-from kdive.providers.fault_inject.engine import FaultDecision, FaultEngine, FaultPlane
-from kdive.providers.fault_inject.provider import FaultInjectInstall, FaultInjectProvision
+from kdive.providers.fault_inject.faulting.engine import FaultDecision, FaultEngine, FaultPlane
+from kdive.providers.fault_inject.lifecycle.provider import FaultInjectInstall, FaultInjectProvision
 
 _FIRST_ATTEMPT: Callable[[UUID], int] = lambda _system_id: 1  # noqa: E731 - a tiny default port
 _SyncSleep = Callable[[float], None]

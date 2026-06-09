@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from kdive.domain.models import Sensitivity
-from kdive.providers.fault_inject.quarantine_console import (
+from kdive.providers.fault_inject.artifacts.quarantine_console import (
     FaultInjectQuarantineConsole,
     QuarantineHealOutput,
     _quarantined_transcript,

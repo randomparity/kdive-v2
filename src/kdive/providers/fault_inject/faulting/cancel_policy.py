@@ -13,7 +13,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Final
 
-from kdive.providers.fault_inject.engine import FaultPlane
+from kdive.providers.fault_inject.faulting.engine import FaultPlane
 
 
 class CancelPolicy(StrEnum):

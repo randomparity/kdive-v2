@@ -25,10 +25,10 @@ from kdive.providers.component_validation import (
     ComponentSourceKind,
 )
 from kdive.providers.fault_inject.discovery import FaultInjectDiscovery
-from kdive.providers.fault_inject.engine import FaultEngine
-from kdive.providers.fault_inject.faulted import FaultedInstall, FaultedProvision
+from kdive.providers.fault_inject.faulting.engine import FaultEngine
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
-from kdive.providers.fault_inject.provider import (
+from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvision
+from kdive.providers.fault_inject.lifecycle.provider import (
     FaultInjectBuild,
     FaultInjectConnect,
     FaultInjectControl,

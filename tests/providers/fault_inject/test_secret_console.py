@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from kdive.domain.models import Sensitivity
-from kdive.providers.fault_inject.secret_console import (
+from kdive.providers.fault_inject.artifacts.secret_console import (
     FaultInjectSecretConsole,
     SecretConsoleOutput,
     _synthetic_transcript,

@@ -17,14 +17,14 @@ from uuid import UUID
 
 import pytest
 
-import kdive.providers.fault_inject.engine as engine_module
+import kdive.providers.fault_inject.faulting.engine as engine_module
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.fault_inject.capabilities import (
     FAULT_RATE_KEY,
     MAX_LATENCY_S_KEY,
     SEED_KEY,
 )
-from kdive.providers.fault_inject.engine import (
+from kdive.providers.fault_inject.faulting.engine import (
     FaultEngine,
     FaultFacet,
     FaultPlane,
@@ -138,7 +138,7 @@ def test_fault_for_rejects_a_non_positive_attempt(attempt: int) -> None:
 
 _SUBPROCESS_DRAW = (
     "from uuid import UUID;"
-    "from kdive.providers.fault_inject.engine import fault_for, FaultPlane, FaultFacet;"
+    "from kdive.providers.fault_inject.faulting.engine import fault_for, FaultPlane, FaultFacet;"
     "print(repr(fault_for(seed=7, system_id=UUID('11111111-1111-1111-1111-111111111111'),"
     " plane=FaultPlane.PROVISION, attempt=1, facet=FaultFacet.FAIL)))"
 )

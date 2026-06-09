@@ -33,10 +33,10 @@ from kdive.domain.state import (
     RunState,
     SystemState,
 )
-from kdive.providers.fault_inject.engine import FaultEngine, FaultPlane
-from kdive.providers.fault_inject.faulted import FaultedInstall, FaultedProvision
+from kdive.providers.fault_inject.faulting.engine import FaultEngine, FaultPlane
 from kdive.providers.fault_inject.inventory import FaultInjectInventory, FaultInjectReaper
-from kdive.providers.fault_inject.provider import FaultInjectInstall, FaultInjectProvision
+from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvision
+from kdive.providers.fault_inject.lifecycle.provider import FaultInjectInstall, FaultInjectProvision
 from kdive.reconciler import loop
 from tests.reconciler.conftest import (
     connect,

@@ -22,13 +22,13 @@ from uuid import UUID
 
 import pytest
 
-from kdive.providers.fault_inject.cancel import (
+from kdive.providers.fault_inject.faulting.cancel import (
     CancelOutcome,
     CancelSignal,
     run_cancelable_op,
 )
-from kdive.providers.fault_inject.cancel_policy import CancelPolicy, cancel_policy_for
-from kdive.providers.fault_inject.engine import FaultPlane
+from kdive.providers.fault_inject.faulting.cancel_policy import CancelPolicy, cancel_policy_for
+from kdive.providers.fault_inject.faulting.engine import FaultPlane
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
 
 _SYSTEM = UUID("33333333-3333-3333-3333-333333333333")

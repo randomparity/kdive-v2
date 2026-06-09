@@ -8,12 +8,12 @@ and the per-plane policy table.
 
 from __future__ import annotations
 
-from kdive.providers.fault_inject.cancel_policy import (
+from kdive.providers.fault_inject.faulting.cancel_policy import (
     CANCEL_POLICY,
     CancelPolicy,
     cancel_policy_for,
 )
-from kdive.providers.fault_inject.engine import FaultPlane
+from kdive.providers.fault_inject.faulting.engine import FaultPlane
 
 
 def test_every_plane_declares_a_cancel_policy() -> None:

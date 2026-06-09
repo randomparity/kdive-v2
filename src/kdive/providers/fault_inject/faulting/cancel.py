@@ -5,7 +5,7 @@ demand**. A fault-inject op runs its first observable side effect (record the sy
 domain in the inventory), then **pauses** on a bounded wait — the injected latency ADR-0072
 names as the cancel lever. ``jobs.cancel`` lands inside that pause by setting a
 :class:`CancelSignal`; the op observes the cancel cooperatively and applies the op's
-**declared** :class:`~kdive.providers.fault_inject.cancel_policy.CancelPolicy`, leaving a
+**declared** :class:`~kdive.providers.fault_inject.faulting.cancel_policy.CancelPolicy`, leaving a
 distinct, reconciler-visible inventory state per policy:
 
 - ``CLEAN_ROLLBACK`` -> the entry is removed; nothing leaks.
@@ -24,8 +24,8 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from kdive.providers.fault_inject.cancel_policy import CancelPolicy, cancel_policy_for
-from kdive.providers.fault_inject.engine import FaultPlane
+from kdive.providers.fault_inject.faulting.cancel_policy import CancelPolicy, cancel_policy_for
+from kdive.providers.fault_inject.faulting.engine import FaultPlane
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
 
 

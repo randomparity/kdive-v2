@@ -14,10 +14,10 @@ from uuid import UUID, uuid4
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.fault_inject.engine import FaultEngine, FaultPlane
-from kdive.providers.fault_inject.faulted import FaultedInstall, FaultedProvision
+from kdive.providers.fault_inject.faulting.engine import FaultEngine, FaultPlane
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
-from kdive.providers.fault_inject.provider import FaultInjectInstall, FaultInjectProvision
+from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvision
+from kdive.providers.fault_inject.lifecycle.provider import FaultInjectInstall, FaultInjectProvision
 
 _SYSTEM = UUID("00000000-0000-0000-0000-0000000000aa")
 _RUN = UUID("00000000-0000-0000-0000-0000000000bb")

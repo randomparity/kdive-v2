@@ -11,7 +11,7 @@ from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction, Sensitivity
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
-from kdive.providers.fault_inject.provider import (
+from kdive.providers.fault_inject.lifecycle.provider import (
     FaultInjectBuild,
     FaultInjectConnect,
     FaultInjectControl,
