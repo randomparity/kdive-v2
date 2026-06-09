@@ -4,9 +4,12 @@ Measures the cumulative touched lines (per-commit added+removed — not a net a 
 revert can zero out) of every commit since the ``pre-M2`` tag over the
 provider-agnostic core (domain/db/jobs/reconciler/services/store/security and the
 whole ``mcp`` package including ``mcp/tools/*``), and fails when any file outside the
-named allowlist is touched. The allowlist is the ADR-0076 set: the ``ResourceKind``
-enum value, the one M2 migration, and the additive ``presign_get`` primitive.
-Extending it is a deliberate, reviewed decision — edit this file in the same PR.
+named allowlist is touched. A second, net ``git diff`` check covers the per-commit
+walk's blind spot: a core change introduced only in a merge commit (a conflict
+resolution or evil merge), which ``--no-merges`` numstat never sees. The allowlist is
+the ADR-0076 set: the ``ResourceKind`` enum value, the one M2 migration, and the
+additive ``presign_get`` primitive. Extending it is a deliberate, reviewed decision —
+edit this file in the same PR.
 
 Exit codes: 0 gate passes; 1 violations found; 2 the baseline tag is unavailable.
 Stdlib-only: CI runs it without a synced environment (``just m2-gate``).
@@ -96,6 +99,24 @@ def main() -> int:
         check=True,
     )
     touched = parse_numstat(log.stdout)
+    # Union in the net diff: it sees merge-commit-only changes the per-commit walk
+    # misses, while the per-commit sum keeps reverted changes counted.
+    net = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--numstat",
+            "--no-renames",
+            f"{BASELINE_TAG}..HEAD",
+            "--",
+            *CORE_PREFIXES,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    for path, count in parse_numstat(net.stdout).items():
+        touched[path] = max(touched.get(path, 0), count)
     allowed = {path: count for path, count in touched.items() if path in ALLOWED_FILES}
     print(f"M2 portability measurement since {BASELINE_TAG} (cumulative touched lines):")
     for path, count in sorted(allowed.items()):

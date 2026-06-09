@@ -40,6 +40,12 @@ def _config(uri: str = "qemu+tls://host.example/system") -> RemoteLibvirtConfig:
         "qemu+tls://host.example/system?no_verify=1",
         "qemu+tls://host.example/system?no_verify=0",
         "qemu+tls://host.example/system?pkipath=/operator/pki",
+        # libvirt matches parameter names case-insensitively and also splits the
+        # query on ';' — validation must reject those spellings too (fail closed).
+        "qemu+tls://host.example/system?No_Verify=1",
+        "qemu+tls://host.example/system?NO_VERIFY=1",
+        "qemu+tls://host.example/system?keepalive_interval=5;no_verify=1",
+        "qemu+tls://host.example/system?PkiPath=/operator/pki",
     ],
 )
 def test_validate_rejects_unsafe_uris(uri: str) -> None:
@@ -107,6 +113,22 @@ def test_unresolvable_ref_is_a_configuration_error_and_leaves_no_residue(
     assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert "remote/clientcert.pem" in str(excinfo.value)  # the ref, never the value
     assert list(tmp_path.iterdir()) == []  # nothing was materialized
+
+
+def test_materialization_io_failure_is_an_infrastructure_failure(tmp_path: Path) -> None:
+    # A full/readonly worker tmp must surface typed, not as a raw OSError.
+    readonly = tmp_path / "ro"
+    readonly.mkdir()
+    readonly.chmod(0o500)
+    try:
+        with (
+            pytest.raises(CategorizedError) as excinfo,
+            materialized_pkipath(RecordingBackend(), _REFS, base_dir=readonly),
+        ):
+            pytest.fail("body must not run")
+    finally:
+        readonly.chmod(0o700)
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
 
 def test_pkipath_cleanup_failure_is_logged_and_never_masks_the_op_error(

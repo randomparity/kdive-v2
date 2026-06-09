@@ -126,3 +126,19 @@ def test_gate_errors_usefully_without_the_tag(tmp_path: Path) -> None:
     result = _run_gate(repo)
     assert result.returncode == 2
     assert "pre-M2" in result.stderr
+
+
+def test_gate_catches_core_change_introduced_only_in_a_merge_commit(gate_repo: Path) -> None:
+    # A conflict resolution (or evil merge) lands only in the merge commit, which
+    # per-commit numstat (--no-merges) never sees; the net-diff union must catch it.
+    _git(gate_repo, "checkout", "-b", "feature")
+    _write_and_commit(gate_repo, "docs/feature.md", "f\n", "feature work")
+    _git(gate_repo, "checkout", "main")
+    # An "evil merge": the merge commit itself edits a core file.
+    _git(gate_repo, "merge", "--no-ff", "--no-commit", "feature")
+    (gate_repo / "src/kdive/services/svc.py").write_text("x = 99\n")
+    _git(gate_repo, "add", "-A")
+    _git(gate_repo, "commit", "-m", "merge feature")
+    result = _run_gate(gate_repo)
+    assert result.returncode == 1
+    assert "src/kdive/services/svc.py" in result.stdout
