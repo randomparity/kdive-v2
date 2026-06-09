@@ -42,11 +42,10 @@ from kdive.mcp.tools._common import (
 from kdive.mcp.tools._common import (
     job_envelope,
 )
-from kdive.mcp.tools._runtime_resolution import runtime_for_run
+from kdive.mcp.tools._runtime_resolution import runtime_for_run, runtime_for_system
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.providers.ports import CrashPostmortem
 from kdive.providers.resolver import ProviderResolver
-from kdive.providers.runtime import ProviderRuntime
 from kdive.security.artifacts.crash_commands import crash_command_rejection_reason
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
@@ -120,7 +119,7 @@ class VmcoreHandlers:
         if self.resolver is None:
             supported_methods = self.supported_methods or frozenset()
         else:
-            runtime = await _runtime_for_system(pool, self.resolver, system_id)
+            runtime = await runtime_for_system(pool, self.resolver, system_id)
             if isinstance(runtime, ToolResponse):
                 return runtime
             supported_methods = runtime.supported_capture_methods
@@ -164,19 +163,6 @@ class VmcoreHandlers:
                 return runtime
             crash = runtime.crash_postmortem
         return await _postmortem_triage(pool, ctx, run_id=run_id, crash=crash)
-
-
-async def _runtime_for_system(
-    pool: AsyncConnectionPool, resolver: ProviderResolver, system_id: str
-) -> ProviderRuntime | ToolResponse:
-    uid = _as_uuid(system_id)
-    if uid is None:
-        return _config_error(system_id)
-    async with pool.connection() as conn:
-        try:
-            return await resolver.runtime_for_system(conn, uid)
-        except CategorizedError as exc:
-            return ToolResponse.failure_from_error(system_id, exc)
 
 
 async def _fetch_vmcore(

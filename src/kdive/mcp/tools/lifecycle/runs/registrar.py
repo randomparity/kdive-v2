@@ -9,12 +9,10 @@ from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
-from kdive.domain.errors import CategorizedError
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools._common import as_uuid as _as_uuid
-from kdive.mcp.tools._common import config_error as _config_error
+from kdive.mcp.tools._runtime_resolution import runtime_for_run
 from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers as _RunBuildHandlers
 from kdive.mcp.tools.lifecycle.runs.create import (
     RunCreateRequest as _RunCreateRequest,
@@ -37,14 +35,7 @@ class _RunRuntimeFactory:
     resolver: ProviderResolver
 
     async def for_run(self, run_id: str) -> ProviderRuntime | ToolResponse:
-        uid = _as_uuid(run_id)
-        if uid is None:
-            return _config_error(run_id)
-        async with self.pool.connection() as conn:
-            try:
-                return await self.resolver.runtime_for_run(conn, uid)
-            except CategorizedError as exc:
-                return ToolResponse.failure_from_error(run_id, exc)
+        return await runtime_for_run(self.pool, self.resolver, run_id)
 
     def build_handlers(self, runtime: ProviderRuntime) -> _RunBuildHandlers:
         return _RunBuildHandlers(

@@ -9,12 +9,10 @@ from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
-from kdive.domain.errors import CategorizedError
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools._common import as_uuid as _as_uuid
-from kdive.mcp.tools._common import config_error as _config_error
+from kdive.mcp.tools._runtime_resolution import runtime_for_allocation, runtime_for_system
 from kdive.mcp.tools.lifecycle.systems.admin import (
     SystemAdminHandlers as _SystemAdminHandlers,
 )
@@ -44,24 +42,10 @@ class _SystemRuntimeFactory:
     resolver: ProviderResolver
 
     async def for_allocation(self, allocation_id: str) -> ProviderRuntime | ToolResponse:
-        uid = _as_uuid(allocation_id)
-        if uid is None:
-            return _config_error(allocation_id)
-        async with self.pool.connection() as conn:
-            try:
-                return await self.resolver.runtime_for_allocation(conn, uid)
-            except CategorizedError as exc:
-                return ToolResponse.failure_from_error(allocation_id, exc)
+        return await runtime_for_allocation(self.pool, self.resolver, allocation_id)
 
     async def for_system(self, system_id: str) -> ProviderRuntime | ToolResponse:
-        uid = _as_uuid(system_id)
-        if uid is None:
-            return _config_error(system_id)
-        async with self.pool.connection() as conn:
-            try:
-                return await self.resolver.runtime_for_system(conn, uid)
-            except CategorizedError as exc:
-                return ToolResponse.failure_from_error(system_id, exc)
+        return await runtime_for_system(self.pool, self.resolver, system_id)
 
     def provision_handlers(self, runtime: ProviderRuntime) -> _SystemProvisionHandlers:
         return _SystemProvisionHandlers(runtime.component_sources, self._rootfs_validator(runtime))
