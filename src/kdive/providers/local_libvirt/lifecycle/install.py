@@ -374,9 +374,15 @@ def _stage_object(store: _ObjectReader, ref: str, dest: Path) -> None:
             opaque ``OSError`` out of the seam.
     """
     data = store.get_artifact(ref, None).data
+    _write_staged_bytes(dest, data)
+
+
+def _write_staged_bytes(dest: Path, data: bytes) -> None:
+    """Write ``data`` through a sibling temp file, then atomically replace ``dest``."""
     tmp = dest.with_name(dest.name + ".part")
     try:
-        tmp.write_bytes(data)
+        with tmp.open("wb") as handle:
+            handle.write(data)
         tmp.replace(dest)
     except OSError as exc:
         with contextlib.suppress(OSError):
