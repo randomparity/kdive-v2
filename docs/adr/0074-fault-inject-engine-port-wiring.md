@@ -61,10 +61,28 @@ This keeps the *fault decision* and the *latency magnitude* real (seed-derived, 
 while removing real wall-time from CI — the engine math is exercised, only the blocking is
 stubbed.
 
-**A drawn `fail` raises `CategorizedError(decision.category)`.** The wrapper maps the engine's
-bucketed category straight onto the existing taxonomy (ADR-0072 forbids new strings); the
-existing provision/install handlers already translate a `CategorizedError` into the System /
-Run failure transition, so no handler changes.
+**Two distinct levers, two distinct repair paths — keep them separate.** The five drift cases
+split into a `fail`-draw lever and a `latency`-only lever, and they reach *different* failure
+states, so the plan must not conflate them:
+
+- A drawn **`fail`** raises `CategorizedError(decision.category)` **iff `decision.fail`** is
+  true (`decision.category` is guaranteed non-None in that branch; the wrapper never raises with
+  a `None` category). The category is a **catalog** value (`PROVISIONING_FAILURE`,
+  `INSTALL_FAILURE`, …), **never** `lease_expired`. On **provision**, the existing
+  `provision_handler` already turns this into `System → failed` via `_record_provision_failure`
+  — so the orphaned-System case needs no handler change. On **install/boot**, the existing
+  handler only abandons the run step and **re-raises** (`runs.py`); it does **not** transition
+  the owning Run — the worker's `queue.fail` dead-letters the *job*, and the *Run* is failed
+  only downstream. Issue 5's drift cases therefore do **not** assert a Run reaches `failed` from
+  an install/boot `fail` draw.
+- The **lease-expiry-mid-job** case uses the **`latency` lever with no `fail` draw**: a slow
+  op (`latency_s × …` > the short lease) whose job lease lapses while running. The owning Run
+  reaches `failed(**lease_expired**)` **only** through the reconciler's `_repair_abandoned_jobs`
+  compensation — `lease_expired` is the reconciler's category, **not** a fault-catalog category,
+  and is distinct from `canceled`. This case asserts no catalog `fail` was drawn for the op.
+
+No handler changes are required for issue 5: the provision `fail` path and the lease-expiry
+latency path both terminate in *already-shipped* transitions.
 
 ## Consequences
 
