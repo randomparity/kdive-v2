@@ -58,6 +58,7 @@ from kdive.mcp.tools.lifecycle import control as control_tools
 from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers, teardown_system
 from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers
 from kdive.providers.local_libvirt.lifecycle.provisioning import domain_name_for
+from kdive.providers.reaping import NullReaper
 from kdive.reconciler import loop
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.services.accounting import ledger as accounting
@@ -692,7 +693,7 @@ def test_c4_idle_lease_expiry_sweeps_and_credits(migrated_url: str) -> None:
     async def _run() -> None:
         async with open_pool(migrated_url) as pool:
             alloc_id, system_id = await _seed_expired_active_alloc_with_system(pool)
-            report = await loop.reconcile_once(pool, loop.NullReaper())
+            report = await loop.reconcile_once(pool, NullReaper())
             assert report.expired_allocations == 1
             assert report.orphaned_systems == 1  # the now-expired allocation orphaned its System
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -770,7 +771,7 @@ def test_c4_abandoned_job_fails_run_lease_expired(migrated_url: str) -> None:
                         f"{run.id}:build",
                     ),
                 )
-            await loop.reconcile_once(pool, loop.NullReaper())
+            await loop.reconcile_once(pool, NullReaper())
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     "SELECT state, failure_category FROM runs WHERE id = %s", (run.id,)

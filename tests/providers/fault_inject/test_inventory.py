@@ -95,7 +95,7 @@ def test_is_orphaned_is_false_for_an_unknown_domain() -> None:
 
 
 def test_reaper_satisfies_the_reconciler_infra_reaper_protocol() -> None:
-    from kdive.reconciler.loop import InfraReaper, OwnedDomain
+    from kdive.providers.reaping import InfraReaper, OwnedDomain
 
     inventory = FaultInjectInventory()
     inventory.record(_SYSTEM, "fault-inject-domain-1")

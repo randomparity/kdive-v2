@@ -1,10 +1,9 @@
 """The mock infra-inventory seam (ADR-0072).
 
-The fault-inject provider owns no real infrastructure, so it tracks the synthetic
-domains it provisions in an in-process :class:`FaultInjectInventory`. The
-:class:`FaultInjectReaper` exposes that inventory in the reconciler's ``InfraReaper``
-shape (async ``list_owned``/``destroy``), so the leaked-domain repair pass has synthetic
-infra to find and reap (the reconciler validation lands in a later issue).
+The fault-inject provider owns no real infrastructure, so it tracks the synthetic domains it
+provisions in an in-process :class:`FaultInjectInventory`. The :class:`FaultInjectReaper`
+exposes that inventory in the provider reaper shape (async ``list_owned``/``destroy``), so
+the leaked-domain repair pass has synthetic infra to find and reap.
 
 The inventory is shared by reference: the provisioner records a domain, teardown/control
 forgets it, and the reaper reads the same map — so a domain that outlives its System row
@@ -16,16 +15,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from kdive.reconciler.loop import OwnedDomain as ReconcilerOwnedDomain
+from kdive.providers.reaping import OwnedDomain as ReaperOwnedDomain
 
 
 @dataclass(frozen=True, slots=True)
 class OwnedDomain:
-    """A synthetic domain the mock owns, in the reconciler ``OwnedDomain`` shape.
+    """A synthetic domain the mock owns, in the provider reaper ``OwnedDomain`` shape.
 
-    A concrete dataclass that structurally satisfies the reconciler's
-    :class:`~kdive.reconciler.loop.OwnedDomain` protocol (``name`` + ``system_id``), so a
-    :class:`FaultInjectReaper` plugs into the reconciler's leaked-domain pass directly.
+    A concrete dataclass that structurally satisfies the
+    :class:`~kdive.providers.reaping.OwnedDomain` protocol (``name`` + ``system_id``), so a
+    :class:`FaultInjectReaper` plugs into leaked-domain repair directly.
     """
 
     name: str
@@ -73,8 +72,8 @@ class FaultInjectReaper:
     def __init__(self, inventory: FaultInjectInventory) -> None:
         self._inventory = inventory
 
-    async def list_owned(self) -> list[ReconcilerOwnedDomain]:
-        """Return the synthetic domains the mock currently owns (the reconciler port shape)."""
+    async def list_owned(self) -> list[ReaperOwnedDomain]:
+        """Return the synthetic domains the mock currently owns (the reaper port shape)."""
         return list(self._inventory.owned_domains())
 
     async def destroy(self, name: str) -> None:

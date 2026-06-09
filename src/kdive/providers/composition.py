@@ -59,9 +59,9 @@ from kdive.providers.local_libvirt.lifecycle.provisioning import (
     LocalLibvirtProvisioning,
 )
 from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
+from kdive.providers.reaping import InfraReaper, NullReaper, OwnedDomain
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
-from kdive.reconciler.loop import InfraReaper, NullReaper, OwnedDomain
 from kdive.services.resources.discovery import ensure_discovered_resource_registered
 from kdive.store.objectstore import object_store_from_env
 

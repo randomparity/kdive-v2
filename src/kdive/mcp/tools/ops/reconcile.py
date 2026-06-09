@@ -23,12 +23,8 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
-from kdive.reconciler.loop import (
-    InfraReaper,
-    ReconcileReport,
-    UploadStore,
-    reconcile_once,
-)
+from kdive.providers.reaping import InfraReaper
+from kdive.reconciler.loop import ReconcileReport, UploadStore, reconcile_once
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_platform_role

@@ -44,7 +44,7 @@ from kdive.domain.state import (
     RunState,
     SystemState,
 )
-from kdive.reconciler.loop import OwnedDomain
+from kdive.providers.reaping import OwnedDomain
 from tests.db.conftest import migrated_url, pg_conn, postgres_url
 
 __all__ = ["migrated_url", "pg_conn", "postgres_url"]

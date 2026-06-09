@@ -24,7 +24,8 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.domain.state import AllocationState, SystemState
 from kdive.mcp.tools.ops import reconcile as ops_reconcile
-from kdive.reconciler.loop import NullReaper, reconcile_once
+from kdive.providers.reaping import NullReaper
+from kdive.reconciler.loop import reconcile_once
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole
 from tests.db_waits import wait_until_any_backend_waiting

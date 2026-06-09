@@ -33,6 +33,7 @@ from kdive.domain.pcie import PCIE_DEVICES_KEY, PCIeClaim
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
+from kdive.providers.reaping import NullReaper
 from kdive.reconciler import loop
 from kdive.security.audit import args_digest
 from kdive.services.allocation.admission import AllocationRequest, admit
@@ -530,7 +531,7 @@ def test_aged_but_placeable_is_promoted_not_reaped(migrated_url: str) -> None:
             await ALLOCATIONS.update_state(seed, holder.id, AllocationState.RELEASED)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             report = await loop.reconcile_once(
-                pool, loop.NullReaper(), queue_max_wait=timedelta(hours=24)
+                pool, NullReaper(), queue_max_wait=timedelta(hours=24)
             )
         assert report.promoted_allocations == 1
         assert report.queue_timeouts == 0

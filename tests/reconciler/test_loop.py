@@ -11,10 +11,9 @@ import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.state import AllocationState, DebugSessionState, RunState, SystemState
+from kdive.providers.reaping import InfraReaper, NullReaper
 from kdive.reconciler import loop
 from kdive.reconciler.loop import (
-    InfraReaper,
-    NullReaper,
     Reconciler,
     ReconcileReport,
     reconcile_once,

@@ -7,8 +7,8 @@ DebugSession, leaked libvirt domain, and the M1 idempotency-key GC — each on a
 pooled connection, each fencing its writes, each isolated so one failing repair does not
 starve the others. The expiry sweep runs first so an allocation it reclaims orphans its
 System in the same pass. Time predicates use Postgres ``now()`` (never a Python clock).
-The local-libvirt :class:`InfraReaper` implementation lands with the provider (#15); M0
-ships :class:`NullReaper` so the Postgres-only repairs run today.
+Provider reaper contracts live in :mod:`kdive.providers.reaping`; the Postgres-only repair
+path can use ``NullReaper`` there when no provider contributes leaked-infra repair.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from kdive.domain.models import JobKind
 from kdive.domain.state import AllocationState, DebugSessionState, JobState, RunState, SystemState
 from kdive.jobs import queue
 from kdive.jobs.payloads import PayloadValidationError, SystemPayload, run_id_from_payload
+from kdive.providers.reaping import InfraReaper
 from kdive.security import audit
 from kdive.services.accounting import ledger as accounting
 from kdive.services.allocation import promotion as allocation_promotion
@@ -102,42 +103,11 @@ SYSTEM_RECONCILER_PRINCIPAL = "system:reconciler"
 
 
 @runtime_checkable
-class OwnedDomain(Protocol):
-    """A libvirt domain the provider owns; ``system_id`` is its metadata tag."""
-
-    name: str
-    system_id: UUID | None
-
-
-@runtime_checkable
-class InfraReaper(Protocol):
-    """The narrow discovery provider port the reconciler consumes."""
-
-    async def list_owned(self) -> list[OwnedDomain]: ...
-    async def destroy(self, name: str) -> None: ...
-
-
-@runtime_checkable
 class UploadStore(Protocol):
     """The narrow object-store port the upload reaper consumes."""
 
     def list_prefix(self, prefix: str) -> list[str]: ...
     def delete(self, key: str) -> None: ...
-
-
-class NullReaper:
-    """The M0 default reaper: owns nothing, destroys nothing.
-
-    Until the libvirt provider (#15) ships a real :class:`InfraReaper`, this lets the
-    three Postgres-only repairs run in production; leaked-domain reaping activates when
-    #15 injects the real reaper. It is the honest "no provider yet" default, not a stub.
-    """
-
-    async def list_owned(self) -> list[OwnedDomain]:
-        return []
-
-    async def destroy(self, name: str) -> None:
-        return None
 
 
 @dataclass(frozen=True, slots=True)

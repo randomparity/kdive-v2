@@ -303,7 +303,7 @@ def test_configured_fault_inject_runtime_is_visible_to_reconciler_reaper() -> No
 def test_reconciler_reaper_defaults_to_null_when_fault_inject_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from kdive.reconciler.loop import NullReaper
+    from kdive.providers.reaping import NullReaper
 
     monkeypatch.delenv("KDIVE_FAULT_INJECT", raising=False)
 
