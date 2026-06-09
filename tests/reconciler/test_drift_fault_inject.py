@@ -205,16 +205,24 @@ def test_abandoned_run_bearing_job_dead_lettered_and_run_compensated(migrated_ur
 
 def test_dead_session_from_connect_transport_drop_is_detached(migrated_url: str) -> None:
     async def _run() -> None:
-        # The upstream cause: the connect plane draws a TRANSPORT_FAILURE for this seed.
-        engine = _fail_engine(FaultPlane.CONNECT)
-        decision = engine.decide(system_id=uuid4(), plane=FaultPlane.CONNECT, attempt=1)
-        assert decision.fail is True
-        assert decision.category is ErrorCategory.TRANSPORT_FAILURE  # the dropped transport
-        # The reconciler trigger is the stale heartbeat the dropped transport produces (the
-        # worker stopped beating), NOT the fault category.
         async with await connect(migrated_url) as seed:
             system_id = await seed_system(seed)
             run_id = await seed_run(seed, system_id)
+        # The upstream cause, on THIS system: a fail-certain seed drops its connect transport;
+        # a no-fail seed for the same system does not — so the seed (not just the single-entry
+        # catalog) is doing the work.
+        dropped = _fail_engine(FaultPlane.CONNECT).decide(
+            system_id=system_id, plane=FaultPlane.CONNECT, attempt=1
+        )
+        assert dropped.fail is True
+        assert dropped.category is ErrorCategory.TRANSPORT_FAILURE  # the dropped transport
+        intact = _no_fail_engine(FaultPlane.CONNECT).decide(
+            system_id=system_id, plane=FaultPlane.CONNECT, attempt=1
+        )
+        assert intact.fail is False  # seed-sensitive: no drop without a failing rate
+        # The reconciler trigger is the stale heartbeat the dropped transport produces (the
+        # worker stopped beating), NOT the fault category.
+        async with await connect(migrated_url) as seed:
             session_id = await seed_debug_session(
                 seed, run_id, state=DebugSessionState.LIVE, heartbeat_ago=timedelta(hours=1)
             )
