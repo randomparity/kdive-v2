@@ -289,3 +289,26 @@ def test_fault_inject_opt_in_reads_the_environment(monkeypatch: pytest.MonkeyPat
     resolver = composition.build_provider_resolver()
 
     assert ResourceKind.FAULT_INJECT in resolver.registered_kinds()
+
+
+def test_fault_inject_runtime_without_engine_uses_bare_happy_path_ports() -> None:
+    from kdive.providers.fault_inject.provider import FaultInjectInstall, FaultInjectProvision
+
+    runtime = composition.build_faultinject_runtime()
+
+    # No engine -> the happy-path ports are used unchanged (no faulting wrapper).
+    assert isinstance(runtime.provisioner, FaultInjectProvision)
+    assert isinstance(runtime.installer, FaultInjectInstall)
+    assert isinstance(runtime.booter, FaultInjectInstall)
+
+
+def test_fault_inject_runtime_with_engine_wraps_ports_in_faulting_decorators() -> None:
+    from kdive.providers.fault_inject.engine import FaultEngine
+    from kdive.providers.fault_inject.faulted import FaultedInstall, FaultedProvision
+
+    engine = FaultEngine(seed=7, fault_rate={"provision": 1.0}, max_latency_s={})
+    runtime = composition.build_faultinject_runtime(engine=engine)
+
+    assert isinstance(runtime.provisioner, FaultedProvision)
+    assert isinstance(runtime.installer, FaultedInstall)
+    assert isinstance(runtime.booter, FaultedInstall)

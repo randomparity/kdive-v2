@@ -25,6 +25,8 @@ from kdive.providers.component_validation import (
     ComponentSourceKind,
 )
 from kdive.providers.fault_inject.discovery import FaultInjectDiscovery
+from kdive.providers.fault_inject.engine import FaultEngine
+from kdive.providers.fault_inject.faulted import FaultedInstall, FaultedProvision
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
 from kdive.providers.fault_inject.provider import (
     FaultInjectBuild,
@@ -133,8 +135,10 @@ def _faultinject_component_sources() -> ComponentSourceCapabilities:
     )
 
 
-def build_faultinject_runtime(*, inventory: FaultInjectInventory | None = None) -> ProviderRuntime:
-    """Build the fault-inject mock provider ports (ADR-0072, happy path).
+def build_faultinject_runtime(
+    *, inventory: FaultInjectInventory | None = None, engine: FaultEngine | None = None
+) -> ProviderRuntime:
+    """Build the fault-inject mock provider ports (ADR-0072 happy path; ADR-0074 faults).
 
     Args:
         inventory: The shared infra-inventory the provisioner records synthetic domains
@@ -142,16 +146,21 @@ def build_faultinject_runtime(*, inventory: FaultInjectInventory | None = None) 
             :class:`~kdive.providers.fault_inject.inventory.FaultInjectReaper` over the
             same state (the reconciler leaked-domain seam); omit it for a standalone
             runtime with its own inventory.
+        engine: When given, the provision/install/boot ports are wrapped in the ADR-0074
+            faulting decorators so a seeded fault perturbs those ops; when ``None`` (the
+            default, the happy path) the bare synthetic ports are used unchanged.
     """
     inventory = inventory if inventory is not None else FaultInjectInventory()
+    provisioner = FaultInjectProvision(inventory)
     install = FaultInjectInstall()
     retrieve = FaultInjectRetrieve(store_factory=object_store_from_env)
     introspect = FaultInjectIntrospect()
+    faulted_install = FaultedInstall(install, engine) if engine is not None else install
     return ProviderRuntime(
-        provisioner=FaultInjectProvision(inventory),
+        provisioner=FaultedProvision(provisioner, engine) if engine is not None else provisioner,
         builder=FaultInjectBuild(store_factory=object_store_from_env),
-        installer=install,
-        booter=install,
+        installer=faulted_install,
+        booter=faulted_install,
         connector=FaultInjectConnect(),
         controller=FaultInjectControl(),
         retriever=retrieve,
