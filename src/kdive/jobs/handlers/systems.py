@@ -104,8 +104,15 @@ async def _finalize_provision_ready(
     )
 
 
-async def _record_provision_failure(
-    conn: AsyncConnection, job: Job, *, system_id: UUID, project: str
+async def _record_system_failure(
+    conn: AsyncConnection,
+    job: Job,
+    *,
+    system_id: UUID,
+    project: str,
+    transition: str,
+    tool: str,
+    operation: str,
 ) -> None:
     try:
         async with conn.transaction():
@@ -115,39 +122,15 @@ async def _record_provision_failure(
                 job,
                 project=project,
                 object_id=system_id,
-                transition="provisioning->failed",
-                tool="systems.provision",
+                transition=transition,
+                tool=tool,
             )
     except IllegalTransition:
-        _log.info("provision of system %s failed but it is already terminal", system_id)
+        _log.info("%s of system %s failed but it is already terminal", operation, system_id)
     except Exception:  # noqa: BLE001 - failure recording is best-effort; preserve provider error
         _log.warning(
-            "provision of system %s failed but failure recording failed; preserving provider error",
-            system_id,
-            exc_info=True,
-        )
-
-
-async def _record_reprovision_failure(
-    conn: AsyncConnection, job: Job, *, system_id: UUID, project: str
-) -> None:
-    try:
-        async with conn.transaction():
-            await SYSTEMS.update_state(conn, system_id, SystemState.FAILED)
-            await audit_transition(
-                conn,
-                job,
-                project=project,
-                object_id=system_id,
-                transition="reprovisioning->failed",
-                tool="systems.reprovision",
-            )
-    except IllegalTransition:
-        _log.info("reprovision of system %s failed but it is already terminal", system_id)
-    except Exception:  # noqa: BLE001 - failure recording is best-effort; preserve provider error
-        _log.warning(
-            "reprovision of system %s failed but failure recording failed; "
-            "preserving provider error",
+            "%s of system %s failed but failure recording failed; preserving provider error",
+            operation,
             system_id,
             exc_info=True,
         )
@@ -219,7 +202,15 @@ async def provision_handler(
     try:
         domain_name = await asyncio.to_thread(provisioning.provision, system_id, profile)
     except CategorizedError:
-        await _record_provision_failure(conn, job, system_id=system_id, project=system.project)
+        await _record_system_failure(
+            conn,
+            job,
+            system_id=system_id,
+            project=system.project,
+            transition="provisioning->failed",
+            tool="systems.provision",
+            operation="provision",
+        )
         raise
     current = await _commit_provision_result(conn, job, system, profile, domain_name)
     if current in TERMINAL_SYSTEM_STATES:
@@ -251,7 +242,15 @@ async def reprovision_handler(
     try:
         domain_name = await asyncio.to_thread(provisioning.reprovision, system_id, profile)
     except CategorizedError:
-        await _record_reprovision_failure(conn, job, system_id=system_id, project=system.project)
+        await _record_system_failure(
+            conn,
+            job,
+            system_id=system_id,
+            project=system.project,
+            transition="reprovisioning->failed",
+            tool="systems.reprovision",
+            operation="reprovision",
+        )
         raise
     fingerprint = profile_digest(profile)
     current: SystemState | None = None
