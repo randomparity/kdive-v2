@@ -40,7 +40,11 @@ from kdive.profiles.build import ServerBuildProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.provider_components.local_paths import validate_local_component_path
 from kdive.provider_components.references import ComponentRef, LocalComponentRef
-from kdive.providers.build_validation import parse_gnu_build_id, patch_target_paths
+from kdive.providers.build_validation import (
+    parse_gnu_build_id,
+    patch_target_paths,
+    snapshot_file_bytes,
+)
 from kdive.providers.ports import BuildOutput
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -449,7 +453,7 @@ def _apply_patch(patch_ref: str, workspace: Path, secret_registry: SecretRegistr
             category=ErrorCategory.MISSING_DEPENDENCY,
         )
     targets = patch_target_paths(patch.read_text(errors="replace"), strip=1)
-    before = {rel: _snapshot_bytes(workspace / rel) for rel in targets}
+    before = {rel: snapshot_file_bytes(workspace / rel) for rel in targets}
     try:
         result = subprocess.run(  # noqa: S603 - fixed argv, no shell; -- ends option parsing
             ["git", "apply", "-p1", "-v", "--", str(patch)],
@@ -472,7 +476,7 @@ def _apply_patch(patch_ref: str, workspace: Path, secret_registry: SecretRegistr
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"stderr": _redacted_tail(result.stderr, secret_registry)},
         )
-    if "Skipped patch" in result.stderr:
+    if any(line.startswith("Skipped patch ") for line in result.stderr.splitlines()):
         raise CategorizedError(
             "patch_ref was silently skipped: git apply reported success but skipped one or "
             "more files as already applied (the build workspace has no .git, so git fell "
@@ -480,7 +484,7 @@ def _apply_patch(patch_ref: str, workspace: Path, secret_registry: SecretRegistr
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"stderr": _redacted_tail(result.stderr, secret_registry)},
         )
-    if targets and all(_snapshot_bytes(workspace / rel) == before[rel] for rel in targets):
+    if targets and all(snapshot_file_bytes(workspace / rel) == before[rel] for rel in targets):
         raise CategorizedError(
             "patch_ref was silently skipped: git apply reported success but left the kernel "
             "tree unchanged (the build workspace has no .git, so git fell back to context "
@@ -488,14 +492,6 @@ def _apply_patch(patch_ref: str, workspace: Path, secret_registry: SecretRegistr
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"targets": sorted(str(rel) for rel in targets)},
         )
-
-
-def _snapshot_bytes(path: Path) -> bytes | None:
-    """Return ``path`` contents, or ``None`` if it does not exist or cannot be read."""
-    try:
-        return path.read_bytes()
-    except OSError:
-        return None
 
 
 def _real_read_config(workspace: Path) -> str:  # pragma: no cover - live_vm
