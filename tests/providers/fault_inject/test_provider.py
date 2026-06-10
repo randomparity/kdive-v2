@@ -160,6 +160,24 @@ def test_close_transport_accepts_a_handle_it_opened() -> None:
     connect.close_transport(handle)
 
 
+def test_open_close_drgn_live_round_trips() -> None:
+    connect = FaultInjectConnect()
+
+    handle = connect.open_transport(SystemHandle("fault-inject-domain"), "drgn-live")
+
+    assert str(handle).startswith("drgn-live://")
+    connect.close_transport(handle)  # decode of drgn-live:// must succeed (#215)
+
+
+def test_open_transport_rejects_the_legacy_ssh_kind() -> None:
+    connect = FaultInjectConnect()
+
+    with pytest.raises(CategorizedError) as exc:
+        connect.open_transport(SystemHandle("fault-inject-domain"), "ssh")
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
 # --- Control ---------------------------------------------------------------------------
 
 

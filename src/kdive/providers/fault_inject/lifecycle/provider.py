@@ -43,7 +43,8 @@ from kdive.security.artifacts.crash_commands import validate_crash_commands
 
 _TENANT = "fault-inject"
 _RETENTION_CLASS = "vmcore"
-_TRANSPORT_KINDS = frozenset({"gdbstub", "ssh"})
+# The accepted transport-kind set for this connector (the agent-facing token, ADR-0085).
+_TRANSPORT_KINDS = frozenset({"gdbstub", "drgn-live"})
 _LOOPBACK_HOST = "127.0.0.1"
 
 # A plausible 40-hex GNU build-id shared by build and capture so provenance holds.
