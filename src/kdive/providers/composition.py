@@ -72,8 +72,10 @@ from kdive.providers.remote_libvirt.introspect import (
 )
 from kdive.providers.remote_libvirt.provisioning import RemoteLibvirtProvision
 from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
+from kdive.providers.remote_libvirt.transport_reset import RemoteLibvirtTransportResetter
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
+from kdive.providers.transport_reset import NullResetter, TransportResetter
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.resources.discovery import ensure_discovered_resource_registered
@@ -346,6 +348,19 @@ class ProviderComposition:
         if len(reapers) == 1:
             return reapers[0]
         return _CompositeReaper(tuple(reapers))
+
+    def build_reconciler_transport_resetter(
+        self, *, enable_remote_libvirt: bool | None = None
+    ) -> TransportResetter:
+        """Assemble the reconciler's dead-session transport resetter (ADR-0086).
+
+        Returns the remote-libvirt resetter when the remote provider is enabled (operator
+        config present or the explicit flag), else the no-op ``NullResetter`` — local-libvirt's
+        co-located gdbstub needs no active reset.
+        """
+        if _remote_libvirt_enabled(enable_remote_libvirt):
+            return RemoteLibvirtTransportResetter.from_env(secret_registry=self._secret_registry)
+        return NullResetter()
 
 
 def build_provider_resolver(

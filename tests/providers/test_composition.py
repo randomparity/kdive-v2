@@ -302,6 +302,22 @@ def test_configured_fault_inject_runtime_is_visible_to_reconciler_reaper() -> No
     asyncio.run(reaper.destroy(domain))
 
 
+def test_transport_resetter_is_null_without_remote() -> None:
+    from kdive.providers.transport_reset import NullResetter
+
+    comp = composition.ProviderComposition()
+    resetter = comp.build_reconciler_transport_resetter(enable_remote_libvirt=False)
+    assert isinstance(resetter, NullResetter)
+
+
+def test_transport_resetter_is_remote_when_enabled() -> None:
+    from kdive.providers.remote_libvirt.transport_reset import RemoteLibvirtTransportResetter
+
+    comp = composition.ProviderComposition()
+    resetter = comp.build_reconciler_transport_resetter(enable_remote_libvirt=True)
+    assert isinstance(resetter, RemoteLibvirtTransportResetter)
+
+
 def test_reconciler_reaper_defaults_to_null_when_fault_inject_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

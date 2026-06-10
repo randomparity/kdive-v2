@@ -125,6 +125,7 @@ async def _run_reconciler(secret_registry: SecretRegistry) -> None:
             pool,
             provider_composition.build_reconciler_reaper(),
             upload_store=upload_store,
+            resetter=provider_composition.build_reconciler_transport_resetter(),
         )
         await reconciler.run(stop)
     finally:

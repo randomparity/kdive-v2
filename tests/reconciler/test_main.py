@@ -44,6 +44,7 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
             events.append("discover")
 
     expected_reaper = object()
+    expected_resetter = object()
 
     class _FakeProviderComposition:
         def build_provider_resolver(self) -> _FakeResolver:
@@ -52,12 +53,16 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
         def build_reconciler_reaper(self) -> object:
             return expected_reaper
 
+        def build_reconciler_transport_resetter(self) -> object:
+            return expected_resetter
+
     monkeypatch.setattr(composition, "ProviderComposition", _FakeProviderComposition)
 
     constructed: dict[str, object] = {}
 
     def _fake_init(self: object, pool: object, reaper: object, **kw: object) -> None:
         constructed["reaper"] = reaper
+        constructed["resetter"] = kw.get("resetter")
 
     async def _fake_run(self: object, stop: object) -> None:
         events.append("run")
@@ -69,3 +74,4 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert events == ["open", "discover", "run", "close"]
     assert constructed["reaper"] is expected_reaper
+    assert constructed["resetter"] is expected_resetter
