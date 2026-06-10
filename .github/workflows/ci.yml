@@ -82,6 +82,18 @@ jobs:
         # because CI invokes recipes individually, so the ci recipe alone would not gate.
         run: just config-guard
 
+      - name: Set up Helm
+        # The tests/helm render gate skips when helm is absent (a skip validates
+        # nothing), so CI installs helm to actually exercise the chart (ADR-0088 §7).
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.21.0
+
+      - name: Helm chart deps
+        # Populate deploy/helm/kdive/charts/ from Chart.lock so `helm template`/`lint`
+        # (and the render tests) resolve the demo bundledBackends subcharts offline.
+        run: helm dependency build deploy/helm/kdive
+
       - name: Test
         # KDIVE_REQUIRE_DOCKER turns the db suite's skip-when-no-Docker into a hard
         # failure, so a broken daemon on the runner can't mask the schema tests

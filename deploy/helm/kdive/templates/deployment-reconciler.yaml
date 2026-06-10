@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kdive.fullname" . }}-reconciler
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.reconciler.replicas }}
+  selector:
+    matchLabels:
+      app: {{ include "kdive.fullname" . }}-reconciler
+  template:
+    metadata:
+      labels:
+        app: {{ include "kdive.fullname" . }}-reconciler
+        {{- include "kdive.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: reconciler
+          image: {{ include "kdive.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["reconciler"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "kdive.fullname" . }}-config
+          # No Service, no ports, no probe: k8s restarts the pod on process exit
+          # (process supervision is the M2.1 liveness contract, ADR-0088 §5).

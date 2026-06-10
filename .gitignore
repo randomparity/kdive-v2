@@ -32,3 +32,7 @@ kdive-live-stack-artifacts/
 # Agents and orchestration
 .claude-flow/
 .swarm/
+
+# Helm subchart tarballs — regenerated from Chart.lock by `helm dependency build`
+# (the demo-only bundledBackends path); Chart.lock pins the exact versions/digests.
+/deploy/helm/kdive/charts/

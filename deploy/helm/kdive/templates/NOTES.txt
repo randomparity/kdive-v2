@@ -1,0 +1,9 @@
+kdive {{ .Chart.AppVersion }} has been deployed as release {{ .Release.Name }}.
+
+Processes: server (Service {{ include "kdive.fullname" . }}-server:8000), worker, reconciler.
+Migrations run as a one-shot Job ({{ if .Values.bundledBackends }}post-install{{ else }}pre-install{{ end }} hook).
+{{- if and .Values.bundledBackends .Values.demoAcknowledged }}
+
+WARNING: bundledBackends is on — Postgres/MinIO run on emptyDir. Data is NOT durable;
+a pod restart drops all state. Use external backends for anything but a throwaway demo.
+{{- end }}
