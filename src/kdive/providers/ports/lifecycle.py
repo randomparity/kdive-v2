@@ -12,7 +12,11 @@ from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.ports._common import config_error
 from kdive.providers.ports.handles import SystemHandle, TransportHandle
 
-_TRANSPORT_KINDS = frozenset({"gdbstub", "ssh"})
+# The handle-scheme decode set (`TransportHandleData.kind`), NOT the agent-facing transport
+# token set. Connectors emit: gdbstub (all), ssh (local drgn-live realization), drgn-live
+# (fault-inject). Remote drgn-live emits a bare domain name (unschemed) — never decoded here
+# (ADR-0085).
+_TRANSPORT_KINDS = frozenset({"gdbstub", "ssh", "drgn-live"})
 
 
 class TransportHandleData(NamedTuple):

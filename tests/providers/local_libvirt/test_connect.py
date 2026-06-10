@@ -83,6 +83,14 @@ def test_transport_handle_decode_unknown_scheme_is_configuration_error() -> None
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
+def test_drgn_live_transport_handle_roundtrips() -> None:
+    # fault-inject emits a drgn-live:// scheme handle, so decode must accept it (#215).
+    handle = TransportHandleData(kind="drgn-live", host="127.0.0.1", port=1234)
+    encoded = handle.encode()
+    assert encoded.startswith("drgn-live://")
+    assert TransportHandleData.decode(encoded) == handle
+
+
 # --- Connector orchestration ---------------------------------------------------------------
 
 
