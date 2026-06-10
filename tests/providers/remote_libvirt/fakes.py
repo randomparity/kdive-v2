@@ -47,6 +47,11 @@ class FakeDomain:
         self._maybe_raise("injectNMI")
         return 0
 
+    def qemuMonitorCommand(self, cmd: str, flags: int) -> str:  # noqa: N802 - libvirt binding name
+        self.calls.append(f"monitor:{cmd}")
+        self._maybe_raise("qemuMonitorCommand")
+        return ""
+
 
 class FakeControlConn:
     """A libvirt connection slice with lookupByName + close for the control fakes."""
