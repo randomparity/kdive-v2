@@ -33,6 +33,7 @@
 | [`debug.read_registers`](debug.md#debugread_registers) | `partial` |
 | [`debug.set_breakpoint`](debug.md#debugset_breakpoint) | `partial` |
 | [`debug.start_session`](debug.md#debugstart_session) | `partial` |
+| [`fixtures.list`](fixtures.md#fixtureslist) | `implemented` |
 | [`introspect.from_vmcore`](introspect.md#introspectfrom_vmcore) | `partial` |
 | [`introspect.run`](introspect.md#introspectrun) | `partial` |
 | [`inventory.list`](inventory.md#inventorylist) | `implemented` |
@@ -68,6 +69,7 @@
 | [`runs.create`](runs.md#runscreate) | `implemented` |
 | [`runs.get`](runs.md#runsget) | `implemented` |
 | [`runs.install`](runs.md#runsinstall) | `partial` |
+| [`secrets.list`](secrets.md#secretslist) | `implemented` |
 | [`shapes.delete`](shapes.md#shapesdelete) | `implemented` |
 | [`shapes.list`](shapes.md#shapeslist) | `implemented` |
 | [`shapes.set`](shapes.md#shapesset) | `implemented` |

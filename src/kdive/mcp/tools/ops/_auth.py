@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 from psycopg_pool import AsyncConnectionPool
 
+import kdive.config as config
+from kdive.config.cli_settings import CLI_CLIENT_ID
 from kdive.security import audit
 from kdive.security.authz.actor import resolve_actor
 
@@ -13,11 +15,6 @@ if TYPE_CHECKING:
     from kdive.security.authz.context import RequestContext
 
 ALL_PROJECTS_SCOPE = "all-projects"
-
-# Operator-CLI OIDC client id. Issue #249 introduces ``config.cli_settings.CLI_CLIENT_ID``;
-# until it lands this literal equals that setting's default and the orchestrator swaps the
-# call sites to ``config.get(CLI_CLIENT_ID)`` once #249 is merged.
-_CLI_CLIENT_ID = "kdivectl"
 
 
 def held_platform_roles(ctx: RequestContext) -> str | None:
@@ -30,7 +27,9 @@ def held_platform_roles(ctx: RequestContext) -> str | None:
 def actor_for(ctx: RequestContext) -> str:
     """Resolve the audit ``actor`` (operator-cli | agent | unknown) for ``ctx`` (ADR-0089)."""
     return resolve_actor(
-        ctx.client_id, agent_session=ctx.agent_session, cli_client_id=_CLI_CLIENT_ID
+        ctx.client_id,
+        agent_session=ctx.agent_session,
+        cli_client_id=config.require(CLI_CLIENT_ID),
     )
 
 

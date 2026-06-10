@@ -77,6 +77,15 @@ ALLOWED_FILES = frozenset(
         "src/kdive/mcp/tools/ops/tuning.py",
         "src/kdive/mcp/tools/accounting/reports.py",
         "src/kdive/mcp/tools/catalog/shapes.py",
+        # M2.2 admin-CLI net-new read tools (#252, ADR-0089 §6): two provider-agnostic
+        # platform reads on the agnostic core. secrets.list reports secret *presence* (the
+        # scope_refs projection on SecretRegistry — never values), platform-operator gated;
+        # fixtures.list is a plain authenticated rootfs-catalog read. Their app.py registrar
+        # wiring and the value-free scope_refs accessor carry no provider-specific logic.
+        "src/kdive/mcp/tools/ops/secrets.py",
+        "src/kdive/mcp/tools/catalog/fixtures.py",
+        "src/kdive/security/secrets/secret_registry.py",
+        "src/kdive/mcp/app.py",
     }
 )
 

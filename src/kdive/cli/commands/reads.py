@@ -125,6 +125,40 @@ async def jobs_get(args: argparse.Namespace) -> int:
     return await _record("jobs.get", args, {"job_id": args.job_id})
 
 
+def _data_list(envelope: Mapping[str, object], key: str) -> list[object]:
+    """Return the list a ``data``-shaped read tool puts under ``data[key]``.
+
+    ``secrets.list``/``fixtures.list`` carry their rows in the envelope's ``data`` (not the
+    nested ``items`` a collection envelope uses), so they flatten from ``data`` here.
+    """
+    raw = envelope.get("data")
+    if not isinstance(raw, Mapping):
+        return []
+    data: Mapping[str, object] = {str(k): v for k, v in raw.items()}
+    rows = data.get(key)
+    return list(rows) if isinstance(rows, list) else []
+
+
+async def secrets_list(args: argparse.Namespace) -> int:
+    """List secret-reference *presence* (keys only; never values). Platform operator-gated."""
+    envelope = await _fetch("secrets.list", {})
+    refs = [{"ref": str(ref)} for ref in _data_list(envelope, "secrets")]
+    render(refs, columns=["ref"], as_json=args.json)
+    return 0
+
+
+async def fixtures_list(args: argparse.Namespace) -> int:
+    """List rootfs fixture catalog entries (provider, name, arch). Requires a valid token."""
+    envelope = await _fetch("fixtures.list", {})
+    rows = [
+        {str(k): v for k, v in row.items()}
+        for row in _data_list(envelope, "fixtures")
+        if isinstance(row, Mapping)
+    ]
+    render(rows, columns=["provider", "name", "arch"], as_json=args.json)
+    return 0
+
+
 async def ledger_show(args: argparse.Namespace) -> int:
     """Show a project's usage rollup (the accounting ledger)."""
     return await _record("accounting.usage_project", args, {"project": args.project})

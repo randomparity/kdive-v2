@@ -145,6 +145,39 @@ def test_inventory_show_lists_rows(monkeypatch: pytest.MonkeyPatch, capsys) -> N
     assert "minio" in out and "ready" in out
 
 
+def _data_envelope(data: dict) -> dict:
+    return {"object_id": "x", "status": "ok", "data": data, "items": []}
+
+
+def test_secrets_list_renders_refs_from_data(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    # secrets.list returns refs under data.secrets (a flat string list), not nested items.
+    client = _install_session(monkeypatch, _data_envelope({"secrets": ["ref://a", "ref://b"]}))
+    code = asyncio.run(reads.secrets_list(_args()))
+    assert code == 0
+    assert client.calls == [("secrets.list", {})]
+    out = capsys.readouterr().out
+    assert "ref" in out and "ref://a" in out and "ref://b" in out
+
+
+def test_secrets_list_json_mode_emits_ref_rows(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    _install_session(monkeypatch, _data_envelope({"secrets": ["ref://a"]}))
+    asyncio.run(reads.secrets_list(argparse.Namespace(json=True)))
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed == [{"ref": "ref://a"}]
+
+
+def test_fixtures_list_renders_rows_from_data(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    client = _install_session(
+        monkeypatch,
+        _data_envelope({"fixtures": [{"provider": "local-libvirt", "name": "base", "arch": "x"}]}),
+    )
+    code = asyncio.run(reads.fixtures_list(_args()))
+    assert code == 0
+    assert client.calls == [("fixtures.list", {})]
+    out = capsys.readouterr().out
+    assert "local-libvirt" in out and "base" in out
+
+
 def test_every_registry_verb_has_a_handler() -> None:
     # The registry is the single source of truth; every entry must resolve to a callable.
     for verb in REGISTRY:

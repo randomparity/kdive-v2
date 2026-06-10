@@ -62,6 +62,29 @@ class SecretRegistry:
         with self._lock:
             return frozenset(self._refcount)
 
+    def scope_refs(self) -> frozenset[str]:
+        """Return a presence projection of the scopes secrets are registered under — no values.
+
+        Powers ``secrets.list``: it reports *that* secrets exist, bucketed by the scope they
+        were registered against, without ever exposing a value. Scope keys vary by call site:
+        a ``str`` ref (e.g. ``"ref://..."``) is surfaced verbatim; the process-global scope
+        (``scope=None`` registrations, ADR-0012 lifetime values) reports as
+        ``"<process-global>"``; any other (non-string) scope owner — e.g. a bare ``object()``
+        sentinel — reports as ``"<scoped>"`` so no object ``repr`` (which would expose a heap
+        address) reaches operator output.
+        """
+        with self._lock:
+            keys = list(self._by_scope)
+        return frozenset(self._scope_label(key) for key in keys)
+
+    def _scope_label(self, key: object) -> str:
+        """Map one ``_by_scope`` key to a value-free presence label (never an object repr)."""
+        if key is self._GLOBAL or key == self._GLOBAL:
+            return "<process-global>"
+        if isinstance(key, str):
+            return key
+        return "<scoped>"
+
     def version(self) -> int:
         with self._lock:
             return self._version
