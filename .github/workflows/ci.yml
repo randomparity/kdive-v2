@@ -90,6 +90,46 @@ jobs:
           KDIVE_REQUIRE_DOCKER: "1"
         run: just test
 
+  image-build:
+    name: image build + smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Build image (no push)
+        # Exercises the Dockerfile on every PR (ADR-0088 decision 8). The build-time
+        # tool-verification RUN fails the build if a worker tool is missing, so a broken
+        # toolchain fails here, not at release time. load:true puts kdive:ci in the local
+        # daemon so the smoke step can run it.
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: kdive:ci
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.11.18"
+          enable-cache: true
+
+      - name: Image smoke test
+        # The job never runs `uv sync`, so kdive is not importable; --no-project keeps it
+        # that way and --noconftest skips the root conftest (which imports kdive.config).
+        # The smoke test needs no fixtures — only stdlib + pytest + `docker run`.
+        run: >-
+          uv run --no-project --with pytest
+          pytest --noconftest tests/image/test_image_smoke.py -q
+        env:
+          KDIVE_IMAGE: kdive:ci
+
   live-vm:
     name: live_vm (self-hosted KVM)
     # Gated to manual dispatch: the live_vm suite needs a KVM/nested-virt host
