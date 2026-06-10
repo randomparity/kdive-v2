@@ -84,17 +84,32 @@ remote provider does not have. `capture()` rejects a non-KDUMP method with
 `CONFIGURATION_ERROR` defensively (the empty-set → `{KDUMP}` widening already blocks it at
 `vmcore.fetch`).
 
-`capture(system_id, KDUMP)` runs on the **next normal boot** after a crash and moves the core
-out of the guest in three guest-agent round-trips (the digest must be known before the PUT can
-be signed, so inspect precedes presign precedes upload):
+`capture(system_id, KDUMP)` runs **after** a crash, against a System whose control-plane state is
+`crashed` but whose guest must have completed its kdump-triggered reboot back to the normal kernel
+for the in-guest agent to be reachable (see §0 below). It moves the core out of the guest in three
+guest-agent round-trips (the digest must be known before the PUT can be signed, so inspect precedes
+presign precedes upload):
 
+0. **Readiness wait.** The capture is admitted by `vmcore.fetch` the moment the System is `crashed`
+   (§4), which can be *before* the guest finishes rebooting out of the capture kernel — so the
+   first inspect can hit an unreachable agent. `capture()` polls inspect over a bounded
+   capture-readiness window: an unreachable agent (`TRANSPORT_FAILURE`) is treated as "still
+   rebooting, keep polling" (the ADR-0082 `_REBOOT_EXPECTED` shape), not a failure. Exhausting the
+   window without a reachable agent → `READINESS_FAILURE`. This mirrors install's boot-id poll: the
+   `crashed` control state and "guest agent back up" are decoupled in time, so capture cannot assume
+   the guest is reachable on the first call.
 1. **Inspect.** Run the single allowlisted retrieve helper —
    **`/usr/local/sbin/kdive-capture-vmcore inspect`** (the base image's Retrieve-plane contract,
    the only program this plane allowlists in `GuestAgentExec`) — which prints one JSON object:
-   `{present, sha256 (base64), size_bytes, build_id, dmesg_b64}` for the local kdump core.
+   `{present, sha256 (base64), size_bytes, build_id, dmesg_b64}` for the local kdump core. The
+   helper **bounds `dmesg_b64`** to a fixed byte cap (truncation marked) so the inspect reply stays
+   within the qemu-guest-agent maximum response regardless of the guest's ring-buffer size — an
+   oversized dmesg must not block obtaining the sha256/size the upload needs.
    `present=false` (no core in the guest's dump storage) → `READINESS_FAILURE`. A malformed
    reply → `INFRASTRUCTURE_FAILURE`. `size_bytes` over the single-PUT 5 GiB ceiling →
-   `CONFIGURATION_ERROR` (multipart upload is a follow-up, the ADR-0048 §>5 GiB shape).
+   `CONFIGURATION_ERROR` (multipart upload is a follow-up, the ADR-0048 §>5 GiB shape). `size_bytes`
+   is the guest's reported size used for the ceiling check; the **signed sha256** (not the size) is
+   the integrity binding S3 enforces on the body.
 2. **Presign.** The worker constructs the **deterministic raw object key**
    `artifact_key("remote-libvirt", "systems", system_id, "vmcore-kdump")` — the same key
    `vmcore.fetch`'s `raw_vmcore_key`/`captured_method` parse and the same first-method-wins key
@@ -113,10 +128,13 @@ be signed, so inspect precedes presign precedes upload):
    host-infra failures); an unreachable agent → `TRANSPORT_FAILURE`.
 
 The worker then **references** the uploaded object without re-downloading it:
-`head(raw_key)` confirms it landed and returns the `etag` (and the stored checksum, asserted to
-equal the inspected `sha256` — provenance that the object is the core the guest inspected); a
-`None` head after a success-reporting upload → `INFRASTRUCTURE_FAILURE`. The result is a
-`StoredArtifact(raw_key, etag, SENSITIVE, "vmcore")`.
+`head(raw_key)` confirms it landed and returns the `etag`. A `None` head after a success-reporting
+upload → `INFRASTRUCTURE_FAILURE`. Integrity is already guaranteed by the **signed-checksum PUT**
+(S3 rejects a body that does not hash to the URL's signed `sha256`), so `head` is for presence +
+etag recovery; `HeadResult.checksum_sha256` is `str | None` (only populated when the store echoes a
+written checksum, which MinIO and S3 do not do identically), so the worker compares it to the
+inspected `sha256` **only when present** and never hard-fails provenance on a `None` the store
+simply did not return. The result is a `StoredArtifact(raw_key, etag, SENSITIVE, "vmcore")`.
 
 The **redacted derivative** travels **inline**: the worker base64-decodes `dmesg_b64`, runs its
 own `Redactor` over it (defense in depth — redaction happens worker-side where the registry
@@ -147,13 +165,18 @@ This replaces the `UnimplementedRetriever` entirely (Replace-don't-deprecate): c
 `retriever`/`crash_postmortem` to the one `RemoteLibvirtRetrieve`, and `planes.py`'s two stubs
 are deleted.
 
-### 4. force_crash → kdump → capture is the end-to-end, orchestrated by existing handlers
+### 4. force_crash → kdump → capture is the end-to-end, driven by the existing operator tool
 
-The acceptance flow uses only existing orchestration: `control.force_crash` injects the NMI →
-the guest panics → kdump writes the core to local dump storage and reboots normally → the boot
-plane (ADR-0082) observes the System back via boot_id change → a `CAPTURE_VMCORE` job runs the
-two-phase `capture()`. No new handler, job kind, tool, or state edge — the provider supplies the
-Control and Retrieve seams the unchanged handlers already call.
+The acceptance flow uses only existing orchestration, but the capture is **operator-initiated, not
+auto-scheduled**: `control.force_crash` injects the NMI → the guest panics → the control handler
+transitions the System to `crashed` → kdump writes the core to local dump storage and reboots the
+guest normally → an operator (or the `live_vm` acceptance test) calls `vmcore.fetch(system_id,
+kdump)`, which admits a `CAPTURE_VMCORE` job on the `crashed` System
+(`mcp/tools/lifecycle/vmcore.py`) → the worker runs the two-phase `capture()`. **No component
+auto-runs capture after the reboot**, and the `crashed` admission state does not imply the guest
+agent is back up — which is exactly why `capture()` owns the §2 step-0 readiness wait rather than
+assuming a reachable guest. No new handler, job kind, tool, or state edge — the provider supplies
+the Control and Retrieve seams the unchanged handlers already call.
 
 All slow/host seams — the TLS connection opener, the guest-agent round-trip, the object store,
 the clock, sleep, the `crash` subprocess — are injected, so unit tests drive the full
@@ -181,9 +204,13 @@ NMI/curl/upload/`crash` mechanics run only under the `live_vm` gate.
   (with `curl` and a kdump-core reader available to it) and is configured for
   `kernel.unknown_nmi_panic=1`, in addition to the ADR-0080/0082 obligations.
 - **Build-id match is verified at postmortem, not capture.** `capture()` records the inspected
-  build-id; the "matches the Run build-id" criterion is enforced by `run_crash_postmortem`'s
-  provenance gate (and the `live_vm` test), because the `capture(system_id, method)` port carries
-  no Run identity.
+  build-id but stores the core unconditionally; the "matches the Run build-id" acceptance criterion
+  is enforced by `run_crash_postmortem`'s provenance gate, which the `live_vm` acceptance test drives
+  explicitly, because the `capture(system_id, method)` port carries no Run identity. The vmcore is
+  scoped **per System** (first-method-wins, ADR-0050), not per Run, so a core captured under one Run
+  can satisfy a later Run's precheck; the build-id gate at postmortem is what ties a given core to a
+  given Run's kernel, and the acceptance test asserts that match rather than assuming capture
+  guarantees it.
 - **Single-PUT ceiling.** A core over 5 GiB is rejected at inspect (`CONFIGURATION_ERROR`);
   multipart upload for very large cores is a deferred follow-up, not an M2 widening.
 
