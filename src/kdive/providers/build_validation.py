@@ -85,6 +85,18 @@ def patch_target_paths(patch_text: str, *, strip: int = 1) -> set[Path]:
     return paths
 
 
+def snapshot_file_bytes(path: Path) -> bytes | None:
+    """Return ``path`` contents, or ``None`` if it does not exist or cannot be read.
+
+    Used by the build planes to snapshot a patch's target files before and after
+    ``git apply`` and detect a silent no-op apply (issue #227).
+    """
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
 def validate_external_artifacts(
     store: ValidatorStore,
     *,
