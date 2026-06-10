@@ -25,6 +25,17 @@ _CAP_ENV = "KDIVE_REMOTE_LIBVIRT_ALLOCATION_CAP"
 _DEFAULT_CAP = 1
 _STORAGE_POOL_ENV = "KDIVE_REMOTE_LIBVIRT_STORAGE_POOL"
 _DEFAULT_STORAGE_POOL = "default"
+_NETWORK_ENV = "KDIVE_REMOTE_LIBVIRT_NETWORK"
+_DEFAULT_NETWORK = "default"
+_MACHINE_ENV = "KDIVE_REMOTE_LIBVIRT_MACHINE"
+# i440fx by default: under q35, libvirt places each virtio device behind an
+# auto-added pcie-root-port, and on QEMU 10.x those devices can come up in
+# D3cold ("Unable to change power state from D3cold to D0, device inaccessible"),
+# so the virtio root disk never appears and the guest hangs in the initramfs.
+# i440fx puts virtio on the legacy PCI bus and sidesteps it. Operators who need
+# q35 can set KDIVE_REMOTE_LIBVIRT_MACHINE=q35 once their host topology powers
+# the root ports correctly.
+_DEFAULT_MACHINE = "pc"
 _GDB_ADDR_ENV = "KDIVE_REMOTE_LIBVIRT_GDB_ADDR"
 _GDB_PORT_MIN_ENV = "KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN"
 _GDB_PORT_MAX_ENV = "KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX"
@@ -55,6 +66,8 @@ class RemoteLibvirtConfig:
     cert_refs: TlsCertRefs
     concurrent_allocation_cap: int
     storage_pool: str = _DEFAULT_STORAGE_POOL
+    network: str = _DEFAULT_NETWORK
+    machine: str = _DEFAULT_MACHINE
     gdb_addr: str | None = None
     gdb_port_min: int = _DEFAULT_GDB_PORT_MIN
     gdb_port_max: int = _DEFAULT_GDB_PORT_MAX
@@ -127,6 +140,8 @@ def remote_config_from_env() -> RemoteLibvirtConfig:
         cert_refs=refs,
         concurrent_allocation_cap=cap,
         storage_pool=os.environ.get(_STORAGE_POOL_ENV) or _DEFAULT_STORAGE_POOL,
+        network=os.environ.get(_NETWORK_ENV) or _DEFAULT_NETWORK,
+        machine=os.environ.get(_MACHINE_ENV) or _DEFAULT_MACHINE,
         gdb_addr=os.environ.get(_GDB_ADDR_ENV) or None,
         gdb_port_min=gdb_port_min,
         gdb_port_max=gdb_port_max,

@@ -47,7 +47,7 @@ _log = logging.getLogger(__name__)
 KDIVE_METADATA_NS = "https://kdive.dev/libvirt/1"
 QEMU_NS = "http://libvirt.org/schemas/domain/qemu/1.0"
 
-_DEFAULT_MACHINE = "q35"
+_DEFAULT_NETWORK = "default"
 _DOMAIN_PREFIX = "kdive-"
 _GUEST_AGENT_CHANNEL = "org.qemu.guest_agent.0"
 # Bounded start-failure port advance (ADR-0080 §2): a squatted port or a define→start
@@ -104,11 +104,15 @@ def render_domain_xml(
     volume: str,
     gdb_addr: str,
     gdb_port: int,
+    network: str = _DEFAULT_NETWORK,
+    machine: str = "pc",
 ) -> str:
     """Render the tagged remote domain XML (ADR-0080 §2/§4).
 
-    Renders the domain shell, the overlay disk (``type='volume'``), boot-from-disk, the
-    qemu-guest-agent virtio-serial channel, a pty serial console **without** a
+    Renders the domain shell, the overlay disk (``type='volume'``), boot-from-disk, a
+    virtio NIC on the host's ``network`` (the in-guest artifact channel pulls presigned
+    GETs and pushes the vmcore PUT over it — ADR-0078/0082/0084 depend on guest egress),
+    the qemu-guest-agent virtio-serial channel, a pty serial console **without** a
     worker-local ``<log>`` tee (the path would be on the remote host), the kdive
     metadata tag, and the gdbstub QEMU passthrough args — the per-System port record.
 
@@ -132,13 +136,16 @@ def render_domain_xml(
     ET.SubElement(domain, "memory", unit="MiB").text = str(profile.memory_mb)
     ET.SubElement(domain, "vcpu").text = str(profile.vcpu)
     os_el = ET.SubElement(domain, "os")
-    ET.SubElement(os_el, "type", arch=profile.arch, machine=_DEFAULT_MACHINE).text = "hvm"
+    ET.SubElement(os_el, "type", arch=profile.arch, machine=machine).text = "hvm"
     ET.SubElement(os_el, "boot", dev="hd")
     devices = ET.SubElement(domain, "devices")
     disk = ET.SubElement(devices, "disk", type="volume", device="disk")
     ET.SubElement(disk, "driver", name="qemu", type="qcow2")
     ET.SubElement(disk, "source", pool=pool, volume=volume)
     ET.SubElement(disk, "target", dev="vda", bus="virtio")
+    interface = ET.SubElement(devices, "interface", type="network")
+    ET.SubElement(interface, "source", network=network)
+    ET.SubElement(interface, "model", type="virtio")
     serial = ET.SubElement(devices, "serial", type="pty")
     ET.SubElement(serial, "target", port="0")
     console = ET.SubElement(devices, "console", type="pty")
@@ -541,6 +548,8 @@ class RemoteLibvirtProvision:
                 volume=overlay_name,
                 gdb_addr=gdb_addr,
                 gdb_port=port,
+                network=config.network,
+                machine=config.machine,
             )
             try:
                 domain = conn.defineXML(xml)

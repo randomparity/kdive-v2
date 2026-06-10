@@ -19,6 +19,11 @@ from typing import Any, Protocol
 import libvirt
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.providers.debug_common.drgn_program import (
+    open_vmcore_program,
+    read_vmcoreinfo_build_id,
+    run_introspection_helper,
+)
 from kdive.providers.debug_common.introspect import assemble_report
 from kdive.providers.ports import IntrospectOutput
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
@@ -77,11 +82,18 @@ class RemoteVmcoreIntrospect:
 
     @classmethod
     def from_env(cls, *, secret_registry: SecretRegistry) -> RemoteVmcoreIntrospect:
-        """Build from env; drgn seams left None (off-gate ``from_vmcore`` raises before any IO)."""
+        """Build from env with the real drgn seams (lazy: drgn imports on first use).
+
+        drgn stays an operator-provided live-host prerequisite — the seams import it
+        inside the call, so composition builds on hosts without it and ``from_vmcore``
+        raises the documented ``MISSING_DEPENDENCY`` there instead of an import error.
+        """
         return cls(
             fetch_object=_real_fetch_object,
-            read_vmcore_build_id=_real_read_vmcore_build_id,
+            read_vmcore_build_id=read_vmcoreinfo_build_id,
             secret_registry=secret_registry,
+            open_program=open_vmcore_program,
+            run_helper=run_introspection_helper,
         )
 
     def from_vmcore(
@@ -146,13 +158,6 @@ def _real_fetch_object(ref: str) -> bytes:  # pragma: no cover - live_vm
     from kdive.store.objectstore import object_store_from_env
 
     return object_store_from_env().get_artifact(ref, None).data
-
-
-def _real_read_vmcore_build_id(data: bytes) -> str:  # pragma: no cover - live_vm
-    raise CategorizedError(
-        "vmcore build-id extraction runs only under the live_vm gate",
-        category=ErrorCategory.MISSING_DEPENDENCY,
-    )
 
 
 class RemoteLiveIntrospect:
