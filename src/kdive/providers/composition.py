@@ -27,7 +27,7 @@ from kdive.provider_components.references import (
 from kdive.provider_components.validation import (
     ComponentSourceCapabilities,
 )
-from kdive.providers.debug_common.gdbmi import GdbMiEngine as LocalGdbMiEngine
+from kdive.providers.debug_common.gdbmi import GdbMiEngine
 from kdive.providers.fault_inject.discovery import FaultInjectDiscovery
 from kdive.providers.fault_inject.faulting.engine import FaultEngine
 from kdive.providers.fault_inject.inventory import FaultInjectInventory, FaultInjectReaper
@@ -60,12 +60,16 @@ from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
 from kdive.providers.reaping import InfraReaper, NullReaper, OwnedDomain
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.config import is_remote_libvirt_configured
+from kdive.providers.remote_libvirt.connect import RemoteLibvirtConnect
+from kdive.providers.remote_libvirt.debug import remote_attach_seam
 from kdive.providers.remote_libvirt.discovery import RemoteLibvirtDiscovery
 from kdive.providers.remote_libvirt.install import RemoteLibvirtInstall
+from kdive.providers.remote_libvirt.introspect import (
+    RemoteLiveIntrospect,
+    RemoteVmcoreIntrospect,
+)
 from kdive.providers.remote_libvirt.planes import (
-    UnimplementedConnector,
     UnimplementedController,
-    UnimplementedIntrospector,
     UnimplementedRetriever,
 )
 from kdive.providers.remote_libvirt.provisioning import RemoteLibvirtProvision
@@ -130,7 +134,7 @@ def build_local_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
         ),
         discovery_registrar=ensure_local_host_registered,
         attach_seam=default_attach_seam,
-        debug_engine=LocalGdbMiEngine(redactor_factory=lambda: Redactor(registry=secret_registry)),
+        debug_engine=GdbMiEngine(redactor_factory=lambda: Redactor(registry=secret_registry)),
         component_sources=_local_component_sources(),
         build_config_validator=builder.validate_config_ref,
         rootfs_validator=provisioner.validate_rootfs_ref,
@@ -213,16 +217,17 @@ def _remote_component_sources() -> ComponentSourceCapabilities:
 def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
     """Build the remote-libvirt ports; buildable without operator config (ADR-0076).
 
-    Construction wires the real provisioning (ADR-0080), build (ADR-0081), and
-    install/boot (ADR-0082) planes, the discovery registrar, and fail-fast stubs for
-    the connect/debug and control/retrieve planes later M2 issues supply; the
-    ``KDIVE_REMOTE_LIBVIRT_*`` config gates discovery/connection/provisioning and is
-    read only when an op runs.
+    Construction wires the real provisioning (ADR-0080), build (ADR-0081), install/boot
+    (ADR-0082), and connect/debug + introspection (ADR-0083) planes, the discovery
+    registrar, and fail-fast stubs for the control/retrieve plane the later M2 issue
+    supplies; the ``KDIVE_REMOTE_LIBVIRT_*`` config gates discovery/connection/provisioning
+    and is read only when an op runs.
     """
     builder = RemoteLibvirtBuild.from_env(secret_registry=secret_registry)
     installer = RemoteLibvirtInstall.from_env(secret_registry=secret_registry)
     retriever = UnimplementedRetriever()
-    introspector = UnimplementedIntrospector()
+    vmcore_introspector = RemoteVmcoreIntrospect.from_env(secret_registry=secret_registry)
+    live_introspector = RemoteLiveIntrospect.from_env(secret_registry=secret_registry)
 
     async def register_remote_host(pool: AsyncConnectionPool) -> None:
         # Known limitation: ensure_discovered_resource_registered calls
@@ -245,17 +250,19 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
         builder=builder,
         installer=installer,
         booter=installer,
-        connector=UnimplementedConnector(),
+        connector=RemoteLibvirtConnect.from_env(),
         controller=UnimplementedController(),
         retriever=retriever,
         crash_postmortem=retriever,
-        vmcore_introspector=introspector,
-        live_introspector=introspector,
+        vmcore_introspector=vmcore_introspector,
+        live_introspector=live_introspector,
         # No capture plane yet: advertise nothing rather than admit a capture request
         # that dies in a stub (vmcore.get validates against this set). The M2 retrieve
         # issue widens it with the real two-phase kdump path (ADR-0078).
         supported_capture_methods=frozenset(),
         discovery_registrar=register_remote_host,
+        attach_seam=remote_attach_seam,
+        debug_engine=GdbMiEngine(redactor_factory=lambda: Redactor(registry=secret_registry)),
         component_sources=_remote_component_sources(),
         build_config_validator=builder.validate_config_ref,
         # The systems registrar hard-fails on a None validator; a remote profile has

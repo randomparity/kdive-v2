@@ -433,6 +433,29 @@ def test_remote_runtime_has_real_installer_and_booter(monkeypatch: pytest.Monkey
     assert runtime.booter is runtime.installer
 
 
+def test_remote_runtime_wires_connect_and_introspect_ports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The connect/debug + introspection planes are real from this issue on (ADR-0083);
+    # control/retrieve stay stubbed (issue #206).
+    monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
+    from kdive.providers.remote_libvirt.connect import RemoteLibvirtConnect
+    from kdive.providers.remote_libvirt.debug import remote_attach_seam
+    from kdive.providers.remote_libvirt.introspect import (
+        RemoteLiveIntrospect,
+        RemoteVmcoreIntrospect,
+    )
+    from kdive.providers.remote_libvirt.planes import UnimplementedController
+
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert isinstance(runtime.connector, RemoteLibvirtConnect)
+    assert runtime.attach_seam is remote_attach_seam
+    assert isinstance(runtime.vmcore_introspector, RemoteVmcoreIntrospect)
+    assert isinstance(runtime.live_introspector, RemoteLiveIntrospect)
+    assert isinstance(runtime.controller, UnimplementedController)
+
+
 def test_remote_runtime_wires_build_config_validator(monkeypatch: pytest.MonkeyPatch) -> None:
     # runs.build runs the config validator after the component-source gate; without it a
     # remote build's config ref goes unvalidated. It must be the builder's validator.
