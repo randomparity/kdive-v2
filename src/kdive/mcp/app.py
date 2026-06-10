@@ -26,6 +26,7 @@ from kdive.mcp.tools.accounting.usage import register as register_accounting_usa
 from kdive.mcp.tools.catalog import (
     artifacts,
     availability,
+    fixtures,
     investigations,
     jobs,
     resources,
@@ -44,6 +45,7 @@ from kdive.mcp.tools.ops import inventory as inventory_tools
 from kdive.mcp.tools.ops import queue as ops_queue_tools
 from kdive.mcp.tools.ops import reconcile as ops_reconcile_tools
 from kdive.mcp.tools.ops import resources as ops_resources_tools
+from kdive.mcp.tools.ops import secrets as ops_secrets_tools
 from kdive.mcp.tools.ops import tuning as ops_tuning_tools
 from kdive.providers.composition import ProviderComposition, build_provider_resolver
 from kdive.providers.reaping import InfraReaper
@@ -109,6 +111,8 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _plain(ops_tuning_tools.register),
     _plain(audit_tools.register),
     _plain(inventory_tools.register),
+    _plain(fixtures.register),
+    lambda app, pool, resolver, registry, reaper: ops_secrets_tools.register(app, pool, registry),
 )
 
 # Handler seam: worker modules expose register_handlers(registry). Long-running lifecycle,

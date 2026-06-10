@@ -5,8 +5,8 @@ The generic ``kdivectl tool call`` passthrough fail-closed-gates on ``readOnlyHi
 therefore unreachable without a curated verb. This guard holds every such tool to the
 hint, making the milestone's "lists/inspects every domain object" claim falsifiable.
 
-#252 extends ``READ_TOOLS`` with ``secrets.list`` and ``fixtures.list`` once those net-new
-read tools land; they are intentionally absent here because they do not exist on this branch.
+``secrets.list`` and ``fixtures.list`` (the #252 net-new read tools) carry the same hint:
+both are domain reads reachable through the passthrough, so they are guarded here too.
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ READ_TOOLS = [
     "jobs.get",
     "accounting.usage_project",
     "inventory.list",
+    "secrets.list",
+    "fixtures.list",
 ]
 
 

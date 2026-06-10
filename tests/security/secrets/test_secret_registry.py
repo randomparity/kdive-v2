@@ -81,3 +81,24 @@ def test_release_of_unknown_scope_does_not_bump_version() -> None:
 
 def test_process_registry_is_a_secret_registry() -> None:
     assert isinstance(PROCESS_SECRET_REGISTRY, SecretRegistry)
+
+
+def test_scope_refs_returns_scope_keys_never_values() -> None:
+    registry = SecretRegistry()
+    registry.register("hunter2", scope="ref://build/key")
+    refs = registry.scope_refs()
+    assert "ref://build/key" in refs
+    assert "hunter2" not in refs  # presence: the reference, never the value
+
+
+def test_scope_refs_labels_process_global_scope() -> None:
+    registry = SecretRegistry()
+    registry.register("global-secret", scope=None)
+    assert registry.scope_refs() == frozenset({"<process-global>"})
+
+
+def test_scope_refs_drops_evicted_scope() -> None:
+    registry = SecretRegistry()
+    registry.register("scoped", scope="ref://a")
+    registry.release("ref://a")
+    assert registry.scope_refs() == frozenset()

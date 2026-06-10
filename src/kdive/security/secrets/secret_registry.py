@@ -62,6 +62,21 @@ class SecretRegistry:
         with self._lock:
             return frozenset(self._refcount)
 
+    def scope_refs(self) -> frozenset[str]:
+        """Return the *references* (scope keys) secrets are registered under — never values.
+
+        A presence projection for ``secrets.list``: it exposes the scope each secret was
+        registered against (the by-reference handle), so a caller learns *that* a secret
+        exists without ever seeing its value. The process-global scope (``scope=None``
+        registrations, ADR-0012 lifetime values) reports as ``"<process-global>"``.
+        """
+        with self._lock:
+            keys = list(self._by_scope)
+        return frozenset(
+            "<process-global>" if key is self._GLOBAL or key == self._GLOBAL else str(key)
+            for key in keys
+        )
+
     def version(self) -> int:
         with self._lock:
             return self._version
