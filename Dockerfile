@@ -41,8 +41,11 @@ COPY --from=builder /app/src /app/src
 ENV PATH=/opt/venv/bin:$PATH PYTHONPATH=/app/src \
     KDIVE_BUILD_WORKSPACE=/var/lib/kdive/build \
     KDIVE_INSTALL_STAGING=/var/lib/kdive/install
-# drgn from its prebuilt wheel into the venv (CLI + import both available).
-RUN uv pip install --python /opt/venv/bin/python "drgn==0.2.0"
+# drgn from its prebuilt wheel into the venv (CLI + import both available). --no-deps
+# keeps the install hermetic: drgn is a self-contained C-extension wheel with no
+# transitive deps, so the uv-sync-frozen venv resolved from uv.lock cannot be perturbed
+# by this pin, now or if a future drgn version declares dependencies.
+RUN uv pip install --no-deps --python /opt/venv/bin/python "drgn==0.2.0"
 # Fail the build (not just the gated smoke test) if any worker tool is missing/broken.
 RUN drgn --version && gdb --version && virsh --version && gcc --version && make --version
 # Fixed non-root uid 10001 (k8s runAsNonRoot convention) so compose/Helm can chown the
