@@ -151,6 +151,18 @@ def test_every_registry_verb_has_a_handler() -> None:
         assert callable(verb.handler)
 
 
+@pytest.mark.parametrize("verb", REGISTRY, ids=lambda v: f"{v.group}.{v.sub}")
+def test_handler_calls_the_tool_the_registry_declares(verb, monkeypatch, capsys) -> None:
+    # Bind verb.tool (what the read-only gate test checks) to the handler's real call, so a
+    # registry that declares a read-only tool but dispatches to another would fail here.
+    client = _install_session(monkeypatch, _collection([]))
+    args = argparse.Namespace(json=False)
+    for name in (*verb.positionals, *verb.options):
+        setattr(args, name, f"{name}-val")
+    asyncio.run(verb.handler(args))
+    assert client.calls and client.calls[0][0] == verb.tool
+
+
 def test_list_verb_with_empty_items_prints_only_header(
     monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:

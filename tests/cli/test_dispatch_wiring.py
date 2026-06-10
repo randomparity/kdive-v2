@@ -32,6 +32,24 @@ def test_optional_filter_defaults_to_none() -> None:
     assert args.state is None
 
 
+def test_json_flag_accepted_after_the_verb() -> None:
+    args = build_parser().parse_args(["resources", "list", "--json"])
+    assert args.json is True
+
+
+def test_json_flag_accepted_before_the_verb() -> None:
+    args = build_parser().parse_args(["--json", "resources", "list"])
+    assert args.json is True
+
+
+def test_json_absent_after_verb_does_not_clobber_top_level() -> None:
+    # The post-verb --json default is SUPPRESS, so omitting it leaves the top-level value.
+    args = build_parser().parse_args(["--json", "resources", "list"])
+    assert args.json is True
+    args = build_parser().parse_args(["resources", "list"])
+    assert args.json is False
+
+
 def test_every_registry_verb_parses_through_the_built_parser() -> None:
     parser = build_parser()
     for verb in REGISTRY:

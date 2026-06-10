@@ -16,6 +16,7 @@ import asyncio
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.cli.commands import REGISTRY
 from kdive.mcp.app import build_app
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.mcp.conftest import AUDIENCE, ISSUER, make_keypair
@@ -50,13 +51,25 @@ def _tools_by_name() -> dict[str, object]:
     return asyncio.run(_collect())
 
 
+def _is_read_only(tool: object) -> bool:
+    return getattr(getattr(tool, "annotations", None), "readOnlyHint", None) is True
+
+
 def test_read_tools_carry_read_only_hint() -> None:
     tools = _tools_by_name()
     missing = [name for name in READ_TOOLS if name not in tools]
     assert not missing, f"read tools not registered: {missing}"
-    not_annotated = [
-        name
-        for name in READ_TOOLS
-        if getattr(getattr(tools[name], "annotations", None), "readOnlyHint", None) is not True
-    ]
+    not_annotated = [name for name in READ_TOOLS if not _is_read_only(tools[name])]
     assert not not_annotated, f"read tools unreachable via passthrough: {not_annotated}"
+
+
+def test_every_curated_read_verb_targets_a_read_only_tool() -> None:
+    # Derive the guarded set from the SAME registry that drives dispatch, so a future verb
+    # wired to a mutating tool fails here instead of silently reaching it (ADR-0089).
+    tools = _tools_by_name()
+    offenders = [
+        verb.tool
+        for verb in REGISTRY
+        if verb.tool not in tools or not _is_read_only(tools[verb.tool])
+    ]
+    assert not offenders, f"curated read verbs target non-read-only tools: {offenders}"
