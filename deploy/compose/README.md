@@ -86,8 +86,12 @@ cosign verify ghcr.io/randomparity/kdive:vX.Y.Z \
 
 The identity regexp pins the signer to a workflow in this repository and the issuer pins it
 to GitHub's OIDC provider; a signature from any other identity or issuer fails the check.
-Inspect the attached SBOM with:
+
+The SBOM and provenance are attached by BuildKit (`docker/build-push-action` `sbom: true`,
+`provenance: mode=max`) as in-toto **attestations** referring to the image index — distinct
+from the image signature `cosign verify` checks. Inspect them with `buildx imagetools`:
 
 ```bash
-cosign download sbom ghcr.io/randomparity/kdive:vX.Y.Z
+docker buildx imagetools inspect ghcr.io/randomparity/kdive:vX.Y.Z \
+  --format '{{ json .SBOM }}'        # or '{{ json .Provenance }}'
 ```
