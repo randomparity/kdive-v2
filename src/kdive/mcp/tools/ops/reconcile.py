@@ -22,7 +22,7 @@ from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
+from kdive.mcp.tools.ops._auth import actor_for, audit_platform_denial, held_platform_roles
 from kdive.providers.reaping import InfraReaper
 from kdive.reconciler.loop import ReconcileReport, UploadStore, reconcile_once
 from kdive.security import audit
@@ -93,6 +93,7 @@ async def reconcile_now(
                     scope=_RECONCILE_SCOPE,
                     args={"tool": _RECONCILE_TOOL},
                     platform_role=held_platform_roles(ctx),
+                    actor=actor_for(ctx),
                 ),
             )
         return _reconcile_response(report)

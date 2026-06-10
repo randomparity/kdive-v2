@@ -109,12 +109,14 @@ def _build_claims(
     roles: Mapping[str, str],
     platform_roles: Sequence[str] | None,
     agent_session: str | None,
+    client_id: str | None = None,
 ) -> dict[str, object]:
     """Build the literal ``claims`` JSON the login form carries.
 
     ``roles`` becomes the nested-object claim ``{project: role}``; ``platform_roles``,
     when not ``None``, becomes the flat array claim. ``None`` for ``platform_roles`` or
-    ``agent_session`` omits that claim entirely (distinct from an empty list).
+    ``agent_session`` omits that claim entirely (distinct from an empty list). ``client_id``,
+    when set, becomes the OIDC ``azp`` claim the actor map resolves to ``operator-cli``.
     """
     claims: dict[str, object] = {
         "sub": subject,
@@ -126,6 +128,8 @@ def _build_claims(
         claims["platform_roles"] = list(platform_roles)
     if agent_session is not None:
         claims["agent_session"] = agent_session
+    if client_id is not None:
+        claims["azp"] = client_id
     return claims
 
 
@@ -208,13 +212,15 @@ def mint_token(
     roles: Mapping[str, str],
     platform_roles: Sequence[str] | None = None,
     agent_session: str | None = None,
+    client_id: str | None = None,
 ) -> str:
     """Mint an access token from the mock-OIDC issuer carrying the kdive claims.
 
     Drives the issuer's interactive-login authorization-code flow: POST the login form
     with a literal ``claims`` JSON (nested-object ``roles`` + optional ``platform_roles``
     array), capture the ``code`` from the redirect, exchange it for the access token. The
-    token validates through the server's real ``JWTVerifier`` (ADR-0044).
+    token validates through the server's real ``JWTVerifier`` (ADR-0044). ``client_id`` sets
+    the OIDC ``azp`` claim so the boundary test can mint an ``operator-cli`` token.
     """
     claims = _build_claims(
         subject=subject,
@@ -223,6 +229,7 @@ def mint_token(
         roles=roles,
         platform_roles=platform_roles,
         agent_session=agent_session,
+        client_id=client_id,
     )
     code = _authorization_code(issuer, claims)
     return _exchange_code(issuer, code)

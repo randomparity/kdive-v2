@@ -67,12 +67,18 @@ class DenialEvent:
 
 @dataclass(frozen=True, slots=True)
 class PlatformAuditEvent:
-    """A platform-scope read or denial audit event."""
+    """A platform-scope read or denial audit event.
+
+    ``actor`` is the required caller classification (operator-cli | agent | unknown)
+    resolved from the OIDC client id (ADR-0089). It has no default so every construction
+    site must attribute the caller — an unported site fails to construct.
+    """
 
     tool: str
     scope: str
     args: Mapping[str, object]
     platform_role: str | None
+    actor: str
 
 
 async def record(
@@ -142,8 +148,8 @@ async def record_platform(
     async with conn.cursor() as cur:
         await cur.execute(
             "INSERT INTO platform_audit_log "
-            "(principal, agent_session, platform_role, tool, scope, args_digest) "
-            "VALUES (%s, %s, %s, %s, %s, %s) "
+            "(principal, agent_session, platform_role, tool, scope, args_digest, actor) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) "
             "RETURNING id",
             (
                 principal,
@@ -152,6 +158,7 @@ async def record_platform(
                 event.tool,
                 event.scope,
                 args_digest(event.args),
+                event.actor,
             ),
         )
         row = await cur.fetchone()

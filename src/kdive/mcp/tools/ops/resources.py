@@ -27,7 +27,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools.catalog.resources import _error, _resource_envelope
-from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
+from kdive.mcp.tools.ops._auth import actor_for, audit_platform_denial, held_platform_roles
 from kdive.mcp.tools.ops.breakglass import breakglass_release_allocation
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
@@ -68,6 +68,7 @@ async def _audit_host_action(
                 scope=f"resource:{resource_id}:{detail}",
                 args={"resource_id": str(resource_id)},
                 platform_role=held_platform_roles(ctx),
+                actor=actor_for(ctx),
             ),
         )
 

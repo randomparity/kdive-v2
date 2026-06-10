@@ -18,6 +18,7 @@ from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._time_window import parse_timestamptz_window
 from kdive.mcp.tools.ops._auth import (
     ALL_PROJECTS_SCOPE,
+    actor_for,
     audit_platform_denial,
     held_platform_roles,
 )
@@ -107,6 +108,7 @@ async def _report_granted_set(
                         scope=scope_value,
                         args=_report_args(_SCOPE_GRANTED_SET, named, group_by, window),
                         platform_role=None,
+                        actor=actor_for(ctx),
                     ),
                 )
     return _report_response(_SCOPE_GRANTED_SET, group_by, targets, rollup)
@@ -163,6 +165,7 @@ async def _report_all_projects(
                     scope=ALL_PROJECTS_SCOPE,
                     args=_report_args(ALL_PROJECTS_SCOPE, None, group_by, window),
                     platform_role=held_platform_roles(ctx),
+                    actor=actor_for(ctx),
                 ),
             )
     return _report_response(ALL_PROJECTS_SCOPE, group_by, targets, rollup)
