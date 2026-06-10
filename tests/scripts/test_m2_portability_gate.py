@@ -11,8 +11,30 @@ import pytest
 from scripts.m2_portability_gate import (
     ALLOWED_FILES,
     parse_numstat,
+    render_report,
     violations,
 )
+
+
+def test_render_report_lists_allowlisted_and_flags_violations() -> None:
+    md = render_report(
+        {
+            "src/kdive/domain/models.py": 4,
+            "src/kdive/services/resources/discovery.py": 7,
+        }
+    )
+    assert "# M2 portability report" in md
+    assert "src/kdive/domain/models.py" in md
+    assert "allowlist" in md.lower()
+    # a non-allowlisted core file renders under the Violations section + a fail verdict
+    assert "## Violations" in md and "src/kdive/services/resources/discovery.py" in md
+    assert "gate FAILED" in md
+
+
+def test_render_report_passes_when_only_allowlisted() -> None:
+    md = render_report({"src/kdive/domain/models.py": 4})
+    assert "gate passed" in md
+    assert "## Violations" not in md
 
 
 def test_parse_numstat_aggregates_per_file_across_commits() -> None:

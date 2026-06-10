@@ -134,6 +134,10 @@ check-mermaid:
 m2-gate:
     python3 scripts/m2_portability_gate.py
 
+# Regenerate the committed milestone-end M2 portability report (ADR-0076).
+m2-report:
+    python3 scripts/m2_portability_gate.py --report > docs/reports/m2-portability.md
+
 # Audit runtime dependencies for known vulnerabilities.
 audit:
     reqs="$(mktemp)" && trap 'rm -f "$reqs"' EXIT && uv export --no-emit-project --no-dev --no-default-groups --format requirements-txt > "$reqs" && uv run --with 'pip-audit==2.10.0' pip-audit --no-deps --strict -r "$reqs"
