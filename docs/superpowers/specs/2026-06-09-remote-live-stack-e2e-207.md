@@ -105,7 +105,7 @@ falsifiable rather than a verbal "it ran").
 ### Preflight (clean skip contract)
 
 The remote spine preflights to a clean skip — each with the exact fix string — unless **all**
-of are present:
+of the following are present:
 
 - **Provider config** (read by `providers/remote_libvirt/config.py` at runtime):
   `KDIVE_REMOTE_LIBVIRT_URI` + the three TLS cert refs (`KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF` /
