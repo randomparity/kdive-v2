@@ -46,6 +46,25 @@ new port lives in `reconciler/loop.py` (a gated core file), the change carries i
 (ADR-0086) and an explicit `scripts/m2_portability_gate.py` `ALLOWED_FILES` extension in the
 same PR — exactly as the issue requires.
 
+## Topology precondition (what makes the reset effective)
+
+The reset recovers a bounded slice of the failure space, and the spec scopes its acceptance to
+it rather than over-claiming. The reconciler is a **separate process** (`python -m kdive
+reconciler`), not co-located with the worker pool. The reset is effective only when:
+
+- the reconciler is **independent of the dead worker** (it survives the worker's death), and
+- the QEMU host is **reachable from the reconciler over `qemu+tls`** even though the worker is
+  gone.
+
+This is the common remote topology (worker pool, reconciler, and QEMU host are distinct
+machines). Two cases sit outside it: when a worker *process* dies but its host is up, the
+worker host's OS already sends `FIN` to the remote stub and the port frees itself — the reset
+is a confirming no-op; when the *QEMU host itself* is partitioned, the reconciler cannot reach
+its monitor to re-arm and the reset fails closed (the session is still detached; fallback is
+today's `transport_conflict`-on-next-attach). The reset's target is the in-between case: a
+worker gone (host down or hard-killed) while the QEMU host stays reachable from an independent
+reconciler.
+
 ## Design
 
 ### 1. `TransportResetter` — the new reconciler→provider port
@@ -92,17 +111,24 @@ until a second provider exists (no premature abstraction).
 ### 3. The reset re-arms the gdbstub via the QEMU monitor
 
 `reset` opens a one-shot mutual-TLS connection with the existing `remote_connection`
-lifecycle (ADR-0077), looks the domain up by name, and issues the HMP `gdbserver tcp::<port>`
-command through libvirt's QEMU-monitor passthrough (`qemuMonitorCommand`, HMP flag). Re-arming
-the listener drops the stale single client and re-opens the port, so the next attach connects
-to a free stub. `port` comes from decoding the dead session's `transport_handle`
-(`TransportHandleData`); `gdb_addr` is operator config.
+lifecycle (ADR-0077), looks the domain up by name, and drives QEMU's gdbstub through libvirt's
+QEMU-monitor passthrough (`qemuMonitorCommand`, HMP flag). `port` comes from decoding the dead
+session's `transport_handle` (`TransportHandleData`); `gdb_addr` is operator config.
 
-This mirrors every other remote seam: the slow host interaction (`qemuMonitorCommand`) is an
-injected seam that runs only under the `live_vm` gate; orchestration, self-selection, handle
-decoding, and the error contract are unit-tested with a fake domain/connection. A libvirt
-error maps to `CategorizedError(TRANSPORT_FAILURE)` (an existing category, ADR-0079 — no new
-strings).
+**The required behavior is a contract, not an asserted QEMU implementation detail:** the reset
+must drop the stale client and re-open the stub so the next attach connects to a free single-
+client port. The candidate command sequence is the **explicit stop-then-rearm** —
+`gdbserver none` (disable the stub, dropping any connected client) followed by `gdbserver
+tcp::<port>` (re-open on the same port) — rather than relying on the re-issue semantics of a
+bare `gdbserver tcp::<port>`, because the explicit teardown closes the holding connection
+deterministically and side-steps an `EADDRINUSE` race against the lingering socket. The exact
+sequence and QEMU's response are **determined and verified under the `live_vm` gate / operator
+runbook** — that live step is the falsifiable check for "the port is actually freed" (acceptance
+#1). This mirrors every other remote seam: the slow host interaction (`qemuMonitorCommand`) is
+an injected seam that runs only under `live_vm`; the orchestration, self-selection, handle
+decoding, the composed command string, and the error contract are unit-tested with a fake
+domain/connection. A libvirt error maps to `CategorizedError(TRANSPORT_FAILURE)` (an existing
+category, ADR-0079 — no new strings).
 
 ### 4. The reconciler change (`reconciler/loop.py`, the one gated file)
 
@@ -112,10 +138,22 @@ strings).
    `id, transport, transport_handle, run_id`. The detach transaction commits first.
 2. **After** the transaction commits (never holding a DB transaction open across provider
    network I/O), for each detached row: resolve `domain_name`
-   (`SELECT s.domain_name FROM runs r JOIN systems s ON s.id = r.system_id WHERE r.id = %s`),
-   then `await resetter.reset(...)` wrapped best-effort — a raise is logged and the sweep
-   continues, exactly like `repair_leaked_domains`'s per-domain `destroy`.
-3. The return value stays the detached-row count, so `ReconcileReport.dead_sessions` keeps its
+   (`SELECT s.domain_name FROM runs r JOIN systems s ON s.id = r.system_id WHERE r.id = %s`).
+3. **Live-holder guard (do not evict a legitimate re-attach).** Before resetting, re-check that
+   **no** `debug_sessions` row for that System is currently `live` on the `gdbstub` transport
+   (`SELECT 1 FROM debug_sessions ds JOIN runs r ON r.id = ds.run_id WHERE r.system_id = %s AND
+   ds.state = 'live' AND ds.transport = 'gdbstub'`). If one exists, **skip the reset** and log
+   it — a live holder means the single-client port is legitimately occupied (a new debugger won
+   the freed port between our detach and now), not wedged; re-arming would kick it. This
+   *narrows* the race to the tiny window between this check and the re-arm rather than holding a
+   per-System lock across the network reset; the residual worst case is one spurious eviction
+   that the evicted debugger re-attaches through — no worse than today's transient. The reset is
+   skipped, not failed.
+4. Otherwise `await resetter.reset(...)`, wrapped best-effort — a raise is logged and the sweep
+   continues, exactly like `repair_leaked_domains`'s per-domain `destroy`. The reconciler logs
+   the attempt; the resetter logs its decision (re-armed vs. self-deselected, with the reason),
+   so a still-wedged port is never silently skipped.
+5. The return value stays the detached-row count, so `ReconcileReport.dead_sessions` keeps its
    meaning.
 
 `Reconciler.__init__` / `reconcile_once` gain a `resetter: TransportResetter = NullResetter()`
@@ -137,16 +175,19 @@ scope; revisit only if operational data shows transient reset failures are commo
 
 ## Acceptance
 
-1. **After a gdbstub-holding worker dies, the reconciler frees the port so the next attach
-   succeeds instead of `transport_conflict`.** Unit-covered at two boundaries: the reconciler
-   detaches the stale `live` session **and** invokes `resetter.reset` with its
-   `gdbstub`/handle/`domain_name`; the remote resetter composes the `gdbserver tcp::<port>`
-   re-arm against the domain. The end-to-end re-attach against a real QEMU stub is `live_vm` /
-   operator-runbook territory (same boundary as the rest of the remote debug plane).
+1. **After a gdbstub-holding worker dies — in the Topology precondition's case (worker gone,
+   QEMU host reachable from an independent reconciler) — the reconciler frees the port so the
+   next attach succeeds instead of `transport_conflict`.** Unit-covered at two boundaries: the
+   reconciler detaches the stale `live` session **and** invokes `resetter.reset` with its
+   `gdbstub`/handle/`domain_name`; the remote resetter composes the stop-then-rearm command
+   sequence against the domain. The end-to-end re-attach against a real QEMU stub — the
+   falsifiable "port is actually freed" check — is `live_vm` / operator-runbook territory (same
+   boundary as the rest of the remote debug plane).
 2. **A test covers the dead-worker-session → reset → re-attach path** (the reconciler test
-   above), plus negative coverage: a NULL-heartbeat or non-stale session is neither detached
-   nor reset; a non-`gdbstub` transport and a non-matching handle host are no-ops in the
-   resetter.
+   above), plus: the **live-holder guard** — a System with a fresh `live` gdbstub session is
+   **not** reset (no eviction); and negative coverage — a NULL-heartbeat or non-stale session is
+   neither detached nor reset; a non-`gdbstub` transport and a non-matching handle host are
+   no-ops in the resetter.
 
 ## Edge cases and failure modes
 
@@ -157,10 +198,17 @@ scope; revisit only if operational data shows transient reset failures are commo
   no gdbstub).
 - **local-libvirt gdbstub session** — detached as before; the remote resetter no-ops (handle
   host is loopback, not `gdb_addr`); the default deployment wires `NullResetter` anyway.
+- **A new debugger re-attached in the detach→reset window** — the live-holder guard (§4 step
+  3) finds a `live` gdbstub session for the System and skips the reset, so the reconciler does
+  not evict a legitimate re-attach. Residual: the sub-second window between the guard check and
+  the re-arm; worst case is one spurious eviction the debugger re-attaches through.
 - **Domain already gone (System torn down)** — the monitor look-up fails; caught, logged,
   swept onward — the port is moot once the domain is gone.
 - **Host unreachable (network partition)** — `qemu+tls` connect fails; caught, logged; the
-  session is still detached. Falls back to today's behavior.
+  session is still detached. Falls back to today's behavior (outside the Topology precondition).
+- **Self-deselected reset (NULL `domain_name`, handle host ≠ `gdb_addr`, non-gdbstub
+  transport)** — the resetter logs the decision + reason; the reconciler logs the attempt, so a
+  port left wedged by a declined reset is visible in logs, not silent.
 - **Reset raises** — logged at warning with the session id and the `transport_conflict`
   fallback named; never starves the other repairs or the rest of the dead-session sweep.
 
