@@ -188,7 +188,9 @@ docs-check:
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
     uv run python -c "from scripts.gen_tool_reference import write_reference; from pathlib import Path; write_reference(Path('$tmp'))"
-    if ! diff -ru docs/guide/reference "$tmp"; then
+    # config.md is generated separately (just config-docs-check); exclude it from the
+    # tool-reference directory diff so the two generators can share docs/guide/reference/.
+    if ! diff -ru --exclude=config.md docs/guide/reference "$tmp"; then
         echo "tool reference is stale — run 'just docs' and commit" >&2
         exit 1
     fi
