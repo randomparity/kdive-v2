@@ -51,6 +51,8 @@ REGISTRY: tuple[Verb, ...] = (
     Verb("jobs", "get", reads.jobs_get, "jobs.get", ("job_id",)),
     Verb("ledger", "show", reads.ledger_show, "accounting.usage_project", options=("project",)),
     Verb("inventory", "show", reads.inventory_show, "inventory.list", options=("project",)),
+    Verb("secrets", "list", reads.secrets_list, "secrets.list"),
+    Verb("fixtures", "list", reads.fixtures_list, "fixtures.list"),
     Verb(
         "teardown",
         "system",
