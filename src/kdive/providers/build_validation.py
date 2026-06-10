@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import struct
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Protocol
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -53,6 +54,32 @@ def parse_gnu_build_id(notes: bytes) -> str:
         "vmlinux carries no GNU build-id note",
         category=ErrorCategory.BUILD_FAILURE,
     )
+
+
+def patch_target_paths(patch_text: str, *, strip: int = 1) -> set[Path]:
+    """Parse the workspace-relative file paths a unified diff touches.
+
+    Collects both the pre-image (``--- a/...``) and post-image (``+++ b/...``) sides so
+    created, modified, and deleted files are all covered, applying ``-p<strip>`` component
+    stripping (``strip=1`` drops the leading ``a/``/``b/``). The ``/dev/null`` side of an
+    add or delete, and any path shallower than ``strip``, are ignored.
+
+    Used to verify ``git apply`` actually changed the tree: a ``.git``-less build workspace
+    can make ``git apply`` exit 0 while silently skipping the patch (issue #227), so the
+    caller snapshots these paths before and after applying and fails if none changed.
+    """
+    paths: set[Path] = set()
+    for line in patch_text.splitlines():
+        if not (line.startswith("--- ") or line.startswith("+++ ")):
+            continue
+        spec = line[4:].split("\t", 1)[0].strip()
+        if not spec or spec == "/dev/null":
+            continue
+        components = spec.split("/")
+        if len(components) <= strip:
+            continue
+        paths.add(Path(*components[strip:]))
+    return paths
 
 
 def validate_external_artifacts(

@@ -36,6 +36,7 @@ from kdive.provider_components.references import ComponentRef, LocalComponentRef
 from kdive.provider_components.requirements import ConfigRequirements, validate_config_requirements
 from kdive.providers.build_validation import (
     parse_gnu_build_id,
+    patch_target_paths,
 )
 from kdive.providers.ports import BuildOutput
 from kdive.security.secrets.redaction import Redactor
@@ -490,10 +491,16 @@ def _apply_patch(
 ) -> None:
     """Apply the resolved ``patch_ref`` to the workspace tree with ``git apply -p1``.
 
+    The workspace is a ``.git``-less rsync of the kernel tree, so ``git apply`` falls back
+    to context matching and can exit 0 while silently skipping the patch (issue #227) —
+    which would ship an unpatched kernel reported as a successful build. Guard against that
+    by snapshotting the files the patch targets and failing if none changed.
+
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` if the ref is unresolvable (via
-            :func:`_resolve_local_ref`) or the patch does not apply (a redacted stderr tail
-            is placed in ``details``); ``MISSING_DEPENDENCY`` if ``git`` is absent.
+            :func:`_resolve_local_ref`), the patch does not apply (a redacted stderr tail
+            is placed in ``details``), or ``git apply`` reports success but leaves the tree
+            unchanged; ``MISSING_DEPENDENCY`` if ``git`` is absent.
     """
     patch = _resolve_local_ref(patch_ref, kind="patch_ref")
     if shutil.which("git") is None:
@@ -501,6 +508,8 @@ def _apply_patch(
             "git is required to apply a build patch",
             category=ErrorCategory.MISSING_DEPENDENCY,
         )
+    targets = patch_target_paths(patch.read_text(errors="replace"), strip=1)
+    before = {rel: _snapshot_bytes(workspace / rel) for rel in targets}
     try:
         result = subprocess.run(  # noqa: S603 - fixed argv, no shell; -- ends option parsing
             ["git", "apply", "-p1", "--", str(patch)],
@@ -522,6 +531,22 @@ def _apply_patch(
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"stderr": _redacted_tail(result.stderr, secret_registry)},
         )
+    if targets and all(_snapshot_bytes(workspace / rel) == before[rel] for rel in targets):
+        raise CategorizedError(
+            "patch_ref was silently skipped: git apply reported success but left the kernel "
+            "tree unchanged (the build workspace has no .git, so git fell back to context "
+            "matching and treated the patch as already applied)",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"targets": sorted(str(rel) for rel in targets)},
+        )
+
+
+def _snapshot_bytes(path: Path) -> bytes | None:
+    """Return ``path`` contents, or ``None`` if it does not exist or cannot be read."""
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
 
 
 def _sync_tree(

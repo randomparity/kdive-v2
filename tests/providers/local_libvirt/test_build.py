@@ -839,6 +839,32 @@ def test_apply_patch_timeout_is_configuration_error(
     assert caught.value.details["timeout_s"] == build_module._GIT_APPLY_TIMEOUT_S
 
 
+def test_apply_patch_silent_skip_no_tree_change_is_configuration_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # git apply exits 0 while silently skipping the patch (no .git for blob-index
+    # matching, issue #227): the tree never changes, so _apply_patch must fail rather
+    # than report a build of an unpatched kernel as success.
+    workspace = _workspace_with_target(tmp_path)
+    original = (workspace / "init" / "main.c").read_text()
+    patch = tmp_path / "fix.patch"
+    patch.write_text(_GOOD_PATCH)
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: "/usr/bin/git")
+
+    def _skip(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="Skipped patch 'init/main.c'.\n"
+        )
+
+    monkeypatch.setattr(build_module.subprocess, "run", _skip)
+
+    with pytest.raises(CategorizedError) as caught:
+        _apply_patch(str(patch), workspace)
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert (workspace / "init" / "main.c").read_text() == original
+
+
 # --- _sync_tree ---------------------------------------------------------------------
 
 

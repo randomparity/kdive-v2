@@ -10,6 +10,7 @@ debuginfo as ``debuginfo_ref``. Fakes are local to this file — nothing imports
 from __future__ import annotations
 
 import io
+import shutil
 import subprocess
 import tarfile
 from dataclasses import dataclass, field
@@ -25,7 +26,7 @@ from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.provider_components.references import LocalComponentRef
 from kdive.providers.remote_libvirt import build as build_module
-from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
+from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild, _apply_patch
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 _RUN = UUID("33333333-3333-3333-3333-333333333333")
@@ -418,7 +419,6 @@ def test_live_vm_real_make_bundle_has_modules() -> None:  # pragma: no cover - l
     absent either (or ``make``), the test skips. The full remote spine is operator-run (#207).
     """
     import os
-    import shutil
     import tempfile
 
     src = os.environ.get("KDIVE_KERNEL_SRC")
@@ -459,3 +459,54 @@ def test_live_vm_real_make_bundle_has_modules() -> None:  # pragma: no cover - l
             names = tar.getnames()
         assert "boot/vmlinuz" in names
         assert any(n.startswith("lib/modules/") and n.endswith(".ko") for n in names)
+
+
+# --- _apply_patch (issue #227) ------------------------------------------------------
+
+_GOOD_PATCH = (
+    "--- a/init/main.c\n+++ b/init/main.c\n@@ -1,2 +1,2 @@\n line1\n-line2\n+line2-patched\n"
+)
+
+
+def _workspace_with_target(tmp_path: Path) -> Path:
+    workspace = tmp_path / "ws"
+    (workspace / "init").mkdir(parents=True)
+    (workspace / "init" / "main.c").write_text("line1\nline2\n")
+    return workspace
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git unavailable")
+def test_apply_patch_applies_clean_diff(tmp_path: Path) -> None:
+    workspace = _workspace_with_target(tmp_path)
+    patch = tmp_path / "fix.patch"
+    patch.write_text(_GOOD_PATCH)
+
+    _apply_patch(str(patch), workspace, SecretRegistry())
+
+    assert (workspace / "init" / "main.c").read_text() == "line1\nline2-patched\n"
+
+
+def test_apply_patch_silent_skip_no_tree_change_is_configuration_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # git apply exits 0 while silently skipping the patch (no .git for blob-index
+    # matching, issue #227): the tree never changes, so _apply_patch must fail rather
+    # than report a build of an unpatched kernel as success.
+    workspace = _workspace_with_target(tmp_path)
+    original = (workspace / "init" / "main.c").read_text()
+    patch = tmp_path / "fix.patch"
+    patch.write_text(_GOOD_PATCH)
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: "/usr/bin/git")
+
+    def _skip(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="Skipped patch 'init/main.c'.\n"
+        )
+
+    monkeypatch.setattr(build_module.subprocess, "run", _skip)
+
+    with pytest.raises(CategorizedError) as caught:
+        _apply_patch(str(patch), workspace, SecretRegistry())
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert (workspace / "init" / "main.c").read_text() == original
