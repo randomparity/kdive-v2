@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kdive.providers.local_libvirt.debug.mi_protocol import (
+from kdive.providers.debug_common.mi_protocol import (
     MiRecord,
     breakpoint_rows,
     memory_segments,

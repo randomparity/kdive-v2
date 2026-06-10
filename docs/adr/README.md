@@ -109,3 +109,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0080](0080-remote-provisioning-disk-image-profile.md) | Remote provisioning: disk-image base-OS profile, domain-XML gdbstub port registry, storage-pool overlay (M2) | Proposed |
 | [0081](0081-remote-build-kernel-bundle.md) | Remote build publishes a single vmlinuz+modules install bundle as `kernel_ref` (M2) | Proposed |
 | [0082](0082-remote-install-in-guest-kernel.md) | Remote install: in-guest kernel install via one allowlisted helper + boot-id readiness (M2) | Proposed |
+| [0083](0083-remote-connect-debug-plane.md) | Remote connect/debug plane: shared gdb-MI/drgn infra + ACL'd direct-TCP gdbstub (M2) | Proposed |

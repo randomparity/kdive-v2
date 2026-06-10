@@ -40,7 +40,7 @@ from kdive.mcp.tools.debug.ops import (
     DebugEngineRuntime,
     run_engine_op,
 )
-from kdive.providers.local_libvirt.debug.debug_gdbmi import GdbMiEngine
+from kdive.providers.debug_common.gdbmi import GdbMiEngine
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.providers.ports import GdbMiAttachment, TransportHandleData
 from kdive.providers.resolver import ProviderBinding, ProviderResolver

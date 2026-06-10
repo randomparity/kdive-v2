@@ -15,16 +15,17 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.mcp.tools.debug.session_registry import GdbMiSessionRegistry
-from kdive.providers.local_libvirt.debug import debug_gdbmi
-from kdive.providers.local_libvirt.debug.debug_gdbmi import (
+from kdive.providers.debug_common import gdbmi
+from kdive.providers.debug_common.execution import ExecutionControl
+from kdive.providers.debug_common.gdbmi import (
     MAX_MEMORY_READ_BYTES,
     GdbMiEngine,
     MiRecord,
     PygdbmiController,
     parse_mi_records,
 )
-from kdive.providers.local_libvirt.debug.execution import ExecutionControl
-from kdive.providers.local_libvirt.debug.transcript import append_transcript
+from kdive.providers.debug_common.transcript import append_transcript
+from kdive.providers.local_libvirt.debug import debug_gdbmi
 from kdive.providers.ports import GdbMiAttachment, GdbStopRecord
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -62,7 +63,7 @@ class _FakeMiController:
         self, *, timeout_sec: float, raise_error_on_timeout: bool = True
     ) -> list[dict[str, object]]:
         if self._response_timeout and raise_error_on_timeout:
-            raise debug_gdbmi._timeout_error("get_gdb_response", timeout_sec)
+            raise gdbmi._timeout_error("get_gdb_response", timeout_sec)
         return []
 
     def exit(self) -> None:
@@ -612,7 +613,7 @@ def test_continue_interrupts_on_timeout(tmp_path: Path) -> None:
 
 
 def test_continue_zero_timeout_uses_interactive_wait_cap(tmp_path: Path) -> None:
-    resume_reads = int(debug_gdbmi.MAX_INTERACTIVE_WAIT_SEC / debug_gdbmi._STOP_POLL_SLICE_SEC) + 1
+    resume_reads = int(gdbmi.MAX_INTERACTIVE_WAIT_SEC / gdbmi._STOP_POLL_SLICE_SEC) + 1
     controller = _FakeMiController(
         responses={
             "-exec-continue": [{"type": "result", "message": "running", "payload": None}],

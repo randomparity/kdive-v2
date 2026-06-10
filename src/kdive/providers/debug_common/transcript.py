@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kdive.providers.local_libvirt.debug.mi_protocol import MiRecord
+from kdive.providers.debug_common.mi_protocol import MiRecord
 from kdive.security.secrets.redaction import Redactor
 
 

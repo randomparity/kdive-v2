@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.local_libvirt.debug.mi_controller import PygdbmiController, timeout_error
+from kdive.providers.debug_common.mi_controller import PygdbmiController, timeout_error
 
 
 class _FakeGdbController:

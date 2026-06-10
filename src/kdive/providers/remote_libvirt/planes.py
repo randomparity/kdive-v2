@@ -2,11 +2,12 @@
 
 The M2 foundation lands the package, kind, transport, and discovery; provisioning
 (``remote_libvirt.provisioning``, ADR-0080), build (``remote_libvirt.build``, ADR-0081),
-and install/boot (``remote_libvirt.install``, ADR-0082) are real; the connect/debug and
-control/retrieve planes land in the later M2 issues. Until then each remaining plane raises
-a typed ``MISSING_DEPENDENCY`` (the ports' documented category for an unavailable provider
-seam) so the runtime is buildable — the ADR-0071 CHECK↔registry parity invariant — without
-pretending the plane works.
+install/boot (``remote_libvirt.install``, ADR-0082), and connect/debug + introspection
+(``remote_libvirt.connect`` / ``.debug`` / ``.introspect``, ADR-0083) are real; the
+control/retrieve plane lands in the later M2 issue. Until then each remaining plane raises a
+typed ``MISSING_DEPENDENCY`` (the ports' documented category for an unavailable provider seam)
+so the runtime is buildable — the ADR-0071 CHECK↔registry parity invariant — without pretending
+the plane works.
 """
 
 from __future__ import annotations
@@ -17,13 +18,7 @@ from uuid import UUID
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction
-from kdive.providers.ports import (
-    CaptureOutput,
-    CrashOutput,
-    IntrospectOutput,
-    SystemHandle,
-    TransportHandle,
-)
+from kdive.providers.ports import CaptureOutput, CrashOutput
 
 
 def _unimplemented(plane: str) -> NoReturn:
@@ -32,16 +27,6 @@ def _unimplemented(plane: str) -> NoReturn:
         category=ErrorCategory.MISSING_DEPENDENCY,
         details={"plane": plane},
     )
-
-
-class UnimplementedConnector:
-    """Connector port stub (lands with the remote connect/debug issue)."""
-
-    def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle:
-        _unimplemented("connect")
-
-    def close_transport(self, handle: TransportHandle) -> None:
-        _unimplemented("connect")
 
 
 class UnimplementedController:
@@ -69,15 +54,3 @@ class UnimplementedRetriever:
         commands: list[str],
     ) -> CrashOutput:
         _unimplemented("crash postmortem")
-
-
-class UnimplementedIntrospector:
-    """Vmcore + live introspection port stub (lands with the remote debug issue)."""
-
-    def from_vmcore(
-        self, *, vmcore_ref: str, debuginfo_ref: str, expected_build_id: str
-    ) -> IntrospectOutput:
-        _unimplemented("vmcore introspection")
-
-    def introspect_live(self, *, transport_handle: str, helper: str) -> IntrospectOutput:
-        _unimplemented("live introspection")
