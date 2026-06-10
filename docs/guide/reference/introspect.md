@@ -16,9 +16,9 @@ Run offline drgn introspection over a Run's captured core; returns redacted repo
 
 `partial` · `read-only`
 
-Run live drgn introspection over a live ssh DebugSession. Requires operator.
+Run live drgn introspection over a live drgn-live DebugSession. Requires operator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `helper` | `string` | yes | In-tree drgn helper to run with operator-provided drgn: tasks, modules, or sysinfo. |
-| `session_id` | `string` | yes | A live ssh DebugSession to introspect. |
+| `session_id` | `string` | yes | A live drgn-live DebugSession. |

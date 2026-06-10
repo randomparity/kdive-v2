@@ -97,4 +97,4 @@ Open a single-attach transport and insert a live DebugSession. Requires operator
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `run_id` | `string` | yes | The booted Run to attach a debug session to. |
-| `transport` | `string` | no | Transport kind: `gdbstub` (default) or `ssh`. |
+| `transport` | `string` | no | Transport kind: `gdbstub` (default) or `drgn-live`. |
