@@ -102,3 +102,14 @@ def test_scope_refs_drops_evicted_scope() -> None:
     registry.register("scoped", scope="ref://a")
     registry.release("ref://a")
     assert registry.scope_refs() == frozenset()
+
+
+def test_scope_refs_labels_non_string_scope_without_leaking_repr() -> None:
+    # A bare object() scope (the production sentinel) must never surface its repr (a heap
+    # address); it collapses to a stable "<scoped>" presence bucket.
+    registry = SecretRegistry()
+    owner = object()
+    registry.register("scoped-secret", scope=owner)
+    refs = registry.scope_refs()
+    assert refs == frozenset({"<scoped>"})
+    assert all("object at 0x" not in ref for ref in refs)
