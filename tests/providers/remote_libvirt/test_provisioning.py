@@ -97,6 +97,25 @@ def test_render_domain_xml_carries_agent_channel_gdb_and_metadata() -> None:
     nic_model = root.find("./devices/interface/model")
     assert nic_model is not None
     assert nic_model.get("type") == "virtio"
+    # i440fx by default: q35 root-port D3cold leaves the virtio disk inaccessible.
+    os_type = root.find("./os/type")
+    assert os_type is not None
+    assert os_type.get("machine") == "pc"
+
+
+def test_render_domain_xml_uses_configured_machine() -> None:
+    xml = render_domain_xml(
+        SYSTEM_ID,
+        _remote_profile(),
+        pool="kdive-pool",
+        volume=overlay_volume_name(SYSTEM_ID),
+        gdb_addr="10.0.0.5",
+        gdb_port=47001,
+        machine="q35",
+    )
+    os_type = fromstring(xml).find("./os/type")
+    assert os_type is not None
+    assert os_type.get("machine") == "q35"
 
 
 def test_render_domain_xml_uses_configured_network() -> None:

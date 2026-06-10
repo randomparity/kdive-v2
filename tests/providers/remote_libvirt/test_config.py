@@ -90,6 +90,7 @@ def test_provisioning_knob_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     config = remote_config_from_env()
     assert config.storage_pool == "default"
     assert config.network == "default"
+    assert config.machine == "pc"
     assert config.gdb_addr is None
     assert config.gdb_port_min == 47000
     assert config.gdb_port_max == 47099
@@ -100,6 +101,7 @@ def test_provisioning_knobs_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch,
         KDIVE_REMOTE_LIBVIRT_STORAGE_POOL="kdive-pool",
         KDIVE_REMOTE_LIBVIRT_NETWORK="lab-net",
+        KDIVE_REMOTE_LIBVIRT_MACHINE="q35",
         KDIVE_REMOTE_LIBVIRT_GDB_ADDR="10.0.0.5",
         KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN="48000",
         KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX="48010",
@@ -107,6 +109,7 @@ def test_provisioning_knobs_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
     config = remote_config_from_env()
     assert config.storage_pool == "kdive-pool"
     assert config.network == "lab-net"
+    assert config.machine == "q35"
     assert config.gdb_addr == "10.0.0.5"
     assert config.gdb_port_min == 48000
     assert config.gdb_port_max == 48010

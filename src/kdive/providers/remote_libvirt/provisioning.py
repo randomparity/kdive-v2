@@ -47,7 +47,6 @@ _log = logging.getLogger(__name__)
 KDIVE_METADATA_NS = "https://kdive.dev/libvirt/1"
 QEMU_NS = "http://libvirt.org/schemas/domain/qemu/1.0"
 
-_DEFAULT_MACHINE = "q35"
 _DEFAULT_NETWORK = "default"
 _DOMAIN_PREFIX = "kdive-"
 _GUEST_AGENT_CHANNEL = "org.qemu.guest_agent.0"
@@ -106,6 +105,7 @@ def render_domain_xml(
     gdb_addr: str,
     gdb_port: int,
     network: str = _DEFAULT_NETWORK,
+    machine: str = "pc",
 ) -> str:
     """Render the tagged remote domain XML (ADR-0080 §2/§4).
 
@@ -136,7 +136,7 @@ def render_domain_xml(
     ET.SubElement(domain, "memory", unit="MiB").text = str(profile.memory_mb)
     ET.SubElement(domain, "vcpu").text = str(profile.vcpu)
     os_el = ET.SubElement(domain, "os")
-    ET.SubElement(os_el, "type", arch=profile.arch, machine=_DEFAULT_MACHINE).text = "hvm"
+    ET.SubElement(os_el, "type", arch=profile.arch, machine=machine).text = "hvm"
     ET.SubElement(os_el, "boot", dev="hd")
     devices = ET.SubElement(domain, "devices")
     disk = ET.SubElement(devices, "disk", type="volume", device="disk")
@@ -549,6 +549,7 @@ class RemoteLibvirtProvision:
                 gdb_addr=gdb_addr,
                 gdb_port=port,
                 network=config.network,
+                machine=config.machine,
             )
             try:
                 domain = conn.defineXML(xml)
