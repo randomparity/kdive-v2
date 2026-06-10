@@ -603,7 +603,17 @@ config-docs-check:
     fi
 ```
 
-Add `config-docs-check` to the `ci` recipe's dependency list.
+Add `config-docs-check` to the `ci` recipe's dependency list **and** add it as its own
+step in `.github/workflows/ci.yml`, right after the existing `just docs-check` step:
+
+```yaml
+      - name: config reference up to date
+        run: just config-docs-check
+```
+
+CI invokes recipes individually (the `ci.yml` has separate `just lint` / `just docs-check`
+/ `just test` steps; `just ci` is not what runs in CI), so adding it only to the `ci` recipe
+would **not** gate PRs — the committed `config.md` could go stale unnoticed.
 
 - [ ] **Step 6: Commit**
 
@@ -868,17 +878,27 @@ def test_server_without_database_url_fails_fast(monkeypatch) -> None:
 Run: `uv run pytest tests/config/test_entrypoint_validation.py -q`
 Expected: FAIL (currently a server start path / pool error, not a CONFIGURATION_ERROR before binding)
 
-- [ ] **Step 3: Write minimal implementation** — in `main()`, after parsing args and configuring logging, before dispatch:
+- [ ] **Step 3: Write minimal implementation** — the order is load-bearing. In `main()`, the
+sequence is: parse args → `config.load()` → resolve the log level via the registry → configure
+logging → validate → dispatch. `config.load()` must come **before** anything reads a setting,
+including the logging bootstrap (ADR-0087 decision 4's early bootstrap phase):
 
 ```python
     import kdive.config as config
+    from kdive.config.core_settings import LOG_LEVEL
 
-    config.load()
+    args = build_parser().parse_args(argv)
+    config.load()                                   # snapshot first — before any get()
+    level = args.log_level or config.get(LOG_LEVEL)  # --log-level flag wins when passed
+    configure_logging(level, secret_registry=secret_registry)
     if args.command in {"server", "worker", "reconciler", "migrate"}:
         config.validate(args.command)
+    # ... existing dispatch ...
 ```
 
-Logging reads `KDIVE_LOG_LEVEL` through the registry: replace the argparse default `os.environ.get("KDIVE_LOG_LEVEL", "INFO")` so the only read is `config.get(LOG_LEVEL)` after `config.load()` (the early bootstrap phase in ADR-0087 decision 4). Keep the `--log-level` flag as an explicit override that wins when passed.
+Drop the argparse default `os.environ.get("KDIVE_LOG_LEVEL", "INFO")` (change the `--log-level`
+arg to `default=None`) so the only `KDIVE_LOG_LEVEL` read is `config.get(LOG_LEVEL)`; the flag,
+when passed, overrides it.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -958,24 +978,36 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 
 # Final: slim base + worker toolchain (drives remote-libvirt over the network).
 FROM python:3.13-slim-bookworm@sha256:<pin-digest>
+# These are all real bookworm packages. drgn is NOT installed via apt — the project
+# obtains drgn from Fedora today (virt-builder), and bookworm only ships the
+# `python3-drgn` library, whose CLI/version is unproven for our `drgn --version`
+# check; we install drgn from its pinned PyPI manylinux wheel instead (below).
+# libelf1/libdw1/zlib1g are drgn's runtime shared libs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      gcc make binutils gdb drgn libvirt-clients openssh-client \
+      gcc make binutils gdb libvirt-clients openssh-client \
+      libelf1 libdw1 zlib1g \
     && rm -rf /var/lib/apt/lists/*
-RUN useradd --system --create-home --uid 10001 kdive \
-    && mkdir -p /var/lib/kdive/build /var/lib/kdive/install \
-    && chown -R kdive:kdive /var/lib/kdive
+COPY --from=ghcr.io/astral-sh/uv:0.11.19 /uv /usr/local/bin/uv
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /app/src /app/src
+# Put the venv on PATH BEFORE the drgn install + verification, so the bare `drgn` check resolves.
 ENV PATH=/opt/venv/bin:$PATH PYTHONPATH=/app/src \
     KDIVE_BUILD_WORKSPACE=/var/lib/kdive/build \
     KDIVE_INSTALL_STAGING=/var/lib/kdive/install
+# drgn from its prebuilt wheel into the same venv (so `drgn` CLI + `import drgn` both work).
+RUN uv pip install --python /opt/venv "drgn==<pin-drgn-version>"
+# Fail the BUILD (not just the gated test) if any worker tool is missing or broken.
+RUN drgn --version && gdb --version && virsh --version && gcc --version && make --version
+RUN useradd --system --create-home --uid 10001 kdive \
+    && mkdir -p /var/lib/kdive/build /var/lib/kdive/install \
+    && chown -R kdive:kdive /var/lib/kdive
 USER kdive
 WORKDIR /app
 ENTRYPOINT ["python", "-m", "kdive"]
 CMD ["server"]
 ```
 
-> Pin both `<pin-digest>` values to the current `python:3.13-slim-bookworm` digest (`docker buildx imagetools inspect python:3.13-slim-bookworm`). The writable volumes (build/install/ssh/debug/crash) are mounted by compose/Helm; the image only pre-creates and chowns the build/install dirs.
+> Pin both `<pin-digest>` values to the current `python:3.13-slim-bookworm` digest (`docker buildx imagetools inspect python:3.13-slim-bookworm`). Pin `<pin-drgn-version>` to the latest drgn release with a cp313 manylinux wheel (`pip index versions drgn`, or check PyPI). The writable volumes (build/install/ssh/debug/crash) are mounted by compose/Helm; the image only pre-creates and chowns the build/install dirs. **If drgn has no cp313 wheel at pin time**, fall back to a Fedora base (matching the proven `virt-builder --install drgn` path) rather than building drgn from source in-image.
 
 - [ ] **Step 2: Write `.dockerignore`**
 
@@ -986,7 +1018,10 @@ CMD ["server"]
 tests
 docs
 deploy
-*.md
+# Do NOT exclude *.md at the root: pyproject declares `readme = "README.md"`, which the
+# uv_build backend reads during `uv sync` — excluding it breaks the project install.
+AGENTS.md
+CLAUDE.md
 ```
 
 - [ ] **Step 3: Build it**
@@ -1073,10 +1108,14 @@ Expected: PASS (2 passed)
           push: false
           load: true
           tags: kdive:ci
-      - run: KDIVE_IMAGE=kdive:ci pytest tests/image/test_image_smoke.py -q
+      - uses: astral-sh/setup-uv@<sha>  # vX.Y.Z
+      - name: image smoke test
+        run: uv run --no-project --with pytest pytest tests/image/test_image_smoke.py -q
+        env:
+          KDIVE_IMAGE: kdive:ci
 ```
 
-> Resolve each `<sha>` to the current release of the action (`gh api repos/<action>/releases/latest`); add the version comment. Run `zizmor .github/workflows/ci.yml` before committing.
+> The job never runs `uv sync`, so `pytest` is not otherwise on PATH — run it through `uv` (the smoke test imports only stdlib + pytest and shells `docker run`, so `--no-project --with pytest` is enough, no full sync needed). Resolve each `<sha>` to the current release of the action (`gh api repos/<action>/releases/latest`); add the version comment. Run `zizmor .github/workflows/ci.yml` before committing.
 
 - [ ] **Step 4: Commit**
 
@@ -1100,12 +1139,24 @@ git commit -m "feat(image): gated smoke test + PR build-only CI job"
 - [ ] **Step 1: Add the migrate one-shot + app services** to `docker-compose.yml` (the backend services stay):
 
 ```yaml
+# Top-level extension field defining the shared backend env ONCE. Every service
+# merges it with `<<: *backends`; server adds its own HTTP vars on top.
+x-backends: &backends
+  KDIVE_DATABASE_URL: postgresql://kdive:kdive@postgres:5432/kdive  # pragma: allowlist secret — local dev only
+  KDIVE_OIDC_ISSUER: http://oidc:8080/default
+  KDIVE_OIDC_JWKS_URI: http://oidc:8080/default/jwks
+  KDIVE_OIDC_AUDIENCE: kdive
+  KDIVE_S3_ENDPOINT_URL: http://minio:9000
+  KDIVE_S3_BUCKET: kdive-artifacts
+  KDIVE_S3_REGION: us-east-1
+
+services:
   migrate:
     build: .
     image: kdive:dev
     command: ["migrate"]
     environment:
-      KDIVE_DATABASE_URL: postgresql://kdive:kdive@postgres:5432/kdive  # pragma: allowlist secret — local dev only
+      <<: *backends
     depends_on:
       postgres:
         condition: service_healthy
@@ -1114,15 +1165,9 @@ git commit -m "feat(image): gated smoke test + PR build-only CI job"
     image: kdive:dev
     command: ["server"]
     environment:
-      KDIVE_DATABASE_URL: postgresql://kdive:kdive@postgres:5432/kdive  # pragma: allowlist secret — local dev only
+      <<: *backends
       KDIVE_HTTP_HOST: 0.0.0.0
       KDIVE_HTTP_PORT: "8000"
-      KDIVE_OIDC_ISSUER: http://oidc:8080/default
-      KDIVE_OIDC_JWKS_URI: http://oidc:8080/default/jwks
-      KDIVE_OIDC_AUDIENCE: kdive
-      KDIVE_S3_ENDPOINT_URL: http://minio:9000
-      KDIVE_S3_BUCKET: kdive-artifacts
-      KDIVE_S3_REGION: us-east-1
     ports: ["8000:8000"]
     depends_on:
       migrate:
@@ -1131,7 +1176,8 @@ git commit -m "feat(image): gated smoke test + PR build-only CI job"
   worker:
     image: kdive:dev
     command: ["worker"]
-    environment: *server-backends      # anchor the shared backend vars in the file
+    environment:
+      <<: *backends
     volumes:
       - kdive-build:/var/lib/kdive/build
       - kdive-install:/var/lib/kdive/install
@@ -1142,7 +1188,8 @@ git commit -m "feat(image): gated smoke test + PR build-only CI job"
   reconciler:
     image: kdive:dev
     command: ["reconciler"]
-    environment: *server-backends
+    environment:
+      <<: *backends
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -1152,7 +1199,11 @@ volumes:
   kdive-install:
 ```
 
-> Define the shared backend env once via a YAML anchor (`x-backends: &server-backends`) at the top and reference it, rather than repeating it. The `service_completed_successfully` condition is the ADR-0088 ordering fix.
+> The `x-backends: &backends` extension field defines the shared env once; the `<<: *backends`
+> merge key pulls it into each service (server adds HTTP vars on top). The
+> `service_completed_successfully` condition is the ADR-0088 ordering fix. Merge these
+> `services:`/`volumes:` keys into the existing `docker-compose.yml`, which already has a
+> top-level `services:` block for the backends — do not introduce a second one.
 
 - [ ] **Step 2: Validate the compose file**
 
