@@ -23,6 +23,7 @@ import json
 import time
 from collections.abc import Mapping
 
+from kdive.cli.errors import exit_code_for_category
 from kdive.cli.render import render_record
 from kdive.cli.transport import Session
 
@@ -106,11 +107,28 @@ def _flatten(envelope: object) -> dict[str, object]:
     return record
 
 
+def _exit_code(envelope: object) -> int:
+    """Map a response envelope to its exit code: 0 on success, else the category's code.
+
+    A break-glass tool denies by *returning* a failure ``ToolResponse`` (e.g.
+    ``authorization_denied`` from the ``platform_admin`` gate), not by raising, so the exit
+    code is derived from the envelope's ``error_category`` here — this is what makes a
+    separation-of-duties denial observable as exit ``3`` to a script or CI (ADR-0089).
+    """
+    if not isinstance(envelope, Mapping):
+        return 0
+    fields: Mapping[str, object] = {str(k): v for k, v in envelope.items()}
+    category = fields.get("error_category")
+    if not isinstance(category, str):
+        return 0
+    return exit_code_for_category(category)
+
+
 async def _run(name: str, arguments: Mapping[str, object], *, as_json: bool) -> int:
     """Preflight, call ``name``, render the response record, and return the exit code."""
     envelope = await _call(name, arguments)
     render_record(_flatten(envelope), as_json=as_json)
-    return 0
+    return _exit_code(envelope)
 
 
 async def teardown(args: argparse.Namespace) -> int:
