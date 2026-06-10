@@ -14,8 +14,7 @@ from __future__ import annotations
 
 SETTING_MODULES: tuple[str, ...] = (
     "kdive.config.core_settings",
-    # Provider setting-bearing modules are appended as Task 1.6 adds their SETTINGS lists:
-    #   "kdive.providers.local_libvirt.discovery",
-    #   "kdive.providers.fault_inject.discovery",
-    #   "kdive.providers.remote_libvirt.config",
+    "kdive.providers.local_libvirt.settings",
+    "kdive.providers.fault_inject.settings",
+    "kdive.providers.remote_libvirt.settings",
 )

@@ -34,6 +34,10 @@
 | Variable | Processes | Default | Required | Value |
 |----------|-----------|---------|----------|-------|
 | `KDIVE_FAULT_INJECT` | migrate, reconciler, server, worker | — | no | Presence (1/true/yes) registers the fault-injection provider. |
+| `KDIVE_FAULT_INJECT_ALLOCATION_CAP` | reconciler, worker | `1` | no | Per-plane concurrent-Allocation cap. |
+| `KDIVE_FAULT_INJECT_SECRET_REF` | reconciler, worker | `fault-inject/console-sentinel` | no | secret (ref only) |
+| `KDIVE_FAULT_INJECT_SEED` | reconciler, worker | `0` | no | Deterministic fault-engine seed. |
+| `KDIVE_FAULT_INJECT_URI` | reconciler, worker | `fault-inject://local` | no | Synthetic host URI for the fault-inject resource. |
 
 ## http
 
@@ -54,6 +58,13 @@
 |----------|-----------|---------|----------|-------|
 | `KDIVE_LEASE_DEFAULT` | server | — | no | Default lease window (hours) when a request omits one (built-in 4). |
 | `KDIVE_LEASE_MAX` | server | — | no | Hard cap (hours) on a lease window / renewal (built-in 24). |
+
+## local-libvirt
+
+| Variable | Processes | Default | Required | Value |
+|----------|-----------|---------|----------|-------|
+| `KDIVE_LIBVIRT_ALLOCATION_CAP` | reconciler, worker | `1` | no | Per-host concurrent-Allocation cap. |
+| `KDIVE_LIBVIRT_URI` | reconciler, worker | `qemu:///system` | no | libvirt connection URI for the local host. |
 
 ## logging
 
@@ -76,6 +87,22 @@
 | `KDIVE_OIDC_AUDIENCE` | server | — | yes | Expected token audience (aud), enforced natively. |
 | `KDIVE_OIDC_ISSUER` | server | — | yes | Expected token issuer (iss), enforced natively. |
 | `KDIVE_OIDC_JWKS_URI` | server | — | yes | JWKS URI the bearer-token verifier fetches signing keys from. |
+
+## remote-libvirt
+
+| Variable | Processes | Default | Required | Value |
+|----------|-----------|---------|----------|-------|
+| `KDIVE_REMOTE_LIBVIRT_ALLOCATION_CAP` | reconciler, worker | `1` | no | Per-host concurrent-Allocation cap. |
+| `KDIVE_REMOTE_LIBVIRT_CA_CERT_REF` | reconciler, worker | — | conditional | secret (ref only) |
+| `KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF` | reconciler, worker | — | conditional | secret (ref only) |
+| `KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF` | reconciler, worker | — | conditional | secret (ref only) |
+| `KDIVE_REMOTE_LIBVIRT_GDB_ADDR` | reconciler, worker | — | no | gdbstub listen address (ACL'd boundary; no default, fails closed if unset). |
+| `KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX` | reconciler, worker | `47099` | no | High end of the gdbstub port range. |
+| `KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN` | reconciler, worker | `47000` | no | Low end of the gdbstub port range. |
+| `KDIVE_REMOTE_LIBVIRT_MACHINE` | reconciler, worker | `pc` | no | QEMU machine type (pc/i440fx by default; q35 opt-in). |
+| `KDIVE_REMOTE_LIBVIRT_NETWORK` | reconciler, worker | `default` | no | libvirt network for guests. |
+| `KDIVE_REMOTE_LIBVIRT_STORAGE_POOL` | reconciler, worker | `default` | no | libvirt storage pool for guest disks. |
+| `KDIVE_REMOTE_LIBVIRT_URI` | reconciler, worker | — | no | qemu+tls host URI; its presence enables the remote-libvirt provider. |
 
 ## secrets
 
