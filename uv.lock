@@ -568,7 +568,7 @@ dependencies = [
     { name = "boto3" },
     { name = "botocore" },
     { name = "defusedxml" },
-    { name = "fastmcp-slim", extra = ["server"] },
+    { name = "fastmcp-slim", extra = ["client", "server"] },
     { name = "libvirt-python" },
     { name = "mcp" },
     { name = "psycopg", extra = ["binary"] },
@@ -580,7 +580,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "fastmcp-slim", extra = ["client"] },
     { name = "hypothesis" },
     { name = "pytest" },
     { name = "ruff" },
@@ -593,7 +592,7 @@ requires-dist = [
     { name = "boto3", specifier = "==1.43.21" },
     { name = "botocore", specifier = "==1.43.21" },
     { name = "defusedxml", specifier = "==0.7.1" },
-    { name = "fastmcp-slim", extras = ["server"], specifier = "==3.4.0" },
+    { name = "fastmcp-slim", extras = ["server", "client"], specifier = "==3.4.0" },
     { name = "libvirt-python", specifier = "==12.3.0" },
     { name = "mcp", specifier = "==1.27.2" },
     { name = "psycopg", extras = ["binary"], specifier = "==3.3.4" },
@@ -605,7 +604,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "fastmcp-slim", extras = ["client"], specifier = "==3.4.0" },
     { name = "hypothesis", specifier = "==6.142.4" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "ruff", specifier = "==0.15.15" },

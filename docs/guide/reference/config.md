@@ -16,6 +16,14 @@
 |----------|-----------|---------|----------|-------|
 | `KDIVE_FIXTURE_CATALOG_PATH` | reconciler, worker | — | no | Override path to the provider fixture catalog. |
 
+## cli
+
+| Variable | Processes | Default | Required | Value |
+|----------|-----------|---------|----------|-------|
+| `KDIVE_CLI_CLIENT_ID` | — | `kdivectl` | no | OIDC client_id kdivectl authenticates under (recorded as actor=operator-cli). |
+| `KDIVE_SERVER_URL` | — | `http://127.0.0.1:8080/mcp` | no | MCP server URL kdivectl connects to. |
+| `KDIVE_TOKEN` | — | — | no | secret (ref only) |
+
 ## database
 
 | Variable | Processes | Default | Required | Value |

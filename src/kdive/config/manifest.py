@@ -14,6 +14,7 @@ from __future__ import annotations
 
 SETTING_MODULES: tuple[str, ...] = (
     "kdive.config.core_settings",
+    "kdive.config.cli_settings",
     "kdive.providers.local_libvirt.settings",
     "kdive.providers.fault_inject.settings",
     "kdive.providers.remote_libvirt.settings",
