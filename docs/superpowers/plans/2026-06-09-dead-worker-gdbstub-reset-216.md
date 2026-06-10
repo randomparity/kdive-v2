@@ -41,7 +41,7 @@
 
 from __future__ import annotations
 
-import pytest
+import asyncio
 
 from kdive.providers.transport_reset import NullResetter, TransportResetter
 
@@ -50,24 +50,32 @@ def test_null_resetter_satisfies_the_port() -> None:
     assert isinstance(NullResetter(), TransportResetter)
 
 
-@pytest.mark.anyio
-async def test_null_resetter_reset_is_a_noop() -> None:
-    # No transport touched; returns None for every input shape.
-    assert (
-        await NullResetter().reset(
-            transport="gdbstub",
-            transport_handle="gdbstub://10.0.0.5:1234",
-            domain_name="kdive-sys",
+def test_null_resetter_reset_is_a_noop() -> None:
+    async def scenario() -> None:
+        # No transport touched; returns None for every input shape.
+        assert (
+            await NullResetter().reset(
+                transport="gdbstub",
+                transport_handle="gdbstub://10.0.0.5:1234",
+                domain_name="kdive-sys",
+            )
+            is None
         )
-        is None
-    )
-    assert (
-        await NullResetter().reset(transport="drgn-live", transport_handle=None, domain_name=None)
-        is None
-    )
+        assert (
+            await NullResetter().reset(
+                transport="drgn-live", transport_handle=None, domain_name=None
+            )
+            is None
+        )
+
+    asyncio.run(scenario())
 ```
 
-Note: the repo's async tests use the `anyio` marker if present elsewhere; if `tests/providers/` uses `asyncio_mode = auto` (check `pyproject.toml` `[tool.pytest.ini_options]`), drop the `@pytest.mark.anyio` lines and the import. Match the convention already used by neighboring async tests in `tests/providers/`.
+**Repo async-test convention (verified):** this repo has no `asyncio_mode`/`anyio` pytest config
+and uses **no** `async def test` functions. Every test is a synchronous `def test_...` that
+wraps its async body in an inner `async def scenario()` and calls `asyncio.run(scenario())` (see
+`tests/reconciler/test_loop.py` and `tests/providers/remote_libvirt/test_retrieve.py`). Use this
+idiom for **all** async assertions in this plan — never `@pytest.mark.anyio`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -214,32 +222,35 @@ def _detach(stale_after: timedelta, resetter=None):
     return lambda conn: loop._repair_dead_sessions(conn, stale_after, r)
 ```
 
-Update the three existing dead-session tests (`test_stale_live_session_detached`,
-`test_recent_heartbeat_session_not_touched`, `test_null_heartbeat_session_not_touched`) so they
-still call `_detach(stale_after)` — they keep passing (NullResetter default). Then add:
+The existing dead-session tests already call `_detach(loop.DEFAULT_DEBUG_SESSION_STALE_AFTER)`;
+the optional `resetter=None` default keeps them passing (NullResetter) with no edit. Add
+`FakeResetter` to the conftest import line at the top of `test_loop.py` (the same line that
+imports `seed_system`, `seed_run`, `seed_debug_session`). Then add these tests, which reuse the
+exact `connect` / `run_repair` / `AsyncConnectionPool` idiom of `test_stale_live_session_detached`
+above — `run_repair(pool, _detach(...))` runs the repair on a pooled (non-autocommit) connection:
 
 ```python
 def test_stale_gdbstub_session_triggers_a_reset(migrated_url: str) -> None:
-    async def scenario() -> None:
-        async with await psycopg.AsyncConnection.connect(migrated_url, autocommit=True) as conn:
-            system_id = await seed_system(conn)
-            await conn.execute(
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed)
+            await seed.execute(
                 "UPDATE systems SET domain_name = %s WHERE id = %s", ("kdive-sys", system_id)
             )
-            run_id = await seed_run(conn, system_id)
+            run_id = await seed_run(seed, system_id)
             await seed_debug_session(
-                conn,
+                seed,
                 run_id,
-                heartbeat_ago=timedelta(minutes=10),
+                state=DebugSessionState.LIVE,
+                heartbeat_ago=timedelta(hours=1),
                 transport="gdbstub",
                 transport_handle="gdbstub://10.0.0.5:1234",
             )
         resetter = FakeResetter()
-        async with AsyncConnectionPool(migrated_url, min_size=1, open=False) as pool:
-            await pool.open()
-            await pool.connection().__aenter__()  # warm; see existing tests' pool usage
-            async with pool.connection() as conn:
-                count = await loop._repair_dead_sessions(conn, timedelta(minutes=2), resetter)
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(
+                pool, _detach(loop.DEFAULT_DEBUG_SESSION_STALE_AFTER, resetter)
+            )
         assert count == 1
         assert resetter.calls == [
             {
@@ -249,45 +260,79 @@ def test_stale_gdbstub_session_triggers_a_reset(migrated_url: str) -> None:
             }
         ]
 
-    asyncio.run(scenario())
-```
+    asyncio.run(_run())
 
-Match the exact pool/connection idiom the neighboring tests in this file already use (look at
-`test_stale_live_session_detached` for the precise `async with` shape; do not invent a new one).
-Then the guard and failure-isolation tests:
 
-```python
 def test_live_holder_guard_skips_reset(migrated_url: str) -> None:
     """A System with a fresh live gdbstub session is not reset (no eviction)."""
-    async def scenario() -> None:
-        async with await psycopg.AsyncConnection.connect(migrated_url, autocommit=True) as conn:
-            system_id = await seed_system(conn)
-            await conn.execute(
+
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed)
+            await seed.execute(
                 "UPDATE systems SET domain_name = %s WHERE id = %s", ("kdive-sys", system_id)
             )
-            stale_run = await seed_run(conn, system_id)
+            stale_run = await seed_run(seed, system_id)
             await seed_debug_session(
-                stale_run, ...  # the stale dead session, heartbeat_ago=timedelta(minutes=10)
+                seed,
+                stale_run,
+                state=DebugSessionState.LIVE,
+                heartbeat_ago=timedelta(hours=1),
+                transport="gdbstub",
+                transport_handle="gdbstub://10.0.0.5:1234",
             )
-            fresh_run = await seed_run(conn, system_id)
+            fresh_run = await seed_run(seed, system_id)
             await seed_debug_session(
-                conn, fresh_run, heartbeat_ago=timedelta(seconds=1),
-                transport="gdbstub", transport_handle="gdbstub://10.0.0.5:1234",
+                seed,
+                fresh_run,
+                state=DebugSessionState.LIVE,
+                heartbeat_ago=timedelta(seconds=1),
+                transport="gdbstub",
+                transport_handle="gdbstub://10.0.0.5:1234",
             )
         resetter = FakeResetter()
-        # ... run _repair_dead_sessions with stale_after=timedelta(minutes=2) ...
-        assert resetter.calls == []  # fresh live gdbstub holder => reset skipped
-    asyncio.run(scenario())
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(
+                pool, _detach(loop.DEFAULT_DEBUG_SESSION_STALE_AFTER, resetter)
+            )
+        assert count == 1  # the one stale session is still detached
+        assert resetter.calls == []  # but the fresh live gdbstub holder => reset skipped
+
+    asyncio.run(_run())
 
 
 def test_reset_failure_does_not_strand_the_detach(migrated_url: str) -> None:
     """A raising resetter is swallowed; the session is still detached and the count stands."""
-    # seed one stale gdbstub session with a handle + domain_name as above;
-    # run with FakeResetter(fail=True); assert count == 1 and the row state == 'detached'.
-```
 
-Fill the elided bodies with the same seeding/pool idiom as the first new test (the plan repeats
-the full shape in the first test; reuse it verbatim — do not leave `...` in the committed code).
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed)
+            await seed.execute(
+                "UPDATE systems SET domain_name = %s WHERE id = %s", ("kdive-sys", system_id)
+            )
+            run_id = await seed_run(seed, system_id)
+            session_id = await seed_debug_session(
+                seed,
+                run_id,
+                state=DebugSessionState.LIVE,
+                heartbeat_ago=timedelta(hours=1),
+                transport="gdbstub",
+                transport_handle="gdbstub://10.0.0.5:1234",
+            )
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(
+                pool, _detach(loop.DEFAULT_DEBUG_SESSION_STALE_AFTER, FakeResetter(fail=True))
+            )
+        assert count == 1  # the reset raised but the detach stands
+        async with await connect(migrated_url) as check:
+            cur = await check.execute(
+                "SELECT state FROM debug_sessions WHERE id = %s", (session_id,)
+            )
+            row = await cur.fetchone()
+            assert row is not None and row[0] == "detached"
+
+    asyncio.run(_run())
+```
 
 - [ ] **Step 3: Run tests to verify they fail**
 
@@ -471,6 +516,7 @@ Create `tests/providers/remote_libvirt/test_transport_reset.py`:
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import libvirt
@@ -496,7 +542,7 @@ def _config() -> RemoteLibvirtConfig:
     )
 
 
-def _resetter(domain: FakeDomain | None, tmp_path: Path, rearm=None) -> RemoteLibvirtTransportResetter:
+def _resetter(domain: FakeDomain | None, tmp_path: Path) -> RemoteLibvirtTransportResetter:
     conn = FakeControlConn({_DOMAIN: domain} if domain is not None else {})
     return RemoteLibvirtTransportResetter(
         secret_registry=SecretRegistry(),
@@ -507,70 +553,87 @@ def _resetter(domain: FakeDomain | None, tmp_path: Path, rearm=None) -> RemoteLi
     )
 
 
-@pytest.mark.anyio
-async def test_matching_gdbstub_handle_rearms_with_stop_then_start(tmp_path: Path) -> None:
+def test_matching_gdbstub_handle_rearms_with_stop_then_start(tmp_path: Path) -> None:
     domain = FakeDomain(_DOMAIN)
-    await _resetter(domain, tmp_path).reset(
-        transport="gdbstub",
-        transport_handle=f"gdbstub://{_GDB_ADDR}:1234",
-        domain_name=_DOMAIN,
-    )
-    assert domain.calls == ["monitor:gdbserver none", "monitor:gdbserver tcp::1234"]
 
-
-@pytest.mark.anyio
-async def test_non_gdbstub_transport_is_a_noop(tmp_path: Path) -> None:
-    domain = FakeDomain(_DOMAIN)
-    await _resetter(domain, tmp_path).reset(
-        transport="drgn-live", transport_handle=_DOMAIN, domain_name=_DOMAIN
-    )
-    assert domain.calls == []
-
-
-@pytest.mark.anyio
-async def test_handle_host_not_gdb_addr_is_a_noop(tmp_path: Path) -> None:
-    domain = FakeDomain(_DOMAIN)
-    await _resetter(domain, tmp_path).reset(
-        transport="gdbstub",
-        transport_handle="gdbstub://127.0.0.1:1234",  # a local loopback session, not ours
-        domain_name=_DOMAIN,
-    )
-    assert domain.calls == []
-
-
-@pytest.mark.anyio
-async def test_missing_domain_name_is_a_noop(tmp_path: Path) -> None:
-    domain = FakeDomain(_DOMAIN)
-    await _resetter(domain, tmp_path).reset(
-        transport="gdbstub", transport_handle=f"gdbstub://{_GDB_ADDR}:1234", domain_name=None
-    )
-    assert domain.calls == []
-
-
-@pytest.mark.anyio
-async def test_none_handle_is_a_noop(tmp_path: Path) -> None:
-    domain = FakeDomain(_DOMAIN)
-    await _resetter(domain, tmp_path).reset(
-        transport="gdbstub", transport_handle=None, domain_name=_DOMAIN
-    )
-    assert domain.calls == []
-
-
-@pytest.mark.anyio
-async def test_monitor_error_maps_to_transport_failure(tmp_path: Path) -> None:
-    domain = FakeDomain(_DOMAIN, raise_on={"qemuMonitorCommand": libvirt.VIR_ERR_OPERATION_FAILED})
-    with pytest.raises(CategorizedError) as exc:
+    async def scenario() -> None:
         await _resetter(domain, tmp_path).reset(
             transport="gdbstub",
             transport_handle=f"gdbstub://{_GDB_ADDR}:1234",
             domain_name=_DOMAIN,
         )
+
+    asyncio.run(scenario())
+    assert domain.calls == ["monitor:gdbserver none", "monitor:gdbserver tcp::1234"]
+
+
+def test_non_gdbstub_transport_is_a_noop(tmp_path: Path) -> None:
+    domain = FakeDomain(_DOMAIN)
+
+    async def scenario() -> None:
+        await _resetter(domain, tmp_path).reset(
+            transport="drgn-live", transport_handle=_DOMAIN, domain_name=_DOMAIN
+        )
+
+    asyncio.run(scenario())
+    assert domain.calls == []
+
+
+def test_handle_host_not_gdb_addr_is_a_noop(tmp_path: Path) -> None:
+    domain = FakeDomain(_DOMAIN)
+
+    async def scenario() -> None:
+        await _resetter(domain, tmp_path).reset(
+            transport="gdbstub",
+            transport_handle="gdbstub://127.0.0.1:1234",  # a local loopback session, not ours
+            domain_name=_DOMAIN,
+        )
+
+    asyncio.run(scenario())
+    assert domain.calls == []
+
+
+def test_missing_domain_name_is_a_noop(tmp_path: Path) -> None:
+    domain = FakeDomain(_DOMAIN)
+
+    async def scenario() -> None:
+        await _resetter(domain, tmp_path).reset(
+            transport="gdbstub", transport_handle=f"gdbstub://{_GDB_ADDR}:1234", domain_name=None
+        )
+
+    asyncio.run(scenario())
+    assert domain.calls == []
+
+
+def test_none_handle_is_a_noop(tmp_path: Path) -> None:
+    domain = FakeDomain(_DOMAIN)
+
+    async def scenario() -> None:
+        await _resetter(domain, tmp_path).reset(
+            transport="gdbstub", transport_handle=None, domain_name=_DOMAIN
+        )
+
+    asyncio.run(scenario())
+    assert domain.calls == []
+
+
+def test_monitor_error_maps_to_transport_failure(tmp_path: Path) -> None:
+    domain = FakeDomain(_DOMAIN, raise_on={"qemuMonitorCommand": libvirt.VIR_ERR_OPERATION_FAILED})
+
+    async def scenario() -> None:
+        await _resetter(domain, tmp_path).reset(
+            transport="gdbstub",
+            transport_handle=f"gdbstub://{_GDB_ADDR}:1234",
+            domain_name=_DOMAIN,
+        )
+
+    with pytest.raises(CategorizedError) as exc:
+        asyncio.run(scenario())
     assert exc.value.category is ErrorCategory.TRANSPORT_FAILURE
 ```
 
 Check `RemoteLibvirtConfig`'s field names (`concurrent_allocation_cap`, `gdb_addr`) against
-`config.py` and the existing `test_control.py::_config`; match them exactly. If the repo's async
-tests use `asyncio_mode = auto`, drop the `@pytest.mark.anyio` decorators.
+`config.py` and the existing `test_control.py::_config`; match them exactly.
 
 - [ ] **Step 3: Run tests to verify they fail**
 
@@ -635,7 +698,7 @@ def open_libvirt_reset(uri: str) -> _ResetConn:
 
 def _real_rearm(domain: _Domain, port: int) -> None:  # pragma: no cover - live_vm
     """Stop-then-rearm the gdbstub over the QEMU monitor (HMP), dropping the stale client."""
-    import libvirt_qemu
+    import libvirt_qemu  # ty: ignore[unresolved-import] - C-extension, no stubs (per CLAUDE.md)
 
     hmp = libvirt_qemu.VIR_DOMAIN_QEMU_MONITOR_COMMAND_HMP
     domain.qemuMonitorCommand("gdbserver none", hmp)
@@ -747,8 +810,12 @@ Expected: PASS (6 passed).
 - [ ] **Step 6: Lint, type, commit**
 
 Run: `just lint && just type && uv run python -m pytest tests/providers/remote_libvirt -q`
-Expected: all green. (If `ty` flags the `libvirt` import, mirror the scoped per-site ignore
-already used in `control.py`/`connect.py`.)
+Expected: all green. `ty` is whole-tree. `import libvirt` resolves bare (as in `control.py`);
+`open_libvirt_reset` already carries `# ty: ignore[invalid-return-type]` on the `libvirt.open`
+return (matching `control.py`). The function-local `import libvirt_qemu` in `_real_rearm` is the
+one unresolvable import and already carries `# ty: ignore[unresolved-import]` in the code block
+above. If `ty` surfaces any other libvirt-family diagnostic, mirror the scoped per-site ignore
+used in `control.py`/`connect.py`.
 
 ```bash
 git add src/kdive/providers/remote_libvirt/transport_reset.py tests/providers/remote_libvirt/
