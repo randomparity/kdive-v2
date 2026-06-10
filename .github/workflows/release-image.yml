@@ -1,0 +1,74 @@
+name: release-image
+
+# Build and publish the kdive container image on a SemVer tag, then attach an SBOM,
+# generate provenance, and cosign-sign the immutable digest keyless/OIDC (ADR-0088
+# decision 8). The PR build-without-push lives in ci.yml; this is the release path.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+# Least privilege: read the source, write the GHCR package, and mint the OIDC token
+# cosign keyless signing needs. No other scopes.
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+concurrency:
+  group: release-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: build · push · sbom · sign
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags and labels
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: ghcr.io/randomparity/kdive
+          tags: type=semver,pattern={{version}}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the published digest
+        # Sign the immutable @sha256 digest, not the mutable tag: a tag can be retargeted
+        # after signing, the digest cannot. Fail fast if the build did not emit a digest
+        # rather than letting cosign sign an empty / wrong subject.
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DIGEST}" ]]; then
+            echo "::error::build step produced no image digest — refusing to sign" >&2
+            exit 1
+          fi
+          cosign sign --yes "ghcr.io/randomparity/kdive@${DIGEST}"

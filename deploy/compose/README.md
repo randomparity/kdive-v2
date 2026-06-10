@@ -66,3 +66,28 @@ the host* (where `iss=http://localhost:8090/default` matches host-minted tokens)
 ```bash
 docker compose down -v   # stop everything and drop the named volumes
 ```
+
+## Image provenance — verify before you run a published image
+
+This reference builds the image locally (`image: kdive:dev`). When you instead pull a
+**published** image from `ghcr.io/randomparity/kdive`, verify its signature first. The
+[`release-image`](../../.github/workflows/release-image.yml) workflow signs each released
+digest keyless/OIDC on a SemVer tag and attaches an SBOM (ADR-0088 decision 8), so a
+consumer can confirm the image was built by this repo's release workflow before trusting it.
+
+Install [cosign](https://docs.sigstore.dev/cosign/system_config/installation/), then verify
+the tag you intend to run:
+
+```bash
+cosign verify ghcr.io/randomparity/kdive:vX.Y.Z \
+  --certificate-identity-regexp '^https://github.com/randomparity/kdive/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The identity regexp pins the signer to a workflow in this repository and the issuer pins it
+to GitHub's OIDC provider; a signature from any other identity or issuer fails the check.
+Inspect the attached SBOM with:
+
+```bash
+cosign download sbom ghcr.io/randomparity/kdive:vX.Y.Z
+```

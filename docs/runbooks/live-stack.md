@@ -27,6 +27,11 @@ The `just` recipes below are source-tree conveniences. Installed-package deploym
   re-pin it to a current tag before `just stack-up`.
 - The repo set up: `just setup` (or `uv sync --locked`).
 - The VM fixtures built (below).
+- If you run a **published** kdive image from `ghcr.io/randomparity/kdive` rather than a
+  locally built one, verify its signature first. The release workflow cosign-signs each
+  released digest keyless/OIDC and attaches an SBOM (ADR-0088 decision 8); the consumer
+  `cosign verify` check is in
+  [`deploy/compose/README.md`](../../deploy/compose/README.md#image-provenance--verify-before-you-run-a-published-image).
 
 ## 1. Bring up the backends
 
