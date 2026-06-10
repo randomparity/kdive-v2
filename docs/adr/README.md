@@ -110,3 +110,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0081](0081-remote-build-kernel-bundle.md) | Remote build publishes a single vmlinuz+modules install bundle as `kernel_ref` (M2) | Proposed |
 | [0082](0082-remote-install-in-guest-kernel.md) | Remote install: in-guest kernel install via one allowlisted helper + boot-id readiness (M2) | Proposed |
 | [0083](0083-remote-connect-debug-plane.md) | Remote connect/debug plane: shared gdb-MI/drgn infra + ACL'd direct-TCP gdbstub (M2) | Proposed |
+| [0084](0084-remote-control-two-phase-vmcore-retrieve.md) | Remote control (power/force_crash over TLS) + two-phase vmcore retrieve (kdump→local, post-reboot presigned-PUT upload) (M2) | Proposed |

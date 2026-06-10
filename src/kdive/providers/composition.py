@@ -62,6 +62,7 @@ from kdive.providers.reaping import InfraReaper, NullReaper, OwnedDomain
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.config import is_remote_libvirt_configured
 from kdive.providers.remote_libvirt.connect import RemoteLibvirtConnect
+from kdive.providers.remote_libvirt.control import RemoteLibvirtControl
 from kdive.providers.remote_libvirt.debug import remote_attach_seam
 from kdive.providers.remote_libvirt.discovery import RemoteLibvirtDiscovery
 from kdive.providers.remote_libvirt.install import RemoteLibvirtInstall
@@ -69,11 +70,8 @@ from kdive.providers.remote_libvirt.introspect import (
     RemoteLiveIntrospect,
     RemoteVmcoreIntrospect,
 )
-from kdive.providers.remote_libvirt.planes import (
-    UnimplementedController,
-    UnimplementedRetriever,
-)
 from kdive.providers.remote_libvirt.provisioning import RemoteLibvirtProvision
+from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.redaction import Redactor
@@ -219,14 +217,13 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
     """Build the remote-libvirt ports; buildable without operator config (ADR-0076).
 
     Construction wires the real provisioning (ADR-0080), build (ADR-0081), install/boot
-    (ADR-0082), and connect/debug + introspection (ADR-0083) planes, the discovery
-    registrar, and fail-fast stubs for the control/retrieve plane the later M2 issue
-    supplies; the ``KDIVE_REMOTE_LIBVIRT_*`` config gates discovery/connection/provisioning
-    and is read only when an op runs.
+    (ADR-0082), connect/debug + introspection (ADR-0083), and control/retrieve (ADR-0084)
+    planes, plus the discovery registrar; the ``KDIVE_REMOTE_LIBVIRT_*`` config gates
+    discovery/connection/provisioning and is read only when an op runs.
     """
     builder = RemoteLibvirtBuild.from_env(secret_registry=secret_registry)
     installer = RemoteLibvirtInstall.from_env(secret_registry=secret_registry)
-    retriever = UnimplementedRetriever()
+    retriever = RemoteLibvirtRetrieve.from_env(secret_registry=secret_registry)
     vmcore_introspector = RemoteVmcoreIntrospect.from_env(secret_registry=secret_registry)
     live_introspector = RemoteLiveIntrospect.from_env(secret_registry=secret_registry)
 
@@ -252,15 +249,14 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
         installer=installer,
         booter=installer,
         connector=RemoteLibvirtConnect.from_env(),
-        controller=UnimplementedController(),
+        controller=RemoteLibvirtControl.from_env(secret_registry=secret_registry),
         retriever=retriever,
         crash_postmortem=retriever,
         vmcore_introspector=vmcore_introspector,
         live_introspector=live_introspector,
-        # No capture plane yet: advertise nothing rather than admit a capture request
-        # that dies in a stub (vmcore.get validates against this set). The M2 retrieve
-        # issue widens it with the real two-phase kdump path (ADR-0078).
-        supported_capture_methods=frozenset(),
+        # The two-phase kdump capture lands here (ADR-0084); vmcore.get admits a kdump
+        # capture against this set. Host-dump stays unsupported (host-coupled).
+        supported_capture_methods=frozenset({CaptureMethod.KDUMP}),
         discovery_registrar=register_remote_host,
         attach_seam=remote_attach_seam,
         # The MI ops never validate the host, but pin the ACL-remote policy so the engine and

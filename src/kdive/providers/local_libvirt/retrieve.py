@@ -13,7 +13,6 @@ sanitized and allowlist-checked before any `crash` invocation.
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
@@ -23,13 +22,19 @@ from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
+from kdive.providers.debug_common.crash_postmortem import (
+    default_fetch_object,
+    default_read_vmcore_build_id,
+    default_run_crash,
+)
+from kdive.providers.debug_common.crash_postmortem import (
+    run_crash_postmortem as _run_crash_postmortem,
+)
 from kdive.providers.ports import (
     CaptureOutput,
     CrashOutput,
     CrashResult,
 )
-from kdive.security.artifacts.crash_commands import validate_crash_commands
-from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.store.objectstore import object_store_from_env
 
@@ -82,11 +87,11 @@ class LocalLibvirtRetrieve:
             tenant="local",
             store_factory=object_store_from_env,
             wait_for_vmcore=_real_wait_for_vmcore,
-            read_vmcore_build_id=_real_read_vmcore_build_id,
+            read_vmcore_build_id=default_read_vmcore_build_id,
             extract_redacted=_real_extract_redacted,
             host_dump_capture=_real_host_dump_capture,
-            fetch_object=_real_fetch_object,
-            run_crash=_real_run_crash,
+            fetch_object=default_fetch_object,
+            run_crash=default_run_crash,
             secret_registry=secret_registry,
         )
 
@@ -145,9 +150,8 @@ class LocalLibvirtRetrieve:
     ) -> CrashOutput:
         """Symbolize the core against ``debuginfo_ref`` and run the crash command batch.
 
-        Stages both objects to temp files, verifies the core's build-id matches
-        ``expected_build_id`` (provenance), runs ``crash`` over the injected seam, and
-        returns the parsed, **redacted** transcript.
+        Delegates to the provider-neutral worker-side helper (ADR-0084); raises the same
+        categories.
 
         Raises:
             CategorizedError: ``CONFIGURATION_ERROR`` for a rejected crash command,
@@ -162,38 +166,15 @@ class LocalLibvirtRetrieve:
                 "crash seams not configured on this Retriever",
                 category=ErrorCategory.MISSING_DEPENDENCY,
             )
-        rejected = validate_crash_commands(commands)
-        if rejected is not None:
-            raise CategorizedError(
-                "crash command batch rejected",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"reason": rejected},
-            )
-        vmcore_bytes = self._fetch_object(vmcore_ref)
-        observed = self._read_vmcore_build_id(vmcore_bytes)
-        if observed != expected_build_id:
-            raise CategorizedError(
-                "captured vmcore build-id does not match the Run's debuginfo build-id",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"vmcore_ref": vmcore_ref},
-            )
-        vmlinux_bytes = self._fetch_object(debuginfo_ref)
-        with (
-            tempfile.NamedTemporaryFile(suffix=".vmcore") as core_file,
-            tempfile.NamedTemporaryFile(suffix=".vmlinux") as vmlinux_file,
-        ):
-            core_file.write(vmcore_bytes)
-            core_file.flush()
-            vmlinux_file.write(vmlinux_bytes)
-            vmlinux_file.flush()
-            script = "\n".join(commands) + "\nquit\n"
-            crash = self._run_crash(Path(vmlinux_file.name), Path(core_file.name), script)
-        redactor = Redactor(registry=self._secret_registry)
-        transcript = redactor.redact_text(crash.stdout.decode("utf-8", "replace"))
-        return CrashOutput(
-            results={cmd: {"ran": True} for cmd in commands},
-            transcript=transcript,
-            truncated=False,
+        return _run_crash_postmortem(
+            vmcore_ref=vmcore_ref,
+            debuginfo_ref=debuginfo_ref,
+            expected_build_id=expected_build_id,
+            commands=commands,
+            fetch_object=self._fetch_object,
+            read_build_id=self._read_vmcore_build_id,
+            run_crash=self._run_crash,
+            secret_registry=self._secret_registry,
         )
 
 
@@ -216,31 +197,9 @@ def _real_host_dump_capture(system_id: UUID) -> bytes | None:  # pragma: no cove
     )
 
 
-def _real_read_vmcore_build_id(data: bytes) -> str:  # pragma: no cover - live_vm
-    raise CategorizedError(
-        "vmcore build-id extraction runs only under the live_vm gate",
-        category=ErrorCategory.MISSING_DEPENDENCY,
-    )
-
-
 def _real_extract_redacted(data: bytes) -> bytes:  # pragma: no cover - live_vm
     raise CategorizedError(
         "vmcore dmesg extraction runs only under the live_vm gate",
-        category=ErrorCategory.MISSING_DEPENDENCY,
-    )
-
-
-def _real_fetch_object(ref: str) -> bytes:  # pragma: no cover - live_vm
-    # The ref is a key the system itself produced; there is no client etag handle, so the
-    # read is unconditional (ADR-0054). An empty etag would 412 here, not skip the check.
-    return object_store_from_env().get_artifact(ref, None).data
-
-
-def _real_run_crash(  # pragma: no cover - live_vm
-    vmlinux: Path, vmcore: Path, script: str
-) -> CrashResult:
-    raise CategorizedError(
-        "the crash subprocess runs only under the live_vm gate",
         category=ErrorCategory.MISSING_DEPENDENCY,
     )
 

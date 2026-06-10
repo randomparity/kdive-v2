@@ -30,8 +30,10 @@ from kdive.providers.ports import (
     TransportHandle,
 )
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
+from kdive.providers.remote_libvirt.control import RemoteLibvirtControl
 from kdive.providers.remote_libvirt.install import RemoteLibvirtInstall
 from kdive.providers.remote_libvirt.provisioning import RemoteLibvirtProvision
+from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.secret_registry import SecretRegistry
 
@@ -383,12 +385,20 @@ def test_remote_runtime_buildable_without_operator_config(
     assert runtime.discovery_registrar is not None
 
 
-def test_remote_runtime_advertises_no_capture_methods_yet() -> None:
-    # vmcore.get admits capture requests against this set; the skeleton has no capture
-    # plane, so it must advertise none (the M2 retrieve issue widens it).
+def test_remote_runtime_advertises_kdump_capture() -> None:
+    # The retrieve issue widens the set to the two-phase kdump path (ADR-0084);
+    # host-dump stays unsupported (host-coupled).
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
-    assert runtime.supported_capture_methods == frozenset()
+    assert runtime.supported_capture_methods == frozenset({CaptureMethod.KDUMP})
+
+
+def test_remote_runtime_has_real_control_and_retrieve() -> None:
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert isinstance(runtime.controller, RemoteLibvirtControl)
+    assert isinstance(runtime.retriever, RemoteLibvirtRetrieve)
+    assert runtime.crash_postmortem is runtime.retriever
 
 
 def test_remote_runtime_has_real_provisioner(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -436,8 +446,8 @@ def test_remote_runtime_has_real_installer_and_booter(monkeypatch: pytest.Monkey
 def test_remote_runtime_wires_connect_and_introspect_ports(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The connect/debug + introspection planes are real from this issue on (ADR-0083);
-    # control/retrieve stay stubbed (issue #206).
+    # The connect/debug + introspection planes are real (ADR-0083); control/retrieve are
+    # real from issue #206 on (ADR-0084), asserted in test_remote_runtime_has_real_control_*.
     monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
     from kdive.providers.remote_libvirt.connect import RemoteLibvirtConnect
     from kdive.providers.remote_libvirt.debug import remote_attach_seam
@@ -445,7 +455,6 @@ def test_remote_runtime_wires_connect_and_introspect_ports(
         RemoteLiveIntrospect,
         RemoteVmcoreIntrospect,
     )
-    from kdive.providers.remote_libvirt.planes import UnimplementedController
 
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
@@ -453,7 +462,6 @@ def test_remote_runtime_wires_connect_and_introspect_ports(
     assert runtime.attach_seam is remote_attach_seam
     assert isinstance(runtime.vmcore_introspector, RemoteVmcoreIntrospect)
     assert isinstance(runtime.live_introspector, RemoteLiveIntrospect)
-    assert isinstance(runtime.controller, UnimplementedController)
 
 
 def test_remote_runtime_wires_build_config_validator(monkeypatch: pytest.MonkeyPatch) -> None:
