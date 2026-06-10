@@ -3,8 +3,8 @@
 Imports NO ``kdive.services`` and reads NO DB/object-store settings — the operator host
 holds only the bearer token (ADR-0089 decision 5). Enforced by ``test_no_service_import``.
 
-``read_cached_token`` is a module-local stub here so this module is self-contained until
-the ``kdivectl login`` token cache (M2.2/2, issue #250) replaces it with a real reader.
+The fallback cache reader is the ``0600`` ``kdivectl login`` cache (:mod:`kdive.cli.login`):
+when ``KDIVE_TOKEN`` is unset, ``Session.from_env`` reads the cached login token.
 """
 
 from __future__ import annotations
@@ -15,16 +15,8 @@ from fastmcp import Client
 from fastmcp.client.auth import BearerAuth
 
 import kdive.config as config
+from kdive.cli.login import read_cached_token
 from kdive.config.cli_settings import SERVER_URL, TOKEN
-
-
-def read_cached_token() -> str | None:
-    """Return the cached login token, or ``None`` when no cache exists.
-
-    Stub until M2.2/2 (issue #250) supplies the ``0600`` login-cache reader; until then
-    only the explicit ``KDIVE_TOKEN`` path yields a token.
-    """
-    return None
 
 
 @dataclass(frozen=True)

@@ -9,29 +9,39 @@ A test-side seam imported by the live-stack spine driver (issue #100):
 * :class:`LiveStackClient` wraps :class:`fastmcp.Client`, parsing each tool result's
   structured output back into the project :class:`~kdive.mcp.responses.ToolResponse`.
 
+The authorization-code flow (:class:`OidcIssuer`, :func:`_build_claims`,
+:func:`_authorization_code`, :func:`_exchange_code`) is the single copy that now lives in
+:mod:`kdive.cli.login`; this harness re-exports those symbols so existing test imports and
+:func:`mint_token` keep working.
+
 This module imports no pytest symbols so it stays importable as a plain library.
 """
 
 from __future__ import annotations
 
-import json
-import os
-import urllib.error
-import urllib.parse
-import urllib.request
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from typing import Self
 
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
+from kdive.cli.login import (
+    OidcIssuer,
+    _authorization_code,
+    _build_claims,
+    _exchange_code,
+)
 from kdive.mcp.responses import ToolResponse
 
-_DEFAULT_AUDIENCE = "kdive"
-_DEFAULT_CLIENT_ID = "kdive-test"
-_REDIRECT_URI = "http://localhost:1234/callback"
-_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+__all__ = [
+    "LiveStackClient",
+    "LiveStackToolError",
+    "OidcIssuer",
+    "_authorization_code",
+    "_build_claims",
+    "_exchange_code",
+    "mint_token",
+]
 
 
 class LiveStackToolError(RuntimeError):
@@ -58,150 +68,6 @@ def _tool_error_text(result: object) -> str:
         if isinstance(text, str):
             return text
     return "tool error"
-
-
-@dataclass(frozen=True)
-class OidcIssuer:
-    """The mock-OIDC issuer the harness mints tokens from (ADR-0044).
-
-    ``base_url`` is the per-issuer base (e.g. ``http://localhost:8090/default``); the
-    token/authorize/jwks endpoints derive from it. Built from the ``KDIVE_OIDC_*`` env the
-    server also reads, or constructed directly in a test.
-    """
-
-    base_url: str
-    audience: str = _DEFAULT_AUDIENCE
-    client_id: str = _DEFAULT_CLIENT_ID
-
-    @classmethod
-    def from_env(cls) -> Self:
-        """Resolve the issuer from ``KDIVE_OIDC_*``; raise if the base URL is unset."""
-        base_url = os.environ.get("KDIVE_OIDC_ISSUER")
-        if not base_url:
-            raise RuntimeError("KDIVE_OIDC_ISSUER is not set; cannot reach the mock-OIDC issuer")
-        return cls(
-            base_url=base_url,
-            audience=os.environ.get("KDIVE_OIDC_AUDIENCE", _DEFAULT_AUDIENCE),
-            client_id=os.environ.get("KDIVE_OIDC_CLIENT_ID", _DEFAULT_CLIENT_ID),
-        )
-
-    @property
-    def authorize_endpoint(self) -> str:
-        """The OAuth authorization endpoint (drives the login form)."""
-        return f"{self.base_url}/authorize"
-
-    @property
-    def token_endpoint(self) -> str:
-        """The OAuth token endpoint (exchanges the code for an access token)."""
-        return f"{self.base_url}/token"
-
-    @property
-    def jwks_uri(self) -> str:
-        """The JWKS endpoint the verifier reads to validate signatures."""
-        return f"{self.base_url}/jwks"
-
-
-def _build_claims(
-    *,
-    subject: str,
-    audience: str,
-    projects: Sequence[str],
-    roles: Mapping[str, str],
-    platform_roles: Sequence[str] | None,
-    agent_session: str | None,
-    client_id: str | None = None,
-) -> dict[str, object]:
-    """Build the literal ``claims`` JSON the login form carries.
-
-    ``roles`` becomes the nested-object claim ``{project: role}``; ``platform_roles``,
-    when not ``None``, becomes the flat array claim. ``None`` for ``platform_roles`` or
-    ``agent_session`` omits that claim entirely (distinct from an empty list). ``client_id``,
-    when set, becomes the OIDC ``azp`` claim the actor map resolves to ``operator-cli``.
-    """
-    claims: dict[str, object] = {
-        "sub": subject,
-        "aud": audience,
-        "projects": list(projects),
-        "roles": dict(roles),
-    }
-    if platform_roles is not None:
-        claims["platform_roles"] = list(platform_roles)
-    if agent_session is not None:
-        claims["agent_session"] = agent_session
-    if client_id is not None:
-        claims["azp"] = client_id
-    return claims
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Suppress redirect-following so the authorization ``code`` is read from Location.
-
-    Returning ``None`` from :meth:`redirect_request` makes urllib raise an ``HTTPError``
-    carrying the 302 and its ``Location`` header instead of following the redirect.
-    """
-
-    def redirect_request(
-        self,
-        req: urllib.request.Request,
-        fp: object,
-        code: int,
-        msg: str,
-        headers: object,
-        newurl: str,
-    ) -> urllib.request.Request | None:
-        return None
-
-
-def _authorization_code(issuer: OidcIssuer, claims: Mapping[str, object]) -> str:
-    """Drive the login form and return the authorization ``code`` from the 302 redirect."""
-    params = urllib.parse.urlencode(
-        {
-            "response_type": "code",
-            "client_id": issuer.client_id,
-            "redirect_uri": _REDIRECT_URI,
-            "scope": "openid",
-            "state": "kdive-harness",
-        }
-    )
-    authorize_url = f"{issuer.authorize_endpoint}?{params}"
-    # The login form has no action: it posts back to the authorize URL (oauth params on
-    # the query string) with username + a literal claims JSON.
-    body = urllib.parse.urlencode(
-        {"username": str(claims["sub"]), "claims": json.dumps(claims)}
-    ).encode()
-    opener = urllib.request.build_opener(_NoRedirect())
-    request = urllib.request.Request(authorize_url, data=body, method="POST")
-    try:
-        opener.open(request)
-    except urllib.error.HTTPError as exc:
-        location = exc.headers.get("Location")
-        if exc.code in _REDIRECT_STATUSES and location:
-            code = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(location).query)).get("code")
-            if code:
-                return code
-        raise RuntimeError(
-            f"issuer login did not return an authorization code (status {exc.code})"
-        ) from exc
-    raise RuntimeError("issuer login did not redirect with an authorization code")
-
-
-def _exchange_code(issuer: OidcIssuer, code: str) -> str:
-    """Exchange the authorization ``code`` for the access token."""
-    body = urllib.parse.urlencode(
-        {
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": _REDIRECT_URI,
-            "client_id": issuer.client_id,
-        }
-    ).encode()
-    request = urllib.request.Request(issuer.token_endpoint, data=body, method="POST")
-    with urllib.request.urlopen(request) as response:
-        payload = json.loads(response.read())
-    access_token = payload.get("access_token")
-    if not isinstance(access_token, str) or not access_token:
-        raise RuntimeError("issuer token response carried no access_token")
-    return access_token
 
 
 def mint_token(

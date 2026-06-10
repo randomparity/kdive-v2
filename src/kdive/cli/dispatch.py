@@ -2,8 +2,8 @@
 
 The generic read-only ``tool call`` passthrough lives here. It lists the server's tools,
 fail-closed-gates the requested tool on ``readOnlyHint``, calls it, and prints the
-structured result. Curated read verbs route through ``commands.run_verb``; ``login`` and
-the curated mutating verbs are wired by other M2.2 tasks.
+structured result. ``login`` mints and caches a bearer token; curated read verbs route
+through ``commands.run_verb``; the curated mutating verbs are wired by other M2.2 tasks.
 """
 
 from __future__ import annotations
@@ -27,8 +27,21 @@ async def run(args: argparse.Namespace) -> int:
     if args.command == "tool" and args.tool_command == "call":
         return await _tool_call(args)
     if args.command == "login":
-        raise SystemExit("`kdivectl login` is not available yet (M2.2/2)")
+        return _login(args)
     return await commands.run_verb(args)
+
+
+def _login(args: argparse.Namespace) -> int:
+    """Acquire a bearer token on the platform-role axis and cache it 0600.
+
+    The token is never printed or logged; only a confirmation line is emitted.
+    """
+    from kdive.cli.login import login
+
+    login(args.platform_role)
+    role = args.platform_role or "none"
+    print(f"login ok (platform_role={role}); token cached")
+    return 0
 
 
 async def _tool_call(args: argparse.Namespace) -> int:
