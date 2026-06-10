@@ -18,6 +18,24 @@
 # Mint a token for an operator request from the mock issuer's token endpoint (see its README).
 #
 # Images are pinned to explicit tags for reproducibility (no :latest).
+#
+# ADR-0088 (M2.1) extends this backend-only compose with the app tier: a `migrate`
+# one-shot and the three `server`/`worker`/`reconciler` processes, all built from the
+# repo Dockerfile and wired purely through `KDIVE_*`. Inside the compose network the
+# app services reach the backends by service name on their CONTAINER ports
+# (postgres:5432, oidc:8080, minio:9000) — not the host-published ports above, which
+# are for a server run on the host. See deploy/compose/README.md for the bring-up.
+
+# Shared backend wiring, declared once and merged into every app service via
+# `<<: *backends`. The server adds its own HTTP bind vars on top.
+x-backends: &backends
+  KDIVE_DATABASE_URL: postgresql://kdive:kdive@postgres:5432/kdive  # pragma: allowlist secret — local dev only
+  KDIVE_OIDC_ISSUER: http://oidc:8080/default
+  KDIVE_OIDC_JWKS_URI: http://oidc:8080/default/jwks
+  KDIVE_OIDC_AUDIENCE: kdive
+  KDIVE_S3_ENDPOINT_URL: http://minio:9000
+  KDIVE_S3_BUCKET: kdive-artifacts
+  KDIVE_S3_REGION: us-east-1
 
 services:
   postgres:
@@ -69,3 +87,58 @@ services:
       SERVER_PORT: "8080"
     ports:
       - "8090:8080"
+
+  # Forward-only schema rollout as a dedicated one-shot (ADR-0088 decision 4). The
+  # app services gate on its successful completion, so they never hit the DB before
+  # migrations finish. The runner (ADR-0015) is locked, transactional, and idempotent,
+  # so no extra coordination is needed. `build: .` builds the shared image once.
+  migrate:
+    build: .
+    image: kdive:dev
+    command: ["migrate"]
+    environment:
+      <<: *backends
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  server:
+    image: kdive:dev
+    command: ["server"]
+    environment:
+      <<: *backends
+      KDIVE_HTTP_HOST: 0.0.0.0
+      KDIVE_HTTP_PORT: "8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # The worker does real build/install I/O as a non-root user, so it needs writable,
+  # correctly-owned volumes for the build workspace and install staging (ADR-0088
+  # decision 3); server and reconciler need none.
+  worker:
+    image: kdive:dev
+    command: ["worker"]
+    environment:
+      <<: *backends
+    volumes:
+      - kdive-build:/var/lib/kdive/build
+      - kdive-install:/var/lib/kdive/install
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  reconciler:
+    image: kdive:dev
+    command: ["reconciler"]
+    environment:
+      <<: *backends
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  kdive-build:
+  kdive-install:
