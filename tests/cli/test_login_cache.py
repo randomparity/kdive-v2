@@ -64,6 +64,28 @@ def test_empty_cache_file_reads_as_none(tmp_path: Path, monkeypatch: pytest.Monk
     assert login.read_cached_token() is None
 
 
+def test_symlinked_cache_path_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    victim = tmp_path / "victim"
+    victim.write_text("untouched")
+    cache = tmp_path / "token"
+    cache.symlink_to(victim)
+    monkeypatch.setattr(login, "_cache_path", lambda: cache)
+    with pytest.raises(OSError):
+        login.write_cached_token("attacker.token")
+    assert victim.read_text() == "untouched"
+
+
+def test_existing_parent_dir_is_re_tightened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = tmp_path / "kdive"
+    parent.mkdir(mode=0o755)
+    cache = parent / "token"
+    monkeypatch.setattr(login, "_cache_path", lambda: cache)
+    login.write_cached_token("t.o.k")
+    assert stat.S_IMODE(os.stat(parent).st_mode) == 0o700
+
+
 def test_default_cache_path_honours_xdg_state_home(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", "/tmp/xdg-state")
     assert login._cache_path() == login.Path("/tmp/xdg-state") / "kdive" / "token"

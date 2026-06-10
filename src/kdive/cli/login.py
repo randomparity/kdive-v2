@@ -40,13 +40,16 @@ def _cache_path() -> Path:
 def write_cached_token(token: str) -> None:
     """Write ``token`` to the cache as a 0600 file under a 0700 parent.
 
-    The file is opened with ``O_CREAT`` mode ``0o600`` and re-tightened with ``chmod`` so a
-    pre-existing file or a widened ``umask`` cannot leave the token group/world-readable.
-    The token value is never logged.
+    The file is opened with ``O_CREAT | O_NOFOLLOW`` mode ``0o600`` and re-tightened with
+    ``chmod`` so a pre-existing file or a widened ``umask`` cannot leave the token
+    group/world-readable, and a symlink planted at the cache path fails closed rather than
+    being followed onto another file. The 0700 parent is re-tightened in case it pre-existed
+    with a wider mode. The token value is never logged.
     """
     path = _cache_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.chmod(path.parent, 0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as handle:
         handle.write(token)
     os.chmod(path, 0o600)
