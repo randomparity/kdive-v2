@@ -65,13 +65,16 @@ def test_violations_excludes_allowlisted_files() -> None:
 
 
 def test_allowlist_is_exactly_the_named_touch_points() -> None:
-    # The ADR-0076 set; extending it is a deliberate, reviewed decision.
+    # The ADR-0076 set plus the ADR-0085 drgn-live routing touch; extending it is a
+    # deliberate, reviewed decision.
     assert (
         frozenset(
             {
                 "src/kdive/domain/models.py",
                 "src/kdive/db/schema/0020_resources_kind_remote_libvirt.sql",
                 "src/kdive/store/objectstore.py",
+                "src/kdive/mcp/tools/debug/sessions.py",
+                "src/kdive/mcp/tools/debug/introspect.py",
             }
         )
         == ALLOWED_FILES

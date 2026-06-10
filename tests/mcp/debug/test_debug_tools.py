@@ -82,7 +82,7 @@ class _FakeConnector:
         self.opened.append((str(system), kind))
         if self._raises is not None:
             raise self._raises
-        port = 22 if kind == "ssh" else 1234
+        port = 22 if kind == "drgn-live" else 1234
         return TransportHandle(TransportHandleData(kind=kind, host="127.0.0.1", port=port).encode())
 
     def close_transport(self, handle: TransportHandle) -> None:
@@ -263,7 +263,7 @@ async def _seed_session(
     *,
     transport: str = "gdbstub",
 ) -> str:
-    port = 22 if transport == "ssh" else 1234
+    port = 22 if transport == "drgn-live" else 1234
     async with pool.connection() as conn:
         session = await DEBUG_SESSIONS.insert(
             conn,
@@ -589,7 +589,7 @@ def test_start_session_without_operator_raises(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-# --- debug.start_session(transport="ssh") (ADR-0039) ---------------------------------------
+# --- debug.start_session(transport="drgn-live") (ADR-0039) ---------------------------------------
 
 
 class _OrderRecordingBackend:
@@ -694,7 +694,7 @@ async def _seed_profiled_system(
     return str(system.id)
 
 
-def test_start_session_ssh_attaches_and_row_records_ssh_transport(migrated_url: str) -> None:
+def test_start_session_drgn_live_attaches_and_row_records_transport(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
@@ -707,12 +707,12 @@ def test_start_session_ssh_attaches_and_row_records_ssh_transport(migrated_url: 
                 pool,
                 _ctx(),
                 run_id=run_id,
-                transport="ssh",
+                transport="drgn-live",
                 connector=connector,
                 secret_backend=backend,
             )
             assert resp.status == "live"
-            assert connector.opened == [("kdive-x", "ssh")]
+            assert connector.opened == [("kdive-x", "drgn-live")]
             async with pool.connection() as c, c.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     "SELECT transport, transport_handle FROM debug_sessions WHERE id = %s",
@@ -720,8 +720,11 @@ def test_start_session_ssh_attaches_and_row_records_ssh_transport(migrated_url: 
                 )
                 row = await cur.fetchone()
         assert row is not None
-        assert row["transport"] == "ssh"
-        assert row["transport_handle"].startswith("ssh://")
+        assert row["transport"] == "drgn-live"
+        # Core stores whatever the connector returned (opaque); this fake echoes the kind. The
+        # real local connector's ssh:// realization scheme is asserted in the provider test, and
+        # the remote bare-domain handle in test_start_session_drgn_live_remote_skips_credential.
+        assert row["transport_handle"].startswith("drgn-live://")
 
     asyncio.run(_run())
 
@@ -740,12 +743,12 @@ def test_start_session_ssh_resolves_credential_before_opening_transport(migrated
                 pool,
                 _ctx(),
                 run_id=run_id,
-                transport="ssh",
+                transport="drgn-live",
                 connector=connector,
                 secret_backend=backend,
             )
             # Ordering acceptance: resolve (which registers) precedes the open.
-            assert log == ["resolve:ssh/guest-key", "open:ssh"]
+            assert log == ["resolve:ssh/guest-key", "open:drgn-live"]
             assert backend.refs == ["ssh/guest-key"]
             # The credential is in the registry before the transport was used.
             assert "guest-ssh-secret" in registry.snapshot()
@@ -793,7 +796,7 @@ def test_start_session_ssh_missing_credential_ref_is_config_error(migrated_url: 
                 pool,
                 _ctx(),
                 run_id=run_id,
-                transport="ssh",
+                transport="drgn-live",
                 connector=connector,
                 secret_backend=_OrderRecordingBackend([]),
             )
@@ -805,28 +808,27 @@ def test_start_session_ssh_missing_credential_ref_is_config_error(migrated_url: 
     asyncio.run(_run())
 
 
-def test_start_session_ssh_fault_inject_profile_is_missing_credential_ref(
-    migrated_url: str,
-) -> None:
+def test_start_session_drgn_live_fault_inject_skips_credential(migrated_url: str) -> None:
+    # A fault-inject profile has no local-libvirt section, so drgn_live_requires_credential is
+    # False: the drgn-live session opens with no credential (#215/ADR-0085), like remote.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_profiled_system(pool, alloc_id, _fault_inject_profile())
             run_id = await _seed_run(pool, sys_id)
             connector = _FakeConnector()
+            backend = _OrderRecordingBackend([])
             resp = await _start_session(
                 pool,
                 _ctx(),
                 run_id=run_id,
-                transport="ssh",
+                transport="drgn-live",
                 connector=connector,
-                secret_backend=_OrderRecordingBackend([]),
+                secret_backend=backend,
             )
-            count = await _session_count(pool)
-        assert resp.status == "error" and resp.error_category == "configuration_error"
-        assert resp.data == {"reason": "ssh_credential_ref_missing"}
-        assert count == 0
-        assert connector.opened == []
+        assert resp.status == "live"
+        assert connector.opened == [("kdive-x", "drgn-live")]
+        assert backend.refs == []  # no credential resolved for a non-local-section profile
 
     asyncio.run(_run())
 
@@ -845,7 +847,7 @@ def test_start_session_ssh_invalid_profile_is_config_error(migrated_url: str) ->
                 pool,
                 _ctx(),
                 run_id=run_id,
-                transport="ssh",
+                transport="drgn-live",
                 connector=connector,
                 secret_backend=backend,
             )
@@ -880,7 +882,7 @@ def test_start_session_ssh_path_escape_is_config_error(migrated_url: str) -> Non
                 pool,
                 _ctx(),
                 run_id=run_id,
-                transport="ssh",
+                transport="drgn-live",
                 connector=connector,
                 secret_backend=_RaisingBackend(PathSafetyError("escapes root")),
             )
@@ -904,7 +906,7 @@ def test_start_session_ssh_backend_dependency_failure_preserves_category(
                 pool,
                 _ctx(),
                 run_id=run_id,
-                transport="ssh",
+                transport="drgn-live",
                 connector=_FakeConnector(),
                 secret_backend=_RaisingBackend(err),
             )
@@ -934,7 +936,7 @@ def test_ssh_credential_masks_after_session_ends(migrated_url: str) -> None:
                 pool,
                 _ctx(),
                 run_id=run_id,
-                transport="ssh",
+                transport="drgn-live",
                 connector=_FakeConnector(),
                 secret_backend_factory=_backend_for,
             )
@@ -959,13 +961,13 @@ def test_second_ssh_attach_is_transport_conflict(migrated_url: str) -> None:
             sys_id = await _seed_ssh_system(pool, alloc_id)
             run_a = await _seed_run(pool, sys_id)
             run_b = await _seed_run(pool, sys_id)
-            await _seed_session(pool, run_a, DebugSessionState.LIVE, transport="ssh")
+            await _seed_session(pool, run_a, DebugSessionState.LIVE, transport="drgn-live")
             connector = _FakeConnector()
             resp = await _start_session(
                 pool,
                 _ctx(),
                 run_id=run_b,
-                transport="ssh",
+                transport="drgn-live",
                 connector=connector,
                 secret_backend=_OrderRecordingBackend([]),
             )
@@ -988,11 +990,84 @@ def test_gdbstub_and_ssh_sessions_coexist_on_one_system(migrated_url: str) -> No
                 pool,
                 _ctx(),
                 run_id=run_b,
-                transport="ssh",
+                transport="drgn-live",
                 connector=_FakeConnector(),
                 secret_backend=_OrderRecordingBackend([]),
             )
         assert resp.status == "live"  # the gdbstub session does not conflict with ssh
+
+    asyncio.run(_run())
+
+
+def _remote_profile() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "arch": "x86_64",
+        "vcpu": 4,
+        "memory_mb": 4096,
+        "disk_gb": 20,
+        "boot_method": "disk-image",
+        "kernel_source_ref": "git+https://git.kernel.org/pub/scm/linux.git#v6.9",
+        "provider": {"remote-libvirt": {"base_image_volume": "base-fedora40"}},
+    }
+
+
+class _DomainHandleConnector(_FakeConnector):
+    """Mimics the remote connector: drgn-live returns the bare SystemHandle (domain name)."""
+
+    def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle:
+        self.opened.append((str(system), kind))
+        if kind == "drgn-live":
+            return TransportHandle(str(system))
+        return super().open_transport(system, kind)
+
+
+def test_start_session_drgn_live_remote_skips_credential_and_stores_domain_handle(
+    migrated_url: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_profiled_system(pool, alloc_id, _remote_profile())
+            run_id = await _seed_run(pool, sys_id)
+            connector = _DomainHandleConnector()
+            # No secret_backend supplied: a remote drgn-live start must not need one.
+            resp = await _start_session(
+                pool, _ctx(), run_id=run_id, transport="drgn-live", connector=connector
+            )
+            assert resp.status == "live"
+            assert connector.opened == [("kdive-x", "drgn-live")]
+            async with pool.connection() as c, c.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT transport, transport_handle FROM debug_sessions WHERE id = %s",
+                    (resp.object_id,),
+                )
+                row = await cur.fetchone()
+        assert row is not None
+        assert row["transport"] == "drgn-live"
+        assert row["transport_handle"] == "kdive-x"  # bare domain, ADR-0083 §4
+
+    asyncio.run(_run())
+
+
+def test_start_session_drgn_live_local_missing_ref_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)  # local, no ssh ref
+            run_id = await _seed_run(pool, sys_id)
+            connector = _FakeConnector()
+            resp = await _start_session(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="drgn-live",
+                connector=connector,
+                secret_backend=_OrderRecordingBackend([]),
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.data == {"reason": "ssh_credential_ref_missing"}
+        assert connector.opened == []
 
     asyncio.run(_run())
 

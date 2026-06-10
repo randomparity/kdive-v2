@@ -47,7 +47,11 @@ from kdive.mcp.tools.debug.ops import (
     DebugRuntimeResolver,
     _register_debug_ops,
 )
-from kdive.profiles.provisioning import ProvisioningProfile, ssh_credential_ref
+from kdive.profiles.provisioning import (
+    ProvisioningProfile,
+    drgn_live_requires_credential,
+    ssh_credential_ref,
+)
 from kdive.providers.ports import Connector, SystemHandle, TransportHandle
 from kdive.providers.resolver import ProviderResolver
 from kdive.security import audit
@@ -58,16 +62,16 @@ from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
 
 _GDBSTUB = "gdbstub"
-_SSH = "ssh"
-_TRANSPORTS = frozenset({_GDBSTUB, _SSH})
+_DRGN_LIVE = "drgn-live"
+_TRANSPORTS = frozenset({_GDBSTUB, _DRGN_LIVE})
 # An attach failure maps these provider categories onto the response envelope. A
 # MISSING_DEPENDENCY (no live_vm host / unresolvable endpoint) surfaces as an attach failure:
 # the agent cannot attach either way.
 _ATTACH_FAILURE = frozenset({ErrorCategory.DEBUG_ATTACH_FAILURE, ErrorCategory.TRANSPORT_FAILURE})
 
 # A live/attach session occupies the System's single endpoint **for that transport kind**
-# (single-attach per transport, ADR-0039 §4): a gdbstub and an ssh session may coexist on one
-# System, but a second attach over the same transport is `transport_conflict`.
+# (single-attach per transport, ADR-0039 §4): a gdbstub and a drgn-live session may coexist on
+# one System, but a second attach over the same transport is `transport_conflict`.
 _OCCUPIED_SQL: LiteralString = (
     "SELECT 1 FROM debug_sessions s "
     "JOIN runs r ON r.id = s.run_id "
@@ -241,10 +245,12 @@ class DebugSessionHandlers:
     ) -> ToolResponse:
         """Open a single-attach transport and insert a `live` DebugSession (operator).
 
-        For ``transport="ssh"`` the guest credential is resolved from the System's profile
-        ``ssh_credential_ref`` through the bound secret backend factory **before** the
-        transport is opened, so the redaction registry is seeded before any transport output
-        can carry the value (ADR-0039 §2). gdbstub needs no credential.
+        For a ``transport="drgn-live"`` session whose profile realizes it over SSH (the
+        local-libvirt section; ``drgn_live_requires_credential``) the guest credential is
+        resolved from the profile's ``ssh_credential_ref`` through the bound secret backend
+        factory **before** the transport is opened, so the redaction registry is seeded before
+        any transport output can carry the value (ADR-0039 §2). gdbstub, and a guest-agent
+        drgn-live realization (remote), need no credential.
         """
         uid = _as_uuid(run_id)
         if uid is None:
@@ -307,7 +313,7 @@ class DebugSessionHandlers:
         )
 
     def _credential_backend(self, session_id: UUID, transport: str) -> SecretBackend | None:
-        if transport != _SSH or self._secret_backend_factory is None:
+        if transport != _DRGN_LIVE or self._secret_backend_factory is None:
             return None
         return self._secret_backend_factory(session_id)
 
@@ -353,19 +359,24 @@ class DebugSessionHandlers:
 def _resolve_credential(
     system: System, transport: str, secret_backend: SecretBackend | None
 ) -> None | ToolResponse:
-    """Resolve + register the ssh credential before transport use (ADR-0039 §2 ordering).
+    """Resolve + register the SSH credential before transport use (ADR-0039 §2 ordering).
 
-    Returns ``None`` when no credential is required (gdbstub) or resolution succeeded, or a
-    failure envelope. The resolved value is registered into the redaction registry by the
-    backend (a structural post-condition of ``FileRefBackend.resolve``) before this returns —
-    so the connector that opens the SSH connection runs with the registry already seeded.
+    A credential is needed only for a ``drgn-live`` transport whose profile realizes it over
+    SSH — the local-libvirt section, per ``drgn_live_requires_credential`` (ADR-0085 Decision
+    2). Returns ``None`` when none is required (gdbstub, or a guest-agent realization such as
+    remote) or resolution succeeded, or a failure envelope. The resolved value is registered
+    into the redaction registry by the backend (a structural post-condition of
+    ``FileRefBackend.resolve``) before this returns — so the connector that opens the SSH
+    connection runs with the registry already seeded.
     """
-    if transport != _SSH:
+    if transport != _DRGN_LIVE:
         return None
     try:
         profile = ProvisioningProfile.parse(system.provisioning_profile)
     except CategorizedError as exc:
         return ToolResponse.failure_from_error(str(system.id), exc)
+    if not drgn_live_requires_credential(profile):
+        return None
     ref = ssh_credential_ref(profile)
     if ref is None:
         return _config_error(str(system.id), data={"reason": "ssh_credential_ref_missing"})
@@ -583,7 +594,7 @@ def register(
         run_id: Annotated[str, Field(description="The booted Run to attach a debug session to.")],
         transport: Annotated[
             str,
-            Field(description="Transport kind: `gdbstub` (default) or `ssh`."),
+            Field(description="Transport kind: `gdbstub` (default) or `drgn-live`."),
         ] = _GDBSTUB,
     ) -> ToolResponse:
         """Open a single-attach transport and insert a live DebugSession. Requires operator."""

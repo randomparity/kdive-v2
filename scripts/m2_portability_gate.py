@@ -41,6 +41,10 @@ ALLOWED_FILES = frozenset(
         "src/kdive/db/schema/0020_resources_kind_remote_libvirt.sql",
         # The additive presign_get primitive (ADR-0076, ADR-0078).
         "src/kdive/store/objectstore.py",
+        # drgn-live transport generalization (#215, ADR-0085): the deliberate, reviewed core
+        # touch routing remote in-guest drgn off the ssh-credential + ssh-string assumption.
+        "src/kdive/mcp/tools/debug/sessions.py",
+        "src/kdive/mcp/tools/debug/introspect.py",
     }
 )
 
