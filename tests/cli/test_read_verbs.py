@@ -151,7 +151,10 @@ def test_every_registry_verb_has_a_handler() -> None:
         assert callable(verb.handler)
 
 
-@pytest.mark.parametrize("verb", REGISTRY, ids=lambda v: f"{v.group}.{v.sub}")
+_READ_VERBS = [v for v in REGISTRY if v.read_only]
+
+
+@pytest.mark.parametrize("verb", _READ_VERBS, ids=lambda v: f"{v.group}.{v.sub}")
 def test_handler_calls_the_tool_the_registry_declares(verb, monkeypatch, capsys) -> None:
     # Bind verb.tool (what the read-only gate test checks) to the handler's real call, so a
     # registry that declares a read-only tool but dispatches to another would fail here.

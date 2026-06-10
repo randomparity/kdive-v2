@@ -70,6 +70,18 @@ def test_every_curated_read_verb_targets_a_read_only_tool() -> None:
     offenders = [
         verb.tool
         for verb in REGISTRY
-        if verb.tool not in tools or not _is_read_only(tools[verb.tool])
+        if verb.read_only and (verb.tool not in tools or not _is_read_only(tools[verb.tool]))
     ]
     assert not offenders, f"curated read verbs target non-read-only tools: {offenders}"
+
+
+def test_mutating_verbs_target_non_read_only_tools() -> None:
+    # The dual of the read-only guard: a verb declared mutating MUST target a tool that is
+    # provably not read-only, so the read-only passthrough can never reach it (ADR-0089).
+    tools = _tools_by_name()
+    leaks = [
+        verb.tool
+        for verb in REGISTRY
+        if not verb.read_only and (verb.tool not in tools or _is_read_only(tools[verb.tool]))
+    ]
+    assert not leaks, f"mutating verbs target read-only/unknown tools: {leaks}"

@@ -11,7 +11,7 @@ import argparse
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from kdive.cli.commands import reads
+from kdive.cli.commands import mutations, reads
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,12 @@ class Verb:
     ``tool`` is the MCP tool the handler calls. It is declared here so the read-only gate
     test (``tests/mcp/test_read_tools_annotated.py``) can prove, from the same registry that
     drives dispatch, that no curated read verb reaches a non-read-only tool (ADR-0089).
+
+    ``read_only`` distinguishes the curated read verbs (default ``True``) from the
+    break-glass mutating verbs (``False``), whose ``tool`` is intentionally a
+    ``destructive()``-annotated server tool. The gate test only holds read-only verbs to
+    the read-only hint; the mutating verbs are reachable only through their curated handler,
+    never the read-only passthrough.
     """
 
     group: str
@@ -29,6 +35,8 @@ class Verb:
     tool: str
     positionals: tuple[str, ...] = ()
     options: tuple[str, ...] = ()
+    flags: tuple[str, ...] = ()
+    read_only: bool = True
 
 
 REGISTRY: tuple[Verb, ...] = (
@@ -43,6 +51,42 @@ REGISTRY: tuple[Verb, ...] = (
     Verb("jobs", "get", reads.jobs_get, "jobs.get", ("job_id",)),
     Verb("ledger", "show", reads.ledger_show, "accounting.usage_project", options=("project",)),
     Verb("inventory", "show", reads.inventory_show, "inventory.list", options=("project",)),
+    Verb(
+        "teardown",
+        "system",
+        mutations.teardown,
+        "ops.force_teardown",
+        ("system_id",),
+        options=("reason",),
+        flags=("force",),
+        read_only=False,
+    ),
+    Verb(
+        "allocations",
+        "force-release",
+        mutations.allocations_force_release,
+        "ops.force_release",
+        ("allocation_id",),
+        options=("reason",),
+        read_only=False,
+    ),
+    Verb(
+        "resources",
+        "cordon",
+        mutations.resources_cordon,
+        "resources.cordon",
+        ("resource_id",),
+        read_only=False,
+    ),
+    Verb(
+        "resources",
+        "drain",
+        mutations.resources_drain,
+        "resources.drain",
+        ("resource_id",),
+        options=("mode", "reason"),
+        read_only=False,
+    ),
 )
 
 
@@ -66,6 +110,8 @@ def _verb_parser(
         parser.add_argument(positional)
     for option in verb.options:
         parser.add_argument(f"--{option.replace('_', '-')}", dest=option, default=None)
+    for flag in verb.flags:
+        parser.add_argument(f"--{flag.replace('_', '-')}", dest=flag, action="store_true")
 
 
 def add_subparsers(sub: argparse._SubParsersAction) -> None:
