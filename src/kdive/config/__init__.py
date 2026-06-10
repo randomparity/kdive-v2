@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib
 import os
 from collections.abc import Mapping
+from typing import Any
 
 from kdive.config.manifest import SETTING_MODULES
 from kdive.config.registry import Registry, Setting
@@ -25,13 +26,14 @@ __all__ = [
     "all_settings",
     "get",
     "load",
+    "require",
     "reset",
     "validate",
 ]
 
 
 def _build_registry() -> Registry:
-    settings: list[Setting] = []
+    settings: list[Setting[Any]] = []
     for path in SETTING_MODULES:
         module = importlib.import_module(path)
         settings.extend(module.SETTINGS)
@@ -51,9 +53,14 @@ def reset() -> None:
     _REGISTRY.reset()
 
 
-def get(setting: Setting) -> object:
+def get[T](setting: Setting[T]) -> T | None:
     """Return the parsed value for ``setting`` (see :meth:`Registry.get`)."""
     return _REGISTRY.get(setting)
+
+
+def require[T](setting: Setting[T]) -> T:
+    """Return the value for ``setting``, failing if unset (see :meth:`Registry.require`)."""
+    return _REGISTRY.require(setting)
 
 
 def validate(process: str) -> None:

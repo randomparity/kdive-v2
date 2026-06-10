@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 
@@ -29,7 +30,7 @@ def never_required(env: Mapping[str, str]) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
-class Setting:
+class Setting[T]:
     """One declared `KDIVE_*` variable.
 
     Args:
@@ -48,7 +49,7 @@ class Setting:
     """
 
     name: str
-    parse: Callable[[str], object]
+    parse: Callable[[str], T]
     default: str | None = None
     secret: bool = False
     processes: frozenset[str] = field(default_factory=frozenset)
@@ -68,9 +69,9 @@ class Setting:
 class Registry:
     """Holds the declared settings and resolves them against a snapshot."""
 
-    def __init__(self, settings: Sequence[Setting]) -> None:
-        self._settings: tuple[Setting, ...] = tuple(settings)
-        by_name: dict[str, Setting] = {}
+    def __init__(self, settings: Sequence[Setting[Any]]) -> None:
+        self._settings: tuple[Setting[Any], ...] = tuple(settings)
+        by_name: dict[str, Setting[Any]] = {}
         for s in self._settings:
             if s.name in by_name:
                 raise ValueError(f"duplicate setting {s.name}")
@@ -94,11 +95,13 @@ class Registry:
         assert self._snapshot is not None
         return self._snapshot
 
-    def all_settings(self) -> tuple[Setting, ...]:
+    def all_settings(self) -> tuple[Setting[Any], ...]:
         return self._settings
 
-    def get(self, setting: Setting) -> object:
+    def get[T](self, setting: Setting[T]) -> T | None:
         """Return the parsed value for ``setting`` from the snapshot, or its default.
+
+        Returns ``None`` only when the variable is absent and the setting has no default.
 
         Raises:
             CategorizedError: ``CONFIGURATION_ERROR`` when the raw value does not parse.
@@ -114,6 +117,24 @@ class Registry:
                 category=ErrorCategory.CONFIGURATION_ERROR,
                 details={"variable": setting.name, "suggest": setting.suggest},
             ) from exc
+
+    def require[T](self, setting: Setting[T]) -> T:
+        """Like :meth:`get`, but fail with a named ``CONFIGURATION_ERROR`` if unset.
+
+        Use for settings a reader cannot proceed without (no usable default).
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` if the variable is absent and the
+                setting has no default, or if the value does not parse.
+        """
+        value = self.get(setting)
+        if value is None:
+            raise CategorizedError(
+                f"{setting.name} is not set",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"variable": setting.name, "suggest": setting.suggest},
+            )
+        return value
 
     def validate(self, process: str) -> None:
         """Fail fast on settings ``process`` requires that are missing or malformed.

@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 
 from psycopg_pool import AsyncConnectionPool
 
+import kdive.config as config
+from kdive.config.core_settings import HTTP_HOST, HTTP_PORT, LOG_LEVEL
 from kdive.db.pool import create_pool
 from kdive.log import configure_logging
 from kdive.version import full_version
@@ -25,8 +27,7 @@ if TYPE_CHECKING:
     from kdive.providers.resolver import ProviderResolver
     from kdive.security.secrets.secret_registry import SecretRegistry
 
-_DEFAULT_HOST = "127.0.0.1"
-_DEFAULT_PORT = 8000
+_RUNNABLE = frozenset({"server", "worker", "reconciler", "migrate"})
 
 _log = logging.getLogger(__name__)
 
@@ -36,8 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kdive")
     parser.add_argument(
         "--log-level",
-        default=os.environ.get("KDIVE_LOG_LEVEL", "INFO"),
-        help="structured-logging level (default INFO)",
+        default=None,
+        help="structured-logging level (default: KDIVE_LOG_LEVEL, else INFO)",
     )
     parser.add_argument(
         "--version",
@@ -152,12 +153,18 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     from kdive.security.secrets.secret_registry import SecretRegistry
 
+    # Snapshot the environment before any setting is read, including the logging
+    # bootstrap (ADR-0087 decision 4): config.load() must precede the first config.get().
+    config.load()
+    level = args.log_level or config.require(LOG_LEVEL)
     secret_registry = SecretRegistry()
-    configure_logging(args.log_level, secret_registry=secret_registry)
+    configure_logging(level, secret_registry=secret_registry)
     _log.info("starting kdive %s (%s)", full_version(), args.command)
+    if args.command in _RUNNABLE:
+        config.validate(args.command)
     if args.command == "server":
-        host = os.environ.get("KDIVE_HTTP_HOST", _DEFAULT_HOST)
-        port = int(os.environ.get("KDIVE_HTTP_PORT", str(_DEFAULT_PORT)))
+        host = config.require(HTTP_HOST)
+        port = config.require(HTTP_PORT)
         asyncio.run(_run_server(host, port, secret_registry))
     elif args.command == "worker":
         asyncio.run(_run_worker(secret_registry))

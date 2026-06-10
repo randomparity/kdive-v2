@@ -13,7 +13,8 @@ from kdive.security.secrets.secret_registry import SecretRegistry
 def test_reconciler_subcommand_parses() -> None:
     args = build_parser().parse_args(["reconciler"])
     assert args.command == "reconciler"
-    assert args.log_level == "INFO"
+    # No flag → None; the INFO default is supplied by the config registry, not argparse.
+    assert args.log_level is None
 
 
 def test_reconciler_subcommand_with_log_level() -> None:
