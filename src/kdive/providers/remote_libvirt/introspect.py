@@ -10,17 +10,36 @@ fakes.
 
 from __future__ import annotations
 
+import json as _json
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
+
+import libvirt
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.debug_common.introspect import assemble_report
 from kdive.providers.ports import IntrospectOutput
+from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.guest_agent import (
+    AgentCommand,
+    AgentExecResult,
+    GuestAgentExec,
+    qemu_agent_command,
+)
+from kdive.providers.remote_libvirt.transport import remote_connection
 from kdive.security.secrets.secret_registry import SecretRegistry
+from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
 
 _REPORT_BYTE_CAP = 1 << 20
+
+# The single allowlisted in-guest drgn helper the base image carries (ADR-0079); it runs the
+# fixed in-tree helper named by argv[1] against /proc/kcore and prints that section as JSON.
+_DRGN_HELPER = "/usr/local/sbin/kdive-drgn"
+_LIVE_HELPERS = frozenset({"tasks", "modules", "sysinfo"})
+
+type _OpenConnection = Callable[[str], Any]
 
 
 class _Program(Protocol):
@@ -136,4 +155,114 @@ def _real_read_vmcore_build_id(data: bytes) -> str:  # pragma: no cover - live_v
     )
 
 
-__all__ = ["RemoteVmcoreIntrospect"]
+class RemoteLiveIntrospect:
+    """In-guest drgn-live over the qemu-guest-agent seam (ADR-0079/0083 §4).
+
+    ``transport_handle`` carries the guest **domain name** (the pinned ADR-0083 §4 contract).
+    The helper is validated worker-side against the fixed set before any agent round-trip, and
+    the real ``GuestAgentExec`` enforces the single-program allowlist, so a guest-agent exec can
+    never run an arbitrary program. The single redaction boundary is ``assemble_report``. All
+    slow/host seams (the agent round-trip, the libvirt opener, the secret backend) are injected,
+    so unit tests drive the full two-phase protocol and the allowlist with no libvirt host.
+    """
+
+    def __init__(
+        self,
+        *,
+        secret_registry: SecretRegistry,
+        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_env,
+        open_connection: _OpenConnection | None = None,
+        agent_command: AgentCommand = qemu_agent_command,
+        secret_backend_factory: Callable[[], SecretBackend] | None = None,
+    ) -> None:
+        self._secret_registry = secret_registry
+        self._config_factory = config_factory
+        self._open_connection = open_connection if open_connection is not None else _open_libvirt
+        self._agent_command = agent_command
+        self._secret_backend_factory = secret_backend_factory or (
+            lambda: secret_backend_from_env(registry=secret_registry)
+        )
+
+    @classmethod
+    def from_env(cls, *, secret_registry: SecretRegistry) -> RemoteLiveIntrospect:
+        """Build from env; opens no connection (config read per op)."""
+        return cls(secret_registry=secret_registry)
+
+    def introspect_live(self, *, transport_handle: str, helper: str) -> IntrospectOutput:
+        """Run one allowlisted in-guest drgn helper; return a redacted, byte-bounded report.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` for an unknown helper or a blank handle;
+                ``TRANSPORT_FAILURE`` for an unreachable guest agent; ``INFRASTRUCTURE_FAILURE``
+                for a malformed agent reply or undecodable helper output; ``DEBUG_ATTACH_FAILURE``
+                for a non-zero helper exit (drgn could not attach in-guest).
+        """
+        if helper not in _LIVE_HELPERS:
+            raise CategorizedError(
+                f"unknown live introspection helper: {helper}",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+            )
+        domain_name = transport_handle.strip()
+        if not domain_name:
+            raise CategorizedError(
+                "remote live introspection handle must carry a domain name",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+            )
+        section = self._run_in_guest(domain_name, helper)
+        tasks = section if helper == "tasks" else {}
+        modules = section if helper == "modules" else {}
+        sysinfo = section if helper == "sysinfo" else {}
+        return assemble_report(
+            tasks,
+            modules,
+            sysinfo,
+            byte_cap=_REPORT_BYTE_CAP,
+            secret_registry=self._secret_registry,
+        )
+
+    def _run_in_guest(self, domain_name: str, helper: str) -> dict[str, object]:
+        result = self._exec(domain_name, [_DRGN_HELPER, helper])
+        if result.exit_status != 0:
+            raise CategorizedError(
+                "in-guest drgn helper exited non-zero (could not attach to the live kernel)",
+                category=ErrorCategory.DEBUG_ATTACH_FAILURE,
+                details={"domain": domain_name, "exit_status": result.exit_status},
+            )
+        try:
+            decoded = _json.loads(result.stdout.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise CategorizedError(
+                "in-guest drgn helper returned undecodable JSON",
+                category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            ) from exc
+        if not isinstance(decoded, dict):
+            raise CategorizedError(
+                "in-guest drgn helper output was not a JSON object",
+                category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            )
+        return decoded
+
+    def _exec(self, domain_name: str, argv: list[str]) -> AgentExecResult:
+        """Open the qemu+tls connection, look up the domain, run argv via GuestAgentExec.
+
+        Fully unit-testable with an injected ``agent_command`` + ``open_connection`` +
+        ``secret_backend_factory`` (mirroring install.py); only ``_open_libvirt``'s real
+        ``libvirt.open`` is the ``live_vm`` seam.
+        """
+        agent = GuestAgentExec(
+            agent_command=self._agent_command,
+            allowed_programs=frozenset({_DRGN_HELPER}),
+        )
+        config = self._config_factory()
+        with remote_connection(
+            config, self._secret_backend_factory(), open_connection=self._open_connection
+        ) as conn:
+            domain = conn.lookupByName(domain_name)
+            return agent.run(domain, argv)
+
+
+def _open_libvirt(uri: str) -> Any:  # pragma: no cover - live_vm
+    return libvirt.open(uri)
+
+
+__all__ = ["RemoteLiveIntrospect", "RemoteVmcoreIntrospect"]

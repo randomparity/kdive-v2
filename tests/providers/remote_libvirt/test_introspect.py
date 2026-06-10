@@ -8,11 +8,17 @@ object store, and no libvirt host.
 
 from __future__ import annotations
 
+import base64
+import json
+
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.remote_libvirt.introspect import RemoteVmcoreIntrospect
+from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
+from kdive.providers.remote_libvirt.guest_agent import AgentExecResult
+from kdive.providers.remote_libvirt.introspect import RemoteLiveIntrospect, RemoteVmcoreIntrospect
 from kdive.security.secrets.secret_registry import SecretRegistry
+from tests.providers.remote_libvirt.conftest import RecordingBackend
 
 
 class _FakeProgram:
@@ -80,3 +86,125 @@ def test_from_vmcore_returns_redacted_report():
     )
     assert out.sysinfo["release"] == "6.1.0"
     assert out.truncated is False
+
+
+_REFS = TlsCertRefs(client_cert_ref="c", client_key_ref="k", ca_cert_ref="a")
+
+
+class _ScriptedAgent:
+    """A qemu_agent_command double implementing the two-phase guest-exec protocol.
+
+    Mirrors test_install.py's scripted agent so the tests exercise the real GuestAgentExec
+    (and its worker-side allowlist), not a mock of it. ``handler(argv)`` returns the command's
+    AgentExecResult or raises libvirt.libvirtError. Records every argv it ran.
+    """
+
+    def __init__(self, handler):
+        self._handler = handler
+        self._pending = {}
+        self._next_pid = 1
+        self.argvs: list[list[str]] = []
+
+    def __call__(self, domain, command, timeout, flags):
+        payload = json.loads(command)
+        if payload["execute"] == "guest-exec":
+            args = payload["arguments"]
+            argv = [args["path"], *args["arg"]]
+            result = self._handler(argv)
+            self.argvs.append(argv)
+            pid = self._next_pid
+            self._next_pid += 1
+            self._pending[pid] = result
+            return json.dumps({"return": {"pid": pid}})
+        if payload["execute"] == "guest-exec-status":
+            result = self._pending.pop(payload["arguments"]["pid"])
+            return json.dumps(
+                {
+                    "return": {
+                        "exited": True,
+                        "exitcode": result.exit_status,
+                        "out-data": base64.b64encode(result.stdout).decode(),
+                        "err-data": base64.b64encode(result.stderr).decode(),
+                    }
+                }
+            )
+        raise AssertionError(payload)
+
+
+class _FakeDomain:
+    def __init__(self, name):
+        self._name = name
+
+    def name(self):
+        return self._name
+
+
+class _FakeConn:
+    def lookupByName(self, name):  # noqa: N802 - libvirt binding name
+        return _FakeDomain(name)
+
+    def close(self):
+        pass
+
+
+def _config_remote():
+    return RemoteLibvirtConfig(
+        uri="qemu+tls://h/system",
+        cert_refs=_REFS,
+        concurrent_allocation_cap=1,
+        gdb_addr="10.0.0.5",
+    )
+
+
+def _live(agent):
+    # RecordingBackend + a real GuestAgentExec run; only the libvirt opener is faked.
+    return RemoteLiveIntrospect(
+        secret_registry=SecretRegistry(),
+        config_factory=_config_remote,
+        open_connection=lambda _uri: _FakeConn(),
+        agent_command=agent,
+        secret_backend_factory=RecordingBackend,
+    )
+
+
+def test_introspect_live_unknown_helper_is_configuration_error():
+    agent = _ScriptedAgent(lambda argv: AgentExecResult(0, b"{}", b""))
+    live = _live(agent)
+    with pytest.raises(CategorizedError) as exc:
+        live.introspect_live(transport_handle="kdive-sys", helper="evil")
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert agent.argvs == []  # rejected before any agent round-trip
+
+
+def test_introspect_live_runs_allowlisted_helper_through_real_guest_agent():
+    section = {
+        "release": "6.1.0",
+        "version": "v",
+        "machine": "x86_64",
+        "nodename": "n",
+        "boot_cmdline": "ro",
+        "cpus_online": 1,
+        "mem_total_pages": 1,
+    }
+    agent = _ScriptedAgent(lambda argv: AgentExecResult(0, json.dumps(section).encode(), b""))
+    live = _live(agent)
+    out = live.introspect_live(transport_handle="kdive-sys", helper="sysinfo")
+    # the single allowlisted program
+    assert agent.argvs == [["/usr/local/sbin/kdive-drgn", "sysinfo"]]
+    assert out.sysinfo["release"] == "6.1.0"
+
+
+def test_introspect_live_nonzero_exit_is_debug_attach_failure():
+    agent = _ScriptedAgent(lambda argv: AgentExecResult(1, b"", b"boom"))
+    live = _live(agent)
+    with pytest.raises(CategorizedError) as exc:
+        live.introspect_live(transport_handle="kdive-sys", helper="tasks")
+    assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
+
+
+def test_introspect_live_undecodable_output_is_infrastructure_failure():
+    agent = _ScriptedAgent(lambda argv: AgentExecResult(0, b"not json", b""))
+    live = _live(agent)
+    with pytest.raises(CategorizedError) as exc:
+        live.introspect_live(transport_handle="kdive-sys", helper="modules")
+    assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
