@@ -65,7 +65,8 @@ stack-up:
     docker compose run --rm minio-init
     ./scripts/live-stack/apply-migrations.sh
     @echo "Backends healthy and schema migrated."
-    @echo "Start host processes with: python -m kdive stack"
+    @echo "Start the app tier with: docker compose up -d migrate server worker reconciler"
+    @echo "(or, for a source checkout of the local-libvirt host path: just stack-start)"
     @echo "MCP URL: http://127.0.0.1:8000/mcp"
     @echo "Full runbook: docs/runbooks/live-stack.md"
 

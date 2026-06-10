@@ -3,24 +3,25 @@
 This guide assumes KDIVE is installed as a Python package on the libvirt host. It does not
 use `just` or require running from a source checkout.
 
+The app processes (`server` / `worker` / `reconciler`) and the `migrate` one-shot now run
+from the published image via the reference compose app tier (ADR-0088); the hand-rolled
+`stack` supervisor and the `install-compose`/`print-local-env` helpers were retired. See
+[`deploy/compose/README.md`](../../deploy/compose/README.md) for the compose bring-up and
+[the config reference](../guide/reference/config.md) for every `KDIVE_*` variable.
+
 ## Backing Services
 
-Install the local backing-service compose file:
+The repo-root [`docker-compose.yml`](../../docker-compose.yml) declares the backing services
+(Postgres, MinIO, mock OIDC) alongside the app tier. Bring the backends up:
 
 ```bash
-python -m kdive install-compose --dest /etc/kdive/docker-compose.local.yml
-```
-
-Start the backing services:
-
-```bash
-docker compose -f /etc/kdive/docker-compose.local.yml up -d --wait postgres minio oidc
-docker compose -f /etc/kdive/docker-compose.local.yml run --rm minio-init
+docker compose up -d --wait postgres minio oidc
+docker compose run --rm minio-init
 ```
 
 Production-like deployments may replace these containers with managed Postgres, managed
 S3-compatible object storage, and a real OIDC issuer. The KDIVE processes only require the
-environment variables below.
+environment variables documented in [the config reference](../guide/reference/config.md).
 
 ## Environment
 
@@ -30,13 +31,8 @@ Install the default local-libvirt fixture catalog:
 python -m kdive install-fixtures --dest /etc/kdive/fixtures/local-libvirt
 ```
 
-Print local defaults:
-
-```bash
-python -m kdive print-local-env > /etc/kdive/local.env
-```
-
-Review `/etc/kdive/local.env`, especially:
+Set the `KDIVE_*` environment from [the config reference](../guide/reference/config.md),
+especially:
 
 - `KDIVE_DATABASE_URL`
 - `KDIVE_OIDC_*`
@@ -48,9 +44,6 @@ Review `/etc/kdive/local.env`, especially:
 ## Schema
 
 ```bash
-set -a
-. /etc/kdive/local.env
-set +a
 python -m kdive migrate
 ```
 
@@ -69,18 +62,17 @@ libvirt resource discovered on the host.
 
 ## Start The Stack
 
-Demo supervisor:
+Run the app tier from the compose reference (builds the image, runs the backends and the
+`migrate` one-shot first):
 
 ```bash
-python -m kdive stack
+docker compose up -d migrate server worker reconciler
 ```
 
-Production-style process split:
+To run the processes directly under a process manager such as systemd instead of compose:
 
 ```bash
 python -m kdive server
 python -m kdive worker
 python -m kdive reconciler
 ```
-
-Use a process manager such as systemd for the split mode.

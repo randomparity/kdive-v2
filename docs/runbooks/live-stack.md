@@ -16,8 +16,10 @@ bring-up and adds worker→host TLS, the gdbstub ACL, and object-store reachabil
 two-phase vmcore upload.
 
 The `just` recipes below are source-tree conveniences. Installed-package deployments use
-`python -m kdive migrate`, `python -m kdive seed-demo`, and `python -m kdive stack`; see
-[`docs/admin/local-stack.md`](../admin/local-stack.md).
+`python -m kdive migrate` and `python -m kdive seed-demo`, then run the app tier from the
+compose reference (`docker compose up -d migrate server worker reconciler`); see
+[`docs/admin/local-stack.md`](../admin/local-stack.md) and
+[`deploy/compose/README.md`](../../deploy/compose/README.md).
 
 ## Prerequisites
 
@@ -51,11 +53,8 @@ This waits for the three long-running backends — Postgres, MinIO, and the mock
 ## 2. Review the host-process env
 
 The source-tree wrappers source `scripts/live-stack/env.sh`, which exports the local
-defaults before starting KDIVE:
-
-```bash
-python -m kdive print-local-env
-```
+defaults before starting KDIVE. The full set of `KDIVE_*` variables is in
+[the config reference](../guide/reference/config.md); the live-run subset is below.
 
 **The most error-prone step:** the object store reads S3 **credentials from boto3's
 default chain** (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`), **not** from `KDIVE_S3_*`.
@@ -127,12 +126,13 @@ just stack-start-daemon
 just stack-stop
 ```
 
-Installed package:
+Installed package — migrate and seed on the host, then run the app tier from the compose
+reference ([`deploy/compose/README.md`](../../deploy/compose/README.md)):
 
 ```bash
 python -m kdive migrate
 python -m kdive seed-demo --project demo
-python -m kdive stack
+docker compose up -d migrate server worker reconciler
 ```
 
 The default MCP URL is `http://127.0.0.1:8000/mcp`. Override the bind address with
@@ -161,7 +161,7 @@ set -a
 set +a
 python -m kdive migrate
 python -m kdive seed-demo --project demo
-python -m kdive stack
+docker compose up -d migrate server worker reconciler
 ```
 
 Expected defaults:
