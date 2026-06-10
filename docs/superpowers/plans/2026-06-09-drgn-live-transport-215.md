@@ -12,13 +12,17 @@
 - **Transport token** (`{gdbstub, drgn-live}`): the `transport=` arg, `debug_sessions.transport`, the `kind` passed to `open_transport`, the single-attach conflict key. Owned by `sessions.py _TRANSPORTS`, the `introspect.run` gate, and each connector's accepted-kind check.
 - **Handle scheme** (`{gdbstub, ssh, drgn-live}`): `TransportHandleData.kind`, validated on decode against `providers/ports/lifecycle.py _TRANSPORT_KINDS`. Local emits `ssh://`, fault-inject emits `drgn-live://`, remote emits a **bare domain name** (unschemed). Never drop `ssh` here.
 
+**Execution mode: inline.** This is one tightly-coupled rename — renaming the token in `sessions.py`/`introspect.py` breaks the connector tests and the shared debug-test scaffolding at the same time, so the tasks are NOT independent and a context-free subagent-per-task is the wrong tool. Execute these tasks **inline in one session** (`superpowers:executing-plans`). Where a task's test constructs a connector or reuses a fixture, **read that connect/test module first and mirror its nearest existing `gdbstub` test** — do not invent constructor signatures. The `...` in the test snippets below mark exactly those seams to copy from the real module.
+
 **Guardrail commands (run before every commit):**
 ```
-uv run python -m pytest <focused test> -q     # the focused test for the task
-just lint                                      # ruff check + ruff format --check
-just type                                      # ty check, whole tree
-just m2-gate                                   # portability gate (after Task 6)
+uv run python -m pytest <focused test> -q          # the focused test for the task
+uv run python -m pytest tests/mcp/debug tests/providers -q   # the affected suites — every commit
+just lint                                           # ruff check + ruff format --check
+just type                                           # ty check, whole tree
+just m2-gate                                        # portability gate — run POST-commit (reads pre-M2..HEAD, committed only)
 ```
+The CI hard gate is the full `just test`; run it before the Tasks 6, 7, and 8 commits (the ones that rename shared scaffolding or touch core), not only at Task 8. `just m2-gate` measures committed history (`pre-M2..HEAD`), so a pre-commit run reports the previous commit's state — always run it **after** the commit it is meant to validate.
 
 ---
 
@@ -521,20 +525,21 @@ Add the two core files to `scripts/m2_portability_gate.py` `ALLOWED_FILES`:
         "src/kdive/mcp/tools/debug/introspect.py",
 ```
 
-- [ ] **Step 4: Run tests + gate**
+- [ ] **Step 4: Run tests (full affected suites — this commit renames shared scaffolding)**
 
 Run: `uv run python -m pytest tests/mcp/debug/test_debug_tools.py -q`
 Expected: PASS (migrated suite + new remote/local cases).
-Run: `just m2-gate`
-Expected: `gate passed` (the two files are now allowlisted).
+Run: `just lint && just type && just test`
+Expected: full suite green. The shared `_FakeConnector`/`_seed_session` fakes live in this module; other debug/reconciler/integration modules use `gdbstub` and are unaffected, but confirm the full run before committing a core touch.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Commit, then validate the gate POST-commit**
 
 ```bash
-just lint && just type
 git add src/kdive/mcp/tools/debug/sessions.py scripts/m2_portability_gate.py tests/mcp/debug/test_debug_tools.py
 git commit -m "feat: route drgn-live start_session off the ssh assumption (#215)"
+just m2-gate   # post-commit: confirms the now-committed sessions.py touch is allowlisted
 ```
+Expected: `gate passed` — `sessions.py` is touched and allowlisted (introspect.py is allowlisted here too, touched in Task 7).
 
 ---
 
@@ -589,14 +594,17 @@ Update tool Field descriptions: `introspect.run`'s `session_id` description (229
 
 Run: `uv run python -m pytest tests/mcp/debug/test_introspect_tools.py -q`
 Expected: PASS.
+Run: `just lint && just type && just test`
+Expected: full suite green (this commit touches core `introspect.py`).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Commit, then validate the gate POST-commit**
 
 ```bash
-just lint && just type && just m2-gate
 git add src/kdive/mcp/tools/debug/introspect.py tests/mcp/debug/test_introspect_tools.py
 git commit -m "feat: gate introspect.run on the drgn-live transport (#215)"
+just m2-gate   # post-commit: introspect.py touched + allowlisted (from Task 6)
 ```
+Expected: `gate passed`.
 
 ---
 
