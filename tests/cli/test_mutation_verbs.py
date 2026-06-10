@@ -66,6 +66,24 @@ def test_force_release_calls_breakglass_tool(monkeypatch: pytest.MonkeyPatch, ca
     assert client.calls == [("ops.force_release", {"allocation_id": "al-1", "reason": "stuck"})]
 
 
+def test_force_release_denied_envelope_maps_to_exit_3(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _install_session(
+        monkeypatch,
+        payload={
+            "object_id": "al-1",
+            "status": "error",
+            "error_category": "authorization_denied",
+            "data": {},
+        },
+    )
+    code = asyncio.run(
+        mutations.allocations_force_release(_args(allocation_id="al-1", reason="stuck"))
+    )
+    assert code == 3
+
+
 def test_force_teardown_calls_breakglass_tool(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     client = _install_session(monkeypatch)
     asyncio.run(mutations.teardown(_args(system_id="sys-1", reason="wedged", force=True)))
