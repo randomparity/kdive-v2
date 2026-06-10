@@ -59,24 +59,75 @@ def _module_constants(tree: ast.Module) -> dict[str, str]:
     return consts
 
 
-def _is_os_environ(node: ast.AST) -> bool:
-    return (
+@dataclass(frozen=True)
+class _OsAliases:
+    """Names bound to the ``os`` module, ``os.environ``, and ``os.getenv`` in one file.
+
+    Built from the file's imports so an aliased access form (``from os import environ``,
+    ``import os as o``) cannot bypass the guard. A *local* rebinding like
+    ``environ = os.environ`` is deliberately excluded — that name is not an import alias
+    and the only such case (managed_ssh_key) is allowlisted.
+    """
+
+    modules: frozenset[str]
+    environ_names: frozenset[str]
+    getenv_names: frozenset[str]
+
+
+def _os_aliases(tree: ast.Module) -> _OsAliases:
+    modules: set[str] = set()
+    environ_names: set[str] = set()
+    getenv_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "os":
+                    modules.add(alias.asname or "os")
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            for alias in node.names:
+                if alias.name == "environ":
+                    environ_names.add(alias.asname or "environ")
+                elif alias.name == "getenv":
+                    getenv_names.add(alias.asname or "getenv")
+    return _OsAliases(frozenset(modules), frozenset(environ_names), frozenset(getenv_names))
+
+
+def _is_environ(node: ast.AST, aliases: _OsAliases) -> bool:
+    if (
         isinstance(node, ast.Attribute)
         and node.attr == "environ"
         and isinstance(node.value, ast.Name)
-        and node.value.id == "os"
-    )
+        and node.value.id in aliases.modules
+    ):
+        return True
+    return isinstance(node, ast.Name) and node.id in aliases.environ_names
 
 
-def _access_key(node: ast.AST) -> ast.AST | None:
-    """Return the key-argument node of an ``os.environ``/``os.getenv`` read, else None."""
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.args:
+def _access_key(node: ast.AST, aliases: _OsAliases) -> ast.AST | None:
+    """Return the key-argument node of an ``environ``/``getenv`` read, else None."""
+    if isinstance(node, ast.Call) and node.args:
         func = node.func
-        if func.attr == "get" and _is_os_environ(func.value):
+        # os.environ.get(...) / environ.get(...)
+        is_environ_get = (
+            isinstance(func, ast.Attribute)
+            and func.attr == "get"
+            and _is_environ(func.value, aliases)
+        )
+        if is_environ_get:
             return node.args[0]
-        if func.attr == "getenv" and isinstance(func.value, ast.Name) and func.value.id == "os":
+        # os.getenv(...)
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "getenv"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in aliases.modules
+        ):
             return node.args[0]
-    if isinstance(node, ast.Subscript) and _is_os_environ(node.value):
+        # getenv(...) bound via `from os import getenv`
+        if isinstance(func, ast.Name) and func.id in aliases.getenv_names:
+            return node.args[0]
+    # os.environ[...] / environ[...]
+    if isinstance(node, ast.Subscript) and _is_environ(node.value, aliases):
         return node.slice
     return None
 
@@ -84,9 +135,10 @@ def _access_key(node: ast.AST) -> ast.AST | None:
 def _check_file(path: Path) -> list[Violation]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     consts = _module_constants(tree)
+    aliases = _os_aliases(tree)
     out: list[Violation] = []
     for node in ast.walk(tree):
-        key = _access_key(node)
+        key = _access_key(node, aliases)
         if key is None:
             continue
         name = _str_literal(key)

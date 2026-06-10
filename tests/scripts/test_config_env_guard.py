@@ -44,6 +44,24 @@ def test_flags_dynamic_unresolvable_arg(tmp_path: Path) -> None:
     assert hits[0].variable is None  # dynamic
 
 
+def test_flags_aliased_from_import_access(tmp_path: Path) -> None:
+    # `from os import getenv, environ` (and `as` aliases) must not bypass the guard.
+    f = tmp_path / "alias.py"
+    f.write_text(
+        "from os import environ, getenv as ge\n"
+        "a = ge('KDIVE_A')\n"
+        "b = environ['KDIVE_B']\n"
+        "c = environ.get('KDIVE_C')\n"
+    )
+    assert _vars(find_violations([f], allowlist=set())) == {"KDIVE_A", "KDIVE_B", "KDIVE_C"}
+
+
+def test_flags_aliased_module_import(tmp_path: Path) -> None:
+    f = tmp_path / "mod.py"
+    f.write_text("import os as o\nx = o.environ.get('KDIVE_X')\ny = o.getenv('KDIVE_Y')\n")
+    assert _vars(find_violations([f], allowlist=set())) == {"KDIVE_X", "KDIVE_Y"}
+
+
 def test_non_kdive_literal_is_ignored(tmp_path: Path) -> None:
     f = tmp_path / "fine.py"
     f.write_text("import os\nx = os.environ.get('HOME')\ny = os.environ['PATH']\n")
