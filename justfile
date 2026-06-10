@@ -209,5 +209,9 @@ config-docs-check:
         exit 1
     fi
 
+# Structural guard: no KDIVE_* env read outside kdive.config (ADR-0087). Stdlib-only.
+config-guard:
+    uv run python scripts/config_env_guard.py
+
 # Run the full gate that PR CI runs, reproducible locally.
 ci: lint type lock-check lint-shell lint-workflows check-mermaid docs-check config-docs-check m2-gate test
