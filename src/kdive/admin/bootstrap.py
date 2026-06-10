@@ -1,13 +1,13 @@
-"""Installed-package admin bootstrap helpers for local KDIVE stacks."""
+"""Installed-package admin helpers: migrate, install-fixtures, seed-demo.
+
+The app-process bring-up (the `stack` supervisor and the `install-compose`/
+`print-local-env` dev crutches) was retired in ADR-0088 decision 9: the published
+image — or the compose app tier — is the bring-up path. Only the real operations the
+image still invokes remain here.
+"""
 
 from __future__ import annotations
 
-import os
-import shlex
-import signal
-import subprocess  # noqa: S404  # supervises fixed local KDIVE child processes
-import sys
-import time
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from pathlib import Path
@@ -17,49 +17,13 @@ import psycopg
 from psycopg_pool import AsyncConnectionPool
 
 import kdive.config as config
-from kdive.admin.default_compose import LOCAL_COMPOSE
 from kdive.admin.default_fixtures import LOCAL_LIBVIRT_FIXTURES
-from kdive.config.core_settings import DATABASE_URL, HTTP_HOST, HTTP_PORT
+from kdive.config.core_settings import DATABASE_URL
 from kdive.db.migrate import apply_migrations
-
-
-def local_env_defaults() -> dict[str, str]:
-    home = os.environ.get("HOME", "")
-    host = config.require(HTTP_HOST)
-    port = str(config.require(HTTP_PORT))
-    return {
-        # pragma: allowlist nextline secret
-        "KDIVE_DATABASE_URL": "postgresql://kdive:kdive@localhost:5432/kdive",
-        "KDIVE_OIDC_ISSUER": "http://localhost:8090/default",
-        "KDIVE_OIDC_JWKS_URI": "http://localhost:8090/default/jwks",
-        "KDIVE_OIDC_AUDIENCE": "kdive",
-        "KDIVE_S3_ENDPOINT_URL": "http://localhost:9000",
-        "KDIVE_S3_BUCKET": "kdive-artifacts",
-        "KDIVE_S3_REGION": "us-east-1",
-        "AWS_ACCESS_KEY_ID": "minioadmin",
-        "AWS_SECRET_ACCESS_KEY": "minioadmin",  # pragma: allowlist secret
-        "KDIVE_HTTP_HOST": host,
-        "KDIVE_HTTP_PORT": port,
-        "KDIVE_STACK_BASE_URL": f"http://{host}:{port}/mcp",
-        "KDIVE_KERNEL_SRC": f"{home}/src/linux",
-        "KDIVE_BUILD_WORKSPACE": "/var/lib/kdive/build",
-        "KDIVE_BUILD_COMPONENT_ROOTS": "/var/lib/kdive/build/components:/etc/kdive/fixtures",
-        "KDIVE_INSTALL_STAGING": "/var/lib/kdive/install",
-        "KDIVE_FIXTURE_CATALOG_PATH": "/etc/kdive/fixtures/local-libvirt",
-    }
-
-
-def print_local_env() -> None:
-    for key, value in local_env_defaults().items():
-        print(f"export {key}={shlex.quote(value)}")
 
 
 def default_fixture_files() -> Mapping[str, str]:
     return LOCAL_LIBVIRT_FIXTURES
-
-
-def default_compose_text() -> str:
-    return LOCAL_COMPOSE
 
 
 def _refuse_existing(path: Path, *, force: bool) -> None:
@@ -73,12 +37,6 @@ def install_fixtures(dest: Path, *, force: bool = False) -> None:
         path = dest / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-
-
-def install_compose(dest: Path, *, force: bool = False) -> None:
-    _refuse_existing(dest, force=force)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(LOCAL_COMPOSE, encoding="utf-8")
 
 
 def migrate(database_url: str | None = None) -> int:
@@ -147,42 +105,3 @@ async def register_local_resource(pool: AsyncConnectionPool) -> None:
     from kdive.providers.composition import build_provider_resolver
 
     await build_provider_resolver().register_all_discovery(pool)
-
-
-def supervisor_commands(env: Mapping[str, str]) -> list[list[str]]:
-    del env
-    return [
-        [sys.executable, "-m", "kdive", "server"],
-        [sys.executable, "-m", "kdive", "worker"],
-        [sys.executable, "-m", "kdive", "reconciler"],
-    ]
-
-
-def run_stack() -> int:
-    env = {**local_env_defaults(), **os.environ}
-    children = [
-        # Commands come from supervisor_commands: sys.executable plus fixed kdive module args.
-        subprocess.Popen(cmd, env=env)  # noqa: S603
-        for cmd in supervisor_commands(env)
-    ]
-
-    def stop(_signum: int, _frame: object) -> None:
-        for child in children:
-            child.terminate()
-
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
-    try:
-        while True:
-            for child in children:
-                code = child.poll()
-                if code is not None:
-                    for other in children:
-                        if other.poll() is None:
-                            other.terminate()
-                    return code
-            time.sleep(1)
-    finally:
-        for child in children:
-            if child.poll() is None:
-                child.terminate()

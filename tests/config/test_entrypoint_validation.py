@@ -34,8 +34,8 @@ def test_server_validates_all_required_before_any_io(monkeypatch) -> None:
 
 
 def test_log_level_flag_overrides_env(monkeypatch) -> None:
-    # --log-level wins over KDIVE_LOG_LEVEL; a non-runnable command skips validate so the
-    # call returns without needing a database.
+    # --log-level wins over KDIVE_LOG_LEVEL; install-fixtures is non-runnable so it skips
+    # config.validate, and its handler is stubbed so the call needs no database or disk.
     monkeypatch.setenv("KDIVE_LOG_LEVEL", "ERROR")
     captured: dict[str, object] = {}
 
@@ -43,7 +43,8 @@ def test_log_level_flag_overrides_env(monkeypatch) -> None:
         captured["level"] = level
 
     monkeypatch.setattr("kdive.__main__.configure_logging", _capture)
-    main(["--log-level", "DEBUG", "print-local-env"])
+    monkeypatch.setattr("kdive.admin.bootstrap.install_fixtures", lambda *a, **k: None)
+    main(["--log-level", "DEBUG", "install-fixtures"])
     assert captured["level"] == "DEBUG"
 
 
@@ -55,5 +56,6 @@ def test_log_level_falls_back_to_registry(monkeypatch) -> None:
         captured["level"] = level
 
     monkeypatch.setattr("kdive.__main__.configure_logging", _capture)
-    main(["print-local-env"])
+    monkeypatch.setattr("kdive.admin.bootstrap.install_fixtures", lambda *a, **k: None)
+    main(["install-fixtures"])
     assert captured["level"] == "WARNING"
