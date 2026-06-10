@@ -7,9 +7,12 @@ This guard enforces that boundary two ways so it cannot erode silently:
   import regardless of binding scope — a *function-local* ``from kdive.services import x``
   inside a future verb is caught, not just a module-top-level import.
 - A runtime allowlist check confirms each :class:`Setting` reachable from a cli module is
-  one of the three the CLI is permitted to read; a new credential setting added to the
-  registry later cannot be referenced without tripping this, because it is an allowlist
-  (safe default), not a denylist of known-bad names.
+  one the CLI is permitted to read; a new credential setting added to the registry later
+  cannot be referenced without tripping this, because it is an allowlist (safe default),
+  not a denylist of known-bad names. The two ``KDIVE_OIDC_*`` discovery settings the
+  ``login`` verb resolves the mock-OIDC issuer from are non-secret OIDC metadata (issuer URL
+  and audience), not credentials, so they are allowlisted alongside the URL/token/client-id
+  the operator host already holds (ADR-0089 decision 5).
 """
 
 from __future__ import annotations
@@ -21,10 +24,17 @@ from pathlib import Path
 
 import kdive.cli
 from kdive.config.cli_settings import CLI_CLIENT_ID, SERVER_URL, TOKEN
+from kdive.config.core_settings import OIDC_AUDIENCE, OIDC_ISSUER
 from kdive.config.registry import Setting
 
 _CLI_DIR = Path(kdive.cli.__path__[0])
-_ALLOWED_SETTING_NAMES = {SERVER_URL.name, TOKEN.name, CLI_CLIENT_ID.name}
+_ALLOWED_SETTING_NAMES = {
+    SERVER_URL.name,
+    TOKEN.name,
+    CLI_CLIENT_ID.name,
+    OIDC_ISSUER.name,
+    OIDC_AUDIENCE.name,
+}
 
 
 def _walk_cli_modules() -> list[str]:

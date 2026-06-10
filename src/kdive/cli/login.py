@@ -24,6 +24,7 @@ from typing import Self
 
 import kdive.config as config
 from kdive.config.cli_settings import CLI_CLIENT_ID
+from kdive.config.core_settings import OIDC_AUDIENCE, OIDC_ISSUER
 
 _DEFAULT_AUDIENCE = "kdive"
 _DEFAULT_CLIENT_ID = "kdive-test"
@@ -68,8 +69,8 @@ class OidcIssuer:
     """The mock-OIDC issuer ``kdivectl`` mints tokens from (ADR-0044/0089).
 
     ``base_url`` is the per-issuer base (e.g. ``http://localhost:8090/default``); the
-    token/authorize/jwks endpoints derive from it. Built from the ``KDIVE_OIDC_*`` env the
-    server also reads, or constructed directly in a test.
+    token/authorize/jwks endpoints derive from it. Built from ``kdive.config`` (the CLI path,
+    :meth:`from_config`) or constructed directly in a test.
     """
 
     base_url: str
@@ -77,15 +78,19 @@ class OidcIssuer:
     client_id: str = _DEFAULT_CLIENT_ID
 
     @classmethod
-    def from_env(cls) -> Self:
-        """Resolve the issuer from ``KDIVE_OIDC_*``; raise if the base URL is unset."""
-        base_url = os.environ.get("KDIVE_OIDC_ISSUER")
+    def from_config(cls) -> Self:
+        """Resolve the issuer through ``kdive.config`` (ADR-0087); raise if no issuer URL.
+
+        Reads ``KDIVE_OIDC_ISSUER`` / ``KDIVE_OIDC_AUDIENCE`` via the registry so the CLI
+        does not read ``KDIVE_*`` env directly. ``client_id`` (the OAuth client the mock
+        issuer expects) keeps its default — it is not a server setting.
+        """
+        base_url = config.get(OIDC_ISSUER)
         if not base_url:
             raise RuntimeError("KDIVE_OIDC_ISSUER is not set; cannot reach the mock-OIDC issuer")
         return cls(
             base_url=base_url,
-            audience=os.environ.get("KDIVE_OIDC_AUDIENCE", _DEFAULT_AUDIENCE),
-            client_id=os.environ.get("KDIVE_OIDC_CLIENT_ID", _DEFAULT_CLIENT_ID),
+            audience=config.get(OIDC_AUDIENCE) or _DEFAULT_AUDIENCE,
         )
 
     @property
@@ -221,7 +226,7 @@ def login(platform_role: str | None) -> str:
     Returns:
         The minted access token.
     """
-    issuer = OidcIssuer.from_env()
+    issuer = OidcIssuer.from_config()
     platform_roles = [platform_role] if platform_role is not None else None
     claims = _build_claims(
         subject="operator-cli",

@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from tests.integration.live_stack.harness import OidcIssuer, _build_claims
+from tests.integration.live_stack.harness import (
+    OidcIssuer,
+    _build_claims,
+    oidc_issuer_from_env,
+)
 
 
 def test_build_claims_nested_roles_object() -> None:
@@ -64,7 +68,7 @@ def test_oidc_issuer_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("KDIVE_OIDC_ISSUER", "http://localhost:8090/default")
     monkeypatch.setenv("KDIVE_OIDC_AUDIENCE", "kdive")
     monkeypatch.delenv("KDIVE_OIDC_CLIENT_ID", raising=False)
-    issuer = OidcIssuer.from_env()
+    issuer = oidc_issuer_from_env()
     assert issuer.base_url == "http://localhost:8090/default"
     assert issuer.audience == "kdive"
     assert issuer.client_id == "kdive-test"  # default
@@ -73,4 +77,4 @@ def test_oidc_issuer_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_oidc_issuer_from_env_missing_base_url_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("KDIVE_OIDC_ISSUER", raising=False)
     with pytest.raises(RuntimeError, match="KDIVE_OIDC_ISSUER"):
-        OidcIssuer.from_env()
+        oidc_issuer_from_env()

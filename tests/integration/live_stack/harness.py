@@ -19,6 +19,7 @@ This module imports no pytest symbols so it stays importable as a plain library.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping, Sequence
 from typing import Self
 
@@ -26,6 +27,8 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
 from kdive.cli.login import (
+    _DEFAULT_AUDIENCE,
+    _DEFAULT_CLIENT_ID,
     OidcIssuer,
     _authorization_code,
     _build_claims,
@@ -41,6 +44,7 @@ __all__ = [
     "_build_claims",
     "_exchange_code",
     "mint_token",
+    "oidc_issuer_from_env",
 ]
 
 
@@ -68,6 +72,23 @@ def _tool_error_text(result: object) -> str:
         if isinstance(text, str):
             return text
     return "tool error"
+
+
+def oidc_issuer_from_env() -> OidcIssuer:
+    """Resolve the mock-OIDC issuer from ``KDIVE_OIDC_*`` (test seam; raw env is allowed here).
+
+    The CLI resolves the issuer through ``kdive.config`` (``OidcIssuer.from_config``); this
+    test-side reader keeps the original raw-env behaviour, including the test-only
+    ``KDIVE_OIDC_CLIENT_ID`` override that is not a server setting.
+    """
+    base_url = os.environ.get("KDIVE_OIDC_ISSUER")
+    if not base_url:
+        raise RuntimeError("KDIVE_OIDC_ISSUER is not set; cannot reach the mock-OIDC issuer")
+    return OidcIssuer(
+        base_url=base_url,
+        audience=os.environ.get("KDIVE_OIDC_AUDIENCE", _DEFAULT_AUDIENCE),
+        client_id=os.environ.get("KDIVE_OIDC_CLIENT_ID", _DEFAULT_CLIENT_ID),
+    )
 
 
 def mint_token(

@@ -8,7 +8,7 @@ import urllib.request
 
 import pytest
 
-from tests.integration.live_stack.harness import OidcIssuer
+from tests.integration.live_stack.harness import OidcIssuer, oidc_issuer_from_env
 
 
 def _issuer_reachable(issuer: OidcIssuer) -> bool:
@@ -24,7 +24,7 @@ def require_issuer() -> OidcIssuer:
     base_url = os.environ.get("KDIVE_OIDC_ISSUER")
     if not base_url:
         pytest.skip("KDIVE_OIDC_ISSUER unset; start the issuer (`docker compose up -d oidc`)")
-    issuer = OidcIssuer.from_env()
+    issuer = oidc_issuer_from_env()
     if not _issuer_reachable(issuer):
         pytest.skip(f"mock-OIDC issuer JWKS unreachable at {issuer.jwks_uri}")
     return issuer
