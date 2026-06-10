@@ -51,6 +51,24 @@ def test_external_render_omits_post_install_migrate_hook() -> None:
     assert "post-install" not in res.stdout
 
 
+def test_bundled_path_wires_backends_into_config() -> None:
+    res = _template("bundledBackends=true", "demoAcknowledged=true")
+    assert res.returncode == 0, res.stderr
+    # The demo apps must reach the in-release services, not render empty config.
+    dsn = "postgresql://kdive:kdive-demo@kdive-postgresql:5432/kdive"  # pragma: allowlist secret
+    assert f'KDIVE_DATABASE_URL: "{dsn}"' in res.stdout
+    assert 'KDIVE_S3_ENDPOINT_URL: "http://kdive-minio:9000"' in res.stdout
+    assert "wait-for-db" in res.stdout
+
+
+def test_external_path_passes_db_url_through_and_omits_demo_creds() -> None:
+    res = _template("config.KDIVE_DATABASE_URL=postgresql://ext/db")
+    assert res.returncode == 0, res.stderr
+    assert 'KDIVE_DATABASE_URL: "postgresql://ext/db"' in res.stdout
+    assert "AWS_ACCESS_KEY_ID" not in res.stdout
+    assert "wait-for-db" not in res.stdout
+
+
 def test_lint_is_clean() -> None:
     res = subprocess.run(
         ["helm", "lint", CHART],

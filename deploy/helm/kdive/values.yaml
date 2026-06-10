@@ -34,14 +34,36 @@ worker:
     install:
       size: 5Gi
 
+# Fixed credentials for the demo-only bundledBackends path. They are non-secret by
+# design (the data is ephemeral emptyDir state) and let the chart derive a working
+# KDIVE_DATABASE_URL / KDIVE_S3_* without operator input. Override for the demo if
+# desired; they are never used on the external-backend path.
+demoCredentials:
+  postgresql:
+    username: kdive
+    password: kdive-demo # pragma: allowlist secret
+    database: kdive
+  minio:
+    rootUser: kdive
+    rootPassword: kdive-demo-secret # pragma: allowlist secret
+
 # Subchart overrides for the demo-only bundledBackends path. Persistence is forced
 # off so the system-of-record runs on emptyDir: a pod restart drops all state by
-# design (ADR-0088 decision 7). Reached only when bundledBackends=true.
+# design (ADR-0088 decision 7). Credentials match demoCredentials so the derived
+# KDIVE_DATABASE_URL / KDIVE_S3_* connect. Reached only when bundledBackends=true.
 postgresql:
+  auth:
+    username: kdive
+    password: kdive-demo # pragma: allowlist secret
+    database: kdive
   primary:
     persistence:
       enabled: false
 minio:
+  auth:
+    rootUser: kdive
+    rootPassword: kdive-demo-secret # pragma: allowlist secret
+  defaultBuckets: kdive-artifacts
   persistence:
     enabled: false
   mode: standalone

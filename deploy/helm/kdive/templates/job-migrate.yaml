@@ -26,6 +26,28 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
+      {{- if .Values.bundledBackends }}
+      initContainers:
+        # The post-install hook fires when the bundled Postgres is created, not
+        # ready, so wait for its port before migrating instead of burning the
+        # Job's backoffLimit on connection-refused (ADR-0088 decision 7).
+        - name: wait-for-db
+          image: {{ include "kdive.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - python
+            - -c
+            - |
+              import socket, time, sys
+              host = "{{ .Release.Name }}-postgresql"
+              for _ in range(60):
+                  try:
+                      socket.create_connection((host, 5432), timeout=2).close()
+                      sys.exit(0)
+                  except OSError:
+                      time.sleep(2)
+              sys.exit("timed out waiting for %s:5432" % host)
+      {{- end }}
       containers:
         - name: migrate
           image: {{ include "kdive.image" . }}

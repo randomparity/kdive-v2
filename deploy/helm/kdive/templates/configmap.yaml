@@ -7,5 +7,17 @@ metadata:
     {{- include "kdive.labels" . | nindent 4 }}
 data:
   {{- range $k, $v := .Values.config }}
+  {{- if not (or (eq $k "KDIVE_DATABASE_URL") (eq $k "KDIVE_S3_ENDPOINT_URL")) }}
   {{ $k }}: {{ $v | quote }}
+  {{- end }}
+  {{- end }}
+  # Computed: bundled path derives these from the in-release services; external
+  # path passes .Values.config.* through (see kdive.databaseUrl / kdive.s3Endpoint).
+  KDIVE_DATABASE_URL: {{ include "kdive.databaseUrl" . | quote }}
+  KDIVE_S3_ENDPOINT_URL: {{ include "kdive.s3Endpoint" . | quote }}
+  {{- if .Values.bundledBackends }}
+  # Demo MinIO credentials for boto3's default chain (AWS_* vars). External
+  # backends supply these out of band (IRSA, secret files under KDIVE_SECRETS_ROOT).
+  AWS_ACCESS_KEY_ID: {{ .Values.demoCredentials.minio.rootUser | quote }}
+  AWS_SECRET_ACCESS_KEY: {{ .Values.demoCredentials.minio.rootPassword | quote }}
   {{- end }}
