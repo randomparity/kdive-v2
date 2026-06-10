@@ -532,6 +532,29 @@ Milestone-based. ("Sprint" is avoided per the project doc-style guard.)
   milestone, not only at the band gate (see the design doc). Hard per-tenant
   sandboxing (core decision #8) and a manager-backed secret backend are **not** in
   this band — they fold into M3 as cloud-driven hardening.
+- **M2.5 — Remote-libvirt capture-method parity.**
+  ([milestone #12](https://github.com/randomparity/kdive/milestone/12),
+  blocks [#198](https://github.com/randomparity/kdive/issues/198)) A
+  provider-feature milestone, not part of the M2.1–M2.4 platform band: it deepens
+  the remote provider so the choice of provider does not constrain crash-capture
+  capability. At M2 close the two providers are **near-complementary, not
+  redundant** — local-libvirt advertises `{console, host_dump, gdbstub}`, remote
+  advertises `{kdump}` only — so local cannot be reclassified away from the
+  production default (the #198 question) until remote covers the capture surface
+  it owns. Per method on remote: **console** gains a realization (it provisions a
+  pty console today but tees no `<log file>`, so no console artifact is
+  registered — route via a host-side tee or the guest-agent/virtio-serial
+  channel, registered as the boot-plane console artifact, ADR-0049 Decision 4);
+  **gdbstub** is surfaced as a capture method (the Connect-plane transport is
+  already wired and was exercised on the first live remote run, just unadvertised);
+  **host_dump** is **realized** on remote (dump guest memory on the remote host and
+  ship the core out via a host-side retrieval channel mirroring kdump's two-phase
+  presigned-PUT pattern) — this **supersedes [ADR-0084](../adr/0084-remote-control-two-phase-vmcore-retrieve.md)'s
+  "host_dump not supported on remote" stance and earns its own ADR**; **kdump** is
+  already done (ADR-0084). Exit: remote advertises all four methods, each exercised
+  against the live remote spine and recorded operator-run. The provider-agnostic
+  capture vocabulary (ADR-0049) is unchanged — this is provider realization behind
+  the existing seam, so the zero-core-touch hypothesis below still applies.
 - **M3 — Cloud.** Cloud provider + QCOW2/cloud-image provisioning + chargeback
   against real cost.
 - **M4 — Bare metal.** PXE/SoL/IPMI/Redfish — the control plane gets real
