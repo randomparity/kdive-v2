@@ -90,6 +90,29 @@ def test_render_domain_xml_carries_agent_channel_gdb_and_metadata() -> None:
     assert root.find("./devices/serial/log") is None
     assert root.find("./devices/serial") is not None
     assert root.find("./devices/console") is not None
+    # A virtio NIC: the in-guest artifact channel (presigned GET/PUT) needs guest egress.
+    nic_source = root.find("./devices/interface[@type='network']/source")
+    assert nic_source is not None
+    assert nic_source.get("network") == "default"
+    nic_model = root.find("./devices/interface/model")
+    assert nic_model is not None
+    assert nic_model.get("type") == "virtio"
+
+
+def test_render_domain_xml_uses_configured_network() -> None:
+    xml = render_domain_xml(
+        SYSTEM_ID,
+        _remote_profile(),
+        pool="kdive-pool",
+        volume=overlay_volume_name(SYSTEM_ID),
+        gdb_addr="10.0.0.5",
+        gdb_port=47001,
+        network="lab-net",
+    )
+    root = fromstring(xml)
+    nic_source = root.find("./devices/interface[@type='network']/source")
+    assert nic_source is not None
+    assert nic_source.get("network") == "lab-net"
 
 
 def test_render_domain_xml_requires_remote_section() -> None:

@@ -25,6 +25,8 @@ _CAP_ENV = "KDIVE_REMOTE_LIBVIRT_ALLOCATION_CAP"
 _DEFAULT_CAP = 1
 _STORAGE_POOL_ENV = "KDIVE_REMOTE_LIBVIRT_STORAGE_POOL"
 _DEFAULT_STORAGE_POOL = "default"
+_NETWORK_ENV = "KDIVE_REMOTE_LIBVIRT_NETWORK"
+_DEFAULT_NETWORK = "default"
 _GDB_ADDR_ENV = "KDIVE_REMOTE_LIBVIRT_GDB_ADDR"
 _GDB_PORT_MIN_ENV = "KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN"
 _GDB_PORT_MAX_ENV = "KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX"
@@ -55,6 +57,7 @@ class RemoteLibvirtConfig:
     cert_refs: TlsCertRefs
     concurrent_allocation_cap: int
     storage_pool: str = _DEFAULT_STORAGE_POOL
+    network: str = _DEFAULT_NETWORK
     gdb_addr: str | None = None
     gdb_port_min: int = _DEFAULT_GDB_PORT_MIN
     gdb_port_max: int = _DEFAULT_GDB_PORT_MAX
@@ -127,6 +130,7 @@ def remote_config_from_env() -> RemoteLibvirtConfig:
         cert_refs=refs,
         concurrent_allocation_cap=cap,
         storage_pool=os.environ.get(_STORAGE_POOL_ENV) or _DEFAULT_STORAGE_POOL,
+        network=os.environ.get(_NETWORK_ENV) or _DEFAULT_NETWORK,
         gdb_addr=os.environ.get(_GDB_ADDR_ENV) or None,
         gdb_port_min=gdb_port_min,
         gdb_port_max=gdb_port_max,
