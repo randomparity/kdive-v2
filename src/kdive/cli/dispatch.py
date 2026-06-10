@@ -2,7 +2,8 @@
 
 The generic read-only ``tool call`` passthrough lives here. It lists the server's tools,
 fail-closed-gates the requested tool on ``readOnlyHint``, calls it, and prints the
-structured result. ``login`` and the curated mutating verbs are wired by later M2.2 tasks.
+structured result. Curated read verbs route through ``commands.run_verb``; ``login`` and
+the curated mutating verbs are wired by other M2.2 tasks.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 
+from kdive.cli import commands
 from kdive.cli.passthrough import NotReadOnlyError, assert_read_only
 from kdive.cli.transport import Session
 
@@ -26,7 +28,7 @@ async def run(args: argparse.Namespace) -> int:
         return await _tool_call(args)
     if args.command == "login":
         raise SystemExit("`kdivectl login` is not available yet (M2.2/2)")
-    raise SystemExit(f"unknown command: {args.command}")
+    return await commands.run_verb(args)
 
 
 async def _tool_call(args: argparse.Namespace) -> int:

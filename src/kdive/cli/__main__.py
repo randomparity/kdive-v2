@@ -29,6 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="{}",
         help="JSON object of tool arguments",
     )
+
+    from kdive.cli.commands import add_subparsers
+
+    add_subparsers(sub)
     return parser
 
 
