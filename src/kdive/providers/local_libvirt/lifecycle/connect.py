@@ -26,7 +26,8 @@ from kdive.providers.debug_common.rsp import rsp_reachable
 from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
 
 _GDBSTUB = "gdbstub"
-_SSH = "ssh"
+_DRGN_LIVE = "drgn-live"  # the agent-facing transport kind (ADR-0085)
+_SSH_SCHEME = "ssh"  # the handle scheme local emits — its SSH realization (ADR-0039)
 
 type _ResolveEndpoint = Callable[[SystemHandle], tuple[str, int]]
 type _Probe = Callable[[str, int], bool]
@@ -46,11 +47,13 @@ def _is_loopback_literal(host: str) -> bool:
 
 
 class LocalLibvirtConnect:
-    """The realized `Connector` for local-libvirt transports: gdbstub and ssh.
+    """The realized `Connector` for local-libvirt transports: gdbstub and drgn-live.
 
-    Both transports enforce loopback-only **before any network IO** (the ported v1 "F2"
-    SSRF control, ADR-0032 §5 / ADR-0039 §1) and probe reachability over an injected,
-    ``live_vm``-gated seam: an RSP framing probe for gdbstub, an SSH connect for ssh.
+    The agent-facing ``drgn-live`` transport (ADR-0085) is realized locally over SSH
+    (ADR-0039); its handle keeps the ``ssh://`` scheme (a provider-internal realization
+    detail). Both transports enforce loopback-only **before any network IO** (the ported v1
+    "F2" SSRF control, ADR-0032 §5 / ADR-0039 §1) and probe reachability over an injected,
+    ``live_vm``-gated seam: an RSP framing probe for gdbstub, an SSH connect for drgn-live.
     """
 
     def __init__(
@@ -93,7 +96,7 @@ class LocalLibvirtConnect:
         """
         if kind == _GDBSTUB:
             return self._open_gdbstub(system)
-        if kind == _SSH:
+        if kind == _DRGN_LIVE:
             return self._open_ssh(system)
         raise _config_error(f"unsupported transport kind: {kind!r}")
 
@@ -135,7 +138,7 @@ class LocalLibvirtConnect:
                 category=ErrorCategory.DEBUG_ATTACH_FAILURE,
                 details={"port": port},
             )
-        return TransportHandle(TransportHandleData(kind=_SSH, host=host, port=port).encode())
+        return TransportHandle(TransportHandleData(kind=_SSH_SCHEME, host=host, port=port).encode())
 
     def close_transport(self, handle: TransportHandle) -> None:
         """Validate the handle, then no-op for these connectionless transports."""

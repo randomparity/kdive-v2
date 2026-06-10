@@ -219,7 +219,7 @@ def _ssh_connector(
 
 def test_open_ssh_transport_returns_decodable_ssh_handle() -> None:
     ssh = _FakeSshConnect(result=True)
-    handle = _ssh_connector(ssh).open_transport(_SYSTEM, "ssh")
+    handle = _ssh_connector(ssh).open_transport(_SYSTEM, "drgn-live")
     decoded = TransportHandleData.decode(str(handle))
     assert decoded == TransportHandleData(kind="ssh", host="127.0.0.1", port=22)
     assert ssh.calls == [("127.0.0.1", 22)]
@@ -228,7 +228,7 @@ def test_open_ssh_transport_returns_decodable_ssh_handle() -> None:
 def test_open_ssh_transport_non_loopback_host_is_configuration_error_without_io() -> None:
     ssh = _FakeSshConnect()
     with pytest.raises(CategorizedError) as exc:
-        _ssh_connector(ssh, host="10.0.0.1").open_transport(_SYSTEM, "ssh")
+        _ssh_connector(ssh, host="10.0.0.1").open_transport(_SYSTEM, "drgn-live")
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert ssh.calls == []  # F2: no outbound SSH connect to a non-loopback host
 
@@ -236,7 +236,7 @@ def test_open_ssh_transport_non_loopback_host_is_configuration_error_without_io(
 def test_open_ssh_transport_hostname_host_is_configuration_error_without_io() -> None:
     ssh = _FakeSshConnect()
     with pytest.raises(CategorizedError) as exc:
-        _ssh_connector(ssh, host="guest.example").open_transport(_SYSTEM, "ssh")
+        _ssh_connector(ssh, host="guest.example").open_transport(_SYSTEM, "drgn-live")
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert ssh.calls == []  # a hostname is not a loopback IP literal — reject without DNS
 
@@ -244,14 +244,14 @@ def test_open_ssh_transport_hostname_host_is_configuration_error_without_io() ->
 def test_open_ssh_transport_unreachable_is_debug_attach_failure() -> None:
     ssh = _FakeSshConnect(result=False)
     with pytest.raises(CategorizedError) as exc:
-        _ssh_connector(ssh).open_transport(_SYSTEM, "ssh")
+        _ssh_connector(ssh).open_transport(_SYSTEM, "drgn-live")
     assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
 
 
 def test_open_ssh_transport_socket_fault_is_transport_failure() -> None:
     ssh = _FakeSshConnect(raises=OSError("connection reset"))
     with pytest.raises(CategorizedError) as exc:
-        _ssh_connector(ssh).open_transport(_SYSTEM, "ssh")
+        _ssh_connector(ssh).open_transport(_SYSTEM, "drgn-live")
     assert exc.value.category is ErrorCategory.TRANSPORT_FAILURE
 
 
@@ -264,11 +264,22 @@ def test_open_unsupported_kind_is_configuration_error() -> None:
 def test_from_env_ssh_resolver_raises_missing_dependency() -> None:
     connector = LocalLibvirtConnect.from_env()
     with pytest.raises(CategorizedError) as exc:
-        connector.open_transport(_SYSTEM, "ssh")
+        connector.open_transport(_SYSTEM, "drgn-live")
     assert exc.value.category is ErrorCategory.MISSING_DEPENDENCY
 
 
 def test_close_ssh_transport_is_noop_and_never_raises() -> None:
     connector = _ssh_connector(_FakeSshConnect())
-    handle = connector.open_transport(_SYSTEM, "ssh")
+    handle = connector.open_transport(_SYSTEM, "drgn-live")
     connector.close_transport(handle)  # no raise
+
+
+def test_open_transport_accepts_drgn_live_kind_and_emits_ssh_scheme_handle() -> None:
+    # The agent-facing token is `drgn-live`; the local realization is SSH, so the handle
+    # scheme stays `ssh://` (a provider-internal detail core treats as opaque, #215/ADR-0085).
+    ssh = _FakeSshConnect(result=True)
+    handle = _ssh_connector(ssh).open_transport(_SYSTEM, "drgn-live")
+    assert str(handle).startswith("ssh://")
+    assert TransportHandleData.decode(str(handle)) == TransportHandleData(
+        kind="ssh", host="127.0.0.1", port=22
+    )
