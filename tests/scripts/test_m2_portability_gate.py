@@ -67,8 +67,9 @@ def test_violations_excludes_allowlisted_files() -> None:
 def test_allowlist_is_exactly_the_named_touch_points() -> None:
     # The ADR-0076 set plus the ADR-0085 drgn-live routing touch, the ADR-0086 dead-worker
     # gdbstub reconciler reset, the ADR-0087 config-registry migration of the agnostic-core
-    # readers, and the ADR-0089 operator-CLI audit-attribution touch (the milestone's only
-    # non-cli core change); extending it is a deliberate, reviewed decision.
+    # readers, the ADR-0089 operator-CLI audit-attribution touch, and the ADR-0089 §6 M2.2
+    # admin-CLI net-new read tools (secrets.list/fixtures.list + their app wiring and the
+    # value-free scope_refs accessor); extending it is a deliberate, reviewed decision.
     assert (
         frozenset(
             {
@@ -97,6 +98,10 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/mcp/tools/ops/tuning.py",
                 "src/kdive/mcp/tools/accounting/reports.py",
                 "src/kdive/mcp/tools/catalog/shapes.py",
+                "src/kdive/mcp/tools/ops/secrets.py",
+                "src/kdive/mcp/tools/catalog/fixtures.py",
+                "src/kdive/security/secrets/secret_registry.py",
+                "src/kdive/mcp/app.py",
             }
         )
         == ALLOWED_FILES
