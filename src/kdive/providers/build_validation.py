@@ -73,7 +73,10 @@ def patch_target_paths(patch_text: str, *, strip: int = 1) -> set[Path]:
         if not (line.startswith("--- ") or line.startswith("+++ ")):
             continue
         spec = line[4:].split("\t", 1)[0].strip()
-        if not spec or spec == "/dev/null":
+        # git c-quotes paths with special/non-ASCII bytes ("b/...", octal escapes); decoding
+        # them here would be brittle, so skip them — the caller's `git apply` stderr check
+        # still catches a skipped quoted path, and we avoid wrongly flagging an applied one.
+        if not spec or spec == "/dev/null" or spec.startswith('"'):
             continue
         components = spec.split("/")
         if len(components) <= strip:

@@ -493,14 +493,16 @@ def _apply_patch(
 
     The workspace is a ``.git``-less rsync of the kernel tree, so ``git apply`` falls back
     to context matching and can exit 0 while silently skipping the patch (issue #227) —
-    which would ship an unpatched kernel reported as a successful build. Guard against that
-    by snapshotting the files the patch targets and failing if none changed.
+    which would ship an unpatched kernel reported as a successful build. Two complementary
+    guards reject that: ``git apply -v`` (under ``LC_ALL=C``) names skipped files on stderr
+    as ``Skipped patch '<file>'.``, and as a locale-independent backstop the files the patch
+    targets are snapshotted before/after and a no-op apply is failed.
 
     Raises:
         CategorizedError: ``CONFIGURATION_ERROR`` if the ref is unresolvable (via
             :func:`_resolve_local_ref`), the patch does not apply (a redacted stderr tail
-            is placed in ``details``), or ``git apply`` reports success but leaves the tree
-            unchanged; ``MISSING_DEPENDENCY`` if ``git`` is absent.
+            is placed in ``details``), or ``git apply`` reports success but skips the patch
+            or leaves the tree unchanged; ``MISSING_DEPENDENCY`` if ``git`` is absent.
     """
     patch = _resolve_local_ref(patch_ref, kind="patch_ref")
     if shutil.which("git") is None:
@@ -512,10 +514,11 @@ def _apply_patch(
     before = {rel: _snapshot_bytes(workspace / rel) for rel in targets}
     try:
         result = subprocess.run(  # noqa: S603 - fixed argv, no shell; -- ends option parsing
-            ["git", "apply", "-p1", "--", str(patch)],
+            ["git", "apply", "-p1", "-v", "--", str(patch)],
             cwd=workspace,
             capture_output=True,
             text=True,
+            env={**os.environ, "LC_ALL": "C"},
             timeout=_GIT_APPLY_TIMEOUT_S,
             check=False,
         )
@@ -528,6 +531,14 @@ def _apply_patch(
     if result.returncode != 0:
         raise CategorizedError(
             "patch_ref does not apply against the kernel tree",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"stderr": _redacted_tail(result.stderr, secret_registry)},
+        )
+    if "Skipped patch" in result.stderr:
+        raise CategorizedError(
+            "patch_ref was silently skipped: git apply reported success but skipped one or "
+            "more files as already applied (the build workspace has no .git, so git fell "
+            "back to context matching)",
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"stderr": _redacted_tail(result.stderr, secret_registry)},
         )

@@ -44,3 +44,10 @@ def test_path_shallower_than_strip_is_dropped() -> None:
 
 def test_empty_patch_has_no_targets() -> None:
     assert patch_target_paths("", strip=1) == set()
+
+
+def test_git_quoted_path_is_skipped() -> None:
+    # git c-quotes paths with special/non-ASCII bytes; they can't be reliably -p stripped,
+    # so they are excluded (the caller's git-apply stderr check covers correctness instead).
+    patch = '--- "a/fs/\\303\\251.c"\n+++ "b/fs/\\303\\251.c"\n'
+    assert patch_target_paths(patch, strip=1) == set()

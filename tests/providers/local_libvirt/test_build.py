@@ -839,30 +839,60 @@ def test_apply_patch_timeout_is_configuration_error(
     assert caught.value.details["timeout_s"] == build_module._GIT_APPLY_TIMEOUT_S
 
 
-def test_apply_patch_silent_skip_no_tree_change_is_configuration_error(
+def test_apply_patch_no_tree_change_is_configuration_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # git apply exits 0 while silently skipping the patch (no .git for blob-index
-    # matching, issue #227): the tree never changes, so _apply_patch must fail rather
-    # than report a build of an unpatched kernel as success.
+    # Content backstop (issue #227): git apply exits 0 without naming a skip on stderr but
+    # leaves the tree unchanged, so _apply_patch must fail rather than report a build of an
+    # unpatched kernel as success.
     workspace = _workspace_with_target(tmp_path)
     original = (workspace / "init" / "main.c").read_text()
     patch = tmp_path / "fix.patch"
     patch.write_text(_GOOD_PATCH)
     monkeypatch.setattr(build_module.shutil, "which", lambda _name: "/usr/bin/git")
 
-    def _skip(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr="Skipped patch 'init/main.c'.\n"
-        )
+    def _noop(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(build_module.subprocess, "run", _skip)
+    monkeypatch.setattr(build_module.subprocess, "run", _noop)
 
     with pytest.raises(CategorizedError) as caught:
         _apply_patch(str(patch), workspace)
 
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert (workspace / "init" / "main.c").read_text() == original
+
+
+def test_apply_patch_stderr_skipped_patch_fails_even_when_a_file_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # git apply can emit "Skipped patch 'X'." for an already-applied file while writing
+    # another and exiting 0 (issue #227); the stderr guard must reject that even though
+    # the tree did change, where the content backstop alone would let it through.
+    workspace = _workspace_with_target(tmp_path)
+    (workspace / "kernel").mkdir()
+    (workspace / "kernel" / "sched.c").write_text("a\n")
+    patch = tmp_path / "fix.patch"
+    patch.write_text(
+        _GOOD_PATCH + "--- a/kernel/sched.c\n+++ b/kernel/sched.c\n@@ -1 +1 @@\n-a\n+b\n"
+    )
+    monkeypatch.setattr(build_module.shutil, "which", lambda _name: "/usr/bin/git")
+
+    def _partial_skip(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        (workspace / "kernel" / "sched.c").write_text("b\n")  # one file applies...
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="",
+            stderr="Skipped patch 'init/main.c'.\nApplied patch kernel/sched.c cleanly.\n",
+        )
+
+    monkeypatch.setattr(build_module.subprocess, "run", _partial_skip)
+
+    with pytest.raises(CategorizedError) as caught:
+        _apply_patch(str(patch), workspace)
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
 # --- _sync_tree ---------------------------------------------------------------------
