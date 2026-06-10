@@ -113,3 +113,5 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0084](0084-remote-control-two-phase-vmcore-retrieve.md) | Remote control (power/force_crash over TLS) + two-phase vmcore retrieve (kdump→local, post-reboot presigned-PUT upload) (M2) | Proposed |
 | [0085](0085-drgn-live-transport-generalization.md) | Generalize the live-drgn transport off the ssh model (`drgn-live` capability token + profile-derived credential) (M2) | Proposed |
 | [0086](0086-dead-worker-gdbstub-reconciler-reset.md) | Dead-worker gdbstub reconciler reset — free the single-client port on stale-session detach (M2) | Proposed |
+| [0087](0087-config-registry.md) | Central typed configuration registry — single source of truth for the `KDIVE_*` contract, startup validation, generated reference (M2.1) | Proposed |
+| [0088](0088-deployment-packaging.md) | Deployment & packaging — one multi-process image (remote-libvirt target), compose + Helm reference, migrate one-shot, GHCR release publish (M2.1) | Proposed |
