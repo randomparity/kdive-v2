@@ -306,6 +306,16 @@ policy parameter.
 
 - [ ] **Step 1: Move the engine + its neutral deps into debug_common**
 
+First enumerate every importer of the symbols about to move, so Step 5 updates them all (the
+`local_libvirt/debug/__init__.py` is a bare docstring with no re-exports, and the only non-test
+src importer of `execution`/`transcript` is `debug_gdbmi.py` itself — but verify before trusting):
+
+```bash
+rg -ln "local_libvirt\.debug\.(debug_gdbmi|execution|transcript)|from kdive\.providers\.local_libvirt\.debug import" src tests
+```
+
+Record the exact `(file, symbol)` pairs this surfaces; Step 5 must update each one.
+
 `git mv` the engine module and its neutral helper modules into `debug_common/`:
 
 ```bash
@@ -402,16 +412,21 @@ from kdive.providers.local_libvirt.debug.debug_gdbmi import default_attach_seam
 
 - [ ] **Step 5: Update test import paths**
 
-In `tests/providers/local_libvirt/test_debug_gdbmi.py`, `test_mi_protocol.py`,
-`test_mi_controller.py`, and `tests/mcp/debug/test_debug_ops.py`: change imports of the engine /
-MI records / execution / transcript symbols from `kdive.providers.local_libvirt.debug.*` to
-`kdive.providers.debug_common.*` (engine → `debug_common.gdbmi`, execution → `debug_common.execution`,
-transcript → `debug_common.transcript`). Imports of `default_attach_seam` stay at the local module.
+Update every `(file, symbol)` pair the Step 1 grep surfaced. Concretely, in
+`tests/providers/local_libvirt/test_debug_gdbmi.py`, `test_mi_protocol.py`,
+`test_mi_controller.py`, and `tests/mcp/debug/test_debug_ops.py`, re-point each imported symbol to
+its new home: the engine `GdbMiEngine`, the MI-record/parsing helpers, and the controller classes
+→ `kdive.providers.debug_common.gdbmi`; `ExecutionControl` and any execution helper →
+`kdive.providers.debug_common.execution`; `write_transcript`/transcript helpers →
+`kdive.providers.debug_common.transcript`. `default_attach_seam` stays imported from the local
+module. Do not guess — match each symbol to the module it was `git mv`'d into.
 
-- [ ] **Step 6: Run the full debug + mcp-debug suites**
+- [ ] **Step 6: Run the full providers + mcp suites (not just the named ones)**
 
-Run: `uv run python -m pytest tests/providers/local_libvirt tests/providers/debug_common tests/mcp/debug -q`
-Expected: PASS, unchanged counts (behavior-preserving).
+Run: `uv run python -m pytest tests/providers tests/mcp -q`
+Expected: PASS, unchanged counts (behavior-preserving). Running the full providers + mcp suites —
+not only the three named ones — catches any importer the Step 1 grep missed within the same task
+that moved the symbol, rather than four commits later at Task 10.
 
 - [ ] **Step 7: Lint, type, commit**
 
@@ -991,64 +1006,111 @@ parses its JSON output, and assembles the redacted report. Off-gate / unknown he
 
 ```python
 # append to tests/providers/remote_libvirt/test_introspect.py
+import base64
 import json
 
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
 from kdive.providers.remote_libvirt.guest_agent import AgentExecResult
 from kdive.providers.remote_libvirt.introspect import RemoteLiveIntrospect
+from tests.providers.remote_libvirt.conftest import RecordingBackend
 
 _REFS = TlsCertRefs(client_cert_ref="c", client_key_ref="k", ca_cert_ref="a")
 
 
+class _ScriptedAgent:
+    """A qemu_agent_command double implementing the two-phase guest-exec protocol.
+
+    Mirrors test_install.py's scripted agent so the tests exercise the **real** GuestAgentExec
+    (and its worker-side allowlist), not a mock of it. `handler(argv)` returns the command's
+    AgentExecResult or raises libvirt.libvirtError. Records every argv it ran.
+    """
+
+    def __init__(self, handler):
+        self._handler = handler
+        self._pending = {}
+        self._next_pid = 1
+        self.argvs: list[list[str]] = []
+
+    def __call__(self, domain, command, timeout, flags):
+        payload = json.loads(command)
+        if payload["execute"] == "guest-exec":
+            args = payload["arguments"]
+            argv = [args["path"], *args["arg"]]
+            result = self._handler(argv)
+            self.argvs.append(argv)
+            pid = self._next_pid
+            self._next_pid += 1
+            self._pending[pid] = result
+            return json.dumps({"return": {"pid": pid}})
+        if payload["execute"] == "guest-exec-status":
+            result = self._pending.pop(payload["arguments"]["pid"])
+            return json.dumps({"return": {
+                "exited": True, "exitcode": result.exit_status,
+                "out-data": base64.b64encode(result.stdout).decode(),
+                "err-data": base64.b64encode(result.stderr).decode(),
+            }})
+        raise AssertionError(payload)
+
+
 class _FakeDomain:
-    def name(self): return "kdive-sys"
+    def __init__(self, name): self._name = name
+    def name(self): return self._name
 
 
 class _FakeConn:
-    def lookupByName(self, name): return _FakeDomain()
+    def lookupByName(self, name): return _FakeDomain(name)  # noqa: N802 - libvirt binding name
     def close(self): pass
 
 
-def _live(*, agent_run):
-    cfg = RemoteLibvirtConfig(uri="qemu+tls://h/system", cert_refs=_REFS,
-                              concurrent_allocation_cap=1, gdb_addr="10.0.0.5")
+def _config_remote():
+    return RemoteLibvirtConfig(uri="qemu+tls://h/system", cert_refs=_REFS,
+                               concurrent_allocation_cap=1, gdb_addr="10.0.0.5")
+
+
+def _live(agent):
+    # RecordingBackend + a real GuestAgentExec run; only the libvirt opener is faked.
     return RemoteLiveIntrospect(
         secret_registry=SecretRegistry(),
-        config_factory=lambda: cfg,
-        open_connection=lambda uri: _FakeConn(),
-        agent_run=agent_run,
+        config_factory=_config_remote,
+        open_connection=lambda _uri: _FakeConn(),
+        agent_command=agent,
+        secret_backend_factory=RecordingBackend,
     )
 
 
 def test_introspect_live_unknown_helper_is_configuration_error():
-    live = _live(agent_run=lambda domain, argv: AgentExecResult(0, b"{}", b""))
+    agent = _ScriptedAgent(lambda argv: AgentExecResult(0, b"{}", b""))
+    live = _live(agent)
     with pytest.raises(CategorizedError) as exc:
         live.introspect_live(transport_handle="kdive-sys", helper="evil")
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert agent.argvs == []  # rejected before any agent round-trip
 
 
-def test_introspect_live_runs_allowlisted_helper_in_guest():
-    seen = {}
-    payload = {"sysinfo": {"release": "6.1.0", "version": "v", "machine": "x86_64",
-                           "nodename": "n", "boot_cmdline": "ro", "cpus_online": 1,
-                           "mem_total_pages": 1}}
-
-    def agent_run(domain, argv):
-        seen["argv"] = argv
-        return AgentExecResult(0, json.dumps(payload["sysinfo"]).encode(), b"")
-
-    live = _live(agent_run=agent_run)
+def test_introspect_live_runs_allowlisted_helper_through_real_guest_agent():
+    section = {"release": "6.1.0", "version": "v", "machine": "x86_64", "nodename": "n",
+               "boot_cmdline": "ro", "cpus_online": 1, "mem_total_pages": 1}
+    agent = _ScriptedAgent(lambda argv: AgentExecResult(0, json.dumps(section).encode(), b""))
+    live = _live(agent)
     out = live.introspect_live(transport_handle="kdive-sys", helper="sysinfo")
-    assert seen["argv"][0].endswith("kdive-drgn")  # the single allowlisted helper
-    assert seen["argv"][1] == "sysinfo"
+    assert agent.argvs == [["/usr/local/sbin/kdive-drgn", "sysinfo"]]  # the single allowlisted program
     assert out.sysinfo["release"] == "6.1.0"
 
 
 def test_introspect_live_nonzero_exit_is_debug_attach_failure():
-    live = _live(agent_run=lambda domain, argv: AgentExecResult(1, b"", b"boom"))
+    agent = _ScriptedAgent(lambda argv: AgentExecResult(1, b"", b"boom"))
+    live = _live(agent)
     with pytest.raises(CategorizedError) as exc:
         live.introspect_live(transport_handle="kdive-sys", helper="tasks")
     assert exc.value.category is ErrorCategory.DEBUG_ATTACH_FAILURE
+
+
+def test_introspect_live_undecodable_output_is_infrastructure_failure():
+    agent = _ScriptedAgent(lambda argv: AgentExecResult(0, b"not json", b""))
+    live = _live(agent)
+    with pytest.raises(CategorizedError) as exc:
+        live.introspect_live(transport_handle="kdive-sys", helper="modules")
+    assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -1086,16 +1148,17 @@ _DRGN_HELPER = "/usr/local/sbin/kdive-drgn"
 _LIVE_HELPERS = frozenset({"tasks", "modules", "sysinfo"})
 
 type _OpenConnection = Callable[[str], Any]
-type _AgentRun = Callable[[Any, list[str]], AgentExecResult]
 
 
 class RemoteLiveIntrospect:
     """In-guest drgn-live over the qemu-guest-agent seam (ADR-0079/0083 §4).
 
     `transport_handle` carries the guest **domain name** (the pinned ADR-0083 §4 contract).
-    The helper is validated worker-side against the fixed set before any agent round-trip, so a
-    guest-agent exec can never run an arbitrary program. The single redaction boundary is
-    `assemble_report`.
+    The helper is validated worker-side against the fixed set before any agent round-trip, and
+    the real `GuestAgentExec` enforces the single-program allowlist, so a guest-agent exec can
+    never run an arbitrary program. The single redaction boundary is `assemble_report`. All
+    slow/host seams (the agent round-trip, the libvirt opener, the secret backend) are injected,
+    so unit tests drive the full two-phase protocol and the allowlist with no libvirt host.
     """
 
     def __init__(
@@ -1105,14 +1168,12 @@ class RemoteLiveIntrospect:
         config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_env,
         open_connection: _OpenConnection | None = None,
         agent_command: AgentCommand = qemu_agent_command,
-        agent_run: _AgentRun | None = None,
         secret_backend_factory: Callable[[], SecretBackend] | None = None,
     ) -> None:
         self._secret_registry = secret_registry
         self._config_factory = config_factory
         self._open_connection = open_connection if open_connection is not None else _open_libvirt
         self._agent_command = agent_command
-        self._agent_run = agent_run
         self._secret_backend_factory = secret_backend_factory or (
             lambda: secret_backend_from_env(registry=secret_registry)
         )
@@ -1173,8 +1234,12 @@ class RemoteLiveIntrospect:
         return decoded
 
     def _exec(self, domain_name: str, argv: list[str]) -> AgentExecResult:
-        if self._agent_run is not None:
-            return self._agent_run(_DomainRef(domain_name), argv)  # test seam
+        """Open the qemu+tls connection, look up the domain, run argv via GuestAgentExec.
+
+        Fully unit-testable with an injected `agent_command` + `open_connection` +
+        `secret_backend_factory` (mirroring test_install.py); only `_open_libvirt`'s real
+        `libvirt.open` is the `live_vm` seam.
+        """
         agent = GuestAgentExec(
             agent_command=self._agent_command,
             allowed_programs=frozenset({_DRGN_HELPER}),
@@ -1185,16 +1250,6 @@ class RemoteLiveIntrospect:
         ) as conn:
             domain = conn.lookupByName(domain_name)
             return agent.run(domain, argv)
-
-
-class _DomainRef:
-    """A minimal domain stand-in for the injected `agent_run` test seam."""
-
-    def __init__(self, name: str) -> None:
-        self._name = name
-
-    def name(self) -> str:
-        return self._name
 
 
 def _open_libvirt(uri: str) -> Any:  # pragma: no cover - live_vm
