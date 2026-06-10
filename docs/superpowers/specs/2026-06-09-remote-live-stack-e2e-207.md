@@ -80,7 +80,7 @@ The remote spine lives in `tests/integration/test_remote_live_stack.py`.
 | provision | `direct-kernel`, local rootfs path | `disk-image` profile (ADR-0080): `base_image_volume` from env, `crashkernel`, `destructive_ops: ["force_crash"]` |
 | attach | gdb-MI over local loopback gdbstub | gdb-MI over **direct TCP** to the host gdbstub port (worker-pool-ACL'd; host/port resolved server-side from operator config + domain XML) |
 | crash | `control.force_crash` (injectNMI) | same tool; remote `RemoteLibvirtControl` injectNMI → panic → kdump (ADR-0084) |
-| capture | `vmcore.fetch` → drain | `vmcore.fetch` → drain; **two-phase** KDUMP-only (ADR-0084). Assert a **redacted** vmcore artifact, no raw core leaked. |
+| capture | `vmcore.fetch` → drain | `vmcore.fetch(method="kdump")` → drain; **two-phase** KDUMP-only (ADR-0084; `fetch` defaults to `host_dump`, so remote pins `kdump`). Assert a **redacted** vmcore artifact, no raw core leaked. |
 | introspect | `introspect.from_vmcore` | same tool, routed to the remote runtime; assert a non-empty redacted report keyed to the remote run |
 
 **The crashed-System state contract is unchanged for remote.** `vmcore.fetch` admits a
@@ -109,8 +109,10 @@ of the following are present:
 
 - **Provider config** (read by `providers/remote_libvirt/config.py` at runtime):
   `KDIVE_REMOTE_LIBVIRT_URI` + the three TLS cert refs (`KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF` /
-  `_CLIENT_KEY_REF` / `_CA_CERT_REF`). The URI is the opt-in gate
-  (`is_remote_libvirt_configured()`).
+  `_CLIENT_KEY_REF` / `_CA_CERT_REF`) + `KDIVE_REMOTE_LIBVIRT_GDB_ADDR` (the ACL'd gdbstub listen
+  address — it has **no default** and remote provisioning fails closed without it, so the
+  preflight requires it to keep the clean-skip contract rather than failing at the provision
+  phase). The URI is the opt-in gate (`is_remote_libvirt_configured()`).
 - **Stack reachability**: the OIDC issuer reachable, `KDIVE_STACK_BASE_URL` set,
   `KDIVE_DATABASE_URL` set.
 - **A test/runbook input** — `KDIVE_REMOTE_BASE_IMAGE_VOLUME`: the operator-staged base-image

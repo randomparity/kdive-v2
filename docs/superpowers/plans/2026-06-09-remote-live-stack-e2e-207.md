@@ -374,10 +374,14 @@ _DATABASE_URL_ENV = "KDIVE_DATABASE_URL"
 # The remote capture job waits out a 300s server-side readiness window (retrieve.py) while the
 # guest reboots out of the kdump kernel, then uploads; budget the drain above that + the reboot.
 _CAPTURE_DEADLINE_S = 900.0
-_CERT_REF_ENVS = (
+# The gdbstub listen address has no default: remote provisioning fails closed
+# (CONFIGURATION_ERROR) without it (providers/remote_libvirt/provisioning.py), so require it in
+# the preflight or a missing-gdb-addr host errors at the provision phase instead of skipping.
+_REQUIRED_REFS = (
     "KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF",
     "KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF",
     "KDIVE_REMOTE_LIBVIRT_CA_CERT_REF",
+    "KDIVE_REMOTE_LIBVIRT_GDB_ADDR",
 )
 
 
@@ -388,9 +392,12 @@ def _remote_spine_preflight() -> tuple[OidcIssuer, str, str]:
             f"{_REMOTE_URI_ENV} unset; configure the remote-libvirt host "
             "(see docs/runbooks/remote-live-stack.md)"
         )
-    for ref_env in _CERT_REF_ENVS:
+    for ref_env in _REQUIRED_REFS:
         if not os.environ.get(ref_env):
-            pytest.skip(f"{ref_env} unset; stage the TLS cert refs (remote-live-stack runbook)")
+            pytest.skip(
+                f"{ref_env} unset; stage the TLS cert refs + gdbstub ACL address "
+                "(remote-live-stack runbook)"
+            )
     if not os.environ.get(_BASE_IMAGE_ENV):
         pytest.skip(f"{_BASE_IMAGE_ENV} unset; stage the base-OS volume (remote-live-stack runbook)")
     db_url = os.environ.get(_DATABASE_URL_ENV)
@@ -495,7 +502,8 @@ def test_remote_spine_over_the_wire() -> None:
                 ok(await scalar(admin, "control.force_crash", system_id=system_id), "crash")
                 await await_system_state(admin, "crash", system_id, "crashed")
             async with phase("capture"):
-                env = ok(await scalar(op, "vmcore.fetch", system_id=system_id), "capture")
+                # Remote is KDUMP-only (ADR-0084); pin the method (fetch defaults to host_dump).
+                env = ok(await scalar(op, "vmcore.fetch", system_id=system_id, method="kdump"), "capture")
                 await drain_job(op, "capture", env.object_id, deadline_s=_CAPTURE_DEADLINE_S)
                 cores = await op.call_tool("vmcore.list", system_id=system_id)
                 assert isinstance(cores, list) and cores, "no vmcore artifact listed"
@@ -621,17 +629,65 @@ def render_report(touched: dict[str, int]) -> str:
     return "\n".join(lines)
 ```
 
-In `main`, after computing `touched` (the union of the per-commit and net measurements), branch on the flag before the existing print/exit logic:
+Restructure `main` so the measurement is computed once, then either rendered as a report or run as the gate. Replace the existing `main` with this full version (the measurement block — `tag_check`, `log`, `net`, the `parse_numstat` union — is unchanged from the current file; only the trailing branch is new):
 
 ```python
+def _measure() -> dict[str, int] | None:
+    """Compute the cumulative touched map, or None if the baseline tag is unavailable."""
+    tag_check = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{BASELINE_TAG}^{{commit}}"],
+        capture_output=True,
+        text=True,
+    )
+    if tag_check.returncode != 0:
+        print(
+            f"error: baseline tag {BASELINE_TAG!r} is unavailable; fetch tags/history "
+            "(CI: actions/checkout with fetch-depth: 0)",
+            file=sys.stderr,
+        )
+        return None
+    log = subprocess.run(
+        ["git", "log", "--numstat", "--no-merges", "--no-renames", "--format=",
+         f"{BASELINE_TAG}..HEAD", "--", *CORE_PREFIXES],
+        capture_output=True, text=True, check=True,
+    )
+    touched = parse_numstat(log.stdout)
+    net = subprocess.run(
+        ["git", "diff", "--numstat", "--no-renames", f"{BASELINE_TAG}..HEAD", "--", *CORE_PREFIXES],
+        capture_output=True, text=True, check=True,
+    )
+    for path, count in parse_numstat(net.stdout).items():
+        touched[path] = max(touched.get(path, 0), count)
+    return touched
+
+
 def main() -> int:
-    report_mode = "--report" in sys.argv[1:]
-    # ... existing tag_check / log / net measurement, producing `touched` ...
-    if report_mode:
+    touched = _measure()
+    if touched is None:
+        return 2
+    if "--report" in sys.argv[1:]:
         print(render_report(touched))
-        return 0 if not violations(touched) else 1
-    # ... existing print + verdict logic unchanged ...
+        return 1 if violations(touched) else 0
+    allowed = {path: count for path, count in touched.items() if path in ALLOWED_FILES}
+    print(f"M2 portability measurement since {BASELINE_TAG} (cumulative touched lines):")
+    for path, count in sorted(allowed.items()):
+        print(f"  allowlisted  {count:>6}  {path}")
+    bad = violations(touched)
+    if bad:
+        print("\ngate FAILED - provider-specific changes reached the core surface:")
+        for path, count in sorted(bad.items()):
+            print(f"  VIOLATION    {count:>6}  {path}")
+        print(
+            "\nRefactor the provider logic out of core (the M2 co-equal goal, "
+            "docs/specs/m2-remote-libvirt.md), or - for a deliberate provider-agnostic "
+            "core change - extend ALLOWED_FILES in this script in the same PR."
+        )
+        return 1
+    print("gate passed: no core surface touched outside the ADR-0076 allowlist.")
+    return 0
 ```
+
+The extraction of `_measure()` keeps the existing 0/1/2 exit semantics: tag-unavailable → 2, violations → 1, clean → 0, with `--report` rendering markdown at the same exit codes (0 pass / 1 fail).
 
 - [ ] **Step 4: Run the renderer tests + the existing gate tests**
 
