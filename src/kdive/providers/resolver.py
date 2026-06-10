@@ -9,6 +9,7 @@ Concrete runtimes are still constructed only in :mod:`kdive.providers.compositio
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import LiteralString
@@ -21,6 +22,8 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
 from kdive.providers.runtime import ProviderRuntime
+
+_log = logging.getLogger(__name__)
 
 _KIND_FOR_SYSTEM: LiteralString = (
     "SELECT r.kind AS kind FROM systems s "
@@ -96,9 +99,21 @@ class ProviderResolver:
 
         Discovery keys on the map entry's own kind, not on a Resource that does
         not yet exist (ADR-0071), so it fans out over the composed runtimes.
+        One runtime's registration failure must not starve the others (a
+        worker-only host has no local libvirtd, but its remote-libvirt resource
+        still has to register), so each registrar is isolated: the first
+        failure is re-raised only after every runtime has been attempted.
         """
-        for runtime in self._runtimes.values():
-            await runtime.register_discovery(pool)
+        first_failure: Exception | None = None
+        for kind, runtime in self._runtimes.items():
+            try:
+                await runtime.register_discovery(pool)
+            except Exception as exc:  # noqa: BLE001 - isolate per-runtime registration faults
+                _log.warning("discovery registration failed for kind %r: %s", kind.value, exc)
+                if first_failure is None:
+                    first_failure = exc
+        if first_failure is not None:
+            raise first_failure
 
     async def runtime_for_system(self, conn: AsyncConnection, system_id: UUID) -> ProviderRuntime:
         return self.resolve(await self._kind(conn, _KIND_FOR_SYSTEM, system_id, "system"))

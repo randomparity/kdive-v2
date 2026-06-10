@@ -55,3 +55,24 @@ def test_register_all_discovery_fans_out_over_every_runtime() -> None:
     pool = cast(AsyncConnectionPool, object())
     asyncio.run(resolver.register_all_discovery(pool))
     assert runtimes[ResourceKind.LOCAL_LIBVIRT].registered == [pool]
+
+
+class _FailingRuntime(_Runtime):
+    async def register_discovery(self, pool: object) -> None:
+        raise RuntimeError("no local libvirtd on this host")
+
+
+def test_register_all_discovery_isolates_one_runtimes_failure() -> None:
+    """A worker-only host: local discovery fails, the remote runtime still registers."""
+    failing = _FailingRuntime("local-libvirt")
+    healthy = _Runtime("remote-libvirt")
+    resolver = ProviderResolver(
+        cast(
+            dict,
+            {ResourceKind.LOCAL_LIBVIRT: failing, ResourceKind.REMOTE_LIBVIRT: healthy},
+        )
+    )
+    pool = cast(AsyncConnectionPool, object())
+    with pytest.raises(RuntimeError):
+        asyncio.run(resolver.register_all_discovery(pool))
+    assert healthy.registered == [pool]
