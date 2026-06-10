@@ -26,7 +26,7 @@ from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools.ops._auth import audit_platform_denial, held_platform_roles
+from kdive.mcp.tools.ops._auth import actor_for, audit_platform_denial, held_platform_roles
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_platform_role
@@ -79,6 +79,7 @@ async def _set_paused(
                     scope="queue",
                     args={"queue_paused": paused},
                     platform_role=held_platform_roles(ctx),
+                    actor=actor_for(ctx),
                 ),
             )
         return ToolResponse.success(
@@ -142,6 +143,7 @@ async def jobs_list(
                             "limit": capped,
                         },
                         platform_role=held_platform_roles(ctx),
+                        actor=actor_for(ctx),
                     ),
                 )
         return _jobs_response(depth, jobs)

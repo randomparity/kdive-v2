@@ -23,6 +23,7 @@ class RequestContext:
     projects: tuple[str, ...]
     roles: Mapping[str, Role] = field(default_factory=dict, compare=False)
     platform_roles: frozenset[PlatformRole] = field(default_factory=frozenset, compare=False)
+    client_id: str | None = field(default=None, compare=False)
 
 
 def context_from_claims(claims: Mapping[str, object]) -> RequestContext:
@@ -47,12 +48,15 @@ def context_from_claims(claims: Mapping[str, object]) -> RequestContext:
         if not isinstance(project, str) or not project:
             raise AuthError("projects claim entries must be non-empty strings")
         projects.append(project)
+    raw_client_id = claims.get("azp") or claims.get("client_id")
+    client_id = raw_client_id if isinstance(raw_client_id, str) and raw_client_id else None
     return RequestContext(
         principal=subject,
         agent_session=agent_session,
         projects=tuple(projects),
         roles=roles_from_claims(claims),
         platform_roles=platform_roles_from_claims(claims),
+        client_id=client_id,
     )
 
 

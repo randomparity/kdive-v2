@@ -24,6 +24,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.mcp.tools._time_window import parse_timestamptz_window
 from kdive.mcp.tools.ops._auth import (
     ALL_PROJECTS_SCOPE,
+    actor_for,
     audit_platform_denial,
     held_platform_roles,
 )
@@ -70,6 +71,7 @@ async def record_read(
                 scope=ALL_PROJECTS_SCOPE,
                 args=args,
                 platform_role=held_platform_roles(ctx),
+                actor=actor_for(ctx),
             ),
         )
 

@@ -66,8 +66,9 @@ def test_violations_excludes_allowlisted_files() -> None:
 
 def test_allowlist_is_exactly_the_named_touch_points() -> None:
     # The ADR-0076 set plus the ADR-0085 drgn-live routing touch, the ADR-0086 dead-worker
-    # gdbstub reconciler reset, and the ADR-0087 config-registry migration of the agnostic-core
-    # readers; extending it is a deliberate, reviewed decision.
+    # gdbstub reconciler reset, the ADR-0087 config-registry migration of the agnostic-core
+    # readers, and the ADR-0089 operator-CLI audit-attribution touch (the milestone's only
+    # non-cli core change); extending it is a deliberate, reviewed decision.
     assert (
         frozenset(
             {
@@ -83,6 +84,19 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/mcp/tools/catalog/artifacts_uploads.py",
                 "src/kdive/mcp/tools/debug/ops.py",
                 "src/kdive/security/secrets/secrets.py",
+                "src/kdive/db/schema/0021_platform_audit_actor.sql",
+                "src/kdive/security/authz/actor.py",
+                "src/kdive/security/authz/context.py",
+                "src/kdive/security/audit.py",
+                "src/kdive/mcp/tools/ops/_auth.py",
+                "src/kdive/mcp/tools/ops/_reads.py",
+                "src/kdive/mcp/tools/ops/breakglass.py",
+                "src/kdive/mcp/tools/ops/queue.py",
+                "src/kdive/mcp/tools/ops/reconcile.py",
+                "src/kdive/mcp/tools/ops/resources.py",
+                "src/kdive/mcp/tools/ops/tuning.py",
+                "src/kdive/mcp/tools/accounting/reports.py",
+                "src/kdive/mcp/tools/catalog/shapes.py",
             }
         )
         == ALLOWED_FILES

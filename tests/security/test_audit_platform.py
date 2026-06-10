@@ -40,6 +40,7 @@ def test_record_platform_writes_row_for_empty_projects(migrated_url: str) -> Non
                     scope="all-projects",
                     args={"scope": "all-projects"},
                     platform_role="platform_auditor",
+                    actor="agent",
                 ),
             )
             assert isinstance(audit_id, UUID)
@@ -75,6 +76,7 @@ def test_record_platform_persists_null_platform_role_for_member_read(migrated_ur
                     scope="granted-set:proj-a,proj-b",
                     args={},
                     platform_role=None,
+                    actor="agent",
                 ),
             )
             async with conn.cursor() as cur:
@@ -102,6 +104,7 @@ def test_record_platform_writes_denial_row(migrated_url: str) -> None:
                     scope="all-projects",
                     args={"scope": "all-projects"},
                     platform_role="platform_operator",
+                    actor="agent",
                 ),
             )
             assert isinstance(audit_id, UUID)
@@ -127,6 +130,7 @@ def test_record_platform_composes_in_caller_transaction(migrated_url: str) -> No
                             scope="all-projects",
                             args={},
                             platform_role="platform_auditor",
+                            actor="agent",
                         ),
                     )
                     raise _Boom

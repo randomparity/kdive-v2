@@ -59,6 +59,24 @@ ALLOWED_FILES = frozenset(
         "src/kdive/mcp/tools/catalog/artifacts_uploads.py",
         "src/kdive/mcp/tools/debug/ops.py",
         "src/kdive/security/secrets/secrets.py",
+        # Operator-CLI audit attribution (#248, ADR-0089): the milestone's only non-cli core
+        # change. A provider-agnostic addition — record the caller class (operator-cli | agent
+        # | unknown) resolved from the OIDC client_id on every platform_audit_log row. The
+        # required `actor` field threads through the shared audit chokepoints and every inline
+        # success site; none of it is provider-specific.
+        "src/kdive/db/schema/0021_platform_audit_actor.sql",
+        "src/kdive/security/authz/actor.py",
+        "src/kdive/security/authz/context.py",
+        "src/kdive/security/audit.py",
+        "src/kdive/mcp/tools/ops/_auth.py",
+        "src/kdive/mcp/tools/ops/_reads.py",
+        "src/kdive/mcp/tools/ops/breakglass.py",
+        "src/kdive/mcp/tools/ops/queue.py",
+        "src/kdive/mcp/tools/ops/reconcile.py",
+        "src/kdive/mcp/tools/ops/resources.py",
+        "src/kdive/mcp/tools/ops/tuning.py",
+        "src/kdive/mcp/tools/accounting/reports.py",
+        "src/kdive/mcp/tools/catalog/shapes.py",
     }
 )
 
