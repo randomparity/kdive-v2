@@ -12,6 +12,9 @@ repos:
       - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
+        # Helm chart templates are Go templates, not standalone YAML, so the
+        # parser cannot decode them. `helm lint` validates the chart instead.
+        exclude: ^deploy/helm/kdive/templates/
       - id: check-executables-have-shebangs
       - id: end-of-file-fixer
       - id: trailing-whitespace

@@ -1,0 +1,11 @@
+{{- include "kdive.validateValues" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kdive.fullname" . }}-config
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+data:
+  {{- range $k, $v := .Values.config }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}

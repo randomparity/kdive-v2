@@ -1,0 +1,47 @@
+image:
+  repository: ghcr.io/randomparity/kdive
+  tag: ""            # defaults to .Chart.AppVersion
+  digest: ""         # set to pin by digest (overrides tag)
+  pullPolicy: IfNotPresent
+
+# bundledBackends pulls the Postgres/MinIO subcharts for a turnkey demo. They run
+# on emptyDir (no PVC, no backup): a pod restart drops all state by design. It is
+# ephemeral/demo-only and must be co-set with demoAcknowledged=true or the chart
+# fails to render. Production runs against operator-provided backends, toggle off.
+bundledBackends: false
+demoAcknowledged: false
+
+config:
+  KDIVE_DATABASE_URL: ""
+  KDIVE_OIDC_ISSUER: ""
+  KDIVE_OIDC_JWKS_URI: ""
+  KDIVE_OIDC_AUDIENCE: kdive
+  KDIVE_S3_ENDPOINT_URL: ""
+  KDIVE_S3_BUCKET: kdive-artifacts
+  KDIVE_S3_REGION: us-east-1
+
+server:
+  replicas: 1
+
+reconciler:
+  replicas: 1
+
+worker:
+  replicas: 1
+  persistence:
+    build:
+      size: 10Gi
+    install:
+      size: 5Gi
+
+# Subchart overrides for the demo-only bundledBackends path. Persistence is forced
+# off so the system-of-record runs on emptyDir: a pod restart drops all state by
+# design (ADR-0088 decision 7). Reached only when bundledBackends=true.
+postgresql:
+  primary:
+    persistence:
+      enabled: false
+minio:
+  persistence:
+    enabled: false
+  mode: standalone

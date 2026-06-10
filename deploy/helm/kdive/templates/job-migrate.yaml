@@ -1,0 +1,36 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "kdive.fullname" . }}-migrate
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.bundledBackends }}
+    # Demo path: the bundled Postgres subchart is created with the release's normal
+    # resources, after pre-install hooks. Run migrate post-install so the DB exists.
+    "helm.sh/hook": post-install,post-upgrade
+    {{- else }}
+    # Production path: external backends pre-exist, so migrate before app rollout.
+    "helm.sh/hook": pre-install,pre-upgrade
+    {{- end }}
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "kdive.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: migrate
+          image: {{ include "kdive.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["migrate"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "kdive.fullname" . }}-config

@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kdive.fullname" . }}-server
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.server.replicas }}
+  selector:
+    matchLabels:
+      app: {{ include "kdive.fullname" . }}-server
+  template:
+    metadata:
+      labels:
+        app: {{ include "kdive.fullname" . }}-server
+        {{- include "kdive.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: server
+          image: {{ include "kdive.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["server"]
+          env:
+            - name: KDIVE_HTTP_HOST
+              value: "0.0.0.0"
+          envFrom:
+            - configMapRef:
+                name: {{ include "kdive.fullname" . }}-config
+          ports:
+            - containerPort: 8000
+          livenessProbe:
+            # M2.1 scope: TCP liveness only (ADR-0088 decision 5). Readiness is M2.3.
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 5

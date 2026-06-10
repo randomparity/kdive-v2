@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kdive.fullname" . }}-worker
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      app: {{ include "kdive.fullname" . }}-worker
+  template:
+    metadata:
+      labels:
+        app: {{ include "kdive.fullname" . }}-worker
+        {{- include "kdive.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        # fsGroup so the non-root worker UID owns the mounted PVCs (ADR-0088 §3).
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: worker
+          image: {{ include "kdive.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["worker"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "kdive.fullname" . }}-config
+          volumeMounts:
+            - name: build
+              mountPath: /var/lib/kdive/build
+            - name: install
+              mountPath: /var/lib/kdive/install
+      volumes:
+        - name: build
+          persistentVolumeClaim:
+            claimName: {{ include "kdive.fullname" . }}-build
+        - name: install
+          persistentVolumeClaim:
+            claimName: {{ include "kdive.fullname" . }}-install
