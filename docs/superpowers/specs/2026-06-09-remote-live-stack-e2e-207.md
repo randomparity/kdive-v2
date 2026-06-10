@@ -38,10 +38,14 @@ artifacts that demonstrate both against a real second provider for the first tim
   under the gate's core prefixes — so it cannot trip the very gate it reports on.
 - **No un-gating.** The new e2e is `live_stack`-marked and preflights to a clean skip; CI
   deselects `live_stack`. It is never run in CI here.
-- **No in-guest drgn-live MCP routing.** That is the deferred ADR-0083 follow-up (#215). The
-  remote spine's introspection phase asserts the **worker-side vmcore postmortem**
-  (`introspect.from_vmcore`), which is wired and exercisable once a remote core is captured —
-  not live in-guest drgn.
+- **No in-guest drgn-live MCP routing.** That is the deferred ADR-0083 follow-up (#215) — it
+  generalizes `start_session` / `introspect.run`, the live in-guest path, **not** `from_vmcore`.
+  The remote spine's introspection phase asserts the **worker-side vmcore postmortem**
+  (`introspect.from_vmcore`), which already resolves the per-run runtime via
+  `with_runtime_for_run` (`mcp/tools/debug/introspect.py`) and so routes to the remote runtime's
+  `debug_common` postmortem the moment a remote core exists. The phase asserts a **non-empty,
+  redacted** report keyed to the remote `run_id` (no secret leak) — the same falsifiable signal
+  the local spine asserts.
 
 ## Deliverable 1 — the remote spine e2e
 
@@ -76,21 +80,43 @@ The remote spine lives in `tests/integration/test_remote_live_stack.py`.
 | provision | `direct-kernel`, local rootfs path | `disk-image` profile (ADR-0080): `base_image_volume` from env, `crashkernel`, `destructive_ops: ["force_crash"]` |
 | attach | gdb-MI over local loopback gdbstub | gdb-MI over **direct TCP** to the host gdbstub port (worker-pool-ACL'd; host/port resolved server-side from operator config + domain XML) |
 | crash | `control.force_crash` (injectNMI) | same tool; remote `RemoteLibvirtControl` injectNMI → panic → kdump (ADR-0084) |
-| capture | `vmcore.fetch` → drain | `vmcore.fetch` → drain; **two-phase** KDUMP-only (crash→local dump→post-reboot agent upload, ADR-0084). Assert a **redacted** vmcore artifact, no raw core leaked. |
-| introspect | `introspect.from_vmcore` | same — worker-side postmortem (in-guest drgn-live MCP routing deferred, #215) |
+| capture | `vmcore.fetch` → drain | `vmcore.fetch` → drain; **two-phase** KDUMP-only (ADR-0084). Assert a **redacted** vmcore artifact, no raw core leaked. |
+| introspect | `introspect.from_vmcore` | same tool, routed to the remote runtime; assert a non-empty redacted report keyed to the remote run |
+
+**The crashed-System state contract is unchanged for remote.** `vmcore.fetch` admits a
+`capture_vmcore` job only on a `crashed` System (`mcp/tools/lifecycle/vmcore.py`), and the
+System *row* stays `crashed` across the two-phase capture — the guest's kdump→reboot→agent-upload
+cycle is **internal to the remote `capture()` job**, not a row transition the spine observes. So
+the spine reuses the shared `_await_system_state(..., "crashed")` → `vmcore.fetch` → `_drain_job`
+sequence verbatim. The one remote-specific budget: the capture job waits out a server-side
+readiness window (`retrieve.py` `_readiness_timeout_s`, default **300s**) while the guest reboots
+out of the capture kernel, then uploads. The spine drains that job, so the drain deadline must
+cover readiness + reboot + upload. The shared `_DRAIN_DEADLINE_S` (600s) is the budget; the
+remote spine confirms it brackets the 300s readiness default, and the runbook flags raising it
+if the operator's reboot is slow.
 
 Everything else (open-investigation, create-run, build, install, boot, release, reconciler
-teardown) is identical and uses the shared helpers.
+teardown, **and the accounting report phase**) is identical and uses the shared helpers. The
+report phase is **kept** for the remote run: it is provider-agnostic (accounting over the
+ledger) and writes `accounting-report.json` — the durable, attachable evidence that the
+operator-run remote pass completed end-to-end (mirroring M1.2; it makes deliverable-1 acceptance
+falsifiable rather than a verbal "it ran").
 
 ### Preflight (clean skip contract)
 
 The remote spine preflights to a clean skip — each with the exact fix string — unless **all**
-of: the OIDC issuer reachable, `KDIVE_STACK_BASE_URL` set, `KDIVE_DATABASE_URL` set,
-`KDIVE_REMOTE_LIBVIRT_URI` + the three TLS cert refs
-(`KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF` / `_CLIENT_KEY_REF` / `_CA_CERT_REF`) set, and a remote
-base-image volume name (`KDIVE_REMOTE_BASE_IMAGE_VOLUME`) set. It reuses
-`is_remote_libvirt_configured()` semantics (the URI is the opt-in gate) plus the explicit
-base-image check the provision profile needs.
+of are present:
+
+- **Provider config** (read by `providers/remote_libvirt/config.py` at runtime):
+  `KDIVE_REMOTE_LIBVIRT_URI` + the three TLS cert refs (`KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF` /
+  `_CLIENT_KEY_REF` / `_CA_CERT_REF`). The URI is the opt-in gate
+  (`is_remote_libvirt_configured()`).
+- **Stack reachability**: the OIDC issuer reachable, `KDIVE_STACK_BASE_URL` set,
+  `KDIVE_DATABASE_URL` set.
+- **A test/runbook input** — `KDIVE_REMOTE_BASE_IMAGE_VOLUME`: the operator-staged base-image
+  volume name the spine feeds into the provision profile's `base_image_volume` field. This is a
+  *test* env var (the e2e's input to the profile factory), **not** part of the
+  `KDIVE_REMOTE_LIBVIRT_*` provider-config surface — the runbook labels it as such.
 
 The RBAC-negative wire checks (viewer denied an operator op; project-only token denied the
 all-projects report) need only issuer + stack — they fire in the auth layer before any
