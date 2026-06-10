@@ -17,6 +17,7 @@ from kdive.profiles.provisioning import (
     ProvisioningProfile,
     capture_method,
     destructive_opt_in,
+    drgn_live_requires_credential,
     dump_profile,
     profile_digest,
     reconcile_profile_sizing,
@@ -610,3 +611,20 @@ def test_remote_profile_rejects_unknown_fields() -> None:
 
 def test_remote_profile_validate_profile_accepts_remote_section() -> None:
     validate_profile(ProvisioningProfile.parse(_valid_remote()))
+
+
+def test_drgn_live_requires_credential_true_for_local_section() -> None:
+    profile = ProvisioningProfile.parse(_valid())
+    assert drgn_live_requires_credential(profile) is True
+
+
+def test_drgn_live_requires_credential_false_for_remote_section() -> None:
+    profile = ProvisioningProfile.parse(_valid_remote())
+    assert drgn_live_requires_credential(profile) is False
+
+
+def test_drgn_live_requires_credential_false_for_fault_inject_section() -> None:
+    data = _valid()
+    data["provider"] = {"fault-inject": {}}
+    profile = ProvisioningProfile.parse(data)
+    assert drgn_live_requires_credential(profile) is False

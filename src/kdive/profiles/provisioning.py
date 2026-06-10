@@ -416,6 +416,17 @@ def ssh_credential_ref(profile: ProvisioningProfile) -> str | None:
     return section.ssh_credential_ref if section is not None else None
 
 
+def drgn_live_requires_credential(profile: ProvisioningProfile) -> bool:
+    """Return whether this profile's drgn-live transport needs a core-resolved credential.
+
+    True for a local-libvirt section (drgn-live is realized over SSH, ADR-0039); False
+    otherwise (remote reaches the guest agent over qemu+tls; fault-inject is synthetic). Keeps
+    the credential decision provider-agnostic in core, which only asks this predicate
+    (ADR-0085 Decision 2).
+    """
+    return profile.provider.local_libvirt_section is not None
+
+
 def validate_profile(profile: ProvisioningProfile) -> None:
     """Reject unsupported provider params and unresolvable rootfs references."""
     section = profile.provider.local_libvirt_section
