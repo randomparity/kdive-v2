@@ -26,6 +26,7 @@ import os
 
 import pytest
 
+from kdive.images.planes.remote_libvirt import REMOTE_BASE_IMAGE_NAME
 from kdive.profiles.provisioning import ProvisioningProfile
 from tests.integration.live_stack.conftest import require_issuer, require_stack
 from tests.integration.live_stack.harness import LiveStackClient, OidcIssuer
@@ -84,7 +85,9 @@ def _remote_provision_profile() -> dict[str, object]:
         "kernel_source_ref": os.environ.get(_KERNEL_TREE_ENV, _DEFAULT_KERNEL_REF),
         "provider": {
             "remote-libvirt": {
-                "base_image_volume": os.environ.get(_BASE_IMAGE_ENV, "kdive-base.qcow2"),
+                "base_image_volume": os.environ.get(
+                    _BASE_IMAGE_ENV, f"{REMOTE_BASE_IMAGE_NAME}.qcow2"
+                ),
                 "crashkernel": "256M",
                 "destructive_ops": ["force_crash"],
             }
@@ -143,6 +146,22 @@ def test_remote_provision_profile_validates() -> None:
     profile = ProvisioningProfile.parse(_remote_provision_profile())
     assert profile.boot_method.value == "disk-image"
     assert profile.provider.remote_libvirt.base_image_volume
+
+
+def test_remote_provision_default_references_the_built_image_not_a_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The provision default names the kdive-published base image, not the placeholder literal.
+
+    The ADR-0080 remote plane shipped a placeholder base-image volume (``kdive-base.qcow2``).
+    M2.4/3 produces a real built image; the provision default now derives from the plane's
+    published base-image name (its identity is the qcow2 content digest, ADR-0092).
+    """
+    monkeypatch.delenv(_BASE_IMAGE_ENV, raising=False)
+    profile = ProvisioningProfile.parse(_remote_provision_profile())
+    default_volume = profile.provider.remote_libvirt.base_image_volume
+    assert default_volume != "kdive-base.qcow2", "the placeholder volume literal is removed"
+    assert REMOTE_BASE_IMAGE_NAME in default_volume
 
 
 def test_remote_preflight_skips_without_config(monkeypatch: pytest.MonkeyPatch) -> None:
