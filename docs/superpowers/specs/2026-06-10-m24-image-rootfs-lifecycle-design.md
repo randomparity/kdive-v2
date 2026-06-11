@@ -67,10 +67,13 @@ scripts, which are **deleted** (replace, don't deprecate):
 - **`planes/remote_libvirt.py`** produces the provisioning disk-image (ADR-0080), replacing
   the placeholder digest with a real built-and-published image.
 
-Reproducibility is recorded provenance: a rebuild from the same spec yields a matching
-`build_id`/digest. The local plane is exercised on the **live-stack path**, not stubbed to
-pass CI — the functional capability the live-stack runbook and integration tests depend on
-must survive the rewrite.
+The falsifiable contract is **recorded provenance** — the row names exactly the pinned inputs
+that produced its image. **Bit-reproducible rebuilds are an explicit non-goal** (a
+`virt-builder` image is not bit-stable: mirror drift, embedded timestamps, filesystem
+ordering), so an image's identity is a **content digest of the qcow2**, distinct from a kernel
+`build_id` (a vmlinux ELF-note that does not exist for a rootfs image). The local plane is
+exercised on the **live-stack path**, not stubbed to pass CI — the functional capability the
+live-stack runbook and integration tests depend on must survive the rewrite.
 
 ### Catalog as single source of truth
 
@@ -86,14 +89,20 @@ Migration `0023_image_catalog.sql` creates `image_catalog`:
 | `visibility` (`public` \| `private`) | resolution scope |
 | `owner` (nullable) | set iff `private` |
 | `expires_at` (nullable) | required iff `private` |
-| `state` | lifecycle (`registered`); a row whose object goes missing is removed by the reconciler, not parked |
+| `state` | `pending` (row registered, object not yet HEAD-confirmed) → `registered` (resolvable) |
+| `pending_since` | timestamp a `pending` row was created; backs the publish-deadline grace window |
 
 DB-level invariants: `CHECK ((visibility='private') = (owner IS NOT NULL))`,
-`CHECK ((visibility='private') = (expires_at IS NOT NULL))`, unique `(provider, name, arch)`
-for public rows.
+`CHECK ((visibility='private') = (expires_at IS NOT NULL))`, and a **partial** unique index on
+`(provider, name, arch)` over **`state='registered'` public rows only** — so a crashed publish's
+leftover `pending` row never blocks a re-publish of the same identity.
 
-A data migration seeds the current `fixtures/local-libvirt/*.yaml` rows into the table, after
-which the YAML files are **removed**. The synchronous `load_fixture_catalog()` is replaced by
+An **application-level seed step** (not the SQL migration — `db/migrate.py` applies only
+`NNNN_*.sql` and cannot read fixture YAML) reads the operator-configured catalog
+(`FIXTURE_CATALOG_PATH`, not just the source-tree default) and registers each entry; it is
+read-only against operator data. The in-repo `fixtures/local-libvirt/` default catalog is then
+removed from the source tree. Deploy ordering is migrate → seed → resolver cutover, so an old
+sync-YAML worker never reads a deleted catalog. The synchronous `load_fixture_catalog()` is replaced by
 an `IMAGE_CATALOG` repository read in the provisioning / `materialize` path; resolution moves
 to async DB reads. The visibility filter becomes
 `visibility='public' OR (visibility='private' AND owner=:requester)` — one authz predicate on
@@ -102,19 +111,28 @@ resolver and its two callers (profile resolution, local_libvirt materialize).
 
 ### Publish/register (two-write with recovery)
 
-`services/images/publish.py` writes the object, gates on `store.head()`, then inserts the
-row — a row is visible only after its object's HEAD succeeds. This mirrors external-build
-artifact ingestion (ADR-0048). The recovery path is the reconciler, not a bespoke rollback.
+`services/images/publish.py` registers the row first in `state='pending'`, writes the object,
+gates on `store.head()`, then flips the row to `registered`; resolution only ever returns
+`registered` rows. Registering the row **before** the object makes a rowless object impossible
+during a live publish, closing the window in which `leaked_images` could race the write (see
+ADR-0092 §3). A re-run after a crashed attempt adopts the existing `pending` row and re-arms
+its `pending_since` rather than colliding — publish is idempotent on its identity. The recovery
+path is the reconciler, not a bespoke rollback.
 
 ### Reconciler drift repair
 
 Three `_RepairSpec`s appended to `reconciler/loop.py`'s `_repair_plan`, each isolated on a
 fresh pooled connection, each evaluating time in Postgres `now()`, modeled on the existing
-`_repair_abandoned_uploads`:
+`_repair_abandoned_uploads` (whose `deadline < now()` window + table cross-check this follows,
+not an eager delete). The publish deadline is `pending_since + <publish-grace>` (a `KDIVE_*`
+config value); `leaked_images` keys an orphan object's grace off the object's store mtime:
 
-- `leaked_images` — an object under the image prefix with no `image_catalog` row (a crashed
-  publish that wrote the object but not the row): delete the object.
-- `dangling_images` — a row whose object HEAD is missing: remove the row.
+- `leaked_images` — an object under the image prefix with **no row at all**, past the publish
+  grace deadline (a build that wrote an object before any `pending` row, or a manual orphan):
+  delete the object. A `pending` row inside its deadline protects its object.
+- `dangling_images` — a row whose object HEAD is missing **past its publish deadline** (a
+  `registered` row whose object was lost, or a `pending` row whose publish crashed before the
+  object landed): remove the row. A `pending` row inside its deadline is left alone.
 - `expired_private_images` — `visibility='private' AND expires_at < now()`: delete object and
   row, audited under `system:reconciler`. This is the "periodic operator pruning" of private
   uploads, automated like every other TTL on the platform (expired allocations, idempotency

@@ -32,22 +32,59 @@ planes, a DB-backed catalog as the single source of truth, and reconciler drift 
 
 1. **A `RootfsBuildPlane` port replaces the bash scripts.** Per-provider implementations
    (local-libvirt orchestrating the libguestfs stages in-process; remote-libvirt building a
-   real provisioning disk-image) produce a qcow2 plus recorded provenance — pinned inputs such
-   that a rebuild from the same spec yields a matching `build_id`/digest. The bash scripts are
-   removed, not kept. The local plane is exercised on the live-stack path, not stubbed.
+   real provisioning disk-image) produce a qcow2 plus **recorded provenance** — the pinned
+   input digests and build args captured into the catalog row. Recorded provenance is the
+   falsifiable contract (a row names exactly what produced its image). **Bit-reproducible
+   rebuilds are an explicit non-goal:** a `virt-builder`-customized image is not bit-stable
+   (mirror drift, embedded timestamps, filesystem ordering), so the image's identity is a
+   **content digest of the qcow2** (distinct from a kernel `build_id`, which is a vmlinux
+   ELF-note and does not exist for a rootfs image). The bash scripts are removed, not kept.
+   The local plane is exercised on the live-stack path, not stubbed.
 2. **The `image_catalog` Postgres table is the single source of truth.** Migration `0023`
-   creates it; a data migration seeds the current `fixtures/local-libvirt/*.yaml` rows and the
-   YAML files are removed. Resolution in the provisioning/`materialize` path moves to async DB
-   reads. There is no dual backing.
-3. **Publish/register is a two-write with the reconciler as the recovery path.** Publish the
-   object, gate on `store.head()`, then register the row; a row is visible only after its
-   object's HEAD succeeds (mirrors ADR-0048). Two reconciler sweeps repair drift —
-   `leaked_images` (object, no row → delete object) and `dangling_images` (row, no object →
-   remove row) — the same drift-repair pattern the platform uses for artifacts/Systems, not a
+   creates the table (schema only). A separate **application-level seed step** (not the SQL
+   migration — `db/migrate.py` applies only `NNNN_*.sql` and cannot read fixture YAML) reads
+   the operator-configured catalog (`FIXTURE_CATALOG_PATH`, not just the source-tree default,
+   so a customized catalog is not silently dropped) and registers each entry. The seed is
+   **read-only against operator data** — it never deletes the files it read. The in-repo
+   `fixtures/local-libvirt/` *default* catalog is removed from the source tree (a code change,
+   not a runtime action); an operator's runtime catalog stays on their disk untouched.
+   **Deploy ordering is migrate → seed → cut the resolver over to DB reads**, so an old
+   (sync-YAML) worker never reads a catalog the new code already deleted. Resolution in the
+   provisioning/`materialize` path then moves to async DB reads. There is no dual backing once
+   the cutover completes.
+3. **Publish/register is a two-write with the reconciler as the recovery path.** Register the
+   row first in a `pending` state, publish the object, gate on `store.head()`, then flip the
+   row to `registered`; resolution only ever returns `registered` rows. Making the **rowless
+   object impossible** (the row precedes the object) is deliberate: it removes the window in
+   which `leaked_images` could race a live publish. A `pending` row carries a `pending_since`
+   timestamp; its publish deadline is `pending_since + <publish-grace>` (a `KDIVE_*` config
+   value), and `leaked_images` keys an orphan object's grace off the object's own store mtime.
+   Both sweeps evaluate the deadline with Postgres `now()` (never a Python clock), guarded like
+   the precedent `repair_abandoned_uploads` (a `deadline < now()` window plus a row
+   cross-check), not an eager delete:
+   - `dangling_images` — a row whose object HEAD is missing **past its publish deadline**:
+     either a `registered` row whose object was later lost, or a `pending` row whose publish
+     crashed before the object landed → remove the row. A `pending` row inside its deadline is
+     left alone (its publish may still be in flight).
+   - `leaked_images` — an object with **no row at all** and past the publish grace deadline →
+     delete the object (a build that wrote an object before any `pending` row, or an orphan
+     from manual poking).
+
+   The `pending` row and the object are thus mutually protective inside the deadline: the row
+   keeps `leaked_images` off the object, and the deadline keeps `dangling_images` off the row.
+   The `unique(provider, name, arch)` constraint applies only to `registered` rows, so a
+   re-run of `images publish` after a crashed attempt adopts the existing `pending` row and
+   re-arms its deadline rather than colliding — publish is idempotent on its identity.
+
+   This is the same drift-repair pattern the platform already uses for uploaded artifacts
+   (`reconciler/uploads.py` cross-checks `artifacts` before deleting) and Systems, not a
    bespoke rollback.
 4. **Image management stays an operator surface.** Build/publish run as an `IMAGE_BUILD` job an
    operator verb enqueues, processed by the worker; the agent-facing MCP tool surface is not
-   extended. Operator/mutating verbs route through the M1.3 break-glass path.
+   extended. Routine operator verbs (`build`/`publish`) authorize as `platform_operator`; only
+   the **destructive** verbs (`prune`, `extend`, cross-owner `delete`) route through the M1.3
+   `platform_admin` break-glass path — routine creation is not over-escalated through the
+   emergency-override path. See the spec's verb table for the per-verb authz.
 
 ## Consequences
 
@@ -64,8 +101,8 @@ planes, a DB-backed catalog as the single source of truth, and reconciler drift 
 ## Alternatives considered
 
 - **Keep the bash scripts, wrap them in a managed port.** Smaller change, but the scripts stay
-  the build mechanism — provenance and reproducibility bolt on awkwardly around shell, and two
-  build idioms (shell rootfs, Python kernel) persist. Rejected for a uniform Python build seam.
+  the build mechanism — provenance recording bolts on awkwardly around shell, and two build
+  idioms (shell rootfs, Python kernel) persist. Rejected for a uniform Python build seam.
 - **Keep the YAML catalog, add a separate DB table for managed images.** Avoids touching the
   hot resolution path, but creates two sources of truth and a union read; "register into the
   catalog" with reconciler row-sweeps then means a second catalog. Rejected per replace-don't-
