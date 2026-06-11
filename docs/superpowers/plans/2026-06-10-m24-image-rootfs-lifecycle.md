@@ -43,8 +43,8 @@
 | `src/kdive/db/repositories.py` | /1 | `IMAGE_CATALOG = StatefulRepository(...)` |
 | `src/kdive/images/__init__.py` | /1 | package marker |
 | `src/kdive/images/catalog.py` | /1 | async resolver: `resolve_rootfs(conn, provider, name, *, project)` (public-or-owned, private-shadows-public) |
-| `src/kdive/images/seed.py` | /1 | app-level seed: read `FIXTURE_CATALOG_PATH`, register rows (read-only against operator data) |
-| `src/kdive/providers/local_libvirt/lifecycle/materialize.py` | /1 | cut `_materialize_catalog_rootfs` over to the async resolver |
+| `src/kdive/images/seed.py` + `src/kdive/images/seed_data/` | /1 | app-level seed: register rows from `FIXTURE_CATALOG_PATH` or the **packaged baseline** (the relocated default catalog), read-only against operator data |
+| `src/kdive/providers/local_libvirt/lifecycle/materialize.py` | /1 | resolve via DB **and wire the object-store fetch** (today `_materialize_catalog_rootfs` resolves a local path; object-backed materialization is a `not wired yet` stub — replace it: download `object_key` → a checksum-verified local cache path) |
 | `src/kdive/images/planes/base.py` | /2 | `RootfsBuildPlane` port + `RootfsBuildSpec`/`RootfsBuildOutput` |
 | `src/kdive/images/planes/local_libvirt.py` | /2 | libguestfs stages in-process + provenance |
 | `src/kdive/providers/local_libvirt/lifecycle/provisioning.py` | /2 | rewire the bash-script consumer onto the plane |
@@ -58,17 +58,34 @@
 | `src/kdive/cli/commands/images.py` | /7 | `kdivectl images` verb group |
 | `src/kdive/config/core_settings.py` | /1,/5 | `IMAGE_*` `Setting`s (publish grace, private lifetime default/max, per-project caps) |
 | `scripts/live-vm/*.sh` | /2 | **deleted after** consumers migrate |
-| `fixtures/local-libvirt/` | /1 | seeded into DB then **removed** from source tree |
+| `fixtures/local-libvirt/rootfs/` → `src/kdive/images/seed_data/` | /1 | **rootfs** baseline relocated into the package (seeded as `defined` rows); `profiles/`+configs stay so `load_fixture_catalog` still resolves profiles |
 | `docs/runbooks/live-stack.md` | /2 | updated to `kdivectl images build` flow |
 
 ---
 
 ## Task /1: Catalog table + repository + seed + resolver cutover
 
+> **Source-model change (read first).** Today a catalog rootfs is a `LocalComponentRef` (local
+> path) and object-store materialization is a `not wired yet` stub (`materialize.py:100`);
+> `image_catalog` is `object_key`-based. This task owns that migration:
+> - **Materialize** wires the object fetch — `resolve_rootfs` → download `object_key` to a
+>   checksum-verified local cache → return that path. The provider boot path is unchanged.
+> - **Seed** registers rootfs metadata as **`defined` rows** (provider/name/arch/capabilities/
+>   format/root_device, `object_key` NULL) from the packaged baseline; `images build`/`publish`
+>   (/2, /4) realizes a `defined` row to `registered` by producing+publishing the object — no
+>   ~GiB qcow2 bytes ship in the package. `resolve_rootfs`/`materialize` return only
+>   `registered` rows, so a `defined`-only baseline is listed but not yet bootable.
+> - **Profiles** (`ProfileCatalogEntry`, the `profiles/*.yaml` + configs with cmdline/config
+>   requirements) are **out of scope for `image_catalog`** — only the *rootfs* catalog moves to
+>   DB this milestone. Only the **rootfs** entries (and the manifest's `rootfs:` list) are
+>   extracted to `seed_data/`; `profiles/`, the configs, and the profiles half of
+>   `manifest.yaml` **stay in `fixtures/local-libvirt/`** so `load_fixture_catalog` keeps
+>   resolving profiles (its `FixtureCatalog.rootfs` list becomes empty, `.profiles` unchanged).
+
 **Files:**
-- Create: `src/kdive/db/schema/0023_image_catalog.sql`, `src/kdive/images/__init__.py`, `src/kdive/images/catalog.py`, `src/kdive/images/seed.py`
-- Modify: `src/kdive/domain/models.py` (model + enums), `src/kdive/db/repositories.py` (`IMAGE_CATALOG`), `src/kdive/providers/local_libvirt/lifecycle/materialize.py` (resolver cutover), `src/kdive/config/core_settings.py` (`IMAGE_PUBLISH_GRACE`)
-- Delete: `fixtures/local-libvirt/*.yaml` (after the seed is proven)
+- Create: `src/kdive/db/schema/0023_image_catalog.sql`, `src/kdive/images/__init__.py`, `src/kdive/images/catalog.py`, `src/kdive/images/seed.py`, `src/kdive/images/seed_data/` (the relocated **rootfs** baseline entries, packaged so a fresh install seeds `defined` rows from code)
+- Modify: `src/kdive/domain/models.py` (model + enums — **serialize/rebase zone, shared with /4's `JobKind.IMAGE_BUILD`**), `src/kdive/db/repositories.py` (`IMAGE_CATALOG`), `src/kdive/providers/local_libvirt/lifecycle/materialize.py` (resolver cutover + object fetch), `src/kdive/config/core_settings.py` (`IMAGE_PUBLISH_GRACE`), `fixtures/local-libvirt/manifest.yaml` (drop the `rootfs:` list; keep `profiles:`)
+- Move: `fixtures/local-libvirt/rootfs/*` → `src/kdive/images/seed_data/` (**rootfs only** — `profiles/` and configs stay so `load_fixture_catalog` still resolves profiles)
 - Test: `tests/db/test_image_catalog_migration.py`, `tests/images/test_catalog_resolver.py`, `tests/images/test_seed.py`
 
 **Schema (`0023_image_catalog.sql`):**
@@ -81,16 +98,18 @@ CREATE TABLE image_catalog (
     arch          text        NOT NULL,
     format        text        NOT NULL,
     root_device   text        NOT NULL,
-    object_key    text        NOT NULL,
-    digest        text,                       -- qcow2 content digest (image identity)
+    object_key    text,                        -- object-store key; NULL for a `defined` row (no image yet)
+    digest        text,                        -- qcow2 content digest (image identity)
     capabilities  text[]      NOT NULL DEFAULT '{}',
     provenance    jsonb       NOT NULL DEFAULT '{}',
     visibility    text        NOT NULL CONSTRAINT image_visibility_check
                               CHECK (visibility IN ('public','private')),
     owner         text,                        -- owning project iff private
     expires_at    timestamptz,                 -- required iff private
-    state         text        NOT NULL DEFAULT 'pending' CONSTRAINT image_state_check
-                              CHECK (state IN ('pending','registered')),
+    state         text        NOT NULL DEFAULT 'defined' CONSTRAINT image_state_check
+                              CHECK (state IN ('defined','pending','registered')),
+    -- a `defined` row is seeded metadata with no object; `pending` is publishing; `registered` is bootable
+    CONSTRAINT image_object_present CHECK ((state = 'defined') = (object_key IS NULL)),
     pending_since timestamptz NOT NULL DEFAULT now(),
     created_at    timestamptz NOT NULL DEFAULT now(),
     updated_at    timestamptz NOT NULL DEFAULT now(),
@@ -105,6 +124,9 @@ CREATE UNIQUE INDEX image_catalog_one_public ON image_catalog (provider, name, a
 -- a project's private image name resolves to exactly one image
 CREATE UNIQUE INDEX image_catalog_one_private ON image_catalog (owner, provider, name)
     WHERE state = 'registered' AND visibility = 'private';
+-- at most one seeded `defined` baseline per public identity (seed idempotency at the DB level)
+CREATE UNIQUE INDEX image_catalog_one_defined ON image_catalog (provider, name, arch)
+    WHERE state = 'defined' AND visibility = 'public';
 ```
 
 **Interfaces:**
@@ -121,16 +143,18 @@ async def resolve_rootfs(
     """
 
 # images/seed.py
-def seed_entries_from_catalog(path: Path) -> list[ImageCatalogEntry]:
-    """Read the operator-configured fixture catalog and return rows to register.
-    Read-only against operator data — never deletes the files it read.
+async def seed_defined_rootfs(conn: AsyncConnection, path: Path | None = None) -> int:
+    """Register the baseline rootfs catalog as `defined` rows (metadata, object_key NULL),
+    idempotently (skip an identity already present). `path` defaults to `FIXTURE_CATALOG_PATH`
+    if the operator set one, else the packaged baseline (`images/seed_data/`). Read-only
+    against operator data — never deletes what it read. Returns the count newly defined.
     """
 ```
 
 **Acceptance (falsifiable):**
-- The migration applies and `CHECK`/partial-unique constraints reject a private row with NULL owner, a public row with two registered same-identity rows, and admit a `pending` duplicate.
-- `resolve_rootfs` returns the private image when a project has one shadowing a public same-name image, and the public image for a different project.
-- The seed registers each YAML rootfs as a row and leaves the source files untouched (read-only assertion); `materialize` resolves via the DB after cutover.
+- The migration applies; `CHECK`/partial-unique constraints reject a private row with NULL owner, a `defined` row with a non-NULL `object_key` (and vice-versa, via `image_object_present`), and two registered same-identity public rows; they admit a `pending` duplicate.
+- `resolve_rootfs` returns only `registered` rows — a `defined`-only baseline resolves to None; it returns the project's private image over a same-name public, and the public image for a different project.
+- The seed registers the baseline rootfs as `defined` rows from the packaged `seed_data/` on a fresh DB (idempotent on re-run), honors a `FIXTURE_CATALOG_PATH` override, and leaves the source it read untouched (read-only assertion); `materialize` fetches a `registered` row's object to a local cache after cutover.
 
 **Dependencies:** none (track head). **Commit boundary:** migration+model+repo, then resolver+seed, then YAML deletion (separate commit after seed proven).
 
@@ -206,20 +230,38 @@ class RootfsBuildPlane(Protocol):
 
 ```python
 # services/images/publish.py
+@dataclass(frozen=True, slots=True)
+class PublishRequest:
+    """The fields needed to create an image row — NOT a built ImageCatalogEntry
+    (which carries id/object_key/state/pending_since that publish assigns)."""
+    provider: str
+    name: str
+    arch: str
+    format: str
+    root_device: str
+    digest: str
+    capabilities: tuple[str, ...]
+    provenance: dict[str, object]
+    visibility: str                 # "public" | "private"
+    owner: str | None = None        # owning project iff private
+    expires_at: datetime | None = None
+
 async def publish_image(
-    conn: AsyncConnection, store: ObjectStore, *, entry: ImageCatalogEntry, source: Path
+    conn: AsyncConnection, store: ObjectStore, *, request: PublishRequest, source: Path
 ) -> ImageCatalogEntry:
-    """Row-first two-write: insert/adopt a `pending` row, write the object to the
-    image prefix, HEAD-gate, then flip the row to `registered`. Idempotent on
-    (provider, name, arch): a re-run adopts the existing `pending` row and re-arms
-    `pending_since`.
+    """Row-first two-write: adopt the existing `defined`/`pending` row for this identity
+    (or insert a `pending` row from `request`), set its `object_key`, write the object to
+    the image prefix, HEAD-gate, then flip the row to `registered` and return it. Idempotent
+    on (provider, name, arch): a re-run adopts the in-flight `pending` row and re-arms
+    `pending_since`. Realizing a seeded `defined` baseline is the same path (defined → pending
+    → registered).
     """
 ```
 
 **Acceptance (falsifiable):**
 - A successful publish leaves a `registered` row whose object HEADs; resolution returns it.
 - A crash injected *after* the `pending` row and *before* the object leaves a `pending` row and an objectless state that a re-run adopts (no unique-violation wedge).
-- The `IMAGE_BUILD` handler runs build → guest-contract-validate → `publish_image` and dead-letters on a validation failure with a named category.
+- The `IMAGE_BUILD` handler runs build → guest-contract-validate → `publish_image` and dead-letters on a validation failure with a named category. The blocking `RootfsBuildPlane.build()` (libguestfs, minutes) is offloaded via `asyncio.to_thread` so it never stalls the worker event loop.
 
 **Dependencies:** /1 (table + repo). **Commit boundary:** publish service, then job kind + handler.
 
@@ -248,8 +290,10 @@ async def register_private_upload(
     name: str, provider: str, arch: str, quarantine_key: str, expires_at: datetime,
 ) -> ImageCatalogEntry:
     """Under the PROJECT lock: enforce the per-project count/bytes quota (fail-closed),
-    validate the quarantined object's guest contract, then row-first register the
-    private image (promote object → `registered`). Records owner=project, principal for audit.
+    validate the quarantined object's guest contract, then **delegate to
+    `publish_image`** (a `PublishRequest` with visibility='private', owner=project,
+    expires_at) with the quarantined object as `source` — no second row-first
+    implementation. Records the principal for audit.
     """
 ```
 
@@ -266,10 +310,12 @@ async def register_private_upload(
 
 **Files:**
 - Create: `src/kdive/reconciler/images.py`
-- Modify: `src/kdive/reconciler/loop.py` (three `_RepairSpec`s in `_repair_plan`; extend `ReconcileReport` + module docstring)
+- Modify: `src/kdive/reconciler/loop.py` (three `_RepairSpec`s in `_repair_plan`; thread the image store through `Reconciler.__init__`/`reconcile_once`/`_repair_plan`; extend `ReconcileReport` + module docstring), `src/kdive/__main__.py` (inject the image store at reconciler construction)
 - Test: `tests/reconciler/test_image_sweeps.py`
 
-**Interfaces (each `Callable[[AsyncConnection], Awaitable[int]]`, modeled on `_repair_abandoned_uploads`):**
+**Interfaces** (each takes `store` + options; they are bound into the loop's `_RepairFn`
+(`Callable[[AsyncConnection], Awaitable[int]]`) via a lambda, exactly as
+`lambda conn: _repair_leaked_domains(conn, reaper)` does today):
 
 ```python
 async def repair_leaked_images(conn, store, *, grace: timedelta) -> int: ...      # object, no row, past grace → delete object
@@ -277,9 +323,14 @@ async def repair_dangling_images(conn, store) -> int: ...                       
 async def repair_expired_private_images(conn, store) -> int: ...                   # private & expires_at<now(), reference-guarded + extend-fenced → delete object+row
 ```
 
+**Loop wiring** (the modify surface is larger than one file): thread the image object-store
+handle through `Reconciler.__init__`, `reconcile_once`, and `_repair_plan` (binding it into the
+three `_RepairSpec` lambdas), and inject it at the reconciler construction in
+`src/kdive/__main__.py` — the same path `upload_store` already takes.
+
 **Acceptance (falsifiable):**
-- `leaked_images` deletes an objectless-row… no: an object with no row past `IMAGE_PUBLISH_GRACE`; a `pending` row inside its deadline protects its object (not deleted).
-- `dangling_images` removes a row whose object is gone past deadline; leaves an in-deadline `pending` row.
+- `leaked_images` deletes an object that has no row once past `IMAGE_PUBLISH_GRACE`; a `pending` row inside its deadline protects its object (not deleted).
+- `dangling_images` operates **only on rows with `object_key IS NOT NULL`** (pending/registered): it removes one whose object is gone past deadline, leaves an in-deadline `pending` row, and **never touches a `defined` baseline** (object-less by design) — assert a seeded `defined` row survives a pass.
 - `expired_private_images` prunes an expired private image; **skips** one still referenced by a non-terminal System (JSONB-containment check on `provisioning_profile`); re-reads `expires_at` under the per-row lock so a concurrent `extend` is honored (not clobbered).
 - `ReconcileReport` exposes `leaked_images`, `dangling_images`, `expired_private_images` counts; `now()` evaluated in Postgres (no Python clock).
 
@@ -329,3 +380,14 @@ async def repair_expired_private_images(conn, store) -> int: ...                
 - **Type consistency:** `RootfsBuildPlane.build(spec) -> RootfsBuildOutput` used identically in /2,/3,/4; `ImageCatalogEntry` from /1 used in /4,/5,/6; `resolve_rootfs(...)` signature stable across /1,/5,/6; `JobKind.IMAGE_BUILD` defined once in /4.
 - **Single migration owner:** `0023` authored only in /1 with the full schema (no second migration in /5/6).
 - **Placeholder scan:** no TBD/TODO; every task carries concrete paths, signatures, SQL, and falsifiable acceptance. Per-task line-level TDD steps are authored by each issue's `/work-issue` agent (stated in the header), consistent with the repo's milestone workflow.
+
+### Spec deltas (reconcile the spec before/while implementing)
+
+Planning surfaced details the spec under-specified; the plan resolves them and the spec
+(`2026-06-10-m24-image-rootfs-lifecycle-design.md`) should be updated to match:
+
+1. **`defined` state + nullable `object_key`.** The spec's `state` is `pending`/`registered` only and `object_key` is NOT NULL. Baseline rootfs bytes (~GiB) cannot ship in the package, so a fresh install cannot seed object-backed rows — the plan adds a `defined` (metadata, no object) state that `images build`/`publish` realizes to `registered`.
+2. **Materialize wires the object fetch.** Object-store-backed materialization is a `not wired yet` stub today; the spec's "resolver cutover" is actually implementing that fetch (download `object_key` → local cache).
+3. **Profiles stay file-based.** The spec says the YAML catalog is removed wholesale, but the fixture catalog also holds `profiles` (not modeled by `image_catalog`). Only the rootfs catalog moves to DB this milestone; `profiles/` and `load_fixture_catalog`'s profile path remain.
+
+These are feasibility corrections, not scope additions — they keep the milestone bounded. Fold them into the spec (a one-pass edit) so spec and plan agree.
