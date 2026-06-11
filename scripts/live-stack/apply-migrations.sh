@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck disable=SC1091 # repo-relative path computed from this script location
 source "${repo_root}/scripts/live-stack/env.sh"
 
 uv run python - <<'PY'
