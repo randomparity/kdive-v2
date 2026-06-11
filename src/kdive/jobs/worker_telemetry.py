@@ -95,6 +95,11 @@ class WorkerTelemetry:
                 handle.span.set_status(Status(StatusCode.ERROR))
         self._duration.record(elapsed, labels)
 
+    @property
+    def enabled(self) -> bool:
+        """Whether instruments are wired; callers skip costly samples when ``False``."""
+        return self._enabled
+
     def observe_queue_depth(self, claimable: int) -> None:
         """Cache the queue depth observed at a poll for the gauge to report on scrape."""
         if self._enabled:
