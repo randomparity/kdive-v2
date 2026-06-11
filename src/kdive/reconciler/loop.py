@@ -35,6 +35,9 @@ from kdive.jobs.payloads import PayloadValidationError, SystemPayload, run_id_fr
 from kdive.providers.reaping import InfraReaper
 from kdive.providers.transport_reset import NullResetter, TransportResetter
 from kdive.reconciler.provider_reaping import repair_leaked_domains as _repair_leaked_domains
+from kdive.reconciler.provider_reaping import (
+    repair_leaked_probe_guests as _repair_leaked_probe_guests,
+)
 from kdive.reconciler.uploads import (
     UploadStore,
 )
@@ -120,6 +123,7 @@ class ReconcileReport:
     abandoned_uploads: int = 0
     promoted_allocations: int = 0
     queue_timeouts: int = 0
+    leaked_probe_guests: int = 0
 
 
 def _repair_plan(
@@ -142,6 +146,7 @@ def _repair_plan(
             lambda conn: _repair_dead_sessions(conn, debug_session_stale_after, resetter),
         ),
         _RepairSpec("leaked_domains", lambda conn: _repair_leaked_domains(conn, reaper)),
+        _RepairSpec("leaked_probe_guests", lambda conn: _repair_leaked_probe_guests(conn, reaper)),
         _RepairSpec(
             "idempotency_keys_gc_count",
             lambda conn: _gc_idempotency_keys(conn, idempotency_retention),
@@ -562,6 +567,7 @@ async def reconcile_once(
         abandoned_uploads=counts["abandoned_uploads"],
         promoted_allocations=counts["promoted_allocations"],
         queue_timeouts=counts["queue_timeouts"],
+        leaked_probe_guests=counts["leaked_probe_guests"],
     )
 
 
