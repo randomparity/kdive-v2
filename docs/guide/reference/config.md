@@ -96,6 +96,15 @@
 | `KDIVE_OIDC_ISSUER` | server | — | yes | Expected token issuer (iss), enforced natively. |
 | `KDIVE_OIDC_JWKS_URI` | server | — | yes | JWKS URI the bearer-token verifier fetches signing keys from. |
 
+## otel
+
+| Variable | Processes | Default | Required | Value |
+|----------|-----------|---------|----------|-------|
+| `KDIVE_OTEL_ENABLED` | migrate, reconciler, server, worker | — | no | Presence (1/true/yes) enables OTLP export of logs/metrics/traces (default off). |
+| `KDIVE_OTEL_EXPORTER_OTLP_ENDPOINT` | migrate, reconciler, server, worker | — | no | OTLP/gRPC collector endpoint; required when KDIVE_OTEL_ENABLED is set. |
+| `KDIVE_OTEL_SERVICE_NAMESPACE` | migrate, reconciler, server, worker | `kdive` | no | service.namespace resource attribute on all emitted telemetry. |
+| `KDIVE_OTEL_TRACES_SAMPLER_RATIO` | migrate, reconciler, server, worker | `0.1` | no | Parent-based ratio trace sampler ratio in [0, 1] (default 0.1). |
+
 ## remote-libvirt
 
 | Variable | Processes | Default | Required | Value |
