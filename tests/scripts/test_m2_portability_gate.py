@@ -101,6 +101,7 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/mcp/tools/ops/secrets.py",
                 "src/kdive/mcp/tools/catalog/fixtures.py",
                 "src/kdive/security/secrets/secret_registry.py",
+                "src/kdive/mcp/tools/ops/diagnostics.py",
                 "src/kdive/mcp/app.py",
             }
         )

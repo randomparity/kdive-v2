@@ -85,6 +85,12 @@ ALLOWED_FILES = frozenset(
         "src/kdive/mcp/tools/ops/secrets.py",
         "src/kdive/mcp/tools/catalog/fixtures.py",
         "src/kdive/security/secrets/secret_registry.py",
+        # M2.3 doctor diagnostics tool (#269, ADR-0091): a provider-agnostic platform-operator
+        # tool that runs an assembled set of read-only Checks and aggregates one verdict. It holds
+        # no provider-specific logic — the per-provider checks live in kdive/diagnostics/ (outside
+        # CORE_PREFIXES) and reach the tool only through the injected service factory; this module
+        # is the same authz-gated/audited ops surface as its siblings above.
+        "src/kdive/mcp/tools/ops/diagnostics.py",
         "src/kdive/mcp/app.py",
     }
 )
