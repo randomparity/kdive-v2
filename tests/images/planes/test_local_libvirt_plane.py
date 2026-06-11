@@ -132,3 +132,16 @@ def test_build_fails_fast_when_authorized_key_unresolved(tmp_path: Path) -> None
         _plane(tmp_path, tools).build(_spec())
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert not tools.builder_calls, "no libguestfs stage runs without a resolvable key"
+
+
+@pytest.mark.parametrize("bad_name", ["../escape", "a/b", ".hidden", "-leading", "with space"])
+def test_build_rejects_a_name_that_would_escape_the_workspace(
+    tmp_path: Path, bad_name: str
+) -> None:
+    key = tmp_path / "id.pub"
+    key.write_text("ssh-ed25519 AAAA kdive\n")
+    tools = _RecordingTools(authorized_key=key)
+    with pytest.raises(CategorizedError) as exc:
+        _plane(tmp_path, tools).build(_spec(name=bad_name))
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert not tools.builder_calls, "an unsafe name is rejected before any libguestfs stage runs"
