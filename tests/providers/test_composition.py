@@ -401,12 +401,39 @@ def test_remote_runtime_buildable_without_operator_config(
     assert runtime.discovery_registrar is not None
 
 
-def test_remote_runtime_advertises_kdump_capture() -> None:
-    # The retrieve issue widens the set to the two-phase kdump path (ADR-0084);
-    # host-dump stays unsupported (host-coupled).
+def test_remote_runtime_advertises_kdump_and_gdbstub_capture() -> None:
+    # The retrieve issue widened the set to the two-phase kdump path (ADR-0084); M2.5
+    # advertises the already-wired gdbstub transport (ADR-0083/0085). host-dump is added
+    # by issue #301; console by #303.
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
-    assert runtime.supported_capture_methods == frozenset({CaptureMethod.KDUMP})
+    assert runtime.supported_capture_methods == frozenset(
+        {CaptureMethod.KDUMP, CaptureMethod.GDBSTUB}
+    )
+
+
+def test_remote_runtime_advertises_gdbstub_as_a_capture_method() -> None:
+    # AC2: GDBSTUB is counted by the advertised capability surface. gdbstub is not
+    # consumed through vmcore.fetch (only HOST_DUMP/KDUMP are), so there is no selection
+    # path to gate; the assertion is membership in the advertised set.
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert CaptureMethod.GDBSTUB in runtime.supported_capture_methods
+
+
+def test_remote_runtime_gdbstub_debug_path_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # AC2 no-regression: advertising GDBSTUB does not alter the existing connect/attach
+    # debug path (ADR-0083/0085) — the remote attach seam and connector are unchanged.
+    monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
+    from kdive.providers.remote_libvirt.connect import RemoteLibvirtConnect
+    from kdive.providers.remote_libvirt.debug import remote_attach_seam
+
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert runtime.attach_seam is remote_attach_seam
+    assert isinstance(runtime.connector, RemoteLibvirtConnect)
 
 
 def test_remote_runtime_has_real_control_and_retrieve() -> None:

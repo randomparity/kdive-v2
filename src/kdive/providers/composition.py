@@ -256,8 +256,11 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
         vmcore_introspector=vmcore_introspector,
         live_introspector=live_introspector,
         # The two-phase kdump capture lands here (ADR-0084); vmcore.get admits a kdump
-        # capture against this set. Host-dump stays unsupported (host-coupled).
-        supported_capture_methods=frozenset({CaptureMethod.KDUMP}),
+        # capture against this set. GDBSTUB is the already-wired live-debug transport
+        # (ADR-0083/0085), advertised here as a capture method — it is not consumed
+        # through vmcore.fetch, so it has no selection path to gate. Host-dump (#301) and
+        # console (#303) join this set as their planes land.
+        supported_capture_methods=frozenset({CaptureMethod.KDUMP, CaptureMethod.GDBSTUB}),
         discovery_registrar=register_remote_host,
         attach_seam=remote_attach_seam,
         # The MI ops never validate the host, but pin the ACL-remote policy so the engine and
