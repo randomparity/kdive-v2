@@ -19,7 +19,9 @@ The `just` recipes below are source-tree conveniences. Installed-package deploym
 `python -m kdive migrate` and `python -m kdive seed-demo`, then run the app tier from the
 compose reference (`docker compose up -d migrate server worker reconciler`); see
 [`docs/admin/local-stack.md`](../admin/local-stack.md) and
-[`deploy/compose/README.md`](../../deploy/compose/README.md).
+[`deploy/compose/README.md`](../../deploy/compose/README.md). For a **Kubernetes / Helm**
+deployment (the production-shaped path), see
+[`kubernetes-deploy.md`](kubernetes-deploy.md).
 
 ## Prerequisites
 
