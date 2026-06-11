@@ -5,6 +5,19 @@ metadata:
   name: {{ include "kdive.fullname" . }}-config
   labels:
     {{- include "kdive.labels" . | nindent 4 }}
+  {{- if not .Values.bundledBackends }}
+  annotations:
+    # External path: the migrate Job is a pre-install/pre-upgrade hook that envFroms
+    # this ConfigMap. Helm creates normal resources only AFTER pre-install hooks, so a
+    # normal-resource ConfigMap leaves the migrate pod in CreateContainerConfigError
+    # until the hook timeout (issue #311). Render it as the same hook phase, weighted
+    # below the migrate Job (weight 0) so Helm creates it first; the hook resource
+    # persists, so the normal Deployments still resolve it by name once they roll out.
+    # The bundled demo path migrates after the bundled DB and keeps this normal.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+  {{- end }}
 data:
   {{- range $k, $v := .Values.config }}
   {{- if not (or (eq $k "KDIVE_DATABASE_URL") (eq $k "KDIVE_S3_ENDPOINT_URL")) }}

@@ -74,6 +74,55 @@ def test_external_path_passes_db_url_through_and_omits_demo_creds() -> None:
     assert "wait-for-db" not in res.stdout
 
 
+def _hooks_by_kind(*set_args: str) -> dict[str, dict[str, Any]]:
+    """Render the chart and index its hook-annotated manifests by Kind.
+
+    Returns ``{kind: {"phase": <hook value>, "weight": <int>}}`` for every doc
+    that carries a ``helm.sh/hook`` annotation, so a test can assert the relative
+    creation order Helm derives from hook phase + weight.
+    """
+    res = _template(*set_args)
+    assert res.returncode == 0, res.stderr
+    out: dict[str, dict[str, Any]] = {}
+    for doc in yaml.safe_load_all(res.stdout):
+        if not isinstance(doc, dict):
+            continue
+        annotations = doc.get("metadata", {}).get("annotations") or {}
+        hook = annotations.get("helm.sh/hook")
+        if hook is None:
+            continue
+        out[doc["kind"]] = {
+            "phase": hook,
+            "weight": int(annotations.get("helm.sh/hook-weight", "0")),
+        }
+    return out
+
+
+def test_external_configmap_is_a_pre_install_hook_before_migrate() -> None:
+    # The migrate Job is a pre-install hook that envFroms the config ConfigMap. Helm
+    # creates normal resources only AFTER pre-install hooks, so a normal-resource
+    # ConfigMap leaves the migrate pod in CreateContainerConfigError until the hook
+    # timeout (issue #311). The ConfigMap must therefore be a pre-install hook too,
+    # weighted strictly lower than the migrate Job so Helm creates it first.
+    hooks = _hooks_by_kind("config.KDIVE_DATABASE_URL=postgresql://x/y")
+    assert "ConfigMap" in hooks, "external-path ConfigMap is not a hook; migrate cannot read it"
+    assert "Job" in hooks
+    assert "pre-install" in hooks["ConfigMap"]["phase"]
+    assert "pre-upgrade" in hooks["ConfigMap"]["phase"]
+    assert hooks["ConfigMap"]["weight"] < hooks["Job"]["weight"], (
+        "ConfigMap hook-weight must be strictly below the migrate Job's so it is created first"
+    )
+
+
+def test_bundled_configmap_stays_a_normal_resource() -> None:
+    # The bundled demo path runs migrate POST-install (after the bundled Postgres is
+    # created), so its ConfigMap is already present as a normal resource by then.
+    # Turning it into a hook would change the bundled path's behavior for no reason,
+    # so the hook annotation must be scoped to the external path only.
+    hooks = _hooks_by_kind("bundledBackends=true", "demoAcknowledged=true")
+    assert "ConfigMap" not in hooks, "bundled-path ConfigMap should stay a normal resource"
+
+
 def _deployments() -> dict[str, dict[str, Any]]:
     """Render the external-backend chart and index Deployments by process name."""
     res = _template("config.KDIVE_DATABASE_URL=postgresql://x/y")
