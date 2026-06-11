@@ -256,6 +256,26 @@ def test_over_bytes_cap_denied_fail_closed(
     asyncio.run(_run())
 
 
+def test_accumulated_bytes_cap_denied_under_lock(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Neither image alone exceeds the cap, but the second pushes the project total over it. The
+    # under-lock authoritative check (current usage + new bytes) must deny — not just the
+    # single-object pre-check.
+    monkeypatch.setenv(IMAGE_PRIVATE_MAX_BYTES.name, "20")
+    store = _quarantine(b"twelve-bytes", key="uploads/q/proj/a.qcow2")  # 12 bytes
+    store._objects["uploads/q/proj/b.qcow2"] = b"twelve-bytes"  # noqa: SLF001 - test seam
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await _register(conn, store, name="first", quarantine_key="uploads/q/proj/a.qcow2")
+            with pytest.raises(CategorizedError) as err:
+                await _register(conn, store, name="second", quarantine_key="uploads/q/proj/b.qcow2")
+            assert err.value.category is ErrorCategory.QUOTA_EXCEEDED
+
+    asyncio.run(_run())
+
+
 def test_concurrent_uploads_cannot_both_pass_the_cap(
     migrated_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

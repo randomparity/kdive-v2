@@ -162,6 +162,34 @@ def _validate_staged(source: Path, required: Sequence[str], inspect: InspectSeam
     validate_guest_contract(source, required=required, inspect=inspect)
 
 
+async def _reject_oversize_upload(store: UploadObjectStore, quarantine_key: str) -> None:
+    """Reject an upload whose object already exceeds the per-project bytes cap before buffering.
+
+    HEADs the quarantined object (cheap — no body read) and rejects a single object larger than
+    ``IMAGE_PRIVATE_MAX_BYTES`` up front, so the service never reads a multi-GiB body into memory
+    only to deny it under the lock. The authoritative cap (current usage + this upload) is still
+    enforced under the project lock; this is the pre-buffer DoS bound, not a replacement for it.
+
+    Raises:
+        CategorizedError: ``QUOTA_EXCEEDED`` if the object alone exceeds the per-project bytes cap;
+            ``STALE_HANDLE`` if the quarantined object is gone.
+    """
+    head = await asyncio.to_thread(store.head, quarantine_key)
+    if head is None:
+        raise CategorizedError(
+            f"quarantined upload object {quarantine_key!r} is gone",
+            category=ErrorCategory.STALE_HANDLE,
+            details={"key": quarantine_key},
+        )
+    max_bytes = config.require(IMAGE_PRIVATE_MAX_BYTES)
+    if head.size_bytes > max_bytes:
+        raise CategorizedError(
+            "uploaded image exceeds the per-project private-image bytes cap",
+            category=ErrorCategory.QUOTA_EXCEEDED,
+            details={"size_bytes": head.size_bytes, "cap_bytes": max_bytes},
+        )
+
+
 async def register_private_upload(
     conn: AsyncConnection,
     store: UploadObjectStore,
@@ -210,6 +238,7 @@ async def register_private_upload(
     """
     _ = ImageVisibility.PRIVATE  # the registered scope is fixed for this path
 
+    await _reject_oversize_upload(store, quarantine_key)
     fetched = await asyncio.to_thread(store.get_artifact, quarantine_key, None)
     data = fetched.data
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
