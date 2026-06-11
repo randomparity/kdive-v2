@@ -35,6 +35,7 @@ from kdive.mcp.tools.catalog import (
     resources,
     shapes,
 )
+from kdive.mcp.tools.catalog import images as catalog_images
 from kdive.mcp.tools.debug import introspect
 from kdive.mcp.tools.debug import sessions as debug_tools
 from kdive.mcp.tools.lifecycle import allocations
@@ -45,6 +46,7 @@ from kdive.mcp.tools.lifecycle.systems import registrar as systems_tools
 from kdive.mcp.tools.ops import audit as audit_tools
 from kdive.mcp.tools.ops import breakglass as ops_breakglass_tools
 from kdive.mcp.tools.ops import diagnostics as ops_diagnostics_tools
+from kdive.mcp.tools.ops import images as ops_images_tools
 from kdive.mcp.tools.ops import inventory as inventory_tools
 from kdive.mcp.tools.ops import queue as ops_queue_tools
 from kdive.mcp.tools.ops import reconcile as ops_reconcile_tools
@@ -120,6 +122,8 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     ),
     _plain(inventory_tools.register),
     _plain(fixtures.register),
+    _plain(catalog_images.register),
+    lambda app, pool, resolver, registry, reaper: ops_images_tools.register_from_env(app, pool),
     lambda app, pool, resolver, registry, reaper: ops_secrets_tools.register(app, pool, registry),
 )
 

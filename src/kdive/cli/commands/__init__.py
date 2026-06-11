@@ -11,9 +11,9 @@ import argparse
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from kdive.cli.commands import doctor, mutations, reads
+from kdive.cli.commands import doctor, images, mutations, reads
 
-__all__ = ["REGISTRY", "Verb", "add_subparsers", "doctor", "run_verb"]
+__all__ = ["REGISTRY", "Verb", "add_subparsers", "doctor", "images", "run_verb"]
 
 
 @dataclass(frozen=True)
@@ -89,6 +89,57 @@ REGISTRY: tuple[Verb, ...] = (
         "resources.drain",
         ("resource_id",),
         options=("mode", "reason"),
+        read_only=False,
+    ),
+    Verb("images", "list", images.images_list, "images.list"),
+    Verb(
+        "images",
+        "upload",
+        images.images_upload,
+        "images.upload",
+        options=("project", "name", "arch", "quarantine_key", "lifetime_seconds"),
+        read_only=False,
+    ),
+    Verb(
+        "images",
+        "delete",
+        images.images_delete,
+        "images.delete",
+        ("image_id",),
+        read_only=False,
+    ),
+    Verb(
+        "images",
+        "build",
+        images.images_build,
+        "images.build",
+        options=("provider", "name", "arch", "releasever", "source_image_digest", "capabilities"),
+        read_only=False,
+    ),
+    Verb(
+        "images",
+        "publish",
+        images.images_publish,
+        "images.publish",
+        options=("provider", "name", "arch", "releasever", "source_image_digest", "capabilities"),
+        read_only=False,
+    ),
+    Verb(
+        "images",
+        "prune",
+        images.images_prune,
+        "images.prune_expired",
+        options=("reason",),
+        flags=("expired",),
+        read_only=False,
+    ),
+    Verb(
+        "images",
+        "extend",
+        images.images_extend,
+        "images.extend",
+        ("image_id",),
+        options=("seconds", "reason"),
         read_only=False,
     ),
 )

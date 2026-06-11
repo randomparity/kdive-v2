@@ -153,6 +153,17 @@ ALLOWED_FILES = frozenset(
         # (an ObjectStore satisfies it) and the catalog table; no provider-specific logic.
         # reconciler/loop.py (already allowlisted) appends the three _RepairSpecs + report counts.
         "src/kdive/reconciler/images.py",
+        # M2.4 kdivectl images verbs + RBAC/break-glass (#288, ADR-0092/0093): the operator
+        # image-management surface. ops/images.py wires build/publish (platform_operator) +
+        # upload/delete (project-scoped operator) + prune_expired/extend (platform_admin
+        # break-glass) over the shared publish/upload/reconciler services (no second source of
+        # truth); catalog/images.py is the RBAC-filtered images.list read; _docmeta.py adds the
+        # three new destructive tools to the reviewed set. None of it is provider-specific —
+        # authz is the same gate-then-act-then-audit ops surface as its siblings above, and the
+        # kdivectl CLI verbs live outside CORE_PREFIXES (src/kdive/cli/...).
+        "src/kdive/mcp/tools/ops/images.py",
+        "src/kdive/mcp/tools/catalog/images.py",
+        "src/kdive/mcp/tools/_docmeta.py",
     }
 )
 

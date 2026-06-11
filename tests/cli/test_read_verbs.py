@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import json
 
 import pytest
@@ -190,8 +191,12 @@ _READ_VERBS = [v for v in REGISTRY if v.read_only]
 @pytest.mark.parametrize("verb", _READ_VERBS, ids=lambda v: f"{v.group}.{v.sub}")
 def test_handler_calls_the_tool_the_registry_declares(verb, monkeypatch, capsys) -> None:
     # Bind verb.tool (what the read-only gate test checks) to the handler's real call, so a
-    # registry that declares a read-only tool but dispatches to another would fail here.
-    client = _install_session(monkeypatch, _collection([]))
+    # registry that declares a read-only tool but dispatches to another would fail here. The
+    # session seam is patched on the handler's own module (read verbs live in more than one
+    # command module now: reads.py and images.py).
+    client = _FakeClient(_collection([]))
+    handler_module = importlib.import_module(verb.handler.__module__)
+    monkeypatch.setattr(handler_module, "_session_factory", lambda: _FakeSession(client))
     args = argparse.Namespace(json=False)
     for name in (*verb.positionals, *verb.options):
         setattr(args, name, f"{name}-val")
