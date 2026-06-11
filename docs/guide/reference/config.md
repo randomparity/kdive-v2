@@ -64,6 +64,10 @@
 
 | Variable | Processes | Default | Required | Value |
 |----------|-----------|---------|----------|-------|
+| `KDIVE_IMAGE_PRIVATE_LIFETIME_DEFAULT_SECONDS` | server | `604800` | no | Default lifetime in seconds applied to a project-private uploaded image when the caller does not request an explicit expiry; the registered row's expires_at is set to now() + this window. |
+| `KDIVE_IMAGE_PRIVATE_LIFETIME_MAX_SECONDS` | server | `2592000` | no | Hard ceiling in seconds on a project-private image lifetime. A requested expiry beyond now() + this window is clamped to the ceiling so a private upload cannot outlive the milestone TTL policy. |
+| `KDIVE_IMAGE_PRIVATE_MAX_BYTES` | server | `53687091200` | no | Per-project cap in bytes on the total size of live (pending or registered) private images. An upload whose size would push the project total past the cap is denied fail-closed under the held project lock and audited. |
+| `KDIVE_IMAGE_PRIVATE_MAX_COUNT` | server | `50` | no | Per-project cap on the number of live (pending or registered) private images. An upload that would exceed the cap is denied fail-closed under the held project lock and audited. |
 | `KDIVE_IMAGE_PUBLISH_GRACE_SECONDS` | reconciler, worker | `3600` | no | Image publish-deadline grace window in seconds. A pending image row (or an orphan object with no row) is protected from the reconciler's leaked/dangling sweeps until pending_since + this window elapses, so an in-flight publish is not reaped. |
 
 ## install

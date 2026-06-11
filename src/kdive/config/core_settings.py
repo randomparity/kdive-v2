@@ -254,6 +254,58 @@ IMAGE_PUBLISH_GRACE = Setting(
     suggest="an integer number of seconds, e.g. 3600",
 )
 
+IMAGE_PRIVATE_LIFETIME_DEFAULT = Setting(
+    name="KDIVE_IMAGE_PRIVATE_LIFETIME_DEFAULT_SECONDS",
+    parse=_int,
+    default=str(7 * 24 * 3600),
+    group="images",
+    processes=_SERVER,
+    help=(
+        "Default lifetime in seconds applied to a project-private uploaded image when the "
+        "caller does not request an explicit expiry; the registered row's expires_at is set to "
+        "now() + this window."
+    ),
+    suggest="an integer number of seconds, e.g. 604800 (7 days)",
+)
+IMAGE_PRIVATE_LIFETIME_MAX = Setting(
+    name="KDIVE_IMAGE_PRIVATE_LIFETIME_MAX_SECONDS",
+    parse=_int,
+    default=str(30 * 24 * 3600),
+    group="images",
+    processes=_SERVER,
+    help=(
+        "Hard ceiling in seconds on a project-private image lifetime. A requested expiry beyond "
+        "now() + this window is clamped to the ceiling so a private upload cannot outlive the "
+        "milestone TTL policy."
+    ),
+    suggest="an integer number of seconds, e.g. 2592000 (30 days)",
+)
+IMAGE_PRIVATE_MAX_COUNT = Setting(
+    name="KDIVE_IMAGE_PRIVATE_MAX_COUNT",
+    parse=_int,
+    default="50",
+    group="images",
+    processes=_SERVER,
+    help=(
+        "Per-project cap on the number of live (pending or registered) private images. An upload "
+        "that would exceed the cap is denied fail-closed under the held project lock and audited."
+    ),
+    suggest="an integer count, e.g. 50",
+)
+IMAGE_PRIVATE_MAX_BYTES = Setting(
+    name="KDIVE_IMAGE_PRIVATE_MAX_BYTES",
+    parse=_int,
+    default=str(50 * 1024 * 1024 * 1024),
+    group="images",
+    processes=_SERVER,
+    help=(
+        "Per-project cap in bytes on the total size of live (pending or registered) private "
+        "images. An upload whose size would push the project total past the cap is denied "
+        "fail-closed under the held project lock and audited."
+    ),
+    suggest="an integer number of bytes, e.g. 53687091200 (50 GiB)",
+)
+
 FAULT_INJECT = Setting(
     name="KDIVE_FAULT_INJECT",
     parse=_str,
@@ -336,6 +388,10 @@ SETTINGS = [
     INSTALL_STAGING,
     FIXTURE_CATALOG_PATH,
     IMAGE_PUBLISH_GRACE,
+    IMAGE_PRIVATE_LIFETIME_DEFAULT,
+    IMAGE_PRIVATE_LIFETIME_MAX,
+    IMAGE_PRIVATE_MAX_COUNT,
+    IMAGE_PRIVATE_MAX_BYTES,
     FAULT_INJECT,
     OTEL_ENABLED,
     OTEL_EXPORTER_OTLP_ENDPOINT,
