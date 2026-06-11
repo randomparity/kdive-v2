@@ -11,12 +11,17 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
 
 CHART = str(Path(__file__).resolve().parents[2] / "deploy" / "helm" / "kdive")
+
+# Per-process aux health/metrics ports (ADR-0090 §5), matching the registry defaults.
+_AUX_PORTS = {"server": 9464, "worker": 9465, "reconciler": 9466}
 
 
 def _template(*set_args: str) -> subprocess.CompletedProcess[str]:
@@ -67,6 +72,70 @@ def test_external_path_passes_db_url_through_and_omits_demo_creds() -> None:
     assert 'KDIVE_DATABASE_URL: "postgresql://ext/db"' in res.stdout
     assert "AWS_ACCESS_KEY_ID" not in res.stdout
     assert "wait-for-db" not in res.stdout
+
+
+def _deployments() -> dict[str, dict[str, Any]]:
+    """Render the external-backend chart and index Deployments by process name."""
+    res = _template("config.KDIVE_DATABASE_URL=postgresql://x/y")
+    assert res.returncode == 0, res.stderr
+    out: dict[str, dict[str, Any]] = {}
+    for doc in yaml.safe_load_all(res.stdout):
+        if isinstance(doc, dict) and doc.get("kind") == "Deployment":
+            name = doc["metadata"]["name"]
+            for proc in _AUX_PORTS:
+                if name.endswith(f"-{proc}"):
+                    out[proc] = doc
+    return out
+
+
+def _container(deploy: dict[str, Any]) -> dict[str, Any]:
+    return deploy["spec"]["template"]["spec"]["containers"][0]
+
+
+@pytest.mark.parametrize("proc", list(_AUX_PORTS))
+def test_deployment_binds_aux_listener_to_pod_interface(proc: str) -> None:
+    # Each pod runs in its own network namespace; the kubelet probes from the node and a
+    # scrape comes from outside the container, so the aux listener binds 0.0.0.0:<port>
+    # via an explicit per-deployment KDIVE_HEALTH_BIND_ADDR env (env wins over the shared
+    # configMap). No Service fronts the aux port, so it stays pod-local / non-public.
+    env = {e["name"]: e.get("value") for e in _container(_deployments()[proc])["env"]}
+    assert env["KDIVE_HEALTH_BIND_ADDR"] == f"0.0.0.0:{_AUX_PORTS[proc]}"
+
+
+@pytest.mark.parametrize("proc", list(_AUX_PORTS))
+def test_deployment_liveness_probes_livez_on_aux_port(proc: str) -> None:
+    # Liveness probes /livez (loop-alive), NOT /readyz: a failing readiness (a backend
+    # down) must not let the kubelet kill a live-but-not-ready pod (ADR-0090 §5).
+    probe = _container(_deployments()[proc])["livenessProbe"]
+    assert probe["httpGet"]["path"] == "/livez"
+    assert probe["httpGet"]["port"] == _AUX_PORTS[proc]
+
+
+@pytest.mark.parametrize("proc", list(_AUX_PORTS))
+def test_deployment_readiness_probes_readyz_on_aux_port(proc: str) -> None:
+    probe = _container(_deployments()[proc])["readinessProbe"]
+    assert probe["httpGet"]["path"] == "/readyz"
+    assert probe["httpGet"]["port"] == _AUX_PORTS[proc]
+
+
+@pytest.mark.parametrize("proc", list(_AUX_PORTS))
+def test_deployment_has_prometheus_scrape_annotations(proc: str) -> None:
+    # The pull-based scrape targets /metrics on the aux port (ADR-0090 §5).
+    annotations = _deployments()[proc]["spec"]["template"]["metadata"].get("annotations", {})
+    assert annotations.get("prometheus.io/scrape") == "true"
+    assert annotations.get("prometheus.io/path") == "/metrics"
+    assert annotations.get("prometheus.io/port") == str(_AUX_PORTS[proc])
+
+
+def test_service_does_not_expose_the_aux_port() -> None:
+    # The aux listener carries no auth; the network boundary is its access control. The
+    # only Service (server's MCP) must front 8000 only, never the aux port.
+    res = _template("config.KDIVE_DATABASE_URL=postgresql://x/y")
+    assert res.returncode == 0, res.stderr
+    for doc in yaml.safe_load_all(res.stdout):
+        if isinstance(doc, dict) and doc.get("kind") == "Service":
+            svc_ports = {p.get("port") for p in doc["spec"]["ports"]}
+            assert svc_ports == {8000}
 
 
 def test_lint_is_clean() -> None:

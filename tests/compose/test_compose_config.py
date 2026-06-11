@@ -117,3 +117,37 @@ def test_server_binds_all_interfaces_and_publishes_its_port() -> None:
     assert server["environment"]["KDIVE_HTTP_HOST"] == "0.0.0.0"
     published = {str(p.get("published")) for p in server.get("ports", [])}
     assert "8000" in published
+
+
+# Per-process aux health/metrics ports (ADR-0090 §5): the loopback default ports the
+# bind decision keeps, but bound to 0.0.0.0 inside each container so the compose
+# healthcheck (and an in-network scrape) can reach a side port that is never published.
+_AUX_PORTS = {"server": 9464, "worker": 9465, "reconciler": 9466}
+
+
+@pytest.mark.parametrize("service", _APP_SERVICES)
+def test_aux_health_listener_binds_container_interface_on_its_port(service: str) -> None:
+    # Each process runs in its own container/network namespace, so the aux listener is
+    # bound 0.0.0.0:<per-process-port> via an explicit KDIVE_HEALTH_BIND_ADDR (loopback
+    # default is not reachable by a healthcheck that execs in the container's PID/net ns
+    # only via 127.0.0.1, and never by an in-network scrape). The container ns IS the
+    # trust boundary: the aux port is never published to the host.
+    env = _services()[service]["environment"]
+    assert env["KDIVE_HEALTH_BIND_ADDR"] == f"0.0.0.0:{_AUX_PORTS[service]}"
+
+
+@pytest.mark.parametrize("service", _APP_SERVICES)
+def test_aux_port_is_not_published_to_the_host(service: str) -> None:
+    # The aux listener carries no auth; the network boundary is its access control. It
+    # must never be in a host port mapping (only the server's 8000 MCP port is).
+    published = {str(p.get("published")) for p in _services()[service].get("ports", [])}
+    assert str(_AUX_PORTS[service]) not in published
+
+
+@pytest.mark.parametrize("service", _APP_SERVICES)
+def test_app_service_has_healthcheck_against_its_aux_readyz(service: str) -> None:
+    # The compose liveness/readiness wiring probes /readyz on the process's own aux port.
+    healthcheck = _services()[service]["healthcheck"]
+    test_cmd = healthcheck["test"]
+    joined = " ".join(test_cmd) if isinstance(test_cmd, list) else str(test_cmd)
+    assert f"127.0.0.1:{_AUX_PORTS[service]}/readyz" in joined
