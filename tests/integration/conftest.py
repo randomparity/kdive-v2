@@ -56,14 +56,12 @@ def live_vm_preflight(*, require_ssh: bool = False) -> tuple[Path, Path]:
     """Resolve operator-provided live-VM fixtures or skip with the setup command."""
     image = os.environ.get(_GUEST_IMAGE_ENV)
     if not image or not Path(image).exists():
-        pytest.skip(
-            f"{_GUEST_IMAGE_ENV} unset or missing; run scripts/live-vm/build-guest-image.sh"
-        )
+        pytest.skip(f"{_GUEST_IMAGE_ENV} unset or missing; run `python -m kdive build-rootfs`")
     tree = os.environ.get(_KERNEL_TREE_ENV)
     if not tree or not Path(tree).exists():
         pytest.skip(
-            f"{_KERNEL_TREE_ENV} unset or missing; run scripts/live-vm/fetch-kernel-tree.sh"
+            f"{_KERNEL_TREE_ENV} unset or missing; run the fetch-kernel-tree fixture script"
         )
     if require_ssh and not os.environ.get(_LIVE_SSH_ENV):
-        pytest.skip(f"{_LIVE_SSH_ENV} unset; run scripts/live-vm/check-ssh-reachable.sh <host>")
+        pytest.skip(f"{_LIVE_SSH_ENV} unset; run the check-ssh-reachable fixture script <host>")
     return Path(image), Path(tree)

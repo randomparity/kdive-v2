@@ -67,13 +67,11 @@ def _spine_preflight() -> tuple[OidcIssuer, str, str]:
     """Resolve issuer + stack URL + DB URL, or skip with the exact fix (ADR-0035 §4)."""
     image = os.environ.get(_GUEST_IMAGE_ENV)
     if not image or not Path(image).exists():
-        pytest.skip(
-            f"{_GUEST_IMAGE_ENV} unset or missing; run scripts/live-vm/build-guest-image.sh"
-        )
+        pytest.skip(f"{_GUEST_IMAGE_ENV} unset or missing; run `python -m kdive build-rootfs`")
     tree = os.environ.get(_KERNEL_TREE_ENV)
     if not tree or not Path(tree).exists():
         pytest.skip(
-            f"{_KERNEL_TREE_ENV} unset or missing; run scripts/live-vm/fetch-kernel-tree.sh"
+            f"{_KERNEL_TREE_ENV} unset or missing; run the fetch-kernel-tree fixture script"
         )
     db_url = os.environ.get(_DATABASE_URL_ENV)
     if not db_url:
