@@ -119,7 +119,8 @@ class Worker:
             if await queue.is_queue_paused(conn):
                 return None
             job = await queue.dequeue(conn, self._worker_id, lease=self._lease)
-            self._telemetry.observe_queue_depth(await queue.count_claimable(conn))
+            if self._telemetry.enabled:
+                self._telemetry.observe_queue_depth(await queue.count_claimable(conn))
         if job is None:
             return None
         handler = self._registry.get(job.kind)
