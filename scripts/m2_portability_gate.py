@@ -98,6 +98,14 @@ ALLOWED_FILES = frozenset(
         # are restricted to the tool name + outcome (no provider/tenant data); none of it
         # is provider-specific.
         "src/kdive/mcp/middleware.py",
+        # M2.3 ephemeral-probe-guest egress check (#270, ADR-0091 §3): the heartbeat-honoring
+        # reaper sweep for leaked `guest_egress` probe guests and its marker table. Both are
+        # provider-agnostic — the reconciler reaps a probe by domain name through its existing
+        # InfraReaper (no provider-specific branch), and the table is the reaper-visible marker
+        # (active-run heartbeat + hard TTL). The probe-guest provision/exec seam itself lives in
+        # kdive/diagnostics/ (outside CORE_PREFIXES) and is provider-wired by the live gate.
+        "src/kdive/reconciler/provider_reaping.py",
+        "src/kdive/db/schema/0022_egress_probe_guests.sql",
     }
 )
 

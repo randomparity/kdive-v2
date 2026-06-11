@@ -105,6 +105,8 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/mcp/tools/ops/diagnostics.py",
                 "src/kdive/mcp/app.py",
                 "src/kdive/mcp/middleware.py",
+                "src/kdive/reconciler/provider_reaping.py",
+                "src/kdive/db/schema/0022_egress_probe_guests.sql",
             }
         )
         == ALLOWED_FILES

@@ -15,8 +15,7 @@ breakage must not emit a confident wrong fix when a backend was simply down.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Protocol
 
 from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
@@ -42,10 +41,25 @@ if TYPE_CHECKING:
     from kdive.security.authz.context import RequestContext
 
 _TOOL = "ops.diagnostics"
+# The distinct audit tool for the mutating opt-in egress probe (ADR-0091 §4): provisioning a
+# guest is recorded under its own event so it cannot be amplified into resource exhaustion
+# under cover of "just running doctor", and is separable in the audit trail from the read-only
+# run.
+_EGRESS_TOOL = "ops.diagnostics.egress"
 _OBJECT_ID = "diagnostics"
 
-# Builds the service for a provider target (a named provider, or None for all registered).
-ServiceFactory = Callable[[str | None], DiagnosticsService]
+
+class ServiceFactory(Protocol):
+    """Builds the diagnostics service for a provider target and the egress opt-in.
+
+    ``provider`` is a named registered provider, or ``None`` for all registered.
+    ``with_egress`` assembles the heavy opt-in ``guest_egress`` check (provisions a probe
+    guest) on top of the cheap read-only checks (ADR-0091 §3).
+    """
+
+    def __call__(
+        self, provider: str | None, *, with_egress: bool = False
+    ) -> DiagnosticsService: ...
 
 
 def _denied() -> ToolResponse:
@@ -60,29 +74,37 @@ async def run_diagnostics(
     ctx: RequestContext,
     *,
     provider: str | None = None,
+    with_egress: bool = False,
 ) -> ToolResponse:
     """Run the read-only diagnostics and return one coherent verdict; operator-gated.
 
     A caller without ``platform_operator`` is denied; the denial is audited iff the caller
     holds any platform role (the over-reach accountability row), and the served run is
-    always audited under the resolved actor. The verdict carries each check's three-state
-    result; an ``error`` item is reported distinctly and never inflated into a ``fail``.
+    always audited under the resolved actor. ``with_egress`` opts into the heavy mutating
+    ``guest_egress`` probe (provisions a guest); when set, the provisioning action is audited
+    **distinctly** from the read-only run so it cannot be amplified under cover of "just
+    running doctor" (ADR-0091 §4). The verdict carries each check's three-state result; an
+    ``error`` item is reported distinctly and never inflated into a ``fail``.
     """
     with bind_context(principal=ctx.principal):
         try:
             require_platform_role(ctx, PlatformRole.PLATFORM_OPERATOR)
         except AuthorizationError:
             await audit_platform_denial(
-                pool, ctx, tool=_TOOL, scope=ALL_PROJECTS_SCOPE, args=_audit_args(provider)
+                pool,
+                ctx,
+                tool=_TOOL,
+                scope=ALL_PROJECTS_SCOPE,
+                args=_audit_args(provider, with_egress),
             )
             return _denied()
-        report = await _build_and_run(service_factory, provider)
-        await _audit_run(pool, ctx, provider)
+        report = await _build_and_run(service_factory, provider, with_egress)
+        await _audit_run(pool, ctx, provider, with_egress)
         return _verdict(report.results, report.has_failure, report.has_error)
 
 
 async def _build_and_run(
-    service_factory: ServiceFactory, provider: str | None
+    service_factory: ServiceFactory, provider: str | None, with_egress: bool
 ) -> DiagnosticsReport:
     """Build the service for ``provider`` and run it; map a build failure to an ``error``.
 
@@ -93,7 +115,7 @@ async def _build_and_run(
     breakage must not 500 on the configuration it exists to inspect).
     """
     try:
-        service = service_factory(provider)
+        service = service_factory(provider, with_egress=with_egress)
     except Exception:  # noqa: BLE001 - a build/config fault is an error verdict, not a crash
         return DiagnosticsReport(
             results=[
@@ -107,11 +129,14 @@ async def _build_and_run(
     return await service.run()
 
 
-def _audit_args(provider: str | None) -> dict[str, object]:
-    return {"provider": provider}
+def _audit_args(provider: str | None, with_egress: bool) -> dict[str, object]:
+    return {"provider": provider, "with_egress": with_egress}
 
 
-async def _audit_run(pool: AsyncConnectionPool, ctx: RequestContext, provider: str | None) -> None:
+async def _audit_run(
+    pool: AsyncConnectionPool, ctx: RequestContext, provider: str | None, with_egress: bool
+) -> None:
+    args = _audit_args(provider, with_egress)
     async with pool.connection() as conn, conn.transaction():
         await audit.record_platform(
             conn,
@@ -120,11 +145,24 @@ async def _audit_run(pool: AsyncConnectionPool, ctx: RequestContext, provider: s
             event=audit.PlatformAuditEvent(
                 tool=_TOOL,
                 scope=ALL_PROJECTS_SCOPE,
-                args=_audit_args(provider),
+                args=args,
                 platform_role=held_platform_roles(ctx),
                 actor=actor_for(ctx),
             ),
         )
+        if with_egress:
+            await audit.record_platform(
+                conn,
+                principal=ctx.principal,
+                agent_session=ctx.agent_session,
+                event=audit.PlatformAuditEvent(
+                    tool=_EGRESS_TOOL,
+                    scope=ALL_PROJECTS_SCOPE,
+                    args=args,
+                    platform_role=held_platform_roles(ctx),
+                    actor=actor_for(ctx),
+                ),
+            )
 
 
 def _item(result: CheckResult) -> ToolResponse:
@@ -157,17 +195,29 @@ def _verdict(results: list[CheckResult], has_failure: bool, has_error: bool) -> 
 def register(app: FastMCP, pool: AsyncConnectionPool, service_factory: ServiceFactory) -> None:
     """Register ``ops.diagnostics`` on ``app``, bound to ``pool`` and the ``service_factory``."""
 
-    @app.tool(name=_TOOL, annotations=_docmeta.read_only(), meta={"maturity": "implemented"})
+    @app.tool(name=_TOOL, annotations=_docmeta.mutating(), meta={"maturity": "implemented"})
     async def ops_diagnostics(
         provider: Annotated[
             str | None,
             Field(description="Diagnose one named registered provider; omit for all registered."),
         ] = None,
+        with_egress: Annotated[
+            bool,
+            Field(
+                description="Opt into the heavy guest_egress probe: provisions a short-lived "
+                "guest on the target provider and execs a presigned request to object-store "
+                "from inside it. Audited distinctly; off by default."
+            ),
+        ] = False,
     ) -> ToolResponse:
-        """Run the read-only deployment diagnostics. Platform operator-gated.
+        """Run the deployment diagnostics. Platform operator-gated.
 
         Returns one verdict carrying each check's three-state status, detail, fix, and the
         provider it covered. A check that could not be run (a down dependency) reports an
-        ``error`` distinctly — it is not a contract failure.
+        ``error`` distinctly — it is not a contract failure. ``with_egress`` adds the mutating
+        ephemeral-probe-guest egress check (off by default; its provisioning is audited
+        distinctly).
         """
-        return await run_diagnostics(pool, service_factory, current_context(), provider=provider)
+        return await run_diagnostics(
+            pool, service_factory, current_context(), provider=provider, with_egress=with_egress
+        )
