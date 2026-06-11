@@ -15,6 +15,7 @@ contract ``fail`` (the tool that explains breakage must not wedge on it).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,7 @@ from kdive.security.secrets.secrets import read_secret_file
 WORKER_UNAVAILABLE_DETAIL = "worker could not pick up the diagnostic job; check /livez and /readyz"
 
 _DEFAULT_PER_CHECK_TIMEOUT = 10.0
+_DEFAULT_OVERALL_TIMEOUT = 30.0
 
 
 class _SecretBackendUnreachable(Exception):
@@ -83,6 +85,7 @@ class DiagnosticsService:
         *,
         checks: Sequence[Check],
         per_check_timeout: float,
+        overall_timeout: float | None = None,
         worker_available: bool = True,
     ) -> None:
         """Build the service.
@@ -91,21 +94,65 @@ class DiagnosticsService:
             checks: The assembled checks to run (server- and worker-vantage).
             per_check_timeout: The per-check timeout bound; a check that does not answer
                 within it is ``error`` (never a hang).
+            overall_timeout: The deadline across the whole run (ADR-0091 §2). Once it is
+                exhausted, every not-yet-run check is reported ``error`` instead of being
+                run, so used as a gate ``doctor`` reports a clean ``error`` rather than
+                hanging on a black-holed host. ``None`` bounds the run only per check.
             worker_available: Whether the worker can pick up worker-vantage jobs. When
                 ``False``, worker-vantage checks are not run — they surface as ``error``
                 pointing at the health endpoints (ADR-0091 §1).
         """
         self._checks = list(checks)
         self._timeout = per_check_timeout
+        self._overall_timeout = overall_timeout
         self._worker_available = worker_available
 
     async def run(self) -> DiagnosticsReport:
-        """Run every check and return the aggregated report."""
+        """Run every check and return the aggregated report.
+
+        Checks run sequentially, each bounded by the per-check timeout and the remaining
+        overall budget (the smaller of the two). When the overall deadline is exhausted,
+        the not-yet-run checks are reported ``error`` rather than run — a gate sees a clean
+        verdict instead of a hang.
+        """
         runnable = [c for c in self._checks if self._can_run(c)]
         skipped = [c for c in self._checks if not self._can_run(c)]
-        results = [await run_check(check, timeout=self._timeout) for check in runnable]
+        results = await self._run_within_budget(runnable)
         results.extend(worker_unavailable_results(skipped))
         return DiagnosticsReport(results=results)
+
+    async def _run_within_budget(self, checks: Sequence[Check]) -> list[CheckResult]:
+        deadline = self._deadline()
+        results: list[CheckResult] = []
+        for index, check in enumerate(checks):
+            remaining = self._remaining(deadline)
+            if remaining is not None and remaining <= 0:
+                results.extend(self._deadline_exceeded(checks[index:]))
+                break
+            timeout = self._timeout if remaining is None else min(self._timeout, remaining)
+            results.append(await run_check(check, timeout=timeout))
+        return results
+
+    def _deadline(self) -> float | None:
+        if self._overall_timeout is None:
+            return None
+        return asyncio.get_running_loop().time() + self._overall_timeout
+
+    def _remaining(self, deadline: float | None) -> float | None:
+        if deadline is None:
+            return None
+        return deadline - asyncio.get_running_loop().time()
+
+    def _deadline_exceeded(self, checks: Sequence[Check]) -> list[CheckResult]:
+        return [
+            CheckResult(
+                check_id=check.id,
+                status=CheckStatus.ERROR,
+                detail=f"overall diagnostics deadline ({self._overall_timeout:g}s) exhausted "
+                "before this check ran",
+            )
+            for check in checks
+        ]
 
     def _can_run(self, check: Check) -> bool:
         return self._worker_available or check.vantage is not Vantage.WORKER
@@ -162,5 +209,7 @@ def default_service_factory(provider: str | None) -> DiagnosticsService:
     probe wiring in the egress-probe wave; this factory ships the cheap server-vantage read.
     """
     return DiagnosticsService(
-        checks=[_secret_ref_check()], per_check_timeout=_DEFAULT_PER_CHECK_TIMEOUT
+        checks=[_secret_ref_check()],
+        per_check_timeout=_DEFAULT_PER_CHECK_TIMEOUT,
+        overall_timeout=_DEFAULT_OVERALL_TIMEOUT,
     )

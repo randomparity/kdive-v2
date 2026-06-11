@@ -62,6 +62,40 @@ def test_service_error_does_not_count_as_failure() -> None:
     assert report.has_error is True
 
 
+class _Slow(_Fixed):
+    def __init__(self, result: CheckResult, *, delay: float) -> None:
+        super().__init__(result)
+        self._delay = delay
+
+    async def run(self) -> CheckResult:
+        await asyncio.sleep(self._delay)
+        return self._result
+
+
+def test_overall_deadline_reports_unrun_checks_as_error() -> None:
+    service = DiagnosticsService(
+        checks=[_Slow(_ok("a"), delay=0.05), _Fixed(_ok("b"))],
+        per_check_timeout=1.0,
+        overall_timeout=0.01,
+    )
+    report = asyncio.run(service.run())
+    by_id = {r.check_id: r for r in report.results}
+    assert by_id["b"].status is CheckStatus.ERROR
+    assert by_id["b"].fix is None
+    assert "deadline" in by_id["b"].detail
+    assert report.has_failure is False
+
+
+def test_overall_deadline_unset_runs_every_check() -> None:
+    service = DiagnosticsService(
+        checks=[_Fixed(_ok("a")), _Fixed(_ok("b"))],
+        per_check_timeout=1.0,
+        overall_timeout=None,
+    )
+    report = asyncio.run(service.run())
+    assert all(r.status is CheckStatus.PASS for r in report.results)
+
+
 def test_worker_unavailable_yields_error_pointing_at_health() -> None:
     worker_checks = [
         _Fixed(_ok("provider_tls"), Vantage.WORKER),
