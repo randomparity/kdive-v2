@@ -71,8 +71,9 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
     # admin-CLI net-new read tools (secrets.list/fixtures.list + their app wiring and the
     # value-free scope_refs accessor), the ADR-0090 §5 server telemetry middleware, and the
     # ADR-0090 §5 worker/reconciler telemetry + aux health gate (#267: worker.py, the two
-    # *_telemetry modules, queue.count_claimable); extending it is a deliberate, reviewed
-    # decision.
+    # *_telemetry modules, queue.count_claimable), and the ADR-0092 M2.4 publish/register +
+    # IMAGE_BUILD job touch (#285: the publish service, the handler + payload, the jobs.kind
+    # widen); extending it is a deliberate, reviewed decision.
     assert (
         frozenset(
             {
@@ -115,6 +116,11 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/reconciler/loop_telemetry.py",
                 "src/kdive/db/schema/0023_image_catalog.sql",
                 "src/kdive/db/repositories.py",
+                "src/kdive/services/images/__init__.py",
+                "src/kdive/services/images/publish.py",
+                "src/kdive/jobs/handlers/image_build.py",
+                "src/kdive/jobs/payloads.py",
+                "src/kdive/db/schema/0024_image_build_job_kind.sql",
             }
         )
         == ALLOWED_FILES

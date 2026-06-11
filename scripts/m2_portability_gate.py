@@ -127,6 +127,18 @@ ALLOWED_FILES = frozenset(
         # CORE_PREFIXES (providers/local_libvirt/...).
         "src/kdive/db/schema/0023_image_catalog.sql",
         "src/kdive/db/repositories.py",
+        # M2.4 publish/register + IMAGE_BUILD job (#285, ADR-0092): the provider-agnostic
+        # row-first publish/register two-write service, the IMAGE_BUILD job kind + handler
+        # (build -> guest-contract-validate -> publish), the typed ImageBuildPayload, and the
+        # jobs.kind CHECK widen that admits the new kind. No provider-specific logic — the
+        # handler drives an injected RootfsBuildPlane and the publish service stores whatever
+        # the PublishRequest carries; the concrete build plane lives under kdive/images/
+        # (outside CORE_PREFIXES).
+        "src/kdive/services/images/__init__.py",
+        "src/kdive/services/images/publish.py",
+        "src/kdive/jobs/handlers/image_build.py",
+        "src/kdive/jobs/payloads.py",
+        "src/kdive/db/schema/0024_image_build_job_kind.sql",
     }
 )
 

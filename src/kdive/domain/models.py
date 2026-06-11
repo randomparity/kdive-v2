@@ -83,6 +83,7 @@ class JobKind(StrEnum):
     FORCE_CRASH = "force_crash"
     POWER = "power"
     CAPTURE_VMCORE = "capture_vmcore"
+    IMAGE_BUILD = "image_build"
 
 
 type DestructiveJobKind = Literal[

@@ -78,11 +78,16 @@ def _real_inspect(qcow2_path: Path, candidates: Sequence[str]) -> set[str]:
     return {path for path, verdict in zip(candidates, verdicts, strict=False) if verdict == "true"}
 
 
+#: The default inspection seam: a real read-only ``guestfish`` probe. Re-exported so the worker
+#: handler can name the same default without reaching for a private symbol.
+DEFAULT_INSPECT: InspectSeam = _real_inspect
+
+
 def validate_guest_contract(
     qcow2_path: Path,
     *,
     required: Sequence[str],
-    inspect: InspectSeam = _real_inspect,
+    inspect: InspectSeam = DEFAULT_INSPECT,
 ) -> None:
     """Confirm ``qcow2_path`` carries every element in ``required``; raise naming the first absent.
 

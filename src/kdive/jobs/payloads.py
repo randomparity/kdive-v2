@@ -7,6 +7,7 @@ sharing raw dict key conventions across modules.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -78,14 +79,45 @@ class CaptureVmcorePayload(SystemPayload):
     method: CaptureMethod
 
 
+class ImageBuildPayload(_PayloadBase):
+    """The inputs an ``IMAGE_BUILD`` job carries: build spec + the publish row's scope.
+
+    The spec fields drive ``RootfsBuildPlane.build`` and the row fields drive
+    ``publish_image``. ``visibility`` is ``"public"`` for an operator base image; a private
+    image carries ``owner`` and ``expires_at`` (the handler validates the pairing through the
+    publish service and the DB CHECK constraints).
+    """
+
+    provider: str
+    name: str
+    arch: str
+    releasever: str
+    packages: tuple[str, ...] = ()
+    source_image_digest: str
+    capabilities: tuple[str, ...] = ()
+    format: str
+    root_device: str
+    visibility: str = "public"
+    owner: str | None = None
+    expires_at: datetime | None = None
+
+
 _PayloadModel = (
     type[SystemPayload]
     | type[ReprovisionPayload]
     | type[RunPayload]
     | type[PowerPayload]
     | type[CaptureVmcorePayload]
+    | type[ImageBuildPayload]
 )
-PayloadModel = SystemPayload | ReprovisionPayload | RunPayload | PowerPayload | CaptureVmcorePayload
+PayloadModel = (
+    SystemPayload
+    | ReprovisionPayload
+    | RunPayload
+    | PowerPayload
+    | CaptureVmcorePayload
+    | ImageBuildPayload
+)
 
 _PAYLOAD_MODELS: dict[JobKind, _PayloadModel] = {
     JobKind.PROVISION: SystemPayload,
@@ -97,6 +129,7 @@ _PAYLOAD_MODELS: dict[JobKind, _PayloadModel] = {
     JobKind.FORCE_CRASH: SystemPayload,
     JobKind.POWER: PowerPayload,
     JobKind.CAPTURE_VMCORE: CaptureVmcorePayload,
+    JobKind.IMAGE_BUILD: ImageBuildPayload,
 }
 _RUN_PAYLOAD_MODELS: dict[JobKind, type[RunPayload]] = {
     JobKind.BUILD: BuildPayload,
