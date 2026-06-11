@@ -17,8 +17,8 @@ from uuid import uuid4
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
-from kdive.db.repositories import IMAGE_CATALOG
 from kdive.domain.models import ImageCatalogEntry, ImageState, ImageVisibility
 from kdive.provider_components.catalog import (
     RootfsCatalogEntry,
@@ -81,7 +81,13 @@ def _defined_row(entry: RootfsCatalogEntry) -> ImageCatalogEntry:
     )
 
 
-async def _identity_exists(conn: AsyncConnection, entry: RootfsCatalogEntry) -> bool:
+async def _identity_present(conn: AsyncConnection, entry: RootfsCatalogEntry) -> bool:
+    """Whether any public row already exists for this identity in any state.
+
+    Skips re-seeding a baseline that build/publish already realized to ``registered`` (or
+    ``pending``) — its ``defined`` row is gone, so the ON CONFLICT-on-``defined`` insert below
+    would otherwise add a spurious second metadata row.
+    """
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "SELECT 1 FROM image_catalog "
@@ -97,8 +103,46 @@ async def _identity_exists(conn: AsyncConnection, entry: RootfsCatalogEntry) -> 
         return await cur.fetchone() is not None
 
 
+async def _insert_defined_if_absent(conn: AsyncConnection, row: ImageCatalogEntry) -> bool:
+    """Insert a ``defined`` row, returning whether it was newly inserted.
+
+    Uses ``ON CONFLICT DO NOTHING`` on the ``image_catalog_one_defined`` partial index so two
+    concurrent seeders cannot both insert the same identity (the loser is a no-op, not a crash).
+    """
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "INSERT INTO image_catalog "
+            "(id, provider, name, arch, format, root_device, object_key, digest, "
+            "capabilities, provenance, visibility, owner, expires_at, state, pending_since) "
+            "VALUES (%(id)s, %(provider)s, %(name)s, %(arch)s, %(format)s, %(root_device)s, "
+            "NULL, NULL, %(capabilities)s, %(provenance)s, %(visibility)s, NULL, NULL, "
+            "%(state)s, %(pending_since)s) "
+            "ON CONFLICT (provider, name, arch) "
+            "WHERE state = 'defined' AND visibility = 'public' DO NOTHING "
+            "RETURNING id",
+            {
+                "id": row.id,
+                "provider": row.provider,
+                "name": row.name,
+                "arch": row.arch,
+                "format": row.format,
+                "root_device": row.root_device,
+                "capabilities": list(row.capabilities),
+                "provenance": Jsonb(row.provenance),
+                "visibility": row.visibility.value,
+                "state": row.state.value,
+                "pending_since": row.pending_since,
+            },
+        )
+        return await cur.fetchone() is not None
+
+
 async def seed_defined_rootfs(conn: AsyncConnection, path: Path | None = None) -> int:
     """Register the baseline rootfs catalog as ``defined`` rows, idempotently.
+
+    Each insert is ``ON CONFLICT DO NOTHING`` on the ``defined``-public unique index, so two
+    concurrent seeders (e.g. racing deploy hooks) cannot collide — the seed step runs after the
+    migration advisory lock is released and holds no lock of its own.
 
     Args:
         conn: An async Postgres connection.
@@ -113,8 +157,8 @@ async def seed_defined_rootfs(conn: AsyncConnection, path: Path | None = None) -
     for entry in catalog.rootfs:
         if entry.visibility != "public":
             continue
-        if await _identity_exists(conn, entry):
+        if await _identity_present(conn, entry):
             continue
-        await IMAGE_CATALOG.insert(conn, _defined_row(entry))
-        registered += 1
+        if await _insert_defined_if_absent(conn, _defined_row(entry)):
+            registered += 1
     return registered

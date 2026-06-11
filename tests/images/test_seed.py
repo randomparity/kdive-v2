@@ -14,7 +14,9 @@ import psycopg
 import pytest
 
 from kdive.domain.models import ImageState, ImageVisibility
-from kdive.images.seed import seed_defined_rootfs
+from kdive.images.seed import _defined_row, _insert_defined_if_absent, seed_defined_rootfs
+from kdive.provider_components.catalog import RootfsCatalogEntry
+from kdive.provider_components.references import LocalComponentRef
 
 _MANIFEST = (
     "schema_version: 1\n"
@@ -120,6 +122,34 @@ def test_seed_honors_fixture_catalog_path_override(
         async with await _connect(migrated_url) as conn:
             count = await seed_defined_rootfs(conn)
             assert count == 1
+
+    asyncio.run(_run())
+
+
+def test_insert_defined_if_absent_is_collision_safe(migrated_url: str) -> None:
+    # Two seeders racing on the same identity must not crash on the defined-public unique index;
+    # the loser is a no-op (the seed runs outside the migration advisory lock).
+    entry = RootfsCatalogEntry(
+        provider="local-libvirt",
+        name="base",
+        arch="x86_64",
+        format="qcow2",
+        root_device="/dev/vda",
+        source=LocalComponentRef(kind="local", path="/var/lib/kdive/rootfs/base.qcow2"),
+        visibility="public",
+        capabilities=["console"],
+    )
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            first = await _insert_defined_if_absent(conn, _defined_row(entry))
+            second = await _insert_defined_if_absent(conn, _defined_row(entry))
+            assert first is True
+            assert second is False
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT count(*) FROM image_catalog")
+                row = await cur.fetchone()
+            assert row is not None and row[0] == 1
 
     asyncio.run(_run())
 
