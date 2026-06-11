@@ -19,6 +19,7 @@ event loop never stalls behind a multi-GiB upload.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -87,28 +88,64 @@ class PublishRequest:
     expires_at: datetime | None = None
 
 
-def image_object_key(provider: str, name: str, arch: str) -> str:
-    """The object-store key for a catalog image, identity-keyed under the ``images/`` prefix.
+def _object_owner_kind(request: PublishRequest) -> str:
+    """The ``owner_kind`` key segment, owner-scoped for a private image.
 
-    Matches the key the materialization fetch reads (``images/{provider}/{name}/{arch}.qcow2``);
-    one registered row per identity means the identity-keyed object is unambiguous.
+    A public image keys its provider directly (``{provider}``); a private image folds the owning
+    project into the segment (``{provider}__{owner}``) so two projects' private images of the same
+    ``(provider, name, arch)`` never collide on one object. The ``__`` separator is illegal in a
+    provider/project name, so the segment stays unambiguous and slash-free (``artifact_key``
+    rejects slashes in a component).
     """
-    return f"images/{provider}/{name}/{arch}.qcow2"
+    if request.visibility == ImageVisibility.PRIVATE.value and request.owner is not None:
+        return f"{request.provider}__{request.owner}"
+    return request.provider
+
+
+def _image_write_request(
+    request: PublishRequest, data: bytes
+) -> artifact_types.ArtifactWriteRequest:
+    """The owner-scoped object write for a catalog image under the ``images/`` prefix."""
+    return artifact_types.ArtifactWriteRequest(
+        tenant="images",
+        owner_kind=_object_owner_kind(request),
+        owner_id=request.name,
+        name=f"{request.arch}.qcow2",
+        data=data,
+        sensitivity=Sensitivity.REDACTED,
+        retention_class=_RETENTION_CLASS,
+    )
+
+
+def image_object_key(request: PublishRequest) -> str:
+    """The object-store key for a catalog image, scoped to its visibility and owner.
+
+    A public image lives under ``images/{provider}/{name}/{arch}.qcow2``; a private image is
+    **owner-scoped** (``images/{provider}__{owner}/{name}/{arch}.qcow2``) so two projects' private
+    images of the same identity never collide on one object. The key is persisted on the row, and
+    the materialization fetch reads it from the row (it never recomputes the key), so the scheme is
+    free to encode owner without a fetch-side change.
+    """
+    return _image_write_request(request, b"").key()
 
 
 async def _adopt_or_insert_pending(
     conn: AsyncConnection, request: PublishRequest, object_key: str
 ) -> UUID:
-    """Adopt the identity's existing non-registered row, or insert a fresh ``pending`` row.
+    """Adopt this scope's existing non-registered row, or insert a fresh ``pending`` row.
 
-    Runs in one transaction so concurrent re-runs of the same identity serialize on the adopted
-    row. A ``defined`` baseline and a crashed ``pending`` attempt are both adopted in place and
-    moved to ``pending`` with ``object_key`` set and ``pending_since`` re-armed; resolution never
-    returns either, so an adopted row is never visible mid-publish.
+    Runs in one transaction so concurrent re-runs of the same image serialize on the adopted row.
+    The match is scoped by ``(provider, name, arch, visibility, owner)`` — a public publish never
+    adopts a project's private row and one project never adopts another's, so cross-tenant
+    isolation holds (the private uniqueness key is ``(owner, provider, name)``). A ``defined``
+    baseline and a crashed ``pending`` attempt are both adopted in place and moved to ``pending``
+    with ``object_key`` set and ``pending_since`` re-armed; resolution never returns either, so an
+    adopted row is never visible mid-publish.
     """
     select_q = sql.SQL(
         "SELECT id FROM image_catalog "
         "WHERE provider = %(provider)s AND name = %(name)s AND arch = %(arch)s "
+        "AND visibility = %(visibility)s AND owner IS NOT DISTINCT FROM %(owner)s "
         "AND state IN (%(defined)s, %(pending)s) "
         "ORDER BY CASE WHEN state = %(pending)s THEN 0 ELSE 1 END "
         "FOR UPDATE LIMIT 1"
@@ -117,6 +154,8 @@ async def _adopt_or_insert_pending(
         "provider": request.provider,
         "name": request.name,
         "arch": request.arch,
+        "visibility": request.visibility,
+        "owner": request.owner,
         "defined": ImageState.DEFINED.value,
         "pending": ImageState.PENDING.value,
     }
@@ -170,18 +209,26 @@ async def _insert_pending(
     return row["id"]
 
 
+def _verify_source_digest(data: bytes, digest: str) -> None:
+    """Reject a publish whose source bytes do not hash to the row's declared ``digest``.
+
+    The materialization fetch verifies ``sha256(object) == row.digest`` on every boot, so a row
+    registered with a mismatched digest would be permanently unfetchable. Verifying here turns
+    that latent corruption into a fail-fast at publish (the row stays ``pending``, never
+    ``registered``). This matters most for a caller-supplied digest (the #286 private-upload path).
+    """
+    actual = "sha256:" + hashlib.sha256(data).hexdigest()
+    if actual != digest:
+        raise CategorizedError(
+            "published image bytes do not match the declared content digest",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"declared": digest, "actual": actual},
+        )
+
+
 async def _write_object(store: ImageObjectStore, request: PublishRequest, data: bytes) -> None:
-    """Write the qcow2 object for ``request``'s identity (offloaded; boto3 is synchronous)."""
-    write_request = artifact_types.ArtifactWriteRequest(
-        tenant="images",
-        owner_kind=request.provider,
-        owner_id=request.name,
-        name=f"{request.arch}.qcow2",
-        data=data,
-        sensitivity=Sensitivity.REDACTED,
-        retention_class=_RETENTION_CLASS,
-    )
-    await asyncio.to_thread(store.put_artifact, write_request)
+    """Write the qcow2 object for ``request``'s scoped identity (offloaded; boto3 is sync)."""
+    await asyncio.to_thread(store.put_artifact, _image_write_request(request, data))
 
 
 async def _registered(conn: AsyncConnection, row_id: UUID) -> ImageCatalogEntry:
@@ -219,14 +266,17 @@ async def publish_image(
         The persisted ``registered`` :class:`ImageCatalogEntry`.
 
     Raises:
-        CategorizedError: ``INFRASTRUCTURE_FAILURE`` if the object write or HEAD gate fails (the
-            row stays ``pending`` for the reconciler to recover).
+        CategorizedError: ``CONFIGURATION_ERROR`` if ``source`` bytes do not hash to
+            ``request.digest`` (the catalog identity the materialization fetch verifies against);
+            ``INFRASTRUCTURE_FAILURE`` if the object write or HEAD gate fails (the row stays
+            ``pending`` for the reconciler to recover).
     """
     _ = ImageVisibility(request.visibility)  # fail-fast on an invalid visibility string
-    object_key = image_object_key(request.provider, request.name, request.arch)
+    object_key = image_object_key(request)
     row_id = await _adopt_or_insert_pending(conn, request, object_key)
 
     data = await asyncio.to_thread(source.read_bytes)
+    _verify_source_digest(data, request.digest)
     await _write_object(store, request, data)
 
     head = await asyncio.to_thread(store.head, object_key)
