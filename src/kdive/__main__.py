@@ -20,7 +20,6 @@ from psycopg_pool import AsyncConnectionPool
 import kdive.config as config
 from kdive.config.core_settings import HTTP_HOST, HTTP_PORT, LOG_LEVEL
 from kdive.db.pool import create_pool
-from kdive.log import configure_logging
 from kdive.version import full_version
 
 if TYPE_CHECKING:
@@ -146,6 +145,7 @@ async def _register_provider_resources(
 def main(argv: list[str] | None = None) -> None:
     """Parse arguments, configure logging, and dispatch to the chosen subcommand."""
     args = build_parser().parse_args(argv)
+    from kdive.observability import bootstrap_stdout_floor, init_telemetry
     from kdive.security.secrets.secret_registry import SecretRegistry
 
     # Snapshot the environment before any setting is read, including the logging
@@ -153,10 +153,17 @@ def main(argv: list[str] | None = None) -> None:
     config.load()
     level = args.log_level or config.require(LOG_LEVEL)
     secret_registry = SecretRegistry()
-    configure_logging(level, secret_registry=secret_registry)
-    _log.info("starting kdive %s (%s)", full_version(), args.command)
+    # Bootstrap-ordering invariant (ADR-0090 §1): the stdlib stdout JSON floor is the
+    # first startup step — before the OTel providers, config validation, or any backend
+    # client — so early-startup records (config-validation failures, the most common
+    # first-run fault) are never lost to an unconfigured root logger.
+    bootstrap_stdout_floor(level, secret_registry=secret_registry)
     if args.command in _RUNNABLE:
         config.validate(args.command)
+        # The config is validated on the stdout floor first; only then is the OTel
+        # pipeline (which may construct an OTLP client) built and the floor handed over.
+        init_telemetry(args.command, secret_registry=secret_registry, level=level)
+    _log.info("starting kdive %s (%s)", full_version(), args.command)
     if args.command == "server":
         host = config.require(HTTP_HOST)
         port = config.require(HTTP_PORT)

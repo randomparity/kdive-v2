@@ -22,8 +22,9 @@ def test_server_validates_all_required_before_any_io(monkeypatch) -> None:
 
     monkeypatch.setattr("kdive.__main__.create_pool", _boom)
     # Stub logging setup: this test asserts validation order, not logging, and the real
-    # configure_logging mutates the global logger hierarchy (caplog-fragile for later tests).
-    monkeypatch.setattr("kdive.__main__.configure_logging", lambda *a, **k: None)
+    # bootstrap mutates the global logger hierarchy (caplog-fragile for later tests).
+    monkeypatch.setattr("kdive.observability.bootstrap_stdout_floor", lambda *a, **k: None)
+    monkeypatch.setattr("kdive.observability.init_telemetry", lambda *a, **k: None)
     with pytest.raises(CategorizedError) as ei:
         main(["server"])
     assert ei.value.category is ErrorCategory.CONFIGURATION_ERROR
@@ -42,7 +43,7 @@ def test_log_level_flag_overrides_env(monkeypatch) -> None:
     def _capture(level: object, **_: object) -> None:
         captured["level"] = level
 
-    monkeypatch.setattr("kdive.__main__.configure_logging", _capture)
+    monkeypatch.setattr("kdive.observability.bootstrap_stdout_floor", _capture)
     monkeypatch.setattr("kdive.admin.bootstrap.install_fixtures", lambda *a, **k: None)
     main(["--log-level", "DEBUG", "install-fixtures"])
     assert captured["level"] == "DEBUG"
@@ -55,7 +56,7 @@ def test_log_level_falls_back_to_registry(monkeypatch) -> None:
     def _capture(level: object, **_: object) -> None:
         captured["level"] = level
 
-    monkeypatch.setattr("kdive.__main__.configure_logging", _capture)
+    monkeypatch.setattr("kdive.observability.bootstrap_stdout_floor", _capture)
     monkeypatch.setattr("kdive.admin.bootstrap.install_fixtures", lambda *a, **k: None)
     main(["install-fixtures"])
     assert captured["level"] == "WARNING"
