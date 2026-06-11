@@ -25,6 +25,7 @@ is synchronous — the worker offloads the whole call via ``asyncio.to_thread`` 
 from __future__ import annotations
 
 import hashlib
+import re
 import subprocess  # noqa: S404 - libguestfs tools invoked with fixed argv, no shell
 import tempfile
 from collections.abc import Callable
@@ -41,6 +42,9 @@ from kdive.prereqs.managed_ssh_key import (
 
 _DEFAULT_WORKSPACE = "/var/lib/kdive/build/images"
 _DEFAULT_IMAGE_SIZE = "6G"
+# The image name becomes the qcow2 filename under the workspace; restrict it so it cannot carry
+# a path separator or `..` that would write the image outside the workspace.
+_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 _READINESS_MARKER = "kdive-ready"
 _DIGEST_CHUNK = 1024 * 1024
 _VIRT_BUILDER_TIMEOUT_S = 30 * 60
@@ -265,6 +269,12 @@ class LocalLibvirtRootfsBuildPlane:
                 ``MISSING_DEPENDENCY`` for absent libguestfs tooling, or ``PROVISIONING_FAILURE``
                 for a build-stage failure.
         """
+        if not _NAME_RE.fullmatch(spec.name):
+            raise CategorizedError(
+                "image name must match ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ (it becomes a filename)",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"name": spec.name},
+            )
         authorized_key = self._tools.resolve_authorized_key()
         if not authorized_key.is_file():
             raise CategorizedError(
@@ -304,7 +314,13 @@ def _digest_file(path: Path) -> str:
 
 
 def _provenance(spec: RootfsBuildSpec, *, size: str, authorized_key: Path) -> dict[str, object]:
-    """Record the pinned inputs and build args that produced the image (falsifiable contract)."""
+    """Record the pinned inputs and build args that produced the image (falsifiable contract).
+
+    ``source_image_digest`` is the caller-declared base/template pin recorded as requested — the
+    plane does not re-fetch and checksum the virt-builder template, so it names what was *asked
+    for*, not a plane-verified hash. The image's verifiable identity is the output qcow2 content
+    digest (:func:`_digest_file`), per ADR-0092.
+    """
     return {
         "plane": "local-libvirt",
         "releasever": spec.releasever,
