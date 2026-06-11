@@ -423,3 +423,30 @@ def test_expire_one_private_image_deletes_when_still_expired(migrated_url: str) 
         assert store.deleted == [key]
 
     asyncio.run(_run())
+
+
+def test_expire_one_private_image_defers_when_referenced_under_lock(migrated_url: str) -> None:
+    """The reference guard is evaluated inside the prune's row lock (atomic with the delete)."""
+
+    async def _run() -> None:
+        key = "images/local-libvirt__proj/locked/x86_64.qcow2"
+        async with await connect(migrated_url) as conn:
+            row_id = await _insert_image_row(
+                conn,
+                name="locked",
+                visibility="private",
+                owner="proj",
+                object_key=key,
+                expires_in=timedelta(seconds=-1),
+            )
+            system_id = await seed_system(conn)  # non-terminal
+            await _set_catalog_rootfs(conn, system_id, provider="local-libvirt", name="locked")
+            store = _FakeImageStore({key: timedelta(hours=2)})
+            deleted = await _expire_one_private_image(conn, store, row_id, key)
+        assert deleted is False
+        assert store.deleted == []
+        async with await connect(migrated_url) as check:
+            cur = await check.execute("SELECT 1 FROM image_catalog WHERE id = %s", (row_id,))
+            assert await cur.fetchone() is not None
+
+    asyncio.run(_run())
