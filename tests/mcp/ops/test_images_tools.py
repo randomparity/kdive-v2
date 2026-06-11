@@ -25,13 +25,16 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 import psycopg
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.errors import ErrorCategory
+from kdive.domain.state import SystemState
 from kdive.mcp.tools.ops import images as ops_images
 from kdive.reconciler.images import ImageMtime
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole, Role
+from tests.reconciler.conftest import connect, seed_system
 
 _TARGET_PROJECT = "tenant-x"
 
@@ -310,6 +313,59 @@ def test_delete_cross_project_denied_and_audited(migrated_url: str) -> None:
         assert await _image_exists(migrated_url, image_id) is True
         audit = await _audit_log_rows(migrated_url)
         assert audit == [("dev-1", "tenant-x", "images.delete", "denied")]
+
+    asyncio.run(_run())
+
+
+async def _reference_image(url: str, *, provider: str, name: str) -> None:
+    """Seed a non-terminal System whose provisioning_profile references ``(provider, name)``."""
+    profile = {
+        "provider": {
+            "local-libvirt": {"rootfs": {"kind": "catalog", "provider": provider, "name": name}}
+        }
+    }
+    async with await connect(url) as conn:
+        system_id = await seed_system(conn, system_state=SystemState.READY)
+        await conn.execute(
+            "UPDATE systems SET provisioning_profile = %s WHERE id = %s",
+            (Jsonb(profile), system_id),
+        )
+
+
+def test_delete_declines_a_referenced_image(migrated_url: str) -> None:
+    # A private image a non-terminal System still boots from must NOT be deletable — the
+    # operator delete honors the same reference guard the reconciler's auto-prune uses.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            image_id = await _insert_private_image(pool, name="referenced")
+            await _reference_image(migrated_url, provider="local-libvirt", name="referenced")
+            resp = await ops_images.delete(
+                pool, _member_ctx(role=Role.OPERATOR), image_id=str(image_id)
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert await _image_exists(migrated_url, image_id) is True
+
+    asyncio.run(_run())
+
+
+def test_upload_unprivileged_denied_audited_even_without_store(migrated_url: str) -> None:
+    # The authz boundary is evaluated before the store-availability check, so an
+    # unprivileged caller is denied and audited even on an S3-less deployment.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await ops_images.upload(
+                pool,
+                _member_ctx(role=Role.VIEWER),
+                None,
+                project=_TARGET_PROJECT,
+                name="custom",
+                arch="x86_64",
+                quarantine_key="quarantine/abc",
+                lifetime_seconds=None,
+            )
+        assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
+        audit = await _audit_log_rows(migrated_url)
+        assert audit == [("dev-1", _TARGET_PROJECT, "images.upload", "denied")]
 
     asyncio.run(_run())
 
