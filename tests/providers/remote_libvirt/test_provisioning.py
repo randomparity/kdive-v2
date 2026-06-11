@@ -71,6 +71,11 @@ def test_render_domain_xml_carries_agent_channel_gdb_and_metadata() -> None:
     assert root.findtext("./memory") == "4096"
     assert root.findtext("./vcpu") == "4"
     assert root.find("./os/boot[@dev='hd']") is not None
+    # The vmcoreinfo fw_cfg device: without it a host_dump core carries no VMCOREINFO and
+    # build-id extraction fails (ADR-0094 AC6 / #317).
+    vmcoreinfo = root.find("./features/vmcoreinfo")
+    assert vmcoreinfo is not None
+    assert vmcoreinfo.get("state") == "on"
     channel_target = root.find("./devices/channel/target[@name='org.qemu.guest_agent.0']")
     assert channel_target is not None
     assert channel_target.get("type") == "virtio"
