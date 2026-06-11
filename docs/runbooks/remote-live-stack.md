@@ -120,6 +120,52 @@ Two operational notes:
   dir (`KDIVE_ARTIFACT_DIR`, or an out-of-tree temp default) — attach it as the record that the
   remote spine completed end-to-end.
 
+## 6. Four-method capture capstone (M2.5)
+
+At the M2.5 exit the remote provider advertises **all four** capture methods —
+`{console, host_dump, gdbstub, kdump}` — so a `just m2-report` records remote at **4/4** (see
+`docs/reports/m2-portability.md`, *Capture-method coverage*). The capstone exercise
+(`test_remote_four_method_capture_over_the_wire`) proves all four against the live remote spine.
+It runs under the same `live_stack` gate as the spine above: configure the prerequisites in steps
+1–4, then `just test-live-stack` collects it.
+
+The exercise drives **two** Systems because `host_dump` and `kdump` are both *vmcore* methods that
+need a `crashed` System, and `ensure_method_match` (#118/[ADR-0050](../adr/0050-vmcore-method-aware-storage.md))
+makes the **first captured method win per System** — a second vmcore method on the same System is
+rejected with `configuration_error`. So they cannot share a System:
+
+| method | System | what it proves |
+|--------|--------|----------------|
+| `host_dump` | **A** — provisioned to `ready`, then crashed | host-side `virDomainCoreDumpWithFormat` → storage-pool volume → stream-download ([ADR-0094](../adr/0094-remote-host-dump-via-coredump-volume.md)); **no** in-guest kdump kernel needed |
+| `gdbstub` | **B** — booted | direct-TCP gdb-MI attach to a running System ([ADR-0083](../adr/0083-remote-connect-debug-plane.md)) |
+| `kdump` | **B** — booted, then crashed | the two-phase in-guest capture kernel → presigned-PUT upload ([ADR-0084](../adr/0084-remote-control-two-phase-vmcore-retrieve.md)) |
+| `console` | **B** — boot→crash lifetime | the reconciler-hosted `virDomainOpenConsole` collector ([ADR-0095](../adr/0095-reconciler-remote-console-collector.md)); the single artifact assembles on teardown-finalize, so it is asserted **after** System B is `torn_down` |
+
+Operator notes:
+
+- **Two crashes, two cores.** A crashed kernel exports VMCOREINFO reliably; an absent VMCOREINFO
+  is the documented `configuration_error`, **not** a 4/4 pass — do not accept a missing-build-id
+  skip as success.
+- **Metering.** The exercise seeds the project for two concurrent allocations/Systems; no extra
+  quota staging is needed.
+- **Capture budget.** Each vmcore drain reuses the spine's 900s `_CAPTURE_DEADLINE_S`; the kdump
+  leg additionally waits out the guest's crash→reboot→upload window.
+- **Record.** Attach the run log (the per-phase names identify any failing leg) as the recorded
+  evidence that the remote spine reached 4/4.
+
+## `#198` disposition (M2.5 exit)
+
+**Local-libvirt is not deprecated.** With remote at 4/4, [#198](https://github.com/randomparity/kdive/issues/198)
+is reframed from "deprecate local" to the narrower **production default vs. opt-in
+dev/CI/reference provider** distinction. Local stays the in-tree default; remote is the opt-in
+production provider (gated on `KDIVE_REMOTE_LIBVIRT_URI`). The two providers' advertised capture
+sets remain **disjoint on `kdump`**: remote advertises `kdump`, local does not (local stays
+`{console, host_dump, gdbstub}`). That disjointness — pinned by the
+`tests/scripts/test_m2_portability_gate.py` drift guard against the real `build_*_runtime` sets —
+is the structural reason the two providers stay complementary rather than one superseding the
+other. `#198` stays **open**; its final disposition (keep-default vs. reclassify-as-opt-in) is
+decided post-parity, informed by this capstone.
+
 ## Non-goals
 
 In-guest drgn-**live** MCP routing is a deferred follow-up (#215). The remote spine's introspect

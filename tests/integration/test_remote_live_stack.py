@@ -8,10 +8,13 @@ server/worker tier does not share a filesystem with. It is ``live_stack``-marked
 a clean skip unless the remote provider config + a reachable stack + issuer + DB are all present
 (CI deselects ``live_stack``). The shared spine scaffolding lives in
 ``tests.integration.live_stack.spine``; this module adds the remote preflight, the disk-image
-profile factory, and the remote spine body.
+profile factory, the remote spine body, and the M2.5 four-method capture capstone (#304):
+``test_remote_four_method_capture_over_the_wire`` exercises gdbstub, console, host_dump, and
+kdump on the live remote spine — host_dump and kdump on **separate** crashed Systems, since
+``ensure_method_match`` (#118/ADR-0050) makes the first vmcore method win per System.
 
-Two non-gated unit tests pin the CI-runnable surface: the remote profile factory parses through
-the real validator (the disk-image↔remote-section pairing rule), and the preflight skips with an
+Non-gated unit tests pin the CI-runnable surface: the remote profile factory parses through the
+real validator (the disk-image↔remote-section pairing rule), and the preflight skips with an
 actionable reason when the provider config is absent.
 
 Out of scope (deferred ADR-0083 follow-up #215): in-guest drgn-*live* MCP routing. The introspect
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 
 import pytest
 
@@ -31,15 +35,19 @@ from kdive.profiles.provisioning import ProvisioningProfile
 from tests.integration.live_stack.conftest import require_issuer, require_stack
 from tests.integration.live_stack.harness import LiveStackClient, OidcIssuer
 from tests.integration.live_stack.spine import (
+    POLL_INTERVAL_S,
     SpinePhaseError,
+    allocate_remote,
     assert_report,
     await_system_state,
+    crash_to_crashed,
     db_now,
     drain_job,
     grant_force_crash_scope,
     mint_role_token,
     ok,
     phase,
+    provision_to_ready,
     scalar,
     seed_metering,
 )
@@ -298,3 +306,209 @@ def test_remote_spine_over_the_wire() -> None:
                 )
 
     asyncio.run(_run())
+
+
+# --- the M2.5 capstone: four-method capture exercise ----------------------------------------
+
+_FOUR_METHOD_PROJECT = "remote-capstone-proj"
+_FOUR_METHOD_SESSION = "remote-capstone-sess"
+
+
+async def _assert_vmcore_captured(client: LiveStackClient, *, system_id: str, method: str) -> None:
+    """List the System's vmcores; assert one exists, has a ref, and never leaks a raw core."""
+    cores = await client.call_tool("vmcore.list", system_id=system_id)
+    assert isinstance(cores, list) and cores, f"no vmcore artifact for {method} (#1)"
+    refs = [v for c in cores for v in c.refs.values()]
+    assert refs, f"no vmcore refs for {method} (#1)"
+    # A raw core is `.../vmcore-{method}` (no `-redacted` suffix); it must never surface.
+    assert all(not ("/vmcore-" in r and not r.endswith("-redacted")) for r in refs), (
+        f"raw vmcore leaked for {method} (#1)"
+    )
+
+
+async def _assert_console_captured(client: LiveStackClient, *, system_id: str) -> None:
+    """Assert a redacted console artifact (boot→crash lifetime) is listed for the System."""
+    artifacts = await client.call_tool("artifacts.list", system_id=system_id)
+    assert isinstance(artifacts, list), "artifacts.list did not return a list"
+    console_refs = [
+        r
+        for a in artifacts
+        for r in a.refs.values()
+        if r.endswith("/console") or r.endswith("/console-redacted")
+    ]
+    assert console_refs, "no console artifact captured across the crash (ADR-0095)"
+
+
+@pytest.mark.live_stack
+def test_remote_four_method_capture_over_the_wire() -> None:
+    """Capstone (#304): exercise gdbstub, console, host_dump, and kdump on the remote spine.
+
+    host_dump and kdump are both vmcore methods requiring a crashed System, and
+    ``ensure_method_match`` (#118/ADR-0050) makes the first captured method win per System — so
+    each runs on its own crashed System (A → host_dump, B → kdump), never the same one. gdbstub
+    attaches to a running System; console capture spans System B's boot→crash lifetime.
+    """
+    issuer, base_url, db_url = _remote_spine_preflight()
+
+    def _tok(role: str, platform_roles: list[str] | None = None) -> str:
+        return mint_role_token(
+            issuer,
+            project=_FOUR_METHOD_PROJECT,
+            agent_session=_FOUR_METHOD_SESSION,
+            role=role,
+            platform_roles=platform_roles,
+        )
+
+    operator_token = _tok("operator")
+    admin_token = _tok("admin")
+
+    async def _run() -> None:
+        op = LiveStackClient.over_http(base_url, operator_token)
+        admin = LiveStackClient.over_http(base_url, admin_token)
+        async with op, admin:
+            await seed_metering(db_url, _FOUR_METHOD_PROJECT)
+
+            # --- System A: host_dump (host-side core-dump; no in-guest kdump kernel needed) ---
+            async with phase("alloc-A"):
+                alloc_a = await allocate_remote(
+                    op, db_url, project=_FOUR_METHOD_PROJECT, phase_name="alloc-A"
+                )
+            async with phase("provision-A"):
+                system_a = await provision_to_ready(
+                    op,
+                    allocation_id=alloc_a,
+                    profile=_remote_provision_profile(),
+                    phase_name="provision-A",
+                )
+            async with phase("crash-A"):
+                await crash_to_crashed(admin, system_id=system_a, phase_name="crash-A")
+            async with phase("host_dump"):
+                env = ok(
+                    await scalar(op, "vmcore.fetch", system_id=system_a, method="host_dump"),
+                    "host_dump",
+                )
+                await drain_job(op, "host_dump", env.object_id, deadline_s=_CAPTURE_DEADLINE_S)
+                await _assert_vmcore_captured(op, system_id=system_a, method="host_dump")
+            async with phase("host_dump-same-system-rejected"):
+                # ensure_method_match (#118/ADR-0050) is enforced inside the capture *job*
+                # (jobs/handlers/vmcore.py:precheck_system), not at vmcore.fetch admission — so
+                # fetch admits a kdump job (distinct dedup key) and the job *fails* with
+                # configuration_error. Assert the drained job carries that category.
+                env = ok(
+                    await scalar(op, "vmcore.fetch", system_id=system_a, method="kdump"),
+                    "host_dump-same-system-rejected",
+                )
+                try:
+                    await drain_job(
+                        op,
+                        "host_dump-same-system-rejected",
+                        env.object_id,
+                        deadline_s=_CAPTURE_DEADLINE_S,
+                    )
+                except SpinePhaseError as failed:
+                    if failed.error_category != "configuration_error":
+                        raise SpinePhaseError(
+                            "host_dump-same-system-rejected",
+                            f"kdump job failed with {failed.error_category}, "
+                            "expected configuration_error",
+                        ) from failed
+                else:
+                    raise SpinePhaseError(
+                        "host_dump-same-system-rejected",
+                        "a second vmcore method on System A was not rejected",
+                    )
+
+            # --- System B: full boot → gdbstub attach → console + kdump across the crash -----
+            async with phase("alloc-B"):
+                alloc_b = await allocate_remote(
+                    op, db_url, project=_FOUR_METHOD_PROJECT, phase_name="alloc-B"
+                )
+            async with phase("provision-B"):
+                system_b = await provision_to_ready(
+                    op,
+                    allocation_id=alloc_b,
+                    profile=_remote_provision_profile(),
+                    phase_name="provision-B",
+                )
+            async with phase("open-investigation-B"):
+                env = ok(
+                    await scalar(
+                        op, "investigations.open", project=_FOUR_METHOD_PROJECT, title="capstone-B"
+                    ),
+                    "open-investigation-B",
+                )
+                investigation_b = env.object_id
+            async with phase("create-run-B"):
+                env = ok(
+                    await scalar(
+                        op,
+                        "runs.create",
+                        investigation_id=investigation_b,
+                        system_id=system_b,
+                        build_profile=_build_profile(),
+                    ),
+                    "create-run-B",
+                )
+                run_b = env.object_id
+            for step in ("build", "install", "boot"):
+                async with phase(f"{step}-B"):
+                    env = ok(await scalar(op, f"runs.{step}", run_id=run_b), f"{step}-B")
+                    await drain_job(op, f"{step}-B", env.object_id)
+            async with phase("gdbstub"):
+                env = ok(
+                    await scalar(op, "debug.start_session", run_id=run_b, transport="gdbstub"),
+                    "gdbstub",
+                )
+                session_b = env.object_id
+                ok(
+                    await scalar(
+                        op, "debug.read_registers", session_id=session_b, registers=["rip"]
+                    ),
+                    "gdbstub",
+                )
+                ok(await scalar(op, "debug.end_session", session_id=session_b), "gdbstub")
+            async with phase("crash-B"):
+                await crash_to_crashed(admin, system_id=system_b, phase_name="crash-B")
+            async with phase("kdump"):
+                env = ok(
+                    await scalar(op, "vmcore.fetch", system_id=system_b, method="kdump"),
+                    "kdump",
+                )
+                await drain_job(op, "kdump", env.object_id, deadline_s=_CAPTURE_DEADLINE_S)
+                await _assert_vmcore_captured(op, system_id=system_b, method="kdump")
+
+            # --- release both allocations; reconciler tears the Systems down ----------------
+            for label, alloc in (("release-A", alloc_a), ("release-B", alloc_b)):
+                async with phase(label):
+                    ok(await scalar(op, "allocations.release", allocation_id=alloc), label)
+            for label, system in (("teardown-A", system_a), ("teardown-B", system_b)):
+                async with phase(label):
+                    await await_system_state(op, label, system, "torn_down")
+
+            # The reconciler-hosted console collector streams System B's boot→crash lifetime and
+            # assembles the single artifact on teardown-finalize (ADR-0095). Assert it only after
+            # System B is torn_down, when the finalize has persisted the artifact row.
+            async with phase("console"):
+                await _await_console_artifact(op, system_id=system_b)
+
+    asyncio.run(_run())
+
+
+async def _await_console_artifact(
+    client: LiveStackClient, *, system_id: str, deadline_s: float = 120.0
+) -> None:
+    """Poll artifacts.list until the boot→crash console artifact is persisted, or fail.
+
+    Teardown-finalize persists the assembled console artifact during the reconciler reap pass;
+    ``torn_down`` is observed when the System row flips, which may precede the collector's
+    finalize+drop, so poll a short while for the artifact to land.
+    """
+    deadline = time.monotonic() + deadline_s
+    while True:
+        try:
+            await _assert_console_captured(client, system_id=system_id)
+            return
+        except AssertionError:
+            if time.monotonic() >= deadline:
+                raise
+            await asyncio.sleep(POLL_INTERVAL_S)
