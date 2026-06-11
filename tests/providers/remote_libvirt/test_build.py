@@ -510,3 +510,26 @@ def test_apply_patch_silent_skip_no_tree_change_is_configuration_error(
 
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert (workspace / "init" / "main.c").read_text() == original
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git unavailable")
+def test_exit_criterion_noop_patch_fails_patch_applied_verification(tmp_path: Path) -> None:
+    # M2.4 exit criterion 1 (closes the #227 class) for the remote-libvirt kernel build plane —
+    # the same proof as the local plane, asserted independently here so the class is closed for
+    # BOTH kernel build planes. A patch already present in the tree is a no-op; driven through the
+    # REAL `_apply_patch` (real `git apply` over a `.git`-less workspace), real `git apply` refuses
+    # it (returncode != 0) and the apply-result guard rejects the unpatched build. (The
+    # complementary #227 silent-skip face is proven by
+    # `test_apply_patch_silent_skip_no_tree_change_is_configuration_error` above.)
+    workspace = _workspace_with_target(tmp_path)
+    workspace_main = workspace / "init" / "main.c"
+    workspace_main.write_text("line1\nline2-patched\n")  # already applied: a no-op
+    original = workspace_main.read_text()
+    patch = tmp_path / "noop.patch"
+    patch.write_text(_GOOD_PATCH)
+
+    with pytest.raises(CategorizedError) as caught:
+        _apply_patch(str(patch), workspace, SecretRegistry())
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert workspace_main.read_text() == original
