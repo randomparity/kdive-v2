@@ -22,6 +22,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from typing import cast
 from uuid import UUID
 
 import psycopg
@@ -34,6 +35,7 @@ from kdive.mcp.tools.ops import images as ops_images
 from kdive.reconciler.images import ImageMtime
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole, Role
+from kdive.services.images.upload import UploadObjectStore
 from tests.reconciler.conftest import connect, seed_system
 
 _TARGET_PROJECT = "tenant-x"
@@ -53,6 +55,23 @@ class _FakeImageStore:
 
     def delete(self, key: str) -> None:
         self.deleted.append(key)
+
+
+class _UnusedUploadStore:
+    """A no-op UploadObjectStore stand-in for paths that reject before any store call.
+
+    Every method raises: the tests using it exercise a guard that returns before any store
+    call, so a touch is a test bug. A ``cast`` at the call site satisfies the protocol type.
+    """
+
+    def put_artifact(self, request: object) -> object:
+        raise AssertionError("store must not be touched")
+
+    def head(self, key: str) -> object:
+        raise AssertionError("store must not be touched")
+
+    def get_artifact(self, key: str, etag: str | None) -> object:
+        raise AssertionError("store must not be touched")
 
 
 def _admin_ctx(*, principal: str = "ops-admin") -> RequestContext:
@@ -366,6 +385,26 @@ def test_upload_unprivileged_denied_audited_even_without_store(migrated_url: str
         assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
         audit = await _audit_log_rows(migrated_url)
         assert audit == [("dev-1", _TARGET_PROJECT, "images.upload", "denied")]
+
+    asyncio.run(_run())
+
+
+def test_upload_rejects_quarantine_key_in_published_prefix(migrated_url: str) -> None:
+    # A quarantine_key under the published images/ prefix would let an operator re-ingest
+    # another project's owner-scoped private image — it is rejected with a config error.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await ops_images.upload(
+                pool,
+                _member_ctx(role=Role.OPERATOR),
+                cast(UploadObjectStore, _UnusedUploadStore()),
+                project=_TARGET_PROJECT,
+                name="evil",
+                arch="x86_64",
+                quarantine_key="images/local-libvirt__tenant-y/secret/x86_64.qcow2",
+                lifetime_seconds=None,
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
     asyncio.run(_run())
 
