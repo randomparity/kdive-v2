@@ -153,7 +153,7 @@ def render_domain_xml(system_id: UUID, profile: ProvisioningProfile, *, disk_pat
     ET.SubElement(os_el, "type", arch=profile.arch, machine=machine).text = "hvm"
     devices = ET.SubElement(domain, "devices")
     disk = ET.SubElement(devices, "disk", type="file", device="disk")
-    # The rootfs images are qcow2 (build-guest-image.sh / virt-make-fs --format=qcow2). Without an
+    # The rootfs images are qcow2 (the RootfsBuildPlane's virt-make-fs --format=qcow2). Without an
     # explicit driver type libvirt defaults to raw, so the guest would read the qcow2 header as the
     # start of the disk and fail to mount root; declare the format so /dev/vda is the ext4
     # filesystem, not the container metadata.

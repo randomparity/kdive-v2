@@ -1,8 +1,8 @@
 """The in-process local-libvirt rootfs build plane (M2.4/2, ADR-0052, ADR-0092).
 
 `LocalLibvirtRootfsBuildPlane` orchestrates the same unprivileged libguestfs stages the deleted
-``scripts/live-vm/build-guest-image.sh`` ran, but in-process and with **pinned-input
-provenance** recorded into the :class:`RootfsBuildOutput`:
+bash rootfs builder ran, but in-process and with **pinned-input provenance** recorded into the
+:class:`RootfsBuildOutput`:
 
 1. resolve the kdive-managed SSH public key (ADR-0052 — the single source of truth shared with
    the connect-time ``ssh -i`` identity);

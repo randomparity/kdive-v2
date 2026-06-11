@@ -115,7 +115,7 @@ compose-up:
 compose-down:
     docker compose down -v
 
-# Lint and format-check the shell scripts (recursively, including scripts/live-vm).
+# Lint and format-check the shell scripts (recursively under scripts/).
 lint-shell:
     shfmt -f scripts | xargs shellcheck
     shfmt -i 2 -d scripts

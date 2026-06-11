@@ -88,28 +88,37 @@ python -m kdive seed-demo --project demo
 ## 3. Build the VM fixtures
 
 The spine boots a real guest and builds a real kernel, so the suite needs an
-operator-provided guest image and kernel tree (the ADR-0035 fixtures, reused unchanged):
+operator-provided guest image and kernel tree:
 
 ```bash
-scripts/live-vm/build-guest-image.sh    # builds the bootable kdive-ready rootfs qcow2
-scripts/live-vm/fetch-kernel-tree.sh     # checks out the pinned kernel source tree
-export KDIVE_GUEST_IMAGE=/path/to/guest-image
+python -m kdive build-rootfs --dest /var/lib/kdive/rootfs/local/fedora-kdive-ready-43.qcow2
+bash scripts/fetch-kernel-tree.sh        # checks out the pinned kernel source tree
+export KDIVE_GUEST_IMAGE=/var/lib/kdive/rootfs/local/fedora-kdive-ready-43.qcow2
 export KDIVE_KERNEL_SRC=/path/to/kernel-tree
 ```
 
-The builder runs unprivileged and writes the rootfs to `KDIVE_ROOTFS` (default
-`/var/lib/kdive/rootfs/local/fedora-kdive-ready-43.qcow2`). For the default root-owned path,
-an OS admin pre-prepares the output directory once and makes it writable by the build user; the
-per-build write and the final `chmod 0644` are unprivileged. The image is left `0644` so
-the separate `qemu` user can read it under `qemu:///system`. Under SELinux the file also
-needs the `virt_image_t` label (the standard label for libvirt-managed images); this is the
-host-side file label and is independent of the guest-internal SELinux the builder disables.
-The build is idempotent on the destination path — delete the file to force a rebuild after
-changing any build input (`KDIVE_ROOTFS_DEBUG`, `KDIVE_ROOTFS_VMLINUX`,
-`KDIVE_ROOTFS_SSH_USER`, `KDIVE_ROOTFS_SIZE`, or a rotated managed SSH key).
+The kernel-tree fetch helper lives under `scripts` (the `fetch-kernel-tree.sh` fixture script);
+clone the pinned source there and point `KDIVE_KERNEL_SRC` at it.
 
-Point `KDIVE_GUEST_IMAGE` and `KDIVE_KERNEL_SRC` at the scripts' output. The `live_stack`
-preflight skips with the exact script to run when either is missing.
+`build-rootfs` drives the in-process `RootfsBuildPlane` (the Python successor to the removed
+bash rootfs builder): it runs the unprivileged libguestfs stages (`virt-builder` customize →
+`virt-make-fs` whole-disk ext4 qcow2 → fstab/crypttab/SELinux normalize), records the pinned
+inputs (releasever, packages, source-image digest) as provenance, prints the qcow2 content
+digest, and moves the image to `--dest` (default
+`/var/lib/kdive/rootfs/local/fedora-kdive-ready-43.qcow2`). Pass `--releasever`/`--package` to
+change the base release or guest package set. For the default root-owned path, an OS admin
+pre-prepares the output directory once and makes it writable by the build user; the per-build
+write and the final `chmod 0644` are unprivileged. The image is left `0644` so the separate
+`qemu` user can read it under `qemu:///system`. Under SELinux the file also needs the
+`virt_image_t` label (the standard label for libvirt-managed images); this is the host-side file
+label and is independent of the guest-internal SELinux the plane disables.
+
+The RBAC-gated, publish-backed `kdivectl images build` operator verb (M2.4/7) enqueues an
+`IMAGE_BUILD` job that runs the same plane and publishes the result to the catalog; this inline
+`build-rootfs` is the local-disk fixture path for the live-stack suite.
+
+Point `KDIVE_GUEST_IMAGE` and `KDIVE_KERNEL_SRC` at the build output and the kernel checkout.
+The `live_stack` preflight skips with an actionable reason when either is missing.
 
 ## 4. Start the host processes
 

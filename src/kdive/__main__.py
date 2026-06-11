@@ -81,9 +81,9 @@ def _add_build_rootfs_parser(sub: argparse._SubParsersAction[argparse.ArgumentPa
 
     Drives the in-process :class:`LocalLibvirtRootfsBuildPlane` and writes the produced qcow2 to
     ``--dest`` (default the live-stack guest-image path), printing its content digest. This is the
-    direct successor to the deleted ``scripts/live-vm/build-guest-image.sh``; the RBAC-gated,
-    publish-backed ``kdivectl images build`` operator verb lands in M2.4/7 and enqueues an
-    ``IMAGE_BUILD`` job rather than building inline.
+    direct successor to the deleted bash rootfs builder; the RBAC-gated, publish-backed
+    ``kdivectl images build`` operator verb lands in M2.4/7 and enqueues an ``IMAGE_BUILD`` job
+    rather than building inline.
     """
     build = sub.add_parser(
         "build-rootfs", help="build a local-libvirt kdive-ready rootfs qcow2 via the build plane"
