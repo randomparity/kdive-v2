@@ -93,6 +93,9 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
         reaper=reaper,
         upload_store=ops_reconcile_tools.resolve_upload_store(),
         image_store=ops_reconcile_tools.resolve_image_store(),
+        dump_volume_reaper=ProviderComposition(
+            secret_registry=registry
+        ).build_reconciler_dump_volume_reaper(),
     ),
     _plain(ops_resources_tools.register),
     _plain(allocations.register),

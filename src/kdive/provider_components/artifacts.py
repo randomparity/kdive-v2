@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import NamedTuple
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -72,6 +73,32 @@ class ArtifactWriteRequest:
     owner_id: str
     name: str
     data: bytes
+    sensitivity: Sensitivity
+    retention_class: str
+
+    def key(self) -> str:
+        return artifact_key(self.tenant, self.owner_kind, self.owner_id, self.name)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ArtifactStreamRequest:
+    """A streaming artifact write: identity + metadata + an on-disk source ``path``.
+
+    The store reads ``path`` as the PUT body so a large artifact (e.g. a spooled host_dump
+    core) is uploaded at constant memory rather than read whole into RAM (ADR-0094). The
+    caller owns ``path``'s lifecycle (it is typically a worker temp file deleted after the
+    put). ``sha256_b64`` is the base64-encoded SHA-256 of ``path``'s bytes (the caller already
+    streams the file once to compute it); the store signs it into the PUT so S3 **rejects** an
+    upload whose body does not hash to it — the same end-to-end integrity binding the presigned
+    kdump PUT gets, and the value ``head().checksum_sha256`` reads back for the post-put check.
+    """
+
+    tenant: str
+    owner_kind: str
+    owner_id: str
+    name: str
+    path: Path
+    sha256_b64: str
     sensitivity: Sensitivity
     retention_class: str
 

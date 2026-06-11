@@ -14,6 +14,7 @@ from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.provider_components.artifacts import (
+    ArtifactStreamRequest,
     ArtifactWriteRequest,
     HeadResult,
     PresignedUpload,
@@ -105,6 +106,10 @@ class FakeStore:
             request.key(), "etag-red", request.sensitivity, request.retention_class
         )
 
+    def put_stream(self, request: ArtifactStreamRequest) -> StoredArtifact:
+        # The kdump path never streams; present only to satisfy the store protocol.
+        raise AssertionError("kdump capture must not call put_stream")
+
 
 def _retrieve(
     agent_exec: _AgentRun,
@@ -195,11 +200,13 @@ def test_capture_missing_object_after_upload_is_infrastructure_failure(tmp_path:
     assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
 
-def test_capture_rejects_non_kdump_method(tmp_path: Path) -> None:
+def test_capture_rejects_a_non_vmcore_method(tmp_path: Path) -> None:
+    # kdump and host_dump are the two vmcore methods remote capture realizes; console and
+    # gdbstub are not produced by capture() and are rejected with CONFIGURATION_ERROR.
     agent = FakeAgentExec(inspect=_inspect_json())
     store = FakeStore(head=None)
     with pytest.raises(CategorizedError) as exc:
-        _retrieve(agent, store, tmp_path).capture(_SID, CaptureMethod.HOST_DUMP)
+        _retrieve(agent, store, tmp_path).capture(_SID, CaptureMethod.CONSOLE)
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 

@@ -318,6 +318,22 @@ def test_transport_resetter_is_remote_when_enabled() -> None:
     assert isinstance(resetter, RemoteLibvirtTransportResetter)
 
 
+def test_dump_volume_reaper_is_null_without_remote() -> None:
+    from kdive.providers.reaping import NullDumpVolumeReaper
+
+    comp = composition.ProviderComposition()
+    reaper = comp.build_reconciler_dump_volume_reaper(enable_remote_libvirt=False)
+    assert isinstance(reaper, NullDumpVolumeReaper)
+
+
+def test_dump_volume_reaper_is_remote_when_enabled() -> None:
+    from kdive.providers.remote_libvirt.dump_volume_reaper import RemoteLibvirtDumpVolumeReaper
+
+    comp = composition.ProviderComposition()
+    reaper = comp.build_reconciler_dump_volume_reaper(enable_remote_libvirt=True)
+    assert isinstance(reaper, RemoteLibvirtDumpVolumeReaper)
+
+
 def test_reconciler_reaper_defaults_to_null_when_fault_inject_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -401,15 +417,28 @@ def test_remote_runtime_buildable_without_operator_config(
     assert runtime.discovery_registrar is not None
 
 
-def test_remote_runtime_advertises_kdump_gdbstub_and_console_capture() -> None:
-    # The retrieve issue widened the set to the two-phase kdump path (ADR-0084); M2.5
-    # advertises the already-wired gdbstub transport (ADR-0083/0085) and the reconciler-owned
-    # console collector (#303, ADR-0095). host-dump is added by issue #301.
+def test_remote_runtime_advertises_all_four_capture_methods() -> None:
+    # M2.5 brings remote to 4/4 advertised methods: the two-phase kdump path (ADR-0084), the
+    # host-side core-dump host_dump path (ADR-0094, #301), the already-wired gdbstub transport
+    # (ADR-0083/0085, #302), and the reconciler-owned console collector (#303, ADR-0095).
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
     assert runtime.supported_capture_methods == frozenset(
-        {CaptureMethod.KDUMP, CaptureMethod.GDBSTUB, CaptureMethod.CONSOLE}
+        {
+            CaptureMethod.KDUMP,
+            CaptureMethod.HOST_DUMP,
+            CaptureMethod.GDBSTUB,
+            CaptureMethod.CONSOLE,
+        }
     )
+
+
+def test_remote_runtime_advertises_host_dump_as_a_capture_method() -> None:
+    # #301: HOST_DUMP is in vmcore.fetch's _VMCORE_METHODS, so advertising it admits
+    # vmcore.fetch(method=host_dump) on remote through the existing tool.
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert CaptureMethod.HOST_DUMP in runtime.supported_capture_methods
 
 
 def test_remote_runtime_advertises_gdbstub_as_a_capture_method() -> None:

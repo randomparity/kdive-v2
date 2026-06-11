@@ -37,7 +37,11 @@ from kdive.domain.models import JobKind
 from kdive.domain.state import AllocationState, DebugSessionState, JobState, RunState, SystemState
 from kdive.jobs import queue
 from kdive.jobs.payloads import PayloadValidationError, SystemPayload, run_id_from_payload
-from kdive.providers.reaping import InfraReaper
+from kdive.providers.reaping import (
+    DumpVolumeReaper,
+    InfraReaper,
+    NullDumpVolumeReaper,
+)
 from kdive.providers.transport_reset import NullResetter, TransportResetter
 from kdive.reconciler.console_hosting import CollectorRegistry
 from kdive.reconciler.images import (
@@ -76,6 +80,10 @@ _log = logging.getLogger(__name__)
 # stateless default argument without a per-call construction (ruff B008).
 _NULL_RESETTER: TransportResetter = NullResetter()
 
+# The default dump-volume reaper (ADR-0094): a module-level singleton so it can be a
+# stateless default argument without a per-call construction (ruff B008).
+_NULL_DUMP_VOLUME_REAPER: DumpVolumeReaper = NullDumpVolumeReaper()
+
 DEFAULT_INTERVAL = timedelta(seconds=30)
 DEFAULT_DEBUG_SESSION_STALE_AFTER = timedelta(minutes=2)
 # A queued ``requested`` allocation never placeable past this window is reaped to
@@ -89,6 +97,16 @@ DEFAULT_IDEMPOTENCY_RETENTION = timedelta(days=7)
 # default is the same 3600s). A pending image row (or an orphan object with no row) is
 # protected from the leaked/dangling image sweeps until this window past pending_since/mtime.
 DEFAULT_IMAGE_PUBLISH_GRACE = timedelta(seconds=3600)
+# A host_dump volume younger than this is never reaped (ADR-0094 live-holder guard):
+# a freshly-written volume may still be mid-download by a live capture, which bypasses the
+# active-capture-job check if its job already finished. Sized like the upload timeout so a
+# slow in-flight stream is never clobbered.
+DEFAULT_DUMP_VOLUME_GRACE = timedelta(minutes=30)
+# Non-terminal capture-job states: a System with a job in one of these is actively (or
+# imminently) capturing, so its dump volume is a live holder and must not be reaped.
+_ACTIVE_CAPTURE_JOB_STATES = (JobState.QUEUED, JobState.RUNNING)
+_CAPTURE_VMCORE_JOB_KIND_VALUE = JobKind.CAPTURE_VMCORE.value
+_ACTIVE_CAPTURE_JOB_STATE_VALUES = tuple(state.value for state in _ACTIVE_CAPTURE_JOB_STATES)
 
 # Allocation states past which an allocation no longer holds a lease to expire.
 _TERMINAL_ALLOCATION_STATES = (
@@ -154,12 +172,14 @@ class ReconcileReport:
     dangling_images: int = 0
     expired_private_images: int = 0
     console_collectors_reaped: int = 0
+    reaped_dump_volumes: int = 0
 
 
 def _repair_plan(
     *,
     reaper: InfraReaper,
     resetter: TransportResetter,
+    dump_volume_reaper: DumpVolumeReaper,
     upload_store: UploadStore | None,
     image_store: ImageSweepStore | None,
     console_registry: CollectorRegistry | None,
@@ -167,6 +187,7 @@ def _repair_plan(
     idempotency_retention: timedelta,
     queue_max_wait: timedelta,
     image_publish_grace: timedelta,
+    dump_volume_grace: timedelta,
 ) -> tuple[_RepairSpec, ...]:
     repairs = [
         _RepairSpec("expired_allocations", _sweep_expired_allocations),
@@ -183,6 +204,10 @@ def _repair_plan(
         _RepairSpec(
             "idempotency_keys_gc_count",
             lambda conn: _gc_idempotency_keys(conn, idempotency_retention),
+        ),
+        _RepairSpec(
+            "reaped_dump_volumes",
+            lambda conn: _reap_orphaned_dump_volumes(conn, dump_volume_reaper, dump_volume_grace),
         ),
     ]
     if upload_store is not None:
@@ -612,17 +637,82 @@ async def _reap_console_collectors(conn: AsyncConnection, registry: CollectorReg
     return reaped
 
 
+async def _reap_orphaned_dump_volumes(
+    conn: AsyncConnection, reaper: DumpVolumeReaper, grace: timedelta
+) -> int:
+    """Delete host_dump volumes orphaned by a non-graceful worker/host crash (ADR-0094).
+
+    A dump volume is reaped only when **both** live-holder guards clear: its store mtime is
+    older than ``grace`` (so a volume a live capture is still writing/downloading — whose own
+    ``finally`` will delete it — is never clobbered), **and** its owning System has no active
+    (``queued``/``running``) ``capture_vmcore`` job. A volume whose name encodes no System is
+    age-reaped on the mtime guard alone (it can have no live capture). The mtime comes from the
+    provider's store; the age comparison uses Postgres ``now()`` (never a Python clock) so the
+    grace window is evaluated against the same clock the rest of the reconciler uses.
+
+    Deletion is idempotent and best-effort per volume: one volume's delete failure is logged
+    and the sweep continues. Counts only volumes this pass actually deleted.
+    """
+    volumes = await reaper.list_dump_volumes()
+    if not volumes:
+        return 0
+    cutoff_epoch = await _now_epoch(conn) - grace.total_seconds()
+    reaped = 0
+    for volume in volumes:
+        if volume.mtime_epoch_s >= cutoff_epoch:
+            continue
+        if volume.system_id is not None and await _has_active_capture_job(conn, volume.system_id):
+            continue
+        try:
+            await reaper.delete_dump_volume(volume.name)
+        except Exception:  # noqa: BLE001 - one volume's failure must not starve the rest
+            _log.warning(
+                "reconciler: deleting orphaned dump volume %s failed; retry next pass",
+                volume.name,
+                exc_info=True,
+            )
+            continue
+        reaped += 1
+        _log.info("reconciler: reaped orphaned host_dump volume %s", volume.name)
+    return reaped
+
+
+async def _now_epoch(conn: AsyncConnection) -> float:
+    """The Postgres clock as epoch seconds (the reconciler never trusts a Python clock)."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT extract(epoch from now())")
+        row = await cur.fetchone()
+    return float(row[0]) if row is not None else 0.0
+
+
+async def _has_active_capture_job(conn: AsyncConnection, system_id: UUID) -> bool:
+    """True if ``system_id`` has a non-terminal ``capture_vmcore`` job (a live dump holder)."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT 1 FROM jobs "
+            "WHERE kind = %s AND state = ANY(%s) AND payload->>'system_id' = %s LIMIT 1",
+            (
+                _CAPTURE_VMCORE_JOB_KIND_VALUE,
+                list(_ACTIVE_CAPTURE_JOB_STATE_VALUES),
+                str(system_id),
+            ),
+        )
+        return await cur.fetchone() is not None
+
+
 async def reconcile_once(
     pool: AsyncConnectionPool,
     reaper: InfraReaper,
     *,
     resetter: TransportResetter = _NULL_RESETTER,
+    dump_volume_reaper: DumpVolumeReaper = _NULL_DUMP_VOLUME_REAPER,
     upload_store: UploadStore | None = None,
     image_store: ImageSweepStore | None = None,
     console_registry: CollectorRegistry | None = None,
     debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
     idempotency_retention: timedelta = DEFAULT_IDEMPOTENCY_RETENTION,
     queue_max_wait: timedelta = DEFAULT_QUEUE_MAX_WAIT,
+    dump_volume_grace: timedelta = DEFAULT_DUMP_VOLUME_GRACE,
 ) -> ReconcileReport:
     """Run the repairs once, each isolated, each on a fresh pooled connection.
 
@@ -647,6 +737,7 @@ async def reconcile_once(
         _repair_plan(
             reaper=reaper,
             resetter=resetter,
+            dump_volume_reaper=dump_volume_reaper,
             upload_store=upload_store,
             image_store=image_store,
             console_registry=console_registry,
@@ -654,6 +745,7 @@ async def reconcile_once(
             idempotency_retention=idempotency_retention,
             queue_max_wait=queue_max_wait,
             image_publish_grace=_image_publish_grace(),
+            dump_volume_grace=dump_volume_grace,
         ),
     )
 
@@ -673,6 +765,7 @@ async def reconcile_once(
         dangling_images=counts.get("dangling_images", 0),
         expired_private_images=counts.get("expired_private_images", 0),
         console_collectors_reaped=counts.get("console_collectors_reaped", 0),
+        reaped_dump_volumes=counts.get("reaped_dump_volumes", 0),
     )
 
 
@@ -709,6 +802,7 @@ class Reconciler:
         reaper: InfraReaper,
         *,
         resetter: TransportResetter = _NULL_RESETTER,
+        dump_volume_reaper: DumpVolumeReaper = _NULL_DUMP_VOLUME_REAPER,
         upload_store: UploadStore | None = None,
         image_store: ImageSweepStore | None = None,
         console_registry: CollectorRegistry | None = None,
@@ -716,6 +810,7 @@ class Reconciler:
         debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
         idempotency_retention: timedelta = DEFAULT_IDEMPOTENCY_RETENTION,
         queue_max_wait: timedelta = DEFAULT_QUEUE_MAX_WAIT,
+        dump_volume_grace: timedelta = DEFAULT_DUMP_VOLUME_GRACE,
         heartbeat: Heartbeat | None = None,
         heartbeat_tick: timedelta = timedelta(seconds=1),
         telemetry: ReconcilerTelemetry | None = None,
@@ -723,6 +818,7 @@ class Reconciler:
         self._pool = pool
         self._reaper = reaper
         self._resetter = resetter
+        self._dump_volume_reaper = dump_volume_reaper
         self._upload_store = upload_store
         self._image_store = image_store
         self._console_registry = console_registry
@@ -730,6 +826,7 @@ class Reconciler:
         self._debug_session_stale_after = debug_session_stale_after
         self._idempotency_retention = idempotency_retention
         self._queue_max_wait = queue_max_wait
+        self._dump_volume_grace = dump_volume_grace
         self._heartbeat = heartbeat
         self._heartbeat_tick = heartbeat_tick.total_seconds()
         self._telemetry = telemetry or ReconcilerTelemetry.disabled()
@@ -740,12 +837,14 @@ class Reconciler:
             self._pool,
             self._reaper,
             resetter=self._resetter,
+            dump_volume_reaper=self._dump_volume_reaper,
             upload_store=self._upload_store,
             image_store=self._image_store,
             console_registry=self._console_registry,
             debug_session_stale_after=self._debug_session_stale_after,
             idempotency_retention=self._idempotency_retention,
             queue_max_wait=self._queue_max_wait,
+            dump_volume_grace=self._dump_volume_grace,
         )
 
     async def run(self, stop: asyncio.Event) -> None:

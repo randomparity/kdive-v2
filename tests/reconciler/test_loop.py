@@ -7,11 +7,12 @@ from datetime import timedelta
 from typing import cast
 from uuid import UUID, uuid4
 
+import psycopg
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.state import AllocationState, DebugSessionState, RunState, SystemState
-from kdive.providers.reaping import InfraReaper, NullReaper
+from kdive.providers.reaping import DumpVolume, InfraReaper, NullReaper
 from kdive.reconciler import loop
 from kdive.reconciler.loop import (
     Reconciler,
@@ -636,6 +637,9 @@ def test_reconciler_run_wakes_promptly_when_stopped_during_interval(
     asyncio.run(_run())
 
 
+# --- console collector reap (ADR-0095, #303) -----------------------------------------------
+
+
 class _FakeConsoleCollector:
     """A console collector double for the reap class: records finalize/close."""
 
@@ -718,5 +722,176 @@ def test_console_reap_with_empty_registry_is_noop(migrated_url: str) -> None:
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(pool, lambda c: loop._reap_console_collectors(c, registry))
         assert count == 0
+
+    asyncio.run(_run())
+
+
+# --- host_dump orphaned-volume reap (ADR-0094, #301) ---------------------------------------
+
+
+class _FakeDumpVolumeReaper:
+    """Records delete calls; returns scripted volumes; structurally a DumpVolumeReaper."""
+
+    def __init__(self, *volumes: DumpVolume, fail_on: frozenset[str] = frozenset()) -> None:
+        self._volumes = list(volumes)
+        self._fail_on = fail_on
+        self.deleted: list[str] = []
+
+    async def list_dump_volumes(self) -> list[DumpVolume]:
+        return list(self._volumes)
+
+    async def delete_dump_volume(self, name: str) -> None:
+        self.deleted.append(name)
+        if name in self._fail_on:
+            raise RuntimeError(f"libvirt vol delete of {name} failed")
+
+
+def test_null_dump_volume_reaper_is_a_dump_volume_reaper() -> None:
+    from kdive.providers.reaping import DumpVolumeReaper, NullDumpVolumeReaper
+
+    async def _run() -> None:
+        reaper = NullDumpVolumeReaper()
+        assert isinstance(reaper, DumpVolumeReaper)
+        assert await reaper.list_dump_volumes() == []
+        assert await reaper.delete_dump_volume("anything") is None
+
+    asyncio.run(_run())
+
+
+async def _seed_capture_job(conn: psycopg.AsyncConnection, system_id: UUID, *, state: str) -> None:
+    from psycopg.types.json import Jsonb
+
+    await conn.execute(
+        "INSERT INTO jobs (kind, payload, state, attempt, max_attempts, authorizing, dedup_key) "
+        "VALUES ('capture_vmcore', %s, %s, 0, 5, %s, %s)",
+        (
+            Jsonb({"system_id": str(system_id), "method": "host_dump"}),
+            state,
+            Jsonb({"principal": "p", "agent_session": None, "project": "proj"}),
+            f"{system_id}:capture_vmcore:host_dump:{state}",
+        ),
+    )
+
+
+async def _seed_now_epoch(conn: psycopg.AsyncConnection) -> float:
+    cur = await conn.execute("SELECT extract(epoch from now())")
+    row = await cur.fetchone()
+    assert row is not None
+    return float(row[0])
+
+
+def _vol(system_id: UUID | None, *, age_s: float, now_epoch: float) -> DumpVolume:
+    suffix = str(system_id) if system_id is not None else "stray"
+    return DumpVolume(
+        name=f"kdive-host-dump-{suffix}.kdump",
+        system_id=system_id,
+        mtime_epoch_s=now_epoch - age_s,
+    )
+
+
+def test_reaps_old_orphan_without_active_capture(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed, system_state=SystemState.CRASHED)
+            now_epoch = await _seed_now_epoch(seed)
+        reaper = _FakeDumpVolumeReaper(_vol(system_id, age_s=3600, now_epoch=now_epoch))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(
+                pool,
+                lambda conn: loop._reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
+            )
+        assert count == 1
+        assert reaper.deleted == [f"kdive-host-dump-{system_id}.kdump"]
+
+    asyncio.run(_run())
+
+
+def test_does_not_reap_a_volume_younger_than_the_grace_window(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed, system_state=SystemState.CRASHED)
+            now_epoch = await _seed_now_epoch(seed)
+        # 60s old, grace 30m: a fresh volume a live capture may still be writing.
+        reaper = _FakeDumpVolumeReaper(_vol(system_id, age_s=60, now_epoch=now_epoch))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(
+                pool,
+                lambda conn: loop._reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
+            )
+        assert count == 0
+        assert reaper.deleted == []  # live-holder guard #1 (mtime)
+
+    asyncio.run(_run())
+
+
+def test_does_not_reap_a_volume_with_an_active_capture_job(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed, system_state=SystemState.CRASHED)
+            await _seed_capture_job(seed, system_id, state="running")
+            now_epoch = await _seed_now_epoch(seed)
+        # Old enough to clear the mtime guard, but a running capture holds it live.
+        reaper = _FakeDumpVolumeReaper(_vol(system_id, age_s=3600, now_epoch=now_epoch))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(
+                pool,
+                lambda conn: loop._reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
+            )
+        assert count == 0
+        assert reaper.deleted == []  # live-holder guard #2 (active capture job)
+
+    asyncio.run(_run())
+
+
+def test_reaps_when_capture_job_is_terminal(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed, system_state=SystemState.CRASHED)
+            await _seed_capture_job(seed, system_id, state="succeeded")
+            now_epoch = await _seed_now_epoch(seed)
+        reaper = _FakeDumpVolumeReaper(_vol(system_id, age_s=3600, now_epoch=now_epoch))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(
+                pool,
+                lambda conn: loop._reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
+            )
+        assert count == 1  # a finished capture no longer holds the volume
+
+    asyncio.run(_run())
+
+
+def test_one_volume_delete_failure_does_not_starve_the_rest(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            sid_a = await seed_system(seed, system_state=SystemState.CRASHED)
+            sid_b = await seed_system(seed, system_state=SystemState.CRASHED)
+            now_epoch = await _seed_now_epoch(seed)
+        reaper = _FakeDumpVolumeReaper(
+            _vol(sid_a, age_s=3600, now_epoch=now_epoch),
+            _vol(sid_b, age_s=3600, now_epoch=now_epoch),
+            fail_on=frozenset({f"kdive-host-dump-{sid_a}.kdump"}),
+        )
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(
+                pool,
+                lambda conn: loop._reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
+            )
+        assert count == 1  # a's delete raised; b still got reaped
+        assert len(reaper.deleted) == 2  # both attempted
+
+    asyncio.run(_run())
+
+
+def test_reaps_a_stray_named_volume_with_no_system(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            now_epoch = await _seed_now_epoch(seed)
+        reaper = _FakeDumpVolumeReaper(_vol(None, age_s=3600, now_epoch=now_epoch))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(
+                pool,
+                lambda conn: loop._reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
+            )
+        assert count == 1  # no System => no live capture possible => age-reap
 
     asyncio.run(_run())

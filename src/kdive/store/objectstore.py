@@ -101,6 +101,47 @@ class ObjectStore:
             request.retention_class,
         )
 
+    def put_stream(
+        self, request: artifact_types.ArtifactStreamRequest
+    ) -> artifact_types.StoredArtifact:
+        """Write ``request.path``'s bytes under the key scheme, streaming from disk.
+
+        Used by callers holding a large artifact on local disk (the spooled host_dump core,
+        ADR-0094): the open file handle is the PUT body, so boto3 streams it in chunks rather
+        than the whole object being read into RAM. The object carries the request's
+        ``sensitivity``/``retention_class`` as user metadata, matching :meth:`put_artifact`,
+        and ``request.sha256_b64`` is sent as ``ChecksumSHA256`` so S3 rejects the PUT if the
+        streamed body does not hash to it (the end-to-end integrity binding) and a later
+        ``head`` returns it for the caller's post-put verification. Async callers must offload
+        this call via ``asyncio.to_thread``.
+
+        Raises:
+            CategorizedError: a key component is invalid
+                (:attr:`ErrorCategory.CONFIGURATION_ERROR`) or the put fails
+                (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
+        """
+        key = request.key()
+        try:
+            with request.path.open("rb") as body:
+                resp = self._client.put_object(
+                    Bucket=self._bucket,
+                    Key=key,
+                    Body=body,
+                    ChecksumSHA256=request.sha256_b64,
+                    Metadata={
+                        "sensitivity": request.sensitivity.value,
+                        "retention-class": request.retention_class,
+                    },
+                )
+        except (BotoCoreError, ClientError) as err:
+            raise _infrastructure_error("put_object", key, err) from err
+        return artifact_types.StoredArtifact(
+            key,
+            _normalize_etag(resp["ETag"]),
+            request.sensitivity,
+            request.retention_class,
+        )
+
     def get_artifact(self, key: str, etag: str | None) -> artifact_types.FetchedArtifact:
         """Fetch the object at ``key``, optionally guarded by an ``If-Match`` on ``etag``.
 

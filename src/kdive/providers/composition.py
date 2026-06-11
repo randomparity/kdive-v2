@@ -58,13 +58,20 @@ from kdive.providers.local_libvirt.lifecycle.provisioning import (
     LocalLibvirtProvisioning,
 )
 from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
-from kdive.providers.reaping import InfraReaper, NullReaper, OwnedDomain
+from kdive.providers.reaping import (
+    DumpVolumeReaper,
+    InfraReaper,
+    NullDumpVolumeReaper,
+    NullReaper,
+    OwnedDomain,
+)
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.config import is_remote_libvirt_configured
 from kdive.providers.remote_libvirt.connect import RemoteLibvirtConnect
 from kdive.providers.remote_libvirt.control import RemoteLibvirtControl
 from kdive.providers.remote_libvirt.debug import remote_attach_seam
 from kdive.providers.remote_libvirt.discovery import RemoteLibvirtDiscovery
+from kdive.providers.remote_libvirt.dump_volume_reaper import RemoteLibvirtDumpVolumeReaper
 from kdive.providers.remote_libvirt.install import RemoteLibvirtInstall
 from kdive.providers.remote_libvirt.introspect import (
     RemoteLiveIntrospect,
@@ -255,15 +262,21 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
         crash_postmortem=retriever,
         vmcore_introspector=vmcore_introspector,
         live_introspector=live_introspector,
-        # The two-phase kdump capture lands here (ADR-0084); vmcore.get admits a kdump
-        # capture against this set. GDBSTUB is the already-wired live-debug transport
-        # (ADR-0083/0085), advertised here as a capture method — it is not consumed
-        # through vmcore.fetch, so it has no selection path to gate. M2.5 adds CONSOLE: a
-        # reconciler-owned virDomainOpenConsole collector assembles the single console artifact
-        # off the boot/diagnostic plane (ADR-0095), the same artifact shape local advertises.
-        # Host-dump (#301) joins this set as its plane lands.
+        # All four M2.5 capture methods land on remote: the two-phase kdump capture (ADR-0084)
+        # and the host-side core-dump → storage-pool volume → stream-download host_dump path
+        # (ADR-0094) both land in retrieve.capture and satisfy vmcore.fetch's _VMCORE_METHODS, so
+        # advertising them admits each through the existing tool (host_dump supersedes ADR-0084's
+        # host-coupled / unsupported stance). GDBSTUB is the already-wired live-debug transport
+        # (ADR-0083/0085), and CONSOLE is the reconciler-owned virDomainOpenConsole collector
+        # (ADR-0095) — both advertised but consumed off the connect/boot plane, not vmcore.fetch,
+        # so neither has a selection path to gate.
         supported_capture_methods=frozenset(
-            {CaptureMethod.KDUMP, CaptureMethod.GDBSTUB, CaptureMethod.CONSOLE}
+            {
+                CaptureMethod.KDUMP,
+                CaptureMethod.HOST_DUMP,
+                CaptureMethod.GDBSTUB,
+                CaptureMethod.CONSOLE,
+            }
         ),
         discovery_registrar=register_remote_host,
         attach_seam=remote_attach_seam,
@@ -367,6 +380,20 @@ class ProviderComposition:
         if _remote_libvirt_enabled(enable_remote_libvirt):
             return RemoteLibvirtTransportResetter.from_env(secret_registry=self._secret_registry)
         return NullResetter()
+
+    def build_reconciler_dump_volume_reaper(
+        self, *, enable_remote_libvirt: bool | None = None
+    ) -> DumpVolumeReaper:
+        """Assemble the reconciler's host_dump orphaned-volume reaper (ADR-0094).
+
+        Returns the remote-libvirt reaper when the remote provider is enabled (operator
+        config present or the explicit flag), else the no-op ``NullDumpVolumeReaper`` —
+        local-libvirt dumps to a worker-local path it cleans up directly, with no host volume
+        to leak.
+        """
+        if _remote_libvirt_enabled(enable_remote_libvirt):
+            return RemoteLibvirtDumpVolumeReaper.from_env(secret_registry=self._secret_registry)
+        return NullDumpVolumeReaper()
 
 
 def build_provider_resolver(

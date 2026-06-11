@@ -7,6 +7,7 @@ exactly as the db tests do; the pure tests (key validation, etag normalization,
 
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -14,7 +15,11 @@ from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeou
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
-from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
+from kdive.provider_components.artifacts import (
+    ArtifactStreamRequest,
+    ArtifactWriteRequest,
+    StoredArtifact,
+)
 from kdive.store.objectstore import (
     ObjectStore,
     _normalize_etag,
@@ -85,6 +90,43 @@ def test_put_artifact_maps_transport_error_to_infrastructure_failure() -> None:
         store.put_artifact(
             _write_request("t", "vmcore", "oid", "core"),
         )
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+def _stream_request(
+    tenant: str, owner_kind: str, owner_id: str, name: str, path: Path
+) -> ArtifactStreamRequest:
+    import base64
+    import hashlib
+
+    sha256_b64 = base64.b64encode(hashlib.sha256(path.read_bytes()).digest()).decode("ascii")
+    return ArtifactStreamRequest(
+        tenant=tenant,
+        owner_kind=owner_kind,
+        owner_id=owner_id,
+        name=name,
+        path=path,
+        sha256_b64=sha256_b64,
+        sensitivity=Sensitivity.SENSITIVE,
+        retention_class="vmcore",
+    )
+
+
+def test_put_stream_rejects_invalid_key_component(tmp_path: Path) -> None:
+    spool = tmp_path / "core"
+    spool.write_bytes(b"x")
+    store = ObjectStore(object(), "bucket")  # client never touched: validation precedes it
+    with pytest.raises(CategorizedError) as excinfo:
+        store.put_stream(_stream_request("t", "with/slash", "oid", "core", spool))
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_put_stream_maps_transport_error_to_infrastructure_failure(tmp_path: Path) -> None:
+    spool = tmp_path / "core"
+    spool.write_bytes(b"payload")
+    store = ObjectStore(_UnreachableClient(), "bucket")
+    with pytest.raises(CategorizedError) as excinfo:
+        store.put_stream(_stream_request("t", "vmcore", "oid", "core", spool))
     assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
 
@@ -211,6 +253,21 @@ def test_put_get_round_trip(minio_store: ObjectStore, key_ns: str) -> None:
     assert '"' not in stored.etag  # stored etag is the bare value
     fetched = minio_store.get_artifact(stored.key, stored.etag)
     assert fetched.data == b"payload-bytes"
+
+
+def test_put_stream_round_trip_streams_from_disk(
+    minio_store: ObjectStore, key_ns: str, tmp_path: Path
+) -> None:
+    spool = tmp_path / "core.kdump"
+    spool.write_bytes(b"spooled-core-bytes")
+    stored = minio_store.put_stream(
+        _stream_request(key_ns, "systems", "sys-1", "vmcore-host_dump", spool)
+    )
+
+    assert '"' not in stored.etag
+    fetched = minio_store.get_artifact(stored.key, stored.etag)
+    assert fetched.data == b"spooled-core-bytes"
+    assert fetched.sensitivity is Sensitivity.SENSITIVE
 
 
 def test_get_artifact_unconditional_reads_without_etag(

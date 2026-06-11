@@ -23,12 +23,15 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.ops._auth import actor_for, audit_platform_denial, held_platform_roles
-from kdive.providers.reaping import InfraReaper
+from kdive.providers.reaping import DumpVolumeReaper, InfraReaper, NullDumpVolumeReaper
 from kdive.reconciler.images import ImageSweepStore
 from kdive.reconciler.loop import ReconcileReport, UploadStore, reconcile_once
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_platform_role
+
+# A module-level singleton so it can be a stateless default arg (ruff B008).
+_NULL_DUMP_VOLUME_REAPER: DumpVolumeReaper = NullDumpVolumeReaper()
 
 _RECONCILE_TOOL = "ops.reconcile_now"
 _RECONCILE_OBJECT_ID = "reconcile"
@@ -43,6 +46,7 @@ async def reconcile_now(
     reaper: InfraReaper,
     upload_store: UploadStore | None,
     image_store: ImageSweepStore | None = None,
+    dump_volume_reaper: DumpVolumeReaper = _NULL_DUMP_VOLUME_REAPER,
 ) -> ToolResponse:
     """Run one ``reconcile_once`` pass on demand; return its per-class repair summary.
 
@@ -85,7 +89,11 @@ async def reconcile_now(
         # not re-raise it, so there is no CategorizedError to catch here; a rare whole-pass
         # error (e.g. pool acquisition) propagates, matching the periodic loop's contract.
         report = await reconcile_once(
-            pool, reaper, upload_store=upload_store, image_store=image_store
+            pool,
+            reaper,
+            upload_store=upload_store,
+            image_store=image_store,
+            dump_volume_reaper=dump_volume_reaper,
         )
         async with pool.connection() as conn, conn.transaction():
             await audit.record_platform(
@@ -122,6 +130,7 @@ def _reconcile_response(report: ReconcileReport) -> ToolResponse:
             "leaked_images": str(report.leaked_images),
             "dangling_images": str(report.dangling_images),
             "expired_private_images": str(report.expired_private_images),
+            "reaped_dump_volumes": str(report.reaped_dump_volumes),
             "failures": ",".join(report.failures),
         },
     )
@@ -163,6 +172,7 @@ def register_with_reaper(
     reaper: InfraReaper,
     upload_store: UploadStore | None,
     image_store: ImageSweepStore | None = None,
+    dump_volume_reaper: DumpVolumeReaper = _NULL_DUMP_VOLUME_REAPER,
 ) -> None:
     """Register ``ops.reconcile_now`` with explicitly assembled repair ports."""
 
@@ -179,4 +189,5 @@ def register_with_reaper(
             reaper=reaper,
             upload_store=upload_store,
             image_store=image_store,
+            dump_volume_reaper=dump_volume_reaper,
         )
