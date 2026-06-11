@@ -139,8 +139,11 @@ def render_domain_xml(
     ET.SubElement(os_el, "type", arch=profile.arch, machine=machine).text = "hvm"
     ET.SubElement(os_el, "boot", dev="hd")
     # The vmcoreinfo fw_cfg device lets the crashed guest pass VMCOREINFO into QEMU's
-    # memory-only core-dump, so host_dump cores carry a build-id (ADR-0094 AC6 / #317).
+    # memory-only core-dump, so host_dump cores carry a build-id (ADR-0094 / #317). ACPI must
+    # be on for the guest kernel to populate that device — libvirt renders a <features> block
+    # without <acpi/> as acpi=off, which leaves VMCOREINFO empty (#319).
     features = ET.SubElement(domain, "features")
+    ET.SubElement(features, "acpi")
     ET.SubElement(features, "vmcoreinfo", state="on")
     devices = ET.SubElement(domain, "devices")
     disk = ET.SubElement(devices, "disk", type="volume", device="disk")

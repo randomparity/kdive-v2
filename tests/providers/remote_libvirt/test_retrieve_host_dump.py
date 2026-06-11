@@ -56,37 +56,6 @@ _LVM_POOL_XML = f"""
 </pool>
 """
 
-# A domainCapabilities document that advertises the kdump-zlib dump format.
-_CAPS_WITH_KDUMP_ZLIB = """
-<domainCapabilities>
-  <dump supported='yes'>
-    <enum name='format'>
-      <value>elf</value>
-      <value>kdump-zlib</value>
-      <value>kdump-lzo</value>
-    </enum>
-  </dump>
-</domainCapabilities>
-"""
-
-_CAPS_WITHOUT_KDUMP_ZLIB = """
-<domainCapabilities>
-  <dump supported='yes'>
-    <enum name='format'>
-      <value>elf</value>
-    </enum>
-  </dump>
-</domainCapabilities>
-"""
-
-# A libvirt too old to advertise the <dump> domcapability at all (e.g. 10.0 on Ubuntu 24.04).
-# Its QEMU may still support kdump-zlib; the preflight must proceed, not fail closed (#316).
-_CAPS_WITHOUT_DUMP_ELEMENT = """
-<domainCapabilities>
-  <os supported='yes'/>
-</domainCapabilities>
-"""
-
 
 def _domain_name() -> str:
     return domain_name_for(_SID)
@@ -198,12 +167,10 @@ class FakeHostDumpConn:
     def __init__(
         self,
         *,
-        caps_xml: str = _CAPS_WITH_KDUMP_ZLIB,
         pool: FakePool | None = None,
         stale_volume: FakeVolume | None = None,
     ) -> None:
         self._domain = FakeDomain(_domain_name())
-        self._caps = caps_xml
         self._pool = pool
         self._stale_volume = stale_volume
         self.stream = FakeStream()
@@ -218,11 +185,6 @@ class FakeHostDumpConn:
 
     def lookupByName(self, name: str) -> FakeDomain:  # noqa: N802 - binding name
         return self._domain
-
-    def getDomainCapabilities(  # noqa: N802 - binding name
-        self, emulatorbin=None, arch=None, machine=None, virttype=None, flags=0
-    ) -> str:
-        return self._caps
 
     def storagePoolLookupByName(self, name: str) -> FakePool:  # noqa: N802 - binding name
         assert self._pool is not None
@@ -320,12 +282,13 @@ def test_host_dump_happy_path_dumps_streams_uploads(tmp_path: Path) -> None:
 
     out = _retrieve(conn, store, tmp_path).capture(_SID, CaptureMethod.HOST_DUMP)
 
-    # AC1: the dump targeted a path inside the pool dir with KDUMP_ZLIB + MEMORY_ONLY.
+    # AC1: the dump targeted a path inside the pool dir with RAW (ELF) + MEMORY_ONLY.
     import libvirt
 
     (to, fmt, flags) = conn.domain.core_dumps[0]
     assert to == str(Path(_POOL_DIR) / host_dump_volume_name(_SID))
-    assert fmt == libvirt.VIR_DOMAIN_CORE_DUMP_FORMAT_KDUMP_ZLIB
+    # ELF (RAW) memory-only: the only format drgn can open from a QEMU dump (#319, ADR-0094).
+    assert fmt == libvirt.VIR_DOMAIN_CORE_DUMP_FORMAT_RAW
     assert flags & libvirt.VIR_DUMP_MEMORY_ONLY
     # AC2: refresh + lookup bridged the path to a volume; the download ran.
     assert pool.refreshed
@@ -370,33 +333,6 @@ class _StalePool(FakePool):
         if not self.refreshed:
             return self._stale
         return self._fresh
-
-
-def test_host_dump_without_kdump_zlib_is_configuration_error_before_dump(tmp_path: Path) -> None:
-    vol = FakeVolume(host_dump_volume_name(_SID), capacity=4096)
-    pool = FakePool(xml=_DIR_POOL_XML, volume=vol)
-    conn = FakeHostDumpConn(caps_xml=_CAPS_WITHOUT_KDUMP_ZLIB, pool=pool)
-    store = FakeStore(head=None)
-
-    with pytest.raises(CategorizedError) as exc:
-        _retrieve(conn, store, tmp_path).capture(_SID, CaptureMethod.HOST_DUMP)
-
-    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
-    assert not conn.domain.core_dumps  # AC2: no dump was attempted
-
-
-def test_host_dump_proceeds_when_libvirt_does_not_advertise_dump_caps(tmp_path: Path) -> None:
-    # A libvirt that emits no <dump> domcapability (e.g. 10.0) is "capability unknown", not
-    # "unsupported": the preflight proceeds and lets the dump itself prove support (#316).
-    vol = FakeVolume(host_dump_volume_name(_SID), capacity=4096)
-    pool = FakePool(xml=_DIR_POOL_XML, volume=vol)
-    conn = FakeHostDumpConn(caps_xml=_CAPS_WITHOUT_DUMP_ELEMENT, pool=pool)
-    store = FakeStore(head=_head_ok())
-
-    out = _retrieve(conn, store, tmp_path).capture(_SID, CaptureMethod.HOST_DUMP)
-
-    assert conn.domain.core_dumps  # the dump ran rather than being rejected at preflight
-    assert out.vmcore_build_id == "deadbeef"
 
 
 def test_host_dump_non_dir_pool_is_configuration_error_before_dump(tmp_path: Path) -> None:

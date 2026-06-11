@@ -99,8 +99,6 @@ _AGENT_REBOOTING = frozenset({ErrorCategory.TRANSPORT_FAILURE})
 # A dir/filesystem storage pool is the only type host_dump can dump-into-then-discover
 # (ADR-0094): an LVM/RBD/iSCSI pool has no directory to write a file into.
 _DIR_POOL_TYPES = frozenset({"dir", "fs", "netfs"})
-# The libvirt dump-format token the host's domainCapabilities must advertise for KDUMP_ZLIB.
-_KDUMP_ZLIB_FORMAT_TOKEN = "kdump-zlib"
 # Read the spooled core in fixed chunks for the sha256 pass so a multi-GB core never lands
 # whole in RAM (ADR-0094 constant-memory requirement).
 _SPOOL_CHUNK_BYTES = 8 * 1024 * 1024
@@ -232,7 +230,7 @@ class RemoteLibvirtRetrieve:
         run_crash: RunCrash = default_run_crash,
         core_build_id_from_file: CoreBuildIdFromFile = read_core_build_id_from_file,
         core_dmesg_from_file: CoreDmesgFromFile = read_core_dmesg_from_file,
-        host_dump_format: int = libvirt.VIR_DOMAIN_CORE_DUMP_FORMAT_KDUMP_ZLIB,
+        host_dump_format: int = libvirt.VIR_DOMAIN_CORE_DUMP_FORMAT_RAW,
         max_core_bytes: int = _MAX_CORE_BYTES,
     ) -> None:
         self._secret_registry = secret_registry
@@ -306,14 +304,14 @@ class RemoteLibvirtRetrieve:
     def _capture_host_dump(self, system_id: UUID) -> CaptureOutput:
         """Host-side core-dump → storage-pool volume → stream download → upload (ADR-0094).
 
-        Preflights (kdump-zlib host support, dir pool, 5 GiB ceiling) fire before paying a
-        dump/stream; the spooled temp file and the host volume are both removed in a
-        ``finally`` on every exit path.
+        Preflights (dir pool, 5 GiB ceiling) fire before paying a dump/stream; the spooled temp
+        file and the host volume are both removed in a ``finally`` on every exit path. The dump
+        is an ELF memory-only core (``VIR_DOMAIN_CORE_DUMP_FORMAT_RAW``): a universally-supported
+        libvirt format, so there is no host dump-format capability to preflight (#319).
         """
         config = self._config_factory()
         with self._connection(config) as conn:
             domain = self._lookup(conn, domain_name_for(system_id))
-            self._preflight_host_kdump_zlib(conn)
             pool = self._lookup_pool(conn, config.storage_pool)
             pool_dir = self._preflight_pool_dir(pool, config.storage_pool)
             vol_name = host_dump_volume_name(system_id)
@@ -336,28 +334,6 @@ class RemoteLibvirtRetrieve:
             with contextlib.suppress(Exception):
                 spool.parent.rmdir()
             self._delete_volume(volume)
-
-    def _preflight_host_kdump_zlib(self, conn: Any) -> None:
-        """Fail with CONFIGURATION_ERROR if the host cannot emit a kdump-zlib memory dump."""
-        try:
-            caps_xml = conn.getDomainCapabilities()
-        except libvirt.libvirtError as exc:
-            raise CategorizedError(
-                "remote host domain-capabilities probe failed for host_dump",
-                category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-            ) from exc
-        formats = _supported_dump_formats(caps_xml)
-        # A libvirt too old to emit the <dump> domcapability (e.g. 10.0) advertises no
-        # formats at all (None). Absence is "capability unknown" — proceed and let the
-        # dump itself fail — not "unsupported" (#316). Only fail closed when libvirt does
-        # advertise <dump> formats and kdump-zlib is genuinely absent.
-        if formats is not None and _KDUMP_ZLIB_FORMAT_TOKEN not in formats:
-            raise CategorizedError(
-                "remote host does not advertise the kdump-zlib core-dump format; "
-                "host_dump needs a libvirt+QEMU that supports compressed memory-only dumps",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"required_format": _KDUMP_ZLIB_FORMAT_TOKEN},
-            )
 
     @staticmethod
     def _lookup_pool(conn: Any, pool_name: str) -> Any:
@@ -666,28 +642,6 @@ class RemoteLibvirtRetrieve:
             category=ErrorCategory.READINESS_FAILURE,
             details={"system_id": str(system_id)},
         )
-
-
-def _supported_dump_formats(caps_xml: str) -> frozenset[str] | None:
-    """The core-dump format tokens the host advertises in domainCapabilities (tolerant parse).
-
-    Returns ``None`` when the host emits no ``<dump>`` element at all — a libvirt too old
-    to advertise the capability (#316), which the caller treats as "unknown, proceed". A
-    present-but-empty ``<dump>`` yields the empty set (genuinely unsupported). The XML is
-    host-emitted (untrusted), so it is parsed with ``defusedxml``; a malformed document
-    yields the empty set — a fail-closed CONFIGURATION_ERROR rather than an unreadable dump.
-    """
-    try:
-        root: ET.Element = _safe_fromstring(caps_xml)
-    except ET.ParseError:
-        return frozenset()
-    if root.find("./dump") is None:
-        return None
-    return frozenset(
-        value.text.strip()
-        for value in root.findall("./dump/enum[@name='format']/value")
-        if value.text
-    )
 
 
 def _pool_type_and_target(pool_xml: str) -> tuple[str | None, str | None]:

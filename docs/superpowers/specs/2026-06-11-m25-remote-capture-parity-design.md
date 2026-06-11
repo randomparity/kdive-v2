@@ -115,13 +115,16 @@ A new Retrieve-plane path in `remote_libvirt/retrieve.py`, parallel to the kdump
 4. The temp file and the host volume are deleted in a `finally` (graceful path); volumes orphaned
    by a non-graceful worker/host crash that bypasses `finally` are reaped by a reconciler sweep.
 
-**Dump format:** compressed kdump (`VIR_DUMP_MEMORY_ONLY` +
-`VIR_DOMAIN_CORE_DUMP_FORMAT_KDUMP_ZLIB`) is the default — drgn reads makedumpfile-compressed
-kdumps natively, and compression keeps cores comparable to the in-guest kdump path. The
-memory-only flag is mandatory: without it `format` is ignored and libvirt emits an unreadable
-QEMU save image. Uncompressed `RAW` ELF stays available behind a config knob but is **not** the
-default — its size ≈ full guest RAM would breach the 5 GiB ceiling on every ordinarily-sized
-guest (see ADR-0094).
+**Dump format:** ELF memory-only (`VIR_DUMP_MEMORY_ONLY` +
+`VIR_DOMAIN_CORE_DUMP_FORMAT_RAW`) is the default. This reverses the original kdump-zlib choice:
+a real-hardware run (#319) showed QEMU's compressed-kdump dumps carry `utsname.machine="Unknown"`
+and drgn cannot resolve their architecture (`KDUMP_ATTR_ARCH_NAME` unset), so they are
+unreadable, whereas drgn reads the ELF format's architecture from `e_machine`. The memory-only
+flag is mandatory: without it `format` is ignored and libvirt emits an unreadable QEMU save
+image. `KDUMP_ZLIB` stays available behind a config knob. The cost of ELF is size — ≈ full guest
+RAM, uncompressed — so host_dump is bounded by the 5 GiB ceiling until multipart upload lands
+(see ADR-0094). The provision domain must also enable `<acpi/>` + `<vmcoreinfo state='on'/>` so
+the guest populates VMCOREINFO into the dump.
 
 This **supersedes ADR-0084's** assertion that host_dump is host-coupled and excluded from
 remote: a storage-pool volume + stream download is the host-side channel ADR-0084 lacked.
@@ -201,12 +204,13 @@ matching the remote provider's existing `open_connection` / `store_factory` /
 
 ## Error handling
 
-- host_dump (ADR-0094): a failed dump/download surfaces as `INFRASTRUCTURE_FAILURE`. Four
-  `CONFIGURATION_ERROR`s are raised **before** wasting a dump/stream: the host lacks
-  `KDUMP_ZLIB` support (capability preflight), the `storage_pool` isn't filesystem/`dir`-backed
-  (pool-type preflight), the volume's capacity exceeds the 5 GiB ceiling (checked post-refresh,
-  pre-download), or the crashed kernel exported no VMCOREINFO so the mandatory `vmcore_build_id`
-  can't be extracted (rare for a crashed System, but handled). Volume cleanup: the `finally`
+- host_dump (ADR-0094): a failed dump/download surfaces as `INFRASTRUCTURE_FAILURE`. The dump
+  format is ELF (`RAW`), a universally-supported libvirt format, so there is no host dump-format
+  capability preflight (#319). Three `CONFIGURATION_ERROR`s are raised **before** wasting a
+  dump/stream: the `storage_pool` isn't filesystem/`dir`-backed (pool-type preflight), the
+  volume's capacity exceeds the 5 GiB ceiling (checked post-refresh, pre-download), or the
+  crashed kernel exported no VMCOREINFO so the mandatory `vmcore_build_id` can't be extracted
+  (rare for a crashed System, but handled). Volume cleanup: the `finally`
   covers the **graceful** path only — a non-graceful
   worker/host crash bypasses it, so a delete-stale-before-dump step plus a reconciler reap (with
   a live-holder/mtime guard so it never deletes a volume an in-flight capture is streaming) close
@@ -224,8 +228,8 @@ matching the remote provider's existing `open_connection` / `store_factory` /
 ## Testing strategy
 
 - **Unit (CI):** inject fake libvirt streams/volumes/console handles.
-  - host_dump: each preflight `CONFIGURATION_ERROR` fires before a dump (no `KDUMP_ZLIB`
-    support; non-`dir` pool; over-ceiling volume capacity rejected post-refresh/pre-download;
+  - host_dump: the dump uses RAW (ELF) memory-only; each preflight `CONFIGURATION_ERROR` fires
+    before a dump (non-`dir` pool; over-ceiling volume capacity rejected post-refresh/pre-download;
     no-VMCOREINFO build-id); spool-to-temp-file (not in-RAM); delete-stale-before-dump;
     redact-dmesg; upload.
   - console collector: attach-watcher opens a stream for a System lacking a collector;

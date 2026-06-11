@@ -33,26 +33,34 @@ Realize host_dump on remote as a stream pipeline in `remote_libvirt/retrieve.py`
 from `capture()` alongside the existing kdump path:
 
 1. **Dump.** `virDomainCoreDumpWithFormat(path, format, flags)` with
-   `flags = VIR_DUMP_MEMORY_ONLY` and `format = VIR_DOMAIN_CORE_DUMP_FORMAT_KDUMP_ZLIB`,
-   writing to a path **inside the configured `storage_pool`'s directory**. The
-   `VIR_DUMP_MEMORY_ONLY` flag is what makes libvirt emit a guest-memory dump at all — without
-   it, `format` is ignored and libvirt produces a QEMU save/migration image that neither drgn
-   nor `crash` can read. Among the memory-only formats, a **compressed kdump** format is the
-   default (not uncompressed `RAW`): an uncompressed dump is ≈ the guest's full physical RAM,
-   so on any guest with more than a few GiB it would breach the ceiling in step 2 on *every*
-   capture; kdump-zlib is drgn-readable (drgn reads makedumpfile-compressed kdumps natively)
-   and excludes/compresses free pages, giving cores comparable to the in-guest kdump path. The
-   uncompressed `RAW` ELF format stays available behind a config knob for the rare consumer
-   that needs it.
+   `flags = VIR_DUMP_MEMORY_ONLY` and `format = VIR_DOMAIN_CORE_DUMP_FORMAT_RAW` (an ELF
+   memory-only core), writing to a path **inside the configured `storage_pool`'s directory**.
+   The `VIR_DUMP_MEMORY_ONLY` flag is what makes libvirt emit a guest-memory dump at all —
+   without it, `format` is ignored and libvirt produces a QEMU save/migration image that
+   neither drgn nor `crash` can read.
 
-   **Host-capability dependency.** `KDUMP_ZLIB` requires the operator's remote host to ship a
-   libvirt+QEMU that supports kdump-compressed memory-only dumps. The remote provider runs
-   against hosts kdive does not control (ADR-0076), so the capture preflights the host's
-   supported dump formats and, if kdump-zlib is unavailable, **fails with a
-   `CONFIGURATION_ERROR` naming the missing host capability** (rather than silently emitting an
-   unreadable or over-ceiling core). The operator's recourse is the `RAW` knob plus a
-   small-enough guest. Auto-falling back to `RAW` is rejected: a silent fallback to a
-   ceiling-breaching format trades a clear config error for a confusing capture failure.
+   **Why ELF, not compressed kdump (revised after a real-hardware run, #319).** This ADR
+   originally defaulted to `KDUMP_ZLIB` on the premise that "kdump-zlib is drgn-readable (drgn
+   reads makedumpfile-compressed kdumps natively)." Exercising host_dump on real hardware
+   (Ubuntu 24.04 / libvirt 10.0 / QEMU 8.2, Fedora-42 guest) **falsified that premise** for
+   QEMU-produced dumps: `virDomainCoreDumpWithFormat(KDUMP_ZLIB)` writes the makedumpfile
+   *flattened* variant, and — decisively — its kdump header carries `utsname.machine="Unknown"`
+   (QEMU does not know the guest uname), so `drgn.set_core_dump()` fails with
+   `KDUMP_ATTR_ARCH_NAME: Key has no value` before VMCOREINFO is ever reachable. drgn 0.2.0 (the
+   pinned worker version and current PyPI latest) cannot derive the architecture, and neither
+   can `makedumpfile`. The ELF (`RAW`) format does not have this problem: drgn reads the
+   architecture from the ELF `e_machine` header and the per-CPU register notes QEMU emits, and
+   the dump is not flattened. *Validated on hardware:* an ELF memory-only dump of an
+   ACPI-enabled, vmcoreinfo-equipped guest opens cleanly in drgn (`arch=X86_64`) and yields the
+   kernel `BUILD-ID`. The cost is size — an ELF memory-only core is ≈ the guest's full physical
+   RAM, with no free-page compression — so host_dump is bounded by the step-2 ceiling (see
+   §Consequences); this is the capability limit until multipart upload lands. `KDUMP_ZLIB`
+   stays available behind the existing `host_dump_format` config knob for an operator whose
+   host+guest produce a drgn-readable compressed kdump, but it is no longer the default.
+
+   Because `RAW` is a universally-supported, built-in libvirt dump format (unlike `KDUMP_ZLIB`,
+   which depended on a host libvirt+QEMU advertising it), the host-capability preflight on the
+   dump format is **removed**: there is no host format dependency to fail closed on.
 
    **Pool-type prerequisite.** The dump-to-path → `pool.refresh()` → lookup mechanism (step 2)
    only works for a **filesystem/`dir`-backed** `storage_pool`: an LVM, RBD, or iSCSI pool has
@@ -79,15 +87,20 @@ from `capture()` alongside the existing kdump path:
    memory: the worker computes sha256, extracts the kernel **build-id from the core's
    VMCOREINFO**
    (`CaptureOutput.vmcore_build_id` is mandatory — `providers/ports/retrieve.py` — and the
-   `run_crash_postmortem` provenance check depends on it). Because the default core is a
-   compressed kdump, **not** an ELF image, build-id extraction must read VMCOREINFO from the
-   makedumpfile container (via drgn, which already parses these), not walk ELF notes — local
-   host_dump's ELF-oriented `_read_vmcore_build_id` is therefore **not** reused as-is for the
-   compressed path. host_dump runs on a **crashed** System (`vmcore.fetch` admits only
-   `SystemState.CRASHED`), and a crashed kernel exports VMCOREINFO reliably; in the rare case the
-   note is absent (an image without a vmcoreinfo device / unpopulated note) the capture fails with
-   a `CONFIGURATION_ERROR` naming the missing build-id rather than fabricating an empty one that
-   would later fail the postmortem provenance check. The worker then extracts + redacts dmesg and uploads the core to the
+   `run_crash_postmortem` provenance check depends on it). The build-id is read from the core's
+   VMCOREINFO via drgn (`drgn.set_core_dump()` then the `VMCOREINFO` object), which works on the
+   ELF core now that the architecture resolves.
+
+   **The guest domain must enable both the vmcoreinfo device and ACPI (#317/#319).** QEMU's
+   memory-only dump can only carry VMCOREINFO if the guest kernel wrote it into the QEMU
+   `vmcoreinfo` fw_cfg device, which requires (a) `<features><vmcoreinfo state='on'/></features>`
+   in the provision domain XML **and** (b) `<acpi/>` in that same `<features>` block — without
+   `<acpi/>` libvirt renders `acpi=off`, the guest never populates the device, and the dump
+   carries no VMCOREINFO at all. `render_domain_xml` therefore emits both. host_dump runs on a
+   **crashed** System (`vmcore.fetch` admits only `SystemState.CRASHED`); in the rare case the
+   note is still absent the capture fails with a `CONFIGURATION_ERROR` naming the missing
+   build-id rather than fabricating an empty one that would later fail the postmortem provenance
+   check. The worker then extracts + redacts dmesg and uploads the core to the
    object store **directly** from the spooled file (the upload, like the other passes, streams
    from disk) — the worker holds the core locally, so no presigned-PUT round trip (the kdump
    asymmetry: kdump uploads from inside the recovered guest; host_dump's guest is dead). The
@@ -134,12 +147,14 @@ a host.
   several concurrent captures, cannot OOM the worker. Bounded by the existing ceiling; >5 GiB is
   a multipart follow-up. This constant-memory path depends on the file/stream artifact-write
   prerequisite noted in §Decision.
-- **The 5 GiB ceiling bounds supported guest RAM, not a rare edge.** Even compressed, a
-  memory-only dump scales with the guest's RAM, so unlike kdump (where makedumpfile shrinks
-  most cores well under the ceiling) host_dump can hit it on a legitimately large guest. The
-  ceiling is therefore a *capability limit* of the method until multipart lands, and an
-  over-ceiling core is a `CONFIGURATION_ERROR` the operator resolves by sizing the guest or
-  using kdump — it is not an error-rate edge to be hand-waved.
+- **The 5 GiB ceiling bounds supported guest RAM, not a rare edge.** An ELF memory-only dump is
+  ≈ the guest's full physical RAM with no free-page compression, so — even more than a
+  compressed kdump would — host_dump hits the ceiling on any guest with more than ~5 GiB of RAM.
+  The ceiling is therefore a *capability limit* of the method until multipart upload lands
+  (tracked as the >5 GiB follow-up), and an over-ceiling core is a `CONFIGURATION_ERROR` the
+  operator resolves by sizing the guest or using kdump — it is not an error-rate edge to be
+  hand-waved. The ELF-over-kdump-zlib choice (#319) traded compression for a core drgn can
+  actually read; multipart upload, not compression, is the path to large-guest support.
 - A new failure surface — a leaked host volume — is **mostly** closed: the `finally` delete
   covers graceful failure, a delete-stale-before-dump step covers a single prior orphan, and a
   reconciler sweep covers volumes orphaned by a non-graceful worker/host crash (which bypasses
