@@ -28,7 +28,8 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from psycopg import AsyncConnection
-from psycopg.rows import dict_row
+from psycopg.cursor_async import AsyncCursor
+from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
 
 from kdive.domain.models import ImageState, ImageVisibility, ResourceKind
@@ -174,30 +175,24 @@ async def repair_expired_private_images(conn: AsyncConnection, store: ImageSweep
         candidates = await cur.fetchall()
     pruned = 0
     for cand in candidates:
-        if await _image_referenced(conn, cand["id"]):
-            _log.info(
-                "reconciler: expired private image %s referenced by a non-terminal System; "
-                "deferring expiry",
-                cand["id"],
-            )
-            continue
         if await expire_one_private_image(conn, store, cand["id"], cand["object_key"]):
             pruned += 1
     return pruned
 
 
-async def _image_referenced(conn: AsyncConnection, row_id: UUID) -> bool:
+async def _image_referenced(cur: AsyncCursor[DictRow], row_id: UUID) -> bool:
     """True if a non-terminal System references this image's catalog rootfs.
 
     The image's ``(provider, name)`` identity is folded into a JSONB-containment (``@>``) probe
     of each non-terminal System's ``provisioning_profile``: a catalog rootfs is serialized under
     the local-libvirt provider section as ``{"kind": "catalog", "provider": ..., "name": ...}``.
     Containment is an FK-free reference check — an image is never hard-linked to a System, so a
-    referenced image's expiry simply defers rather than failing a delete.
+    referenced image's expiry simply defers rather than failing a delete. Runs on the caller's
+    cursor (which already holds the per-row ``FOR UPDATE`` lock) so the reference predicate is
+    evaluated atomically with the prune, closing the provision-races-prune window.
     """
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute("SELECT provider, name FROM image_catalog WHERE id = %s", (row_id,))
-        image = await cur.fetchone()
+    await cur.execute("SELECT provider, name FROM image_catalog WHERE id = %s", (row_id,))
+    image = await cur.fetchone()
     if image is None:
         return False
     probe = Jsonb(
@@ -213,38 +208,48 @@ async def _image_referenced(conn: AsyncConnection, row_id: UUID) -> bool:
             }
         }
     )
-    async with conn.cursor() as cur:
-        await cur.execute(
-            "SELECT 1 FROM systems WHERE state <> ALL(%s) AND provisioning_profile @> %s LIMIT 1",
-            (list(_TERMINAL_SYSTEM_STATE_VALUES), probe),
-        )
-        return await cur.fetchone() is not None
+    await cur.execute(
+        "SELECT 1 FROM systems WHERE state <> ALL(%s) AND provisioning_profile @> %s LIMIT 1",
+        (list(_TERMINAL_SYSTEM_STATE_VALUES), probe),
+    )
+    return await cur.fetchone() is not None
 
 
 async def expire_one_private_image(
     conn: AsyncConnection, store: ImageSweepStore, row_id: UUID, object_key: str | None
 ) -> bool:
-    """Delete one expired private image's object + row under a ``FOR UPDATE`` row lock.
+    """Delete one expired private image's object + row, reference-guarded and extend-fenced.
 
-    The ``SELECT ... FOR UPDATE`` re-read is the extend fence (the ADR-0036 renew analogue): it
-    locks the row and declines one whose ``expires_at`` was pushed into the future since candidate
-    selection (a concurrent operator extend) or that another pass already pruned. Re-validated
-    against Postgres ``now()``. The row stays locked across the object delete and the row delete,
-    so an extend committing after the fence read blocks until this prune commits or rolls back.
+    Opens one transaction holding the row's ``FOR UPDATE`` lock across both guards and both
+    deletes, so the prune is atomic against a concurrent extend **and** a concurrent provision:
+
+    * the locked ``expires_at < now()`` re-read is the **extend fence** (the ADR-0036 renew
+      analogue) — it declines a row whose ``expires_at`` was pushed into the future since
+      candidate selection, or that another pass already pruned;
+    * the **reference guard** (a JSONB-containment probe of non-terminal Systems) runs inside the
+      same locked transaction, so a System provisioned to reference this image after candidate
+      selection is observed and the prune defers rather than orphaning that System's rootfs.
+
     The object delete (idempotent) precedes the row delete so a crash strands at most a dangling
-    row the dangling sweep heals, never a rowless object.
+    row the dangling sweep heals, never a rowless object. Re-validated against Postgres ``now()``.
 
-    Returns ``True`` if this call pruned the image, ``False`` if the fence declined it.
+    Returns ``True`` if this call pruned the image, ``False`` if a guard declined it.
     """
-    async with conn.transaction(), conn.cursor() as cur:
+    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "SELECT 1 FROM image_catalog "
             "WHERE id = %s AND visibility = %s "
             "  AND expires_at IS NOT NULL AND expires_at < now() FOR UPDATE",
             (row_id, _PRIVATE_VISIBILITY),
         )
-        still_expired = await cur.fetchone() is not None
-        if not still_expired:
+        if await cur.fetchone() is None:
+            return False
+        if await _image_referenced(cur, row_id):
+            _log.info(
+                "reconciler: expired private image %s referenced by a non-terminal System; "
+                "deferring expiry",
+                row_id,
+            )
             return False
         if object_key is not None:
             await asyncio.to_thread(store.delete, object_key)
