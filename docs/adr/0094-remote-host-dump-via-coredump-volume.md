@@ -83,11 +83,11 @@ from `capture()` alongside the existing kdump path:
    compressed kdump, **not** an ELF image, build-id extraction must read VMCOREINFO from the
    makedumpfile container (via drgn, which already parses these), not walk ELF notes — local
    host_dump's ELF-oriented `_read_vmcore_build_id` is therefore **not** reused as-is for the
-   compressed path. **A live (uncrashed) guest may carry no VMCOREINFO** (the note is reliable
-   for a crashed kernel but depends on a vmcoreinfo device / kernel population on an arbitrary
-   operator image); when it is absent the capture fails with a `CONFIGURATION_ERROR` naming the
-   missing build-id rather than fabricating an empty one that would later fail the postmortem
-   provenance check. The worker then extracts + redacts dmesg and uploads the core to the
+   compressed path. host_dump runs on a **crashed** System (`vmcore.fetch` admits only
+   `SystemState.CRASHED`), and a crashed kernel exports VMCOREINFO reliably; in the rare case the
+   note is absent (an image without a vmcoreinfo device / unpopulated note) the capture fails with
+   a `CONFIGURATION_ERROR` naming the missing build-id rather than fabricating an empty one that
+   would later fail the postmortem provenance check. The worker then extracts + redacts dmesg and uploads the core to the
    object store **directly** from the spooled file (the upload, like the other passes, streams
    from disk) — the worker holds the core locally, so no presigned-PUT round trip (the kdump
    asymmetry: kdump uploads from inside the recovered guest; host_dump's guest is dead). The
@@ -135,7 +135,7 @@ a host.
   a multipart follow-up. This constant-memory path depends on the file/stream artifact-write
   prerequisite noted in §Decision.
 - **The 5 GiB ceiling bounds supported guest RAM, not a rare edge.** Even compressed, a
-  memory-only dump scales with live guest memory, so unlike kdump (where makedumpfile shrinks
+  memory-only dump scales with the guest's RAM, so unlike kdump (where makedumpfile shrinks
   most cores well under the ceiling) host_dump can hit it on a legitimately large guest. The
   ceiling is therefore a *capability limit* of the method until multipart lands, and an
   over-ceiling core is a `CONFIGURATION_ERROR` the operator resolves by sizing the guest or

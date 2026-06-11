@@ -97,8 +97,10 @@ readiness via boot_id-change and treats the console artifact as a crash/diagnost
 A new Retrieve-plane path in `remote_libvirt/retrieve.py`, parallel to the kdump `capture()`:
 
 1. `virDomainCoreDumpWithFormat(path, format, flags)` with `flags = VIR_DUMP_MEMORY_ONLY`
-   dumps the live (or NMI-crashed) guest's memory to a path **inside the `storage_pool`
-   directory**, named deterministically per System. A stale same-named volume is deleted first.
+   dumps the **crashed** guest's memory to a path **inside the `storage_pool` directory**, named
+   deterministically per System (`vmcore.fetch` admits only `SystemState.CRASHED`, like kdump;
+   host_dump's distinction is the host-side dump mechanism — no in-guest kdump kernel needed — not
+   the System state). A stale same-named volume is deleted first.
 2. `pool.refresh()` so libvirt discovers the file as a managed volume, then
    `storageVolLookupByName`. The **5 GiB ceiling is enforced here, against the volume's reported
    capacity, before any download** — an over-ceiling core is rejected having paid only the dump,
@@ -170,11 +172,12 @@ seam (a console-collector port) following the `register_with_reaper` pattern.
 
 Operator-run on the real remote spine (`tests/integration/live_stack/spine.py`):
 
-- Exercise all four methods against a live remote System: gdbstub attach, console capture
-  across a crash, host_dump of a **running guest whose kernel exposes VMCOREINFO** (a
-  vmcoreinfo device / populated note — required so the mandatory `vmcore_build_id` is
-  extractable; a guest without it is the documented no-VMCOREINFO `CONFIGURATION_ERROR`, not a
-  4/4 pass), and kdump across an NMI crash.
+- Exercise all four methods on the live remote spine: gdbstub attach (any running System);
+  console capture across a crash (any System); host_dump and kdump **each on its own crashed
+  System** — both are vmcore methods requiring `SystemState.CRASHED`, and `ensure_method_match`
+  (#118) makes the first method win per System, so the two cannot share one System (crash A →
+  host_dump, crash B → kdump). A crashed kernel exports VMCOREINFO reliably; an absent VMCOREINFO
+  is the documented `CONFIGURATION_ERROR`, not a 4/4 pass.
 - Update `just m2-report` so the portability report records remote at **4/4** capture methods.
 - Extend the remote runbook with the four-method capture walkthrough.
 - Record the `#198` disposition: not deprecated; reframed as default-vs-opt-in.
@@ -202,8 +205,9 @@ matching the remote provider's existing `open_connection` / `store_factory` /
   `CONFIGURATION_ERROR`s are raised **before** wasting a dump/stream: the host lacks
   `KDUMP_ZLIB` support (capability preflight), the `storage_pool` isn't filesystem/`dir`-backed
   (pool-type preflight), the volume's capacity exceeds the 5 GiB ceiling (checked post-refresh,
-  pre-download), or a live guest carries no VMCOREINFO so the mandatory `vmcore_build_id` can't
-  be extracted. Volume cleanup: the `finally` covers the **graceful** path only — a non-graceful
+  pre-download), or the crashed kernel exported no VMCOREINFO so the mandatory `vmcore_build_id`
+  can't be extracted (rare for a crashed System, but handled). Volume cleanup: the `finally`
+  covers the **graceful** path only — a non-graceful
   worker/host crash bypasses it, so a delete-stale-before-dump step plus a reconciler reap (with
   a live-holder/mtime guard so it never deletes a volume an in-flight capture is streaming) close
   the orphan surface.
