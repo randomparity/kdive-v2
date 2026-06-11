@@ -4,6 +4,10 @@ Deploys the three kdive processes — server, worker, reconciler — plus a migr
 one-shot Job, against operator-provided Postgres/MinIO/OIDC backends. Implements
 ADR-0088 (deployment & packaging).
 
+This README is the value/flag reference. For an end-to-end bring-up — building and
+pushing the image, standing up backends, reaching the MCP endpoint, and verifying —
+follow [`docs/runbooks/kubernetes-deploy.md`](../../../docs/runbooks/kubernetes-deploy.md).
+
 ## Install (external backends, production)
 
 ```sh
