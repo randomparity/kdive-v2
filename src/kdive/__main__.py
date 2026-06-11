@@ -72,7 +72,37 @@ def build_parser() -> argparse.ArgumentParser:
     seed.add_argument("--limit-kcu", default="1000000")
     seed.add_argument("--max-concurrent-allocations", type=int, default=4)
     seed.add_argument("--max-concurrent-systems", type=int, default=4)
+    _add_build_rootfs_parser(sub)
     return parser
+
+
+def _add_build_rootfs_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """Register `build-rootfs`: the operator's local-libvirt rootfs build (replaces the builder).
+
+    Drives the in-process :class:`LocalLibvirtRootfsBuildPlane` and writes the produced qcow2 to
+    ``--dest`` (default the live-stack guest-image path), printing its content digest. This is the
+    direct successor to the deleted ``scripts/live-vm/build-guest-image.sh``; the RBAC-gated,
+    publish-backed ``kdivectl images build`` operator verb lands in M2.4/7 and enqueues an
+    ``IMAGE_BUILD`` job rather than building inline.
+    """
+    build = sub.add_parser(
+        "build-rootfs", help="build a local-libvirt kdive-ready rootfs qcow2 via the build plane"
+    )
+    build.add_argument(
+        "--dest",
+        default="/var/lib/kdive/rootfs/local/fedora-kdive-ready-43.qcow2",
+        help="destination qcow2 path (the produced image is moved here)",
+    )
+    build.add_argument("--name", default="fedora-kdive-ready-43", help="catalog image name")
+    build.add_argument("--arch", default="x86_64")
+    build.add_argument("--releasever", default="43", help="Fedora release the image is built from")
+    build.add_argument(
+        "--package",
+        action="append",
+        default=None,
+        dest="packages",
+        help="extra guest package (repeatable); defaults to drgn,kexec-tools,makedumpfile",
+    )
 
 
 async def _run_server(
@@ -262,6 +292,39 @@ async def _register_provider_resources(
         _log.warning("reconciler: provider discovery registration failed at startup", exc_info=True)
 
 
+_DEFAULT_ROOTFS_PACKAGES = ("drgn", "kexec-tools", "makedumpfile")
+
+
+def _run_build_rootfs(args: argparse.Namespace) -> None:
+    """Build a kdive-ready rootfs qcow2 via the local plane and move it to ``--dest``.
+
+    The plane writes the qcow2 into its own workspace; this moves it to the operator-chosen
+    destination and prints the content digest so it can be content-addressed downstream.
+    """
+    import shutil
+    from pathlib import Path
+
+    from kdive.images.planes.base import RootfsBuildSpec
+    from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane
+
+    packages = tuple(args.packages) if args.packages else _DEFAULT_ROOTFS_PACKAGES
+    spec = RootfsBuildSpec(
+        provider="local-libvirt",
+        name=args.name,
+        arch=args.arch,
+        releasever=args.releasever,
+        packages=packages,
+        source_image_digest=f"virt-builder:fedora-{args.releasever}",
+        capabilities=("agent", "kdump", "drgn"),
+    )
+    output = LocalLibvirtRootfsBuildPlane.from_env().build(spec)
+    dest = Path(args.dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(output.qcow2_path), str(dest))
+    dest.chmod(0o644)
+    _log.info("built rootfs %s digest=%s", dest, output.digest)
+
+
 def main(argv: list[str] | None = None) -> None:
     """Parse arguments, configure logging, and dispatch to the chosen subcommand."""
     args = build_parser().parse_args(argv)
@@ -319,6 +382,8 @@ def main(argv: list[str] | None = None) -> None:
                 max_concurrent_systems=args.max_concurrent_systems,
             )
         )
+    elif args.command == "build-rootfs":
+        _run_build_rootfs(args)
 
 
 if __name__ == "__main__":
