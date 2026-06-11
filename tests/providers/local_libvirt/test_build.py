@@ -895,6 +895,34 @@ def test_apply_patch_stderr_skipped_patch_fails_even_when_a_file_changed(
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
+# --- exit criterion 1: a no-op kernel patch FAILS patch-applied verification (#227) -
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git unavailable")
+def test_exit_criterion_noop_patch_fails_patch_applied_verification(tmp_path: Path) -> None:
+    # M2.4 exit criterion 1 (closes the #227 class) for the local-libvirt kernel build plane:
+    # a no-op kernel patch must FAIL patch-applied verification, driven end to end through the
+    # REAL `_apply_patch` (real `git apply` over a `.git`-less workspace — the #227 condition).
+    # A patch whose change is already present in the tree is a no-op: shipping it would build an
+    # unpatched kernel and report success. Real `git apply` refuses it (returncode != 0), so the
+    # apply-result guard rejects it; the test fails if that guard is removed. (The complementary
+    # #227 silent-skip face — `git apply` exits 0 yet leaves the tree unchanged — and the
+    # content-snapshot backstop that catches it are proven by
+    # `test_apply_patch_no_tree_change_is_configuration_error` above.)
+    workspace = _workspace_with_target(tmp_path)
+    workspace_main = workspace / "init" / "main.c"
+    workspace_main.write_text("line1\nline2-patched\n")  # the patch is already applied: a no-op
+    original = workspace_main.read_text()
+    patch = tmp_path / "noop.patch"
+    patch.write_text(_GOOD_PATCH)
+
+    with pytest.raises(CategorizedError) as caught:
+        _apply_patch(str(patch), workspace)
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert workspace_main.read_text() == original  # the no-op left the tree unchanged
+
+
 # --- _sync_tree ---------------------------------------------------------------------
 
 
