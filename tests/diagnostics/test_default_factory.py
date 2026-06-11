@@ -11,9 +11,12 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 import kdive.config as config
 from kdive.diagnostics.checks import CheckStatus, SecretRefCheck
 from kdive.diagnostics.service import default_service_factory
+from kdive.domain.errors import CategorizedError, ErrorCategory
 
 
 def _set_env(monkeypatch, root: Path, **refs: str) -> None:
@@ -60,3 +63,12 @@ def test_secret_ref_fails_when_a_configured_ref_is_missing(monkeypatch, tmp_path
     result = asyncio.run(check.run())
     assert result.status is CheckStatus.FAIL
     assert result.fix is not None
+
+
+def test_with_egress_fails_fast_when_no_probe_image_is_wired(monkeypatch, tmp_path: Path) -> None:
+    # The default factory has no probe-guest seam (remote needs an operator-staged image until
+    # M2.4, ADR-0091), so opting into egress fails fast rather than silently dropping the check.
+    _set_env(monkeypatch, tmp_path)
+    with pytest.raises(CategorizedError) as exc:
+        default_service_factory(None, with_egress=True)
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR

@@ -30,6 +30,7 @@ from kdive.diagnostics.checks import (
     Vantage,
     run_check,
 )
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.security.secrets.paths import PathSafetyError
 from kdive.security.secrets.secrets import read_secret_file
 
@@ -200,14 +201,33 @@ def _secret_ref_check() -> SecretRefCheck:
     )
 
 
-def default_service_factory(provider: str | None) -> DiagnosticsService:
+def default_service_factory(
+    provider: str | None, *, with_egress: bool = False
+) -> DiagnosticsService:
     """Build the production read-only diagnostics service for ``provider``.
 
     Assembles the server-vantage ``secret_ref`` check over the configured secret refs,
     resolved against the file-ref backend under ``KDIVE_SECRETS_ROOT``. The worker-vantage
     provider checks (``provider_tls``/``gdbstub_acl``) are assembled with their worker-job
     probe wiring in the egress-probe wave; this factory ships the cheap server-vantage read.
+
+    ``with_egress`` opts into the heavy mutating ``guest_egress`` probe, which provisions a
+    short-lived guest on the target provider. Its production probe-guest seam needs a bootable
+    image on that provider — on remote-libvirt that image is **operator-staged** until the
+    M2.4 image-lifecycle work makes it first-class (ADR-0091), so this default factory raises
+    a fail-fast configuration error rather than silently dropping the opt-in check; a
+    deployment that has staged the image wires a probe-guest-backed factory in its place.
+
+    Raises:
+        CategorizedError: ``with_egress`` is requested but no probe-guest image/seam is wired
+            in this deployment (``CONFIGURATION_ERROR``).
     """
+    if with_egress:
+        raise CategorizedError(
+            "guest_egress (--with-egress) needs an operator-staged probe-guest image on the "
+            "target provider; none is wired in this deployment (ADR-0091, M2.4)",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
     return DiagnosticsService(
         checks=[_secret_ref_check()],
         per_check_timeout=_DEFAULT_PER_CHECK_TIMEOUT,

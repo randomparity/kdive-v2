@@ -4,17 +4,20 @@
 
 ## `ops.diagnostics`
 
-`implemented` · `read-only`
+`implemented`
 
-Run the read-only deployment diagnostics. Platform operator-gated.
+Run the deployment diagnostics. Platform operator-gated.
 
 Returns one verdict carrying each check's three-state status, detail, fix, and the
 provider it covered. A check that could not be run (a down dependency) reports an
-``error`` distinctly — it is not a contract failure.
+``error`` distinctly — it is not a contract failure. ``with_egress`` adds the mutating
+ephemeral-probe-guest egress check (off by default; its provisioning is audited
+distinctly).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `provider` | `any` | no | Diagnose one named registered provider; omit for all registered. |
+| `with_egress` | `boolean` | no | Opt into the heavy guest_egress probe: provisions a short-lived guest on the target provider and execs a presigned request to object-store from inside it. Audited distinctly; off by default. |
 
 ## `ops.force_release`
 
