@@ -8,7 +8,14 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 
-from kdive.db.locks import LockScope, _lock_key, advisory_xact_lock
+from kdive.db.locks import (
+    CONSOLE_HOSTING_LEADER,
+    LockScope,
+    SessionAdvisoryLock,
+    _lock_key,
+    _session_lock_key,
+    advisory_xact_lock,
+)
 from tests.db_waits import wait_until_backend_waiting
 
 _KEY = UUID("11111111-1111-1111-1111-111111111111")
@@ -180,5 +187,95 @@ def test_no_open_transaction_raises(postgres_url: str) -> None:
             with pytest.raises(RuntimeError, match="open transaction"):
                 async with advisory_xact_lock(conn, LockScope.ALLOCATION, uuid4()):
                     pass
+
+    asyncio.run(_run())
+
+
+def test_session_lock_key_deterministic_and_name_sensitive() -> None:
+    assert _session_lock_key("a") == _session_lock_key("a")
+    assert _session_lock_key("a") != _session_lock_key("b")
+    value = _session_lock_key(CONSOLE_HOSTING_LEADER)
+    assert -(2**63) <= value < 2**63
+
+
+def test_session_lock_key_disjoint_from_xact_lock_space() -> None:
+    # A session leadership lock and a transaction-scoped scope lock must never collide
+    # in the single-bigint advisory space, or leadership would serialize against a
+    # per-object op. The session helper salts its key so the two spaces stay disjoint.
+    assert _session_lock_key("console-hosting-leader") != _lock_key(
+        LockScope.SYSTEM, "console-hosting-leader"
+    )
+
+
+def test_session_lock_held_across_commits(postgres_url: str) -> None:
+    """A session-scoped lock outlives transaction boundaries (unlike advisory_xact_lock)."""
+
+    async def _run() -> None:
+        async with await psycopg.AsyncConnection.connect(postgres_url, autocommit=True) as conn:
+            lock = SessionAdvisoryLock(conn, CONSOLE_HOSTING_LEADER)
+            assert await lock.try_acquire() is True
+            # A committed transaction on the same connection does not drop it.
+            async with conn.transaction():
+                await conn.execute("SELECT 1")
+            assert await lock.is_held() is True
+            await lock.release()
+            assert await lock.is_held() is False
+
+    asyncio.run(_run())
+
+
+def test_session_lock_is_held_for_negative_key(postgres_url: str) -> None:
+    # blake2b can produce a key whose high bit is set (negative int8); is_held must not
+    # mis-detect it through signed-int4 reconstruction. "a" hashes to a negative key.
+    assert _session_lock_key("a") < 0
+
+    async def _run() -> None:
+        async with await psycopg.AsyncConnection.connect(postgres_url, autocommit=True) as conn:
+            lock = SessionAdvisoryLock(conn, "a")
+            assert await lock.is_held() is False
+            assert await lock.try_acquire() is True
+            assert await lock.is_held() is True
+            await lock.release()
+            assert await lock.is_held() is False
+
+    asyncio.run(_run())
+
+
+def test_session_lock_single_holder(postgres_url: str) -> None:
+    """Only one connection holds the session lock; a second try fails without blocking."""
+
+    async def _run() -> None:
+        async with (
+            await psycopg.AsyncConnection.connect(postgres_url, autocommit=True) as a,
+            await psycopg.AsyncConnection.connect(postgres_url, autocommit=True) as b,
+        ):
+            leader = SessionAdvisoryLock(a, CONSOLE_HOSTING_LEADER)
+            standby = SessionAdvisoryLock(b, CONSOLE_HOSTING_LEADER)
+            assert await leader.try_acquire() is True
+            assert await standby.try_acquire() is False
+            await leader.release()
+            # After the leader releases, the standby can claim leadership.
+            assert await standby.try_acquire() is True
+            await standby.release()
+
+    asyncio.run(_run())
+
+
+def test_session_lock_released_on_connection_loss(postgres_url: str) -> None:
+    """Closing the holder's connection releases the lock so a standby can acquire it.
+
+    This is the split-brain hazard AC6 guards against: Postgres frees a session lock the
+    instant the holding backend disconnects, with no notice to the (now-dead) holder.
+    """
+
+    async def _run() -> None:
+        a = await psycopg.AsyncConnection.connect(postgres_url, autocommit=True)
+        leader = SessionAdvisoryLock(a, CONSOLE_HOSTING_LEADER)
+        assert await leader.try_acquire() is True
+        await a.close()  # simulate a dropped leader connection
+        async with await psycopg.AsyncConnection.connect(postgres_url, autocommit=True) as b:
+            standby = SessionAdvisoryLock(b, CONSOLE_HOSTING_LEADER)
+            assert await standby.try_acquire() is True
+            await standby.release()
 
     asyncio.run(_run())
