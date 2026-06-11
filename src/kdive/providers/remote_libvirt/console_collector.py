@@ -65,7 +65,7 @@ class ConsoleStream(Protocol):
 class OpenConsole(Protocol):
     """Open a fresh console stream for a System (wraps ``virDomainOpenConsole``)."""
 
-    def __call__(self, system_id: UUID) -> ConsoleStream: ...
+    def __call__(self, system_id: UUID, /) -> ConsoleStream: ...
 
 
 class ConsolePartStore(Protocol):
@@ -235,3 +235,12 @@ class ConsoleCollector:
     @property
     def finalized(self) -> bool:
         return self._finalized
+
+    def close(self) -> None:
+        """Close the console stream **without** finalizing (lock-loss / failover path).
+
+        The artifact is intentionally not assembled — on leader failover the new leader
+        cold-starts and pre-failover console history is the accepted best-effort loss
+        (ADR-0095). Use :meth:`finalize` for the capture/teardown path that must persist.
+        """
+        self._drop_stream()

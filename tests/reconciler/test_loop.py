@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from psycopg_pool import AsyncConnectionPool
@@ -632,5 +632,91 @@ def test_reconciler_run_wakes_promptly_when_stopped_during_interval(
         stop.set()
 
         await asyncio.wait_for(task, timeout=1.0)
+
+    asyncio.run(_run())
+
+
+class _FakeConsoleCollector:
+    """A console collector double for the reap class: records finalize/close."""
+
+    def __init__(self, system_id: UUID) -> None:
+        self.system_id = system_id
+        self.finalized = False
+        self.closed = False
+
+    def pump_once(self) -> bool:
+        return True
+
+    def finalize(self) -> None:
+        self.finalized = True
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_console_reap_finalizes_and_drops_gone_system(migrated_url: str) -> None:
+    from kdive.reconciler.console_hosting import CollectorRegistry
+
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            gone = await seed_system(seed, system_state=SystemState.TORN_DOWN)
+        registry = CollectorRegistry()
+        collector = _FakeConsoleCollector(gone)
+        registry.add(collector)
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, lambda c: loop._reap_console_collectors(c, registry))
+        assert count == 1
+        # Finalize ran (artifact persisted) BEFORE the drop — reap never races finalize (AC7).
+        assert collector.finalized is True
+        assert registry.has(gone) is False
+
+    asyncio.run(_run())
+
+
+def test_console_reap_leaves_live_system_collector(migrated_url: str) -> None:
+    from kdive.reconciler.console_hosting import CollectorRegistry
+
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            live = await seed_system(seed, system_state=SystemState.READY)
+        registry = CollectorRegistry()
+        collector = _FakeConsoleCollector(live)
+        registry.add(collector)
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, lambda c: loop._reap_console_collectors(c, registry))
+        assert count == 0
+        assert collector.finalized is False  # a live System keeps streaming
+        assert registry.has(live) is True
+
+    asyncio.run(_run())
+
+
+def test_console_reap_drops_vanished_system_collector(migrated_url: str) -> None:
+    # A System row deleted out from under the collector (no row at all) is "gone" and reaped.
+    from kdive.reconciler.console_hosting import CollectorRegistry
+
+    async def _run() -> None:
+        registry = CollectorRegistry()
+        vanished = uuid4()
+        collector = _FakeConsoleCollector(vanished)
+        registry.add(collector)
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, lambda c: loop._reap_console_collectors(c, registry))
+        assert count == 1
+        assert collector.finalized is True
+        assert registry.has(vanished) is False
+
+    asyncio.run(_run())
+
+
+def test_console_reap_with_empty_registry_is_noop(migrated_url: str) -> None:
+    # A non-leader replica hosts no collectors (AC5): the reap class touches nothing.
+    from kdive.reconciler.console_hosting import CollectorRegistry
+
+    async def _run() -> None:
+        registry = CollectorRegistry()
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, lambda c: loop._reap_console_collectors(c, registry))
+        assert count == 0
 
     asyncio.run(_run())

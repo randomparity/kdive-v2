@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from kdive.health import HealthProbe, Heartbeat
     from kdive.observability import Telemetry
     from kdive.providers.resolver import ProviderResolver
+    from kdive.reconciler.console_hosting import CollectorRegistry
     from kdive.security.secrets.secret_registry import SecretRegistry
 
 _RUNNABLE = frozenset({"server", "worker", "reconciler", "migrate"})
@@ -247,12 +248,14 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
     aux_task = asyncio.create_task(serve_aux(aux_app, host=aux_host, port=aux_port))
     provider_composition = ProviderComposition()
     await _register_provider_resources(pool, provider_composition.build_provider_resolver())
+    console_hosting = await _build_console_hosting(secret_registry)
     try:
         reconciler = Reconciler(
             pool,
             provider_composition.build_reconciler_reaper(),
             upload_store=upload_store,
             image_store=upload_store,
+            console_registry=console_hosting.registry if console_hosting else None,
             resetter=provider_composition.build_reconciler_transport_resetter(),
             heartbeat=heartbeat,
             telemetry=ReconcilerTelemetry(
@@ -260,11 +263,140 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
                 meter=telemetry.meter_provider.get_meter("kdive.reconciler"),
             ),
         )
-        await reconciler.run(stop)
+        hosting_task = _start_console_hosting(console_hosting, stop)
+        try:
+            await reconciler.run(stop)
+        finally:
+            await _cancel(*([hosting_task] if hosting_task else []))
+            if console_hosting is not None:
+                await console_hosting.close()
     finally:
         await _cancel(aux_task)
         secret_registry.clear()
         await pool.close()
+
+
+# The continuous attach-watcher cadence (ADR-0095 AC4): sub-tick, decoupled from the 30s
+# repair pass so early-boot console is bounded by this latency, not a reconcile interval.
+_CONSOLE_ATTACH_TICK_SECONDS = 1.0
+
+
+class _ConsoleHosting:
+    """Holds the console hosting loop, its shared registry, and the dedicated leader connection.
+
+    The leader lock is held on ``leader_conn`` — a connection **outside** the ``min_size=1``
+    repair pool (holding a pooled connection for the process life would pin the pool's only
+    connection and starve repairs, ADR-0095). :meth:`close` releases the lock and the connection.
+    """
+
+    def __init__(
+        self,
+        loop: object,
+        registry: CollectorRegistry,
+        leader_conn: object,
+        host_pool: object,
+    ) -> None:
+        self.loop = loop
+        self.registry = registry
+        self._leader_conn = leader_conn
+        self._host_pool = host_pool
+
+    async def run(self, stop: object) -> None:
+        import asyncio as _asyncio
+
+        from kdive.reconciler.console_hosting import ConsoleHostingLoop
+
+        assert isinstance(self.loop, ConsoleHostingLoop)
+        assert isinstance(stop, _asyncio.Event)
+        try:
+            while not stop.is_set():
+                await self.loop.tick()
+                with contextlib.suppress(TimeoutError):
+                    await _asyncio.wait_for(stop.wait(), timeout=_CONSOLE_ATTACH_TICK_SECONDS)
+        finally:
+            await self.loop.stop()
+
+    async def close(self) -> None:
+        import psycopg
+
+        if isinstance(self._leader_conn, psycopg.AsyncConnection):
+            await self._leader_conn.close()
+        if isinstance(self._host_pool, AsyncConnectionPool):
+            await self._host_pool.close()
+
+
+async def _build_console_hosting(secret_registry: SecretRegistry) -> _ConsoleHosting | None:
+    """Build the single-leader console hosting loop, or ``None`` when its env is unconfigured.
+
+    Returns ``None`` (hosting disabled, like the off upload reaper) when the object store or
+    remote-libvirt config is unavailable — the rest of the reconciler still runs. The leader
+    lock is claimed lazily inside the loop's first tick; this only opens the dedicated
+    connection and constructs the injected seams.
+    """
+    import psycopg
+
+    from kdive.db.locks import CONSOLE_HOSTING_LEADER, SessionAdvisoryLock
+    from kdive.db.pool import database_url
+    from kdive.domain.errors import CategorizedError
+    from kdive.providers.remote_libvirt.config import remote_config_from_env
+    from kdive.providers.remote_libvirt.console_collector import ConsoleCollector
+    from kdive.providers.remote_libvirt.console_wiring import (
+        RemoteConsolePartStore,
+        open_remote_console,
+    )
+    from kdive.reconciler.console_hosting import (
+        AsyncioPumpRunner,
+        CollectorRegistry,
+        ConsoleHostingLoop,
+        DbRunningRemoteSystems,
+    )
+    from kdive.security.secrets.secrets import secret_backend_from_env
+    from kdive.store.objectstore import object_store_from_env
+
+    try:
+        conninfo = database_url()
+        store = object_store_from_env()
+        remote_config = remote_config_from_env()
+        secret_backend = secret_backend_from_env(registry=secret_registry)
+    except CategorizedError:
+        return None
+
+    part_store = RemoteConsolePartStore(store, conninfo)
+    leader_conn = await psycopg.AsyncConnection.connect(conninfo, autocommit=True)
+    lock = SessionAdvisoryLock(leader_conn, CONSOLE_HOSTING_LEADER)
+    runner = AsyncioPumpRunner()
+    registry = CollectorRegistry(pump_runner=runner)
+    host_pool = create_pool(min_size=1)
+    await host_pool.open()
+
+    def factory(system_id: object) -> ConsoleCollector:
+        from uuid import UUID
+
+        assert isinstance(system_id, UUID)
+        return ConsoleCollector(
+            system_id,
+            open_console=lambda sid: open_remote_console(remote_config, secret_backend, sid),
+            store=part_store,
+            secret_registry=secret_registry,
+        )
+
+    loop = ConsoleHostingLoop(
+        leader_lock=lock,
+        running_systems=DbRunningRemoteSystems(host_pool),
+        collector_factory=factory,
+        registry=registry,
+        pump_runner=runner,
+    )
+    return _ConsoleHosting(loop, registry, leader_conn, host_pool)
+
+
+def _start_console_hosting(
+    console_hosting: _ConsoleHosting | None, stop: object
+) -> asyncio.Task[None] | None:
+    """Start the hosting loop concurrently with ``Reconciler.run``, sharing the stop event."""
+    if console_hosting is None:
+        return None
+    return asyncio.create_task(console_hosting.run(stop))
 
 
 def _reconciler_probe(

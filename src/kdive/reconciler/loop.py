@@ -39,6 +39,7 @@ from kdive.jobs import queue
 from kdive.jobs.payloads import PayloadValidationError, SystemPayload, run_id_from_payload
 from kdive.providers.reaping import InfraReaper
 from kdive.providers.transport_reset import NullResetter, TransportResetter
+from kdive.reconciler.console_hosting import CollectorRegistry
 from kdive.reconciler.images import (
     ImageSweepStore,
 )
@@ -152,6 +153,7 @@ class ReconcileReport:
     leaked_images: int = 0
     dangling_images: int = 0
     expired_private_images: int = 0
+    console_collectors_reaped: int = 0
 
 
 def _repair_plan(
@@ -160,6 +162,7 @@ def _repair_plan(
     resetter: TransportResetter,
     upload_store: UploadStore | None,
     image_store: ImageSweepStore | None,
+    console_registry: CollectorRegistry | None,
     debug_session_stale_after: timedelta,
     idempotency_retention: timedelta,
     queue_max_wait: timedelta,
@@ -187,6 +190,13 @@ def _repair_plan(
             _RepairSpec(
                 "abandoned_uploads",
                 lambda conn: _repair_abandoned_uploads(conn, upload_store),
+            )
+        )
+    if console_registry is not None:
+        repairs.append(
+            _RepairSpec(
+                "console_collectors_reaped",
+                lambda conn: _reap_console_collectors(conn, console_registry),
             )
         )
     if image_store is not None:
@@ -563,6 +573,45 @@ async def _has_live_gdbstub_holder(conn: AsyncConnection, system_id: UUID) -> bo
         return await cur.fetchone() is not None
 
 
+# A System whose console collector should be reaped: it reached a terminal state, so it will
+# never produce more console output. Reusing the orphaned-System terminal set keeps "gone"
+# consistent across the reaper classes.
+_GONE_SYSTEM_STATE_VALUES = _ORPHANED_SYSTEM_TERMINAL_STATE_VALUES
+
+
+async def _reap_console_collectors(conn: AsyncConnection, registry: CollectorRegistry) -> int:
+    """Finalize+drop console collectors for gone Systems (ADR-0095, AC7).
+
+    For each collector the hosting leader holds, this checks the System's persisted state and,
+    if the System is gone (terminal) or no longer exists, **finalizes** the collector — which
+    assembles and persists the single console artifact — and **then** drops it. Ordering is the
+    reap-never-races-finalize guard: the artifact is persisted before the collector is forgotten,
+    so a teardown's console is never discarded before it is stored. ``finalize`` is idempotent,
+    so a teardown-path finalize that already ran makes this reap's finalize a no-op.
+
+    A non-leader replica holds an empty registry (it hosts nothing, AC5), so this reaps nothing
+    there. Counts the collectors reaped; one structured-log line per reap.
+    """
+    held = registry.system_ids()
+    if not held:
+        return 0
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT id, state FROM systems WHERE id = ANY(%s)",
+            (list(held),),
+        )
+        states = {row[0]: row[1] for row in await cur.fetchall()}
+    reaped = 0
+    for system_id in held:
+        state = states.get(system_id)
+        if state is not None and state not in _GONE_SYSTEM_STATE_VALUES:
+            continue  # still live: the attach-watcher keeps streaming it
+        registry.finalize_and_drop(system_id)
+        reaped += 1
+        _log.info("reconciler: console collector for gone system %s finalized + reaped", system_id)
+    return reaped
+
+
 async def reconcile_once(
     pool: AsyncConnectionPool,
     reaper: InfraReaper,
@@ -570,6 +619,7 @@ async def reconcile_once(
     resetter: TransportResetter = _NULL_RESETTER,
     upload_store: UploadStore | None = None,
     image_store: ImageSweepStore | None = None,
+    console_registry: CollectorRegistry | None = None,
     debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
     idempotency_retention: timedelta = DEFAULT_IDEMPOTENCY_RETENTION,
     queue_max_wait: timedelta = DEFAULT_QUEUE_MAX_WAIT,
@@ -599,6 +649,7 @@ async def reconcile_once(
             resetter=resetter,
             upload_store=upload_store,
             image_store=image_store,
+            console_registry=console_registry,
             debug_session_stale_after=debug_session_stale_after,
             idempotency_retention=idempotency_retention,
             queue_max_wait=queue_max_wait,
@@ -621,6 +672,7 @@ async def reconcile_once(
         leaked_images=counts.get("leaked_images", 0),
         dangling_images=counts.get("dangling_images", 0),
         expired_private_images=counts.get("expired_private_images", 0),
+        console_collectors_reaped=counts.get("console_collectors_reaped", 0),
     )
 
 
@@ -659,6 +711,7 @@ class Reconciler:
         resetter: TransportResetter = _NULL_RESETTER,
         upload_store: UploadStore | None = None,
         image_store: ImageSweepStore | None = None,
+        console_registry: CollectorRegistry | None = None,
         interval: timedelta = DEFAULT_INTERVAL,
         debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
         idempotency_retention: timedelta = DEFAULT_IDEMPOTENCY_RETENTION,
@@ -672,6 +725,7 @@ class Reconciler:
         self._resetter = resetter
         self._upload_store = upload_store
         self._image_store = image_store
+        self._console_registry = console_registry
         self._interval = interval
         self._debug_session_stale_after = debug_session_stale_after
         self._idempotency_retention = idempotency_retention
@@ -688,6 +742,7 @@ class Reconciler:
             resetter=self._resetter,
             upload_store=self._upload_store,
             image_store=self._image_store,
+            console_registry=self._console_registry,
             debug_session_stale_after=self._debug_session_stale_after,
             idempotency_retention=self._idempotency_retention,
             queue_max_wait=self._queue_max_wait,
