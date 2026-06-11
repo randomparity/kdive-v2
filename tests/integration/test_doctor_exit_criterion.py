@@ -32,9 +32,11 @@ import asyncio
 import pathlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
+from typing import cast
 
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.__main__ import _reconciler_probe
 from kdive.cli.commands import doctor
 from kdive.diagnostics.checks import (
     Check,
@@ -60,6 +62,7 @@ from kdive.health.worker_checks import build_worker_checks
 from kdive.mcp.tools.ops import diagnostics
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole
+from kdive.worker_health import build_worker_probe
 
 # Fault-seeding fixtures (the "broken input" each real check runs over). Mirror the unit-test
 # fixtures so the seeded fault matches the contract the M2 deployment actually broke.
@@ -456,6 +459,24 @@ def _worker_probe(*, pg_ok: bool, minio_ok: bool) -> HealthProbe:
     )
 
 
+def _reconciler_health_probe(*, pg_ok: bool, minio_ok: bool) -> HealthProbe:
+    """Build the probe through the real reconciler wiring (``__main__._reconciler_probe``).
+
+    The reconciler's readiness probe is assembled by ``_reconciler_probe`` (it delegates to
+    the worker builder today). Driving that production seam — rather than rebuilding the
+    worker set inline — means a future change that gives the reconciler a distinct dependency
+    set is caught by this exit-criterion proof instead of passing green by equivalence. The
+    pool argument is unused by the builder path (the Postgres ping is the injected gate), so a
+    stub stands in for it.
+    """
+    return _reconciler_probe(
+        cast("AsyncConnectionPool", None),
+        lambda _pool: _async_gate(pg_ok),
+        build_worker_probe,
+        lambda: _Store(ok=minio_ok),
+    )
+
+
 class _Store:
     def __init__(self, *, ok: bool) -> None:
         self._ok = ok
@@ -493,12 +514,20 @@ def test_readyz_down_on_server_worker_and_reconciler() -> None:
         assert "oidc" not in worker_result.checks
         assert (await _worker_probe(pg_ok=True, minio_ok=True).check()).ready
 
-        # reconciler: same builder as the worker (PG+MinIO, no OIDC); PG down -> not ready.
-        reconciler_result = await _worker_probe(pg_ok=False, minio_ok=True).check()
+        # reconciler: drive the *real* reconciler probe wiring (`_reconciler_probe`), not a
+        # worker stand-in — so a future divergence of the reconciler dependency set from the
+        # worker's would fail this proof rather than passing green by equivalence.
+        reconciler_result = await _reconciler_health_probe(pg_ok=False, minio_ok=True).check()
         assert reconciler_result.ready is False
         assert reconciler_result.checks["postgres"] is False
-        assert "oidc" not in reconciler_result.checks
-        assert (await _worker_probe(pg_ok=True, minio_ok=True).check()).ready
+        assert "oidc" not in reconciler_result.checks  # reconciler never couples to the IdP
+        assert (await _reconciler_health_probe(pg_ok=True, minio_ok=True).check()).ready
+        # Pin the worker/reconciler set equivalence the wiring relies on (ADR-0090 §5): if a
+        # future change gave the reconciler its own set, this assertion catches the drift.
+        assert set((await _reconciler_health_probe(pg_ok=True, minio_ok=True).check()).checks) == {
+            "postgres",
+            "minio",
+        }
 
     asyncio.run(_run())
 
