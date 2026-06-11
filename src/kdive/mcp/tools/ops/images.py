@@ -51,7 +51,11 @@ from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.ops._auth import actor_for, audit_platform_denial, held_platform_roles
-from kdive.reconciler.images import ImageSweepStore, repair_expired_private_images
+from kdive.reconciler.images import (
+    ImageSweepStore,
+    image_referenced_by_live_system,
+    repair_expired_private_images,
+)
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import (
@@ -281,7 +285,7 @@ async def _audit_project_denial(
 async def upload(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
-    store: UploadObjectStore,
+    store: UploadObjectStore | None,
     *,
     project: str,
     name: str,
@@ -292,11 +296,11 @@ async def upload(
     """Register a quarantined upload as a project-private image. Requires ``operator`` on it.
 
     Gates ``operator`` on ``project`` first (a member-over-reach or cross-project caller is
-    denied and audited before the store is read), then delegates to the shared
-    :func:`register_private_upload`, which enforces the per-project quota fail-closed under the
-    project lock, validates the guest contract, and publishes through the row-first two-write.
-    ``lifetime_seconds`` (clamped to the ceiling by the service) defaults to the configured
-    private-image lifetime when absent.
+    denied and audited before the store is read — the authz boundary is evaluated even when no
+    object store is configured), then delegates to the shared :func:`register_private_upload`,
+    which enforces the per-project quota fail-closed under the project lock, validates the guest
+    contract, and publishes through the row-first two-write. ``lifetime_seconds`` (clamped to the
+    ceiling by the service) defaults to the configured private-image lifetime when absent.
     """
     with bind_context(principal=ctx.principal):
         try:
@@ -306,6 +310,8 @@ async def upload(
                 pool, ctx, tool=_UPLOAD_TOOL, project=project, args={"name": name}
             )
             return _denied(name, _UPLOAD_TOOL)
+        if store is None:  # No KDIVE_S3_* configured — authz already evaluated above.
+            return _config_error(name)
         now = datetime.now(UTC)
         expires_at = (
             now + timedelta(seconds=lifetime_seconds)
@@ -395,11 +401,33 @@ async def delete(pool: AsyncConnectionPool, ctx: RequestContext, *, image_id: st
 async def _delete_owned(
     pool: AsyncConnectionPool, ctx: RequestContext, uid: UUID, *, project: str
 ) -> ToolResponse:
-    """Delete the resolved row and audit the success under the owning project, one transaction."""
-    async with pool.connection() as conn, conn.transaction():
-        removed = await IMAGE_CATALOG.delete(conn, uid)
-        if not removed:  # A concurrent delete won; the desired end state holds.
+    """Reference-guard, then delete the row + audit, all under the row's ``FOR UPDATE`` lock.
+
+    The row lock spans the JSONB-containment reference probe and the delete, so a System
+    provisioned to reference this image after the resolve read is observed and the delete
+    declines rather than orphaning that System's rootfs (the same guard the reconciler's
+    expired-prune uses — one source of truth). A referenced image returns a typed
+    ``CONFIGURATION_ERROR``; the row survives. The object is left for the reconciler's
+    dangling/leaked sweep to GC (row-first removal: a rowless object is never stranded).
+    """
+    async with (
+        pool.connection() as conn,
+        conn.transaction(),
+        conn.cursor(row_factory=dict_row) as cur,
+    ):
+        await cur.execute(
+            "SELECT id FROM image_catalog WHERE id = %s AND visibility = %s FOR UPDATE",
+            (uid, ImageVisibility.PRIVATE.value),
+        )
+        if await cur.fetchone() is None:  # A concurrent delete won; desired end state holds.
             return ToolResponse.success(str(uid), "deleted")
+        if await image_referenced_by_live_system(cur, uid):
+            return ToolResponse.failure(
+                str(uid),
+                ErrorCategory.CONFIGURATION_ERROR,
+                data={"reason": "image is referenced by a non-terminal System"},
+            )
+        await cur.execute("DELETE FROM image_catalog WHERE id = %s", (uid,))
         await audit.record(
             conn,
             ctx,
@@ -647,8 +675,6 @@ def register(
         ] = None,
     ) -> ToolResponse:
         """Register a quarantined upload as a project-private image. Requires operator."""
-        if upload_store is None:
-            return _config_error(name)
         return await upload(
             pool,
             current_context(),

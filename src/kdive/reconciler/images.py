@@ -180,7 +180,7 @@ async def repair_expired_private_images(conn: AsyncConnection, store: ImageSweep
     return pruned
 
 
-async def _image_referenced(cur: AsyncCursor[DictRow], row_id: UUID) -> bool:
+async def image_referenced_by_live_system(cur: AsyncCursor[DictRow], row_id: UUID) -> bool:
     """True if a non-terminal System references this image's catalog rootfs.
 
     The image's ``(provider, name)`` identity is folded into a JSONB-containment (``@>``) probe
@@ -188,8 +188,10 @@ async def _image_referenced(cur: AsyncCursor[DictRow], row_id: UUID) -> bool:
     the local-libvirt provider section as ``{"kind": "catalog", "provider": ..., "name": ...}``.
     Containment is an FK-free reference check — an image is never hard-linked to a System, so a
     referenced image's expiry simply defers rather than failing a delete. Runs on the caller's
-    cursor (which already holds the per-row ``FOR UPDATE`` lock) so the reference predicate is
-    evaluated atomically with the prune, closing the provision-races-prune window.
+    cursor (which should already hold the per-row ``FOR UPDATE`` lock) so the reference predicate
+    is evaluated atomically with the prune/delete, closing the provision-races-removal window.
+    Shared by the reconciler's expired-private sweep and the operator ``images.delete`` tool so
+    both honor one reference guard.
     """
     await cur.execute("SELECT provider, name FROM image_catalog WHERE id = %s", (row_id,))
     image = await cur.fetchone()
@@ -244,7 +246,7 @@ async def expire_one_private_image(
         )
         if await cur.fetchone() is None:
             return False
-        if await _image_referenced(cur, row_id):
+        if await image_referenced_by_live_system(cur, row_id):
             _log.info(
                 "reconciler: expired private image %s referenced by a non-terminal System; "
                 "deferring expiry",
