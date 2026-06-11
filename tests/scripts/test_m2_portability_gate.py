@@ -69,8 +69,9 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
     # gdbstub reconciler reset, the ADR-0087 config-registry migration of the agnostic-core
     # readers, the ADR-0089 operator-CLI audit-attribution touch, and the ADR-0089 §6 M2.2
     # admin-CLI net-new read tools (secrets.list/fixtures.list + their app wiring and the
-    # value-free scope_refs accessor), and the ADR-0090 §5 server telemetry middleware;
-    # extending it is a deliberate, reviewed decision.
+    # value-free scope_refs accessor), the ADR-0090 §5 server telemetry middleware, and the
+    # ADR-0090 §5 worker/reconciler telemetry + aux health gate (#267: worker.py, the two
+    # *_telemetry modules); extending it is a deliberate, reviewed decision.
     assert (
         frozenset(
             {
@@ -107,6 +108,9 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/mcp/middleware.py",
                 "src/kdive/reconciler/provider_reaping.py",
                 "src/kdive/db/schema/0022_egress_probe_guests.sql",
+                "src/kdive/jobs/worker.py",
+                "src/kdive/jobs/worker_telemetry.py",
+                "src/kdive/reconciler/loop_telemetry.py",
             }
         )
         == ALLOWED_FILES

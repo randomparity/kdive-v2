@@ -106,6 +106,16 @@ ALLOWED_FILES = frozenset(
         # kdive/diagnostics/ (outside CORE_PREFIXES) and is provider-wired by the live gate.
         "src/kdive/reconciler/provider_reaping.py",
         "src/kdive/db/schema/0022_egress_probe_guests.sql",
+        # Worker/reconciler telemetry + aux health gate (#267, ADR-0090 §5): a
+        # provider-agnostic platform change. worker.py gains the loop-granularity /livez
+        # heartbeat tick, the not-ready dequeue pause, and a per-job span; the two
+        # *_telemetry modules build the per-job/per-pass spans + duration/queue-depth/lag
+        # metrics over the facade providers, labelled only by job_kind/outcome (no
+        # provider/tenant data). reconciler/loop.py (already allowlisted above) gains the
+        # per-pass span + heartbeat tick. None of it is provider-specific.
+        "src/kdive/jobs/worker.py",
+        "src/kdive/jobs/worker_telemetry.py",
+        "src/kdive/reconciler/loop_telemetry.py",
     }
 )
 

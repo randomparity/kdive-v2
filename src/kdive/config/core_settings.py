@@ -290,7 +290,9 @@ HEALTH_BIND_ADDR = Setting(
     help=(
         "host:port for the aux health/metrics listener (/livez /readyz /metrics), "
         "distinct from the MCP port. Loopback by default — the network boundary is its "
-        "access control; widening it is an explicit act."
+        "access control; widening it is an explicit act. When unset the port defaults "
+        "per process (server 9464, worker 9465, reconciler 9466) so three processes on "
+        "one host do not collide; an explicit value wins for every process."
     ),
     suggest="a host:port, e.g. 127.0.0.1:9464 (loopback) or 0.0.0.0:9464 (pod-local)",
 )

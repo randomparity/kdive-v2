@@ -15,8 +15,9 @@ import asyncio
 import contextlib
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from psycopg_pool import AsyncConnectionPool
@@ -26,8 +27,12 @@ from kdive.domain.models import Job
 from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry, JobHandler
 from kdive.jobs.payloads import PayloadValidationError
+from kdive.jobs.worker_telemetry import JobSpan, WorkerTelemetry
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
+
+if TYPE_CHECKING:
+    from kdive.health import Heartbeat
 
 _log = logging.getLogger(__name__)
 _CONTEXT_VALUE_MAX = 1000
@@ -47,8 +52,21 @@ class Worker:
         heartbeat_interval: timedelta = timedelta(seconds=30),
         poll_interval: timedelta = timedelta(seconds=1),
         secret_registry: SecretRegistry,
+        heartbeat: Heartbeat | None = None,
+        readiness: Callable[[], Awaitable[bool]] | None = None,
+        telemetry: WorkerTelemetry | None = None,
     ) -> None:
         """Build a worker.
+
+        Args:
+            heartbeat: The ``/livez`` loop heartbeat ticked once per poll pass (ADR-0090
+                §5), so a long-running job never makes the worker read not-live. ``None``
+                in tests / a process without the aux listener.
+            readiness: A coroutine returning whether this process's backends are reachable
+                (the worker/reconciler set: PG + MinIO, no OIDC). When it returns ``False``
+                the worker pauses dequeuing new jobs while the backend is down rather than
+                failing them (ADR-0090 §5). ``None`` disables the gate (always dequeues).
+            telemetry: Per-job span + duration/queue-depth metrics; defaults to a no-op.
 
         Raises:
             ValueError: ``heartbeat_interval > lease / 3`` — too coarse to keep the
@@ -75,20 +93,28 @@ class Worker:
         self._heartbeat_interval = heartbeat_interval
         self._poll_interval = poll_interval
         self._secret_registry = secret_registry
+        self._heartbeat = heartbeat
+        self._readiness = readiness
+        self._telemetry = telemetry or WorkerTelemetry.disabled()
 
     async def run_once(self) -> Job | None:
         """Claim and dispatch one job; return it, or ``None`` if idle.
 
-        Reads ``queue_paused`` at the top of the claim loop (ADR-0062): while the queue is
-        paused the worker skips ``dequeue`` and returns ``None`` (idle), so it claims no
-        new job — but a job already in flight in :meth:`_dispatch` is untouched and keeps
-        heart-beating. Pause freezes the worker's claim loop only; the reconciler keeps
-        enqueuing, and those jobs simply wait for resume.
+        Skips ``dequeue`` and returns ``None`` (idle) when this process's backends are
+        not reachable (ADR-0090 §5): a not-ready worker pauses dequeuing new jobs while a
+        needed backend is down rather than failing them. It also reads ``queue_paused`` at
+        the top of the claim loop (ADR-0062): while the queue is paused the worker skips
+        ``dequeue`` too. In both cases a job already in flight in :meth:`_dispatch` is
+        untouched and keeps heart-beating — the freeze applies only to the claim of *new*
+        work; the reconciler keeps enqueuing, and those jobs simply wait for resume.
         """
+        if not await self._is_ready():
+            return None
         async with self._pool.connection() as conn:
             if await queue.is_queue_paused(conn):
                 return None
             job = await queue.dequeue(conn, self._worker_id, lease=self._lease)
+        self._telemetry.observe_queue_depth(0 if job is None else 1)
         if job is None:
             return None
         handler = self._registry.get(job.kind)
@@ -100,8 +126,20 @@ class Worker:
         await self._dispatch(job, handler)
         return job
 
+    async def _is_ready(self) -> bool:
+        """Return readiness via the injected gate; always ready when no gate is wired."""
+        if self._readiness is None:
+            return True
+        return await self._readiness()
+
     async def run(self, stop: asyncio.Event) -> None:
         """Loop :meth:`run_once`, sleeping ``poll_interval`` when idle or after an error.
+
+        The ``/livez`` heartbeat is ticked at the **top of every poll pass** (ADR-0090
+        §5), *before* dispatching a job — so a single long-running job (a kernel build can
+        run for minutes) never starves the heartbeat and makes the worker read not-live.
+        Liveness tracks the loop, not the work unit; a genuinely wedged loop stops ticking
+        and goes stale, while a busy-but-progressing worker stays live.
 
         A transient per-iteration error (e.g. a brief database outage in ``dequeue``)
         is logged and the loop continues — a durable worker must not die on one bad
@@ -110,6 +148,8 @@ class Worker:
         """
         poll = self._poll_interval.total_seconds()
         while not stop.is_set():
+            if self._heartbeat is not None:
+                self._heartbeat.tick()
             try:
                 job = await self.run_once()
             except Exception:  # noqa: BLE001 - a durable worker survives a transient per-iteration error
@@ -120,30 +160,35 @@ class Worker:
                 await _sleep_until_stop(stop, poll)
 
     async def _dispatch(self, job: Job, handler: JobHandler) -> None:
-        heartbeat = asyncio.create_task(self._heartbeat_loop(job.id))
-        try:
+        with self._telemetry.job_span(job.kind.value) as span:
+            heartbeat = asyncio.create_task(self._heartbeat_loop(job.id))
             try:
-                async with self._pool.connection() as conn:
-                    result_ref = await handler(conn, job)
-            except Exception as exc:  # noqa: BLE001 - the worker turns any handler failure into a dead-letter/requeue
-                category = _failure_category(exc)
-                async with self._pool.connection() as conn:
-                    await queue.fail(
-                        conn,
-                        job,
-                        category,
-                        failure_context=_failure_context(exc, self._secret_registry),
-                    )
-                _log.warning("job %s failed: %s", job.id, category, exc_info=True)
-                return
+                await self._run_handler(job, handler, span)
+            finally:
+                heartbeat.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await heartbeat
+
+    async def _run_handler(self, job: Job, handler: JobHandler, span: JobSpan) -> None:
+        try:
             async with self._pool.connection() as conn:
-                completed = await queue.complete(conn, job.id, self._worker_id, result_ref)
-            if completed is None:
-                _log.warning("job %s completed but was reclaimed; result dropped", job.id)
-        finally:
-            heartbeat.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await heartbeat
+                result_ref = await handler(conn, job)
+        except Exception as exc:  # noqa: BLE001 - the worker turns any handler failure into a dead-letter/requeue
+            span.set_outcome("error")
+            category = _failure_category(exc)
+            async with self._pool.connection() as conn:
+                await queue.fail(
+                    conn,
+                    job,
+                    category,
+                    failure_context=_failure_context(exc, self._secret_registry),
+                )
+            _log.warning("job %s failed: %s", job.id, category, exc_info=True)
+            return
+        async with self._pool.connection() as conn:
+            completed = await queue.complete(conn, job.id, self._worker_id, result_ref)
+        if completed is None:
+            _log.warning("job %s completed but was reclaimed; result dropped", job.id)
 
     async def _heartbeat_loop(self, job_id: UUID) -> None:
         """Renew the lease until cancelled, the fence misses, or a heartbeat errors.
