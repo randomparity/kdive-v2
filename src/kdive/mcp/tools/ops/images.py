@@ -77,6 +77,10 @@ _PUBLISH_TOOL = "images.publish"
 _UPLOAD_TOOL = "images.upload"
 _DELETE_TOOL = "images.delete"
 _DEFAULT_REQUIRED_CONTRACT = ("agent", "kdump", "drgn")
+# The published catalog object prefix. A quarantine key under it would let an operator
+# re-ingest another project's already-published (owner-scoped) private image into their own
+# catalog, so it is rejected — an upload sources only a freshly-quarantined object.
+_PUBLISHED_IMAGE_PREFIX = "images/"
 _PRUNE_TOOL = "images.prune_expired"
 _EXTEND_TOOL = "images.extend"
 _OBJECT_KIND = "image_catalog"
@@ -312,6 +316,10 @@ async def upload(
             return _denied(name, _UPLOAD_TOOL)
         if store is None:  # No KDIVE_S3_* configured — authz already evaluated above.
             return _config_error(name)
+        if quarantine_key.startswith(_PUBLISHED_IMAGE_PREFIX):
+            # Reject a source key in the published catalog prefix: it would let an operator
+            # re-ingest another project's owner-scoped private image into their own catalog.
+            return _config_error(name, data={"reason": "quarantine_key in published prefix"})
         now = datetime.now(UTC)
         expires_at = (
             now + timedelta(seconds=lifetime_seconds)
