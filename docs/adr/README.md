@@ -120,3 +120,6 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0091](0091-doctor-diagnostics-model.md) | `doctor` / diagnostics model — server-side authz-gated diagnostics tool, per-check vantage, ephemeral-probe-guest egress check (M2.3) | Proposed |
 | [0092](0092-image-rootfs-lifecycle.md) | Image & rootfs lifecycle — `RootfsBuildPlane` Python build planes, `image_catalog` DB table as single source of truth, publish/register two-write + reconciler drift repair (M2.4) | Proposed |
 | [0093](0093-private-image-uploads.md) | Private image uploads — owner-scoped `visibility='private'` rows, required TTL, reconciler auto-prune, ADR-0048 ingest reuse (M2.4) | Proposed |
+| [0094](0094-remote-host-dump-via-coredump-volume.md) | Remote host_dump via `virDomainCoreDumpWithFormat` (ELF) + presigned-PUT stream download (M2.5) | Proposed |
+| [0095](0095-reconciler-remote-console-collector.md) | Reconciler-supervised remote console collector (M2.5) | Proposed |
+| [0096](0096-kdump-config-fragment-build-input.md) | Kdump kernel-config fragment as a seeded build-config catalog input — merge onto `make defconfig`, catalog ref with implicit default, inline agent download | Proposed |
