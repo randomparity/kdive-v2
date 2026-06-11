@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from opentelemetry.sdk._logs import LogRecordProcessor, ReadWriteLogRecord
 from opentelemetry.sdk.metrics.export import (
@@ -26,9 +26,6 @@ from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
-
-if TYPE_CHECKING:
-    from opentelemetry.sdk.metrics.view import Aggregation
 
 
 class _RegistryRedactor:
@@ -135,9 +132,6 @@ class RedactingMetricExporter(MetricExporter):
 
     def shutdown(self, timeout_millis: float = 30000, **kwargs: Any) -> None:
         self._inner.shutdown(timeout_millis, **kwargs)
-
-    def _preferred_aggregation_fallback(self) -> dict[type, Aggregation]:  # pragma: no cover
-        return {}
 
 
 def _redact_metrics_data(redactor: Redactor, metrics_data: MetricsData) -> None:
