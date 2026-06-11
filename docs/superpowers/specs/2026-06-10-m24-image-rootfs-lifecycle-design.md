@@ -90,42 +90,58 @@ Migration `0023_image_catalog.sql` creates `image_catalog`:
 | column | notes |
 |--------|-------|
 | `provider, name, arch, format, root_device` | identity + boot layout |
-| `object_key` | object-store key of the qcow2 |
-| `digest` | content digest of the qcow2 — the image identity (a rootfs image has no kernel `build_id`) |
+| `object_key` (nullable) | object-store key of the qcow2; **NULL for a `defined` row** (metadata seeded, no image built yet) |
+| `digest` | content digest of the qcow2 — the image identity (a rootfs image has no kernel `build_id`); NULL until built |
 | `capabilities` | guest contract tags (agent, kdump, drgn, helpers) |
 | `provenance` (jsonb) | pinned inputs + build args |
 | `visibility` (`public` \| `private`) | resolution scope |
 | `owner` (nullable) | the **owning project** (not a principal); set iff `private` |
 | `expires_at` (nullable) | required iff `private` |
-| `state` | `pending` (row registered, object not yet HEAD-confirmed) → `registered` (resolvable) |
+| `state` | `defined` (seeded metadata, no object) → `pending` (publishing) → `registered` (resolvable) |
 | `pending_since` | timestamp a `pending` row was created; backs the publish-deadline grace window |
 
 DB-level invariants: `CHECK ((visibility='private') = (owner IS NOT NULL))`,
-`CHECK ((visibility='private') = (expires_at IS NOT NULL))`, a **partial** unique index on
-`(provider, name, arch)` over **`state='registered'` public rows only** (so a crashed publish's
-leftover `pending` row never blocks a re-publish of the same identity), and a partial unique
+`CHECK ((visibility='private') = (expires_at IS NOT NULL))`, `CHECK ((state='defined') =
+(object_key IS NULL))` (a `defined` baseline has no object; `pending`/`registered` do), a
+**partial** unique index on `(provider, name, arch)` over **`state='registered'` public rows
+only** (so a crashed publish's leftover `pending` row never blocks a re-publish of the same
+identity), the same over `state='defined'` public rows (seed idempotency), and a partial unique
 index on `(owner, provider, name)` over registered **private** rows (so a project's private
 image name resolves to exactly one image).
 
+A **`defined`** row is why a fresh install works: baseline rootfs qcow2 bytes (~GiB) cannot ship
+in the package, so the seed registers baseline *metadata* as `defined` rows and `images
+build`/`publish` realizes each to `registered` (`defined → pending → registered`). Resolution
+returns only `registered` rows, so a `defined`-only baseline is listed but not yet bootable.
+
 An **application-level seed step** (not the SQL migration — `db/migrate.py` applies only
-`NNNN_*.sql` and cannot read fixture YAML) reads the operator-configured catalog
-(`FIXTURE_CATALOG_PATH`, not just the source-tree default) and registers each entry; it is
-read-only against operator data. The in-repo `fixtures/local-libvirt/` default catalog is then
-removed from the source tree. Deploy ordering is migrate → seed → resolver cutover, so an old
-sync-YAML worker never reads a deleted catalog. The synchronous `load_fixture_catalog()` is replaced by
-an `IMAGE_CATALOG` repository read in the provisioning / `materialize` path; resolution moves
-to async DB reads. The visibility filter becomes
-`visibility='public' OR (visibility='private' AND owner=:project)` — one authz predicate on
-the existing visibility seam, not a new mechanism. A project's private image **shadows** a
-public image of the same `(provider, name)` (private-first), so resolution is deterministic.
-This is the contained hot-path change: the
-resolver and its two callers (profile resolution, local_libvirt materialize).
+`NNNN_*.sql` and cannot read fixture YAML) registers the baseline **rootfs** as `defined` rows
+from the operator-configured catalog (`FIXTURE_CATALOG_PATH`) or, on a fresh install, the
+packaged baseline relocated into `images/seed_data/`; it is read-only against operator data.
+
+**Only the rootfs catalog moves to the DB.** The fixture catalog also holds `profiles`
+(`ProfileCatalogEntry`, cmdline/config requirements) that `image_catalog` does not model — so
+only `fixtures/local-libvirt/rootfs/` is relocated to `images/seed_data/`; `profiles/` and the
+configs **stay file-based** and `load_fixture_catalog` keeps resolving them (its
+`FixtureCatalog.rootfs` list becomes empty, `.profiles` unchanged).
+
+The synchronous rootfs lookup in the provisioning / `materialize` path is replaced by an
+`IMAGE_CATALOG` async DB read **plus a wired object fetch**: object-store-backed materialization
+is a `not wired yet` stub today (`materialize.py`), so the resolver returns the row and
+`materialize` downloads its `object_key` to a checksum-verified local cache for the provider to
+boot. The visibility filter becomes `visibility='public' OR (visibility='private' AND
+owner=:project)` — one authz predicate on the existing visibility seam, not a new mechanism. A
+project's private image **shadows** a public image of the same `(provider, name)` (private-first),
+so resolution is deterministic. This is the contained hot-path change: the resolver and its
+callers.
 
 ### Publish/register (two-write with recovery)
 
-`services/images/publish.py` registers the row first in `state='pending'`, writes the object,
-gates on `store.head()`, then flips the row to `registered`; resolution only ever returns
-`registered` rows. Registering the row **before** the object makes a rowless object impossible
+`services/images/publish.py` adopts the identity's existing `defined`/`pending` row (or inserts
+a `pending` row), sets its `object_key`, writes the object, gates on `store.head()`, then flips
+the row to `registered`; resolution only ever returns `registered` rows. Realizing a seeded
+`defined` baseline is this same path (`defined → pending → registered`). Registering the row
+**before** the object makes a rowless object impossible
 during a live publish, closing the window in which `leaked_images` could race the write (see
 ADR-0092 §3). A re-run after a crashed attempt adopts the existing `pending` row and re-arms
 its `pending_since` rather than colliding — publish is idempotent on its identity. The recovery
@@ -142,8 +158,9 @@ config value); `leaked_images` keys an orphan object's grace off the object's st
 - `leaked_images` — an object under the image prefix with **no row at all**, past the publish
   grace deadline (a build that wrote an object before any `pending` row, or a manual orphan):
   delete the object. A `pending` row inside its deadline protects its object.
-- `dangling_images` — a row whose object HEAD is missing **past its publish deadline** (a
-  `registered` row whose object was lost, or a `pending` row whose publish crashed before the
+- `dangling_images` — operates only on rows with `object_key IS NOT NULL` (a `defined` baseline
+  is object-less by design and never dangling): a row whose object HEAD is missing **past its
+  publish deadline** (a `registered` row whose object was lost, or a `pending` row whose publish crashed before the
   object landed): remove the row. A `pending` row inside its deadline is left alone.
 - `expired_private_images` — `visibility='private' AND expires_at < now()`: delete object and
   row, audited under `system:reconciler`, but **reference-guarded** (skip an image a
@@ -227,9 +244,10 @@ fails, for both kernel planes — closing the class with a test, not re-implemen
 `M2.4/N` issues under an epic. Two tracks run in parallel up front — **catalog/data** (/1)
 and **build/plane** (/2, /3, which need no DB table) — then the service/wiring issues chain.
 
-- **M2.4/1** — `image_catalog` migration `0023` + `IMAGE_CATALOG` repository + seed-and-delete
-  YAML + async resolver cutover. *Catalog-track head.* **Migration `0023` is authored whole
-  here with the full public + private schema** (owner, expires_at, pending_since, state, both
+- **M2.4/1** — `image_catalog` migration `0023` + `IMAGE_CATALOG` repository + seed baseline
+  rootfs as `defined` rows (relocate `rootfs/` → `images/seed_data/`; profiles stay file-based)
+  + async resolver cutover **with the wired object fetch**. *Catalog-track head.* **Migration
+  `0023` is authored whole here with the full public + private schema** (owner, expires_at, pending_since, state, both
   partial unique indexes) so no later issue adds a second migration — the single migration owner,
   to avoid the parallel registry conflict the M2.2/M2.3 waves hit.
 - **M2.4/2** — `RootfsBuildPlane` port + local-libvirt Python plane, exercised on the
@@ -260,8 +278,9 @@ and **build/plane** (/2, /3, which need no DB table) — then the service/wiring
 
 - The agent-facing MCP tool surface is not extended; image management is an operator surface
   and a private-upload surface, both on the CLI/HTTP boundary.
-- No dual catalog backing: the YAML files are removed, not kept as a fallback. The DB table is
-  the single source of truth.
+- No dual catalog backing for **rootfs images**: the DB table is the single source of truth and
+  the rootfs YAML is relocated into the seed (not kept as a runtime fallback). The *profiles*
+  catalog is a separate concern and stays file-based this milestone.
 - Tier-3 in-guest kdump image work (#115) and >5 GiB uploads (#112) remain their own issues.
   A private rootfs upload is bounded by the ADR-0048 object-size cap; a qcow2 is normally sparse
   enough to fit, but an image above the cap (e.g. a debug-heavy rootfs with a staged vmlinux)
@@ -269,8 +288,10 @@ and **build/plane** (/2, /3, which need no DB table) — then the service/wiring
 
 ## Consequences
 
-- Resolution in the provisioning/`materialize` path becomes an async DB read; the synchronous
-  YAML loader is removed along with the `fixtures/` source-tree catalog.
+- Resolution in the provisioning/`materialize` path becomes an async DB read **plus an
+  object-store fetch** (replacing the `not wired yet` stub); the synchronous YAML *rootfs*
+  lookup is removed (the rootfs catalog moves to the DB), while `load_fixture_catalog` is kept
+  for profiles.
 - The reconciler gains three sweeps and three report counts; its pass cost grows by the
   object-prefix listing, the per-row HEAD checks, and the per-pass JSONB scan over non-terminal
   Systems the `expired_private_images` reference guard runs.
