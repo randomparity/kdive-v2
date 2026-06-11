@@ -47,6 +47,12 @@
 | `KDIVE_FAULT_INJECT_SEED` | reconciler, worker | `0` | no | Deterministic fault-engine seed. |
 | `KDIVE_FAULT_INJECT_URI` | reconciler, worker | `fault-inject://local` | no | Synthetic host URI for the fault-inject resource. |
 
+## health
+
+| Variable | Processes | Default | Required | Value |
+|----------|-----------|---------|----------|-------|
+| `KDIVE_HEALTH_BIND_ADDR` | reconciler, server, worker | `127.0.0.1:9464` | no | host:port for the aux health/metrics listener (/livez /readyz /metrics), distinct from the MCP port. Loopback by default — the network boundary is its access control; widening it is an explicit act. |
+
 ## http
 
 | Variable | Processes | Default | Required | Value |
