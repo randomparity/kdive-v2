@@ -128,14 +128,17 @@ kubectl port-forward svc/kdive-kdive-server 8000:8000
 # MCP at http://127.0.0.1:8000/mcp
 ```
 
-…or expose it for a longer-lived setup by patching the Service to `NodePort` (or fronting it with
-an Ingress/LoadBalancer):
+…or expose it for a longer-lived setup with `service.type` (or front it with an
+Ingress/LoadBalancer). Set it at install/upgrade — optionally pinning the port:
 
 ```bash
-kubectl patch svc kdive-kdive-server -p '{"spec":{"type":"NodePort"}}'
-kubectl get svc kdive-kdive-server -o jsonpath='{.spec.ports[0].nodePort}'   # e.g. 30800
+helm upgrade kdive deploy/helm/kdive --reuse-values \
+  --set service.type=NodePort --set service.nodePort=30800
+kubectl get svc kdive-kdive-server -o jsonpath='{.spec.ports[0].nodePort}'
 # MCP at http://<node-ip>:<nodePort>/mcp
 ```
+
+Leave `service.nodePort` unset to let the cluster assign one.
 
 FastMCP serves at **`/mcp`** — a bare host returns a 307/session error, so any client base URL
 must end in `/mcp`.
