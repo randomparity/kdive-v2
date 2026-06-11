@@ -17,7 +17,8 @@ from opentelemetry import metrics, trace
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.diagnostics.service import default_service_factory
-from kdive.jobs.handlers import control, runs, systems, vmcore
+from kdive.domain.errors import CategorizedError
+from kdive.jobs.handlers import control, image_build, runs, systems, vmcore
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import build_verifier
 from kdive.mcp.middleware import DenialAuditMiddleware, TelemetryMiddleware
@@ -121,6 +122,29 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     lambda app, pool, resolver, registry, reaper: ops_secrets_tools.register(app, pool, registry),
 )
 
+
+def _register_image_build_handler(
+    registry: HandlerRegistry, _resolver: ProviderResolver, _secret_registry: SecretRegistry
+) -> None:
+    """Bind the IMAGE_BUILD handler when an image object store is configured.
+
+    The handler's build plane is the local-libvirt rootfs plane and the store is the S3 image
+    store. A worker with no ``KDIVE_S3_*`` env cannot publish an image, so it does not bind the
+    handler — exactly as the abandoned-upload reaper stays off without S3 (see
+    ``ops.reconcile.resolve_upload_store``).
+    """
+    from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane
+    from kdive.store.objectstore import object_store_from_env
+
+    try:
+        store = object_store_from_env()
+    except CategorizedError:
+        return
+    image_build.register_handlers(
+        registry, build_plane=LocalLibvirtRootfsBuildPlane.from_env(), store=store
+    )
+
+
 # Handler seam: worker modules expose register_handlers(registry). Long-running lifecycle,
 # build, control, and retrieval operations register JobKind handlers here; synchronous tools
 # register only in _PLANE_REGISTRARS. Handler construction receives the provider resolver and
@@ -138,6 +162,7 @@ _HANDLER_REGISTRARS: tuple[HandlerRegistrar, ...] = (
     lambda registry, resolver, secret_registry: vmcore.register_handlers(
         registry, resolver=resolver
     ),
+    _register_image_build_handler,
 )
 
 
