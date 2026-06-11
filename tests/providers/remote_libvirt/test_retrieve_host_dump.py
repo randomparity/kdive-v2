@@ -79,6 +79,14 @@ _CAPS_WITHOUT_KDUMP_ZLIB = """
 </domainCapabilities>
 """
 
+# A libvirt too old to advertise the <dump> domcapability at all (e.g. 10.0 on Ubuntu 24.04).
+# Its QEMU may still support kdump-zlib; the preflight must proceed, not fail closed (#316).
+_CAPS_WITHOUT_DUMP_ELEMENT = """
+<domainCapabilities>
+  <os supported='yes'/>
+</domainCapabilities>
+"""
+
 
 def _domain_name() -> str:
     return domain_name_for(_SID)
@@ -375,6 +383,20 @@ def test_host_dump_without_kdump_zlib_is_configuration_error_before_dump(tmp_pat
 
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert not conn.domain.core_dumps  # AC2: no dump was attempted
+
+
+def test_host_dump_proceeds_when_libvirt_does_not_advertise_dump_caps(tmp_path: Path) -> None:
+    # A libvirt that emits no <dump> domcapability (e.g. 10.0) is "capability unknown", not
+    # "unsupported": the preflight proceeds and lets the dump itself prove support (#316).
+    vol = FakeVolume(host_dump_volume_name(_SID), capacity=4096)
+    pool = FakePool(xml=_DIR_POOL_XML, volume=vol)
+    conn = FakeHostDumpConn(caps_xml=_CAPS_WITHOUT_DUMP_ELEMENT, pool=pool)
+    store = FakeStore(head=_head_ok())
+
+    out = _retrieve(conn, store, tmp_path).capture(_SID, CaptureMethod.HOST_DUMP)
+
+    assert conn.domain.core_dumps  # the dump ran rather than being rejected at preflight
+    assert out.vmcore_build_id == "deadbeef"
 
 
 def test_host_dump_non_dir_pool_is_configuration_error_before_dump(tmp_path: Path) -> None:
