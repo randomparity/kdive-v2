@@ -10,10 +10,38 @@ import pytest
 
 from scripts.m2_portability_gate import (
     ALLOWED_FILES,
+    CAPTURE_COVERAGE,
     parse_numstat,
     render_report,
     violations,
 )
+
+
+def test_render_report_records_remote_at_four_of_four_capture_methods() -> None:
+    md = render_report({"src/kdive/domain/models.py": 4})
+    assert "## Capture-method coverage" in md
+    # The capstone exit record (M2.5): remote reaches 4/4, local stays 3/4 (no KDUMP),
+    # and the two advertised sets are disjoint on KDUMP.
+    assert "| `remote-libvirt` | 4 / 4 |" in md
+    assert "| `local-libvirt` | 3 / 4 |" in md
+    assert "kdump" in md
+
+
+def test_capture_coverage_matches_the_real_advertised_provider_sets() -> None:
+    # The script is stdlib-only (CI runs it without a synced env), so the coverage table
+    # is a pinned constant; this test imports the real builders and fails on any drift, so
+    # the committed report can never silently diverge from what composition advertises.
+    from kdive.providers.composition import build_local_runtime, build_remote_runtime
+    from kdive.security.secrets.secret_registry import SecretRegistry
+
+    registry = SecretRegistry()
+    remote = build_remote_runtime(secret_registry=registry).supported_capture_methods
+    local = build_local_runtime(secret_registry=registry).supported_capture_methods
+    assert CAPTURE_COVERAGE["remote-libvirt"] == frozenset(m.value for m in remote)
+    assert CAPTURE_COVERAGE["local-libvirt"] == frozenset(m.value for m in local)
+    # AC4: the two advertised sets stay disjoint on KDUMP — remote has it, local does not.
+    assert "kdump" in CAPTURE_COVERAGE["remote-libvirt"]
+    assert "kdump" not in CAPTURE_COVERAGE["local-libvirt"]
 
 
 def test_render_report_lists_allowlisted_and_flags_violations() -> None:
