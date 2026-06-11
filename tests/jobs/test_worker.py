@@ -576,3 +576,104 @@ def test_run_stops_while_error_sleep_is_pending(monkeypatch: pytest.MonkeyPatch)
         await asyncio.wait_for(task, timeout=1)
 
     asyncio.run(_run())
+
+
+def test_run_once_pauses_dequeue_when_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A not-ready worker claims no new job and never touches the pool (ADR-0090 §5)."""
+
+    async def _run() -> None:
+        async def not_ready() -> bool:
+            return False
+
+        worker = _worker(
+            _unopened_pool(),  # an unopened pool would raise if dequeue tried to connect
+            HandlerRegistry(),
+            worker_id="w1",
+            readiness=not_ready,
+        )
+        assert await worker.run_once() is None
+
+    asyncio.run(_run())
+
+
+def test_run_once_dequeues_when_ready_again(migrated_url: str) -> None:
+    """Recovery: once readiness flips back to ready, the worker resumes claiming."""
+
+    async def _run() -> None:
+        async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:
+            ready = {"value": False}
+
+            async def readiness() -> bool:
+                return ready["value"]
+
+            async def handler(conn: psycopg.AsyncConnection, job: Job) -> str:
+                return "s3://out"
+
+            reg = HandlerRegistry()
+            reg.register(JobKind.BUILD, handler)
+            worker = _worker(pool, reg, worker_id="w1", readiness=readiness)
+            async with pool.connection() as conn:
+                job = await queue.enqueue(
+                    conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-notready"
+                )
+            assert await worker.run_once() is None  # not ready: no claim
+            assert (await _final_state(migrated_url, job.id)).attempt == 0
+            ready["value"] = True
+            processed = await worker.run_once()  # recovered: claims
+            assert processed is not None and processed.id == job.id
+
+    asyncio.run(_run())
+
+
+def test_run_ticks_heartbeat_at_loop_granularity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The /livez heartbeat ticks each poll pass, not per job — a long job stays live."""
+
+    async def _run() -> None:
+        from kdive.health import Heartbeat
+
+        clock = {"now": 0.0}
+        hb = Heartbeat(stale_after=10.0, now=lambda: clock["now"])
+        worker = _worker(
+            _unopened_pool(),
+            HandlerRegistry(),
+            worker_id="w1",
+            poll_interval=timedelta(milliseconds=1),
+            heartbeat=hb,
+        )
+        stop = asyncio.Event()
+        passes = 0
+
+        async def fake_run_once() -> Job | None:
+            nonlocal passes
+            passes += 1
+            clock["now"] += 1.0  # time advances, but each pass re-ticks the heartbeat
+            if passes >= 3:
+                stop.set()
+            return None
+
+        monkeypatch.setattr(worker, "run_once", fake_run_once)
+        await asyncio.wait_for(worker.run(stop), timeout=2)
+        assert hb.is_live()  # last tick is fresh against the advanced clock
+
+    asyncio.run(_run())
+
+
+def test_long_job_does_not_flip_livez_stale() -> None:
+    """A job that runs longer than stale_after must not make /livez go stale.
+
+    The loop ticks the heartbeat *before* dispatching the job, so a single long job
+    cannot starve the heartbeat — liveness tracks the loop, not the work unit.
+    """
+
+    async def _run() -> None:
+        from kdive.health import Heartbeat
+
+        clock = {"now": 0.0}
+        hb = Heartbeat(stale_after=5.0, now=lambda: clock["now"])
+        hb.tick()  # loop pass at t=0
+        clock["now"] = 100.0  # a 100s "build" elapses inside one dispatch
+        assert hb.is_live() is False  # without a re-tick the loop would read stale
+        hb.tick()  # the next poll pass re-ticks; liveness restored
+        assert hb.is_live() is True
+
+    asyncio.run(_run())

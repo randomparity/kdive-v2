@@ -16,9 +16,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -34,6 +36,7 @@ from kdive.jobs import queue
 from kdive.jobs.payloads import PayloadValidationError, SystemPayload, run_id_from_payload
 from kdive.providers.reaping import InfraReaper
 from kdive.providers.transport_reset import NullResetter, TransportResetter
+from kdive.reconciler.loop_telemetry import ReconcilerTelemetry
 from kdive.reconciler.provider_reaping import repair_leaked_domains as _repair_leaked_domains
 from kdive.reconciler.provider_reaping import (
     repair_leaked_probe_guests as _repair_leaked_probe_guests,
@@ -47,6 +50,9 @@ from kdive.reconciler.uploads import (
 from kdive.security import audit
 from kdive.services.accounting import ledger as accounting
 from kdive.services.allocation import promotion as allocation_promotion
+
+if TYPE_CHECKING:
+    from kdive.health import Heartbeat
 
 _log = logging.getLogger(__name__)
 
@@ -601,6 +607,8 @@ class Reconciler:
         debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
         idempotency_retention: timedelta = DEFAULT_IDEMPOTENCY_RETENTION,
         queue_max_wait: timedelta = DEFAULT_QUEUE_MAX_WAIT,
+        heartbeat: Heartbeat | None = None,
+        telemetry: ReconcilerTelemetry | None = None,
     ) -> None:
         self._pool = pool
         self._reaper = reaper
@@ -610,6 +618,8 @@ class Reconciler:
         self._debug_session_stale_after = debug_session_stale_after
         self._idempotency_retention = idempotency_retention
         self._queue_max_wait = queue_max_wait
+        self._heartbeat = heartbeat
+        self._telemetry = telemetry or ReconcilerTelemetry.disabled()
 
     async def run_once(self) -> ReconcileReport:
         """Run one reconciliation pass."""
@@ -626,15 +636,28 @@ class Reconciler:
     async def run(self, stop: asyncio.Event) -> None:
         """Loop :meth:`run_once` every ``interval``, surviving a transient pass error.
 
+        The ``/livez`` heartbeat is ticked at the **top of every pass** (ADR-0090 §5),
+        before the repairs run — so a single slow pass never makes the reconciler read
+        not-live; liveness tracks the poll cycle, not a repair. Each pass also opens a
+        span and records its duration plus the reconcile-lag (the gap between the
+        scheduled and actual start, which grows when a pass overruns its interval).
+
         ``reconcile_once`` already isolates each repair, so a raise here is a rare
         whole-pass failure (e.g. pool acquisition); it is logged and the loop continues
         — a durable reconciler must not die on one bad pass.
         """
         interval = self._interval.total_seconds()
+        next_due = time.monotonic()
         while not stop.is_set():
-            try:
-                await self.run_once()
-            except Exception:  # noqa: BLE001 - a durable reconciler survives a transient per-pass error
-                _log.exception("reconcile pass failed; continuing after %ss", interval)
+            if self._heartbeat is not None:
+                self._heartbeat.tick()
+            self._telemetry.observe_lag(time.monotonic() - next_due)
+            with self._telemetry.pass_span() as span:
+                try:
+                    await self.run_once()
+                except Exception:  # noqa: BLE001 - a durable reconciler survives a transient per-pass error
+                    span.set_outcome("error")
+                    _log.exception("reconcile pass failed; continuing after %ss", interval)
+            next_due = time.monotonic() + interval
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=interval)

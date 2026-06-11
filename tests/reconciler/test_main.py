@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from kdive.__main__ import build_parser
+from kdive.observability import Telemetry
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 
@@ -21,6 +22,22 @@ def test_reconciler_subcommand_with_log_level() -> None:
     args = build_parser().parse_args(["--log-level", "DEBUG", "reconciler"])
     assert args.command == "reconciler"
     assert args.log_level == "DEBUG"
+
+
+def _fake_telemetry() -> Telemetry:
+    """A Telemetry the reconciler runner reaches for (providers + scrape reader)."""
+    from opentelemetry.sdk._logs import LoggerProvider
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace import TracerProvider
+
+    reader = InMemoryMetricReader()
+    return Telemetry(
+        logger_provider=LoggerProvider(),
+        tracer_provider=TracerProvider(),
+        meter_provider=MeterProvider(metric_readers=[reader]),
+        scrape_reader=reader,
+    )
 
 
 def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -39,6 +56,14 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
             events.append("close")
 
     monkeypatch.setattr(__main__, "create_pool", lambda **kw: _FakePool())
+    monkeypatch.setattr(__main__, "_install_stop", lambda: __import__("asyncio").Event())
+    monkeypatch.setattr("kdive.store.objectstore.object_store_from_env", lambda: object())
+
+    async def _no_serve(*a: object, **k: object) -> None:
+        return None
+
+    monkeypatch.setattr("kdive.health.serve_aux", _no_serve)
+    monkeypatch.setattr("kdive.server_health.build_postgres_ping", lambda pool: lambda: None)
 
     class _FakeResolver:
         async def register_all_discovery(self, pool: object) -> None:
@@ -71,7 +96,7 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(loop.Reconciler, "__init__", _fake_init)
     monkeypatch.setattr(loop.Reconciler, "run", _fake_run)
 
-    asyncio.run(__main__._run_reconciler(SecretRegistry()))
+    asyncio.run(__main__._run_reconciler(SecretRegistry(), _fake_telemetry()))
 
     assert events == ["open", "discover", "run", "close"]
     assert constructed["reaper"] is expected_reaper
