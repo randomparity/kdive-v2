@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,25 @@ def test_read_secret_file_returns_value_without_registering(tmp_path: Path) -> N
 
     assert value == "s3kret-value"  # trailing newline stripped
     assert "s3kret-value" not in registry.snapshot()  # read does NOT register
+
+
+def test_read_secret_file_accepts_root_relative_ref(tmp_path: Path) -> None:
+    # A bare, root-relative ref (the name "ref" implies) resolves under the root, not the
+    # process CWD (#314). This is the form a deployment's KDIVE_SECRETS_ROOT + ref pair uses.
+    _write(tmp_path, "clientcert.pem", "CERTDATA\n")
+    assert read_secret_file(tmp_path, "clientcert.pem") == "CERTDATA"
+
+
+def test_read_secret_file_reads_a_kubernetes_secret_symlink_farm(tmp_path: Path) -> None:
+    # A k8s Secret volume is a relative-symlink farm under the mount dir:
+    #   clientcert.pem -> ..data/clientcert.pem ; ..data -> ..2026_.../  (real files within).
+    # A root-relative ref must resolve through it (#313 correction: the farm is not rejected).
+    real = tmp_path / "..2026_06_11_09_30_00.123456"
+    real.mkdir()
+    (real / "clientcert.pem").write_text("FARMDATA\n", encoding="utf-8")
+    os.symlink(real.name, tmp_path / "..data")
+    os.symlink("..data/clientcert.pem", tmp_path / "clientcert.pem")
+    assert read_secret_file(tmp_path, "clientcert.pem") == "FARMDATA"
 
 
 def test_resolve_returns_file_content(tmp_path: Path) -> None:
