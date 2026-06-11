@@ -5,8 +5,12 @@ metadata:
   labels:
     {{- include "kdive.labels" . | nindent 4 }}
 spec:
+  type: {{ .Values.service.type }}
   selector:
     app: {{ include "kdive.fullname" . }}-server
   ports:
     - port: 8000
       targetPort: 8000
+      {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePort }}
+      nodePort: {{ .Values.service.nodePort }}
+      {{- end }}

@@ -187,6 +187,35 @@ def test_service_does_not_expose_the_aux_port() -> None:
             assert svc_ports == {8000}
 
 
+def _service(*set_args: str) -> dict[str, Any]:
+    res = _template("config.KDIVE_DATABASE_URL=postgresql://x/y", *set_args)
+    assert res.returncode == 0, res.stderr
+    return next(
+        doc
+        for doc in yaml.safe_load_all(res.stdout)
+        if isinstance(doc, dict) and doc.get("kind") == "Service"
+    )
+
+
+def test_service_defaults_to_clusterip_without_a_nodeport() -> None:
+    svc = _service()
+    assert svc["spec"]["type"] == "ClusterIP"
+    assert "nodePort" not in svc["spec"]["ports"][0]
+
+
+def test_service_type_nodeport_lets_the_cluster_assign_the_port() -> None:
+    svc = _service("service.type=NodePort")
+    assert svc["spec"]["type"] == "NodePort"
+    # No pin: the cluster assigns the nodePort, so the chart must not emit one.
+    assert "nodePort" not in svc["spec"]["ports"][0]
+
+
+def test_service_nodeport_can_be_pinned() -> None:
+    svc = _service("service.type=NodePort", "service.nodePort=30800")
+    assert svc["spec"]["type"] == "NodePort"
+    assert svc["spec"]["ports"][0]["nodePort"] == 30800
+
+
 def _deployments_with(*set_args: str) -> dict[str, dict[str, Any]]:
     """Render with extra --set args and index Deployments by process name."""
     res = _template("config.KDIVE_DATABASE_URL=postgresql://x/y", *set_args)

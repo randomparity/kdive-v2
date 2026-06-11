@@ -31,6 +31,13 @@ secrets:
   secretName: ""
   mountPath: /etc/kdive/secrets
 
+# The server's MCP Service (port 8000). Default ClusterIP keeps MCP in-cluster (reach it with
+# `kubectl port-forward`); set type: NodePort (optionally pinning nodePort) or front it with an
+# Ingress/LoadBalancer to expose it. The per-process aux ports are never fronted by a Service.
+service:
+  type: ClusterIP
+  nodePort: null   # only honored when type is NodePort; null lets the cluster assign one
+
 server:
   replicas: 1
 

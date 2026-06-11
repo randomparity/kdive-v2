@@ -55,6 +55,10 @@ and the scrape can reach it. **No Service fronts the aux port** — only the ser
 network boundary is their access control; scope it with a NetworkPolicy if your scrape
 source is not pod-local.
 
+The MCP `8000` Service defaults to `ClusterIP` (`kubectl port-forward` to reach it). Set
+`service.type=NodePort` — optionally pinning `service.nodePort` — or front it with an
+Ingress/LoadBalancer to expose it outside the cluster.
+
 ## Secrets
 
 `config.*` renders into a plain ConfigMap, so it is for **non-secret** configuration
