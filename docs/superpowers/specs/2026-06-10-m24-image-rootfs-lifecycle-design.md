@@ -87,15 +87,17 @@ Migration `0023_image_catalog.sql` creates `image_catalog`:
 | `capabilities` | guest contract tags (agent, kdump, drgn, helpers) |
 | `provenance` (jsonb) | pinned inputs + build args |
 | `visibility` (`public` \| `private`) | resolution scope |
-| `owner` (nullable) | set iff `private` |
+| `owner` (nullable) | the **owning project** (not a principal); set iff `private` |
 | `expires_at` (nullable) | required iff `private` |
 | `state` | `pending` (row registered, object not yet HEAD-confirmed) → `registered` (resolvable) |
 | `pending_since` | timestamp a `pending` row was created; backs the publish-deadline grace window |
 
 DB-level invariants: `CHECK ((visibility='private') = (owner IS NOT NULL))`,
-`CHECK ((visibility='private') = (expires_at IS NOT NULL))`, and a **partial** unique index on
-`(provider, name, arch)` over **`state='registered'` public rows only** — so a crashed publish's
-leftover `pending` row never blocks a re-publish of the same identity.
+`CHECK ((visibility='private') = (expires_at IS NOT NULL))`, a **partial** unique index on
+`(provider, name, arch)` over **`state='registered'` public rows only** (so a crashed publish's
+leftover `pending` row never blocks a re-publish of the same identity), and a partial unique
+index on `(owner, provider, name)` over registered **private** rows (so a project's private
+image name resolves to exactly one image).
 
 An **application-level seed step** (not the SQL migration — `db/migrate.py` applies only
 `NNNN_*.sql` and cannot read fixture YAML) reads the operator-configured catalog
@@ -105,8 +107,10 @@ removed from the source tree. Deploy ordering is migrate → seed → resolver c
 sync-YAML worker never reads a deleted catalog. The synchronous `load_fixture_catalog()` is replaced by
 an `IMAGE_CATALOG` repository read in the provisioning / `materialize` path; resolution moves
 to async DB reads. The visibility filter becomes
-`visibility='public' OR (visibility='private' AND owner=:requester)` — one authz predicate on
-the existing visibility seam, not a new mechanism. This is the contained hot-path change: the
+`visibility='public' OR (visibility='private' AND owner=:project)` — one authz predicate on
+the existing visibility seam, not a new mechanism. A project's private image **shadows** a
+public image of the same `(provider, name)` (private-first), so resolution is deterministic.
+This is the contained hot-path change: the
 resolver and its two callers (profile resolution, local_libvirt materialize).
 
 ### Publish/register (two-write with recovery)
@@ -134,20 +138,30 @@ config value); `leaked_images` keys an orphan object's grace off the object's st
   `registered` row whose object was lost, or a `pending` row whose publish crashed before the
   object landed): remove the row. A `pending` row inside its deadline is left alone.
 - `expired_private_images` — `visibility='private' AND expires_at < now()`: delete object and
-  row, audited under `system:reconciler`. This is the "periodic operator pruning" of private
-  uploads, automated like every other TTL on the platform (expired allocations, idempotency
-  GC) — self-healing, no standing operator chore.
+  row, audited under `system:reconciler`, but **reference-guarded** (skip an image a
+  non-terminal System/run still uses — a JSONB-containment check against
+  `systems.provisioning_profile` — deferring its expiry) and **extend-fenced** (re-read
+  `expires_at` under a per-row lock, the ADR-0036 renew analogue). This is the "periodic
+  operator pruning" of private uploads, automated like every other TTL on the platform (expired
+  allocations, idempotency GC) — self-healing, no standing operator chore. See ADR-0093.
 
 `ReconcileReport` gains three counts and the `loop.py` module docstring's repair list is
 updated.
 
 ### Private uploads
 
-A project member uploads a private image through the same presigned-PUT ingest as
-external-build artifacts (ADR-0048): the upload is size-capped, quarantined, and validated
-against the provider contract before a `private` row is registered with `owner=<principal>`
-and a required `expires_at`. A private image is visible and usable only to its owner; the
-reconciler auto-prunes it on expiry. Operators can prune-early or extend a lifetime.
+A project member uploads a private image through the ADR-0048 presigned-PUT ingest (which
+supplies the channel, size cap, and quarantine — it validates kernel artifacts, so the rootfs
+**guest-contract check is new**: a libguestfs inspection confirms the agent/kdump/drgn/helper
+contract while the object is still quarantined). Registration follows ADR-0092's row-first
+ordering (pending row → promote object → `registered`) and records `owner=<owning project>`
+with a required `expires_at`. Visibility is **project-private** (usable by the owning project,
+audited to the uploading principal). Upload admission enforces a per-project quota (count +
+total bytes) under the project lock. The reconciler auto-prunes on expiry, but **reference-
+guards** (an image a non-terminal System/run still uses is not pruned — its expiry defers) and
+**extend-fences** (re-reads `expires_at` under a per-row lock, the ADR-0036 renew analogue).
+Operators can prune-early or extend a lifetime; a member can delete an unreferenced one anytime.
+See [ADR-0093](../../adr/0093-private-image-uploads.md).
 
 ### Verbs + RBAC
 
@@ -184,8 +198,10 @@ fix is a merged prerequisite, not band scope.
    asserts the failure for both build planes (closes the #227 class).
 2. A half-published image (object without row, or row without object) is reconciled rather
    than leaving a dangling/leaked artifact — tested by injecting each half-state.
-3. A private upload is visible only to its owner, and an expired private image is auto-pruned
-   by the reconciler — tested with a seeded `expires_at < now()`.
+3. A private upload is visible only within its owning project, and an expired private image is
+   auto-pruned by the reconciler — but an expired image a non-terminal System still references
+   is **not** pruned (reference guard) — tested with a seeded `expires_at < now()` in both the
+   referenced and unreferenced cases.
 4. The local-libvirt rootfs build runs through the new Python plane on the live-stack path —
    capability preserved, not stubbed.
 
