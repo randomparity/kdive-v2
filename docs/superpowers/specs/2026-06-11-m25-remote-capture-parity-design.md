@@ -20,12 +20,20 @@
 
 After M2, `remote-libvirt` advertises exactly one crash-capture method —
 `supported_capture_methods = {KDUMP}` (`providers/composition.py:260`) — while
-`local-libvirt` advertises three: `{CONSOLE, HOST_DUMP, GDBSTUB}` (plus kdump through the
-shared Retrieve plane). `#198` proposed deprecating local-libvirt after M2; investigation
-(see the `m25-remote-capture-parity` design note) found that premise false. The two
-providers are **near-complementary on capture, not redundant**, and local-libvirt is the only
-zero-hardware default/CI/reference provider. The real gap is that remote cannot yet capture a
-crash three of the four ways local can.
+`local-libvirt` advertises exactly three: `{CONSOLE, HOST_DUMP, GDBSTUB}`
+(`composition.py:132`). The advertised set is load-bearing: `vmcore.fetch` rejects any method
+`not in supported_capture_methods` (`vmcore.py`), so KDUMP — which local's Retrieve plane has a
+code branch for but does **not** advertise — is not tool-admitted on local, and the two providers'
+advertised sets are **disjoint** (`{KDUMP}` vs `{CONSOLE, HOST_DUMP, GDBSTUB}`). `#198` proposed
+deprecating local-libvirt after M2; investigation (see the `m25-remote-capture-parity` design
+note) found that premise false. The two providers are **near-complementary on capture, not
+redundant**, and local-libvirt is the only zero-hardware default/CI/reference provider. The real
+gap is that remote cannot yet capture a crash three of the four ways the platform supports.
+
+Scope note: M2.5 brings **remote to 4/4** advertised methods; it does **not** make the two
+providers identical — local intentionally does not advertise KDUMP, so post-M2.5 remote
+advertises a method local does not. "Parity" here means remote-reaching-4/4, not
+remote-matching-local.
 
 The structural reason is host topology. `local-libvirt` shares a filesystem with its
 hypervisor: it tees the serial console to a worker-local `<log file>`
@@ -79,8 +87,10 @@ four live.
 
 `host_dump` and `kdump` both satisfy `vmcore.fetch` (both in `_VMCORE_METHODS`); advertising
 `HOST_DUMP` in the remote runtime's `supported_capture_methods` is what admits it through the
-existing tool. `console` and `gdbstub` are advertised but consumed off the boot/connect planes
-— identical to how local surfaces them.
+existing tool. `console` and `gdbstub` are advertised but consumed off the boot/connect planes,
+not `vmcore.fetch` — the artifact/transport *shape* matches local. One readiness nuance differs
+(per ADR-0095): local consumes the console for **boot readiness**, whereas remote proves
+readiness via boot_id-change and treats the console artifact as a crash/diagnostic record only.
 
 ### 1. host_dump on remote (ADR-0094)
 
@@ -90,13 +100,18 @@ A new Retrieve-plane path in `remote_libvirt/retrieve.py`, parallel to the kdump
    dumps the live (or NMI-crashed) guest's memory to a path **inside the `storage_pool`
    directory**, named deterministically per System. A stale same-named volume is deleted first.
 2. `pool.refresh()` so libvirt discovers the file as a managed volume, then
-   `storageVolLookupByName` + `virStorageVolDownload` streams it back over the TLS connection.
-3. The worker computes sha256/size, enforces the 5 GiB ceiling, extracts the kernel build-id
-   from the core's VMCOREINFO note (`CaptureOutput.vmcore_build_id` is mandatory), extracts +
-   redacts dmesg (reusing the shared redaction path), and uploads the core to the object store
-   directly (the worker holds the bytes, so no presigned-PUT round trip — unlike kdump).
-4. The host volume is deleted in a `finally` (graceful path); volumes orphaned by a
-   non-graceful worker/host crash that bypasses `finally` are reaped by a reconciler sweep.
+   `storageVolLookupByName`. The **5 GiB ceiling is enforced here, against the volume's reported
+   capacity, before any download** — an over-ceiling core is rejected having paid only the dump,
+   never a multi-GB stream that could OOM the worker. Only then does `virStorageVolDownload`
+   stream the (bounded) volume back over the TLS connection.
+3. The download **spools to a worker-local temp file** (not held in RAM — a 5 GiB core × concurrent
+   captures would OOM the worker); all passes stream over that file at constant memory: sha256,
+   the kernel build-id from the **compressed-kdump container's VMCOREINFO** (via drgn — not an
+   ELF-note walk; `CaptureOutput.vmcore_build_id` is mandatory), dmesg redaction (shared path),
+   and the upload to the object store directly from the file (the worker has the core locally, so
+   no presigned-PUT round trip — unlike kdump).
+4. The temp file and the host volume are deleted in a `finally` (graceful path); volumes orphaned
+   by a non-graceful worker/host crash that bypasses `finally` are reaped by a reconciler sweep.
 
 **Dump format:** compressed kdump (`VIR_DUMP_MEMORY_ONLY` +
 `VIR_DOMAIN_CORE_DUMP_FORMAT_KDUMP_ZLIB`) is the default — drgn reads makedumpfile-compressed
@@ -120,10 +135,12 @@ selection-confirmation test, and a line in the capstone exercise.
 ### 3. Reconciler-owned console collector (ADR-0095)
 
 `virDomainOpenConsole` delivers only **future** output (no replayable backing log), so console
-parity — boot-through-crash capture — requires a **long-lived** owner that opens the stream at
-boot and tees continuously. A worker job cannot host this (it runs one provider operation and
-returns; holding a stream open for the System's life would pin a worker slot). The owner is the
-**reconciler process**, supervised by a new `reconcile_once` repair class:
+parity — boot-through-crash capture — requires a **long-lived** owner that opens the stream
+*promptly* (a libvirt stream can't be handed worker→leader, so on remote it opens at a
+sub-tick attach-watcher latency, not literally at domain start) and tees continuously. A worker
+job cannot host this (it runs one provider operation and returns; holding a stream open for the
+System's life would pin a worker slot). The owner is the **reconciler process** — a continuous
+attach-watcher opens streams and a new `reconcile_once` class does liveness/reap:
 
 - **Streaming** runs as a long-lived per-System task in the reconciler process: open
   `virDomainOpenConsole`, append decoded output to a bounded rolling buffer, reconnect on stream
@@ -144,16 +161,20 @@ returns; holding a stream open for the System's life would pin a worker slot). T
   expect — the same shape local produces from its `<log>` tee, so downstream consumers
   (`classify_console`, artifact search) are provider-agnostic.
 
-This adds a fourth reconcile-pass class alongside provider reaping and image sweeps, and a new
-reconciler→provider seam (a console-collector port) following the `register_with_reaper`
-pattern.
+Across M2.5 the reconciler gains **two** new `reconcile_once` classes — the host_dump
+orphan-volume reap (issue 1) and this console liveness/reap (issue 3) — plus the continuous
+attach-watcher (**not** a pass class) and the hosting leader lock, and a new reconciler→provider
+seam (a console-collector port) following the `register_with_reaper` pattern.
 
 ### 4. Capstone — live exercise + portability report
 
 Operator-run on the real remote spine (`tests/integration/live_stack/spine.py`):
 
 - Exercise all four methods against a live remote System: gdbstub attach, console capture
-  across a crash, host_dump of a live guest, kdump across an NMI crash.
+  across a crash, host_dump of a **running guest whose kernel exposes VMCOREINFO** (a
+  vmcoreinfo device / populated note — required so the mandatory `vmcore_build_id` is
+  extractable; a guest without it is the documented no-VMCOREINFO `CONFIGURATION_ERROR`, not a
+  4/4 pass), and kdump across an NMI crash.
 - Update `just m2-report` so the portability report records remote at **4/4** capture methods.
 - Extend the remote runbook with the four-method capture walkthrough.
 - Record the `#198` disposition: not deprecated; reframed as default-vs-opt-in.
@@ -166,8 +187,8 @@ Consistent with the live-stack-on-hardware constraint, the four-method exercise 
 | Unit | Responsibility | Depends on |
 |------|----------------|------------|
 | `remote_libvirt/retrieve.py::capture` (extended) | dispatch host_dump alongside kdump | `virDomainCoreDumpWithFormat`, `virStorageVolDownload` (injected) |
-| `remote_libvirt/console_collector.py` (new) | per-System OpenConsole streamer + buffer | `virDomainOpenConsole` (injected), object store |
-| `reconciler/loop.py` (extended) | new collector-supervision repair class | console-collector port |
+| `remote_libvirt/console_collector.py` (new) | per-System OpenConsole streamer + rotation/redaction + part assembly | `virDomainOpenConsole` (injected), object store |
+| `reconciler/loop.py` (extended) | host_dump orphan-volume reap sweep (issue 1); console leader-lock + attach-watcher + liveness/reap pass (issue 3) | console-collector port, `pg_advisory_lock` |
 | `providers/composition.py::build_remote_runtime` | advertise all four methods | — |
 | capstone test + `just m2-report` + runbook | prove + document parity | the live remote spine |
 
@@ -177,37 +198,68 @@ matching the remote provider's existing `open_connection` / `store_factory` /
 
 ## Error handling
 
-- host_dump: a failed dump/download surfaces as `INFRASTRUCTURE_FAILURE`; an over-ceiling core
-  is `CONFIGURATION_ERROR` (parity with kdump's `_parse_inspect`); the host volume is always
-  deleted in `finally`.
-- console collector: a stream drop is recoverable — the supervising pass restarts the
-  collector; a System that has disappeared has its collector reaped, not retried forever.
-  Collector failures are isolated per-System in the reconcile report (a stuck collector for one
-  System never blocks the pass), mirroring `reconcile_once`'s per-repair isolation.
+- host_dump (ADR-0094): a failed dump/download surfaces as `INFRASTRUCTURE_FAILURE`. Four
+  `CONFIGURATION_ERROR`s are raised **before** wasting a dump/stream: the host lacks
+  `KDUMP_ZLIB` support (capability preflight), the `storage_pool` isn't filesystem/`dir`-backed
+  (pool-type preflight), the volume's capacity exceeds the 5 GiB ceiling (checked post-refresh,
+  pre-download), or a live guest carries no VMCOREINFO so the mandatory `vmcore_build_id` can't
+  be extracted. Volume cleanup: the `finally` covers the **graceful** path only — a non-graceful
+  worker/host crash bypasses it, so a delete-stale-before-dump step plus a reconciler reap (with
+  a live-holder/mtime guard so it never deletes a volume an in-flight capture is streaming) close
+  the orphan surface.
+- console collector (ADR-0095): a stream drop is recoverable — the liveness/reap pass restarts a
+  dead collector; a gone System has its collector reaped **only after** any teardown-finalize has
+  persisted the artifact (reap never races finalize). Per-System collector failures are isolated
+  in the reconcile report (a stuck collector never blocks the pass). Hosting is single-leader
+  (session-scoped advisory lock); on leader failover the standby cold-starts collectors and
+  pre-failover console history is lost (future-only `OpenConsole`) — an accepted best-effort
+  limitation, with host_dump/kdump as the durable crash-core path.
 - gdbstub: selection of an unsupported method on a runtime that doesn't advertise it stays the
   existing `CONFIGURATION_ERROR`.
 
 ## Testing strategy
 
-- **Unit (CI):** inject fake libvirt streams/volumes/console handles. host_dump: dump →
-  download → ceiling enforcement → volume cleanup on both success and failure. Console
-  collector: start/restart/reap supervision transitions; buffer rotation; finalize→artifact.
-  gdbstub: advertisement + selection confirmation.
+- **Unit (CI):** inject fake libvirt streams/volumes/console handles.
+  - host_dump: each preflight `CONFIGURATION_ERROR` fires before a dump (no `KDUMP_ZLIB`
+    support; non-`dir` pool; over-ceiling volume capacity rejected post-refresh/pre-download;
+    no-VMCOREINFO build-id); spool-to-temp-file (not in-RAM); delete-stale-before-dump;
+    redact-dmesg; upload.
+  - console collector: attach-watcher opens a stream for a System lacking a collector;
+    liveness restart of a dead stream; redaction at the **rotation boundary** including a
+    secret straddling the part seam; kdive-side part assembly into one artifact; single-leader
+    hosting (a non-leader replica / `ops.reconcile_now` hosts none).
+  - gdbstub: advertisement + selection confirmation.
 - **Live (capstone runbook, real hardware):** all four methods end-to-end on the remote spine.
-- **Mutation/edge:** the `finally` volume cleanup and the collector-reap branch are the
-  high-value edges — assert a forced download failure still deletes the volume, and a
-  vanished System still drops its collector.
+- **Mutation/edge — the race guards are the highest-value edges:** a forced download failure
+  still deletes the volume; the reap **does not** delete a volume an in-flight capture is
+  streaming (live-holder guard); the reap **does not** drop a collector before its
+  teardown-finalize persists the artifact (reap-after-finalize); a vanished System still drops
+  its collector.
 
 ## Decomposition
 
-Three independent issues (parallel `/work-issue` agents) + one serialized capstone — the M2
-`#207` pattern.
+Three logically-separable issues (parallel `/work-issue` agents) + one serialized capstone — the
+M2 `#207` pattern — with **two shared-file collision zones**, so the feature merges are
+serialized even though the work runs in parallel:
+- **`composition.py::build_remote_runtime` — all of 1/2/3.** Each adds a member to the same
+  `supported_capture_methods` frozenset (`HOST_DUMP`/`GDBSTUB`/`CONSOLE`), a guaranteed three-way
+  conflict. Mitigation: land the full `{CONSOLE, HOST_DUMP, GDBSTUB, KDUMP}` advertisement as a
+  tiny **shared prerequisite (issue 0)** the feature issues build behind, so they don't each
+  edit the frozenset; or serialize the three merges on that line.
+- **`reconciler/loop.py` — issues 1 and 3.** Both add a `reconcile_once` class (the recurring
+  rebase zone from prior milestones); the second to land rebases onto the first's reconciler
+  changes. They are not logically coupled on leadership: issue 1's orphan-volume reap is a
+  **stateless, replication-safe sweep** (idempotent delete + live-holder/mtime guard), whereas
+  issue 3 introduces the **single-leader hosting** lock + attach-watcher; only issue 3 needs
+  leadership, so issue 1 does not block on it.
 
 1. **Remote host_dump capture** — `capture()` host_dump path, advertise `HOST_DUMP`,
-   ADR-0094. Medium. Self-contained in `remote_libvirt/retrieve.py` + composition.
+   ADR-0094. Medium. `remote_libvirt/retrieve.py` + composition + a stateless reconciler
+   orphan-volume reap sweep (shares `reconciler/loop.py` with issue 3).
 2. **Remote gdbstub advertisement** — advertise `GDBSTUB`, selection-confirmation test. Small.
-3. **Reconciler console collector** — new collector subsystem + supervision pass, advertise
-   `CONSOLE`, ADR-0095. Large.
+3. **Reconciler console collector** — new collector subsystem + attach-watcher + leader-lock +
+   liveness/reap pass, advertise `CONSOLE`, ADR-0095. Large (shares `reconciler/loop.py` with
+   issue 1).
 4. **M2.5 capstone** — live four-method exercise, `just m2-report` → remote 4/4, runbook,
    `#198` disposition. Depends on 1–3.
 
