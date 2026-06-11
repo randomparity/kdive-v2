@@ -281,6 +281,20 @@ OTEL_SERVICE_NAMESPACE = Setting(
     help="service.namespace resource attribute on all emitted telemetry.",
 )
 
+HEALTH_BIND_ADDR = Setting(
+    name="KDIVE_HEALTH_BIND_ADDR",
+    parse=_str,
+    default="127.0.0.1:9464",
+    group="health",
+    processes=frozenset({"server", "worker", "reconciler"}),
+    help=(
+        "host:port for the aux health/metrics listener (/livez /readyz /metrics), "
+        "distinct from the MCP port. Loopback by default — the network boundary is its "
+        "access control; widening it is an explicit act."
+    ),
+    suggest="a host:port, e.g. 127.0.0.1:9464 (loopback) or 0.0.0.0:9464 (pod-local)",
+)
+
 SETTINGS = [
     DATABASE_URL,
     HTTP_HOST,
@@ -310,4 +324,5 @@ SETTINGS = [
     OTEL_EXPORTER_OTLP_ENDPOINT,
     OTEL_TRACES_SAMPLER_RATIO,
     OTEL_SERVICE_NAMESPACE,
+    HEALTH_BIND_ADDR,
 ]

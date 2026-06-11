@@ -13,12 +13,13 @@ from collections.abc import Callable
 
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.jwt import JWTVerifier
+from opentelemetry import metrics, trace
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.jobs.handlers import control, runs, systems, vmcore
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import build_verifier
-from kdive.mcp.middleware import DenialAuditMiddleware
+from kdive.mcp.middleware import DenialAuditMiddleware, TelemetryMiddleware
 from kdive.mcp.tools.accounting.admin import register as register_accounting_admin
 from kdive.mcp.tools.accounting.estimate import register as register_accounting_estimate
 from kdive.mcp.tools.accounting.reports import register as register_accounting_reports
@@ -153,6 +154,14 @@ def build_app(
         secret_registry: App-owned registry shared by secret backends and logging.
     """
     app: FastMCP = FastMCP(name="kdive", auth=verifier or build_verifier())
+    # Telemetry runs outermost (added first) so its span/RED metrics wrap the whole
+    # dispatch, including a denial mapped by DenialAuditMiddleware (ADR-0090 §5). Both
+    # use the process-global OTel providers, which no-op until init_telemetry runs.
+    app.add_middleware(
+        TelemetryMiddleware(
+            tracer=trace.get_tracer("kdive.mcp"), meter=metrics.get_meter("kdive.mcp")
+        )
+    )
     app.add_middleware(DenialAuditMiddleware(pool))
     composition = provider_composition or ProviderComposition(secret_registry=secret_registry)
     resolver = composition.build_provider_resolver()

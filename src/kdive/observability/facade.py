@@ -19,6 +19,7 @@ All OTel SDK wiring lives here so an upstream API shift (notably the pre-stable
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from opentelemetry import metrics, trace
@@ -27,7 +28,11 @@ from opentelemetry.instrumentation.logging.handler import LoggingHandler
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor, SimpleLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.metrics.export import (
+    InMemoryMetricReader,
+    MetricReader,
+    PeriodicExportingMetricReader,
+)
 from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_NAMESPACE, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -76,11 +81,17 @@ def require_otlp_endpoint() -> str:
 
 @dataclass(frozen=True, slots=True)
 class Telemetry:
-    """The per-process OTel providers, returned by :func:`init_telemetry`."""
+    """The per-process OTel providers, returned by :func:`init_telemetry`.
+
+    ``scrape_reader`` is the in-memory metric reader attached to the meter provider that
+    the aux ``/metrics`` endpoint (ADR-0090 §5) renders for a Prometheus-style pull —
+    independent of whether OTLP push is enabled.
+    """
 
     logger_provider: LoggerProvider
     tracer_provider: TracerProvider
     meter_provider: MeterProvider
+    scrape_reader: InMemoryMetricReader
 
 
 def bootstrap_stdout_floor(level: str, *, secret_registry: SecretRegistry) -> None:
@@ -112,17 +123,19 @@ def init_telemetry(service_name: str, *, secret_registry: SecretRegistry, level:
         level: The logging level for the bridged root logger.
 
     Returns:
-        The constructed :class:`Telemetry` providers, registered process-globally.
+        The constructed :class:`Telemetry` providers (including the aux ``/metrics``
+        scrape reader), registered process-globally.
     """
     resource = _resource(service_name)
-    meter_provider = _build_meter_provider(resource, secret_registry)
+    scrape_reader = InMemoryMetricReader()
+    meter_provider = _build_meter_provider(resource, secret_registry, [scrape_reader])
     metrics.set_meter_provider(meter_provider)
     tracer_provider = _build_tracer_provider(resource, secret_registry, meter_provider)
     trace.set_tracer_provider(tracer_provider)
     logger_provider = _build_logger_provider(resource, secret_registry, meter_provider)
     set_logger_provider(logger_provider)
     _bridge_root_logger(logger_provider, level)
-    return Telemetry(logger_provider, tracer_provider, meter_provider)
+    return Telemetry(logger_provider, tracer_provider, meter_provider, scrape_reader)
 
 
 def _build_logger_provider(
@@ -161,8 +174,12 @@ def _build_tracer_provider(
     return provider
 
 
-def _build_meter_provider(resource: Resource, secret_registry: SecretRegistry) -> MeterProvider:
-    readers: list[PeriodicExportingMetricReader] = []
+def _build_meter_provider(
+    resource: Resource,
+    secret_registry: SecretRegistry,
+    extra_metric_readers: Sequence[MetricReader],
+) -> MeterProvider:
+    readers: list[MetricReader] = list(extra_metric_readers)
     if otlp_enabled():
         from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 

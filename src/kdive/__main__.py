@@ -23,10 +23,17 @@ from kdive.db.pool import create_pool
 from kdive.version import full_version
 
 if TYPE_CHECKING:
+    from kdive.health import Heartbeat
+    from kdive.observability import Telemetry
     from kdive.providers.resolver import ProviderResolver
     from kdive.security.secrets.secret_registry import SecretRegistry
 
 _RUNNABLE = frozenset({"server", "worker", "reconciler", "migrate"})
+
+# Server /livez heartbeat: ticked at this cadence, stale after the larger bound. The
+# server's "loop" is its asyncio event loop, so a stale tick means the loop is wedged.
+_HEARTBEAT_TICK_SECONDS = 1.0
+_HEARTBEAT_STALE_SECONDS = 10.0
 
 _log = logging.getLogger(__name__)
 
@@ -60,17 +67,45 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _run_server(host: str, port: int, secret_registry: SecretRegistry) -> None:
+async def _run_server(
+    host: str, port: int, secret_registry: SecretRegistry, telemetry: Telemetry
+) -> None:
+    from kdive.health import HealthProbe, Heartbeat, build_aux_app, serve_aux
+    from kdive.health.aux_bind import resolve_health_bind
+    from kdive.health.server_checks import build_server_checks
     from kdive.mcp.app import build_app
+    from kdive.server_health import build_oidc_ping, build_postgres_ping
+    from kdive.store.objectstore import object_store_from_env
 
     pool = create_pool()
     await pool.open()
+    heartbeat = Heartbeat(stale_after=_HEARTBEAT_STALE_SECONDS)
+    probe = HealthProbe(
+        checks=build_server_checks(
+            postgres_ping=build_postgres_ping(pool),
+            object_store=object_store_from_env(),
+            oidc_ping=build_oidc_ping(),
+        )
+    )
+    aux_host, aux_port = resolve_health_bind()
+    aux_app = build_aux_app(heartbeat=heartbeat, probe=probe, metric_reader=telemetry.scrape_reader)
+    app = build_app(pool, secret_registry=secret_registry)
+    aux_task = asyncio.create_task(serve_aux(aux_app, host=aux_host, port=aux_port))
+    ticker = asyncio.create_task(_tick_heartbeat(heartbeat))
     try:
-        app = build_app(pool, secret_registry=secret_registry)
         await app.run_async(transport="http", host=host, port=port)
     finally:
+        ticker.cancel()
+        aux_task.cancel()
         secret_registry.clear()
         await pool.close()
+
+
+async def _tick_heartbeat(heartbeat: Heartbeat) -> None:
+    """Bump the server heartbeat each tick so /livez tracks event-loop responsiveness."""
+    while True:
+        heartbeat.tick()
+        await asyncio.sleep(_HEARTBEAT_TICK_SECONDS)
 
 
 async def _run_worker(secret_registry: SecretRegistry) -> None:
@@ -158,16 +193,18 @@ def main(argv: list[str] | None = None) -> None:
     # client — so early-startup records (config-validation failures, the most common
     # first-run fault) are never lost to an unconfigured root logger.
     bootstrap_stdout_floor(level, secret_registry=secret_registry)
+    telemetry = None
     if args.command in _RUNNABLE:
         config.validate(args.command)
         # The config is validated on the stdout floor first; only then is the OTel
         # pipeline (which may construct an OTLP client) built and the floor handed over.
-        init_telemetry(args.command, secret_registry=secret_registry, level=level)
+        telemetry = init_telemetry(args.command, secret_registry=secret_registry, level=level)
     _log.info("starting kdive %s (%s)", full_version(), args.command)
     if args.command == "server":
+        assert telemetry is not None  # server is in _RUNNABLE, so telemetry was built
         host = config.require(HTTP_HOST)
         port = config.require(HTTP_PORT)
-        asyncio.run(_run_server(host, port, secret_registry))
+        asyncio.run(_run_server(host, port, secret_registry, telemetry))
     elif args.command == "worker":
         asyncio.run(_run_worker(secret_registry))
     elif args.command == "reconciler":

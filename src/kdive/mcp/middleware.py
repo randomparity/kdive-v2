@@ -1,4 +1,4 @@
-"""MCP dispatch-boundary middleware for denial audit (ADR-0062 §5).
+"""MCP dispatch-boundary middleware: denial audit (ADR-0062 §5) + telemetry (ADR-0090 §5).
 
 `require_role`'s **member-over-reach** site raises :class:`~kdive.security.authz.rbac.RoleDenied`
 (the dedicated discriminator, not the base :class:`~kdive.security.authz.rbac.AuthorizationError`
@@ -10,15 +10,23 @@ exception), and returns the uniform authorization-denied envelope. Catching the
 ``require_platform_role`` denials and :class:`~kdive.security.authz.gate.DestructiveOpDenied`
 (both already handled elsewhere); the non-member denial is also deliberately excluded to
 avoid write-amplification (ADR-0043 §4 / ADR-0062 §5).
+
+:class:`TelemetryMiddleware` is the per-request instrumentation seam (ADR-0090 §5): a span
+per MCP tool call plus per-tool RED metrics (request rate, error count, duration
+histogram). Labels are restricted to the allowlist (``tool``/``outcome``) so no
+tenant/principal identifier becomes a free-cardinality label; secret values that reach a
+span attribute or exception event are scrubbed by the redacting span exporter on export.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from fastmcp.server.middleware import Middleware
+from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from kdive.domain.errors import ErrorCategory
 from kdive.mcp.auth import current_context
@@ -27,9 +35,14 @@ from kdive.security import audit
 from kdive.security.authz.rbac import RoleDenied
 
 if TYPE_CHECKING:
+    from opentelemetry.metrics import Counter, Histogram, Meter
+    from opentelemetry.trace import Tracer
     from psycopg_pool import AsyncConnectionPool
 
 _log = logging.getLogger(__name__)
+
+#: Histogram bucket bounds (seconds) for per-tool request duration (the "D" in RED).
+_DURATION_BUCKETS = (0.005, 0.025, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0)
 
 
 def _current_agent_session() -> str | None:
@@ -92,3 +105,62 @@ class DenialAuditMiddleware(Middleware):
                     reason=str(denial),
                 ),
             )
+
+
+class TelemetryMiddleware(Middleware):
+    """Emit a span + per-tool RED metrics for every MCP tool call (ADR-0090 §5).
+
+    One span per call (``kind=SERVER``) carries only allowlisted labels — ``tool`` and
+    ``outcome`` — never a tenant/principal identifier (ADR-0090 §4). On failure the
+    exception is recorded as a span event (scrubbed of secrets by the redacting span
+    exporter on export) and the original exception re-raised. RED metrics: a request
+    counter, an error counter, and a duration histogram, all labelled by ``tool`` and
+    ``outcome`` only.
+
+    Args:
+        tracer: The tracer (from the facade's :class:`TracerProvider`) spans are opened on.
+        meter: The meter (from the facade's :class:`MeterProvider`) instruments are made on.
+    """
+
+    def __init__(self, *, tracer: Tracer, meter: Meter) -> None:
+        self._tracer = tracer
+        self._requests: Counter = meter.create_counter(
+            "kdive.mcp.requests", unit="1", description="MCP tool calls dispatched."
+        )
+        self._errors: Counter = meter.create_counter(
+            "kdive.mcp.request.errors", unit="1", description="MCP tool calls that failed."
+        )
+        self._duration: Histogram = meter.create_histogram(
+            "kdive.mcp.request.duration",
+            unit="s",
+            description="MCP tool-call wall-clock duration.",
+            explicit_bucket_boundaries_advisory=list(_DURATION_BUCKETS),
+        )
+
+    async def on_call_tool(
+        self,
+        context: Any,
+        call_next: Callable[[Any], Any],
+    ) -> Any:
+        """Time and trace one tool call; record RED metrics; re-raise on failure."""
+        tool = context.message.name
+        started = time.perf_counter()
+        with self._tracer.start_as_current_span(
+            f"mcp.tool/{tool}", kind=SpanKind.SERVER, attributes={"tool": tool}
+        ) as span:
+            try:
+                result = await call_next(context)
+            except Exception as exc:
+                self._finish(span, tool, "error", started)
+                self._errors.add(1, {"tool": tool, "outcome": "error"})
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR))
+                raise
+            self._finish(span, tool, "ok", started)
+            return result
+
+    def _finish(self, span: Any, tool: str, outcome: str, started: float) -> None:
+        labels = {"tool": tool, "outcome": outcome}
+        span.set_attribute("outcome", outcome)
+        self._requests.add(1, labels)
+        self._duration.record(time.perf_counter() - started, labels)

@@ -152,6 +152,19 @@ class ObjectStore:
             raise _infrastructure_error("get_object", key, err) from err
         return artifact_types.FetchedArtifact(data, sensitivity, retention_class)
 
+    def ping(self) -> None:
+        """Probe the bucket's reachability with a ``HEAD`` (ADR-0090 §5 readiness check).
+
+        Raises:
+            CategorizedError: the bucket is unreachable or absent
+                (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`). Async callers offload via
+                ``asyncio.to_thread``.
+        """
+        try:
+            self._client.head_bucket(Bucket=self._bucket)
+        except (BotoCoreError, ClientError) as err:
+            raise _infrastructure_error("head_bucket", self._bucket, err) from err
+
     def head(self, key: str) -> artifact_types.HeadResult | None:
         """Return the object's size/checksum/etag, or ``None`` if it does not exist.
 
