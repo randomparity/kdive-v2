@@ -276,6 +276,61 @@ def test_registry_cancels_pump_on_finalize_and_drop() -> None:
     assert runner.cancelled == [sid]
 
 
+class RaisingLeaderLock(FakeLeaderLock):
+    def __init__(self) -> None:
+        super().__init__()
+        self.raise_on_is_held = False
+
+    async def is_held(self) -> bool:
+        if self.raise_on_is_held:
+            raise RuntimeError("leader connection dropped")
+        return self.held
+
+
+def test_lock_check_error_is_treated_as_loss_and_does_not_kill_tick() -> None:
+    # A leader-lock check that raises (dead connection) must be fail-closed: stop hosting and
+    # retry, not propagate and strand the hosting task.
+    lock = RaisingLeaderLock()
+    running = FakeRunning()
+    sid = uuid4()
+    running.systems = {sid}
+    runner = FakePumpRunner()
+    reg = CollectorRegistry(pump_runner=runner)
+    loop = ConsoleHostingLoop(
+        leader_lock=lock,
+        running_systems=running,
+        collector_factory=lambda s: FakeCollector(s),
+        registry=reg,
+        pump_runner=runner,
+    )
+
+    async def _run() -> None:
+        await loop.tick()  # becomes leader, opens collector
+        assert reg.has(sid)
+        lock.raise_on_is_held = True
+        await loop.tick()  # is_held raises -> treated as a loss, no exception escapes
+
+    asyncio.run(_run())
+    assert reg.system_ids() == set()
+    assert loop.is_leader is False
+
+
+def test_tick_survives_a_running_systems_query_error() -> None:
+    class BoomRunning:
+        async def list_running(self):  # noqa: ANN202
+            raise RuntimeError("db down")
+
+    lock = FakeLeaderLock()
+    loop = ConsoleHostingLoop(
+        leader_lock=lock,
+        running_systems=BoomRunning(),
+        collector_factory=lambda s: FakeCollector(s),
+        registry=CollectorRegistry(),
+    )
+    # Must not raise: a transient query failure is logged and retried next tick.
+    asyncio.run(loop.tick())
+
+
 def test_registry_finalize_and_drop_persists_then_forgets() -> None:
     reg = CollectorRegistry()
     sid = uuid4()

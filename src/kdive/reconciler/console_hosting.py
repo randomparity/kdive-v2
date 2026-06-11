@@ -208,29 +208,55 @@ class ConsoleHostingLoop:
 
         The leadership check runs **first and every tick**: if the loop believed it was leader
         but the lock is no longer held (a dropped connection released it), it drops all
-        collectors before doing anything else (AC6). A non-leader hosts nothing (AC5).
+        collectors before doing anything else (AC6). A non-leader hosts nothing (AC5). A tick
+        never raises: a transient error (a failed running-Systems query, a factory error) is
+        logged and retried next tick so the hosting task is durable.
         """
-        if not await self._reconcile_leadership():
-            return
-        await self._host_running_systems()
+        try:
+            if not await self._reconcile_leadership():
+                return
+            await self._host_running_systems()
+        except Exception:  # noqa: BLE001 - a durable hosting loop survives a transient tick error
+            _log.warning("console hosting tick failed; retrying next tick", exc_info=True)
 
     async def _reconcile_leadership(self) -> bool:
         """Return whether this loop holds leadership after reconciling, closing streams on loss.
 
         Order matters for the split-brain guard: a leader that lost its lock closes all streams
         **before** any re-acquire attempt, so a standby that already grabbed the lock is never
-        joined by the old leader still streaming.
+        joined by the old leader still streaming. A **failed** lock check (e.g. the leader
+        connection raised) is treated as a loss — fail-closed: stop hosting and retry next tick,
+        rather than letting an exception kill the hosting task and strand the streams.
         """
         if self._is_leader:
-            if await self._leader_lock.is_held():
+            if await self._lock_still_held():
                 return True
-            # Lost the lock (connection drop / failover). Stop hosting immediately.
-            _log.warning("console hosting lost its leader lock; closing all streams")
+            _log.warning(
+                "console hosting lost (or could not confirm) its leader lock; closing all streams"
+            )
             self._stop_all_pumps()
             self._registry.drop_all()
             self._is_leader = False
             return False
-        acquired = await self._leader_lock.try_acquire()
+        return await self._try_become_leader()
+
+    async def _lock_still_held(self) -> bool:
+        try:
+            return await self._leader_lock.is_held()
+        except Exception:  # noqa: BLE001 - a lock-check error is fail-closed: treat as a loss
+            _log.warning(
+                "console hosting leader-lock check failed; treating as a loss", exc_info=True
+            )
+            return False
+
+    async def _try_become_leader(self) -> bool:
+        try:
+            acquired = await self._leader_lock.try_acquire()
+        except Exception:  # noqa: BLE001 - a failed acquire just means not-leader this tick
+            _log.warning(
+                "console hosting leader-lock acquire failed; not hosting this tick", exc_info=True
+            )
+            return False
         if acquired:
             _log.info("console hosting acquired leadership")
         self._is_leader = acquired
