@@ -98,6 +98,15 @@ class Registry:
     def all_settings(self) -> tuple[Setting[Any], ...]:
         return self._settings
 
+    def env_snapshot(self) -> dict[str, str]:
+        """Return a copy of the ``KDIVE_*`` snapshot the registry resolves against.
+
+        For consumers (e.g. the diagnostics ``secret_ref`` check) that must evaluate a
+        setting's ``required_when`` predicate against the same environment the registry
+        sees, without reaching into ``os.environ`` directly and diverging from the snapshot.
+        """
+        return dict(self._env())
+
     def get[T](self, setting: Setting[T]) -> T | None:
         """Return the parsed value for ``setting`` from the snapshot, or its default.
 

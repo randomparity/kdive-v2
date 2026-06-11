@@ -17,10 +17,28 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
-from kdive.diagnostics.checks import Check, CheckResult, CheckStatus, Vantage, run_check
+import kdive.config as config
+from kdive.config.core_settings import SECRETS_ROOT
+from kdive.diagnostics.checks import (
+    Check,
+    CheckResult,
+    CheckStatus,
+    SecretRefCheck,
+    Vantage,
+    run_check,
+)
+from kdive.security.secrets.paths import PathSafetyError
+from kdive.security.secrets.secrets import read_secret_file
 
 WORKER_UNAVAILABLE_DETAIL = "worker could not pick up the diagnostic job; check /livez and /readyz"
+
+_DEFAULT_PER_CHECK_TIMEOUT = 10.0
+
+
+class _SecretBackendUnreachable(Exception):
+    """The secret backend root is absent — a check-cannot-run condition, not a per-ref miss."""
 
 
 def worker_unavailable_results(checks: Sequence[Check]) -> list[CheckResult]:
@@ -91,3 +109,58 @@ class DiagnosticsService:
 
     def _can_run(self, check: Check) -> bool:
         return self._worker_available or check.vantage is not Vantage.WORKER
+
+
+def _configured_secret_refs() -> list[tuple[str, bool]]:
+    """Collect the ``secret=True`` refs the current environment requires as ``(ref, is_platform)``.
+
+    A setting is checked only when its ``required_when`` predicate holds against the same
+    environment snapshot the registry resolves against — the contract :func:`config.validate`
+    enforces at startup. This scopes ``secret_ref`` to the refs the deployment actually depends
+    on (e.g. the remote-libvirt mTLS refs once ``KDIVE_REMOTE_LIBVIRT_URI`` is set) instead of
+    flagging a provider-default ref no active provider needs.
+
+    Every ``KDIVE_*`` secret setting is operator-owned platform config (not tenant data), so
+    each is flagged ``is_platform=True`` — naming an unresolved one in the verdict is safe.
+    Per-tenant refs (which must never be named) live in the secret registry, not config, and are
+    folded in by a later wave; the framework already enforces non-disclosure for them.
+    """
+    env = config.env_snapshot()
+    refs: list[tuple[str, bool]] = []
+    for setting in config.all_settings():
+        if not setting.secret or not setting.required_when(env):
+            continue
+        value = config.get(setting)
+        if value:
+            refs.append((value, True))
+    return refs
+
+
+def _secret_ref_check() -> SecretRefCheck:
+    root = Path(config.require(SECRETS_ROOT))
+    refs = _configured_secret_refs()
+
+    def _resolve(ref: str) -> None:
+        if not root.is_dir():
+            raise _SecretBackendUnreachable(str(root))
+        try:
+            read_secret_file(root, ref)
+        except PathSafetyError:
+            raise FileNotFoundError(ref) from None
+
+    return SecretRefCheck(
+        refs=refs, resolve=_resolve, backend_unreachable=_SecretBackendUnreachable
+    )
+
+
+def default_service_factory(provider: str | None) -> DiagnosticsService:
+    """Build the production read-only diagnostics service for ``provider``.
+
+    Assembles the server-vantage ``secret_ref`` check over the configured secret refs,
+    resolved against the file-ref backend under ``KDIVE_SECRETS_ROOT``. The worker-vantage
+    provider checks (``provider_tls``/``gdbstub_acl``) are assembled with their worker-job
+    probe wiring in the egress-probe wave; this factory ships the cheap server-vantage read.
+    """
+    return DiagnosticsService(
+        checks=[_secret_ref_check()], per_check_timeout=_DEFAULT_PER_CHECK_TIMEOUT
+    )

@@ -24,6 +24,7 @@ __all__ = [
     "Registry",
     "Setting",
     "all_settings",
+    "env_snapshot",
     "get",
     "load",
     "require",
@@ -71,3 +72,8 @@ def validate(process: str) -> None:
 def all_settings() -> tuple[Setting, ...]:
     """Return every declared setting across the manifest."""
     return _REGISTRY.all_settings()
+
+
+def env_snapshot() -> dict[str, str]:
+    """Return a copy of the ``KDIVE_*`` environment snapshot (see :meth:`Registry.env_snapshot`)."""
+    return _REGISTRY.env_snapshot()
