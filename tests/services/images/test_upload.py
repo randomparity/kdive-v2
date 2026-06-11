@@ -256,6 +256,33 @@ def test_over_bytes_cap_denied_fail_closed(
     asyncio.run(_run())
 
 
+def test_traversal_bearing_arch_is_rejected_before_staging(migrated_url: str) -> None:
+    # A `/`-bearing identity component must be rejected up front (it would otherwise fold into the
+    # staged temp path / object key); the object is never read or written.
+    store = _quarantine(b"rootfs")
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            with pytest.raises(CategorizedError) as err:
+                await register_private_upload(
+                    conn,
+                    store,
+                    project="proj",
+                    principal="alice",
+                    name="myrootfs",
+                    provider="local-libvirt",
+                    arch="../../etc/evil",
+                    quarantine_key="uploads/q/proj/rootfs.qcow2",
+                    expires_at=_DT + timedelta(days=3),
+                    required=_REQUIRED,
+                    inspect=_conforming(),
+                )
+            assert err.value.category is ErrorCategory.CONFIGURATION_ERROR
+            assert store.puts == []
+
+    asyncio.run(_run())
+
+
 def test_accumulated_bytes_cap_denied_under_lock(
     migrated_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
