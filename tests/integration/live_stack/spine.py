@@ -207,6 +207,73 @@ async def seed_metering(
         await conn.commit()
 
 
+# --- allocate / provision / crash phase helpers ---------------------------------------------
+
+
+async def allocate_remote(
+    client: LiveStackClient,
+    db_url: str,
+    *,
+    project: str,
+    phase_name: str,
+) -> str:
+    """Request a remote-libvirt allocation and grant the force_crash scope; return its id.
+
+    Folds the wire ``allocations.request`` and the out-of-band capability grant the destructive
+    crash needs into one step a multi-System exercise can call once per System.
+    """
+    env = ok(
+        await scalar(
+            client,
+            "allocations.request",
+            project=project,
+            request={
+                "vcpus": 2,
+                "memory_gb": 2,
+                "disk_gb": 10,
+                "resource": {"mode": "kind", "kind": "remote-libvirt"},
+            },
+        ),
+        phase_name,
+    )
+    allocation_id = env.object_id
+    await grant_force_crash_scope(db_url, allocation_id)
+    return allocation_id
+
+
+async def provision_to_ready(
+    client: LiveStackClient,
+    *,
+    allocation_id: str,
+    profile: dict[str, object],
+    phase_name: str,
+) -> str:
+    """Provision a System from an allocation and wait for it to reach ``ready``; return its id."""
+    env = ok(
+        await scalar(
+            client,
+            "systems.provision",
+            allocation_id=allocation_id,
+            profile=profile,
+        ),
+        phase_name,
+    )
+    system_id = env.data["system_id"]  # in data, NOT object_id (the job id)
+    await await_system_state(client, phase_name, system_id, "ready")
+    return system_id
+
+
+async def crash_to_crashed(
+    admin: LiveStackClient,
+    *,
+    system_id: str,
+    phase_name: str,
+) -> None:
+    """Force-crash a System (admin scope) and wait for it to reach ``crashed``."""
+    ok(await scalar(admin, "control.force_crash", system_id=system_id), phase_name)
+    await await_system_state(admin, phase_name, system_id, "crashed")
+
+
 # --- report-phase DB + artifact helpers (ADR-0046 §0/§2/§3) ---------------------------------
 
 
