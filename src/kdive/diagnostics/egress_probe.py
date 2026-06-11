@@ -29,6 +29,7 @@ the provider was simply down is the worst failure a diagnostic can have (ADR-009
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from collections.abc import Awaitable, Callable, Coroutine
 from datetime import timedelta
@@ -36,6 +37,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
+from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
@@ -59,9 +61,15 @@ PROBE_DOMAIN_PREFIX = "kdive-egress-probe-"
 DEFAULT_PROBE_TTL = timedelta(minutes=10)
 
 # A probe whose heartbeat has not advanced within this window is treated as leaked (its owning
-# doctor run stopped beating). Sized below the TTL so a stalled run is reaped promptly while a
-# live run that beats on the check's cadence is never mistaken for a leak.
+# doctor run stopped beating). Sized comfortably above the beat interval below so a live run
+# that keeps beating is never mistaken for a leak, and below the TTL so a stalled run is reaped
+# promptly rather than waiting out the hard ceiling.
 DEFAULT_PROBE_HEARTBEAT_STALE_AFTER = timedelta(minutes=2)
+
+# How often a live probe advances its heartbeat while provisioning/execing. A live run beats on
+# this cadence for its whole duration (not a single stamp), so the reaper never mistakes a slow
+# but live probe for a leak; it is well below the staleness window above with margin to spare.
+DEFAULT_PROBE_HEARTBEAT_INTERVAL = timedelta(seconds=30)
 
 _PRESIGNED_QUERY_RE = re.compile(r"\?.*$")
 
@@ -105,6 +113,14 @@ class ProbeGuest(Protocol):
     async def teardown(self, domain_name: str) -> None: ...
 
 
+class ProbeInFlightError(Exception):
+    """A live probe row already exists for this provider — the DB single-flight fence fired.
+
+    Distinct from a backend-down error so the check can report "a probe is already in flight"
+    rather than a generic registration failure (the cross-process second-caller signal).
+    """
+
+
 class EgressProbeRegistry:
     """The DB-backed reaper-visible marker: register, heartbeat, release a probe guest.
 
@@ -119,18 +135,26 @@ class EgressProbeRegistry:
         self._ttl = ttl
 
     async def register(self, provider: str, domain_name: str) -> UUID:
-        """Insert a live marker row; return its id. Raises on a duplicate live provider row."""
-        async with (
-            self._pool.connection() as conn,
-            conn.transaction(),
-            conn.cursor(row_factory=dict_row) as cur,
-        ):
-            await cur.execute(
-                "INSERT INTO egress_probe_guests (provider, domain_name, ttl_deadline) "
-                "VALUES (%s, %s, now() + %s) RETURNING id",
-                (provider, domain_name, self._ttl),
-            )
-            row = await cur.fetchone()
+        """Insert a live marker row; return its id.
+
+        Raises:
+            ProbeInFlightError: a live probe row already exists for ``provider`` (the partial
+                unique index fired — the cross-process single-flight fence).
+        """
+        try:
+            async with (
+                self._pool.connection() as conn,
+                conn.transaction(),
+                conn.cursor(row_factory=dict_row) as cur,
+            ):
+                await cur.execute(
+                    "INSERT INTO egress_probe_guests (provider, domain_name, ttl_deadline) "
+                    "VALUES (%s, %s, now() + %s) RETURNING id",
+                    (provider, domain_name, self._ttl),
+                )
+                row = await cur.fetchone()
+        except UniqueViolation as exc:
+            raise ProbeInFlightError(provider) from exc
         if row is None:  # invariant: INSERT ... RETURNING always yields one row
             raise RuntimeError("INSERT into egress_probe_guests returned no row")
         return row["id"]
@@ -156,8 +180,13 @@ class SingleFlight:
     """Per-key in-process single-flight: concurrent callers share one in-flight coroutine.
 
     A second ``run`` for a key whose probe is in flight awaits the first call's result instead
-    of spawning a second guest. The DB unique index is the cross-process backstop; this is the
-    common-case (one process, a CI loop or two operators) coalescer (ADR-0091 §3).
+    of spawning a second guest — the ADR-0091 §3 "attaches to the in-flight result" contract.
+    This holds within one process, so a production probe-guest factory **must share one
+    process-level ``SingleFlight``** across ``doctor`` calls (not build a fresh one per call) or
+    single-flight degrades to the DB fence alone. The DB partial unique index is the
+    cross-process backstop: a second *process* cannot share this coalescer, so its ``register``
+    raises :class:`ProbeInFlightError` and the check reports "a probe is already in flight"
+    (still exactly one guest, reported as ``error`` rather than the shared result).
     """
 
     def __init__(self) -> None:
@@ -199,12 +228,14 @@ class GuestEgressCheck(Check):
         presigned_url: PresignedUrlSource,
         registry: EgressProbeRegistry,
         single_flight: SingleFlight,
+        heartbeat_interval: timedelta = DEFAULT_PROBE_HEARTBEAT_INTERVAL,
     ) -> None:
         self._provider = provider
         self._guest = guest
         self._presigned_url = presigned_url
         self._registry = registry
         self._single_flight = single_flight
+        self._heartbeat_interval = heartbeat_interval.total_seconds()
 
     @property
     def id(self) -> str:
@@ -221,18 +252,38 @@ class GuestEgressCheck(Check):
         domain_name = f"{PROBE_DOMAIN_PREFIX}{uuid4().hex}"
         try:
             probe_id = await self._registry.register(self._provider, domain_name)
-        except Exception:  # noqa: BLE001 - a live row already exists (single-flight) or DB down
+        except ProbeInFlightError:
+            # The cross-process single-flight fence fired: another doctor run already holds the
+            # live probe for this provider. Report it as error (the check could not be run to a
+            # verdict here), never a contract fail — the egress path itself is unjudged.
+            return self._error("a probe is already in flight for this provider; retry shortly")
+        except Exception:  # noqa: BLE001 - the secret/marker backend is down
             return self._error("could not register the probe marker; cannot provision a guest")
+        beat = asyncio.create_task(self._beat_until_cancelled(probe_id))
         try:
-            return await self._provision_exec_verdict(domain_name, probe_id)
+            return await self._provision_exec_verdict(domain_name)
         finally:
+            await _cancel(beat)
             await self._teardown(domain_name)
             await self._registry.release(probe_id)
 
-    async def _provision_exec_verdict(self, domain_name: str, probe_id: UUID) -> CheckResult:
+    async def _beat_until_cancelled(self, probe_id: UUID) -> None:
+        """Advance the heartbeat every interval so the reaper never reaps a live (slow) probe.
+
+        The active-run heartbeat is not a single stamp: a probe whose boot + exec exceeds the
+        reaper's staleness window must keep beating, or the reaper would destroy it mid-check
+        and turn a healthy egress path into a spurious ``error`` (ADR-0091 §3). A heartbeat
+        write failure is swallowed — a transient DB blip must not fail the egress verdict; the
+        hard TTL remains the absolute backstop.
+        """
+        while True:
+            with contextlib.suppress(Exception):  # a heartbeat blip must not fail the verdict
+                await self._registry.heartbeat(probe_id)
+            await asyncio.sleep(self._heartbeat_interval)
+
+    async def _provision_exec_verdict(self, domain_name: str) -> CheckResult:
         try:
             await self._guest.provision(domain_name)
-            await self._registry.heartbeat(probe_id)
             url = await self._presigned_url()
             outcome = await self._guest.exec_egress(domain_name, url)
         except Exception:  # noqa: BLE001 - provision/exec failure is an indeterminate run -> error
@@ -270,3 +321,10 @@ class GuestEgressCheck(Check):
             detail=detail,
             provider=self._provider,
         )
+
+
+async def _cancel(task: asyncio.Task[None]) -> None:
+    """Cancel ``task`` and await its completion, swallowing the resulting cancellation."""
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task

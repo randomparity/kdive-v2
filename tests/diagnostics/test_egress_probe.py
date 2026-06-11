@@ -15,7 +15,9 @@ fence) runs against the disposable Postgres fixture; the check logic runs over a
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
+import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.diagnostics.checks import CheckStatus
@@ -26,6 +28,7 @@ from kdive.diagnostics.egress_probe import (
     EgressOutcome,
     EgressProbeRegistry,
     GuestEgressCheck,
+    ProbeInFlightError,
     SingleFlight,
     redact_presigned,
 )
@@ -165,6 +168,38 @@ def test_teardown_failure_does_not_change_verdict(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_heartbeat_keeps_beating_for_a_slow_probe(migrated_url: str) -> None:
+    # A probe whose boot+exec exceeds the beat interval must keep advancing its heartbeat, or
+    # the reaper would reap a live (slow) probe mid-check (ADR-0091 §3). Assert the heartbeat
+    # advances more than once during a probe that runs across several beat intervals.
+    async def _run() -> None:
+        guest = _FakeGuest(outcome=EgressOutcome.REACHABLE, provision_delay=0.15)
+        async with _pool(migrated_url) as pool:
+            registry = EgressProbeRegistry(pool)
+            check = GuestEgressCheck(
+                provider="p",
+                guest=guest,
+                presigned_url=_presigned,
+                registry=registry,
+                single_flight=SingleFlight(),
+                heartbeat_interval=timedelta(seconds=0.03),
+            )
+            await check.run()
+            conn = await pool.getconn()
+            try:
+                cur = await conn.execute(
+                    "SELECT extract(epoch FROM (heartbeat_at - created_at)) "
+                    "FROM egress_probe_guests"
+                )
+                row = await cur.fetchone()
+            finally:
+                await pool.putconn(conn)
+        # The heartbeat advanced past the row's creation time (it beat during the slow probe).
+        assert row is not None and row[0] > 0
+
+    asyncio.run(_run())
+
+
 def test_probe_domain_carries_the_reaper_marker_prefix(migrated_url: str) -> None:
     async def _run() -> None:
         guest = _FakeGuest()
@@ -195,6 +230,34 @@ def test_concurrent_callers_spin_exactly_one_guest(migrated_url: str) -> None:
         assert all(r.status is CheckStatus.PASS for r in results)
         # Exactly one guest spun despite three concurrent callers.
         assert len(guest.provisioned) == 1
+
+    asyncio.run(_run())
+
+
+def test_registry_raises_in_flight_when_a_live_row_exists(migrated_url: str) -> None:
+    # The DB partial unique index is the cross-process single-flight fence: a second register
+    # for a provider with a live (unreleased) row raises ProbeInFlightError, not a generic DB
+    # error, so the check can report "already in flight" distinctly.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            registry = EgressProbeRegistry(pool)
+            await registry.register("p", "kdive-egress-probe-a")
+            with pytest.raises(ProbeInFlightError):
+                await registry.register("p", "kdive-egress-probe-b")
+
+    asyncio.run(_run())
+
+
+def test_in_flight_register_is_reported_as_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            registry = EgressProbeRegistry(pool)
+            await registry.register("p", "kdive-egress-probe-held")  # occupy the live slot
+            # A fresh SingleFlight (the cross-process case): register hits the fence -> error.
+            result = await _check("p", _FakeGuest(), registry).run()
+        assert result.status is CheckStatus.ERROR
+        assert "in flight" in result.detail
+        assert result.fix is None
 
     asyncio.run(_run())
 
