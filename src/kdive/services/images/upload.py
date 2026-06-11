@@ -41,6 +41,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ImageCatalogEntry, ImageState, ImageVisibility
 from kdive.images.validation import DEFAULT_INSPECT, InspectSeam, validate_guest_contract
 from kdive.provider_components import artifacts as artifact_types
+from kdive.provider_components.artifacts import validate_key_component
 from kdive.security import audit
 from kdive.services.images.publish import (
     ImageObjectStore,
@@ -236,7 +237,17 @@ async def register_private_upload(
             ``CONFIGURATION_ERROR`` if the image fails its guest contract or its bytes do not hash
             to the computed digest; ``STALE_HANDLE``/``INFRASTRUCTURE_FAILURE`` from the store.
     """
-    _ = ImageVisibility.PRIVATE  # the registered scope is fixed for this path
+    # Validate the identity components before any filesystem or object-key use: `arch`/`name`/
+    # `provider` are folded into the staged temp path and the object key, so a `/`-bearing value
+    # could otherwise traverse out of the temp directory. publish_image re-validates at key
+    # construction, but the staged write happens first, so the guard belongs here.
+    for label, value in (
+        ("provider", provider),
+        ("name", name),
+        ("arch", arch),
+        ("owner", project),
+    ):
+        validate_key_component(label, value)
 
     await _reject_oversize_upload(store, quarantine_key)
     fetched = await asyncio.to_thread(store.get_artifact, quarantine_key, None)

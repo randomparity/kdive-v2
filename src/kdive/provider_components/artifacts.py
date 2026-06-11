@@ -9,7 +9,16 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 
 
-def _validate_component(label: str, value: str) -> str:
+def validate_key_component(label: str, value: str) -> str:
+    """Validate one object-key path component: non-empty, no ``/`` or control characters.
+
+    Reused by callers that fold a value into a filesystem path or object key before it reaches
+    :func:`artifact_key`, so a traversal-bearing component (``/`` or ``..`` with a slash) is
+    rejected with a named ``CONFIGURATION_ERROR`` at the boundary rather than escaping a path.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` if ``value`` is empty or has an illegal char.
+    """
     if not value:
         raise CategorizedError(
             f"artifact key component {label!r} must not be empty",
@@ -26,10 +35,10 @@ def _validate_component(label: str, value: str) -> str:
 def artifact_key(tenant: str, kind: str, object_id: str, name: str) -> str:
     """Public, validated ``{tenant}/{kind}/{object_id}/{name}`` key."""
     parts = [
-        _validate_component("tenant", tenant),
-        _validate_component("kind", kind),
-        _validate_component("object_id", object_id),
-        _validate_component("name", name),
+        validate_key_component("tenant", tenant),
+        validate_key_component("kind", kind),
+        validate_key_component("object_id", object_id),
+        validate_key_component("name", name),
     ]
     return "/".join(parts)
 
@@ -37,9 +46,9 @@ def artifact_key(tenant: str, kind: str, object_id: str, name: str) -> str:
 def owner_prefix(tenant: str, kind: str, object_id: str) -> str:
     """The validated ``{tenant}/{kind}/{object_id}/`` key prefix for an owner's objects."""
     parts = [
-        _validate_component("tenant", tenant),
-        _validate_component("kind", kind),
-        _validate_component("object_id", object_id),
+        validate_key_component("tenant", tenant),
+        validate_key_component("kind", kind),
+        validate_key_component("object_id", object_id),
     ]
     return "/".join(parts) + "/"
 
