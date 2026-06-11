@@ -15,6 +15,7 @@ from fastmcp import FastMCP
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.diagnostics.service import default_service_factory
 from kdive.jobs.handlers import control, runs, systems, vmcore
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import build_verifier
@@ -41,6 +42,7 @@ from kdive.mcp.tools.lifecycle.runs import registrar as runs_tools
 from kdive.mcp.tools.lifecycle.systems import registrar as systems_tools
 from kdive.mcp.tools.ops import audit as audit_tools
 from kdive.mcp.tools.ops import breakglass as ops_breakglass_tools
+from kdive.mcp.tools.ops import diagnostics as ops_diagnostics_tools
 from kdive.mcp.tools.ops import inventory as inventory_tools
 from kdive.mcp.tools.ops import queue as ops_queue_tools
 from kdive.mcp.tools.ops import reconcile as ops_reconcile_tools
@@ -110,6 +112,9 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _plain(ops_queue_tools.register),
     _plain(ops_tuning_tools.register),
     _plain(audit_tools.register),
+    lambda app, pool, resolver, registry, reaper: ops_diagnostics_tools.register(
+        app, pool, default_service_factory
+    ),
     _plain(inventory_tools.register),
     _plain(fixtures.register),
     lambda app, pool, resolver, registry, reaper: ops_secrets_tools.register(app, pool, registry),

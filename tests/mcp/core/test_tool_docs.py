@@ -74,6 +74,7 @@ _BEHAVIOR_TESTS_BY_TOOL = {
     "jobs.wait": ("tests/mcp/catalog/test_jobs_tools.py",),
     "introspect.from_vmcore": ("tests/mcp/debug/test_introspect_tools.py",),
     "introspect.run": ("tests/mcp/debug/test_introspect_tools.py",),
+    "ops.diagnostics": ("tests/mcp/ops/test_diagnostics.py",),
     "ops.force_release": ("tests/mcp/ops/test_breakglass.py",),
     "ops.force_teardown": ("tests/mcp/ops/test_breakglass.py",),
     "ops.jobs_list": ("tests/mcp/ops/test_queue_tools.py",),

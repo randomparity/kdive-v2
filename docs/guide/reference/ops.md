@@ -2,6 +2,20 @@
 
 # `ops` tools
 
+## `ops.diagnostics`
+
+`implemented` · `read-only`
+
+Run the read-only deployment diagnostics. Platform operator-gated.
+
+Returns one verdict carrying each check's three-state status, detail, fix, and the
+provider it covered. A check that could not be run (a down dependency) reports an
+``error`` distinctly — it is not a contract failure.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `provider` | `any` | no | Diagnose one named registered provider; omit for all registered. |
+
 ## `ops.force_release`
 
 `implemented` · `destructive`
