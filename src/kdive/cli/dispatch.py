@@ -28,6 +28,8 @@ async def run(args: argparse.Namespace) -> int:
         return await _tool_call(args)
     if args.command == "login":
         return _login(args)
+    if args.command == "doctor":
+        return await commands.doctor.doctor(args)
     return await commands.run_verb(args)
 
 

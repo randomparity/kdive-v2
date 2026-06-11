@@ -109,6 +109,28 @@ kdivectl fixtures list [--project <project>] # available fixtures, project-scope
 
 `secrets list` reports presence/refs only — it never returns secret values.
 
+## Diagnostics (`doctor`)
+
+`doctor` runs the read-only deployment diagnostics through the operator-gated
+`ops.diagnostics` tool and renders one verdict row per check (`check`, `status`, `detail`,
+`fix`, `provider`). It is usable as a deployment/CI gate as well as interactively:
+
+```bash
+kdivectl doctor                              # the three cheap read checks (default)
+kdivectl doctor --provider remote-libvirt    # diagnose one named registered provider
+kdivectl doctor --with-egress                # also run the heavyweight egress probe
+kdivectl doctor --json                       # the verdict rows as stable JSON
+```
+
+The exit code is **gate-safe** (ADR-0091 §5): all-`pass` exits `0`; any `fail` exits `1`
+(a contract is violated, and `fix` names the remediation); a check that could not run to a
+verdict (a down dependency) is reported as `error` and exits `6` — a *distinct* nonzero code,
+so a gate never goes green on a check that did not actually pass. A `fail` and an `error`
+together exit `1` (a real contract violation is never masked by an unrelated down
+dependency). `doctor` is operator-gated, so it exits `3` if your token lacks
+`platform_operator`. The default run is the three read checks; `--with-egress` is opt-in
+because the egress probe provisions a probe guest.
+
 ## Read-only passthrough (`tool call`)
 
 To reach any read-only MCP tool not covered by a curated verb, use the passthrough. It is
@@ -164,6 +186,7 @@ the denial is itself audited under `actor=operator-cli` (separation-of-duties ac
 | `3` | authorization denied (or a non-read-only passthrough target) |
 | `4` | not found |
 | `5` | conflict |
+| `6` | `doctor` only: a check could not run to a verdict (`error`); not a passed contract |
 
 ## Reading the audit trail by `actor`
 

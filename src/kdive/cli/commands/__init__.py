@@ -11,7 +11,9 @@ import argparse
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from kdive.cli.commands import mutations, reads
+from kdive.cli.commands import doctor, mutations, reads
+
+__all__ = ["REGISTRY", "Verb", "add_subparsers", "doctor", "run_verb"]
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,18 @@ def add_subparsers(sub: argparse._SubParsersAction) -> None:
             group_parser = parser.add_subparsers(dest="subcommand", required=True)
             groups[verb.group] = group_parser
         _verb_parser(group_parser, verb, parent)
+    _doctor_parser(sub, parent)
+
+
+def _doctor_parser(sub: argparse._SubParsersAction, parent: argparse.ArgumentParser) -> None:
+    """Add the ``doctor`` verb: a deployment-diagnostics gate, not a generic read verb.
+
+    It is wired here (not as a ``Verb``) because it has a bespoke flag (``--with-egress``),
+    renders a fixed verdict table, and maps its own gate-safe exit codes (ADR-0091 §5).
+    """
+    parser = sub.add_parser("doctor", parents=[parent], help="run deployment diagnostics")
+    parser.add_argument("--provider", dest="provider", default=None)
+    parser.add_argument("--with-egress", dest="with_egress", action="store_true")
 
 
 async def run_verb(args: argparse.Namespace) -> int:
