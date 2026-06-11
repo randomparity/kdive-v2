@@ -118,3 +118,5 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0089](0089-operator-cli-mcp-client.md) | Operator CLI (`kdivectl`) as an authenticated MCP client — read-only-by-policy passthrough, break-glass mutations, `(principal, operator-cli)` attribution (M2.2) | Proposed |
 | [0090](0090-opentelemetry-adoption-service-health.md) | OpenTelemetry adoption — logs/metrics/traces spine, log-signal migration (amends ADR-0014) with stdout floor + opt-in OTLP, aux health endpoints (M2.3) | Proposed |
 | [0091](0091-doctor-diagnostics-model.md) | `doctor` / diagnostics model — server-side authz-gated diagnostics tool, per-check vantage, ephemeral-probe-guest egress check (M2.3) | Proposed |
+| [0092](0092-image-rootfs-lifecycle.md) | Image & rootfs lifecycle — `RootfsBuildPlane` Python build planes, `image_catalog` DB table as single source of truth, publish/register two-write + reconciler drift repair (M2.4) | Proposed |
+| [0093](0093-private-image-uploads.md) | Private image uploads — owner-scoped `visibility='private'` rows, required TTL, reconciler auto-prune, ADR-0048 ingest reuse (M2.4) | Proposed |
