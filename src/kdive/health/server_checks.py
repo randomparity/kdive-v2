@@ -26,22 +26,28 @@ class _Pingable(Protocol):
 def build_server_checks(
     *,
     postgres_ping: Callable[[], Awaitable[None]],
-    object_store: _Pingable,
+    object_store_factory: Callable[[], _Pingable],
     oidc_ping: Callable[[], Awaitable[None]],
 ) -> list[BackendCheck]:
     """Return the server's readiness checks: Postgres, MinIO, OIDC.
 
     Args:
         postgres_ping: Coroutine running a ``SELECT 1`` over the shared pool.
-        object_store: An object store exposing a synchronous ``ping()`` (bucket ``HEAD``).
+        object_store_factory: Builds an object store exposing a synchronous ``ping()``
+            (bucket ``HEAD``). Called **inside the check**, so a misconfigured or
+            unreachable store reads as not-ready rather than crashing process startup.
         oidc_ping: Coroutine probing OIDC discovery/JWKS reachability.
     """
 
     async def minio() -> None:
-        await asyncio.to_thread(object_store.ping)
+        await asyncio.to_thread(_ping_store, object_store_factory)
 
     return [
         BackendCheck(name="postgres", probe=postgres_ping),
         BackendCheck(name="minio", probe=minio),
         BackendCheck(name="oidc", probe=oidc_ping),
     ]
+
+
+def _ping_store(factory: Callable[[], _Pingable]) -> None:
+    factory().ping()

@@ -42,15 +42,32 @@ async def _oidc_down() -> None:
 
 def test_server_set_is_postgres_minio_oidc() -> None:
     checks = build_server_checks(
-        postgres_ping=_pg_ok, object_store=_FakeStore(ok=True), oidc_ping=_oidc_ok
+        postgres_ping=_pg_ok, object_store_factory=lambda: _FakeStore(ok=True), oidc_ping=_oidc_ok
     )
     assert {c.name for c in checks} == {"postgres", "minio", "oidc"}
+
+
+def test_store_factory_failure_reads_as_not_ready_not_crash() -> None:
+    async def _run() -> None:
+        def boom() -> _FakeStore:
+            raise RuntimeError("KDIVE_S3_ENDPOINT_URL is not set")
+
+        checks = build_server_checks(
+            postgres_ping=_pg_ok, object_store_factory=boom, oidc_ping=_oidc_ok
+        )
+        result = await HealthProbe(checks=checks).check()
+        assert result.ready is False
+        assert result.checks["minio"] is False
+
+    asyncio.run(_run())
 
 
 def test_ready_when_all_up() -> None:
     async def _run() -> None:
         checks = build_server_checks(
-            postgres_ping=_pg_ok, object_store=_FakeStore(ok=True), oidc_ping=_oidc_ok
+            postgres_ping=_pg_ok,
+            object_store_factory=lambda: _FakeStore(ok=True),
+            oidc_ping=_oidc_ok,
         )
         assert (await HealthProbe(checks=checks).check()).ready is True
 
@@ -60,7 +77,9 @@ def test_ready_when_all_up() -> None:
 def test_not_ready_when_minio_down() -> None:
     async def _run() -> None:
         checks = build_server_checks(
-            postgres_ping=_pg_ok, object_store=_FakeStore(ok=False), oidc_ping=_oidc_ok
+            postgres_ping=_pg_ok,
+            object_store_factory=lambda: _FakeStore(ok=False),
+            oidc_ping=_oidc_ok,
         )
         result = await HealthProbe(checks=checks).check()
         assert result.ready is False
@@ -72,7 +91,9 @@ def test_not_ready_when_minio_down() -> None:
 def test_not_ready_when_oidc_down() -> None:
     async def _run() -> None:
         checks = build_server_checks(
-            postgres_ping=_pg_ok, object_store=_FakeStore(ok=True), oidc_ping=_oidc_down
+            postgres_ping=_pg_ok,
+            object_store_factory=lambda: _FakeStore(ok=True),
+            oidc_ping=_oidc_down,
         )
         result = await HealthProbe(checks=checks).check()
         assert result.ready is False

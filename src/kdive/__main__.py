@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -83,7 +84,7 @@ async def _run_server(
     probe = HealthProbe(
         checks=build_server_checks(
             postgres_ping=build_postgres_ping(pool),
-            object_store=object_store_from_env(),
+            object_store_factory=object_store_from_env,
             oidc_ping=build_oidc_ping(),
         )
     )
@@ -95,10 +96,23 @@ async def _run_server(
     try:
         await app.run_async(transport="http", host=host, port=port)
     finally:
-        ticker.cancel()
-        aux_task.cancel()
+        await _cancel(ticker, aux_task)
         secret_registry.clear()
         await pool.close()
+
+
+async def _cancel(*tasks: asyncio.Task[None]) -> None:
+    """Cancel and await aux background tasks before the pool/registry are torn down.
+
+    Awaiting (suppressing ``CancelledError``) drains an in-flight ``/readyz`` — which
+    borrows a pool connection — so the pool never closes underneath it, and avoids a
+    "Task was destroyed but it is pending" warning on exit.
+    """
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 async def _tick_heartbeat(heartbeat: Heartbeat) -> None:
