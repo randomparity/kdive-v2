@@ -5,9 +5,9 @@ storage:
     - /var/lib/kdive/rootfs
   cache_dir: /var/lib/kdive/rootfs/cache
   overlay_dir: /var/lib/kdive/rootfs/overlays
-rootfs:
-  - rootfs/fedora-kdive-ready-43.yaml
-  - rootfs/fedora-cloud-43.yaml
-  - rootfs/busybox-bare.yaml
+# The rootfs catalog moved to the DB-backed image_catalog (ADR-0092); the baseline rootfs
+# metadata now ships in src/kdive/images/seed_data/ and is seeded as `defined` rows. Only the
+# profiles half stays file-based — load_fixture_catalog still resolves it.
+rootfs: []
 profiles:
   - profiles/console-ready_x86_64.yaml

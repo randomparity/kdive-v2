@@ -66,8 +66,10 @@ def test_empty_catalog_yields_empty_list(monkeypatch) -> None:
     assert resp.data["fixtures"] == []
 
 
-def test_real_default_catalog_loads_local_libvirt_rootfs() -> None:
+def test_real_baseline_catalog_loads_local_libvirt_rootfs() -> None:
+    # The tool reads the packaged seed_data baseline (ADR-0092 relocation); it still surfaces
+    # the local-libvirt baseline rootfs inventory.
     resp = asyncio.run(fixtures.list_fixtures_tool())
     assert resp.status == "ok"
     local = [row for row in resp.data["fixtures"] if row["provider"] == "local-libvirt"]
-    assert local, "default source-tree catalog should expose local-libvirt rootfs entries"
+    assert local, "packaged baseline catalog should expose local-libvirt rootfs entries"

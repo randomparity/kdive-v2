@@ -33,10 +33,12 @@ from kdive.profiles.provisioning import (
     RootfsSource,
     _UploadRootfs,
     require_concrete_sizing,
+    validate_rootfs_reference,
 )
 from kdive.profiles.provisioning import (
     validate_profile as _validate_profile,
 )
+from kdive.provider_components.references import CatalogComponentRef
 from kdive.providers.local_libvirt.discovery import _KDIVE_METADATA_NS
 from kdive.providers.local_libvirt.lifecycle.materialize import (
     RootfsMaterializationContext,
@@ -386,7 +388,16 @@ class LocalLibvirtProvisioning:
         )
 
     def validate_rootfs_ref(self, rootfs: RootfsSource) -> None:
-        """Validate that a rootfs ref can materialize within provider roots."""
+        """Validate that a rootfs ref is statically resolvable.
+
+        A ``catalog`` reference is validated by name against the baseline catalog (its object is
+        resolved at provision time through the DB-backed materialize fetch, ADR-0092, which needs
+        a connection this admission-time validator does not hold); a ``local``/``upload``
+        reference is validated by materializing it within the provider roots.
+        """
+        if isinstance(rootfs, CatalogComponentRef):
+            validate_rootfs_reference(rootfs)
+            return
         self._materialize_rootfs_base(rootfs, UUID(int=0))
 
     def reprovision(self, system_id: UUID, profile: ProvisioningProfile) -> str:

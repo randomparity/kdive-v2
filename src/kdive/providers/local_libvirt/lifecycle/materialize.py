@@ -1,14 +1,22 @@
-"""Local-libvirt component materialization (ADR-0065)."""
+"""Local-libvirt component materialization (ADR-0065, ADR-0092).
+
+A ``catalog`` rootfs reference resolves through the DB-backed ``image_catalog`` and its object is
+fetched to a checksum-verified local cache (the cutover from the read-only YAML lookup). The
+resolve+fetch capability is injected as ``RootfsMaterializationContext.catalog_fetch`` because
+the provider provision seam is synchronous and owns no Postgres connection; the worker wires a
+concrete fetch (a connection + object store) into the context. The ``local`` and ``upload`` paths
+are unchanged provider-local resolutions.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import RootfsSource, _UploadRootfs
-from kdive.provider_components.catalog import load_fixture_catalog
 from kdive.provider_components.local_paths import validate_local_component_path
 from kdive.provider_components.references import (
     ArtifactComponentRef,
@@ -17,6 +25,9 @@ from kdive.provider_components.references import (
     ComponentUploadRef,
     LocalComponentRef,
 )
+
+# Resolve a `catalog` reference to a provider-readable local path (DB row → object → cache).
+type CatalogFetch = Callable[[CatalogComponentRef], Path]
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,10 +41,16 @@ class RootfsUploadContext:
 
 @dataclass(frozen=True, slots=True)
 class RootfsMaterializationContext:
-    """Inputs needed to resolve a provider-readable rootfs base path."""
+    """Inputs needed to resolve a provider-readable rootfs base path.
+
+    ``catalog_fetch`` resolves a ``catalog`` reference through ``image_catalog`` and downloads its
+    object to a checksum-verified cache; it is ``None`` in lanes that never resolve a catalog
+    reference (then a ``catalog`` reference is a configuration error).
+    """
 
     allowed_roots: list[Path]
     upload: RootfsUploadContext | None = None
+    catalog_fetch: CatalogFetch | None = None
 
 
 def materialize_rootfs_base(
@@ -87,17 +104,15 @@ def _materialize_local_rootfs(
 def _materialize_catalog_rootfs(
     ref: CatalogComponentRef, context: RootfsMaterializationContext
 ) -> Path:
-    catalog = load_fixture_catalog()
-    entry = catalog.rootfs_entry(ref.provider, ref.name)
-    if entry is None:
+    """Resolve a ``catalog`` rootfs through the DB catalog and fetch its object to a cache.
+
+    The resolve+fetch is injected (``context.catalog_fetch``) so the synchronous provider seam
+    stays connectionless; an unwired lane treats a ``catalog`` reference as a configuration error.
+    """
+    if context.catalog_fetch is None:
         raise CategorizedError(
-            "unknown provider rootfs catalog entry",
+            "catalog rootfs materialization is not wired for this lane",
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"provider": ref.provider, "name": ref.name},
         )
-    if isinstance(entry.source, LocalComponentRef):
-        return _materialize_local_rootfs(entry.source, context)
-    raise CategorizedError(
-        "artifact-backed rootfs materialization is not wired yet",
-        category=ErrorCategory.MISSING_DEPENDENCY,
-    )
+    return context.catalog_fetch(ref)

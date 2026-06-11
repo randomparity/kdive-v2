@@ -240,6 +240,20 @@ FIXTURE_CATALOG_PATH = Setting(
     help="Override path to the provider fixture catalog.",
 )
 
+IMAGE_PUBLISH_GRACE = Setting(
+    name="KDIVE_IMAGE_PUBLISH_GRACE_SECONDS",
+    parse=_int,
+    default="3600",
+    group="images",
+    processes=_DISCOVERY,
+    help=(
+        "Image publish-deadline grace window in seconds. A pending image row (or an orphan "
+        "object with no row) is protected from the reconciler's leaked/dangling sweeps until "
+        "pending_since + this window elapses, so an in-flight publish is not reaped."
+    ),
+    suggest="an integer number of seconds, e.g. 3600",
+)
+
 FAULT_INJECT = Setting(
     name="KDIVE_FAULT_INJECT",
     parse=_str,
@@ -321,6 +335,7 @@ SETTINGS = [
     BUILD_COMPONENT_ROOTS,
     INSTALL_STAGING,
     FIXTURE_CATALOG_PATH,
+    IMAGE_PUBLISH_GRACE,
     FAULT_INJECT,
     OTEL_ENABLED,
     OTEL_EXPORTER_OTLP_ENDPOINT,

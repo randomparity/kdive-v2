@@ -393,9 +393,18 @@ def reject_rootfs_upload_without_window(profile: ProvisioningProfile) -> None:
 
 
 def validate_rootfs_reference(rootfs: RootfsSource) -> None:
-    """Validate a rootfs reference's static resolvability."""
+    """Validate a rootfs reference's static resolvability.
+
+    A ``catalog`` reference is checked against the baseline rootfs inventory (the packaged
+    ``seed_data/`` catalog the rootfs entries moved to, ADR-0092). A name absent from the baseline
+    but present in the DB catalog (a built/published or private image) is resolved later by the
+    DB-backed ``materialize`` fetch; this is the static, connectionless tool-boundary check.
+    """
+    from kdive.images.seed import PACKAGED_SEED_DATA_PATH
+
     if isinstance(rootfs, CatalogComponentRef) and (
-        load_fixture_catalog().rootfs_entry(rootfs.provider, rootfs.name) is None
+        load_fixture_catalog(PACKAGED_SEED_DATA_PATH).rootfs_entry(rootfs.provider, rootfs.name)
+        is None
     ):
         raise CategorizedError(
             f"unknown rootfs catalog name: {rootfs.name}",

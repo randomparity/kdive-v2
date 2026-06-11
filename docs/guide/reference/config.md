@@ -60,6 +60,12 @@
 | `KDIVE_HTTP_HOST` | server | `127.0.0.1` | no | Bind host for the MCP server. |
 | `KDIVE_HTTP_PORT` | server | `8000` | no | Bind port for the MCP server. |
 
+## images
+
+| Variable | Processes | Default | Required | Value |
+|----------|-----------|---------|----------|-------|
+| `KDIVE_IMAGE_PUBLISH_GRACE_SECONDS` | reconciler, worker | `3600` | no | Image publish-deadline grace window in seconds. A pending image row (or an orphan object with no row) is protected from the reconciler's leaked/dangling sweeps until pending_since + this window elapses, so an in-flight publish is not reaped. |
+
 ## install
 
 | Variable | Processes | Default | Required | Value |
