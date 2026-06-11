@@ -47,7 +47,26 @@ def migrate(database_url: str | None = None) -> int:
     finally:
         conn.close()
     print(f"applied {len(applied)} migration(s)")
+    seeded = _seed_baseline_rootfs(url)
+    print(f"seeded {seeded} baseline rootfs image(s)")
     return len(applied)
+
+
+def _seed_baseline_rootfs(database_url: str) -> int:
+    """Register the baseline rootfs as `defined` catalog rows after migrating (ADR-0092).
+
+    Runs as the deploy ``migrate → seed`` step so a fresh install lists the baseline before any
+    image is built. Idempotent and read-only against operator data.
+    """
+    import asyncio
+
+    from kdive.images.seed import seed_defined_rootfs
+
+    async def _run() -> int:
+        async with await psycopg.AsyncConnection.connect(database_url, autocommit=True) as conn:
+            return await seed_defined_rootfs(conn)
+
+    return asyncio.run(_run())
 
 
 def seed_project_statements(
