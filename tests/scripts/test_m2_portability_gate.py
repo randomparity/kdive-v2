@@ -74,7 +74,10 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
     # *_telemetry modules, queue.count_claimable), and the ADR-0092 M2.4 publish/register +
     # IMAGE_BUILD job touch (#285: the publish service, the handler + payload, the jobs.kind
     # widen), and the ADR-0092/0093 M2.4 reconciler image sweeps (#287: reconciler/images.py,
-    # the three deadline-guarded drift sweeps); extending it is a deliberate, reviewed decision.
+    # the three deadline-guarded drift sweeps), and the ADR-0095 M2.5 reconciler-owned remote
+    # console collector (#303: the console_hosting.py hosting loop + the session-scoped
+    # pg_advisory_lock leadership helper in locks.py); extending it is a deliberate, reviewed
+    # decision.
     assert (
         frozenset(
             {
@@ -127,6 +130,8 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/mcp/tools/ops/images.py",
                 "src/kdive/mcp/tools/catalog/images.py",
                 "src/kdive/mcp/tools/_docmeta.py",
+                "src/kdive/reconciler/console_hosting.py",
+                "src/kdive/db/locks.py",
             }
         )
         == ALLOWED_FILES

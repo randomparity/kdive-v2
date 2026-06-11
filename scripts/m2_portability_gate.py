@@ -164,6 +164,16 @@ ALLOWED_FILES = frozenset(
         "src/kdive/mcp/tools/ops/images.py",
         "src/kdive/mcp/tools/catalog/images.py",
         "src/kdive/mcp/tools/_docmeta.py",
+        # M2.5 reconciler-owned remote console collector (#303, ADR-0095): the two net-new core
+        # modules the single-leader console hosting needs. console_hosting.py is the injectable
+        # leader-locked hosting loop + attach-watcher + shared CollectorRegistry the liveness/reap
+        # class drives; locks.py gains the session-scoped pg_advisory_lock leadership helper (the
+        # transaction-scoped advisory_xact_lock cannot hold leadership across between-pass
+        # streamers). Both are provider-agnostic platform infra — the per-System streamer and its
+        # libvirt/object-store wiring live under providers/remote_libvirt/ (outside CORE_PREFIXES).
+        # reconciler/loop.py (already allowlisted) gains the console liveness/reap _RepairSpec.
+        "src/kdive/reconciler/console_hosting.py",
+        "src/kdive/db/locks.py",
     }
 )
 
