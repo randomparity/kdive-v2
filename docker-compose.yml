@@ -125,11 +125,19 @@ services:
       KDIVE_HEALTH_BIND_ADDR: 0.0.0.0:9464
     healthcheck:
       <<: *readyz_cadence
+      # urlopen raises HTTPError on /readyz's 503 (not-ready), so the broad except maps
+      # any non-200 / unreachable listener to a clean exit 1 with no stderr traceback.
       test:
         - CMD
         - python
         - -c
-        - import sys,urllib.request;sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:9464/readyz",timeout=3).status==200 else 1)
+        - |
+          import sys, urllib.request
+          try:
+              ok = urllib.request.urlopen("http://127.0.0.1:9464/readyz", timeout=3).status == 200
+          except Exception:
+              ok = False
+          sys.exit(0 if ok else 1)
     ports:
       - "8000:8000"
     # Self-contained graph: a bare `docker compose up server` pulls in migrate
@@ -160,7 +168,13 @@ services:
         - CMD
         - python
         - -c
-        - import sys,urllib.request;sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:9465/readyz",timeout=3).status==200 else 1)
+        - |
+          import sys, urllib.request
+          try:
+              ok = urllib.request.urlopen("http://127.0.0.1:9465/readyz", timeout=3).status == 200
+          except Exception:
+              ok = False
+          sys.exit(0 if ok else 1)
     volumes:
       - kdive-build:/var/lib/kdive/build
       - kdive-install:/var/lib/kdive/install
@@ -182,7 +196,13 @@ services:
         - CMD
         - python
         - -c
-        - import sys,urllib.request;sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:9466/readyz",timeout=3).status==200 else 1)
+        - |
+          import sys, urllib.request
+          try:
+              ok = urllib.request.urlopen("http://127.0.0.1:9466/readyz", timeout=3).status == 200
+          except Exception:
+              ok = False
+          sys.exit(0 if ok else 1)
     depends_on:
       migrate:
         condition: service_completed_successfully
