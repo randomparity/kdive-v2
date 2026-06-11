@@ -35,6 +35,10 @@ from tests.integration.live_stack.harness import LiveStackClient, OidcIssuer, mi
 DRAIN_DEADLINE_S = 600.0
 POLL_INTERVAL_S = 2.0
 
+# The remote allocation's disk request and the provision profile's disk_gb must agree, or
+# reconcile_profile_sizing rejects the mismatch before provision runs (#315). One source.
+REMOTE_ALLOCATION_DISK_GB = 10
+
 _ARTIFACT_DIR_ENV = "KDIVE_ARTIFACT_DIR"
 
 
@@ -230,7 +234,7 @@ async def allocate_remote(
             request={
                 "vcpus": 2,
                 "memory_gb": 2,
-                "disk_gb": 10,
+                "disk_gb": REMOTE_ALLOCATION_DISK_GB,
                 "resource": {"mode": "kind", "kind": "remote-libvirt"},
             },
         ),

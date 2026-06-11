@@ -36,6 +36,7 @@ from tests.integration.live_stack.conftest import require_issuer, require_stack
 from tests.integration.live_stack.harness import LiveStackClient, OidcIssuer
 from tests.integration.live_stack.spine import (
     POLL_INTERVAL_S,
+    REMOTE_ALLOCATION_DISK_GB,
     SpinePhaseError,
     allocate_remote,
     assert_report,
@@ -88,7 +89,7 @@ def _remote_provision_profile() -> dict[str, object]:
         "arch": "x86_64",
         "vcpu": 2,
         "memory_mb": 2048,
-        "disk_gb": 20,
+        "disk_gb": REMOTE_ALLOCATION_DISK_GB,
         "boot_method": "disk-image",
         "kernel_source_ref": os.environ.get(_KERNEL_TREE_ENV, _DEFAULT_KERNEL_REF),
         "provider": {
@@ -154,6 +155,9 @@ def test_remote_provision_profile_validates() -> None:
     profile = ProvisioningProfile.parse(_remote_provision_profile())
     assert profile.boot_method.value == "disk-image"
     assert profile.provider.remote_libvirt.base_image_volume
+    # The profile's disk_gb must equal the allocation request's, or reconcile_profile_sizing
+    # rejects the spine at provision (#315). One constant keeps the two sites from drifting.
+    assert profile.disk_gb == REMOTE_ALLOCATION_DISK_GB
 
 
 def test_remote_provision_default_references_the_built_image_not_a_placeholder(

@@ -138,6 +138,10 @@ def render_domain_xml(
     os_el = ET.SubElement(domain, "os")
     ET.SubElement(os_el, "type", arch=profile.arch, machine=machine).text = "hvm"
     ET.SubElement(os_el, "boot", dev="hd")
+    # The vmcoreinfo fw_cfg device lets the crashed guest pass VMCOREINFO into QEMU's
+    # memory-only core-dump, so host_dump cores carry a build-id (ADR-0094 AC6 / #317).
+    features = ET.SubElement(domain, "features")
+    ET.SubElement(features, "vmcoreinfo", state="on")
     devices = ET.SubElement(domain, "devices")
     disk = ET.SubElement(devices, "disk", type="volume", device="disk")
     ET.SubElement(disk, "driver", name="qemu", type="qcow2")

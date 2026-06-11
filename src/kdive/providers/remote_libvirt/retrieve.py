@@ -346,7 +346,12 @@ class RemoteLibvirtRetrieve:
                 "remote host domain-capabilities probe failed for host_dump",
                 category=ErrorCategory.INFRASTRUCTURE_FAILURE,
             ) from exc
-        if _KDUMP_ZLIB_FORMAT_TOKEN not in _supported_dump_formats(caps_xml):
+        formats = _supported_dump_formats(caps_xml)
+        # A libvirt too old to emit the <dump> domcapability (e.g. 10.0) advertises no
+        # formats at all (None). Absence is "capability unknown" — proceed and let the
+        # dump itself fail — not "unsupported" (#316). Only fail closed when libvirt does
+        # advertise <dump> formats and kdump-zlib is genuinely absent.
+        if formats is not None and _KDUMP_ZLIB_FORMAT_TOKEN not in formats:
             raise CategorizedError(
                 "remote host does not advertise the kdump-zlib core-dump format; "
                 "host_dump needs a libvirt+QEMU that supports compressed memory-only dumps",
@@ -663,17 +668,21 @@ class RemoteLibvirtRetrieve:
         )
 
 
-def _supported_dump_formats(caps_xml: str) -> frozenset[str]:
+def _supported_dump_formats(caps_xml: str) -> frozenset[str] | None:
     """The core-dump format tokens the host advertises in domainCapabilities (tolerant parse).
 
-    The XML is host-emitted (untrusted), so it is parsed with ``defusedxml``; a malformed
-    document yields the empty set, which the caller treats as "kdump-zlib unsupported" — a
-    fail-closed CONFIGURATION_ERROR rather than an unreadable dump.
+    Returns ``None`` when the host emits no ``<dump>`` element at all — a libvirt too old
+    to advertise the capability (#316), which the caller treats as "unknown, proceed". A
+    present-but-empty ``<dump>`` yields the empty set (genuinely unsupported). The XML is
+    host-emitted (untrusted), so it is parsed with ``defusedxml``; a malformed document
+    yields the empty set — a fail-closed CONFIGURATION_ERROR rather than an unreadable dump.
     """
     try:
         root: ET.Element = _safe_fromstring(caps_xml)
     except ET.ParseError:
         return frozenset()
+    if root.find("./dump") is None:
+        return None
     return frozenset(
         value.text.strip()
         for value in root.findall("./dump/enum[@name='format']/value")
