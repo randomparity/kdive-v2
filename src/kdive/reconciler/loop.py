@@ -608,6 +608,7 @@ class Reconciler:
         idempotency_retention: timedelta = DEFAULT_IDEMPOTENCY_RETENTION,
         queue_max_wait: timedelta = DEFAULT_QUEUE_MAX_WAIT,
         heartbeat: Heartbeat | None = None,
+        heartbeat_tick: timedelta = timedelta(seconds=1),
         telemetry: ReconcilerTelemetry | None = None,
     ) -> None:
         self._pool = pool
@@ -619,6 +620,7 @@ class Reconciler:
         self._idempotency_retention = idempotency_retention
         self._queue_max_wait = queue_max_wait
         self._heartbeat = heartbeat
+        self._heartbeat_tick = heartbeat_tick.total_seconds()
         self._telemetry = telemetry or ReconcilerTelemetry.disabled()
 
     async def run_once(self) -> ReconcileReport:
@@ -636,9 +638,11 @@ class Reconciler:
     async def run(self, stop: asyncio.Event) -> None:
         """Loop :meth:`run_once` every ``interval``, surviving a transient pass error.
 
-        The ``/livez`` heartbeat is ticked at the **top of every pass** (ADR-0090 §5),
-        before the repairs run — so a single slow pass never makes the reconciler read
-        not-live; liveness tracks the poll cycle, not a repair. Each pass also opens a
+        The ``/livez`` heartbeat is bumped by a **background ticker** at
+        :attr:`_heartbeat_tick` cadence (ADR-0090 §5), *not* per pass — so a single slow
+        pass (an over-interval idempotency GC or a large domain sweep) never makes the
+        reconciler read not-live; liveness tracks the event loop, not a repair. A wedged
+        event loop stops the ticker too and ``/livez`` goes stale. Each pass also opens a
         span and records its duration plus the reconcile-lag (the gap between the
         scheduled and actual start, which grows when a pass overruns its interval).
 
@@ -646,11 +650,24 @@ class Reconciler:
         whole-pass failure (e.g. pool acquisition); it is logged and the loop continues
         — a durable reconciler must not die on one bad pass.
         """
+        ticker = self._start_heartbeat_ticker(stop)
+        try:
+            await self._pass_loop(stop)
+        finally:
+            if ticker is not None:
+                ticker.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ticker
+
+    def _start_heartbeat_ticker(self, stop: asyncio.Event) -> asyncio.Task[None] | None:
+        if self._heartbeat is None:
+            return None
+        return asyncio.create_task(_tick_until_stop(self._heartbeat, stop, self._heartbeat_tick))
+
+    async def _pass_loop(self, stop: asyncio.Event) -> None:
         interval = self._interval.total_seconds()
         next_due = time.monotonic()
         while not stop.is_set():
-            if self._heartbeat is not None:
-                self._heartbeat.tick()
             self._telemetry.observe_lag(time.monotonic() - next_due)
             with self._telemetry.pass_span() as span:
                 try:
@@ -661,3 +678,17 @@ class Reconciler:
             next_due = time.monotonic() + interval
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=interval)
+
+
+async def _tick_until_stop(heartbeat: Heartbeat, stop: asyncio.Event, interval: float) -> None:
+    """Bump ``heartbeat`` every ``interval`` seconds until ``stop`` is set or cancelled.
+
+    Runs concurrently with the pass loop so a long-running pass never starves the
+    ``/livez`` signal (ADR-0090 §5); a wedged event loop stops this ticker too, so a truly
+    stuck reconciler still reads not-live.
+    """
+    heartbeat.tick()
+    while not stop.is_set():
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        heartbeat.tick()

@@ -106,6 +106,24 @@ async def dequeue(
     return None if row is None else Job.model_validate(row)
 
 
+async def count_claimable(conn: AsyncConnection) -> int:
+    """Return the number of jobs a ``dequeue`` could currently claim (the queue depth).
+
+    Mirrors :func:`dequeue`'s eligibility predicate (``queued`` or lease-lapsed
+    ``running``, attempts remaining) without locking or claiming — a read-only depth
+    sample for the ``kdive.job.queue.depth`` gauge (ADR-0090 §5). It does not include
+    jobs paused by ``queue_paused`` state because pausing is a separate operator gate.
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT count(*) FROM jobs "
+            "WHERE (state = 'queued' OR (state = 'running' AND lease_expires_at < now())) "
+            "  AND attempt < max_attempts"
+        )
+        row = await cur.fetchone()
+    return int(row[0]) if row is not None else 0
+
+
 async def heartbeat(
     conn: AsyncConnection, job_id: UUID, worker_id: str, *, lease: timedelta = DEFAULT_LEASE
 ) -> bool:

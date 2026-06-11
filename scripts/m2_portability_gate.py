@@ -112,9 +112,11 @@ ALLOWED_FILES = frozenset(
         # *_telemetry modules build the per-job/per-pass spans + duration/queue-depth/lag
         # metrics over the facade providers, labelled only by job_kind/outcome (no
         # provider/tenant data). reconciler/loop.py (already allowlisted above) gains the
-        # per-pass span + heartbeat tick. None of it is provider-specific.
+        # per-pass span + heartbeat tick. queue.py gains a read-only count_claimable used
+        # by the queue-depth gauge. None of it is provider-specific.
         "src/kdive/jobs/worker.py",
         "src/kdive/jobs/worker_telemetry.py",
+        "src/kdive/jobs/queue.py",
         "src/kdive/reconciler/loop_telemetry.py",
     }
 )

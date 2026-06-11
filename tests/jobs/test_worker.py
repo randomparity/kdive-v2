@@ -625,55 +625,60 @@ def test_run_once_dequeues_when_ready_again(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_run_ticks_heartbeat_at_loop_granularity(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The /livez heartbeat ticks each poll pass, not per job — a long job stays live."""
+def test_background_ticker_keeps_livez_live_across_a_long_blocking_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run_once that blocks far past stale_after must NOT flip /livez stale (ADR-0090 §5).
 
-    async def _run() -> None:
-        from kdive.health import Heartbeat
-
-        clock = {"now": 0.0}
-        hb = Heartbeat(stale_after=10.0, now=lambda: clock["now"])
-        worker = _worker(
-            _unopened_pool(),
-            HandlerRegistry(),
-            worker_id="w1",
-            poll_interval=timedelta(milliseconds=1),
-            heartbeat=hb,
-        )
-        stop = asyncio.Event()
-        passes = 0
-
-        async def fake_run_once() -> Job | None:
-            nonlocal passes
-            passes += 1
-            clock["now"] += 1.0  # time advances, but each pass re-ticks the heartbeat
-            if passes >= 3:
-                stop.set()
-            return None
-
-        monkeypatch.setattr(worker, "run_once", fake_run_once)
-        await asyncio.wait_for(worker.run(stop), timeout=2)
-        assert hb.is_live()  # last tick is fresh against the advanced clock
-
-    asyncio.run(_run())
-
-
-def test_long_job_does_not_flip_livez_stale() -> None:
-    """A job that runs longer than stale_after must not make /livez go stale.
-
-    The loop ticks the heartbeat *before* dispatching the job, so a single long job
-    cannot starve the heartbeat — liveness tracks the loop, not the work unit.
+    The heartbeat is bumped by a background ticker, not by the claim loop, so a single
+    long-running job (here: a run_once that awaits past the stale bound) keeps the worker
+    live — the exact failure a per-job heartbeat would cause is avoided.
     """
 
     async def _run() -> None:
         from kdive.health import Heartbeat
 
-        clock = {"now": 0.0}
-        hb = Heartbeat(stale_after=5.0, now=lambda: clock["now"])
-        hb.tick()  # loop pass at t=0
-        clock["now"] = 100.0  # a 100s "build" elapses inside one dispatch
-        assert hb.is_live() is False  # without a re-tick the loop would read stale
-        hb.tick()  # the next poll pass re-ticks; liveness restored
-        assert hb.is_live() is True
+        # Real monotonic clock; a tiny stale bound and a sub-stale tick cadence.
+        hb = Heartbeat(stale_after=0.05)
+        worker = _worker(
+            _unopened_pool(),
+            HandlerRegistry(),
+            worker_id="w1",
+            heartbeat=hb,
+            heartbeat_tick=timedelta(milliseconds=5),
+        )
+        stop = asyncio.Event()
+        live_during_job: list[bool] = []
+
+        async def long_run_once() -> Job | None:
+            # A "build" far longer than stale_after; the background ticker must keep us live.
+            await asyncio.sleep(0.2)
+            live_during_job.append(hb.is_live())
+            stop.set()
+            return None
+
+        monkeypatch.setattr(worker, "run_once", long_run_once)
+        await asyncio.wait_for(worker.run(stop), timeout=2)
+        assert live_during_job == [True]  # still live after a job that outlasted stale_after
+
+    asyncio.run(_run())
+
+
+def test_no_heartbeat_means_no_ticker_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no heartbeat wired the run loop still works (no ticker task is started)."""
+
+    async def _run() -> None:
+        worker = _worker(_unopened_pool(), HandlerRegistry(), worker_id="w1")
+        stop = asyncio.Event()
+        ran = asyncio.Event()
+
+        async def fake_run_once() -> Job | None:
+            ran.set()
+            stop.set()
+            return None
+
+        monkeypatch.setattr(worker, "run_once", fake_run_once)
+        await asyncio.wait_for(worker.run(stop), timeout=1)
+        assert ran.is_set()
 
     asyncio.run(_run())

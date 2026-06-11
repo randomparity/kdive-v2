@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import contextlib
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING
 
+from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
 if TYPE_CHECKING:
-    from opentelemetry.metrics import Histogram, Meter, UpDownCounter
+    from opentelemetry.metrics import Histogram, Meter
     from opentelemetry.trace import Span, Tracer
 
 #: Histogram bucket bounds (seconds) for per-job duration — kdive jobs run from
@@ -40,17 +41,24 @@ class WorkerTelemetry:
     def __init__(self, *, tracer: Tracer, meter: Meter) -> None:
         self._tracer = tracer
         self._enabled = True
+        self._last_depth = 0
         self._duration: Histogram = meter.create_histogram(
             "kdive.job.duration",
             unit="s",
             description="Worker job-handler wall-clock duration.",
             explicit_bucket_boundaries_advisory=list(_DURATION_BUCKETS),
         )
-        self._queue_depth: UpDownCounter = meter.create_up_down_counter(
+        # An observable gauge reflecting the most recent observed queue depth — read on
+        # scrape, not accumulated, so it reports the current backlog (not a running sum).
+        meter.create_observable_gauge(
             "kdive.job.queue.depth",
+            callbacks=[self._observe_depth],
             unit="1",
-            description="Jobs claimable from the queue at the last poll.",
+            description="Claimable jobs in the queue at the last poll.",
         )
+
+    def _observe_depth(self, _options: CallbackOptions) -> Iterable[Observation]:
+        return [Observation(self._last_depth)]
 
     @classmethod
     def disabled(cls) -> WorkerTelemetry:
@@ -88,9 +96,9 @@ class WorkerTelemetry:
         self._duration.record(elapsed, labels)
 
     def observe_queue_depth(self, claimable: int) -> None:
-        """Record the queue depth observed at a poll (no-op when disabled)."""
+        """Cache the queue depth observed at a poll for the gauge to report on scrape."""
         if self._enabled:
-            self._queue_depth.add(claimable)
+            self._last_depth = claimable
 
 
 class JobSpan:

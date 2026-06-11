@@ -53,15 +53,19 @@ class Worker:
         poll_interval: timedelta = timedelta(seconds=1),
         secret_registry: SecretRegistry,
         heartbeat: Heartbeat | None = None,
+        heartbeat_tick: timedelta = timedelta(seconds=1),
         readiness: Callable[[], Awaitable[bool]] | None = None,
         telemetry: WorkerTelemetry | None = None,
     ) -> None:
         """Build a worker.
 
         Args:
-            heartbeat: The ``/livez`` loop heartbeat ticked once per poll pass (ADR-0090
-                §5), so a long-running job never makes the worker read not-live. ``None``
-                in tests / a process without the aux listener.
+            heartbeat: The ``/livez`` loop heartbeat bumped by a background ticker at
+                ``heartbeat_tick`` cadence (ADR-0090 §5), so a long-running job never makes
+                the worker read not-live. ``None`` in tests / a process without the aux
+                listener.
+            heartbeat_tick: The interval between background heartbeat bumps; must be well
+                under the heartbeat's ``stale_after`` so a healthy loop never reads stale.
             readiness: A coroutine returning whether this process's backends are reachable
                 (the worker/reconciler set: PG + MinIO, no OIDC). When it returns ``False``
                 the worker pauses dequeuing new jobs while the backend is down rather than
@@ -94,6 +98,7 @@ class Worker:
         self._poll_interval = poll_interval
         self._secret_registry = secret_registry
         self._heartbeat = heartbeat
+        self._heartbeat_tick = heartbeat_tick.total_seconds()
         self._readiness = readiness
         self._telemetry = telemetry or WorkerTelemetry.disabled()
 
@@ -114,7 +119,7 @@ class Worker:
             if await queue.is_queue_paused(conn):
                 return None
             job = await queue.dequeue(conn, self._worker_id, lease=self._lease)
-        self._telemetry.observe_queue_depth(0 if job is None else 1)
+            self._telemetry.observe_queue_depth(await queue.count_claimable(conn))
         if job is None:
             return None
         handler = self._registry.get(job.kind)
@@ -135,21 +140,37 @@ class Worker:
     async def run(self, stop: asyncio.Event) -> None:
         """Loop :meth:`run_once`, sleeping ``poll_interval`` when idle or after an error.
 
-        The ``/livez`` heartbeat is ticked at the **top of every poll pass** (ADR-0090
-        §5), *before* dispatching a job — so a single long-running job (a kernel build can
-        run for minutes) never starves the heartbeat and makes the worker read not-live.
-        Liveness tracks the loop, not the work unit; a genuinely wedged loop stops ticking
-        and goes stale, while a busy-but-progressing worker stays live.
+        The ``/livez`` heartbeat is bumped by a **background ticker task** at
+        :attr:`_heartbeat_tick` cadence (ADR-0090 §5), *not* per job — so a single
+        long-running job (a kernel build runs for minutes, far past the stale bound) never
+        starves the heartbeat and makes the worker read not-live. Liveness tracks the
+        event loop, not the work unit: while the loop is scheduling the ticker keeps it
+        live; a genuinely wedged event loop stops the ticker too and ``/livez`` goes stale.
+        A stuck *job* (vs a stuck loop) is caught by job-duration metrics and the lease
+        fence, not by liveness.
 
         A transient per-iteration error (e.g. a brief database outage in ``dequeue``)
         is logged and the loop continues — a durable worker must not die on one bad
         iteration. The sleep after an error avoids a hot error-loop while the
         dependency recovers.
         """
+        ticker = self._start_heartbeat_ticker(stop)
+        try:
+            await self._claim_loop(stop)
+        finally:
+            if ticker is not None:
+                ticker.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ticker
+
+    def _start_heartbeat_ticker(self, stop: asyncio.Event) -> asyncio.Task[None] | None:
+        if self._heartbeat is None:
+            return None
+        return asyncio.create_task(_tick_until_stop(self._heartbeat, stop, self._heartbeat_tick))
+
+    async def _claim_loop(self, stop: asyncio.Event) -> None:
         poll = self._poll_interval.total_seconds()
         while not stop.is_set():
-            if self._heartbeat is not None:
-                self._heartbeat.tick()
             try:
                 job = await self.run_once()
             except Exception:  # noqa: BLE001 - a durable worker survives a transient per-iteration error
@@ -251,3 +272,16 @@ def _redacted(redactor: Redactor, value: str) -> str:
 async def _sleep_until_stop(stop: asyncio.Event, timeout: float) -> None:
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(stop.wait(), timeout=timeout)
+
+
+async def _tick_until_stop(heartbeat: Heartbeat, stop: asyncio.Event, interval: float) -> None:
+    """Bump ``heartbeat`` every ``interval`` seconds until ``stop`` is set or cancelled.
+
+    Runs concurrently with the claim loop so a long-running job never starves the
+    ``/livez`` signal (ADR-0090 §5); a wedged event loop stops this ticker too, so a truly
+    stuck worker still reads not-live.
+    """
+    heartbeat.tick()
+    while not stop.is_set():
+        await _sleep_until_stop(stop, interval)
+        heartbeat.tick()

@@ -71,7 +71,8 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
     # admin-CLI net-new read tools (secrets.list/fixtures.list + their app wiring and the
     # value-free scope_refs accessor), the ADR-0090 §5 server telemetry middleware, and the
     # ADR-0090 §5 worker/reconciler telemetry + aux health gate (#267: worker.py, the two
-    # *_telemetry modules); extending it is a deliberate, reviewed decision.
+    # *_telemetry modules, queue.count_claimable); extending it is a deliberate, reviewed
+    # decision.
     assert (
         frozenset(
             {
@@ -110,6 +111,7 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/db/schema/0022_egress_probe_guests.sql",
                 "src/kdive/jobs/worker.py",
                 "src/kdive/jobs/worker_telemetry.py",
+                "src/kdive/jobs/queue.py",
                 "src/kdive/reconciler/loop_telemetry.py",
             }
         )

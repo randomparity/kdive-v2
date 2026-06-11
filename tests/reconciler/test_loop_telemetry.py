@@ -69,30 +69,32 @@ def test_pass_span_records_duration_and_emits_span() -> None:
     assert spans and spans[0].name == "reconcile/pass"
 
 
-def test_run_ticks_heartbeat_each_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_background_ticker_keeps_livez_live_across_a_long_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pass that blocks far past stale_after must NOT flip /livez stale (ADR-0090 §5)."""
+
     async def _run() -> None:
-        clock = {"now": 0.0}
-        hb = Heartbeat(stale_after=10.0, now=lambda: clock["now"])
+        hb = Heartbeat(stale_after=0.05)
         reconciler = Reconciler(
             pool=_FakePool(),  # ty: ignore[invalid-argument-type]
             reaper=NullReaper(),
             interval=timedelta(milliseconds=1),
             heartbeat=hb,
+            heartbeat_tick=timedelta(milliseconds=5),
         )
         stop = asyncio.Event()
-        passes = 0
+        live_during_pass: list[bool] = []
 
-        async def fake_run_once() -> ReconcileReport:
-            nonlocal passes
-            passes += 1
-            clock["now"] += 5.0  # a slow pass; the next loop pass re-ticks
-            if passes >= 3:
-                stop.set()
+        async def long_run_once() -> ReconcileReport:
+            await asyncio.sleep(0.2)  # a slow pass far longer than stale_after
+            live_during_pass.append(hb.is_live())
+            stop.set()
             return _empty_report()
 
-        monkeypatch.setattr(reconciler, "run_once", fake_run_once)
+        monkeypatch.setattr(reconciler, "run_once", long_run_once)
         await asyncio.wait_for(reconciler.run(stop), timeout=2)
-        assert hb.is_live()
+        assert live_during_pass == [True]
 
     asyncio.run(_run())
 

@@ -63,7 +63,30 @@ def test_job_span_error_sets_error_status() -> None:
     assert spans[0].status.status_code.name == "ERROR"
 
 
-def test_queue_depth_is_recorded() -> None:
+def _gauge_value(reader: InMemoryMetricReader, name: str) -> float | int | None:
+    from opentelemetry.sdk.metrics.export import NumberDataPoint
+
+    data = reader.get_metrics_data()
+    assert data is not None
+    for rm in data.resource_metrics:
+        for sm in rm.scope_metrics:
+            for metric in sm.metrics:
+                if metric.name == name:
+                    points = list(metric.data.data_points)
+                    last = points[-1] if points else None
+                    assert last is None or isinstance(last, NumberDataPoint)
+                    return last.value if last is not None else None
+    return None
+
+
+def test_queue_depth_gauge_reports_last_observed_not_a_running_sum() -> None:
     telemetry, reader, _exporter = _telemetry()
+    telemetry.observe_queue_depth(3)
+    assert _gauge_value(reader, "kdive.job.queue.depth") == 3
+    # A second observation REPLACES, not accumulates — it is a gauge, not a counter.
     telemetry.observe_queue_depth(1)
-    assert "kdive.job.queue.depth" in _metric_names(reader)
+    assert _gauge_value(reader, "kdive.job.queue.depth") == 1
+
+
+def test_queue_depth_disabled_is_noop() -> None:
+    WorkerTelemetry.disabled().observe_queue_depth(5)  # must not raise
