@@ -228,3 +228,26 @@ def test_secret_ref_aggregate_carries_no_per_tenant_ref(migrated_url: str) -> No
         assert item.data["status"] == "fail"
 
     asyncio.run(_run())
+
+
+def test_factory_build_failure_is_error_verdict_and_audited(migrated_url: str) -> None:
+    def _failing_factory(provider: str | None) -> DiagnosticsService:
+        raise RuntimeError("malformed KDIVE_* secret value")
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}))
+            resp = await diagnostics.run_diagnostics(pool, _failing_factory, ctx)
+        # A build/config fault is a distinct error verdict, not an unhandled crash or a fail.
+        assert resp.status == "ok"
+        item = resp.items[0]
+        assert item.data["status"] == "error"
+        assert item.data["fix"] is None
+        assert resp.data["has_error"] == "true"
+        assert resp.data["has_failure"] == "false"
+        # The served attempt is still audited.
+        rows = await _platform_audit_rows(migrated_url)
+        assert len(rows) == 1
+        assert rows[0][1] == "platform_operator"
+
+    asyncio.run(_run())

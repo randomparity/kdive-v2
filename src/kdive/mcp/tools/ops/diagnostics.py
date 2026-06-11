@@ -22,8 +22,8 @@ from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
-from kdive.diagnostics.checks import CheckResult
-from kdive.diagnostics.service import DiagnosticsService
+from kdive.diagnostics.checks import CheckResult, CheckStatus
+from kdive.diagnostics.service import DiagnosticsReport, DiagnosticsService
 from kdive.domain.errors import ErrorCategory
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
@@ -76,9 +76,35 @@ async def run_diagnostics(
                 pool, ctx, tool=_TOOL, scope=ALL_PROJECTS_SCOPE, args=_audit_args(provider)
             )
             return _denied()
-        report = await service_factory(provider).run()
+        report = await _build_and_run(service_factory, provider)
         await _audit_run(pool, ctx, provider)
         return _verdict(report.results, report.has_failure, report.has_error)
+
+
+async def _build_and_run(
+    service_factory: ServiceFactory, provider: str | None
+) -> DiagnosticsReport:
+    """Build the service for ``provider`` and run it; map a build failure to an ``error``.
+
+    Assembling the service can fail before any check runs (e.g. a malformed ``KDIVE_*``
+    secret value the registry cannot parse). That is a check-cannot-run condition, not a
+    contract ``fail`` — so it surfaces as one ``error`` result rather than an unhandled
+    exception, keeping the served call diagnosable and auditable (the verdict that explains
+    breakage must not 500 on the configuration it exists to inspect).
+    """
+    try:
+        service = service_factory(provider)
+    except Exception:  # noqa: BLE001 - a build/config fault is an error verdict, not a crash
+        return DiagnosticsReport(
+            results=[
+                CheckResult(
+                    check_id=_OBJECT_ID,
+                    status=CheckStatus.ERROR,
+                    detail="diagnostics could not be assembled; check the KDIVE_* configuration",
+                )
+            ]
+        )
+    return await service.run()
 
 
 def _audit_args(provider: str | None) -> dict[str, object]:
