@@ -69,7 +69,8 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
     # gdbstub reconciler reset, the ADR-0087 config-registry migration of the agnostic-core
     # readers, the ADR-0089 operator-CLI audit-attribution touch, and the ADR-0089 §6 M2.2
     # admin-CLI net-new read tools (secrets.list/fixtures.list + their app wiring and the
-    # value-free scope_refs accessor); extending it is a deliberate, reviewed decision.
+    # value-free scope_refs accessor), and the ADR-0090 §5 server telemetry middleware;
+    # extending it is a deliberate, reviewed decision.
     assert (
         frozenset(
             {
@@ -103,6 +104,7 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/security/secrets/secret_registry.py",
                 "src/kdive/mcp/tools/ops/diagnostics.py",
                 "src/kdive/mcp/app.py",
+                "src/kdive/mcp/middleware.py",
             }
         )
         == ALLOWED_FILES

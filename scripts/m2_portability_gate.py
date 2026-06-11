@@ -92,6 +92,12 @@ ALLOWED_FILES = frozenset(
         # is the same authz-gated/audited ops surface as its siblings above.
         "src/kdive/mcp/tools/ops/diagnostics.py",
         "src/kdive/mcp/app.py",
+        # Server telemetry middleware (#266, ADR-0090 §5): a provider-agnostic platform
+        # change adding TelemetryMiddleware (a span per MCP tool call + per-tool RED
+        # metrics) at the dispatch boundary and registering it in build_app. The labels
+        # are restricted to the tool name + outcome (no provider/tenant data); none of it
+        # is provider-specific.
+        "src/kdive/mcp/middleware.py",
     }
 )
 
