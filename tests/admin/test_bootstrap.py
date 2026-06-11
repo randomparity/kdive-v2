@@ -2,11 +2,13 @@ import asyncio
 from decimal import Decimal
 from pathlib import Path
 
+import psycopg
 import pytest
 
 from kdive.admin.bootstrap import (
     default_fixture_files,
     install_fixtures,
+    migrate,
     seed_demo,
     seed_project_statements,
 )
@@ -72,6 +74,28 @@ def test_default_fixture_files_include_catalog() -> None:
 
     assert "manifest.yaml" in fixture_files
     assert "profiles/console-ready_x86_64.yaml" in fixture_files
+
+
+def test_migrate_seeds_baseline_rootfs_idempotently(
+    monkeypatch: pytest.MonkeyPatch, postgres_url: str
+) -> None:
+    # migrate applies the schema then seeds the packaged baseline as `defined` rows
+    # (deploy ordering migrate → seed); a re-run adds no rows.
+    with psycopg.connect(postgres_url, autocommit=True) as conn:
+        conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+
+    monkeypatch.delenv("KDIVE_FIXTURE_CATALOG_PATH", raising=False)
+    migrate(postgres_url)
+    with psycopg.connect(postgres_url, autocommit=True) as conn:
+        first = conn.execute(
+            "SELECT count(*) FROM image_catalog WHERE state = 'defined'"
+        ).fetchone()
+    assert first is not None and first[0] >= 1
+
+    migrate(postgres_url)
+    with psycopg.connect(postgres_url, autocommit=True) as conn:
+        second = conn.execute("SELECT count(*) FROM image_catalog").fetchone()
+    assert second is not None and second[0] == first[0]
 
 
 def test_install_fixtures_refuses_overwrite_without_force(tmp_path: Path) -> None:
