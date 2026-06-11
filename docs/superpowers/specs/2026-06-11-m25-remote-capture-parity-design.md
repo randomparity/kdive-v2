@@ -126,15 +126,23 @@ returns; holding a stream open for the System's life would pin a worker slot). T
 **reconciler process**, supervised by a new `reconcile_once` repair class:
 
 - **Streaming** runs as a long-lived per-System task in the reconciler process: open
-  `virDomainOpenConsole`, append decoded output to a rolling worker-local buffer (bounded;
-  rotate/upload on size threshold — S3 has no append), reconnect on stream drop.
-- **Supervision** is the new reconcile-pass class: each `reconcile_once` pass ensures a live
-  collector exists for every running remote System (start missing, restart dead, reap
-  collectors for Systems that are gone), reported per-class like the existing reaper/image
-  sweeps. The pass is the supervisor; it does not itself stream.
-- **Finalization:** on capture or teardown the rolling buffer is flushed, redacted, and
-  registered as the console artifact — the same artifact shape local produces from its `<log>`
-  tee, so downstream consumers (`classify_console`, artifact search) are provider-agnostic.
+  `virDomainOpenConsole`, append decoded output to a bounded rolling buffer, reconnect on stream
+  drop. On a size threshold the buffer rotates by uploading a **numbered, redacted part object**
+  (S3 has no append; redaction runs at the rotation boundary, not only at finalize, so mid-stream
+  parts never carry raw console secrets). A crash marker in the stream forces an immediate flush
+  so the panic tail is the least-lost part.
+- **Attach + supervision:** the single leader-locked reconciler runs a **continuous attach-watcher**
+  that promptly (sub-tick) opens a stream for any running remote System lacking a live collector —
+  decoupled from the 30s repair pass so early-boot console isn't gapped by a reconcile interval.
+  The new `reconcile_once` class does only **liveness/reap** (restart a dead stream, reap a gone
+  System), reported per-class like the existing reaper/image sweeps; it never streams itself.
+  Because `reconcile_once` also runs on-demand in the **server** (`ops.reconcile_now`), the class
+  and the attach-watcher share one predicate — periodic reconciler loop **and** hosting leader —
+  so neither the server nor a non-leader replica opens duplicate streams (see ADR-0095).
+- **Finalization:** on capture or teardown the tail part is flushed+redacted and the numbered
+  parts are assembled into the **single** console artifact `classify_console`/`read_console_log`
+  expect — the same shape local produces from its `<log>` tee, so downstream consumers
+  (`classify_console`, artifact search) are provider-agnostic.
 
 This adds a fourth reconcile-pass class alongside provider reaping and image sweeps, and a new
 reconciler→provider seam (a console-collector port) following the `register_with_reaper`
@@ -207,8 +215,9 @@ Three independent issues (parallel `/work-issue` agents) + one serialized capsto
 
 - **>5 GiB cores:** multipart upload for host_dump and kdump alike — a shared follow-up, out of
   M2.5 scope.
-- **Console buffer durability:** if the reconciler restarts mid-stream, output between the last
-  rotation-upload and the restart is lost. Acceptable for M2.5 (boot + most of the run survive);
-  a fully durable console journal is a follow-up if it proves necessary.
+- **Console buffer durability:** a hard reconciler kill loses the unflushed buffer since the
+  last rotation — and the at-risk bytes are the crash tail, the part that matters most. The
+  crash-marker flush + small rotation threshold narrow the window; host_dump/kdump remain the
+  durable crash-core path. A fully durable console journal is a follow-up if it proves necessary.
 - **`#198` final disposition:** decided post-parity, informed by the capstone — keep local as
   production default vs. reclassify as opt-in dev/CI/reference provider.
