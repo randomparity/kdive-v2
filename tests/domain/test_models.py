@@ -219,6 +219,7 @@ def test_job_kind_covers_the_async_tool_surface() -> None:
         "force_crash",
         "power",
         "capture_vmcore",
+        "image_build",
     }
 
 
