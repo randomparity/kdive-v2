@@ -27,6 +27,13 @@ operator error from turning a multi-megabyte value into a redaction needle that 
 def read_secret_file(root: Path, ref: str) -> str:
     """Read a secret file's value, confined to ``root``, size-capped, newline-stripped.
 
+    ``ref`` is resolved **relative to** ``root``: a bare root-relative ref like
+    ``clientcert.pem`` resolves to ``root/clientcert.pem`` (not the process CWD — #314), and an
+    absolute ref is honored only if it lands under ``root``. Both forms are then confined to
+    ``root``, so a relative-symlink farm under the root (e.g. a Kubernetes Secret volume's
+    ``..data`` indirection) resolves correctly while a traversal or absolute path escaping the
+    root is still rejected before any read.
+
     Does **not** register the value. :meth:`FileRefBackend.resolve` registers after this read;
     callers that need the raw value without registration (the ADR-0075 quarantine pre-write)
     call this directly.
@@ -34,7 +41,7 @@ def read_secret_file(root: Path, ref: str) -> str:
     Raises:
         PathSafetyError: ``ref`` escapes ``root``, does not exist, or exceeds the cap.
     """
-    resolved = confine_to_root(Path(ref), allowed_root=root)
+    resolved = confine_to_root(root / Path(ref), allowed_root=root)
     if not resolved.is_file():
         raise PathSafetyError("secret file does not exist")
     if resolved.stat().st_size > _MAX_SECRET_FILE_BYTES:
