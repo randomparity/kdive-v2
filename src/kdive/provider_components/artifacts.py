@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import NamedTuple
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -92,6 +93,13 @@ class HeadResult(NamedTuple):
     size_bytes: int
     checksum_sha256: str | None
     etag: str
+
+
+class ObjectListing(NamedTuple):
+    """One listed object key and its store last-modified time."""
+
+    key: str
+    last_modified: datetime
 
 
 class PresignedUpload(NamedTuple):

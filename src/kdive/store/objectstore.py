@@ -305,6 +305,39 @@ class ObjectStore:
         except (BotoCoreError, ClientError) as err:
             raise _infrastructure_error("delete_object", key, err) from err
 
+    def list_image_objects(self) -> list[artifact_types.ObjectListing]:
+        """Return every object under the ``images/`` prefix with its store mtime (paginated).
+
+        Backs the reconciler's leaked-image sweep: the mtime lets the sweep compare an
+        orphan object's age against the publish grace in Postgres ``now()``.
+
+        Raises:
+            CategorizedError: the listing fails
+                (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
+        """
+        listings: list[artifact_types.ObjectListing] = []
+        try:
+            paginator = self._client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self._bucket, Prefix="images/"):
+                for obj in page.get("Contents", []):
+                    listings.append(
+                        artifact_types.ObjectListing(
+                            key=obj["Key"], last_modified=obj["LastModified"]
+                        )
+                    )
+        except (BotoCoreError, ClientError) as err:
+            raise _infrastructure_error("list_objects_v2", "images/", err) from err
+        return listings
+
+    def head_present(self, key: str) -> bool:
+        """Return whether an object exists at ``key`` (a HEAD presence check).
+
+        Raises:
+            CategorizedError: any non-404 store error
+                (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
+        """
+        return self.head(key) is not None
+
 
 def register_artifact_row(
     stored: artifact_types.StoredArtifact, *, owner_kind: str, owner_id: UUID

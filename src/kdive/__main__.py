@@ -252,6 +252,7 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
             pool,
             provider_composition.build_reconciler_reaper(),
             upload_store=upload_store,
+            image_store=upload_store,
             resetter=provider_composition.build_reconciler_transport_resetter(),
             heartbeat=heartbeat,
             telemetry=ReconcilerTelemetry(

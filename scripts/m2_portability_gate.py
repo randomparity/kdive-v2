@@ -146,6 +146,13 @@ ALLOWED_FILES = frozenset(
         # provider-specific logic — it reuses the IMAGE_PRIVATE_* core settings and the existing
         # publish two-write; the new settings live in config/core_settings.py (already core).
         "src/kdive/services/images/upload.py",
+        # M2.4 reconciler image sweeps (#287, ADR-0092/0093): three provider-agnostic,
+        # deadline-guarded drift sweeps over the image_catalog + image-prefix objects (leaked
+        # objects with no row, dangling rows whose object is gone, expired private images —
+        # reference-guarded + extend-fenced). The sweeps consume the narrow ImageSweepStore port
+        # (an ObjectStore satisfies it) and the catalog table; no provider-specific logic.
+        # reconciler/loop.py (already allowlisted) appends the three _RepairSpecs + report counts.
+        "src/kdive/reconciler/images.py",
     }
 )
 

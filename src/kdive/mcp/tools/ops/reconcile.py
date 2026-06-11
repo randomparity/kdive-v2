@@ -24,6 +24,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools.ops._auth import actor_for, audit_platform_denial, held_platform_roles
 from kdive.providers.reaping import InfraReaper
+from kdive.reconciler.images import ImageSweepStore
 from kdive.reconciler.loop import ReconcileReport, UploadStore, reconcile_once
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
@@ -41,6 +42,7 @@ async def reconcile_now(
     *,
     reaper: InfraReaper,
     upload_store: UploadStore | None,
+    image_store: ImageSweepStore | None = None,
 ) -> ToolResponse:
     """Run one ``reconcile_once`` pass on demand; return its per-class repair summary.
 
@@ -82,7 +84,9 @@ async def reconcile_now(
         # reconcile_once isolates every per-repair failure into report.failures and does
         # not re-raise it, so there is no CategorizedError to catch here; a rare whole-pass
         # error (e.g. pool acquisition) propagates, matching the periodic loop's contract.
-        report = await reconcile_once(pool, reaper, upload_store=upload_store)
+        report = await reconcile_once(
+            pool, reaper, upload_store=upload_store, image_store=image_store
+        )
         async with pool.connection() as conn, conn.transaction():
             await audit.record_platform(
                 conn,
@@ -115,6 +119,9 @@ def _reconcile_response(report: ReconcileReport) -> ToolResponse:
             "leaked_domains": str(report.leaked_domains),
             "idempotency_keys_gc_count": str(report.idempotency_keys_gc_count),
             "abandoned_uploads": str(report.abandoned_uploads),
+            "leaked_images": str(report.leaked_images),
+            "dangling_images": str(report.dangling_images),
+            "expired_private_images": str(report.expired_private_images),
             "failures": ",".join(report.failures),
         },
     )
@@ -135,12 +142,27 @@ def resolve_upload_store() -> UploadStore | None:
         return None
 
 
+def resolve_image_store() -> ImageSweepStore | None:
+    """Resolve the image-sweep store from the ``KDIVE_S3_*`` env, or ``None`` if unconfigured.
+
+    Mirrors the periodic reconciler's wiring: no S3 env means the image sweeps stay off,
+    exactly as they do for the periodic pass, so the on-demand pass repairs the same set.
+    """
+    from kdive.store.objectstore import object_store_from_env
+
+    try:
+        return object_store_from_env()
+    except CategorizedError:
+        return None
+
+
 def register_with_reaper(
     app: FastMCP,
     pool: AsyncConnectionPool,
     *,
     reaper: InfraReaper,
     upload_store: UploadStore | None,
+    image_store: ImageSweepStore | None = None,
 ) -> None:
     """Register ``ops.reconcile_now`` with explicitly assembled repair ports."""
 
@@ -152,5 +174,9 @@ def register_with_reaper(
     async def ops_reconcile_now() -> ToolResponse:
         """Run one reconcile pass on demand; return the repair summary. Platform operator."""
         return await reconcile_now(
-            pool, current_context(), reaper=reaper, upload_store=upload_store
+            pool,
+            current_context(),
+            reaper=reaper,
+            upload_store=upload_store,
+            image_store=image_store,
         )

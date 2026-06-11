@@ -90,6 +90,7 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
         pool,
         reaper=reaper,
         upload_store=ops_reconcile_tools.resolve_upload_store(),
+        image_store=ops_reconcile_tools.resolve_image_store(),
     ),
     _plain(ops_resources_tools.register),
     _plain(allocations.register),

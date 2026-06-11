@@ -73,7 +73,8 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
     # ADR-0090 §5 worker/reconciler telemetry + aux health gate (#267: worker.py, the two
     # *_telemetry modules, queue.count_claimable), and the ADR-0092 M2.4 publish/register +
     # IMAGE_BUILD job touch (#285: the publish service, the handler + payload, the jobs.kind
-    # widen); extending it is a deliberate, reviewed decision.
+    # widen), and the ADR-0092/0093 M2.4 reconciler image sweeps (#287: reconciler/images.py,
+    # the three deadline-guarded drift sweeps); extending it is a deliberate, reviewed decision.
     assert (
         frozenset(
             {
@@ -122,6 +123,7 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/jobs/payloads.py",
                 "src/kdive/db/schema/0024_image_build_job_kind.sql",
                 "src/kdive/services/images/upload.py",
+                "src/kdive/reconciler/images.py",
             }
         )
         == ALLOWED_FILES

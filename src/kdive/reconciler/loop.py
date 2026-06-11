@@ -3,7 +3,8 @@
 A :class:`Reconciler` owns an ``AsyncConnectionPool`` and an :class:`InfraReaper`, and
 runs :func:`reconcile_once` on an interval. Each pass runs the repairs — allocation
 expiry, orphaned System, abandoned (zombie) job, dead DebugSession, leaked libvirt domain,
-and idempotency-key GC — each on a fresh
+idempotency-key GC, and (when an image store is wired) the three image-catalog sweeps:
+leaked image objects, dangling image rows, and expired private images — each on a fresh
 pooled connection, each fencing its writes, each isolated so one failing repair does not
 starve the others. The expiry sweep runs first so an allocation it reclaims orphans its
 System in the same pass. Time predicates use Postgres ``now()`` (never a Python clock).
@@ -27,6 +28,8 @@ from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+import kdive.config as config
+from kdive.config.core_settings import IMAGE_PUBLISH_GRACE
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ALLOCATIONS
 from kdive.domain.errors import ErrorCategory
@@ -36,6 +39,18 @@ from kdive.jobs import queue
 from kdive.jobs.payloads import PayloadValidationError, SystemPayload, run_id_from_payload
 from kdive.providers.reaping import InfraReaper
 from kdive.providers.transport_reset import NullResetter, TransportResetter
+from kdive.reconciler.images import (
+    ImageSweepStore,
+)
+from kdive.reconciler.images import (
+    repair_dangling_images as _repair_dangling_images,
+)
+from kdive.reconciler.images import (
+    repair_expired_private_images as _repair_expired_private_images,
+)
+from kdive.reconciler.images import (
+    repair_leaked_images as _repair_leaked_images,
+)
 from kdive.reconciler.loop_telemetry import ReconcilerTelemetry
 from kdive.reconciler.provider_reaping import repair_leaked_domains as _repair_leaked_domains
 from kdive.reconciler.provider_reaping import (
@@ -69,6 +84,10 @@ DEFAULT_QUEUE_MAX_WAIT = timedelta(hours=24)
 # Idempotency-key rows older than this are GC'd by the reconciler (ADR-0040 §3): the
 # append-only request/renew retry-dedup store has no other reaper.
 DEFAULT_IDEMPOTENCY_RETENTION = timedelta(days=7)
+# Fallback image publish-deadline grace when the config setting is unset (its declared
+# default is the same 3600s). A pending image row (or an orphan object with no row) is
+# protected from the leaked/dangling image sweeps until this window past pending_since/mtime.
+DEFAULT_IMAGE_PUBLISH_GRACE = timedelta(seconds=3600)
 
 # Allocation states past which an allocation no longer holds a lease to expire.
 _TERMINAL_ALLOCATION_STATES = (
@@ -130,6 +149,9 @@ class ReconcileReport:
     promoted_allocations: int = 0
     queue_timeouts: int = 0
     leaked_probe_guests: int = 0
+    leaked_images: int = 0
+    dangling_images: int = 0
+    expired_private_images: int = 0
 
 
 def _repair_plan(
@@ -137,9 +159,11 @@ def _repair_plan(
     reaper: InfraReaper,
     resetter: TransportResetter,
     upload_store: UploadStore | None,
+    image_store: ImageSweepStore | None,
     debug_session_stale_after: timedelta,
     idempotency_retention: timedelta,
     queue_max_wait: timedelta,
+    image_publish_grace: timedelta,
 ) -> tuple[_RepairSpec, ...]:
     repairs = [
         _RepairSpec("expired_allocations", _sweep_expired_allocations),
@@ -163,6 +187,23 @@ def _repair_plan(
             _RepairSpec(
                 "abandoned_uploads",
                 lambda conn: _repair_abandoned_uploads(conn, upload_store),
+            )
+        )
+    if image_store is not None:
+        repairs.extend(
+            (
+                _RepairSpec(
+                    "leaked_images",
+                    lambda conn: _repair_leaked_images(conn, image_store, image_publish_grace),
+                ),
+                _RepairSpec(
+                    "dangling_images",
+                    lambda conn: _repair_dangling_images(conn, image_store, image_publish_grace),
+                ),
+                _RepairSpec(
+                    "expired_private_images",
+                    lambda conn: _repair_expired_private_images(conn, image_store),
+                ),
             )
         )
     return tuple(repairs)
@@ -528,6 +569,7 @@ async def reconcile_once(
     *,
     resetter: TransportResetter = _NULL_RESETTER,
     upload_store: UploadStore | None = None,
+    image_store: ImageSweepStore | None = None,
     debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
     idempotency_retention: timedelta = DEFAULT_IDEMPOTENCY_RETENTION,
     queue_max_wait: timedelta = DEFAULT_QUEUE_MAX_WAIT,
@@ -556,9 +598,11 @@ async def reconcile_once(
             reaper=reaper,
             resetter=resetter,
             upload_store=upload_store,
+            image_store=image_store,
             debug_session_stale_after=debug_session_stale_after,
             idempotency_retention=idempotency_retention,
             queue_max_wait=queue_max_wait,
+            image_publish_grace=_image_publish_grace(),
         ),
     )
 
@@ -574,7 +618,18 @@ async def reconcile_once(
         promoted_allocations=counts["promoted_allocations"],
         queue_timeouts=counts["queue_timeouts"],
         leaked_probe_guests=counts["leaked_probe_guests"],
+        leaked_images=counts.get("leaked_images", 0),
+        dangling_images=counts.get("dangling_images", 0),
+        expired_private_images=counts.get("expired_private_images", 0),
     )
+
+
+def _image_publish_grace() -> timedelta:
+    """Resolve the image publish-deadline grace from config (default 3600s)."""
+    seconds = config.get(IMAGE_PUBLISH_GRACE)
+    if seconds is None:
+        return DEFAULT_IMAGE_PUBLISH_GRACE
+    return timedelta(seconds=seconds)
 
 
 async def _run_repair_plan(
@@ -603,6 +658,7 @@ class Reconciler:
         *,
         resetter: TransportResetter = _NULL_RESETTER,
         upload_store: UploadStore | None = None,
+        image_store: ImageSweepStore | None = None,
         interval: timedelta = DEFAULT_INTERVAL,
         debug_session_stale_after: timedelta = DEFAULT_DEBUG_SESSION_STALE_AFTER,
         idempotency_retention: timedelta = DEFAULT_IDEMPOTENCY_RETENTION,
@@ -615,6 +671,7 @@ class Reconciler:
         self._reaper = reaper
         self._resetter = resetter
         self._upload_store = upload_store
+        self._image_store = image_store
         self._interval = interval
         self._debug_session_stale_after = debug_session_stale_after
         self._idempotency_retention = idempotency_retention
@@ -630,6 +687,7 @@ class Reconciler:
             self._reaper,
             resetter=self._resetter,
             upload_store=self._upload_store,
+            image_store=self._image_store,
             debug_session_stale_after=self._debug_session_stale_after,
             idempotency_retention=self._idempotency_retention,
             queue_max_wait=self._queue_max_wait,
