@@ -381,13 +381,14 @@ three `_RepairSpec` lambdas), and inject it at the reconciler construction in
 - **Single migration owner:** `0023` authored only in /1 with the full schema (no second migration in /5/6).
 - **Placeholder scan:** no TBD/TODO; every task carries concrete paths, signatures, SQL, and falsifiable acceptance. Per-task line-level TDD steps are authored by each issue's `/work-issue` agent (stated in the header), consistent with the repo's milestone workflow.
 
-### Spec deltas (reconcile the spec before/while implementing)
+### Spec deltas (reconciled into the spec 2026-06-11)
 
-Planning surfaced details the spec under-specified; the plan resolves them and the spec
-(`2026-06-10-m24-image-rootfs-lifecycle-design.md`) should be updated to match:
+Planning surfaced details the spec under-specified; the plan resolved them and the spec
+(`2026-06-10-m24-image-rootfs-lifecycle-design.md`) was updated to match — spec and plan now
+agree on all three:
 
 1. **`defined` state + nullable `object_key`.** The spec's `state` is `pending`/`registered` only and `object_key` is NOT NULL. Baseline rootfs bytes (~GiB) cannot ship in the package, so a fresh install cannot seed object-backed rows — the plan adds a `defined` (metadata, no object) state that `images build`/`publish` realizes to `registered`.
 2. **Materialize wires the object fetch.** Object-store-backed materialization is a `not wired yet` stub today; the spec's "resolver cutover" is actually implementing that fetch (download `object_key` → local cache).
 3. **Profiles stay file-based.** The spec says the YAML catalog is removed wholesale, but the fixture catalog also holds `profiles` (not modeled by `image_catalog`). Only the rootfs catalog moves to DB this milestone; `profiles/` and `load_fixture_catalog`'s profile path remain.
 
-These are feasibility corrections, not scope additions — they keep the milestone bounded. Fold them into the spec (a one-pass edit) so spec and plan agree.
+These are feasibility corrections, not scope additions — they keep the milestone bounded.
