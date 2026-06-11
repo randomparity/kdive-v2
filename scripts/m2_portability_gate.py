@@ -118,6 +118,15 @@ ALLOWED_FILES = frozenset(
         "src/kdive/jobs/worker_telemetry.py",
         "src/kdive/jobs/queue.py",
         "src/kdive/reconciler/loop_telemetry.py",
+        # M2.4 image_catalog (#282, ADR-0092/0093): the DB-backed image catalog that replaces the
+        # read-only YAML rootfs catalog as the single source of truth. A provider-agnostic
+        # platform addition — the single M2.4 migration's full public+private schema, the
+        # ImageCatalogEntry model + ImageVisibility/ImageState enums in models.py (already
+        # allowlisted), and the IMAGE_CATALOG repository binding (a plain Repository over the new
+        # table). No provider-specific logic; the provider materialize cutover lives outside
+        # CORE_PREFIXES (providers/local_libvirt/...).
+        "src/kdive/db/schema/0023_image_catalog.sql",
+        "src/kdive/db/repositories.py",
     }
 )
 

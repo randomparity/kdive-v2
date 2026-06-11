@@ -113,6 +113,8 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/jobs/worker_telemetry.py",
                 "src/kdive/jobs/queue.py",
                 "src/kdive/reconciler/loop_telemetry.py",
+                "src/kdive/db/schema/0023_image_catalog.sql",
+                "src/kdive/db/repositories.py",
             }
         )
         == ALLOWED_FILES

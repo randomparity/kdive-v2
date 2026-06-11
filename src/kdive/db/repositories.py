@@ -25,6 +25,7 @@ from kdive.domain.models import (
     CostClassCoefficient,
     DebugSession,
     DomainModel,
+    ImageCatalogEntry,
     Investigation,
     Job,
     LedgerEntry,
@@ -279,6 +280,14 @@ JOBS = StatefulRepository(
     json_columns=frozenset({"payload", "authorizing", "failure_context"}),
 )
 ARTIFACTS = Repository(Artifact, "artifacts")
+
+# The image catalog (ADR-0092). A plain `Repository`: the publish/register state machine
+# (defined → pending → registered, re-arming `pending_since`) is owned by the images publish
+# service, not the `can_transition`-guarded `update_state`, so it is not a StatefulRepository.
+# `provenance` is jsonb; `capabilities` is a Postgres text[] psycopg adapts from a list directly.
+IMAGE_CATALOG = Repository(
+    ImageCatalogEntry, "image_catalog", json_columns=frozenset({"provenance"})
+)
 
 # Accounting tables. COST_CLASS_COEFFICIENTS/QUOTAS upsert every non-key column;
 # BUDGETS upserts only `limit_kcu` so a re-set_budget never clobbers `spent_kcu` (the
