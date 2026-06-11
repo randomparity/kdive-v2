@@ -43,12 +43,16 @@ build, and an agent that wants to apply kdive's kdump options to a kernel it bui
 
 2. **Distribution — one seeded object-store artifact.** A new `build_config_catalog` DB table
    (`name` PK, `object_key`, `sha256`, `description`) records published configs. At bootstrap,
-   `_seed_build_configs()` content-hashes `provisioning/configs/kdump.config`, writes the bytes to a
-   reserved object-store key if that hash is absent (via the object-store client, not the
-   project-scoped `artifacts` table — its TTL/owner-scoping per ADR-0093 is the wrong lifecycle for
-   a global seeded input), and upserts the `name="kdump"` row. The
-   table is the single runtime source of truth; the repo file is the build-time source of truth;
-   the content hash binds them. A deployed cluster can serve the fragment over MCP without a
+   `_seed_build_configs()` content-hashes `provisioning/configs/kdump.config` and, if the stored
+   `sha256` differs, writes the bytes to a **fixed reserved key per name** (e.g.
+   `build-configs/kdump`) via the object-store client — not the project-scoped `artifacts` table,
+   whose TTL/owner-scoping (ADR-0093) is the wrong lifecycle for a global seeded input — then
+   upserts the `name="kdump"` row. A fixed per-name key means an edited fragment **overwrites in
+   place**, leaving no orphaned object (the alternative, a content-addressed key, would dedup but
+   strand the prior object with no prune path — and unlike rootfs in ADR-0092/0093 there is no
+   reconciler sweep for these). The stored `sha256` still gates the write (unchanged bytes = no-op)
+   and binds the row to the object. The table is the single runtime source of truth; the repo file
+   is the build-time source of truth. A deployed cluster can serve the fragment over MCP without a
    filesystem copy that could drift.
 
 3. **Resolution — catalog config refs, with an implicit default.** Add `"catalog"` to
@@ -57,6 +61,16 @@ build, and an agent that wants to apply kdive's kdump options to a kernel it bui
    (mirroring the rootfs catalog fetch already wired in `materialize.py`). When a build profile
    names **no** config ref, the build resolves the canonical `name="kdump"` entry automatically;
    an explicit ref overrides. A kdump-capable kernel is the zero-config path.
+
+   **In-scope schema change.** `ServerBuildProfile.config` is today a **required** field
+   (`config: ComponentRef`, `profiles/build.py`), so an absent config is rejected at
+   `BuildProfile.parse` time, never reaching a resolver. The implicit default therefore requires
+   making the field optional (`ComponentRef | None`) and adding default-resolution at the build
+   boundary that substitutes the `name="kdump"` catalog ref when the field is `None`. This touches
+   the profile model, the MCP build-tool input schema, and profile (de)serialization — not just the
+   provider resolver. Existing server profiles that name a config are unaffected (the field stays
+   accepted); this only *admits* its omission. That blast radius is the price of the zero-config
+   default; the rejected "explicit ref" alternative avoids it.
 
 4. **Agent retrieval — inline MCP read tool.** A `buildconfig.get name="kdump"` read tool on the
    catalog surface returns the fragment bytes inline (≈500 B), its `sha256`, and a one-line
@@ -73,8 +87,16 @@ build, and an agent that wants to apply kdive's kdump options to a kernel it bui
 
 - The build-flow change (`defconfig` → `merge_config.sh` → `olddefconfig`) lands symmetrically in
   both providers and is the one behavioral change to an existing seam. The preflight
-  (`_missing_config_groups`) now validates a *merged* result, so it becomes a real gate instead
-  of an always-fail check.
+  (`_missing_config_groups`) now validates a *merged* result instead of always failing — but it
+  gates only its two OR-groups (`CONFIG_CRASH_DUMP` + DWARF/BTF debuginfo), **not** full
+  kdump-correctness. The fragment carries more options (`KEXEC`, `PROC_VMCORE`, …) than the
+  preflight checks, and `make olddefconfig` silently **drops** any fragment option whose dependency
+  the base `defconfig` does not satisfy (the same tolerance noted in decision 5). A dropped
+  non-preflight option (e.g. `PROC_VMCORE`) yields a kernel that passes the build but cannot kdump.
+  The build therefore adds a **fragment-survival check** after the merge: every requested fragment
+  symbol must appear in the final `.config` (`merge_config.sh` emits a "Value requested for X not in
+  final .config" warning on a drop — the build fails on it). Full kdump-correctness beyond symbol
+  presence remains the live run's responsibility (the acceptance gate below).
 - The dead `/configs/kdump.config` references in the integration seed and fixtures are replaced
   with the catalog ref (or omission, relying on the default). This removes a phantom path.
 - One new DB table and one migration; one new seed function alongside `_seed_baseline_rootfs`;
@@ -82,8 +104,12 @@ build, and an agent that wants to apply kdive's kdump options to a kernel it bui
 - The implicit default changes the build contract: omitting a config ref was a
   `CONFIGURATION_ERROR`, and now resolves the `kdump` entry. Callers that relied on the error to
   catch a missing config no longer get it; this is intentional — the default is kdump-capable.
-- Unblocks the `kdump`/`gdbstub`/`console` methods on the from-source System, whose four-method
-  live run on real hardware is the milestone's acceptance gate (operator runbook, not CI).
+- Unblocks the from-source build itself (today it dies on the missing `/configs` path), which all
+  three remaining methods need to produce a kernel at all. The kdump fragment is what lets that
+  build pass its own kdump/debuginfo preflight; `gdbstub` additionally relies on the fragment's
+  DWARF debuginfo options for symbolization, and `console` needs neither (it is a boot-cmdline
+  concern). The four-method live run on real hardware is the milestone's acceptance gate (operator
+  runbook, not CI).
 
 ## Alternatives considered
 

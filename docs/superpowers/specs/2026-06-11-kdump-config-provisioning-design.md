@@ -78,14 +78,15 @@ New table **`build_config_catalog`**:
 | `description` | text        | human label                            |
 
 `_seed_build_configs(conn, store)`, called from `admin/bootstrap.py` alongside
-`_seed_baseline_rootfs`: read `provisioning/configs/kdump.config`, compute sha256, and if no row
-with that hash exists, write the bytes to a **reserved object-store key** via the object-store
-client — not the project-scoped `artifacts` table, whose owner-scoping and required TTL (ADR-0093)
-are the wrong lifecycle for a global, non-expiring seeded input — exactly as `image_catalog`
-manages its own `object_key`. Then upsert the `name="kdump"` row with the new
-`object_key`/`sha256`. Idempotent and content-addressed:
-re-seeding identical bytes is a no-op; an edited fragment republishes under a new hash and updates
-the row.
+`_seed_baseline_rootfs`: read `provisioning/configs/kdump.config`, compute sha256, and if the
+stored row's `sha256` differs (or no row exists), write the bytes to a **fixed reserved key per
+name** (`build-configs/kdump`) via the object-store client — not the project-scoped `artifacts`
+table, whose owner-scoping and required TTL (ADR-0093) are the wrong lifecycle for a global,
+non-expiring seeded input — then upsert the `name="kdump"` row with that `object_key`/`sha256`.
+The fixed per-name key means an edited fragment **overwrites in place**: no orphaned object is
+left behind (a content-addressed key would dedup but strand the prior object, and there is no
+reconciler prune sweep for build configs as there is for rootfs in ADR-0092/0093). Idempotent:
+re-seeding unchanged bytes is a no-op (the `sha256` gate skips the write).
 
 ### 3. Resolution & the build-flow change
 
@@ -96,8 +97,13 @@ the row.
   fetches the entry's bytes via an injected fetch callback (parallel to the rootfs
   `catalog_fetch` in `materialize.py`), verifying sha256. Non-`local`/non-`catalog` kinds still
   raise `CONFIGURATION_ERROR`.
-- **Implicit default.** When the build profile names no config ref, the build resolves the
-  `name="kdump"` catalog entry. An explicit ref overrides.
+- **Implicit default — schema change.** `ServerBuildProfile.config` is today **required**
+  (`config: ComponentRef`, `profiles/build.py:70`); an absent config is rejected at
+  `BuildProfile.parse` time and never reaches a resolver. The default therefore makes the field
+  optional (`ComponentRef | None`) and substitutes the `name="kdump"` catalog ref when it is
+  `None`, at the build boundary. This touches the profile model, the MCP build-tool input schema,
+  and profile (de)serialization — not only the provider resolver. Profiles that name a config are
+  unaffected; this only admits omission. An explicit ref always overrides.
 - **Build flow** (both providers, in checkout/staging):
 
   ```
@@ -105,13 +111,22 @@ the row.
   make defconfig                          # base from the kernel tree
   merge_config.sh .config <fragment>      # overlay kdump fragment (resolved bytes)
   make olddefconfig                       # resolve against this tree
-  _missing_config_groups(.config)         # existing preflight, now on the merged result
+  fragment-survival check                 # every requested fragment symbol present in final .config
+  _missing_config_groups(.config)         # existing preflight (CRASH_DUMP + debuginfo) on the merge
   make
   ```
 
   `_stage_config` is replaced by a `_merge_config` step that writes the fragment to a temp file and
   runs `defconfig` + `merge_config.sh`. The fragment bytes come from the resolved ref (catalog or
   local), not a fixed path.
+- **Fragment-survival check.** `make olddefconfig` silently drops any fragment option whose
+  dependency the base `defconfig` does not satisfy. The two-group preflight (`CONFIG_CRASH_DUMP` +
+  debuginfo) does not cover the rest of the fragment, so a dropped `CONFIG_PROC_VMCORE` (etc.)
+  would build a kernel that passes the build but cannot kdump. After the merge the build asserts
+  every requested fragment symbol appears in the final `.config` — `merge_config.sh` emits a
+  `Value requested for X not in final .config` line on a drop; the build fails on it. The preflight
+  is a coarse gate; this check is what makes the *fragment* meaningful. Full kdump-correctness
+  beyond symbol presence stays the live run's responsibility.
 
 ### 4. Agent retrieval
 
@@ -133,7 +148,7 @@ built-with fragment share a sha256.
 | `_seed_build_configs` (bootstrap) | Publish + upsert, idempotent | repo file, object store, DB |
 | build-config catalog repository/resolver | `name` → bytes (sha256-verified) | DB, object store |
 | `_resolve_config_ref` (both providers) | Admit `catalog` refs + implicit default | resolver |
-| `_merge_config` (both providers) | `defconfig` + `merge_config.sh` + `olddefconfig` | kernel tree |
+| `_merge_config` (both providers) | `defconfig` + `merge_config.sh` + `olddefconfig` + fragment-survival check | kernel tree |
 | `buildconfig.get` MCP tool | Inline agent download | resolver |
 
 Each unit has one purpose and a narrow interface; the resolver is the single seam shared by the
@@ -143,9 +158,10 @@ two build providers and the read tool, which is what keeps "same bytes everywher
 
 - Resolver: unknown `name` → `CONFIGURATION_ERROR` (`details` names the missing entry, never its
   bytes). sha256 mismatch on fetch → `INFRASTRUCTURE_FAILURE` (object store drifted from the row).
-- Build: `make defconfig` or `merge_config.sh` non-zero → `BUILD_FAILURE`. Merged result still
-  missing a required group → existing `CONFIGURATION_ERROR` with `missing_any_of` (now reachable
-  only on a genuinely broken fragment/base, which the unit tests guard against).
+- Build: `make defconfig` or `merge_config.sh` non-zero → `BUILD_FAILURE`. A fragment symbol
+  dropped by `make olddefconfig` (fragment-survival check fails) → `CONFIGURATION_ERROR` whose
+  `details` names the dropped symbol(s), never the fragment bytes. Merged result still missing a
+  required preflight group → existing `CONFIGURATION_ERROR` with `missing_any_of`.
 - Seed: object-store put failure → fail bootstrap loudly (a half-seeded catalog is worse than an
   absent one); the content-hash check makes a retried bootstrap safe.
 
@@ -153,6 +169,9 @@ two build providers and the read tool, which is what keeps "same bytes everywher
 
 Unit:
 - `_missing_config_groups` on a real merged `defconfig`+fragment result (committed fixture).
+- Fragment-survival check: a fragment symbol present in the final `.config` passes; a fragment
+  symbol dropped by `olddefconfig` (simulated via a fixture where a dependency is absent) →
+  `CONFIGURATION_ERROR` naming the dropped symbol.
 - Resolver: catalog fetch returns bytes, sha256 verified; mismatch → `INFRASTRUCTURE_FAILURE`;
   unknown name → `CONFIGURATION_ERROR`.
 - Seed idempotency: re-seed identical bytes = no put, no row change; edited bytes = new
@@ -177,8 +196,10 @@ Suggested issue split (each independently shippable, guardrails green per commit
    `build_config_catalog`, `_seed_build_configs`, repository/resolver, unit tests. No build change
    yet (resolver usable, default not wired).
 2. **Build-flow change, both providers.** `_merge_config` (`defconfig`+`merge_config.sh`+
-   `olddefconfig`), catalog branch in `_resolve_config_ref`, `composition.py` source sets, implicit
-   default, preflight-on-merged tests. Replaces `_stage_config`.
+   `olddefconfig`+fragment-survival check), catalog branch in `_resolve_config_ref`,
+   `composition.py` source sets, the implicit-default schema change (`ServerBuildProfile.config`
+   → optional + default resolution; updates the MCP build-tool input schema), preflight-on-merged
+   tests. Replaces `_stage_config`.
 3. **Agent download.** `buildconfig.get` MCP tool + tool-doc/generated-doc regen.
 4. **Fixture/seed cleanup + runbook.** Replace dead `/configs/kdump.config` references; document
    the four-method live run on System B.
