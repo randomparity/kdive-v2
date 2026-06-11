@@ -77,6 +77,26 @@ def test_secret_in_span_attribute_is_redacted_before_export() -> None:
     assert REDACTION in rendered
 
 
+def test_secret_in_span_event_is_redacted_before_export() -> None:
+    registry = _registry()
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(orx.RedactingSpanExporter(exporter, registry)))
+    tracer = provider.get_tracer("kdive.test.redact.span.event")
+
+    with tracer.start_as_current_span("op") as span:
+        try:
+            raise ValueError(f"failed with token={_SECRET}")
+        except ValueError as exc:
+            span.record_exception(exc)
+
+    spans = exporter.get_finished_spans()
+    assert spans, "expected an exported span"
+    rendered = "".join(str(dict(event.attributes or {})) for event in spans[0].events)
+    assert _SECRET not in rendered, "exception-event message/stacktrace must be redacted"
+    assert REDACTION in rendered
+
+
 class _CapturingMetricExporter(MetricExporter):
     def __init__(self) -> None:
         super().__init__()

@@ -79,7 +79,12 @@ class RedactingLogProcessor(LogRecordProcessor):
 
 
 class RedactingSpanExporter(SpanExporter):
-    """Wrap a span exporter, scrubbing registered secrets from span attributes."""
+    """Wrap a span exporter, scrubbing registered secrets from a span before export.
+
+    Both span attributes **and span events** (ADR-0090 §4) are scrubbed: an
+    ``exception`` event's ``exception.message``/``exception.stacktrace`` routinely
+    carries secret-bearing data, so events must be redacted alongside attributes.
+    """
 
     def __init__(self, inner: SpanExporter, registry: SecretRegistry) -> None:
         self._inner = inner
@@ -93,6 +98,11 @@ class RedactingSpanExporter(SpanExporter):
                 # BoundedAttributes is a mapping; replace the private store in place so
                 # the exported ReadableSpan carries the redacted values.
                 span._attributes = _redact_attributes(redactor, attributes)  # noqa: SLF001
+            for event in span.events:
+                if event.attributes:
+                    event._attributes = _redact_attributes(  # noqa: SLF001
+                        redactor, event.attributes
+                    )
         return self._inner.export(spans)
 
     def shutdown(self) -> None:
