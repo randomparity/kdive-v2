@@ -139,6 +139,13 @@ ALLOWED_FILES = frozenset(
         "src/kdive/jobs/handlers/image_build.py",
         "src/kdive/jobs/payloads.py",
         "src/kdive/db/schema/0024_image_build_job_kind.sql",
+        # M2.4 private upload path (#286, ADR-0093): the provider-agnostic project-private
+        # upload registration service. Under the project advisory lock it enforces the
+        # per-project count/bytes quota fail-closed, validates the quarantined object's guest
+        # contract, then delegates to the publish service with visibility='private'. No
+        # provider-specific logic — it reuses the IMAGE_PRIVATE_* core settings and the existing
+        # publish two-write; the new settings live in config/core_settings.py (already core).
+        "src/kdive/services/images/upload.py",
     }
 )
 

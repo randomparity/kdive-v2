@@ -121,6 +121,7 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/jobs/handlers/image_build.py",
                 "src/kdive/jobs/payloads.py",
                 "src/kdive/db/schema/0024_image_build_job_kind.sql",
+                "src/kdive/services/images/upload.py",
             }
         )
         == ALLOWED_FILES
