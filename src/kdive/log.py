@@ -24,7 +24,8 @@ from contextvars import ContextVar, Token
 from kdive.security.secrets.redaction import SecretRedactionFilter
 from kdive.security.secrets.secret_registry import SecretRegistry
 
-_FIELDS: tuple[str, ...] = ("request_id", "job_id", "principal", "object_id", "transition")
+CONTEXT_FIELDS: tuple[str, ...] = ("request_id", "job_id", "principal", "object_id", "transition")
+_FIELDS = CONTEXT_FIELDS
 
 _CONTEXT: dict[str, ContextVar[str | None]] = {
     field: ContextVar(f"kdive_log_{field}", default=None) for field in _FIELDS
@@ -115,6 +116,17 @@ def configure_logging(level: str = "INFO", *, secret_registry: SecretRegistry) -
     handler.addFilter(ContextFilter())
     _set_redaction_filter(handler, secret_registry)
     root.addHandler(handler)
+
+
+def remove_stdlib_floor() -> None:
+    """Detach the stdlib JSON floor handler from the root logger.
+
+    Called once the OTel log pipeline (which carries its own stdout JSON exporter) is
+    built, so stdout does not emit each record twice. Idempotent: a no-op when the
+    floor handler is absent.
+    """
+    root = logging.getLogger()
+    root.handlers = [h for h in root.handlers if not isinstance(h, _KdiveHandler)]
 
 
 def _set_redaction_filter(handler: logging.Handler, registry: SecretRegistry) -> None:

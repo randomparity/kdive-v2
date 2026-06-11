@@ -31,6 +31,13 @@ def _str(raw: str) -> str:
     return raw
 
 
+def _ratio(raw: str) -> float:
+    value = float(raw)
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"must be in [0, 1], got {value}")
+    return value
+
+
 def _always(env: Mapping[str, str]) -> bool:
     return True
 
@@ -241,6 +248,39 @@ FAULT_INJECT = Setting(
     help="Presence (1/true/yes) registers the fault-injection provider.",
 )
 
+OTEL_ENABLED = Setting(
+    name="KDIVE_OTEL_ENABLED",
+    parse=_str,
+    group="otel",
+    processes=RUNNABLE,
+    help="Presence (1/true/yes) enables OTLP export of logs/metrics/traces (default off).",
+)
+OTEL_EXPORTER_OTLP_ENDPOINT = Setting(
+    name="KDIVE_OTEL_EXPORTER_OTLP_ENDPOINT",
+    parse=_str,
+    group="otel",
+    processes=RUNNABLE,
+    help="OTLP/gRPC collector endpoint; required when KDIVE_OTEL_ENABLED is set.",
+    suggest="a gRPC collector endpoint, e.g. http://otel-collector:4317",
+)
+OTEL_TRACES_SAMPLER_RATIO = Setting(
+    name="KDIVE_OTEL_TRACES_SAMPLER_RATIO",
+    parse=_ratio,
+    default="0.1",
+    group="otel",
+    processes=RUNNABLE,
+    help="Parent-based ratio trace sampler ratio in [0, 1] (default 0.1).",
+    suggest="a float in [0, 1], e.g. 0.1",
+)
+OTEL_SERVICE_NAMESPACE = Setting(
+    name="KDIVE_OTEL_SERVICE_NAMESPACE",
+    parse=_str,
+    default="kdive",
+    group="otel",
+    processes=RUNNABLE,
+    help="service.namespace resource attribute on all emitted telemetry.",
+)
+
 SETTINGS = [
     DATABASE_URL,
     HTTP_HOST,
@@ -266,4 +306,8 @@ SETTINGS = [
     INSTALL_STAGING,
     FIXTURE_CATALOG_PATH,
     FAULT_INJECT,
+    OTEL_ENABLED,
+    OTEL_EXPORTER_OTLP_ENDPOINT,
+    OTEL_TRACES_SAMPLER_RATIO,
+    OTEL_SERVICE_NAMESPACE,
 ]
