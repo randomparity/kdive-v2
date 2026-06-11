@@ -71,6 +71,7 @@ def _request(
     visibility: str = "public",
     owner: str | None = None,
     expires_at: datetime | None = None,
+    digest: str = _DIGEST,
 ) -> PublishRequest:
     return PublishRequest(
         provider="local-libvirt",
@@ -78,7 +79,7 @@ def _request(
         arch="x86_64",
         format="qcow2",
         root_device="/dev/vda",
-        digest=_DIGEST,
+        digest=digest,
         capabilities=("console", "kdump"),
         provenance={"releasever": "43"},
         visibility=visibility,
@@ -220,6 +221,95 @@ def test_publish_fails_when_object_does_not_head(migrated_url: str, tmp_path: Pa
             assert err.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
             row = (await IMAGE_CATALOG.list_all(conn))[0]
             assert row.state is ImageState.PENDING
+
+    asyncio.run(_run())
+
+
+def test_publish_rejects_source_digest_mismatch(migrated_url: str, tmp_path: Path) -> None:
+    # The declared digest disagrees with the source bytes: publish must fail-fast (a registered
+    # row with a mismatched digest would be permanently unfetchable), leaving an adoptable pending.
+    store = _FakeStore()
+    source = _qcow2_source(tmp_path)
+    wrong_digest = "sha256:" + "f" * 64
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            with pytest.raises(CategorizedError) as err:
+                await publish_image(
+                    conn, store, request=_request(digest=wrong_digest), source=source
+                )
+            assert err.value.category is ErrorCategory.CONFIGURATION_ERROR
+            rows = await IMAGE_CATALOG.list_all(conn)
+            assert len(rows) == 1
+            assert rows[0].state is ImageState.PENDING
+            assert store.puts == []  # rejected before any object write
+
+    asyncio.run(_run())
+
+
+def test_two_owners_same_identity_do_not_collide(migrated_url: str, tmp_path: Path) -> None:
+    # Two projects publish a private image of the same (provider, name, arch). They must NOT adopt
+    # each other's row and must NOT share one object key — cross-tenant isolation.
+    store = _FakeStore()
+    source = _qcow2_source(tmp_path)
+    expires = _DT + timedelta(days=7)
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            a = await publish_image(
+                conn,
+                store,
+                request=_request(visibility="private", owner="proj-a", expires_at=expires),
+                source=source,
+            )
+            b = await publish_image(
+                conn,
+                store,
+                request=_request(visibility="private", owner="proj-b", expires_at=expires),
+                source=source,
+            )
+            assert a.id != b.id
+            assert a.object_key != b.object_key
+            assert a.owner == "proj-a"
+            assert b.owner == "proj-b"
+            rows = await IMAGE_CATALOG.list_all(conn)
+            assert len([r for r in rows if r.state is ImageState.REGISTERED]) == 2
+            # Each owner resolves only its own private image.
+            resolved_a = await resolve_rootfs(conn, "local-libvirt", "base", project="proj-a")
+            resolved_b = await resolve_rootfs(conn, "local-libvirt", "base", project="proj-b")
+            assert resolved_a is not None and resolved_a.id == a.id
+            assert resolved_b is not None and resolved_b.id == b.id
+
+    asyncio.run(_run())
+
+
+def test_public_publish_does_not_adopt_a_private_pending(migrated_url: str, tmp_path: Path) -> None:
+    # A crashed private pending row for an identity must not be adopted by a public publish of the
+    # same (provider, name, arch) — the match is scoped by visibility/owner.
+    source = _qcow2_source(tmp_path)
+    expires = _DT + timedelta(days=7)
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            failing = _FakeStore(fail_put=True)
+            with pytest.raises(CategorizedError):
+                await publish_image(
+                    conn,
+                    failing,
+                    request=_request(visibility="private", owner="proj-a", expires_at=expires),
+                    source=source,
+                )
+            private_pending = (await IMAGE_CATALOG.list_all(conn))[0]
+
+            healthy = _FakeStore()
+            public = await publish_image(conn, healthy, request=_request(), source=source)
+            assert public.id != private_pending.id
+            assert public.visibility is ImageVisibility.PUBLIC
+            # The private pending row is untouched (still pending, still owned by proj-a).
+            still = await IMAGE_CATALOG.get(conn, private_pending.id)
+            assert still is not None
+            assert still.state is ImageState.PENDING
+            assert still.owner == "proj-a"
 
     asyncio.run(_run())
 
