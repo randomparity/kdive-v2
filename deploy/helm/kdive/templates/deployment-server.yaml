@@ -14,6 +14,8 @@ spec:
       labels:
         app: {{ include "kdive.fullname" . }}-server
         {{- include "kdive.labels" . | nindent 8 }}
+      annotations:
+        {{- include "kdive.scrapeAnnotations" 9464 | nindent 8 }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -26,13 +28,11 @@ spec:
           env:
             - name: KDIVE_HTTP_HOST
               value: "0.0.0.0"
+            {{- include "kdive.auxEnv" 9464 | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: {{ include "kdive.fullname" . }}-config
           ports:
             - containerPort: 8000
-          livenessProbe:
-            # M2.1 scope: TCP liveness only (ADR-0088 decision 5). Readiness is M2.3.
-            tcpSocket:
-              port: 8000
-            initialDelaySeconds: 5
+            - containerPort: 9464
+          {{- include "kdive.auxProbes" 9464 | nindent 10 }}

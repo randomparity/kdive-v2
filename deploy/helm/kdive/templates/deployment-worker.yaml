@@ -14,6 +14,8 @@ spec:
       labels:
         app: {{ include "kdive.fullname" . }}-worker
         {{- include "kdive.labels" . | nindent 8 }}
+      annotations:
+        {{- include "kdive.scrapeAnnotations" 9465 | nindent 8 }}
     spec:
       securityContext:
         # fsGroup so the non-root worker UID owns the mounted PVCs (ADR-0088 §3).
@@ -25,9 +27,14 @@ spec:
           image: {{ include "kdive.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["worker"]
+          env:
+            {{- include "kdive.auxEnv" 9465 | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: {{ include "kdive.fullname" . }}-config
+          ports:
+            - containerPort: 9465
+          {{- include "kdive.auxProbes" 9465 | nindent 10 }}
           volumeMounts:
             - name: build
               mountPath: /var/lib/kdive/build

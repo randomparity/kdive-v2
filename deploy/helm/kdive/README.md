@@ -35,6 +35,22 @@ helm dependency build deploy/helm/kdive
 helm install kdive deploy/helm/kdive --set bundledBackends=true --set demoAcknowledged=true
 ```
 
+## Health probes & scrape (ADR-0090 §5)
+
+Every Deployment wires `livenessProbe` → `/livez` and `readinessProbe` → `/readyz` on
+the process's aux port (`server` 9464, `worker` 9465, `reconciler` 9466), and carries
+`prometheus.io/scrape` pod annotations pointing a pull-based collector at `/metrics` on
+that port. Liveness tracks the loop being alive, readiness tracks the process's own
+backend set — a failing `/readyz` (a backend down) withdraws/gates the pod but does
+**not** trip liveness, so a live-but-not-ready pod is never killed.
+
+The aux listener binds `0.0.0.0:<port>` *inside* the pod (set per Deployment via
+`KDIVE_HEALTH_BIND_ADDR`, overriding the loopback registry default) so the node kubelet
+and the scrape can reach it. **No Service fronts the aux port** — only the server's MCP
+`8000` is exposed — so the unauthenticated `/readyz`/`/metrics` stay pod-local. The
+network boundary is their access control; scope it with a NetworkPolicy if your scrape
+source is not pod-local.
+
 ## Secrets
 
 `config.*` renders into a plain ConfigMap, so it is for **non-secret** configuration

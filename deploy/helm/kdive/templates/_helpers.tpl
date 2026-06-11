@@ -42,6 +42,42 @@ back to the operator-provided .Values.config.* on the external-backend path.
 {{- end -}}
 
 {{/*
+Aux health/metrics wiring (ADR-0090 §5). Each process exposes /livez /readyz /metrics
+on a per-process aux port (server 9464, worker 9465, reconciler 9466). The listener
+binds 0.0.0.0:<port> INSIDE the pod via an explicit KDIVE_HEALTH_BIND_ADDR env (env
+wins over the shared configMap) so the kubelet/scrape can reach it; no Service fronts
+the aux port, so it stays pod-local / non-public. Liveness probes /livez (loop-alive)
+and readiness probes /readyz (dependency set) — a failing /readyz withdraws/gates the
+pod but must never let liveness kill a live-but-not-ready pod. Call with a port arg:
+`{{ include "kdive.auxEnv" 9464 }}`.
+*/}}
+{{- define "kdive.auxEnv" -}}
+- name: KDIVE_HEALTH_BIND_ADDR
+  value: "0.0.0.0:{{ . }}"
+{{- end -}}
+
+{{- define "kdive.auxProbes" -}}
+livenessProbe:
+  httpGet:
+    path: /livez
+    port: {{ . }}
+  initialDelaySeconds: 5
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: {{ . }}
+  initialDelaySeconds: 5
+  periodSeconds: 10
+{{- end -}}
+
+{{- define "kdive.scrapeAnnotations" -}}
+prometheus.io/scrape: "true"
+prometheus.io/path: /metrics
+prometheus.io/port: "{{ . }}"
+{{- end -}}
+
+{{/*
 Render gate: bundledBackends is ephemeral/demo-only, so it must be co-set with
 demoAcknowledged. A free-standing fail in this partial would never execute (Helm
 only renders define blocks from _*.tpl when included), so the check lives in a

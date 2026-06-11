@@ -14,6 +14,8 @@ spec:
       labels:
         app: {{ include "kdive.fullname" . }}-reconciler
         {{- include "kdive.labels" . | nindent 8 }}
+      annotations:
+        {{- include "kdive.scrapeAnnotations" 9466 | nindent 8 }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -23,8 +25,15 @@ spec:
           image: {{ include "kdive.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["reconciler"]
+          env:
+            {{- include "kdive.auxEnv" 9466 | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: {{ include "kdive.fullname" . }}-config
-          # No Service, no ports, no probe: k8s restarts the pod on process exit
-          # (process supervision is the M2.1 liveness contract, ADR-0088 §5).
+          # No Service fronts the reconciler; its aux listener (ADR-0090 §5) is reached
+          # only by the pod-local kubelet/scrape. /readyz gates rollout progression (it
+          # withdraws nothing), /livez tracks the reconcile loop — a not-ready reconciler
+          # is not killed by liveness.
+          ports:
+            - containerPort: 9466
+          {{- include "kdive.auxProbes" 9466 | nindent 10 }}
