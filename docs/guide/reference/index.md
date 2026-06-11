@@ -34,6 +34,13 @@
 | [`debug.set_breakpoint`](debug.md#debugset_breakpoint) | `partial` |
 | [`debug.start_session`](debug.md#debugstart_session) | `partial` |
 | [`fixtures.list`](fixtures.md#fixtureslist) | `implemented` |
+| [`images.build`](images.md#imagesbuild) | `implemented` |
+| [`images.delete`](images.md#imagesdelete) | `implemented` |
+| [`images.extend`](images.md#imagesextend) | `implemented` |
+| [`images.list`](images.md#imageslist) | `implemented` |
+| [`images.prune_expired`](images.md#imagesprune_expired) | `implemented` |
+| [`images.publish`](images.md#imagespublish) | `implemented` |
+| [`images.upload`](images.md#imagesupload) | `implemented` |
 | [`introspect.from_vmcore`](introspect.md#introspectfrom_vmcore) | `partial` |
 | [`introspect.run`](introspect.md#introspectrun) | `partial` |
 | [`inventory.list`](inventory.md#inventorylist) | `implemented` |
