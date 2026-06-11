@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from pathlib import Path
 from typing import Protocol
 
@@ -20,6 +21,8 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.images.catalog import resolve_rootfs
 from kdive.provider_components import artifacts as artifact_types
 
+_SHA256_DIGEST = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
+
 
 class RootfsObjectStore(Protocol):
     """The narrow object-store capability the rootfs fetch needs (an :class:`ObjectStore`)."""
@@ -28,7 +31,17 @@ class RootfsObjectStore(Protocol):
 
 
 def _cache_path(cache_dir: Path, digest: str) -> Path:
-    """A digest-keyed cache path so a repeat boot of the same image reuses the bytes."""
+    """A digest-keyed cache path so a repeat boot of the same image reuses the bytes.
+
+    The digest is validated as ``sha256:<64 lowercase hex>`` before it forms a filename, so a
+    malformed row value can never escape ``cache_dir`` (defense-in-depth path-traversal guard).
+    """
+    if not _SHA256_DIGEST.match(digest):
+        raise CategorizedError(
+            "rootfs catalog digest is not a sha256:<hex> value",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details={"digest": digest},
+        )
     return cache_dir / f"{digest.removeprefix('sha256:')}.qcow2"
 
 

@@ -140,6 +140,30 @@ def test_fetch_unknown_identity_raises_config_error(migrated_url: str, tmp_path:
     asyncio.run(_run())
 
 
+def test_fetch_rejects_malformed_digest(migrated_url: str, tmp_path: Path) -> None:
+    from kdive.db.repositories import IMAGE_CATALOG
+
+    # A row whose digest is not sha256:<hex> must not form a cache path (traversal guard).
+    store = _FakeStore("images/local-libvirt/base/x86_64.qcow2", _QCOW2)
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await IMAGE_CATALOG.insert(conn, _entry(digest="sha256:../../../etc/passwd"))
+            with pytest.raises(CategorizedError) as err:
+                await fetch_registered_rootfs(
+                    conn,
+                    store,
+                    provider="local-libvirt",
+                    name="base",
+                    project="proj",
+                    cache_dir=tmp_path,
+                )
+            assert err.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+            assert store.gets == []  # rejected before any download
+
+    asyncio.run(_run())
+
+
 def test_fetch_checksum_mismatch_raises_infra(migrated_url: str, tmp_path: Path) -> None:
     from kdive.db.repositories import IMAGE_CATALOG
 
