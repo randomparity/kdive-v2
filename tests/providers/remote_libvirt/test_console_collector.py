@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from kdive.providers.remote_libvirt.console_collector import ConsoleCollector
+from kdive.providers.remote_libvirt.console.collector import ConsoleCollector
 from kdive.security.secrets.redaction import REDACTION
 from kdive.security.secrets.secret_registry import SecretRegistry
 

@@ -13,7 +13,7 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.debug_common.hostpolicy import allow_acl_remote, require_loopback
-from kdive.providers.remote_libvirt.debug import remote_attach_seam
+from kdive.providers.remote_libvirt.debug.gdbmi import remote_attach_seam
 
 
 def test_remote_attach_seam_off_gate_reports_missing_dependency():

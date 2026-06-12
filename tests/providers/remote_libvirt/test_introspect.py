@@ -15,8 +15,11 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
-from kdive.providers.remote_libvirt.guest_agent import AgentExecResult
-from kdive.providers.remote_libvirt.introspect import RemoteLiveIntrospect, RemoteVmcoreIntrospect
+from kdive.providers.remote_libvirt.debug.introspect import (
+    RemoteLiveIntrospect,
+    RemoteVmcoreIntrospect,
+)
+from kdive.providers.remote_libvirt.guest.agent import AgentExecResult
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.providers.remote_libvirt.conftest import RecordingBackend
 

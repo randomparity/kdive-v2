@@ -23,7 +23,7 @@ from kdive.provider_components.artifacts import (
 )
 from kdive.providers.ports import CrashResult
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
-from kdive.providers.remote_libvirt.guest_agent import AgentExecResult
+from kdive.providers.remote_libvirt.guest.agent import AgentExecResult
 from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security.secrets.secret_registry import SecretRegistry

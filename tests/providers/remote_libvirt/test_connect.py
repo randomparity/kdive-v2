@@ -11,7 +11,7 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
-from kdive.providers.remote_libvirt.connect import RemoteLibvirtConnect
+from kdive.providers.remote_libvirt.lifecycle.connect import RemoteLibvirtConnect
 
 _REFS = TlsCertRefs(client_cert_ref="c", client_key_ref="k", ca_cert_ref="a")
 

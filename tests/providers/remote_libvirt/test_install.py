@@ -20,8 +20,8 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.providers.ports import InstallRequest
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
-from kdive.providers.remote_libvirt.guest_agent import AgentExecResult
-from kdive.providers.remote_libvirt.install import RemoteLibvirtInstall
+from kdive.providers.remote_libvirt.guest.agent import AgentExecResult
+from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
 from kdive.security.secrets.redaction import REDACTION
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.providers.remote_libvirt.conftest import RecordingBackend, libvirt_error

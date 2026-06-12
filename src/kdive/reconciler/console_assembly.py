@@ -13,8 +13,8 @@ from kdive.db.locks import CONSOLE_HOSTING_LEADER, SessionAdvisoryLock
 from kdive.db.pool import create_pool, database_url
 from kdive.domain.errors import CategorizedError
 from kdive.providers.remote_libvirt.config import remote_config_from_env
-from kdive.providers.remote_libvirt.console_collector import ConsoleCollector
-from kdive.providers.remote_libvirt.console_wiring import (
+from kdive.providers.remote_libvirt.console.collector import ConsoleCollector
+from kdive.providers.remote_libvirt.console.wiring import (
     RemoteConsolePartStore,
     open_remote_console,
 )

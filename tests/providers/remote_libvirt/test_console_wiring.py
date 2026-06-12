@@ -9,7 +9,7 @@ import psycopg
 
 from kdive.domain.models import Sensitivity
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
-from kdive.providers.remote_libvirt.console_wiring import RemoteConsolePartStore
+from kdive.providers.remote_libvirt.console.wiring import RemoteConsolePartStore
 
 
 class FakeObjectStore:

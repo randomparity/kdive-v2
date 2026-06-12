@@ -18,8 +18,8 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
-from kdive.providers.remote_libvirt.artifact_channel import InTargetArtifactChannel
-from kdive.providers.remote_libvirt.guest_agent import AgentExecResult
+from kdive.providers.remote_libvirt.guest.agent import AgentExecResult
+from kdive.providers.remote_libvirt.guest.artifact_channel import InTargetArtifactChannel
 from kdive.security.secrets.redaction import REDACTION
 from kdive.security.secrets.secret_registry import SecretRegistry
 

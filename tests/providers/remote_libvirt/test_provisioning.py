@@ -15,7 +15,7 @@ from defusedxml.ElementTree import fromstring
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
-from kdive.providers.remote_libvirt.provisioning import (
+from kdive.providers.remote_libvirt.lifecycle.provisioning import (
     KDIVE_METADATA_NS,
     QEMU_NS,
     RemoteLibvirtProvision,

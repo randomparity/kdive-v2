@@ -30,9 +30,9 @@ from kdive.providers.ports import (
     TransportHandle,
 )
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
-from kdive.providers.remote_libvirt.control import RemoteLibvirtControl
-from kdive.providers.remote_libvirt.install import RemoteLibvirtInstall
-from kdive.providers.remote_libvirt.provisioning import RemoteLibvirtProvision
+from kdive.providers.remote_libvirt.lifecycle.control import RemoteLibvirtControl
+from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
+from kdive.providers.remote_libvirt.lifecycle.provisioning import RemoteLibvirtProvision
 from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -465,8 +465,8 @@ def test_remote_runtime_gdbstub_debug_path_is_unchanged(
     # AC2 no-regression: advertising GDBSTUB does not alter the existing connect/attach
     # debug path (ADR-0083/0085) — the remote attach seam and connector are unchanged.
     monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
-    from kdive.providers.remote_libvirt.connect import RemoteLibvirtConnect
-    from kdive.providers.remote_libvirt.debug import remote_attach_seam
+    from kdive.providers.remote_libvirt.debug.gdbmi import remote_attach_seam
+    from kdive.providers.remote_libvirt.lifecycle.connect import RemoteLibvirtConnect
 
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
@@ -530,12 +530,12 @@ def test_remote_runtime_wires_connect_and_introspect_ports(
     # The connect/debug + introspection planes are real (ADR-0083); control/retrieve are
     # real from issue #206 on (ADR-0084), asserted in test_remote_runtime_has_real_control_*.
     monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
-    from kdive.providers.remote_libvirt.connect import RemoteLibvirtConnect
-    from kdive.providers.remote_libvirt.debug import remote_attach_seam
-    from kdive.providers.remote_libvirt.introspect import (
+    from kdive.providers.remote_libvirt.debug.gdbmi import remote_attach_seam
+    from kdive.providers.remote_libvirt.debug.introspect import (
         RemoteLiveIntrospect,
         RemoteVmcoreIntrospect,
     )
+    from kdive.providers.remote_libvirt.lifecycle.connect import RemoteLibvirtConnect
 
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 

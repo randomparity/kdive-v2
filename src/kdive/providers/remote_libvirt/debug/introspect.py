@@ -27,7 +27,7 @@ from kdive.providers.debug_common.drgn_program import (
 from kdive.providers.debug_common.introspect import assemble_report
 from kdive.providers.ports import IntrospectOutput
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
-from kdive.providers.remote_libvirt.guest_agent import (
+from kdive.providers.remote_libvirt.guest.agent import (
     AgentCommand,
     AgentExecResult,
     GuestAgentExec,

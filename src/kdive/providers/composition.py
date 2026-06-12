@@ -73,17 +73,17 @@ from kdive.providers.reaping import (
 )
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.config import is_remote_libvirt_configured
-from kdive.providers.remote_libvirt.connect import RemoteLibvirtConnect
-from kdive.providers.remote_libvirt.control import RemoteLibvirtControl
-from kdive.providers.remote_libvirt.debug import remote_attach_seam
-from kdive.providers.remote_libvirt.discovery import RemoteLibvirtDiscovery
-from kdive.providers.remote_libvirt.dump_volume_reaper import RemoteLibvirtDumpVolumeReaper
-from kdive.providers.remote_libvirt.install import RemoteLibvirtInstall
-from kdive.providers.remote_libvirt.introspect import (
+from kdive.providers.remote_libvirt.debug.gdbmi import remote_attach_seam
+from kdive.providers.remote_libvirt.debug.introspect import (
     RemoteLiveIntrospect,
     RemoteVmcoreIntrospect,
 )
-from kdive.providers.remote_libvirt.provisioning import RemoteLibvirtProvision
+from kdive.providers.remote_libvirt.discovery import RemoteLibvirtDiscovery
+from kdive.providers.remote_libvirt.dump_volume_reaper import RemoteLibvirtDumpVolumeReaper
+from kdive.providers.remote_libvirt.lifecycle.connect import RemoteLibvirtConnect
+from kdive.providers.remote_libvirt.lifecycle.control import RemoteLibvirtControl
+from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
+from kdive.providers.remote_libvirt.lifecycle.provisioning import RemoteLibvirtProvision
 from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
 from kdive.providers.remote_libvirt.transport_reset import RemoteLibvirtTransportResetter
 from kdive.providers.resolver import ProviderResolver

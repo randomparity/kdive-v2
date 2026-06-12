@@ -17,7 +17,7 @@ import libvirt
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.remote_libvirt.guest_agent import GuestAgentExec
+from kdive.providers.remote_libvirt.guest.agent import GuestAgentExec
 
 _ALLOWED = frozenset({"/usr/bin/curl", "/usr/bin/kdive-install"})
 

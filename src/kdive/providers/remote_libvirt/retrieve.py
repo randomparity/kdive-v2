@@ -60,14 +60,14 @@ from kdive.providers.debug_common.crash_postmortem import (
     run_crash_postmortem as _run_crash_postmortem,
 )
 from kdive.providers.ports import CaptureOutput, CrashOutput
-from kdive.providers.remote_libvirt.artifact_channel import InTargetArtifactChannel
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
-from kdive.providers.remote_libvirt.guest_agent import (
+from kdive.providers.remote_libvirt.guest.agent import (
     AgentCommand,
     AgentExecResult,
     GuestAgentExec,
     qemu_agent_command,
 )
+from kdive.providers.remote_libvirt.guest.artifact_channel import InTargetArtifactChannel
 from kdive.providers.remote_libvirt.transport import remote_connection
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security.secrets.redaction import Redactor
