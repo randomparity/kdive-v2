@@ -13,7 +13,7 @@ from kdive.db.repositories import SYSTEMS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.lifecycle_rules import TERMINAL_SYSTEM_STATES
 from kdive.domain.models import Job, JobKind, System
-from kdive.domain.state import SystemState
+from kdive.domain.state import DebugSessionState, SystemState
 from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import PowerPayload, SystemPayload, load_payload
@@ -160,14 +160,19 @@ async def detach_sessions(conn: AsyncConnection, job: Job, system: System) -> No
         await cur.execute(
             "WITH targets AS ("
             "    SELECT id, state FROM debug_sessions "
-            "    WHERE state IN ('attach', 'live') "
+            "    WHERE state IN (%s, %s) "
             "      AND run_id IN (SELECT id FROM runs WHERE system_id = %s) "
             "    FOR UPDATE"
             ") "
-            "UPDATE debug_sessions s SET state = 'detached' "
+            "UPDATE debug_sessions s SET state = %s "
             "FROM targets t WHERE s.id = t.id "
             "RETURNING s.id, t.state",
-            (system.id,),
+            (
+                DebugSessionState.ATTACH.value,
+                DebugSessionState.LIVE.value,
+                system.id,
+                DebugSessionState.DETACHED.value,
+            ),
         )
         rows = await cur.fetchall()
     for session_id, old_state in rows:
