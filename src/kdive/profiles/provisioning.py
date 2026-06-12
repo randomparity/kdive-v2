@@ -72,7 +72,7 @@ class _ProfileBase(BaseModel):
 
 class _UploadRootfs(_ProfileBase):
     # A System-owned uploaded qcow2; opened by systems.define + artifacts.create_system_upload and
-    # committed at provisioning->ready (ADR-0048 §5). path/url/catalog are alternatives.
+    # committed at provisioning->ready (ADR-0048 §5). local/artifact/catalog are alternatives.
     kind: Literal["upload"]
 
 
@@ -100,9 +100,11 @@ class LibvirtProfile(_ProfileBase):
 
     ``domain_xml_params`` is an optionally-empty map whose values are non-empty;
     ``rootfs`` is the discriminated rootfs source (ADR-0048 §3) keyed by ``kind`` —
-    ``path`` (a declared file), ``upload`` (a System-owned uploaded object), ``url``
-    (a content-addressed fetch), or ``catalog`` (a curated image by name); the resolver
-    maps it to the libvirt-readable disk path at provisioning. ``crashkernel`` is an
+    ``local`` (an allowlisted provider-local file), ``artifact`` (parsed for the shared
+    component contract but currently rejected by local-libvirt materialization),
+    ``catalog`` (a curated image by name), or ``upload`` (a System-owned uploaded
+    object); the resolver maps supported references to the libvirt-readable disk path
+    at provisioning. ``crashkernel`` is an
     optional opaque non-empty token (the kdump prerequisite — the booted kernel is the
     arbiter of its grammar); ``None`` when the System is not provisioned for kdump.
     ``destructive_ops`` is the optionally-empty list of destructive op kinds this profile
