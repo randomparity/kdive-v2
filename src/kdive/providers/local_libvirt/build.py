@@ -34,10 +34,10 @@ from kdive.provider_components.build_results import BuildOutput
 from kdive.provider_components.references import (
     ComponentRef,
 )
-from kdive.providers import build_host_config as _build_config
-from kdive.providers import build_host_execution as _build_exec
-from kdive.providers import build_host_workspace as _build_workspace
-from kdive.providers.build_host_orchestration import BuildHostOrchestrator
+from kdive.providers.build_host import config as _build_config
+from kdive.providers.build_host import execution as _build_exec
+from kdive.providers.build_host import workspace as _build_workspace
+from kdive.providers.build_host.orchestration import BuildHostOrchestrator
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.store.objectstore import object_store_from_env
 

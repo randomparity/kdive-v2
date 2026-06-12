@@ -18,11 +18,11 @@ from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.provider_components.artifacts import FetchedArtifact
 from kdive.provider_components.references import CatalogComponentRef
-from kdive.providers.build_common import (
+from kdive.providers.build_host.common import (
     _dropped_fragment_symbols,
     _fragment_symbols,
 )
-from kdive.providers.build_host_orchestration import BuildHostOrchestrator
+from kdive.providers.build_host.orchestration import BuildHostOrchestrator
 
 _RUN = UUID("44444444-4444-4444-4444-444444444444")
 

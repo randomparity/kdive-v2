@@ -22,7 +22,9 @@ from kdive.provider_components.references import (
     CatalogComponentRef,
     LocalComponentRef,
 )
-from kdive.providers import build_host_config, build_host_execution, build_host_workspace
+from kdive.providers.build_host import config as build_host_config
+from kdive.providers.build_host import execution as build_host_execution
+from kdive.providers.build_host import workspace as build_host_workspace
 from kdive.providers.local_libvirt import build as build_module
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.security.secrets.secret_registry import SecretRegistry

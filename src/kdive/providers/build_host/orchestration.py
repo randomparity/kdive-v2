@@ -11,16 +11,16 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.build import ServerBuildProfile
 from kdive.provider_components.references import ComponentRef
 from kdive.provider_components.requirements import validate_config_requirements
-from kdive.providers.build_common import _dropped_fragment_symbols
-from kdive.providers.build_host_config import (
+from kdive.providers.build_host.common import _dropped_fragment_symbols
+from kdive.providers.build_host.config import (
     DEFAULT_BUILD_COMPONENT_ROOT,
     load_profile_config_requirements,
     missing_config_groups,
     resolve_config_bytes,
     validate_config_ref,
 )
-from kdive.providers.build_host_execution import ReadConfig, RunStep, build_failure
-from kdive.providers.build_host_workspace import Checkout
+from kdive.providers.build_host.execution import ReadConfig, RunStep, build_failure
+from kdive.providers.build_host.workspace import Checkout
 
 REQUIRED_KERNEL_CONFIG: tuple[tuple[str, ...], ...] = (
     ("CONFIG_CRASH_DUMP",),

@@ -12,8 +12,8 @@ from uuid import UUID
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.build import ServerBuildProfile
 from kdive.provider_components.build_validation import patch_target_paths, snapshot_file_bytes
-from kdive.providers.build_host_config import resolve_local_ref
-from kdive.providers.build_host_execution import (
+from kdive.providers.build_host.config import resolve_local_ref
+from kdive.providers.build_host.execution import (
     MAKE_TIMEOUT_S,
     build_failure,
     launch_failure,
