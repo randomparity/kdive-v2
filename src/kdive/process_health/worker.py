@@ -4,7 +4,8 @@ Binds the generic, dependency-set-agnostic :mod:`kdive.health` primitives to the
 worker's and reconciler's concrete backends: a Postgres ``SELECT 1`` over the shared pool
 and a MinIO bucket ``HEAD`` — **no OIDC** (they pull jobs from the DB and never verify
 tokens, so their readiness must not couple to the IdP). Kept out of :mod:`kdive.health`
-so that package stays free of server-stack imports, mirroring :mod:`kdive.server_health`.
+so that package stays free of server-stack imports, mirroring
+:mod:`kdive.process_health.server`.
 """
 
 from __future__ import annotations

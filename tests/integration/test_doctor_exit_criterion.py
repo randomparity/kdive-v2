@@ -60,9 +60,9 @@ from kdive.health import HealthProbe
 from kdive.health.server_checks import build_server_checks
 from kdive.health.worker_checks import build_worker_checks
 from kdive.mcp.tools.ops import diagnostics
+from kdive.process_health.worker import build_worker_probe
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole
-from kdive.worker_health import build_worker_probe
 
 # Fault-seeding fixtures (the "broken input" each real check runs over). Mirror the unit-test
 # fixtures so the seeded fault matches the contract the M2 deployment actually broke.

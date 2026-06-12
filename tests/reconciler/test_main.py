@@ -63,7 +63,9 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
         return None
 
     monkeypatch.setattr("kdive.health.serve_aux", _no_serve)
-    monkeypatch.setattr("kdive.server_health.build_postgres_ping", lambda pool: lambda: None)
+    monkeypatch.setattr(
+        "kdive.process_health.server.build_postgres_ping", lambda pool: lambda: None
+    )
 
     class _FakeResolver:
         async def register_all_discovery(self, pool: object) -> None:

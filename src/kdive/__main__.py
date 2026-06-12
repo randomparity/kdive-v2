@@ -101,7 +101,7 @@ async def _run_server(
     from kdive.health.aux_bind import resolve_health_bind
     from kdive.health.server_checks import build_server_checks
     from kdive.mcp.app import build_app
-    from kdive.server_health import build_oidc_ping, build_postgres_ping
+    from kdive.process_health.server import build_oidc_ping, build_postgres_ping
     from kdive.store.objectstore import object_store_from_env
 
     pool = create_pool()
@@ -176,9 +176,9 @@ async def _run_worker(secret_registry: SecretRegistry, telemetry: Telemetry) -> 
     from kdive.jobs.worker import Worker
     from kdive.jobs.worker_telemetry import WorkerTelemetry
     from kdive.mcp.app import build_handler_registry
-    from kdive.server_health import build_postgres_ping
+    from kdive.process_health.server import build_postgres_ping
+    from kdive.process_health.worker import build_worker_probe
     from kdive.store.objectstore import object_store_from_env
-    from kdive.worker_health import build_worker_probe
 
     pool = create_pool(min_size=2, max_size=4)
     await pool.open()
@@ -215,12 +215,12 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
     from kdive.domain.errors import CategorizedError
     from kdive.health import Heartbeat, build_aux_app, serve_aux
     from kdive.health.aux_bind import resolve_health_bind
+    from kdive.process_health.server import build_postgres_ping
+    from kdive.process_health.worker import build_worker_probe
     from kdive.providers.composition import ProviderComposition
     from kdive.reconciler.loop import Reconciler
     from kdive.reconciler.loop_telemetry import ReconcilerTelemetry
-    from kdive.server_health import build_postgres_ping
     from kdive.store.objectstore import object_store_from_env
-    from kdive.worker_health import build_worker_probe
 
     pool = create_pool(min_size=1)
     await pool.open()
