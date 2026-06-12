@@ -21,7 +21,9 @@ from contextlib import asynccontextmanager
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
+import kdive.config as config
 from kdive.db.locks import LockScope, advisory_xact_lock
+from kdive.domain.errors import CategorizedError
 from kdive.domain.state import AllocationState, SystemState
 from kdive.mcp.tools.ops import reconcile as ops_reconcile
 from kdive.providers.reaping import NullReaper
@@ -278,3 +280,21 @@ def test_register_resolves_upload_store_off_without_s3_env(monkeypatch: pytest.M
     monkeypatch.delenv("KDIVE_S3_ENDPOINT_URL", raising=False)
     monkeypatch.delenv("KDIVE_S3_BUCKET", raising=False)
     assert ops_reconcile.resolve_upload_store() is None
+
+
+@pytest.mark.usefixtures("migrated_url")
+def test_register_resolves_image_store_off_without_s3_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KDIVE_S3_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("KDIVE_S3_BUCKET", raising=False)
+    assert ops_reconcile.resolve_image_store() is None
+
+
+@pytest.mark.parametrize("helper_name", ["resolve_upload_store", "resolve_image_store"])
+def test_register_reraises_partial_s3_config(helper_name: str) -> None:
+    try:
+        config.load({"KDIVE_S3_ENDPOINT_URL": "http://localhost:9000"})
+        helper = getattr(ops_reconcile, helper_name)
+        with pytest.raises(CategorizedError):
+            helper()
+    finally:
+        config.reset()
