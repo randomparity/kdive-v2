@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import time
-import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,7 +26,6 @@ from typing import Protocol
 from uuid import UUID
 
 import libvirt
-from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import (
@@ -35,157 +33,46 @@ from kdive.profiles.provisioning import (
     RemoteLibvirtProfile,
     require_concrete_sizing,
 )
-from kdive.providers.libvirt_xml import (
+from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.lifecycle.xml import (
     KDIVE_METADATA_NS,
     QEMU_NS,
-    register_kdive_namespace,
-    register_qemu_namespace,
+    overlay_volume_name,
+    recorded_gdb_port,
+    render_domain_xml,
+    render_volume_xml,
 )
-from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.lifecycle.xml import (
+    agent_channel_connected as _agent_channel_connected,
+)
+from kdive.providers.remote_libvirt.lifecycle.xml import (
+    disk_pool as _disk_pool,
+)
 from kdive.providers.remote_libvirt.transport import remote_connection
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
 
+__all__ = [
+    "KDIVE_METADATA_NS",
+    "QEMU_NS",
+    "RemoteLibvirtProvision",
+    "allocate_gdb_port",
+    "overlay_volume_name",
+    "recorded_gdb_port",
+    "render_domain_xml",
+    "render_volume_xml",
+]
+
 _log = logging.getLogger(__name__)
 
-_DEFAULT_NETWORK = "default"
 _DOMAIN_PREFIX = "kdive-"
-_GUEST_AGENT_CHANNEL = "org.qemu.guest_agent.0"
 # Bounded start-failure port advance (ADR-0080 §2): a squatted port or a define→start
 # race is skipped without message sniffing; an unrelated start fault fails fast after
 # this many attempts.
 _START_ATTEMPTS = 3
 _AGENT_TIMEOUT_S = 180.0
 _AGENT_POLL_S = 2.0
-
-
-def _ensure_namespaces_registered() -> None:
-    """Register XML prefixes at the rendering boundary (process-global ET state)."""
-    register_kdive_namespace()
-    register_qemu_namespace()
-
-
-def overlay_volume_name(system_id: UUID | str) -> str:
-    """The per-System overlay volume name in the host's storage pool (ADR-0080 §3).
-
-    Accepts the raw id string too, so ``teardown`` can derive it from the domain name
-    without a UUID parse (mirrors the local overlay-path contract, ADR-0060).
-    """
-    return f"kdive-{system_id}-overlay.qcow2"
-
-
-def render_volume_xml(name: str, *, capacity_bytes: int, backing_path: str) -> str:
-    """Render the overlay volume XML: qcow2, backed by the base image volume.
-
-    Capacity is the base volume's virtual capacity — a smaller value would truncate
-    the guest's view of the disk (ADR-0080 §3).
-    """
-    volume = ET.Element("volume")
-    ET.SubElement(volume, "name").text = name
-    ET.SubElement(volume, "capacity").text = str(capacity_bytes)
-    target = ET.SubElement(volume, "target")
-    ET.SubElement(target, "format", type="qcow2")
-    backing = ET.SubElement(volume, "backingStore")
-    ET.SubElement(backing, "path").text = backing_path
-    ET.SubElement(backing, "format", type="qcow2")
-    return ET.tostring(volume, encoding="unicode")
-
-
-def render_domain_xml(
-    system_id: UUID,
-    profile: ProvisioningProfile,
-    *,
-    pool: str,
-    volume: str,
-    gdb_addr: str,
-    gdb_port: int,
-    network: str = _DEFAULT_NETWORK,
-    machine: str = "pc",
-) -> str:
-    """Render the tagged remote domain XML (ADR-0080 §2/§4).
-
-    Renders the domain shell, the overlay disk (``type='volume'``), boot-from-disk, a
-    virtio NIC on the host's ``network`` (the in-guest artifact channel pulls presigned
-    GETs and pushes the vmcore PUT over it — ADR-0078/0082/0084 depend on guest egress),
-    the qemu-guest-agent virtio-serial channel, a pty serial console **without** a
-    worker-local ``<log>`` tee (the path would be on the remote host), the kdive
-    metadata tag, and the gdbstub QEMU passthrough args — the per-System port record.
-
-    Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` for a profile without a remote
-            section or without concrete sizing.
-    """
-    _ensure_namespaces_registered()
-    if profile.provider.remote_libvirt_section is None:
-        raise CategorizedError(
-            "provisioning profile has no remote-libvirt provider section",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    require_concrete_sizing(profile)
-
-    domain = ET.Element("domain", type="kvm")
-    ET.SubElement(domain, "name").text = domain_name_for(system_id)
-    # A deterministic uuid (= the System id) makes `defineXML` redefine the System's
-    # existing domain in place on a provision retry (ADR-0025/ADR-0080).
-    ET.SubElement(domain, "uuid").text = str(system_id)
-    ET.SubElement(domain, "memory", unit="MiB").text = str(profile.memory_mb)
-    ET.SubElement(domain, "vcpu").text = str(profile.vcpu)
-    os_el = ET.SubElement(domain, "os")
-    ET.SubElement(os_el, "type", arch=profile.arch, machine=machine).text = "hvm"
-    ET.SubElement(os_el, "boot", dev="hd")
-    # The vmcoreinfo fw_cfg device lets the crashed guest pass VMCOREINFO into QEMU's
-    # memory-only core-dump, so host_dump cores carry a build-id (ADR-0094 / #317). ACPI must
-    # be on for the guest kernel to populate that device — libvirt renders a <features> block
-    # without <acpi/> as acpi=off, which leaves VMCOREINFO empty (#319).
-    features = ET.SubElement(domain, "features")
-    ET.SubElement(features, "acpi")
-    ET.SubElement(features, "vmcoreinfo", state="on")
-    devices = ET.SubElement(domain, "devices")
-    disk = ET.SubElement(devices, "disk", type="volume", device="disk")
-    ET.SubElement(disk, "driver", name="qemu", type="qcow2")
-    ET.SubElement(disk, "source", pool=pool, volume=volume)
-    ET.SubElement(disk, "target", dev="vda", bus="virtio")
-    interface = ET.SubElement(devices, "interface", type="network")
-    ET.SubElement(interface, "source", network=network)
-    ET.SubElement(interface, "model", type="virtio")
-    serial = ET.SubElement(devices, "serial", type="pty")
-    ET.SubElement(serial, "target", port="0")
-    console = ET.SubElement(devices, "console", type="pty")
-    ET.SubElement(console, "target", type="serial", port="0")
-    channel = ET.SubElement(devices, "channel", type="unix")
-    ET.SubElement(channel, "target", type="virtio", name=_GUEST_AGENT_CHANNEL)
-    metadata = ET.SubElement(domain, "metadata")
-    ET.SubElement(metadata, f"{{{KDIVE_METADATA_NS}}}system").text = str(system_id)
-    commandline = ET.SubElement(domain, f"{{{QEMU_NS}}}commandline")
-    ET.SubElement(commandline, f"{{{QEMU_NS}}}arg", value="-gdb")
-    ET.SubElement(commandline, f"{{{QEMU_NS}}}arg", value=f"tcp:{gdb_addr}:{gdb_port}")
-    return ET.tostring(domain, encoding="unicode")
-
-
-def recorded_gdb_port(domain_xml: str) -> int | None:
-    """The gdbstub port a domain's XML records, or ``None`` if absent/malformed.
-
-    Parsed with ``defusedxml`` — the XML is emitted by the remote libvirtd. Tolerant
-    by design: a domain without the passthrough args (or with mangled ones) simply
-    owns no port; allocation treats malformed records as absent.
-    """
-    try:
-        root: ET.Element = _safe_fromstring(domain_xml)
-    except ET.ParseError:
-        return None
-    args = [
-        arg.get("value") for arg in root.findall(f"./{{{QEMU_NS}}}commandline/{{{QEMU_NS}}}arg")
-    ]
-    for previous, current in zip(args, args[1:], strict=False):
-        if previous != "-gdb" or current is None:
-            continue
-        _, _, port_text = current.rpartition(":")
-        try:
-            return int(port_text)
-        except ValueError:
-            return None
-    return None
 
 
 def allocate_gdb_port(
@@ -267,32 +154,6 @@ def open_libvirt_provision(uri: str) -> _ProvisionConn:
     # libvirt ships no type stubs; ty infers `virConnect`, which does not structurally
     # match the protocol. Duck-typed at the seam, as in transport.open_libvirt.
     return libvirt.open(uri)  # ty: ignore[invalid-return-type]
-
-
-def _agent_channel_connected(domain_xml: str) -> bool:
-    """Whether the live XML reports the guest-agent channel ``state='connected'``.
-
-    Parsed with ``defusedxml`` (host-emitted XML); a malformed document reads as
-    not-connected — the poll keeps waiting and the bounded timeout owns the failure.
-    """
-    try:
-        root: ET.Element = _safe_fromstring(domain_xml)
-    except ET.ParseError:
-        return False
-    target = root.find(f"./devices/channel/target[@name='{_GUEST_AGENT_CHANNEL}']")
-    return target is not None and target.get("state") == "connected"
-
-
-def _disk_pool(domain_xml: str) -> str | None:
-    """The storage pool the domain's disk records, or ``None`` (tolerant parse)."""
-    try:
-        root: ET.Element = _safe_fromstring(domain_xml)
-    except ET.ParseError:
-        return None
-    source = root.find("./devices/disk/source")
-    if source is None:
-        return None
-    return source.get("pool")
 
 
 @dataclass(frozen=True, slots=True)

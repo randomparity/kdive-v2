@@ -6,20 +6,15 @@ System id in the kdive metadata element discovery reads), `defineXML`+`create`s 
 connection factory (unit tests never touch a real host; the real `libvirt.open` adapter is
 `live_vm`-only). It owns no Postgres — the `systems.*` handlers drive the state machine.
 
-The domain XML is *constructed* with `xml.etree.ElementTree` (no string interpolation, so a
-profile value cannot inject XML; no untrusted-input parse here, so no XXE surface). It renders
-the domain shell, the rootfs disk, and the metadata tag — no `<kernel>`/`<cmdline>`: libvirt
-ignores `<os><cmdline>` without a `<kernel>` element, and the test kernel plus its
-`crashkernel=` kdump reservation are the install/boot plane's.
+Storage file lifecycle is delegated to ``lifecycle.storage`` and pure XML rendering to
+``lifecycle.xml``. This facade owns materialization, libvirt define/start, and teardown
+orchestration.
 """
 
 from __future__ import annotations
 
 import logging
-import subprocess  # noqa: S404 - qemu-img is invoked with a fixed argv, no shell
-import xml.etree.ElementTree as ET
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
@@ -32,49 +27,39 @@ from kdive.profiles.provisioning import (
     ProvisioningProfile,
     RootfsSource,
     _UploadRootfs,
-    require_concrete_sizing,
     validate_rootfs_reference,
-)
-from kdive.profiles.provisioning import (
-    validate_profile as _validate_profile,
 )
 from kdive.provider_components.references import (
     ArtifactComponentRef,
     CatalogComponentRef,
     LocalComponentRef,
 )
-from kdive.providers.libvirt_xml import KDIVE_METADATA_NS, register_kdive_namespace
 from kdive.providers.local_libvirt.lifecycle.materialize import (
     MaterializableRootfsRef,
     RootfsMaterializationContext,
     RootfsUploadContext,
     materialize_rootfs_base,
 )
+from kdive.providers.local_libvirt.lifecycle.storage import (
+    ROOTFS_DIR,
+    ProvisioningFiles,
+    overlay_path,
+)
+from kdive.providers.local_libvirt.lifecycle.xml import render_domain_xml
 from kdive.providers.local_libvirt.settings import LIBVIRT_URI
 from kdive.providers.runtime_paths import console_log_path, domain_name_for
 
+__all__ = [
+    "LocalLibvirtProvisioning",
+    "ProvisioningFiles",
+    "console_log_path",
+    "domain_name_for",
+    "overlay_path",
+    "reject_rootfs_without_upload_window",
+    "render_domain_xml",
+]
+
 _log = logging.getLogger(__name__)
-
-_DEFAULT_MACHINE = "q35"
-_ROOTFS_DIR = "/var/lib/kdive/rootfs"
-_QEMU_IMG_TIMEOUT_S = 5 * 60
-
-
-def overlay_path(system_id: UUID | str) -> str:
-    """The per-System qcow2 overlay path (a writable layer backed by the shared base image).
-
-    Each System boots its own overlay so two domains never contend for the read-only base's
-    qcow2 write lock and one System's writes never bleed into another (ADR-0060). Accepts the
-    raw id string too, so ``teardown`` can derive it from the domain name without a UUID parse.
-    """
-    return f"{_ROOTFS_DIR}/{system_id}-overlay.qcow2"
-
-
-def _ensure_kdive_namespace_registered() -> None:
-    """Register the kdive XML prefix when rendering domain XML."""
-    # ElementTree keeps namespace prefixes in process-global state. Keep that mutation out of
-    # import time and perform it at the rendering boundary that needs deterministic prefixes.
-    register_kdive_namespace()
 
 
 class _LibvirtDomain(Protocol):
@@ -121,181 +106,7 @@ def reject_rootfs_without_upload_window(rootfs: RootfsSource) -> None:
         )
 
 
-def render_domain_xml(system_id: UUID, profile: ProvisioningProfile, *, disk_path: str) -> str:
-    """Render the tagged libvirt domain XML for a System (ADR-0025 §3).
-
-    Renders the domain shell, the rootfs disk, the always-on serial console with a ``<log>``
-    tee to ``_CONSOLE_DIR``, and the kdive metadata tag — no ``<kernel>``/``<cmdline>`` (the
-    kdump ``crashkernel=`` reservation is the install/boot plane's and is inert without a
-    ``<kernel>`` element). ``disk_path`` is explicit so rootfs materialization policy stays in
-    the materialization plane; production passes the per-System overlay (ADR-0060).
-    """
-    _ensure_kdive_namespace_registered()
-    _validate_profile(profile)
-    # Sizing is optional in the schema (ADR-0024 delta); a stored profile is always concrete,
-    # but fail closed here rather than render a "None" memory/vcpu if a NULL ever slips through.
-    require_concrete_sizing(profile)
-    section = profile.provider.local_libvirt
-    machine = section.domain_xml_params.get("machine", _DEFAULT_MACHINE)
-
-    domain = ET.Element("domain", type="kvm")
-    ET.SubElement(domain, "name").text = domain_name_for(system_id)
-    # A deterministic uuid (= the System id) makes `defineXML` redefine the System's existing
-    # domain in place on a provision retry, instead of failing the name collision with a fresh
-    # libvirt-assigned uuid ("domain already exists with uuid ...") — the libvirt-level half of
-    # provision idempotency (ADR-0025; the unit test's fake defineXML cannot model this).
-    ET.SubElement(domain, "uuid").text = str(system_id)
-    ET.SubElement(domain, "memory", unit="MiB").text = str(profile.memory_mb)
-    ET.SubElement(domain, "vcpu").text = str(profile.vcpu)
-    os_el = ET.SubElement(domain, "os")
-    ET.SubElement(os_el, "type", arch=profile.arch, machine=machine).text = "hvm"
-    devices = ET.SubElement(domain, "devices")
-    disk = ET.SubElement(devices, "disk", type="file", device="disk")
-    # The rootfs images are qcow2 (the RootfsBuildPlane's virt-make-fs --format=qcow2). Without an
-    # explicit driver type libvirt defaults to raw, so the guest would read the qcow2 header as the
-    # start of the disk and fail to mount root; declare the format so /dev/vda is the ext4
-    # filesystem, not the container metadata.
-    ET.SubElement(disk, "driver", name="qemu", type="qcow2")
-    ET.SubElement(disk, "source", file=disk_path)
-    ET.SubElement(disk, "target", dev="vda", bus="virtio")
-    serial = ET.SubElement(devices, "serial", type="pty")
-    ET.SubElement(serial, "log", file=str(console_log_path(system_id)))
-    ET.SubElement(serial, "target", port="0")
-    console = ET.SubElement(devices, "console", type="pty")
-    ET.SubElement(console, "target", type="serial", port="0")
-    metadata = ET.SubElement(domain, "metadata")
-    ET.SubElement(metadata, f"{{{KDIVE_METADATA_NS}}}system").text = str(system_id)
-
-    return ET.tostring(domain, encoding="unicode")
-
-
-def _real_make_overlay(base: str, overlay: str) -> None:
-    """Create the per-System qcow2 overlay backed by ``base`` with ``qemu-img`` (ADR-0060).
-
-    ``-F qcow2`` names the backing format (the rootfs images are qcow2), so qemu-img does not
-    format-probe the base. A non-zero exit is a ``PROVISIONING_FAILURE`` with a redacted stderr
-    tail.
-    """
-    try:
-        result = subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted paths
-            ["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", base, overlay],
-            capture_output=True,
-            text=True,
-            timeout=_QEMU_IMG_TIMEOUT_S,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise CategorizedError(
-            "qemu-img is not installed; cannot create the per-System rootfs overlay",
-            category=ErrorCategory.MISSING_DEPENDENCY,
-            details=_overlay_error_details("create_overlay", overlay, tool="qemu-img"),
-        ) from exc
-    except OSError as exc:
-        details = _overlay_error_details("create_overlay", overlay, tool="qemu-img")
-        details["error"] = type(exc).__name__
-        raise CategorizedError(
-            "failed to launch qemu-img to create the per-System rootfs overlay",
-            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-            details=details,
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise CategorizedError(
-            "qemu-img exceeded the overlay creation timeout",
-            category=ErrorCategory.PROVISIONING_FAILURE,
-            details={
-                **_overlay_error_details("create_overlay", overlay, tool="qemu-img"),
-                "timeout_s": _QEMU_IMG_TIMEOUT_S,
-            },
-        ) from exc
-    if result.returncode != 0:
-        raise CategorizedError(
-            "qemu-img failed to create the per-System rootfs overlay",
-            category=ErrorCategory.PROVISIONING_FAILURE,
-            details={
-                **_overlay_error_details("create_overlay", overlay, tool="qemu-img"),
-                "stderr": result.stderr[-2000:],
-            },
-        )
-
-
-def _real_remove_overlay(overlay: str) -> None:
-    """Remove a System's overlay file; an absent file is the achieved post-state (idempotent)."""
-    try:
-        Path(overlay).unlink(missing_ok=True)
-    except OSError as exc:
-        details = _overlay_error_details("remove_overlay", overlay)
-        details["error"] = type(exc).__name__
-        raise CategorizedError(
-            "failed to remove the per-System rootfs overlay",
-            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-            details=details,
-        ) from exc
-
-
-def _overlay_error_details(op: str, overlay: str, *, tool: str | None = None) -> dict[str, object]:
-    details: dict[str, object] = {"op": op, "overlay": Path(overlay).name}
-    if tool is not None:
-        details["tool"] = tool
-    return details
-
-
-def _real_overlay_exists(overlay: str) -> bool:
-    return Path(overlay).exists()
-
-
-type MakeOverlay = Callable[[str, str], None]
-type RemoveOverlay = Callable[[str], None]
-type OverlayExists = Callable[[str], bool]
 type MaterializeRootfs = Callable[[RootfsSource, UUID], str]
-type PrepareConsoleLog = Callable[[Path], None]
-
-
-def _prepare_console_log(path: Path) -> None:
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch(mode=0o644, exist_ok=True)
-        path.chmod(0o644)
-    except OSError as exc:
-        raise CategorizedError(
-            "failed to prepare libvirt console log",
-            category=ErrorCategory.PROVISIONING_FAILURE,
-            details={"path": str(path)},
-        ) from exc
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedOverlay:
-    path: str
-    created: bool
-
-
-@dataclass(frozen=True, slots=True)
-class ProvisioningFiles:
-    make_overlay: MakeOverlay = _real_make_overlay
-    remove_overlay: RemoveOverlay = _real_remove_overlay
-    overlay_exists: OverlayExists = _real_overlay_exists
-    prepare_console_log: PrepareConsoleLog = _prepare_console_log
-
-    def prepare_overlay(self, system_id: UUID, *, base: str) -> PreparedOverlay:
-        overlay = overlay_path(system_id)
-        created = not self.overlay_exists(overlay)
-        if created:
-            self.make_overlay(base, overlay)
-        return PreparedOverlay(path=overlay, created=created)
-
-    def prepare_console(self, system_id: UUID) -> None:
-        self.prepare_console_log(console_log_path(system_id))
-
-    def cleanup_overlay_if_created(self, overlay: PreparedOverlay) -> None:
-        if not overlay.created:
-            return
-        try:
-            self.remove_overlay(overlay.path)
-        except CategorizedError:
-            _log.warning("failed to remove overlay after failed provision", exc_info=True)
-
-    def remove_overlay_for_domain(self, domain_name: str) -> None:
-        self.remove_overlay(overlay_path(domain_name.removeprefix("kdive-")))
 
 
 def _materializable_rootfs(rootfs: RootfsSource) -> MaterializableRootfsRef:
@@ -325,7 +136,7 @@ class LocalLibvirtProvisioning:
     ) -> None:
         self._connect = connect
         self._files = files or ProvisioningFiles()
-        self._allowed_roots = allowed_roots or [Path(_ROOTFS_DIR)]
+        self._allowed_roots = allowed_roots or [Path(ROOTFS_DIR)]
         self._materialize_rootfs = materialize_rootfs or self._materialize_rootfs_base
 
     @classmethod
@@ -450,7 +261,7 @@ class LocalLibvirtProvisioning:
                 rootfs,
                 context=RootfsMaterializationContext(
                     allowed_roots=self._allowed_roots,
-                    upload=RootfsUploadContext("local", system_id, Path(_ROOTFS_DIR)),
+                    upload=RootfsUploadContext("local", system_id, Path(ROOTFS_DIR)),
                 ),
             )
         )
