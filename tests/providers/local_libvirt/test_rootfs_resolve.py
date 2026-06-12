@@ -22,6 +22,8 @@ def test_reject_rootfs_without_upload_window_rejects_upload() -> None:
     with pytest.raises(CategorizedError) as e:
         reject_rootfs_without_upload_window(_UploadRootfs(kind="upload"))
     assert e.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert "use 'local' or 'catalog' for a one-step provision" in str(e.value)
+    assert "use 'local', 'artifact', or 'catalog'" not in str(e.value)
 
 
 def test_reject_rootfs_without_upload_window_allows_path() -> None:

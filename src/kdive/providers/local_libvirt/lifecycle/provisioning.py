@@ -101,7 +101,7 @@ def reject_rootfs_without_upload_window(rootfs: RootfsSource) -> None:
     if isinstance(rootfs, _UploadRootfs):
         raise CategorizedError(
             "rootfs 'upload' kind requires systems.define + artifacts.create_system_upload first; "
-            "use 'local', 'artifact', or 'catalog' for a one-step provision",
+            "use 'local' or 'catalog' for a one-step provision",
             category=ErrorCategory.CONFIGURATION_ERROR,
         )
 
