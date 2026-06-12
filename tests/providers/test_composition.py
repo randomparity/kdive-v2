@@ -273,7 +273,7 @@ def test_enabling_fault_inject_registers_both_kinds() -> None:
 
 
 def test_fault_inject_runtime_advertises_its_provider_identity() -> None:
-    runtime = composition.build_faultinject_runtime()
+    runtime = composition.build_fault_inject_runtime()
 
     assert isinstance(runtime.profile_policy, FaultInjectProfilePolicy)
     assert runtime.component_sources.provider == "fault-inject"
@@ -287,7 +287,7 @@ def test_fault_inject_runtime_provision_is_visible_to_a_reaper_on_the_same_inven
     from kdive.providers.fault_inject.inventory import FaultInjectInventory, FaultInjectReaper
 
     inventory = FaultInjectInventory()
-    runtime = composition.build_faultinject_runtime(inventory=inventory)
+    runtime = composition.build_fault_inject_runtime(inventory=inventory)
     system_id = UUID("33333333-3333-3333-3333-333333333333")
 
     domain = runtime.provisioner.provision(system_id, _provisioning_profile())
@@ -410,7 +410,7 @@ def test_fault_inject_runtime_without_engine_uses_bare_happy_path_ports() -> Non
     from kdive.providers.fault_inject.lifecycle.install import FaultInjectInstall
     from kdive.providers.fault_inject.lifecycle.provisioning import FaultInjectProvisioning
 
-    runtime = composition.build_faultinject_runtime()
+    runtime = composition.build_fault_inject_runtime()
 
     # No engine -> the happy-path ports are used unchanged (no faulting wrapper).
     assert isinstance(runtime.provisioner, FaultInjectProvisioning)
@@ -423,7 +423,7 @@ def test_fault_inject_runtime_with_engine_wraps_ports_in_faulting_decorators() -
     from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvisioning
 
     engine = FaultEngine(seed=7, fault_rate={"provision": 1.0}, max_latency_s={})
-    runtime = composition.build_faultinject_runtime(engine=engine)
+    runtime = composition.build_fault_inject_runtime(engine=engine)
 
     assert isinstance(runtime.provisioner, FaultedProvisioning)
     assert isinstance(runtime.installer, FaultedInstall)

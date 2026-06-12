@@ -16,7 +16,7 @@ import kdive.config as config
 from kdive.config.core_settings import FAULT_INJECT
 from kdive.domain.models import ResourceKind
 from kdive.providers.discovery_registration import ProviderDiscoveryRegistration
-from kdive.providers.fault_inject import composition as faultinject_composition
+from kdive.providers.fault_inject import composition as fault_inject_composition
 from kdive.providers.fault_inject.faulting.engine import FaultEngine
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
 from kdive.providers.local_libvirt import composition as local_composition
@@ -68,11 +68,11 @@ def build_local_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
     return _with_discovery_registration(runtime, local_composition.discovery_registration())
 
 
-def build_faultinject_runtime(
+def build_fault_inject_runtime(
     *, inventory: FaultInjectInventory | None = None, engine: FaultEngine | None = None
 ) -> ProviderRuntime:
-    runtime = faultinject_composition.build_runtime(inventory=inventory, engine=engine)
-    return _with_discovery_registration(runtime, faultinject_composition.discovery_registration())
+    runtime = fault_inject_composition.build_runtime(inventory=inventory, engine=engine)
+    return _with_discovery_registration(runtime, fault_inject_composition.discovery_registration())
 
 
 def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
@@ -86,8 +86,8 @@ async def ensure_local_host_registered(pool: AsyncConnectionPool) -> None:
     await _discovery_registrar(local_composition.discovery_registration())(pool)
 
 
-async def ensure_faultinject_resource_registered(pool: AsyncConnectionPool) -> None:
-    await _discovery_registrar(faultinject_composition.discovery_registration())(pool)
+async def ensure_fault_inject_resource_registered(pool: AsyncConnectionPool) -> None:
+    await _discovery_registrar(fault_inject_composition.discovery_registration())(pool)
 
 
 def _fault_inject_enabled(enable_fault_inject: bool | None) -> bool:
@@ -127,10 +127,10 @@ class ProviderComposition:
     def __init__(
         self,
         *,
-        faultinject_inventory: FaultInjectInventory | None = None,
+        fault_inject_inventory: FaultInjectInventory | None = None,
         secret_registry: SecretRegistry | None = None,
     ) -> None:
-        self._faultinject_inventory = faultinject_inventory or FaultInjectInventory()
+        self._fault_inject_inventory = fault_inject_inventory or FaultInjectInventory()
         self._secret_registry = secret_registry or SecretRegistry()
 
     @property
@@ -149,8 +149,8 @@ class ProviderComposition:
             ResourceKind.LOCAL_LIBVIRT: build_local_runtime(secret_registry=self._secret_registry)
         }
         if _fault_inject_enabled(enable_fault_inject):
-            runtimes[ResourceKind.FAULT_INJECT] = build_faultinject_runtime(
-                inventory=self._faultinject_inventory
+            runtimes[ResourceKind.FAULT_INJECT] = build_fault_inject_runtime(
+                inventory=self._fault_inject_inventory
             )
         if _remote_libvirt_enabled(enable_remote_libvirt):
             runtimes[ResourceKind.REMOTE_LIBVIRT] = build_remote_runtime(
@@ -162,7 +162,7 @@ class ProviderComposition:
         """Assemble the provider-aware leaked-infra reaper for reconciliation."""
         reapers: list[InfraReaper] = []
         if _fault_inject_enabled(enable_fault_inject):
-            reapers.append(faultinject_composition.build_reaper(self._faultinject_inventory))
+            reapers.append(fault_inject_composition.build_reaper(self._fault_inject_inventory))
         if not reapers:
             return NullReaper()
         if len(reapers) == 1:
@@ -214,11 +214,11 @@ def build_provider_resolver(
 
 
 __all__ = [
-    "build_faultinject_runtime",
+    "build_fault_inject_runtime",
     "build_local_runtime",
     "build_provider_resolver",
     "build_remote_runtime",
-    "ensure_faultinject_resource_registered",
+    "ensure_fault_inject_resource_registered",
     "ensure_local_host_registered",
     "ProviderComposition",
 ]

@@ -13,7 +13,7 @@ delegating, so a seeded fault actually perturbs the spine op:
 - ``attempt`` is a caller-supplied **durable** input (``attempt_for``, default first attempt),
   never a wrapper-held counter (ADR-0072's determinism leg).
 
-A wrapper is assembled only when fault config is present (``build_faultinject_runtime`` with a
+A wrapper is assembled only when fault config is present (``build_fault_inject_runtime`` with a
 non-None ``engine``); the happy-path composition stays unchanged when no fault is configured.
 """
 
