@@ -12,6 +12,7 @@ named category (no half-published row: validation gates the publish).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 from psycopg import AsyncConnection
 
@@ -25,6 +26,8 @@ from kdive.services.images.publish import (
     PublishRequest,
     publish_image,
 )
+
+type RootfsBuildPlaneResolver = Callable[[str], RootfsBuildPlane]
 
 
 def _spec(payload: ImageBuildPayload) -> RootfsBuildSpec:
@@ -43,7 +46,8 @@ async def image_build_handler(
     conn: AsyncConnection,
     job: Job,
     *,
-    build_plane: RootfsBuildPlane,
+    build_plane: RootfsBuildPlane | None = None,
+    plane_resolver: RootfsBuildPlaneResolver | None = None,
     store: ImageObjectStore,
     inspect: InspectSeam = DEFAULT_INSPECT,
 ) -> str:
@@ -52,7 +56,8 @@ async def image_build_handler(
     Args:
         conn: The worker dispatch connection.
         job: The claimed ``IMAGE_BUILD`` job.
-        build_plane: The provider's rootfs build plane.
+        build_plane: A single injected rootfs build plane, used by focused tests.
+        plane_resolver: Runtime resolver for ``payload.provider`` in production assembly.
         store: The image object store.
         inspect: The libguestfs inspection seam threaded into the validator (tests inject a stub).
 
@@ -64,6 +69,10 @@ async def image_build_handler(
             the missing element), or publish fails — the worker dead-letters with the category.
     """
     payload = load_payload(job, ImageBuildPayload)
+    if plane_resolver is not None:
+        build_plane = plane_resolver(payload.provider)
+    if build_plane is None:
+        raise RuntimeError("IMAGE_BUILD handler has no rootfs build plane resolver")
     output = await asyncio.to_thread(build_plane.build, _spec(payload))
     await asyncio.to_thread(
         validate_guest_contract,
@@ -93,7 +102,8 @@ async def image_build_handler(
 def register_handlers(
     registry: HandlerRegistry,
     *,
-    build_plane: RootfsBuildPlane,
+    build_plane: RootfsBuildPlane | None = None,
+    plane_resolver: RootfsBuildPlaneResolver | None = None,
     store: ImageObjectStore,
     inspect: InspectSeam = DEFAULT_INSPECT,
 ) -> None:
@@ -101,6 +111,11 @@ def register_handlers(
     registry.register(
         JobKind.IMAGE_BUILD,
         lambda conn, job: image_build_handler(
-            conn, job, build_plane=build_plane, store=store, inspect=inspect
+            conn,
+            job,
+            build_plane=build_plane,
+            plane_resolver=plane_resolver,
+            store=store,
+            inspect=inspect,
         ),
     )

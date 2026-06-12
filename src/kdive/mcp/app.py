@@ -144,7 +144,6 @@ def _register_image_build_handler(
     store. A worker with no ``KDIVE_S3_*`` env still binds IMAGE_BUILD so queued jobs fail with
     the original configuration category instead of falling through to ``not_implemented``.
     """
-    from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane
     from kdive.store.objectstore import object_store_from_env
 
     try:
@@ -153,7 +152,11 @@ def _register_image_build_handler(
         registry.register(JobKind.IMAGE_BUILD, _unconfigured_image_build_handler(exc))
         return
     image_build.register_handlers(
-        registry, build_plane=LocalLibvirtRootfsBuildPlane.from_env(), store=store
+        registry,
+        plane_resolver=ProviderComposition(
+            secret_registry=_secret_registry
+        ).build_rootfs_build_plane_resolver(),
+        store=store,
     )
 
 

@@ -8,12 +8,18 @@ superseded capability-registry prototype from production source.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from psycopg_pool import AsyncConnectionPool
 
 import kdive.config as config
 from kdive.config.core_settings import FAULT_INJECT
 from kdive.domain.capture import CaptureMethod
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
+from kdive.images.planes.base import RootfsBuildPlane
+from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane
+from kdive.images.planes.remote_libvirt import RemoteLibvirtRootfsBuildPlane
 from kdive.provider_components.references import (
     CONFIG_COMPONENT,
     INITRD_COMPONENT,
@@ -98,6 +104,8 @@ _REMOTE_POOL = "remote-libvirt"
 # Reuses the seeded `local` coefficient: a `remote` seed row would be core DDL beyond
 # migration 0020 (the ADR-0076 portability gate firing). Same precedent as fault-inject.
 _REMOTE_COST_CLASS = "local"
+
+type RootfsBuildPlaneResolver = Callable[[str], RootfsBuildPlane]
 
 
 def _local_component_sources() -> ComponentSourceCapabilities:
@@ -395,6 +403,28 @@ class ProviderComposition:
         if _remote_libvirt_enabled(enable_remote_libvirt):
             return RemoteLibvirtDumpVolumeReaper.from_env(secret_registry=self._secret_registry)
         return NullDumpVolumeReaper()
+
+    def build_rootfs_build_plane_resolver(
+        self, *, enable_remote_libvirt: bool | None = None
+    ) -> RootfsBuildPlaneResolver:
+        """Assemble the provider-name -> rootfs build plane resolver for IMAGE_BUILD jobs."""
+        planes: dict[str, RootfsBuildPlane] = {
+            ResourceKind.LOCAL_LIBVIRT.value: LocalLibvirtRootfsBuildPlane.from_env()
+        }
+        if _remote_libvirt_enabled(enable_remote_libvirt):
+            planes[ResourceKind.REMOTE_LIBVIRT.value] = RemoteLibvirtRootfsBuildPlane.from_env()
+
+        def resolve(provider: str) -> RootfsBuildPlane:
+            plane = planes.get(provider)
+            if plane is None:
+                raise CategorizedError(
+                    "unsupported image build provider",
+                    category=ErrorCategory.CONFIGURATION_ERROR,
+                    details={"provider": provider},
+                )
+            return plane
+
+        return resolve
 
 
 def build_provider_resolver(
