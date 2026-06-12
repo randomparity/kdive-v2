@@ -75,7 +75,8 @@ async def _build_locked(
             return _config_error(str(run.id), data={"current_status": state.value})
         if state is RunState.CREATED:
             await conn.execute(
-                "UPDATE runs SET state = 'running' WHERE id = %s AND state = 'created'", (run.id,)
+                "UPDATE runs SET state = %s WHERE id = %s AND state = %s",
+                (RunState.RUNNING.value, run.id, RunState.CREATED.value),
             )
             await audit.record(
                 conn,
@@ -322,9 +323,15 @@ async def _finalize_external_build(
             (run.id, Jsonb(result.dump())),
         )
         await conn.execute(
-            "UPDATE runs SET kernel_ref = %s, debuginfo_ref = %s, state = 'succeeded' "
-            "WHERE id = %s AND state = 'created'",
-            (output.kernel_ref, output.debuginfo_ref or None, run.id),
+            "UPDATE runs SET kernel_ref = %s, debuginfo_ref = %s, state = %s "
+            "WHERE id = %s AND state = %s",
+            (
+                output.kernel_ref,
+                output.debuginfo_ref or None,
+                RunState.SUCCEEDED.value,
+                run.id,
+                RunState.CREATED.value,
+            ),
         )
         await audit.record(
             conn,

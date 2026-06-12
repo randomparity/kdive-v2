@@ -30,9 +30,15 @@ async def finalize_build(
         if row is None or RunState(row["state"]) is not RunState.RUNNING:
             return
         await conn.execute(
-            "UPDATE runs SET kernel_ref = %s, debuginfo_ref = %s, state = 'succeeded' "
-            "WHERE id = %s AND state = 'running'",
-            (result.kernel_ref, result.debuginfo_ref, run.id),
+            "UPDATE runs SET kernel_ref = %s, debuginfo_ref = %s, state = %s "
+            "WHERE id = %s AND state = %s",
+            (
+                result.kernel_ref,
+                result.debuginfo_ref,
+                RunState.SUCCEEDED.value,
+                run.id,
+                RunState.RUNNING.value,
+            ),
         )
         await audit.record(
             conn,
