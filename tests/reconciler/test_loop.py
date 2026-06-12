@@ -14,12 +14,20 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.domain.state import AllocationState, DebugSessionState, RunState, SystemState
 from kdive.providers.reaping import DumpVolume, InfraReaper, NullReaper
 from kdive.reconciler import loop
+from kdive.reconciler.debug_sessions import repair_dead_sessions
+from kdive.reconciler.gc import (
+    reap_console_collectors,
+    reap_orphaned_dump_volumes,
+)
+from kdive.reconciler.jobs import repair_abandoned_jobs
 from kdive.reconciler.loop import (
     ReconcileConfig,
     Reconciler,
     ReconcileReport,
     reconcile_once,
 )
+from kdive.reconciler.provider_reaping import repair_leaked_domains
+from kdive.reconciler.systems import repair_orphaned_systems
 from tests.reconciler.conftest import (
     FakeReaper,
     FakeResetter,
@@ -69,7 +77,7 @@ def test_orphaned_system_enqueues_gc_teardown(migrated_url: str) -> None:
                 seed, system_state=SystemState.READY, alloc_state=AllocationState.RELEASED
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._repair_orphaned_systems)
+            count = await run_repair(pool, repair_orphaned_systems)
         assert count == 1
         async with await connect(migrated_url) as check:
             cur = await check.execute("SELECT state FROM systems WHERE id = %s", (system_id,))
@@ -94,8 +102,8 @@ def test_orphaned_system_second_pass_is_idempotent(migrated_url: str) -> None:
                 seed, system_state=SystemState.READY, alloc_state=AllocationState.FAILED
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            first = await run_repair(pool, loop._repair_orphaned_systems)
-            second = await run_repair(pool, loop._repair_orphaned_systems)
+            first = await run_repair(pool, repair_orphaned_systems)
+            second = await run_repair(pool, repair_orphaned_systems)
         assert first == 1
         assert second == 0  # already queued: a re-pass enqueues nothing new
         async with await connect(migrated_url) as check:
@@ -113,7 +121,7 @@ def test_active_allocation_system_not_touched(migrated_url: str) -> None:
                 seed, system_state=SystemState.READY, alloc_state=AllocationState.ACTIVE
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._repair_orphaned_systems)
+            count = await run_repair(pool, repair_orphaned_systems)
         assert count == 0
         async with await connect(migrated_url) as check:
             cur = await check.execute("SELECT count(*) FROM jobs")
@@ -130,7 +138,7 @@ def test_terminal_system_on_released_allocation_not_touched(migrated_url: str) -
                 seed, system_state=SystemState.TORN_DOWN, alloc_state=AllocationState.RELEASED
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._repair_orphaned_systems)
+            count = await run_repair(pool, repair_orphaned_systems)
         assert count == 0
 
     asyncio.run(_run())
@@ -143,7 +151,7 @@ def test_zombie_job_dead_lettered_with_lease_expired(migrated_url: str) -> None:
                 seed, "dk-zombie", lease_seconds=-60, attempt=3, max_attempts=3
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._repair_abandoned_jobs)
+            count = await run_repair(pool, repair_abandoned_jobs)
         assert count == 1
         async with await connect(migrated_url) as check:
             cur = await check.execute(
@@ -171,7 +179,7 @@ def test_zombie_job_compensates_owning_run(migrated_url: str) -> None:
                 max_attempts=3,
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            await run_repair(pool, loop._repair_abandoned_jobs)
+            await run_repair(pool, repair_abandoned_jobs)
         async with await connect(migrated_url) as check:
             cur = await check.execute(
                 "SELECT state, failure_category FROM runs WHERE id = %s", (run_id,)
@@ -198,7 +206,7 @@ def test_zombie_without_run_id_leaves_runs_untouched(migrated_url: str) -> None:
                 max_attempts=3,
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            await run_repair(pool, loop._repair_abandoned_jobs)
+            await run_repair(pool, repair_abandoned_jobs)
         async with await connect(migrated_url) as check:
             cur = await check.execute("SELECT state FROM runs WHERE id = %s", (run_id,))
             row = await cur.fetchone()
@@ -221,7 +229,7 @@ def test_zombie_with_malformed_run_payload_still_dead_letters_job(migrated_url: 
                 max_attempts=3,
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._repair_abandoned_jobs)
+            count = await run_repair(pool, repair_abandoned_jobs)
         assert count == 1
         async with await connect(migrated_url) as check:
             cur = await check.execute(
@@ -248,7 +256,7 @@ def test_live_lease_and_attempts_remaining_not_swept(migrated_url: str) -> None:
                 seed, "dk-retryable", lease_seconds=-60, attempt=1, max_attempts=3
             )  # lapsed but attempts remain -> dequeue's job, not the reconciler's
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._repair_abandoned_jobs)
+            count = await run_repair(pool, repair_abandoned_jobs)
         assert count == 0
         async with await connect(migrated_url) as check:
             cur = await check.execute("SELECT count(*) FROM jobs WHERE state = 'failed'")
@@ -262,7 +270,7 @@ def _detach(stale_after: timedelta, resetter=None):
     from kdive.providers.transport_reset import NullResetter
 
     r = resetter if resetter is not None else NullResetter()
-    return lambda conn: loop._repair_dead_sessions(conn, stale_after, r)
+    return lambda conn: repair_dead_sessions(conn, stale_after, r)
 
 
 def test_stale_live_session_detached(migrated_url: str) -> None:
@@ -433,7 +441,7 @@ def test_reset_failure_does_not_strand_the_detach(migrated_url: str) -> None:
 
 
 def _reap(reaper: FakeReaper):
-    return lambda conn: loop._repair_leaked_domains(conn, reaper)
+    return lambda conn: repair_leaked_domains(conn, reaper)
 
 
 def test_leaked_domain_with_no_row_is_reaped(migrated_url: str) -> None:
@@ -677,7 +685,7 @@ def test_console_reap_finalizes_and_drops_gone_system(migrated_url: str) -> None
         collector = _FakeConsoleCollector(gone)
         registry.add(collector)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, lambda c: loop._reap_console_collectors(c, registry))
+            count = await run_repair(pool, lambda c: reap_console_collectors(c, registry))
         assert count == 1
         # Finalize ran (artifact persisted) BEFORE the drop — reap never races finalize (AC7).
         assert collector.finalized is True
@@ -696,7 +704,7 @@ def test_console_reap_leaves_live_system_collector(migrated_url: str) -> None:
         collector = _FakeConsoleCollector(live)
         registry.add(collector)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, lambda c: loop._reap_console_collectors(c, registry))
+            count = await run_repair(pool, lambda c: reap_console_collectors(c, registry))
         assert count == 0
         assert collector.finalized is False  # a live System keeps streaming
         assert registry.has(live) is True
@@ -714,7 +722,7 @@ def test_console_reap_drops_vanished_system_collector(migrated_url: str) -> None
         collector = _FakeConsoleCollector(vanished)
         registry.add(collector)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, lambda c: loop._reap_console_collectors(c, registry))
+            count = await run_repair(pool, lambda c: reap_console_collectors(c, registry))
         assert count == 1
         assert collector.finalized is True
         assert registry.has(vanished) is False
@@ -729,7 +737,7 @@ def test_console_reap_with_empty_registry_is_noop(migrated_url: str) -> None:
     async def _run() -> None:
         registry = CollectorRegistry()
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, lambda c: loop._reap_console_collectors(c, registry))
+            count = await run_repair(pool, lambda c: reap_console_collectors(c, registry))
         assert count == 0
 
     asyncio.run(_run())
@@ -807,7 +815,7 @@ def test_reaps_old_orphan_without_active_capture(migrated_url: str) -> None:
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(
                 pool,
-                lambda conn: loop._reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
+                lambda conn: reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
             )
         assert count == 1
         assert reaper.deleted == [f"kdive-host-dump-{system_id}.kdump"]
@@ -825,7 +833,7 @@ def test_does_not_reap_a_volume_younger_than_the_grace_window(migrated_url: str)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(
                 pool,
-                lambda conn: loop._reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
+                lambda conn: reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
             )
         assert count == 0
         assert reaper.deleted == []  # live-holder guard #1 (mtime)
@@ -844,7 +852,7 @@ def test_does_not_reap_a_volume_with_an_active_capture_job(migrated_url: str) ->
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(
                 pool,
-                lambda conn: loop._reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
+                lambda conn: reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
             )
         assert count == 0
         assert reaper.deleted == []  # live-holder guard #2 (active capture job)
@@ -862,7 +870,7 @@ def test_reaps_when_capture_job_is_terminal(migrated_url: str) -> None:
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(
                 pool,
-                lambda conn: loop._reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
+                lambda conn: reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
             )
         assert count == 1  # a finished capture no longer holds the volume
 
@@ -883,7 +891,7 @@ def test_one_volume_delete_failure_does_not_starve_the_rest(migrated_url: str) -
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(
                 pool,
-                lambda conn: loop._reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
+                lambda conn: reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
             )
         assert count == 1  # a's delete raised; b still got reaped
         assert len(reaper.deleted) == 2  # both attempted
@@ -899,7 +907,7 @@ def test_reaps_a_stray_named_volume_with_no_system(migrated_url: str) -> None:
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(
                 pool,
-                lambda conn: loop._reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
+                lambda conn: reap_orphaned_dump_volumes(conn, reaper, timedelta(minutes=30)),
             )
         assert count == 1  # no System => no live capture possible => age-reap
 
