@@ -22,17 +22,11 @@ from kdive.providers.debug_common.crash_postmortem import (
 from kdive.providers.ports import CaptureOutput, CrashOutput
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
 from kdive.providers.remote_libvirt.guest.agent import (
-    AgentCommand,
     qemu_agent_command,
 )
 from kdive.providers.remote_libvirt.retrieve.common import (
     MAX_CORE_BYTES,
-    AgentExecFactory,
-    CoreBuildIdFromFile,
-    CoreDmesgFromFile,
-    Monotonic,
     OpenRetrieveConnection,
-    Sleep,
     StorePort,
     open_libvirt_capture,
 )
@@ -64,6 +58,57 @@ from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_en
 from kdive.store.objectstore import object_store_from_env
 
 
+def _build_kdump_capturer(
+    *,
+    secret_registry: SecretRegistry,
+    config_factory: Callable[[], RemoteLibvirtConfig],
+    open_connection: OpenRetrieveConnection,
+    store_factory: Callable[[], StorePort],
+    secret_backend_factory: Callable[[], SecretBackend],
+    pki_base_dir: Path | None,
+) -> KdumpCapturer:
+    return KdumpCapturer(
+        secret_registry=secret_registry,
+        config_factory=config_factory,
+        open_connection=open_connection,
+        store_factory=store_factory,
+        agent_command=qemu_agent_command,
+        agent_exec_factory=None,
+        secret_backend_factory=secret_backend_factory,
+        pki_base_dir=pki_base_dir,
+        put_expiry_s=DEFAULT_PUT_EXPIRY_S,
+        readiness_timeout_s=DEFAULT_READINESS_TIMEOUT_S,
+        readiness_poll_s=DEFAULT_READINESS_POLL_S,
+        sleep=time.sleep,
+        monotonic=time.monotonic,
+    )
+
+
+def _build_host_dump_capturer(
+    *,
+    secret_registry: SecretRegistry,
+    config_factory: Callable[[], RemoteLibvirtConfig],
+    open_connection: OpenRetrieveConnection,
+    store_factory: Callable[[], StorePort],
+    secret_backend_factory: Callable[[], SecretBackend],
+    pki_base_dir: Path | None,
+) -> HostDumpCapturer:
+    return HostDumpCapturer(
+        secret_registry=secret_registry,
+        config_factory=config_factory,
+        open_connection=open_connection,
+        store_factory=store_factory,
+        secret_backend_factory=secret_backend_factory,
+        pki_base_dir=pki_base_dir,
+        options=HostDumpOptions(
+            core_build_id_from_file=read_core_build_id_from_file,
+            core_dmesg_from_file=read_core_dmesg_from_file,
+            dump_format=libvirt.VIR_DOMAIN_CORE_DUMP_FORMAT_RAW,
+            max_core_bytes=MAX_CORE_BYTES,
+        ),
+    )
+
+
 class RemoteLibvirtRetrieve:
     """The realized remote `Retriever` + `CrashPostmortem` facade (ADR-0084)."""
 
@@ -74,54 +119,32 @@ class RemoteLibvirtRetrieve:
         config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_env,
         open_connection: OpenRetrieveConnection = open_libvirt_capture,
         store_factory: Callable[[], StorePort] = object_store_from_env,
-        agent_command: AgentCommand = qemu_agent_command,
-        agent_exec_factory: AgentExecFactory | None = None,
         secret_backend_factory: Callable[[], SecretBackend] | None = None,
         pki_base_dir: Path | None = None,
-        put_expiry_s: int = DEFAULT_PUT_EXPIRY_S,
-        readiness_timeout_s: float = DEFAULT_READINESS_TIMEOUT_S,
-        readiness_poll_s: float = DEFAULT_READINESS_POLL_S,
-        sleep: Sleep = time.sleep,
-        monotonic: Monotonic = time.monotonic,
         fetch_object: FetchObject = default_fetch_object,
         read_build_id: ReadBuildId = default_read_vmcore_build_id,
         run_crash: RunCrash = default_run_crash,
-        core_build_id_from_file: CoreBuildIdFromFile = read_core_build_id_from_file,
-        core_dmesg_from_file: CoreDmesgFromFile = read_core_dmesg_from_file,
-        host_dump_format: int = libvirt.VIR_DOMAIN_CORE_DUMP_FORMAT_RAW,
-        max_core_bytes: int = MAX_CORE_BYTES,
+        kdump_capturer: KdumpCapturer | None = None,
+        host_dump_capturer: HostDumpCapturer | None = None,
     ) -> None:
         secret_backend_factory = secret_backend_factory or (
             lambda: secret_backend_from_env(registry=secret_registry)
         )
-        self._kdump = KdumpCapturer(
+        self._kdump = kdump_capturer or _build_kdump_capturer(
             secret_registry=secret_registry,
             config_factory=config_factory,
             open_connection=open_connection,
             store_factory=store_factory,
-            agent_command=agent_command,
-            agent_exec_factory=agent_exec_factory,
             secret_backend_factory=secret_backend_factory,
             pki_base_dir=pki_base_dir,
-            put_expiry_s=put_expiry_s,
-            readiness_timeout_s=readiness_timeout_s,
-            readiness_poll_s=readiness_poll_s,
-            sleep=sleep,
-            monotonic=monotonic,
         )
-        self._host_dump = HostDumpCapturer(
+        self._host_dump = host_dump_capturer or _build_host_dump_capturer(
             secret_registry=secret_registry,
             config_factory=config_factory,
             open_connection=open_connection,
             store_factory=store_factory,
             secret_backend_factory=secret_backend_factory,
             pki_base_dir=pki_base_dir,
-            options=HostDumpOptions(
-                core_build_id_from_file=core_build_id_from_file,
-                core_dmesg_from_file=core_dmesg_from_file,
-                dump_format=host_dump_format,
-                max_core_bytes=max_core_bytes,
-            ),
         )
         self._postmortem = CrashPostmortemAdapter(
             secret_registry=secret_registry,

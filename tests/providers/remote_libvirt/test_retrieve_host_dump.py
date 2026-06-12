@@ -35,6 +35,10 @@ from kdive.providers.remote_libvirt.retrieve import (
     RemoteLibvirtRetrieve,
     host_dump_volume_name,
 )
+from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
+    HostDumpCapturer,
+    HostDumpOptions,
+)
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.providers.remote_libvirt.conftest import RecordingBackend
@@ -263,16 +267,27 @@ def _retrieve(
         assert path.exists()
         return dmesg
 
-    return RemoteLibvirtRetrieve(
+    host_dump = HostDumpCapturer(
         secret_registry=SecretRegistry(),
         config_factory=_config,
         open_connection=lambda uri: conn,
         store_factory=lambda: store,
         secret_backend_factory=RecordingBackend,
         pki_base_dir=tmp_path,
-        core_build_id_from_file=_read_build_id,
-        core_dmesg_from_file=_read_dmesg,
-        max_core_bytes=max_core_bytes,
+        options=HostDumpOptions(
+            core_build_id_from_file=_read_build_id,
+            core_dmesg_from_file=_read_dmesg,
+            dump_format=0,
+            max_core_bytes=max_core_bytes,
+        ),
+    )
+    return RemoteLibvirtRetrieve(
+        secret_registry=SecretRegistry(),
+        config_factory=_config,
+        store_factory=lambda: store,
+        secret_backend_factory=RecordingBackend,
+        pki_base_dir=tmp_path,
+        host_dump_capturer=host_dump,
     )
 
 
