@@ -29,7 +29,7 @@ from kdive.provider_components.references import (
     CatalogComponentRef,
     LocalComponentRef,
 )
-from kdive.providers import build_host, build_host_workspace
+from kdive.providers import build_host_config, build_host_execution, build_host_workspace
 from kdive.providers.remote_libvirt import build as build_module
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -333,7 +333,7 @@ def test_resolve_config_bytes_reads_local_file(tmp_path: Path) -> None:
     config = root / "x.config"
     config.write_bytes(b"CONFIG_FROM_REF=y\n")
 
-    data = build_host.resolve_config_bytes(
+    data = build_host_config.resolve_config_bytes(
         LocalComponentRef(kind="local", path=str(config)),
         allowed_component_roots=[root],
         catalog_fetch=lambda _name: b"unused",
@@ -343,7 +343,7 @@ def test_resolve_config_bytes_reads_local_file(tmp_path: Path) -> None:
 
 
 def test_resolve_config_bytes_returns_injected_catalog_bytes() -> None:
-    data = build_host.resolve_config_bytes(
+    data = build_host_config.resolve_config_bytes(
         CatalogComponentRef(kind="catalog", provider="system", name="kdump"),
         allowed_component_roots=[Path("/unused")],
         catalog_fetch=lambda name: f"CONFIG_{name.upper()}=y\n".encode(),
@@ -354,7 +354,7 @@ def test_resolve_config_bytes_returns_injected_catalog_bytes() -> None:
 
 def test_resolve_config_bytes_rejects_artifact_kind() -> None:
     with pytest.raises(CategorizedError) as caught:
-        build_host.resolve_config_bytes(
+        build_host_config.resolve_config_bytes(
             ArtifactComponentRef(
                 kind="artifact",
                 artifact_id=UUID("00000000-0000-0000-0000-000000000001"),
@@ -419,7 +419,7 @@ def test_real_run_modules_install_argv(monkeypatch: pytest.MonkeyPatch) -> None:
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(subprocess, "run", _capture)
-    assert build_host.real_run_modules_install(Path("/ws"), Path("/stage")) == 0
+    assert build_host_execution.real_run_modules_install(Path("/ws"), Path("/stage")) == 0
     argv = captured[0]
     assert argv[:3] == ["make", "-C", "/ws"]
     assert "modules_install" in argv
@@ -430,12 +430,12 @@ def test_real_run_modules_install_timeout_is_build_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[bytes]:
-        raise subprocess.TimeoutExpired(["make"], timeout=build_host.MAKE_TIMEOUT_S)
+        raise subprocess.TimeoutExpired(["make"], timeout=build_host_execution.MAKE_TIMEOUT_S)
 
     monkeypatch.setattr(subprocess, "run", _timeout)
 
     with pytest.raises(CategorizedError) as caught:
-        build_host.real_run_modules_install(Path("/ws"), Path("/stage"))
+        build_host_execution.real_run_modules_install(Path("/ws"), Path("/stage"))
 
     assert caught.value.category is ErrorCategory.BUILD_FAILURE
 
@@ -449,7 +449,7 @@ def test_real_run_modules_install_missing_make_is_missing_dependency(
     monkeypatch.setattr(subprocess, "run", _missing)
 
     with pytest.raises(CategorizedError) as caught:
-        build_host.real_run_modules_install(Path("/ws"), Path("/stage"))
+        build_host_execution.real_run_modules_install(Path("/ws"), Path("/stage"))
 
     assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
 
@@ -534,16 +534,16 @@ def test_live_vm_real_make_bundle_has_modules() -> None:  # pragma: no cover - l
         builder = RemoteLibvirtBuild(
             workspace_root=Path(tmp),
             store_factory=lambda: store,
-            checkout=lambda run_id, profile, ws, fragment: build_host.real_checkout(
+            checkout=lambda run_id, profile, ws, fragment: build_host_workspace.real_checkout(
                 src, profile, ws, fragment, run_id=run_id, secret_registry=SecretRegistry()
             ),
-            run_olddefconfig=build_host.real_run_olddefconfig,
-            read_config=build_host.real_read_config,
-            run_make=build_host.real_run_make,
-            run_modules_install=build_host.real_run_modules_install,
+            run_olddefconfig=build_host_execution.real_run_olddefconfig,
+            read_config=build_host_execution.real_read_config,
+            run_make=build_host_execution.real_run_make,
+            run_modules_install=build_host_execution.real_run_modules_install,
             build_bundle=build_module._real_build_bundle,
-            read_vmlinux=build_host.real_read_vmlinux,
-            read_build_id=build_host.real_read_build_id,
+            read_vmlinux=build_host_execution.real_read_vmlinux,
+            read_build_id=build_host_execution.real_read_build_id,
             staging_factory=lambda: Path(tempfile.mkdtemp(prefix="kdive-mod-")),
             catalog_fetch=build_module.build_config_fetch_from_env(),
         )
@@ -585,7 +585,7 @@ def test_apply_patch_applies_clean_diff(tmp_path: Path) -> None:
     patch = tmp_path / "fix.patch"
     patch.write_text(_GOOD_PATCH)
 
-    build_host.apply_patch(str(patch), workspace, SecretRegistry())
+    build_host_workspace.apply_patch(str(patch), workspace, SecretRegistry())
 
     assert (workspace / "init" / "main.c").read_text() == "line1\nline2-patched\n"
 
@@ -610,7 +610,7 @@ def test_apply_patch_silent_skip_no_tree_change_is_configuration_error(
     monkeypatch.setattr(build_host_workspace.subprocess, "run", _skip)
 
     with pytest.raises(CategorizedError) as caught:
-        build_host.apply_patch(str(patch), workspace, SecretRegistry())
+        build_host_workspace.apply_patch(str(patch), workspace, SecretRegistry())
 
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert (workspace / "init" / "main.c").read_text() == original
@@ -633,7 +633,7 @@ def test_exit_criterion_noop_patch_fails_patch_applied_verification(tmp_path: Pa
     patch.write_text(_GOOD_PATCH)
 
     with pytest.raises(CategorizedError) as caught:
-        build_host.apply_patch(str(patch), workspace, SecretRegistry())
+        build_host_workspace.apply_patch(str(patch), workspace, SecretRegistry())
 
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert workspace_main.read_text() == original
