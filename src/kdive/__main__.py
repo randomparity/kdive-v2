@@ -48,6 +48,23 @@ _RECONCILER_HEARTBEAT_STALE_SECONDS = 90.0
 _log = logging.getLogger(__name__)
 
 
+class _VersionAction(argparse.Action):
+    """Print the full version only when ``--version`` is selected."""
+
+    def __init__(self, option_strings: list[str], dest: str = argparse.SUPPRESS) -> None:
+        super().__init__(option_strings=option_strings, dest=dest, nargs=0)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        del namespace, values, option_string
+        parser.exit(message=f"kdive {full_version()}\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argument parser with the `server`/`worker`/`reconciler` subcommands."""
     parser = argparse.ArgumentParser(prog="kdive")
@@ -58,8 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--version",
-        action="version",
-        version=f"kdive {full_version()}",
+        action=_VersionAction,
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("server", help="run the MCP streamable-HTTP server")
