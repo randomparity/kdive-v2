@@ -136,7 +136,11 @@ def test_handler_builds_validates_publishes_registered(migrated_url: str, tmp_pa
             )
             main_thread = threading.get_ident()
             ref = await image_build_handler(
-                conn, job, build_plane=plane, store=store, inspect=_all_present
+                conn,
+                job,
+                provider_resolver=_resolver_with_plane(plane),
+                store=store,
+                inspect=_all_present,
             )
             assert ref is not None
             rows = await IMAGE_CATALOG.list_all(conn)
@@ -182,7 +186,12 @@ def test_handler_dead_letters_validation_failure_with_named_category(
     plane = _FakePlane(tmp_path)
     store = _FakeStore()
     registry = HandlerRegistry()
-    register_handlers(registry, build_plane=plane, store=store, inspect=_none_present)
+    register_handlers(
+        registry,
+        provider_resolver=_resolver_with_plane(plane),
+        store=store,
+        inspect=_none_present,
+    )
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -222,7 +231,11 @@ def test_handler_propagates_validation_category_when_called_directly(
             )
             with pytest.raises(CategorizedError) as err:
                 await image_build_handler(
-                    conn, job, build_plane=plane, store=store, inspect=_none_present
+                    conn,
+                    job,
+                    provider_resolver=_resolver_with_plane(plane),
+                    store=store,
+                    inspect=_none_present,
                 )
             assert err.value.category is ErrorCategory.CONFIGURATION_ERROR
             assert "agent" in str(err.value)
@@ -233,7 +246,10 @@ def test_handler_propagates_validation_category_when_called_directly(
 def test_register_handlers_binds_image_build_kind(tmp_path: Path) -> None:
     registry = HandlerRegistry()
     register_handlers(
-        registry, build_plane=_FakePlane(tmp_path), store=_FakeStore(), inspect=_all_present
+        registry,
+        provider_resolver=_resolver_with_plane(_FakePlane(tmp_path)),
+        store=_FakeStore(),
+        inspect=_all_present,
     )
     assert registry.get(JobKind.IMAGE_BUILD) is not None
     assert GUEST_CONTRACT_PATHS  # the validator's contract map is importable for #286 reuse

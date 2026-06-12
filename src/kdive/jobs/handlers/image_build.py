@@ -45,8 +45,7 @@ async def image_build_handler(
     conn: AsyncConnection,
     job: Job,
     *,
-    build_plane: RootfsBuildPlane | None = None,
-    provider_resolver: ProviderResolver | None = None,
+    provider_resolver: ProviderResolver,
     store: ImageObjectStore,
     inspect: InspectSeam = DEFAULT_INSPECT,
 ) -> str:
@@ -55,7 +54,6 @@ async def image_build_handler(
     Args:
         conn: The worker dispatch connection.
         job: The claimed ``IMAGE_BUILD`` job.
-        build_plane: A single injected rootfs build plane, used by focused tests.
         provider_resolver: Runtime resolver used by production assembly.
         store: The image object store.
         inspect: The libguestfs inspection seam threaded into the validator (tests inject a stub).
@@ -68,10 +66,7 @@ async def image_build_handler(
             the missing element), or publish fails — the worker dead-letters with the category.
     """
     payload = load_payload(job, ImageBuildPayload)
-    if provider_resolver is not None:
-        build_plane = _resolve_build_plane(provider_resolver, payload.provider)
-    if build_plane is None:
-        raise RuntimeError("IMAGE_BUILD handler has no rootfs build plane resolver")
+    build_plane = _resolve_build_plane(provider_resolver, payload.provider)
     output = await asyncio.to_thread(build_plane.build, _spec(payload))
     await asyncio.to_thread(
         validate_guest_contract,
@@ -120,8 +115,7 @@ def _resolve_build_plane(resolver: ProviderResolver, provider: str) -> RootfsBui
 def register_handlers(
     registry: HandlerRegistry,
     *,
-    build_plane: RootfsBuildPlane | None = None,
-    provider_resolver: ProviderResolver | None = None,
+    provider_resolver: ProviderResolver,
     store: ImageObjectStore,
     inspect: InspectSeam = DEFAULT_INSPECT,
 ) -> None:
@@ -131,7 +125,6 @@ def register_handlers(
         lambda conn, job: image_build_handler(
             conn,
             job,
-            build_plane=build_plane,
             provider_resolver=provider_resolver,
             store=store,
             inspect=inspect,
