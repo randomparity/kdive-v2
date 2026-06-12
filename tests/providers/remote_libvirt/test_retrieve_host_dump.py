@@ -57,6 +57,14 @@ _LVM_POOL_XML = f"""
 </pool>
 """
 
+_POOL_BOMB = f"""<?xml version="1.0"?>
+<!DOCTYPE pool [ <!ENTITY path "{_POOL_DIR}"> ]>
+<pool type='dir'>
+  <name>{_POOL}</name>
+  <target><path>&path;</path></target>
+</pool>
+"""
+
 
 def _domain_name() -> str:
     return domain_name_for(_SID)
@@ -388,6 +396,22 @@ def test_host_dump_non_dir_pool_is_configuration_error_before_dump(tmp_path: Pat
 
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert not conn.domain.core_dumps  # AC3: no dump into a void
+    assert pool.xml_desc_calls == 1
+
+
+def test_host_dump_forbidden_pool_xml_is_configuration_error_before_dump(
+    tmp_path: Path,
+) -> None:
+    vol = FakeVolume(host_dump_volume_name(_SID), capacity=4096)
+    pool = FakePool(xml=_POOL_BOMB, volume=vol)
+    conn = FakeHostDumpConn(pool=pool)
+    store = FakeStore(head=None)
+
+    with pytest.raises(CategorizedError) as exc:
+        _retrieve(conn, store, tmp_path).capture(_SID, CaptureMethod.HOST_DUMP)
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert not conn.domain.core_dumps
     assert pool.xml_desc_calls == 1
 
 

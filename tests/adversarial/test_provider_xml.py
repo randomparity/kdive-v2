@@ -19,7 +19,6 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from defusedxml.common import DefusedXmlException
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -171,10 +170,8 @@ def test_parse_arch_reads_valid_caps_and_unknowns_malformed() -> None:
     assert parse_capabilities_arch("<not-closed") == "unknown"
 
 
-def test_parse_arch_refuses_entity_expansion_fail_loud() -> None:
-    # The docstring promises an *attack* document raises (fail loud), not silent "unknown".
-    with pytest.raises(DefusedXmlException):
-        parse_capabilities_arch(_CAPS_BOMB)
+def test_parse_arch_returns_unknown_for_forbidden_xml() -> None:
+    assert parse_capabilities_arch(_CAPS_BOMB) == "unknown"
 
 
 def test_parse_system_id_reads_valid_and_none_on_malformed() -> None:
@@ -185,6 +182,5 @@ def test_parse_system_id_reads_valid_and_none_on_malformed() -> None:
     assert parse_metadata_system_id("<broken") is None
 
 
-def test_parse_system_id_refuses_entity_expansion_fail_loud() -> None:
-    with pytest.raises(DefusedXmlException):
-        parse_metadata_system_id(_META_BOMB)
+def test_parse_system_id_returns_none_for_forbidden_xml() -> None:
+    assert parse_metadata_system_id(_META_BOMB) is None

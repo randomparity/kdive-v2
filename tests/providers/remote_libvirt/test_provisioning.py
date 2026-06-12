@@ -25,10 +25,17 @@ from kdive.providers.remote_libvirt.lifecycle.provisioning import (
     render_domain_xml,
     render_volume_xml,
 )
+from kdive.providers.remote_libvirt.lifecycle.xml import agent_channel_connected, disk_pool
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.providers.remote_libvirt.conftest import RecordingBackend, libvirt_error
 
 SYSTEM_ID = UUID("00000000-0000-0000-0000-00000000beef")
+
+_DOMAIN_BOMB = """<?xml version="1.0"?>
+<!DOCTYPE domain [ <!ENTITY boom "47007"> ]>
+<domain><qemu:commandline xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0">
+<qemu:arg value="-gdb"/><qemu:arg value="tcp:127.0.0.1:&boom;"/>
+</qemu:commandline></domain>"""
 
 
 def _remote_profile(**section_overrides: Any) -> ProvisioningProfile:
@@ -191,6 +198,12 @@ def test_recorded_gdb_port_roundtrip() -> None:
 )
 def test_recorded_gdb_port_tolerates_absent_or_malformed(xml: str) -> None:
     assert recorded_gdb_port(xml) is None
+
+
+def test_tolerant_domain_xml_helpers_handle_forbidden_xml() -> None:
+    assert recorded_gdb_port(_DOMAIN_BOMB) is None
+    assert agent_channel_connected(_DOMAIN_BOMB) is False
+    assert disk_pool(_DOMAIN_BOMB) is None
 
 
 def test_allocate_lowest_free_port_skips_used() -> None:

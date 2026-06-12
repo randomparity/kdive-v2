@@ -5,6 +5,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from uuid import UUID
 
+from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
@@ -102,7 +103,7 @@ def recorded_gdb_port(domain_xml: str) -> int | None:
     """The gdbstub port a domain's XML records, or ``None`` if absent/malformed."""
     try:
         root: ET.Element = _safe_fromstring(domain_xml)
-    except ET.ParseError:
+    except (ET.ParseError, DefusedXmlException):
         return None
     args = [
         arg.get("value") for arg in root.findall(f"./{{{QEMU_NS}}}commandline/{{{QEMU_NS}}}arg")
@@ -122,7 +123,7 @@ def agent_channel_connected(domain_xml: str) -> bool:
     """Whether the live XML reports the guest-agent channel ``state='connected'``."""
     try:
         root: ET.Element = _safe_fromstring(domain_xml)
-    except ET.ParseError:
+    except (ET.ParseError, DefusedXmlException):
         return False
     target = root.find(f"./devices/channel/target[@name='{_GUEST_AGENT_CHANNEL}']")
     return target is not None and target.get("state") == "connected"
@@ -132,7 +133,7 @@ def disk_pool(domain_xml: str) -> str | None:
     """The storage pool the domain's disk records, or ``None``."""
     try:
         root: ET.Element = _safe_fromstring(domain_xml)
-    except ET.ParseError:
+    except (ET.ParseError, DefusedXmlException):
         return None
     source = root.find("./devices/disk/source")
     if source is None:
