@@ -10,7 +10,6 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.lifecycle.runs.common import envelope_for_run
-from kdive.providers.composition import build_provider_resolver
 from kdive.providers.resolver import ProviderResolver
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
@@ -23,13 +22,12 @@ async def get_run(
     ctx: RequestContext,
     run_id: str,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> ToolResponse:
     """Return a Run the caller's project owns, advertising the boot's required cmdline."""
     uid = _as_uuid(run_id)
     if uid is None:
         return _config_error(run_id)
-    resolver = resolver or build_provider_resolver()
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             run = await RUNS.get(conn, uid)

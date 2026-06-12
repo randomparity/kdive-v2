@@ -49,13 +49,14 @@ from kdive.mcp.tools.lifecycle.runs.create import (
     create_run,
 )
 from kdive.mcp.tools.lifecycle.runs.steps import boot_run, install_run
-from kdive.mcp.tools.lifecycle.runs.view import get_run
+from kdive.mcp.tools.lifecycle.runs.view import get_run as _get_run
 from kdive.provider_components.references import CatalogComponentRef
 from kdive.provider_components.validation import ComponentSourceCapabilities
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.runs import steps as run_steps
 from tests.db_waits import wait_until_any_backend_waiting
+from tests.mcp.systems_support import provider_resolver
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _PROFILE: dict[str, Any] = {
@@ -119,6 +120,10 @@ async def _pool(url: str) -> AsyncIterator[AsyncConnectionPool]:
         yield pool
     finally:
         await pool.close()
+
+
+async def get_run(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> Any:
+    return await _get_run(pool, ctx, run_id, resolver=provider_resolver())
 
 
 async def _seed_system(

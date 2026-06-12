@@ -30,7 +30,6 @@ from kdive.profiles.provider_policy import rootfs_upload_window_allowed
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.provider_components.artifacts import PresignedUpload, PresignPutRequest
 from kdive.provider_components.uploads import ManifestEntry
-from kdive.providers.composition import build_provider_resolver
 from kdive.providers.resolver import ProviderResolver
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
@@ -295,7 +294,7 @@ async def create_system_upload(
     *,
     system_id: str,
     artifacts: Sequence[ArtifactDeclaration],
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
     store: _PresignStore | None = None,
 ) -> ToolResponse:
     """Mint presigned PUTs for a DEFINED System's uploaded rootfs."""
@@ -306,5 +305,5 @@ async def create_system_upload(
         owner_id=system_id,
         artifacts=artifacts,
         store=store,
-        resolver=resolver or build_provider_resolver(),
+        resolver=resolver,
     )

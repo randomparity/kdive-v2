@@ -28,7 +28,6 @@ from kdive.profiles.provider_policy import destructive_opt_in, reject_rootfs_upl
 from kdive.profiles.provisioning import ProvisioningProfile, dump_profile, profile_digest
 from kdive.profiles.types import ProvisioningProfileInput
 from kdive.provider_components.validation import ComponentSourceCapabilities
-from kdive.providers.composition import build_provider_resolver
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProfilePolicy
 from kdive.security import audit
@@ -216,13 +215,12 @@ async def teardown_system(
     ctx: RequestContext,
     system_id: str,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> ToolResponse:
     """Enqueue an idempotent teardown for a System the caller's project owns."""
     uid = _as_uuid(system_id)
     if uid is None:
         return _config_error(system_id)
-    resolver = resolver or build_provider_resolver()
     with bind_context(principal=ctx.principal):
         async with (
             pool.connection() as conn,

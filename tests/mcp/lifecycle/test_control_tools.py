@@ -49,6 +49,7 @@ from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.audit import args_digest
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.services.resources.discovery import register_discovered_resource
+from tests.mcp.systems_support import provider_resolver
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -214,6 +215,14 @@ class _FakeControl:
         self.crashed.append(domain_name)
 
 
+async def _power(
+    pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str, action: str
+) -> Any:
+    return await control_tools.power_system(
+        pool, ctx, system_id=system_id, action=action, resolver=provider_resolver()
+    )
+
+
 # --- control.power tool --------------------------------------------------------------------
 
 
@@ -225,9 +234,7 @@ def test_power_off_with_gate_checks_enqueues_job(migrated_url: str) -> None:
             sys_id = await _seed_system(
                 pool, alloc_id, SystemState.READY, destructive_ops=["power"]
             )
-            resp = await control_tools.power_system(
-                pool, _admin_ctx(), system_id=sys_id, action="off"
-            )
+            resp = await _power(pool, _admin_ctx(), system_id=sys_id, action="off")
             assert resp.status == "queued"
             assert resp.data["system_id"] == sys_id
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -247,7 +254,7 @@ def test_power_on_is_operator_and_enqueues_job(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
-            resp = await control_tools.power_system(pool, _ctx(), system_id=sys_id, action="on")
+            resp = await _power(pool, _ctx(), system_id=sys_id, action="on")
         assert resp.status == "queued"
 
     asyncio.run(_run())
@@ -261,7 +268,7 @@ def test_power_destructive_action_refused_for_operator(migrated_url: str, action
             sys_id = await _seed_system(
                 pool, alloc_id, SystemState.READY, destructive_ops=["power"]
             )
-            resp = await control_tools.power_system(pool, _ctx(), system_id=sys_id, action=action)
+            resp = await _power(pool, _ctx(), system_id=sys_id, action=action)
             assert resp.status == "error" and resp.error_category == "authorization_denied"
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT count(*) AS n FROM jobs WHERE kind = 'power'")
@@ -285,9 +292,7 @@ def test_power_destructive_action_denied_without_scope(migrated_url: str) -> Non
             sys_id = await _seed_system(
                 pool, alloc_id, SystemState.READY, destructive_ops=["power"]
             )
-            resp = await control_tools.power_system(
-                pool, _admin_ctx(), system_id=sys_id, action="reset"
-            )
+            resp = await _power(pool, _admin_ctx(), system_id=sys_id, action="reset")
             assert resp.status == "error" and resp.error_category == "authorization_denied"
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT count(*) AS n FROM jobs WHERE kind = 'power'")
@@ -312,7 +317,7 @@ def test_power_unknown_action_is_config_error(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
-            resp = await control_tools.power_system(pool, _ctx(), system_id=sys_id, action="nope")
+            resp = await _power(pool, _ctx(), system_id=sys_id, action="nope")
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -325,9 +330,7 @@ def test_power_non_started_system_is_config_error(migrated_url: str) -> None:
             sys_id = await _seed_system(
                 pool, alloc_id, SystemState.DEFINED, destructive_ops=["power"]
             )
-            resp = await control_tools.power_system(
-                pool, _admin_ctx(), system_id=sys_id, action="off"
-            )
+            resp = await _power(pool, _admin_ctx(), system_id=sys_id, action="off")
         assert resp.status == "error" and resp.error_category == "configuration_error"
         assert resp.data["current_status"] == "defined"
 
@@ -339,9 +342,7 @@ def test_power_cross_project_is_config_error(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
-            resp = await control_tools.power_system(
-                pool, _ctx(projects=("other",)), system_id=sys_id, action="off"
-            )
+            resp = await _power(pool, _ctx(projects=("other",)), system_id=sys_id, action="off")
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -350,9 +351,7 @@ def test_power_cross_project_is_config_error(migrated_url: str) -> None:
 def test_power_malformed_uuid_is_config_error(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await control_tools.power_system(
-                pool, _ctx(), system_id="not-a-uuid", action="off"
-            )
+            resp = await _power(pool, _ctx(), system_id="not-a-uuid", action="off")
         assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
@@ -365,9 +364,7 @@ def test_power_on_without_operator_raises(migrated_url: str) -> None:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             with pytest.raises(AuthorizationError):
-                await control_tools.power_system(
-                    pool, _ctx(Role.VIEWER), system_id=sys_id, action="on"
-                )
+                await _power(pool, _ctx(Role.VIEWER), system_id=sys_id, action="on")
 
     asyncio.run(_run())
 
@@ -428,7 +425,9 @@ def test_power_handler_missing_system_is_infra_failure(migrated_url: str) -> Non
 
 
 async def _crash(pool: AsyncConnectionPool, ctx: RequestContext, sys_id: str) -> Any:
-    return await control_tools.force_crash_system(pool, ctx, system_id=sys_id)
+    return await control_tools.force_crash_system(
+        pool, ctx, system_id=sys_id, resolver=provider_resolver()
+    )
 
 
 def _operator_ctx() -> RequestContext:

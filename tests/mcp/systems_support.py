@@ -7,14 +7,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import ALLOCATIONS, BUDGETS, QUOTAS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Allocation, Budget, Job, JobKind, Quota
+from kdive.domain.models import Allocation, Budget, Job, JobKind, Quota, ResourceKind
 from kdive.domain.state import AllocationState
 from kdive.jobs import queue
 from kdive.jobs.payloads import SystemPayload
@@ -24,6 +24,8 @@ from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers
 from kdive.provider_components.validation import ComponentSourceCapabilities
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
+from kdive.providers.resolver import ProviderResolver
+from kdive.providers.runtime import ProviderRuntime
 from kdive.security.authz.rbac import Role
 from kdive.services.resources.discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
@@ -83,6 +85,27 @@ def upload_profile() -> dict[str, Any]:
     profile = provisioning_profile()
     profile["provider"]["local-libvirt"]["rootfs"] = {"kind": "upload"}
     return profile
+
+
+def provider_resolver() -> ProviderResolver:
+    """Return a local-libvirt resolver with inert ports for tests that only need policy."""
+    unused_port = cast(Any, object())
+    runtime = ProviderRuntime(
+        profile_policy=TEST_PROFILE_POLICY,
+        provisioner=unused_port,
+        builder=unused_port,
+        installer=unused_port,
+        booter=unused_port,
+        connector=unused_port,
+        controller=unused_port,
+        retriever=unused_port,
+        crash_postmortem=unused_port,
+        vmcore_introspector=unused_port,
+        live_introspector=unused_port,
+        component_sources=TEST_COMPONENT_SOURCES,
+        rootfs_validator=lambda _: None,
+    )
+    return ProviderResolver({ResourceKind.LOCAL_LIBVIRT: runtime})
 
 
 def ctx(

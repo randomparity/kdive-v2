@@ -47,6 +47,7 @@ from tests.integration._seed import (
 )
 from tests.integration.conftest import open_pool, request_context
 from tests.mcp.json_data import data_str
+from tests.mcp.systems_support import provider_resolver
 
 _AUTH = Authorizing(principal="user-1", agent_session="sess-1", project="proj")
 
@@ -141,7 +142,9 @@ def test_force_crash_refused_when_gate_check_absent(
                 pool, alloc_id, SystemState.READY, destructive_ops=ops, domain_name="kdive-x"
             )
             ctx = _admin_ctx() if is_admin else request_context(Role.OPERATOR)
-            resp = await control_tools.force_crash_system(pool, ctx, system_id=sys_id)
+            resp = await control_tools.force_crash_system(
+                pool, ctx, system_id=sys_id, resolver=provider_resolver()
+            )
             assert resp.status == "error"
             assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -174,7 +177,9 @@ def test_force_crash_allowed_when_all_gate_checks_present(migrated_url: str) -> 
                 destructive_ops=["force_crash"],
                 domain_name="kdive-x",
             )
-            resp = await control_tools.force_crash_system(pool, _admin_ctx(), system_id=sys_id)
+            resp = await control_tools.force_crash_system(
+                pool, _admin_ctx(), system_id=sys_id, resolver=provider_resolver()
+            )
             assert resp.status == "queued"
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(

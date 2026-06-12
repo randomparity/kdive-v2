@@ -45,7 +45,6 @@ from kdive.mcp.tools._common import (
 from kdive.mcp.tools._common import job_envelope
 from kdive.profiles.provider_policy import destructive_opt_in
 from kdive.profiles.provisioning import ProvisioningProfile
-from kdive.providers.composition import build_provider_resolver
 from kdive.providers.resolver import ProviderResolver
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
@@ -73,7 +72,7 @@ async def power_system(
     *,
     system_id: str,
     action: str,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> ToolResponse:
     """Admit a power op on a started System and enqueue a `power` job.
 
@@ -90,7 +89,6 @@ async def power_system(
         power_action = PowerAction(action)
     except ValueError:
         return _config_error(system_id)
-    resolver = resolver or build_provider_resolver()
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             system = await SYSTEMS.get(conn, uid)
@@ -166,7 +164,7 @@ async def force_crash_system(
     ctx: RequestContext,
     *,
     system_id: str,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> ToolResponse:
     """Gate, admit, and enqueue a `force_crash` job for a `ready` System (admin + gate).
 
@@ -176,7 +174,6 @@ async def force_crash_system(
     uid = _as_uuid(system_id)
     if uid is None:
         return _config_error(system_id)
-    resolver = resolver or build_provider_resolver()
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             system = await SYSTEMS.get(conn, uid)

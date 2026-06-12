@@ -43,6 +43,9 @@ from tests.mcp.systems_support import (
     pool as _pool,
 )
 from tests.mcp.systems_support import (
+    provider_resolver as _provider_resolver,
+)
+from tests.mcp.systems_support import (
     upload_profile as _upload_profile,
 )
 
@@ -65,6 +68,7 @@ def test_define_upload_provision_reaches_ready_with_committed_rootfs(
                 _ctx(),
                 system_id=sys_id,
                 artifacts=[{"name": "rootfs", "sha256": "sha256:x", "size_bytes": 18}],
+                resolver=_provider_resolver(),
                 store=minio_store,
             )
             upload_items = uploads.items

@@ -77,6 +77,9 @@ from tests.mcp.systems_support import (
 from tests.mcp.systems_support import (
     TEST_PROFILE_POLICY as _TEST_PROFILE_POLICY,
 )
+from tests.mcp.systems_support import (
+    provider_resolver as _provider_resolver,
+)
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _COEFF_LOCAL = Decimal("1.0")
@@ -896,9 +899,11 @@ def test_c6_operator_refused_admin_ops(migrated_url: str) -> None:
             sys_id = data_str(prov, "system_id")
             async with pool.connection() as conn:
                 await conn.execute("UPDATE systems SET state = 'ready' WHERE id = %s", (sys_id,))
-            power = await control_tools.power_system(pool, op, system_id=sys_id, action="off")
+            power = await control_tools.power_system(
+                pool, op, system_id=sys_id, action="off", resolver=_provider_resolver()
+            )
             assert power.status == "error" and power.error_category == "authorization_denied"
-            teardown = await teardown_system(pool, op, sys_id)
+            teardown = await teardown_system(pool, op, sys_id, resolver=_provider_resolver())
             assert teardown.status == "error"
             assert teardown.error_category == "authorization_denied"
 
@@ -931,7 +936,9 @@ def test_c6_operator_force_crash_returns_authorization_denied_envelope(migrated_
                     "UPDATE allocations SET capability_scope = %s WHERE id = %s",
                     (Jsonb({"destructive_ops": ["force_crash"]}), grant.object_id),
                 )
-            resp = await control_tools.force_crash_system(pool, op, system_id=sys_id)
+            resp = await control_tools.force_crash_system(
+                pool, op, system_id=sys_id, resolver=_provider_resolver()
+            )
             assert resp.status == "error"
             assert resp.error_category == "authorization_denied"  # envelope, not a raise
 
@@ -978,7 +985,9 @@ def test_c6_admin_and_operator_succeed_on_their_surfaces(migrated_url: str) -> N
                     "UPDATE allocations SET capability_scope = %s WHERE id = %s",
                     (Jsonb({"destructive_ops": ["reprovision"]}), grant.object_id),
                 )
-            power_on = await control_tools.power_system(pool, op, system_id=sys_id, action="on")
+            power_on = await control_tools.power_system(
+                pool, op, system_id=sys_id, action="on", resolver=_provider_resolver()
+            )
             assert power_on.status == "queued"
             reprov = await _SYSTEM_ADMIN_HANDLERS.reprovision_system(
                 pool,

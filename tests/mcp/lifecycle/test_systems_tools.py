@@ -87,6 +87,9 @@ from tests.mcp.systems_support import (
     pool as _pool,
 )
 from tests.mcp.systems_support import (
+    provider_resolver as _provider_resolver,
+)
+from tests.mcp.systems_support import (
     provisioning_profile as _profile,
 )
 from tests.mcp.systems_support import (
@@ -995,7 +998,7 @@ def test_provision_handler_absent_uploaded_rootfs_fails_config_error(
 
 
 async def _teardown(pool: AsyncConnectionPool, ctx: RequestContext, system_id: str):
-    return await teardown_system(pool, ctx, system_id)
+    return await teardown_system(pool, ctx, system_id, resolver=_provider_resolver())
 
 
 def _teardown_profile() -> dict[str, Any]:
