@@ -25,30 +25,7 @@ from kdive.providers.remote_libvirt.guest.agent import (
     AgentCommand,
     qemu_agent_command,
 )
-from kdive.providers.remote_libvirt.host_dump_capture import (
-    DMESG_UNAVAILABLE as _DMESG_UNAVAILABLE,
-)
-from kdive.providers.remote_libvirt.host_dump_capture import (
-    HostDumpCapturer,
-    HostDumpOptions,
-    host_dump_volume_name,
-    read_core_build_id_from_file,
-    read_core_dmesg_from_file,
-)
-from kdive.providers.remote_libvirt.host_dump_capture import (
-    file_sha256_b64 as _file_sha256_b64,
-)
-from kdive.providers.remote_libvirt.host_dump_capture import (
-    pool_type_and_target as _pool_type_and_target,
-)
-from kdive.providers.remote_libvirt.kdump_capture import (
-    DEFAULT_PUT_EXPIRY_S,
-    DEFAULT_READINESS_POLL_S,
-    DEFAULT_READINESS_TIMEOUT_S,
-    KdumpCapturer,
-)
-from kdive.providers.remote_libvirt.postmortem import CrashPostmortemAdapter
-from kdive.providers.remote_libvirt.retrieve_common import (
+from kdive.providers.remote_libvirt.retrieve.common import (
     MAX_CORE_BYTES,
     AgentExecFactory,
     CoreBuildIdFromFile,
@@ -59,6 +36,29 @@ from kdive.providers.remote_libvirt.retrieve_common import (
     StorePort,
     open_libvirt_capture,
 )
+from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
+    DMESG_UNAVAILABLE as _DMESG_UNAVAILABLE,
+)
+from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
+    HostDumpCapturer,
+    HostDumpOptions,
+    host_dump_volume_name,
+    read_core_build_id_from_file,
+    read_core_dmesg_from_file,
+)
+from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
+    file_sha256_b64 as _file_sha256_b64,
+)
+from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
+    pool_type_and_target as _pool_type_and_target,
+)
+from kdive.providers.remote_libvirt.retrieve.kdump_capture import (
+    DEFAULT_PUT_EXPIRY_S,
+    DEFAULT_READINESS_POLL_S,
+    DEFAULT_READINESS_TIMEOUT_S,
+    KdumpCapturer,
+)
+from kdive.providers.remote_libvirt.retrieve.postmortem import CrashPostmortemAdapter
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
 from kdive.store.objectstore import object_store_from_env

@@ -25,7 +25,7 @@ from kdive.domain.models import Sensitivity
 from kdive.provider_components.artifacts import ArtifactStreamRequest, StoredArtifact
 from kdive.providers.ports import CaptureOutput
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig
-from kdive.providers.remote_libvirt.retrieve_common import (
+from kdive.providers.remote_libvirt.retrieve.common import (
     OWNER_KIND,
     RETENTION,
     TENANT,

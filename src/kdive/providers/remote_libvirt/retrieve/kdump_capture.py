@@ -22,7 +22,7 @@ from kdive.providers.remote_libvirt.guest.agent import (
     GuestAgentExec,
 )
 from kdive.providers.remote_libvirt.guest.artifact_channel import InTargetArtifactChannel
-from kdive.providers.remote_libvirt.retrieve_common import (
+from kdive.providers.remote_libvirt.retrieve.common import (
     HELPER,
     MAX_CORE_BYTES,
     OWNER_KIND,
