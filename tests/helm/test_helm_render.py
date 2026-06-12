@@ -59,10 +59,14 @@ def test_external_render_omits_post_install_migrate_hook() -> None:
 def test_bundled_path_wires_backends_into_config() -> None:
     res = _template("bundledBackends=true", "demoAcknowledged=true")
     assert res.returncode == 0, res.stderr
-    # The demo apps must reach the in-release services, not render empty config.
-    dsn = "postgresql://kdive:kdive-demo@kdive-postgresql:5432/kdive"  # pragma: allowlist secret
+    # The demo apps must reach the in-chart services, not render empty config.
+    dsn = (
+        "postgresql://kdive:kdive-demo@kdive-kdive-postgres:5432/kdive"  # pragma: allowlist secret
+    )
     assert f'KDIVE_DATABASE_URL: "{dsn}"' in res.stdout
-    assert 'KDIVE_S3_ENDPOINT_URL: "http://kdive-minio:9000"' in res.stdout
+    assert 'KDIVE_S3_ENDPOINT_URL: "http://kdive-kdive-minio:9000"' in res.stdout
+    assert 'KDIVE_OIDC_ISSUER: "http://kdive-kdive-oidc:8080/default"' in res.stdout
+    assert 'KDIVE_OIDC_JWKS_URI: "http://kdive-kdive-oidc:8080/default/jwks"' in res.stdout
     assert "wait-for-db" in res.stdout
 
 
@@ -264,6 +268,50 @@ def test_secrets_set_projects_readonly_on_each_component(proc: str) -> None:
     # — verified on a real cluster. YAML parses the octal literal 0440 to 288.
     assert volume["secret"]["defaultMode"] == 0o440
     assert deploy["spec"]["template"]["spec"]["securityContext"]["fsGroup"] == 10001
+
+
+def test_bundled_renders_demo_backends() -> None:
+    res = _template("bundledBackends=true", "demoAcknowledged=true")
+    assert res.returncode == 0, res.stderr
+    for name in ("kdive-kdive-postgres", "kdive-kdive-minio", "kdive-kdive-oidc"):
+        assert f"name: {name}\n" in res.stdout, name
+    assert "mock-oauth2-server" in res.stdout
+    assert "kind: NetworkPolicy" in res.stdout
+    # six Deployments on the demo path: 3 app + 3 demo backends.
+    assert res.stdout.count("kind: Deployment") == 6
+
+
+def test_external_path_has_no_demo_backends() -> None:
+    res = _template("config.KDIVE_DATABASE_URL=postgresql://x/y")
+    assert res.returncode == 0, res.stderr
+    assert "mock-oauth2-server" not in res.stdout
+    assert "kind: NetworkPolicy" not in res.stdout
+    assert res.stdout.count("kind: Deployment") == 3
+
+
+def test_bundled_oidc_pins_audience_kdive() -> None:
+    res = _template("bundledBackends=true", "demoAcknowledged=true")
+    assert res.returncode == 0, res.stderr
+    assert '"aud":["kdive"]' in res.stdout
+
+
+def test_bundled_demo_services_are_clusterip() -> None:
+    res = _template("bundledBackends=true", "demoAcknowledged=true")
+    assert res.returncode == 0, res.stderr
+    for doc in yaml.safe_load_all(res.stdout):
+        if isinstance(doc, dict) and doc.get("kind") == "Service":
+            assert doc["spec"].get("type", "ClusterIP") == "ClusterIP", doc["metadata"]["name"]
+
+
+def test_bundled_with_nodeport_is_rejected() -> None:
+    res = _template("bundledBackends=true", "demoAcknowledged=true", "service.type=NodePort")
+    assert res.returncode != 0
+    assert "service.type must stay ClusterIP" in res.stderr
+
+
+def test_bundled_has_a_helm_test_hook() -> None:
+    hooks = _hooks_by_kind("bundledBackends=true", "demoAcknowledged=true")
+    assert hooks.get("Pod", {}).get("phase") == "test"
 
 
 def test_lint_is_clean() -> None:
