@@ -13,7 +13,8 @@ import asyncio
 
 import pytest
 
-from kdive.cli.commands import REGISTRY, images
+import kdive.cli.commands.images as images
+from kdive.cli.commands import REGISTRY
 
 
 class _FakeResult:
@@ -106,6 +107,32 @@ def test_upload_calls_images_upload_with_payload(monkeypatch: pytest.MonkeyPatch
     ]
 
 
+def test_upload_omits_lifetime_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _install(monkeypatch)
+    asyncio.run(
+        images.images_upload(
+            _args(
+                project="proj-a",
+                name="custom",
+                arch="x86_64",
+                quarantine_key="quarantine/abc",
+                lifetime_seconds=None,
+            )
+        )
+    )
+    assert client.calls == [
+        (
+            "images.upload",
+            {
+                "project": "proj-a",
+                "name": "custom",
+                "arch": "x86_64",
+                "quarantine_key": "quarantine/abc",
+            },
+        )
+    ]
+
+
 def test_delete_calls_images_delete(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _install(monkeypatch)
     asyncio.run(images.images_delete(_args(image_id="img-1")))
@@ -139,6 +166,33 @@ def test_build_calls_images_build(monkeypatch: pytest.MonkeyPatch) -> None:
             },
         )
     ]
+
+
+def test_build_trims_blank_capability_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _install(monkeypatch)
+    asyncio.run(
+        images.images_build(
+            _args(
+                provider="local-libvirt",
+                name="fedora-40",
+                arch="x86_64",
+                releasever="40",
+                source_image_digest="sha256:base",
+                capabilities=" agent, ,kdump, ",
+            )
+        )
+    )
+    assert client.calls[0] == (
+        "images.build",
+        {
+            "provider": "local-libvirt",
+            "name": "fedora-40",
+            "arch": "x86_64",
+            "releasever": "40",
+            "source_image_digest": "sha256:base",
+            "capabilities": ["agent", "kdump"],
+        },
+    )
 
 
 def test_publish_calls_images_publish(monkeypatch: pytest.MonkeyPatch) -> None:
