@@ -19,8 +19,8 @@ from defusedxml.ElementTree import fromstring as _safe_fromstring
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import ProvisioningProfile, validate_profile
 from kdive.providers.local_libvirt import discovery
-from kdive.providers.local_libvirt.lifecycle import provisioning as provisioning_module
-from kdive.providers.local_libvirt.lifecycle.provisioning import (
+from kdive.providers.local_libvirt import provisioning as provisioning_module
+from kdive.providers.local_libvirt.provisioning import (
     LocalLibvirtProvisioning,
     ProvisioningFiles,
     console_log_path,

@@ -7,7 +7,7 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import _UploadRootfs, validate_rootfs_reference
 from kdive.provider_components.references import CatalogComponentRef, LocalComponentRef
-from kdive.providers.local_libvirt.lifecycle.provisioning import reject_rootfs_without_upload_window
+from kdive.providers.local_libvirt.provisioning import reject_rootfs_without_upload_window
 
 
 def test_validate_rootfs_reference_accepts_well_formed_upload() -> None:

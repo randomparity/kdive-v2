@@ -16,12 +16,12 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
+from kdive.provider_components.build_validation import parse_gnu_build_id
 from kdive.provider_components.references import (
     ArtifactComponentRef,
     CatalogComponentRef,
     LocalComponentRef,
 )
-from kdive.providers.build_validation import parse_gnu_build_id
 from kdive.providers.local_libvirt import build as build_module
 from kdive.providers.local_libvirt.build import (
     LocalLibvirtBuild,

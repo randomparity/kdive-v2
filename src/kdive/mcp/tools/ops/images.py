@@ -171,29 +171,6 @@ async def _operator_image_build(
         return await _enqueue_image_build(pool, ctx, tool=tool, payload=payload)
 
 
-def _build_payload(
-    *,
-    provider: str,
-    name: str,
-    arch: str,
-    releasever: str,
-    source_image_digest: str,
-    capabilities: tuple[str, ...],
-    format: str,
-    root_device: str,
-) -> ImageBuildPayload:
-    return ImageBuildPayload(
-        provider=provider,
-        name=name,
-        arch=arch,
-        releasever=releasever,
-        source_image_digest=source_image_digest,
-        capabilities=capabilities,
-        format=format,
-        root_device=root_device,
-    )
-
-
 async def build(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
@@ -208,7 +185,7 @@ async def build(
     root_device: str,
 ) -> ToolResponse:
     """Enqueue an ``IMAGE_BUILD`` job for a public base image. Requires ``platform_operator``."""
-    payload = _build_payload(
+    payload = ImageBuildPayload(
         provider=provider,
         name=name,
         arch=arch,
@@ -240,7 +217,7 @@ async def publish(
     realized ``defined`` baseline and a fresh build land through the one publish path; there is
     no second promote implementation.
     """
-    payload = _build_payload(
+    payload = ImageBuildPayload(
         provider=provider,
         name=name,
         arch=arch,

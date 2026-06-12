@@ -8,7 +8,7 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import _UploadRootfs
 from kdive.provider_components.references import CatalogComponentRef, LocalComponentRef
-from kdive.providers.local_libvirt.lifecycle.materialize import (
+from kdive.providers.local_libvirt.materialize import (
     RootfsMaterializationContext,
     RootfsUploadContext,
     materialize_rootfs_base,

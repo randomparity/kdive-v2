@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.build_configs.defaults import DEFAULT_CONFIG_REF
 from kdive.db import upload_manifest
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, RUNS
@@ -31,6 +32,7 @@ from kdive.mcp.tools.lifecycle.runs.common import (
 )
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile
 from kdive.provider_components.artifacts import HeadResult, StoredArtifact
+from kdive.provider_components.build_validation import ValidatorStore, validate_external_artifacts
 from kdive.provider_components.catalog import load_fixture_catalog
 from kdive.provider_components.references import CONFIG_COMPONENT, ComponentRef
 from kdive.provider_components.requirements import ConfigRequirements
@@ -39,8 +41,6 @@ from kdive.provider_components.validation import (
     ComponentSourceCapabilities,
     reject_unsupported_component_source,
 )
-from kdive.providers.build_common import _DEFAULT_CONFIG_REF
-from kdive.providers.build_validation import ValidatorStore, validate_external_artifacts
 from kdive.providers.ports import BuildOutput, ValidatedUpload
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
@@ -149,7 +149,7 @@ class RunBuildHandlers:
                 # An omitted config validates against the kdump catalog default — the same
                 # substitution the resolver applies on the build path (ADR-0096), so a provider
                 # that does not accept a catalog config rejects an omitted ref at run-creation.
-                config_ref = parsed.config or _DEFAULT_CONFIG_REF
+                config_ref = parsed.config or DEFAULT_CONFIG_REF
                 try:
                     reject_unsupported_component_source(
                         self.component_sources,

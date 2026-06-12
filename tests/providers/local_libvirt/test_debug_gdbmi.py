@@ -25,7 +25,7 @@ from kdive.providers.debug_common.gdbmi import (
     parse_mi_records,
 )
 from kdive.providers.debug_common.transcript import append_transcript
-from kdive.providers.local_libvirt.debug import debug_gdbmi
+from kdive.providers.local_libvirt import debug as debug_gdbmi
 from kdive.providers.ports import GdbMiAttachment, GdbStopRecord
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry

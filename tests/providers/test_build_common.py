@@ -7,17 +7,16 @@ from types import TracebackType
 
 import pytest
 
+from kdive.build_configs import defaults as build_defaults
 from kdive.build_configs.catalog import BuildConfigEntry
+from kdive.build_configs.defaults import DEFAULT_CONFIG_REF, build_config_fetch_from_env
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.provider_components.artifacts import FetchedArtifact
 from kdive.provider_components.references import CatalogComponentRef
-from kdive.providers import build_common
 from kdive.providers.build_common import (
-    _DEFAULT_CONFIG_REF,
     _dropped_fragment_symbols,
     _fragment_symbols,
-    build_config_fetch_from_env,
 )
 
 
@@ -53,7 +52,7 @@ def test_dropped_fragment_symbols_accepts_module_survivor() -> None:
 
 def test_default_config_ref_is_the_kdump_catalog_entry() -> None:
     assert (
-        CatalogComponentRef(kind="catalog", provider="system", name="kdump") == _DEFAULT_CONFIG_REF
+        CatalogComponentRef(kind="catalog", provider="system", name="kdump") == DEFAULT_CONFIG_REF
     )
 
 
@@ -86,9 +85,9 @@ def _patch_fetch_env(
     store: object,
 ) -> None:
     monkeypatch.setenv("KDIVE_DATABASE_URL", "postgresql://stub/stub")
-    monkeypatch.setattr(build_common.psycopg, "connect", lambda _url: conn)
-    monkeypatch.setattr(build_common, "get_build_config_sync", lambda _conn, _name: entry)
-    monkeypatch.setattr(build_common, "object_store_from_env", lambda: store)
+    monkeypatch.setattr(build_defaults.psycopg, "connect", lambda _url: conn)
+    monkeypatch.setattr(build_defaults, "get_build_config_sync", lambda _conn, _name: entry)
+    monkeypatch.setattr(build_defaults, "object_store_from_env", lambda: store)
 
 
 def test_build_config_fetch_unknown_name_is_configuration_error(

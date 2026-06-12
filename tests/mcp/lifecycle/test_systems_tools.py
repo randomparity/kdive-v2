@@ -40,7 +40,7 @@ from kdive.profiles.provisioning import RootfsSource
 from kdive.provider_components.artifacts import ArtifactWriteRequest
 from kdive.provider_components.references import ComponentRef
 from kdive.provider_components.uploads import ManifestEntry
-from kdive.providers.local_libvirt.lifecycle.materialize import (
+from kdive.providers.local_libvirt.materialize import (
     RootfsMaterializationContext,
     materialize_rootfs_base,
 )

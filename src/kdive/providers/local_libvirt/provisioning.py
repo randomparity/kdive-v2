@@ -40,7 +40,7 @@ from kdive.profiles.provisioning import (
 )
 from kdive.provider_components.references import CatalogComponentRef
 from kdive.providers.local_libvirt.discovery import _KDIVE_METADATA_NS
-from kdive.providers.local_libvirt.lifecycle.materialize import (
+from kdive.providers.local_libvirt.materialize import (
     RootfsMaterializationContext,
     RootfsUploadContext,
     materialize_rootfs_base,

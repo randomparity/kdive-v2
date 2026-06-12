@@ -11,8 +11,8 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.debug_common.rsp import rsp_frame, valid_rsp_frame
-from kdive.providers.local_libvirt.lifecycle import connect as connect_mod
-from kdive.providers.local_libvirt.lifecycle.connect import LocalLibvirtConnect
+from kdive.providers.local_libvirt import connect as connect_mod
+from kdive.providers.local_libvirt.connect import LocalLibvirtConnect
 from kdive.providers.ports import SystemHandle, TransportHandleData
 
 # --- RSP framing codec ---------------------------------------------------------------------

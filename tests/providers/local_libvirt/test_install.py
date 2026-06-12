@@ -16,8 +16,8 @@ from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.provider_components.artifacts import FetchedArtifact
-from kdive.providers.local_libvirt.lifecycle import install
-from kdive.providers.local_libvirt.lifecycle.install import (
+from kdive.providers.local_libvirt import install
+from kdive.providers.local_libvirt.install import (
     LocalLibvirtInstall,
     ReadinessResult,
     _stage_object,
@@ -293,7 +293,7 @@ def test_from_env_does_not_connect(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_read_console_log_returns_bytes(tmp_path: Path) -> None:
-    from kdive.providers.local_libvirt.lifecycle.install import read_console_log
+    from kdive.providers.local_libvirt.install import read_console_log
 
     log = tmp_path / "sys.log"
     log.write_bytes(b"[ 0.0] Kernel panic - __d_lookup\n")
@@ -301,7 +301,7 @@ def test_read_console_log_returns_bytes(tmp_path: Path) -> None:
 
 
 def test_read_console_log_missing_is_empty(tmp_path: Path) -> None:
-    from kdive.providers.local_libvirt.lifecycle.install import read_console_log
+    from kdive.providers.local_libvirt.install import read_console_log
 
     assert read_console_log(tmp_path / "absent.log") == b""
 

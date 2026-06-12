@@ -27,11 +27,21 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 import kdive.config as config
+from kdive.build_configs.defaults import (
+    DEFAULT_CONFIG_REF,
+    CatalogConfigFetch,
+    build_config_fetch_from_env,
+)
 from kdive.config.core_settings import BUILD_COMPONENT_ROOTS, BUILD_WORKSPACE, KERNEL_SRC
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
+from kdive.provider_components.build_validation import (
+    parse_gnu_build_id,
+    patch_target_paths,
+    snapshot_file_bytes,
+)
 from kdive.provider_components.catalog import load_fixture_catalog
 from kdive.provider_components.local_paths import validate_local_component_path
 from kdive.provider_components.references import (
@@ -40,17 +50,7 @@ from kdive.provider_components.references import (
     LocalComponentRef,
 )
 from kdive.provider_components.requirements import ConfigRequirements, validate_config_requirements
-from kdive.providers.build_common import (
-    _DEFAULT_CONFIG_REF,
-    CatalogConfigFetch,
-    _dropped_fragment_symbols,
-    build_config_fetch_from_env,
-)
-from kdive.providers.build_validation import (
-    parse_gnu_build_id,
-    patch_target_paths,
-    snapshot_file_bytes,
-)
+from kdive.providers.build_common import _dropped_fragment_symbols
 from kdive.providers.ports import BuildOutput
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -172,7 +172,7 @@ class LocalLibvirtBuild:
                 propagated from a failed artifact store.
         """
         workspace = self._workspace_root / str(run_id)
-        config_ref = profile.config or _DEFAULT_CONFIG_REF
+        config_ref = profile.config or DEFAULT_CONFIG_REF
         fragment_bytes = _resolve_config_bytes(
             config_ref,
             allowed_component_roots=self._allowed_component_roots,
