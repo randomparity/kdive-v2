@@ -34,6 +34,7 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import RequestContext
+from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.debug import ops as debug_ops
 from kdive.mcp.tools.debug import sessions as debug_tools
 from kdive.mcp.tools.debug.ops import (
@@ -44,7 +45,7 @@ from kdive.providers.debug_common.gdbmi import GdbMiEngine
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.providers.ports import GdbMiAttachment, TransportHandleData
 from kdive.providers.resolver import ProviderBinding, ProviderResolver
-from kdive.providers.runtime import ProviderRuntime
+from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.resources.discovery import register_discovered_resource
@@ -527,21 +528,40 @@ def test_provider_debug_runtime_cache_uses_binding_kind() -> None:
     first_attach = _CountingAttach()
     first_provider = cast(
         ProviderRuntime,
-        SimpleNamespace(debug_engine=GdbMiEngine(), attach_seam=first_attach),
+        SimpleNamespace(debug=DebugCapabilities(engine=GdbMiEngine(), attach_seam=first_attach)),
     )
     runtime = resolver.runtime_for_binding(
         ProviderBinding(kind=ResourceKind.LOCAL_LIBVIRT, runtime=first_provider)
     )
+    assert isinstance(runtime, DebugEngineRuntime)
 
     second_provider = cast(
         ProviderRuntime,
-        SimpleNamespace(debug_engine=GdbMiEngine(), attach_seam=_CountingAttach()),
+        SimpleNamespace(
+            debug=DebugCapabilities(engine=GdbMiEngine(), attach_seam=_CountingAttach())
+        ),
     )
     same_runtime = resolver.runtime_for_binding(
         ProviderBinding(kind=ResourceKind.LOCAL_LIBVIRT, runtime=second_provider)
     )
+    assert isinstance(same_runtime, DebugEngineRuntime)
 
     assert same_runtime is runtime
+
+
+def test_provider_debug_runtime_fails_when_debug_capability_absent() -> None:
+    resolver = debug_ops.DebugRuntimeResolver(cast(ProviderResolver, object()))
+    provider = cast(ProviderRuntime, SimpleNamespace(debug=None))
+
+    response = resolver.runtime_for_binding(
+        ProviderBinding(kind=ResourceKind.FAULT_INJECT, runtime=provider),
+        object_id="session-1",
+    )
+
+    assert isinstance(response, ToolResponse)
+    assert response.status == "error"
+    assert response.error_category == "debug_attach_failure"
+    assert response.data["reason"] == "provider_debug_unavailable"
 
 
 def test_end_session_reaps_engine(migrated_url: str) -> None:

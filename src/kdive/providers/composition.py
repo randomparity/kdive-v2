@@ -83,7 +83,7 @@ from kdive.providers.remote_libvirt.lifecycle.provisioning import RemoteLibvirtP
 from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
 from kdive.providers.remote_libvirt.transport_reset import RemoteLibvirtTransportResetter
 from kdive.providers.resolver import ProviderResolver
-from kdive.providers.runtime import ProviderRuntime
+from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
 from kdive.providers.transport_reset import NullResetter, TransportResetter
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -142,8 +142,10 @@ def build_local_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
             {CaptureMethod.CONSOLE, CaptureMethod.HOST_DUMP, CaptureMethod.GDBSTUB}
         ),
         discovery_registrar=ensure_local_host_registered,
-        attach_seam=default_attach_seam,
-        debug_engine=GdbMiEngine(redactor_factory=lambda: Redactor(registry=secret_registry)),
+        debug=DebugCapabilities(
+            attach_seam=default_attach_seam,
+            engine=GdbMiEngine(redactor_factory=lambda: Redactor(registry=secret_registry)),
+        ),
         component_sources=_local_component_sources(),
         build_config_validator=builder.validate_config_ref,
         rootfs_validator=provisioner.validate_rootfs_ref,
@@ -202,8 +204,10 @@ def build_faultinject_runtime(
             {CaptureMethod.CONSOLE, CaptureMethod.HOST_DUMP, CaptureMethod.GDBSTUB}
         ),
         discovery_registrar=ensure_faultinject_resource_registered,
-        attach_seam=fault_inject_attach_seam,
-        debug_engine=FaultInjectDebugEngine(),
+        debug=DebugCapabilities(
+            attach_seam=fault_inject_attach_seam,
+            engine=FaultInjectDebugEngine(),
+        ),
         component_sources=_faultinject_component_sources(),
         rootfs_validator=lambda _rootfs: None,
     )
@@ -283,12 +287,14 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
             }
         ),
         discovery_registrar=register_remote_host,
-        attach_seam=remote_attach_seam,
         # The MI ops never validate the host, but pin the ACL-remote policy so the engine and
         # its attach seam agree — the remote runtime is correct-by-construction (ADR-0083 §2).
-        debug_engine=GdbMiEngine(
-            redactor_factory=lambda: Redactor(registry=secret_registry),
-            host_policy=allow_acl_remote,
+        debug=DebugCapabilities(
+            attach_seam=remote_attach_seam,
+            engine=GdbMiEngine(
+                redactor_factory=lambda: Redactor(registry=secret_registry),
+                host_policy=allow_acl_remote,
+            ),
         ),
         component_sources=_remote_component_sources(),
         build_config_validator=builder.validate_config_ref,

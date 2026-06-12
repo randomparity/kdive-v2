@@ -133,15 +133,24 @@ class DebugRuntimeResolver:
                 binding = await self._resolver.binding_for_session(conn, session_id)
             except CategorizedError as exc:
                 return ToolResponse.failure_from_error(str(session_id), exc)
-        return self.runtime_for_binding(binding)
+        return self.runtime_for_binding(binding, object_id=str(session_id))
 
-    def runtime_for_binding(self, binding: ProviderBinding) -> DebugEngineRuntime:
+    def runtime_for_binding(
+        self, binding: ProviderBinding, *, object_id: str | None = None
+    ) -> DebugEngineRuntime | ToolResponse:
+        debug = binding.runtime.debug
+        if debug is None:
+            return ToolResponse.failure(
+                object_id or binding.kind.value,
+                ErrorCategory.DEBUG_ATTACH_FAILURE,
+                data={"reason": "provider_debug_unavailable"},
+            )
         with self._guard:
             runtime = self._runtimes.get(binding.kind)
             if runtime is None:
                 runtime = DebugEngineRuntime(
-                    engine=binding.runtime.debug_engine,
-                    attach=binding.runtime.attach_seam,
+                    engine=debug.engine,
+                    attach=debug.attach_seam,
                     transcript_dir=self._transcript_dir,
                 )
                 self._runtimes[binding.kind] = runtime

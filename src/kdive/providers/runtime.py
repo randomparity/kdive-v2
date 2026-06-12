@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import NoReturn
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -26,10 +24,7 @@ from kdive.providers.ports import (
     Connector,
     Controller,
     CrashPostmortem,
-    GdbBreakpointRef,
-    GdbMiAttachment,
     GdbMiEngine,
-    GdbStopRecord,
     Installer,
     LiveIntrospector,
     Provisioner,
@@ -46,48 +41,12 @@ def _unconfigured_component_sources() -> ComponentSourceCapabilities:
     return ComponentSourceCapabilities(provider="unconfigured", accepted_component_sources={})
 
 
-def _missing_attach_seam(
-    *,
-    host: str,
-    port: int,
-    run_id: str,
-    transcript_path: Path,
-) -> GdbMiAttachment:
-    raise RuntimeError(
-        "debug attach seam is not configured for this ProviderRuntime; "
-        "build the runtime through kdive.providers.composition"
-    )
+@dataclass(frozen=True, slots=True)
+class DebugCapabilities:
+    """Optional live-debug capability group for providers that support gdb/MI."""
 
-
-class _UnavailableGdbMiEngine:
-    def _raise(self) -> NoReturn:
-        raise RuntimeError(
-            "gdb/MI engine is not configured for this ProviderRuntime; "
-            "build the runtime through kdive.providers.composition"
-        )
-
-    def set_breakpoint(self, attachment: GdbMiAttachment, location: str) -> GdbBreakpointRef:
-        self._raise()
-
-    def clear_breakpoint(self, attachment: GdbMiAttachment, number: str) -> None:
-        self._raise()
-
-    def list_breakpoints(self, attachment: GdbMiAttachment) -> list[GdbBreakpointRef]:
-        self._raise()
-
-    def read_memory(self, attachment: GdbMiAttachment, *, address: int, byte_count: int) -> bytes:
-        self._raise()
-
-    def read_registers(
-        self, attachment: GdbMiAttachment, register_names: list[str]
-    ) -> dict[str, object]:
-        self._raise()
-
-    def continue_(self, attachment: GdbMiAttachment, *, timeout_sec: float) -> GdbStopRecord:
-        self._raise()
-
-    def interrupt(self, attachment: GdbMiAttachment) -> GdbStopRecord | None:
-        self._raise()
+    attach_seam: AttachSeam
+    engine: GdbMiEngine
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,8 +67,7 @@ class ProviderRuntime:
         default_factory=lambda: frozenset(CaptureMethod)
     )
     discovery_registrar: DiscoveryRegistrar | None = None
-    attach_seam: AttachSeam = _missing_attach_seam
-    debug_engine: GdbMiEngine = field(default_factory=_UnavailableGdbMiEngine)
+    debug: DebugCapabilities | None = None
     component_sources: ComponentSourceCapabilities = field(
         default_factory=_unconfigured_component_sources
     )

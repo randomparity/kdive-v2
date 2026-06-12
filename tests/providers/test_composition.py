@@ -478,7 +478,8 @@ def test_remote_runtime_gdbstub_debug_path_is_unchanged(
 
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
-    assert runtime.attach_seam is remote_attach_seam
+    assert runtime.debug is not None
+    assert runtime.debug.attach_seam is remote_attach_seam
     assert isinstance(runtime.connector, RemoteLibvirtConnect)
 
 
@@ -556,7 +557,8 @@ def test_remote_runtime_wires_connect_and_introspect_ports(
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
     assert isinstance(runtime.connector, RemoteLibvirtConnect)
-    assert runtime.attach_seam is remote_attach_seam
+    assert runtime.debug is not None
+    assert runtime.debug.attach_seam is remote_attach_seam
     assert isinstance(runtime.vmcore_introspector, RemoteVmcoreIntrospect)
     assert isinstance(runtime.live_introspector, RemoteLiveIntrospect)
 

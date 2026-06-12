@@ -139,7 +139,14 @@ class _ResolvedDebugSessionProvider:
             binding = await self.resolver.binding_for_session(conn, session_id)
         except CategorizedError as exc:
             return ToolResponse.failure_from_error(str(session_id), exc)
-        runtime = self.runtime.runtime_for_binding(binding) if self.runtime is not None else None
+        runtime: DebugEngineRuntime | None
+        if self.runtime is None:
+            runtime = None
+        else:
+            resolved_runtime = self.runtime.runtime_for_binding(binding, object_id=str(session_id))
+            if isinstance(resolved_runtime, ToolResponse):
+                return resolved_runtime
+            runtime = resolved_runtime
         return _DetachResources(connector=binding.runtime.connector, runtime=runtime)
 
 
