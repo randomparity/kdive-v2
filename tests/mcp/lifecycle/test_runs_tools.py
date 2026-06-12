@@ -50,6 +50,7 @@ from kdive.mcp.tools.lifecycle.runs.create import (
 )
 from kdive.mcp.tools.lifecycle.runs.steps import boot_run, install_run
 from kdive.mcp.tools.lifecycle.runs.view import get_run
+from kdive.provider_components.references import CatalogComponentRef
 from kdive.provider_components.validation import ComponentSourceCapabilities
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -1101,6 +1102,11 @@ _TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
     accepted_component_sources={"config": frozenset({"local"})},
 )
 _BUILD_HANDLERS = RunBuildHandlers(_TEST_COMPONENT_SOURCES)
+# A provider that accepts the catalog config source (local-libvirt/remote-libvirt under ADR-0096).
+_CATALOG_COMPONENT_SOURCES = ComponentSourceCapabilities(
+    provider="catalog-provider",
+    accepted_component_sources={"config": frozenset({"catalog", "local"})},
+)
 
 
 async def _build(pool: AsyncConnectionPool, ctx: RequestContext, run_id: str) -> Any:
@@ -1284,6 +1290,57 @@ def test_build_rejects_local_config_outside_provider_roots_before_state_change(
 
     asyncio.run(_run())
     assert len(calls) == 1
+
+
+def test_build_omitted_config_validates_kdump_catalog_default(migrated_url: str) -> None:
+    # ADR-0096: an omitted config substitutes the kdump catalog ref BEFORE validation, so a
+    # provider that accepts the catalog source admits the build and the validator sees that ref.
+    validated: list[Any] = []
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            profile = {
+                "schema_version": 1,
+                "kernel_source_ref": "git+https://git.kernel.org#v6.9",
+            }
+            run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
+
+            resp = await RunBuildHandlers(
+                _CATALOG_COMPONENT_SOURCES,
+                config_validator=validated.append,
+            ).build_run(pool, _ctx(Role.OPERATOR), run_id)
+
+        assert resp.status == "queued"
+        assert validated == [CatalogComponentRef(kind="catalog", provider="system", name="kdump")]
+
+    asyncio.run(_run())
+
+
+def test_build_omitted_config_rejected_when_provider_lacks_catalog_source(
+    migrated_url: str,
+) -> None:
+    # A provider that does NOT accept the catalog source rejects an omitted config at
+    # run-creation (the substituted kdump catalog ref is unsupported), before any state change.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            profile = {
+                "schema_version": 1,
+                "kernel_source_ref": "git+https://git.kernel.org#v6.9",
+            }
+            run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
+
+            resp = await _BUILD_HANDLERS.build_run(pool, _ctx(Role.OPERATOR), run_id)
+
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs", ())
+            ncreated = await _count(
+                pool, "SELECT count(*) AS n FROM runs WHERE id=%s AND state='created'", (run_id,)
+            )
+
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert njobs == 0
+        assert ncreated == 1
+
+    asyncio.run(_run())
 
 
 @pytest.mark.parametrize("state", [RunState.FAILED, RunState.CANCELED])

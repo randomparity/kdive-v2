@@ -22,6 +22,7 @@
 | [`artifacts.list`](artifacts.md#artifactslist) | `partial` |
 | [`artifacts.search_text`](artifacts.md#artifactssearch_text) | `partial` |
 | [`audit.query`](audit.md#auditquery) | `implemented` |
+| [`buildconfig.get`](buildconfig.md#buildconfigget) | `implemented` |
 | [`control.force_crash`](control.md#controlforce_crash) | `partial` |
 | [`control.power`](control.md#controlpower) | `partial` |
 | [`debug.clear_breakpoint`](debug.md#debugclear_breakpoint) | `partial` |

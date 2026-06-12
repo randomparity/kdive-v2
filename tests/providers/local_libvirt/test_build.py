@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import shutil
 import struct
 import subprocess
@@ -17,7 +16,11 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
-from kdive.provider_components.references import LocalComponentRef
+from kdive.provider_components.references import (
+    ArtifactComponentRef,
+    CatalogComponentRef,
+    LocalComponentRef,
+)
 from kdive.providers.build_validation import parse_gnu_build_id
 from kdive.providers.local_libvirt import build as build_module
 from kdive.providers.local_libvirt.build import (
@@ -25,8 +28,8 @@ from kdive.providers.local_libvirt.build import (
     _apply_patch,
     _real_read_config,
     _real_read_kernel_image,
+    _resolve_config_bytes,
     _resolve_local_ref,
-    _stage_config,
     _sync_tree,
 )
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -37,7 +40,7 @@ _TENANT = "proj"
 _VALID_PROFILE: dict[str, Any] = {
     "schema_version": 1,
     "kernel_source_ref": "git+https://git.kernel.org/pub/scm/linux.git#v6.9",
-    "config": {"kind": "local", "path": "/configs/x86_64-kdump.config"},
+    "config": {"kind": "catalog", "provider": "system", "name": "kdump"},
     "patch_ref": None,
 }
 
@@ -49,6 +52,8 @@ _GOOD_CONFIG = "\n".join(
         "CONFIG_DEBUG_INFO_DWARF5=y",
     ]
 )
+# Catalog fragment bytes the injected fetch returns; its symbols survive the (faked) read_config.
+_FRAGMENT_BYTES = _GOOD_CONFIG.encode()
 
 _NT_GNU_BUILD_ID = 3
 
@@ -104,10 +109,14 @@ class _Seams:
     make_calls: int = 0
     checkout_calls: int = 0
     call_order: list[str] = field(default_factory=list)
+    merged_fragments: list[bytes] = field(default_factory=list)
 
-    def checkout(self, run_id: UUID, profile: ServerBuildProfile, workspace: Path) -> None:
+    def checkout(
+        self, run_id: UUID, profile: ServerBuildProfile, workspace: Path, fragment_bytes: bytes
+    ) -> None:
         self.checkout_calls += 1
         self.call_order.append("checkout")
+        self.merged_fragments.append(fragment_bytes)
 
     def run_olddefconfig(self, workspace: Path) -> int:
         self.olddefconfig_calls += 1
@@ -133,7 +142,13 @@ class _Seams:
         return self.build_id.hex()
 
 
-def _builder(store: _FakeStore, seams: _Seams, tmp_path: Path) -> LocalLibvirtBuild:
+def _builder(
+    store: _FakeStore,
+    seams: _Seams,
+    tmp_path: Path,
+    *,
+    catalog_fetch: Any = None,
+) -> LocalLibvirtBuild:
     return LocalLibvirtBuild(
         tenant=_TENANT,
         workspace_root=tmp_path,
@@ -146,6 +161,7 @@ def _builder(store: _FakeStore, seams: _Seams, tmp_path: Path) -> LocalLibvirtBu
         read_vmlinux=seams.read_vmlinux,
         read_build_id=seams.read_build_id,
         secret_registry=SecretRegistry(),
+        catalog_fetch=catalog_fetch or (lambda _name: _FRAGMENT_BYTES),
     )
 
 
@@ -314,6 +330,7 @@ def test_build_missing_bzimage_after_make_is_build_failure(tmp_path: Path) -> No
         read_vmlinux=seams.read_vmlinux,
         read_build_id=seams.read_build_id,
         secret_registry=SecretRegistry(),
+        catalog_fetch=lambda _name: _FRAGMENT_BYTES,
     )
 
     with pytest.raises(CategorizedError) as caught:
@@ -382,7 +399,7 @@ def test_validate_config_ref_rejects_local_file_outside_allowed_roots(tmp_path: 
         tenant=_TENANT,
         workspace_root=tmp_path / "workspace",
         store_factory=lambda: _FakeStore(),
-        checkout=lambda _run, _profile, _workspace: None,
+        checkout=lambda _run, _profile, _workspace, _fragment: None,
         run_olddefconfig=lambda _workspace: 0,
         read_config=lambda _workspace: _GOOD_CONFIG,
         run_make=lambda _workspace: 0,
@@ -390,6 +407,7 @@ def test_validate_config_ref_rejects_local_file_outside_allowed_roots(tmp_path: 
         read_vmlinux=lambda _workspace: b"vmlinux",
         read_build_id=lambda _workspace: "deadbeef",
         secret_registry=SecretRegistry(),
+        catalog_fetch=lambda _name: _FRAGMENT_BYTES,
         allowed_component_roots=[allowed],
     )
 
@@ -543,8 +561,8 @@ def test_live_vm_real_make_build_id_matches_readelf() -> None:  # pragma: no cov
             tenant=_TENANT,
             workspace_root=Path(tmp),
             store_factory=lambda: store,
-            checkout=lambda _run, profile, ws: build_module._real_checkout(
-                src, profile, ws, secret_registry=SecretRegistry()
+            checkout=lambda run_id, profile, ws, fragment: build_module._real_checkout(
+                src, profile, ws, fragment, run_id=run_id, secret_registry=SecretRegistry()
             ),
             run_olddefconfig=build_module._real_run_olddefconfig,
             read_config=build_module._real_read_config,
@@ -553,6 +571,7 @@ def test_live_vm_real_make_build_id_matches_readelf() -> None:  # pragma: no cov
             read_vmlinux=build_module._real_read_vmlinux,
             read_build_id=build_module._real_read_build_id,
             secret_registry=SecretRegistry(),
+            catalog_fetch=build_module.build_config_fetch_from_env(),
         )
         profile = BuildProfile.parse(
             {
@@ -627,139 +646,123 @@ def test_resolve_local_ref_rejects_directory(tmp_path: Path) -> None:
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
-# --- _stage_config ------------------------------------------------------------------
+# --- _resolve_config_bytes (local + catalog) ----------------------------------------
 
 
-def test_stage_config_copies_bytes_to_workspace_dotconfig(tmp_path: Path) -> None:
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
+def test_resolve_config_bytes_reads_local_file(tmp_path: Path) -> None:
     root = tmp_path / "components"
     root.mkdir()
     config = root / "x.config"
-    config.write_text("CONFIG_FROM_REF=y\n")
+    config.write_bytes(b"CONFIG_FROM_REF=y\n")
 
-    _stage_config(
+    data = _resolve_config_bytes(
         LocalComponentRef(kind="local", path=str(config)),
-        workspace,
         allowed_component_roots=[root],
+        catalog_fetch=lambda _name: b"unused",
     )
 
-    assert (workspace / ".config").read_text() == "CONFIG_FROM_REF=y\n"
+    assert data == b"CONFIG_FROM_REF=y\n"
 
 
-def test_stage_config_overwrites_existing_dotconfig(tmp_path: Path) -> None:
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    (workspace / ".config").write_text("CONFIG_WARM_TREE=y\n")
-    root = tmp_path / "components"
-    root.mkdir()
-    config = root / "x.config"
-    config.write_text("CONFIG_FROM_REF=y\n")
-
-    _stage_config(
-        LocalComponentRef(kind="local", path=str(config)),
-        workspace,
-        allowed_component_roots=[root],
-    )
-
-    assert (workspace / ".config").read_text() == "CONFIG_FROM_REF=y\n"
-
-
-def test_stage_config_rejects_sha256_mismatch_before_copy(tmp_path: Path) -> None:
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
+def test_resolve_config_bytes_rejects_local_sha256_mismatch(tmp_path: Path) -> None:
     root = tmp_path / "components"
     root.mkdir()
     config = root / "x.config"
     config.write_text("CONFIG_FROM_REF=y\n")
 
     with pytest.raises(CategorizedError) as caught:
-        _stage_config(
+        _resolve_config_bytes(
             LocalComponentRef(kind="local", path=str(config), sha256="sha256:" + "0" * 64),
-            workspace,
             allowed_component_roots=[root],
+            catalog_fetch=lambda _name: b"unused",
         )
 
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
-    assert not (workspace / ".config").exists()
 
 
-def test_stage_config_copies_config_with_matching_sha256(tmp_path: Path) -> None:
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    root = tmp_path / "components"
-    root.mkdir()
-    config = root / "x.config"
-    content = b"CONFIG_FROM_REF=y\n"
-    config.write_bytes(content)
-    sha256 = f"sha256:{hashlib.sha256(content).hexdigest()}"
-
-    _stage_config(
-        LocalComponentRef(kind="local", path=str(config), sha256=sha256),
-        workspace,
-        allowed_component_roots=[root],
-    )
-
-    assert (workspace / ".config").read_bytes() == content
-
-
-def test_stage_config_rejects_config_outside_allowed_roots_before_copy(tmp_path: Path) -> None:
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
+def test_resolve_config_bytes_rejects_local_outside_allowed_roots(tmp_path: Path) -> None:
     root = tmp_path / "components"
     root.mkdir()
     outside = tmp_path / "outside.config"
     outside.write_text("CONFIG_FROM_REF=y\n")
 
     with pytest.raises(CategorizedError) as caught:
-        _stage_config(
+        _resolve_config_bytes(
             LocalComponentRef(kind="local", path=str(outside)),
-            workspace,
             allowed_component_roots=[root],
+            catalog_fetch=lambda _name: b"unused",
         )
 
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
-    assert not (workspace / ".config").exists()
 
 
-def test_stage_config_missing_ref_is_configuration_error(tmp_path: Path) -> None:
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    root = tmp_path / "components"
-    root.mkdir()
+def test_resolve_config_bytes_returns_injected_catalog_bytes() -> None:
+    data = _resolve_config_bytes(
+        CatalogComponentRef(kind="catalog", provider="system", name="kdump"),
+        allowed_component_roots=[Path("/unused")],
+        catalog_fetch=lambda name: f"CONFIG_{name.upper()}=y\n".encode(),
+    )
+
+    assert data == b"CONFIG_KDUMP=y\n"
+
+
+def test_resolve_config_bytes_rejects_artifact_kind() -> None:
     with pytest.raises(CategorizedError) as caught:
-        _stage_config(
-            LocalComponentRef(kind="local", path=str(root / "absent.config")),
-            workspace,
-            allowed_component_roots=[root],
+        _resolve_config_bytes(
+            ArtifactComponentRef(
+                kind="artifact",
+                artifact_id=UUID("00000000-0000-0000-0000-000000000001"),
+            ),
+            allowed_component_roots=[Path("/unused")],
+            catalog_fetch=lambda _name: b"unused",
         )
+
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
-def test_stage_config_copy_fault_is_infrastructure_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    root = tmp_path / "components"
-    root.mkdir()
-    config = root / "x.config"
-    config.write_text("CONFIG_FROM_REF=y\n")
+# --- build()-path default + survival check -------------------------------------------
 
-    def _copy_fault(*_: object, **__: object) -> None:
-        raise OSError("disk full")
 
-    monkeypatch.setattr(build_module.shutil, "copyfile", _copy_fault)
+def test_build_with_no_config_resolves_kdump_default_via_catalog_fetch(tmp_path: Path) -> None:
+    # The build-path default fires when profile.config is None: the injected catalog_fetch is
+    # called with "kdump" and its bytes are what reach _checkout (merged onto defconfig).
+    fetched_names: list[str] = []
+
+    def _fetch(name: str) -> bytes:
+        fetched_names.append(name)
+        return _FRAGMENT_BYTES
+
+    store, seams = _FakeStore(), _Seams()
+    profile = BuildProfile.parse(
+        {
+            "schema_version": 1,
+            "kernel_source_ref": "git+https://git.kernel.org#v6.9",
+            "patch_ref": None,
+        }
+    )
+    assert isinstance(profile, ServerBuildProfile)
+    assert profile.config is None
+
+    _builder(store, seams, tmp_path, catalog_fetch=_fetch).build(_RUN, profile)
+
+    assert fetched_names == ["kdump"]
+    assert seams.merged_fragments == [_FRAGMENT_BYTES]
+
+
+def test_build_fails_when_fragment_symbol_dropped(tmp_path: Path) -> None:
+    # The injected fragment requests CONFIG_PROC_VMCORE, but the final .config (read seam) drops
+    # it: the survival check fails with CONFIGURATION_ERROR naming the dropped symbol, no make.
+    fragment = b"CONFIG_CRASH_DUMP=y\nCONFIG_DEBUG_INFO_DWARF5=y\nCONFIG_PROC_VMCORE=y\n"
+    final = "CONFIG_CRASH_DUMP=y\nCONFIG_DEBUG_INFO_DWARF5=y\n# CONFIG_PROC_VMCORE is not set\n"
+    store, seams = _FakeStore(), _Seams(config_text=final)
 
     with pytest.raises(CategorizedError) as caught:
-        _stage_config(
-            LocalComponentRef(kind="local", path=str(config)),
-            workspace,
-            allowed_component_roots=[root],
-        )
+        _builder(store, seams, tmp_path, catalog_fetch=lambda _n: fragment).build(_RUN, _profile())
 
-    assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
-    assert caught.value.details == {"op": "copy_config", "path": ".config"}
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert caught.value.details == {"dropped": ["CONFIG_PROC_VMCORE"]}
+    assert seams.make_calls == 0
+    assert store.puts == []
 
 
 # --- _apply_patch -------------------------------------------------------------------
@@ -1068,9 +1071,9 @@ def test_real_checkout_calls_steps_in_order_with_right_args(
         order.append("sync")
         seen["sync"] = (kernel_src, ws)
 
-    def _stage(config_ref: object, ws: Path, *, allowed_component_roots: list[Path]) -> None:
-        order.append("stage")
-        seen["stage"] = (config_ref, ws, allowed_component_roots)
+    def _merge(fragment_bytes: bytes, ws: Path, run_id: UUID) -> None:
+        order.append("merge")
+        seen["merge"] = (fragment_bytes, ws, run_id)
 
     def _patch(patch_ref: str, ws: Path, secret_registry: SecretRegistry) -> None:
         del secret_registry
@@ -1078,29 +1081,23 @@ def test_real_checkout_calls_steps_in_order_with_right_args(
         seen["patch"] = (patch_ref, ws)
 
     monkeypatch.setattr(build_module, "_sync_tree", _sync)
-    monkeypatch.setattr(build_module, "_stage_config", _stage)
+    monkeypatch.setattr(build_module, "_merge_config", _merge)
     monkeypatch.setattr(build_module, "_apply_patch", _patch)
 
-    profile = BuildProfile.parse(
-        {
-            **_VALID_PROFILE,
-            "config": {"kind": "local", "path": "/configs/c"},
-            "patch_ref": "/patches/p",
-        }
-    )
+    profile = BuildProfile.parse({**_VALID_PROFILE, "patch_ref": "/patches/p"})
     assert isinstance(profile, ServerBuildProfile)
-    component_roots = [Path("/build/components")]
     build_module._real_checkout(
         "/src/linux",
         profile,
         workspace,
+        b"CONFIG_FRAGMENT=y\n",
+        run_id=_RUN,
         secret_registry=SecretRegistry(),
-        allowed_component_roots=component_roots,
     )
 
-    assert order == ["sync", "stage", "patch"]
+    assert order == ["sync", "merge", "patch"]
     assert seen["sync"] == ("/src/linux", workspace)
-    assert seen["stage"] == (profile.config, workspace, component_roots)
+    assert seen["merge"] == (b"CONFIG_FRAGMENT=y\n", workspace, _RUN)
     assert seen["patch"] == ("/patches/p", workspace)
 
 
@@ -1111,14 +1108,19 @@ def test_real_checkout_skips_patch_when_absent(
     monkeypatch.setattr(build_module, "_sync_tree", lambda *_: order.append("sync"))
     monkeypatch.setattr(
         build_module,
-        "_stage_config",
-        lambda *_, **__: order.append("stage"),
+        "_merge_config",
+        lambda *_, **__: order.append("merge"),
     )
     monkeypatch.setattr(build_module, "_apply_patch", lambda *_: order.append("patch"))
 
     profile = _profile()  # patch_ref is None
     build_module._real_checkout(
-        "/src/linux", profile, tmp_path / "ws", secret_registry=SecretRegistry()
+        "/src/linux",
+        profile,
+        tmp_path / "ws",
+        b"CONFIG_FRAGMENT=y\n",
+        run_id=_RUN,
+        secret_registry=SecretRegistry(),
     )
 
-    assert order == ["sync", "stage"]  # no patch step
+    assert order == ["sync", "merge"]  # no patch step

@@ -105,7 +105,7 @@ def _local_component_sources() -> ComponentSourceCapabilities:
         ROOTFS_COMPONENT: frozenset({"catalog", "local"}),
         KERNEL_COMPONENT: frozenset({"local"}),
         INITRD_COMPONENT: frozenset({"local"}),
-        CONFIG_COMPONENT: frozenset({"local"}),
+        CONFIG_COMPONENT: frozenset({"catalog", "local"}),
         PATCH_COMPONENT: frozenset({"local"}),
         VMLINUX_COMPONENT: frozenset({"local"}),
     }
@@ -207,13 +207,14 @@ def build_faultinject_runtime(
 
 
 def _remote_component_sources() -> ComponentSourceCapabilities:
-    # The remote server build stages a local .config and applies an optional local patch on
-    # the worker (ADR-0081), exactly as local-libvirt's server build does; runs.build rejects
-    # any config source not advertised here, so CONFIG must be present or every remote build
-    # fails. No rootfs/kernel/initrd: the remote target is a disk-image base OS, not a
-    # component-provisioned guest.
+    # The remote server build merges a kdump config fragment onto the tree's defconfig and
+    # applies an optional local patch on the worker (ADR-0081/0096), exactly as local-libvirt's
+    # server build does; runs.build rejects any config source not advertised here, so CONFIG must
+    # be present or every remote build fails. The fragment resolves from a `local` ref or the
+    # seeded `catalog` entry (the zero-config kdump default). No rootfs/kernel/initrd: the remote
+    # target is a disk-image base OS, not a component-provisioned guest.
     accepted: dict[ComponentKind, frozenset[ComponentSourceKind]] = {
-        CONFIG_COMPONENT: frozenset({"local"}),
+        CONFIG_COMPONENT: frozenset({"catalog", "local"}),
         PATCH_COMPONENT: frozenset({"local"}),
     }
     return ComponentSourceCapabilities(

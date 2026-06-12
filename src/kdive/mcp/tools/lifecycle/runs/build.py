@@ -39,6 +39,7 @@ from kdive.provider_components.validation import (
     ComponentSourceCapabilities,
     reject_unsupported_component_source,
 )
+from kdive.providers.build_common import _DEFAULT_CONFIG_REF
 from kdive.providers.build_validation import ValidatorStore, validate_external_artifacts
 from kdive.providers.ports import BuildOutput, ValidatedUpload
 from kdive.security import audit
@@ -145,17 +146,21 @@ class RunBuildHandlers:
                     return _config_error(
                         run_id, data={"reason": "external_source_uses_complete_build"}
                     )
+                # An omitted config validates against the kdump catalog default — the same
+                # substitution the resolver applies on the build path (ADR-0096), so a provider
+                # that does not accept a catalog config rejects an omitted ref at run-creation.
+                config_ref = parsed.config or _DEFAULT_CONFIG_REF
                 try:
                     reject_unsupported_component_source(
                         self.component_sources,
                         component_kind=CONFIG_COMPONENT,
-                        ref=parsed.config,
+                        ref=config_ref,
                     )
                 except CategorizedError as exc:
                     return ToolResponse.failure_from_error(run_id, exc)
                 if self.config_validator is not None:
                     try:
-                        self.config_validator(parsed.config)
+                        self.config_validator(config_ref)
                     except CategorizedError as exc:
                         return ToolResponse.failure_from_error(run_id, exc)
                 return await _build_locked(conn, ctx, run, cmdline)

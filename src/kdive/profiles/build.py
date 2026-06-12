@@ -63,11 +63,15 @@ class ProfileRequirementsRef(BaseModel):
 
 
 class ServerBuildProfile(_BuildProfileBase):
-    """Server-build lane: names a source tree, a config, and an optional patch."""
+    """Server-build lane: names a source tree, an optional config, and an optional patch.
+
+    An omitted ``config`` resolves to the seeded ``kdump`` catalog fragment at the build boundary
+    (ADR-0096); a profile that names a config overrides that default.
+    """
 
     source: Literal["server"] = "server"
     kernel_source_ref: NonEmptyStr
-    config: ComponentRef
+    config: ComponentRef | None = None
     profile_requirements: ProfileRequirementsRef | None = None
     patch_ref: NonEmptyStr | None = None
 

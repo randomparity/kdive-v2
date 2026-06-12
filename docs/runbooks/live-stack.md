@@ -15,6 +15,10 @@ not share a filesystem with — see [remote-live-stack.md](remote-live-stack.md)
 bring-up and adds worker→host TLS, the gdbstub ACL, and object-store reachability for the
 two-phase vmcore upload.
 
+For the **from-source build acceptance gate** (the four-method live run on a System built with the
+kdump catalog default, the kernel-build-config provisioning milestone's acceptance criterion) — see
+[four-method-live-run.md](four-method-live-run.md).
+
 The `just` recipes below are source-tree conveniences. Installed-package deployments use
 `python -m kdive migrate` and `python -m kdive seed-demo`, then run the app tier from the
 compose reference (`docker compose up -d migrate server worker reconciler`); see

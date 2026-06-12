@@ -45,10 +45,12 @@ def test_external_profile_rejects_server_fields() -> None:
     assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
-def test_server_profile_requires_config() -> None:
-    with pytest.raises(CategorizedError) as excinfo:
-        BuildProfile.parse({"schema_version": 1, "kernel_source_ref": "git#v6.9"})
-    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+def test_server_profile_config_is_optional() -> None:
+    # An omitted config defaults to the seeded kdump catalog fragment at the build
+    # boundary (ADR-0096); the document parses with config left unset.
+    parsed = BuildProfile.parse({"schema_version": 1, "kernel_source_ref": "git#v6.9"})
+    assert isinstance(parsed, ServerBuildProfile)
+    assert parsed.config is None
 
 
 def test_unknown_source_is_configuration_error() -> None:

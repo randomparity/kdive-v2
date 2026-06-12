@@ -177,7 +177,7 @@ def test_default_runtime_advertises_implemented_component_sources_only() -> None
         "rootfs": frozenset({"catalog", "local"}),
         "kernel": frozenset({"local"}),
         "initrd": frozenset({"local"}),
-        "config": frozenset({"local"}),
+        "config": frozenset({"catalog", "local"}),
         "patch": frozenset({"local"}),
         "vmlinux": frozenset({"local"}),
     }
@@ -555,13 +555,14 @@ def test_remote_runtime_wires_build_config_validator(monkeypatch: pytest.MonkeyP
     assert runtime.build_config_validator is not None
 
 
-def test_remote_runtime_accepts_local_config_and_patch_sources() -> None:
+def test_remote_runtime_accepts_local_and_catalog_config_and_local_patch_sources() -> None:
     # runs.build rejects a config whose source-kind is not advertised; an empty set rejects
-    # every remote build. The remote server build stages a local .config + optional local
-    # patch, so it advertises CONFIG/PATCH as {"local"} (ADR-0081).
+    # every remote build. The remote server build merges a kdump fragment from a local .config
+    # or the seeded catalog entry + applies an optional local patch, so it advertises CONFIG as
+    # {"catalog", "local"} and PATCH as {"local"} (ADR-0081/0096).
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
     accepted = runtime.component_sources.accepted_component_sources
-    assert accepted.get(CONFIG_COMPONENT) == frozenset({"local"})
+    assert accepted.get(CONFIG_COMPONENT) == frozenset({"catalog", "local"})
     assert accepted.get(PATCH_COMPONENT) == frozenset({"local"})
     assert runtime.component_sources.provider == ResourceKind.REMOTE_LIBVIRT.value

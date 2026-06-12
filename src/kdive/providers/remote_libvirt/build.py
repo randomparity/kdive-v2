@@ -41,7 +41,17 @@ from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.provider_components.local_paths import validate_local_component_path
-from kdive.provider_components.references import ComponentRef, LocalComponentRef
+from kdive.provider_components.references import (
+    CatalogComponentRef,
+    ComponentRef,
+    LocalComponentRef,
+)
+from kdive.providers.build_common import (
+    _DEFAULT_CONFIG_REF,
+    CatalogConfigFetch,
+    _dropped_fragment_symbols,
+    build_config_fetch_from_env,
+)
 from kdive.providers.build_validation import (
     parse_gnu_build_id,
     patch_target_paths,
@@ -78,7 +88,7 @@ class _StorePort(Protocol):
     def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact: ...
 
 
-type _Checkout = Callable[[UUID, ServerBuildProfile, Path], None]
+type _Checkout = Callable[[UUID, ServerBuildProfile, Path, bytes], None]
 type _ReadConfig = Callable[[Path], str]
 type _RunStep = Callable[[Path], int]
 type _RunModulesInstall = Callable[[Path, Path], int]
@@ -115,6 +125,7 @@ class RemoteLibvirtBuild:
         read_vmlinux: _ReadBytes,
         read_build_id: _ReadBuildId,
         staging_factory: _StagingFactory,
+        catalog_fetch: CatalogConfigFetch,
         allowed_component_roots: list[Path] | None = None,
     ) -> None:
         self._workspace_root = workspace_root
@@ -123,6 +134,7 @@ class RemoteLibvirtBuild:
         ]
         self._store_factory = store_factory
         self._store: _StorePort | None = None
+        self._catalog_fetch = catalog_fetch
         self._checkout = checkout
         self._run_olddefconfig = run_olddefconfig
         self._read_config = read_config
@@ -150,7 +162,7 @@ class RemoteLibvirtBuild:
         return cls(
             workspace_root=workspace_root,
             store_factory=object_store_from_env,
-            checkout=_make_checkout(kernel_src, allowed_component_roots, secret_registry),
+            checkout=_make_checkout(kernel_src, secret_registry),
             run_olddefconfig=_real_run_olddefconfig,
             read_config=_real_read_config,
             run_make=_real_run_make,
@@ -159,6 +171,7 @@ class RemoteLibvirtBuild:
             read_vmlinux=_real_read_vmlinux,
             read_build_id=_real_read_build_id,
             staging_factory=_real_staging_factory,
+            catalog_fetch=build_config_fetch_from_env(),
             allowed_component_roots=allowed_component_roots,
         )
 
@@ -172,10 +185,25 @@ class RemoteLibvirtBuild:
                 build-id; ``INFRASTRUCTURE_FAILURE`` propagated from a failed artifact store.
         """
         workspace = self._workspace_root / str(run_id)
-        self._checkout(run_id, profile, workspace)
+        config_ref = profile.config or _DEFAULT_CONFIG_REF
+        fragment_bytes = _resolve_config_bytes(
+            config_ref,
+            allowed_component_roots=self._allowed_component_roots,
+            catalog_fetch=self._catalog_fetch,
+        )
+        fragment_text = fragment_bytes.decode()
+        self._checkout(run_id, profile, workspace, fragment_bytes)
         if self._run_olddefconfig(workspace) != 0:
             raise _build_failure("make olddefconfig exited non-zero", run_id)
-        missing = _missing_config_groups(self._read_config(workspace))
+        final_config = self._read_config(workspace)
+        dropped = _dropped_fragment_symbols(fragment_text, final_config)
+        if dropped:
+            raise CategorizedError(
+                "kdump fragment symbols were dropped by olddefconfig (unmet base dependency)",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"dropped": dropped},
+            )
+        missing = _missing_config_groups(final_config)
         if missing:
             raise CategorizedError(
                 "kernel .config omits a required kdump/debuginfo option",
@@ -197,8 +225,20 @@ class RemoteLibvirtBuild:
         return BuildOutput(kernel_ref=kernel.key, debuginfo_ref=vmlinux.key, build_id=build_id)
 
     def validate_config_ref(self, ref: ComponentRef) -> None:
-        """Validate that a build config ref is available within provider roots."""
-        _resolve_config_ref(ref, allowed_component_roots=self._allowed_component_roots)
+        """Validate a build config ref's shape at run-creation (local path or catalog kind).
+
+        A ``local`` ref is resolved against the provider roots; a ``catalog`` ref is accepted by
+        kind (its existence is checked when the build fetches it, since this seam owns no DB
+        connection). Any other kind is a ``CONFIGURATION_ERROR``.
+        """
+        if isinstance(ref, LocalComponentRef):
+            validate_local_component_path(
+                ref.path, allowed_roots=self._allowed_component_roots, sha256=ref.sha256
+            )
+            return
+        if isinstance(ref, CatalogComponentRef):
+            return
+        raise _ref_error("config", "config component ref must be local or catalog for builds")
 
     def _put(self, run_id: UUID, name: str, data: bytes) -> StoredArtifact:
         if self._store is None:
@@ -236,12 +276,21 @@ def _ref_error(kind: str, message: str) -> CategorizedError:
     )
 
 
-def _resolve_config_ref(ref: ComponentRef, *, allowed_component_roots: list[Path]) -> Path:
-    if not isinstance(ref, LocalComponentRef):
-        raise _ref_error("config", "config component ref must be local for remote-libvirt builds")
-    return validate_local_component_path(
-        ref.path, allowed_roots=allowed_component_roots, sha256=ref.sha256
-    )
+def _resolve_config_bytes(
+    ref: ComponentRef,
+    *,
+    allowed_component_roots: list[Path],
+    catalog_fetch: CatalogConfigFetch,
+) -> bytes:
+    """Resolve a config ref to fragment bytes: a local file's bytes, or catalog bytes by name."""
+    if isinstance(ref, LocalComponentRef):
+        path = validate_local_component_path(
+            ref.path, allowed_roots=allowed_component_roots, sha256=ref.sha256
+        )
+        return path.read_bytes()
+    if isinstance(ref, CatalogComponentRef):
+        return catalog_fetch(ref.name)
+    raise _ref_error("config", "config component ref must be local or catalog for builds")
 
 
 def _resolve_local_ref(ref: str, *, kind: str) -> Path:
@@ -338,14 +387,17 @@ def _real_staging_factory() -> Path:  # pragma: no cover - live_vm
 
 
 def _make_checkout(  # pragma: no cover - live_vm
-    kernel_src: str, allowed_component_roots: list[Path], secret_registry: SecretRegistry
+    kernel_src: str, secret_registry: SecretRegistry
 ) -> _Checkout:
-    def _checkout(run_id: UUID, profile: ServerBuildProfile, workspace: Path) -> None:
+    def _checkout(
+        run_id: UUID, profile: ServerBuildProfile, workspace: Path, fragment_bytes: bytes
+    ) -> None:
         _real_checkout(
             kernel_src,
             profile,
             workspace,
-            allowed_component_roots=allowed_component_roots,
+            fragment_bytes,
+            run_id=run_id,
             secret_registry=secret_registry,
         )
 
@@ -356,18 +408,18 @@ def _real_checkout(  # pragma: no cover - live_vm
     kernel_src: str,
     profile: ServerBuildProfile,
     workspace: Path,
+    fragment_bytes: bytes,
     *,
+    run_id: UUID,
     secret_registry: SecretRegistry,
-    allowed_component_roots: list[Path] | None = None,
 ) -> None:
-    """Materialize a warm per-Run workspace, stage the ``.config``, apply any patch.
+    """Materialize a warm per-Run workspace, merge the kdump fragment, apply any patch.
 
-    Steps run in order so the resetting rsync precedes config-staging and patch application;
-    the rsync and later ``make`` run only on a real build host (``live_vm``).
+    Steps run in order so the resetting rsync precedes config-merging and patch application;
+    the rsync, merge, and later ``make`` run only on a real build host (``live_vm``).
     """
-    roots = allowed_component_roots or [Path(_DEFAULT_BUILD_COMPONENT_ROOT)]
     _sync_tree(kernel_src, workspace, secret_registry)
-    _stage_config(profile.config, workspace, allowed_component_roots=roots)
+    _merge_config(fragment_bytes, workspace, run_id)
     if profile.patch_ref is not None:
         _apply_patch(profile.patch_ref, workspace, secret_registry)
 
@@ -419,19 +471,38 @@ def _sync_tree(  # pragma: no cover - live_vm
         )
 
 
-def _stage_config(  # pragma: no cover - live_vm
-    config: ComponentRef, workspace: Path, *, allowed_component_roots: list[Path]
+def _merge_config(  # pragma: no cover - live_vm
+    fragment_bytes: bytes, workspace: Path, run_id: UUID
 ) -> None:
-    """Copy the resolved config component to ``workspace/.config``."""
-    source = _resolve_config_ref(config, allowed_component_roots=allowed_component_roots)
+    """Base defconfig + merge the kdump fragment + single olddefconfig.
+
+    ``merge_config.sh -m`` merges only (no internal olddefconfig); a single ``make olddefconfig``
+    then resolves once against this tree (run by the caller via the ``_run_olddefconfig`` seam),
+    so the final ``.config`` is authoritative. The caller runs the fragment-survival check against
+    that final ``.config``. ``run_id`` flows into ``_build_failure`` (which requires it for the
+    ledger details) — there is no sentinel id.
+    """
+    if _run_make_target(workspace, ["defconfig"], "make defconfig") != 0:
+        raise _build_failure("make defconfig exited non-zero", run_id)
+    fragment_path = workspace / "kdump.config.fragment"
+    fragment_path.write_bytes(fragment_bytes)
     try:
-        shutil.copyfile(source, workspace / ".config")
+        merge = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["scripts/kconfig/merge_config.sh", "-m", ".config", str(fragment_path)],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_MAKE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _build_failure("merge_config.sh -m exceeded the build timeout", run_id) from exc
     except OSError as exc:
-        raise CategorizedError(
-            "build workspace copy_config failed",
-            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-            details={"op": "copy_config", "path": ".config"},
+        raise _launch_failure(
+            "merge_config.sh", exc, category=ErrorCategory.INFRASTRUCTURE_FAILURE
         ) from exc
+    if merge.returncode != 0:
+        raise _build_failure("merge_config.sh -m exited non-zero", run_id)
 
 
 def _apply_patch(patch_ref: str, workspace: Path, secret_registry: SecretRegistry) -> None:

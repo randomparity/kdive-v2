@@ -29,6 +29,7 @@ from kdive.mcp.tools.accounting.usage import register as register_accounting_usa
 from kdive.mcp.tools.catalog import (
     artifacts,
     availability,
+    build_configs,
     fixtures,
     investigations,
     jobs,
@@ -107,6 +108,7 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     lambda app, pool, resolver, registry, reaper: runs_tools.register(app, pool, resolver=resolver),
     _plain(control_tools.register),
     _plain(artifacts.register),
+    _plain(build_configs.register),
     lambda app, pool, resolver, registry, reaper: vmcore_tools.register(
         app, pool, resolver=resolver, secret_registry=registry
     ),

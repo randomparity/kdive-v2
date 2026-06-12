@@ -24,9 +24,17 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
-from kdive.provider_components.references import LocalComponentRef
+from kdive.provider_components.references import (
+    ArtifactComponentRef,
+    CatalogComponentRef,
+    LocalComponentRef,
+)
 from kdive.providers.remote_libvirt import build as build_module
-from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild, _apply_patch
+from kdive.providers.remote_libvirt.build import (
+    RemoteLibvirtBuild,
+    _apply_patch,
+    _resolve_config_bytes,
+)
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 _RUN = UUID("33333333-3333-3333-3333-333333333333")
@@ -35,7 +43,7 @@ _TENANT = "remote-libvirt"
 _VALID_PROFILE: dict[str, Any] = {
     "schema_version": 1,
     "kernel_source_ref": "git+https://git.kernel.org/pub/scm/linux.git#v6.9",
-    "config": {"kind": "local", "path": "/configs/x86_64-kdump.config"},
+    "config": {"kind": "catalog", "provider": "system", "name": "kdump"},
     "patch_ref": None,
 }
 
@@ -43,6 +51,8 @@ _VALID_PROFILE: dict[str, Any] = {
 _GOOD_CONFIG = "\n".join(
     ["CONFIG_CRASH_DUMP=y", "CONFIG_DEBUG_INFO=y", "CONFIG_DEBUG_INFO_DWARF5=y"]
 )
+# Catalog fragment bytes the injected fetch returns; its symbols survive the (faked) read_config.
+_FRAGMENT_BYTES = _GOOD_CONFIG.encode()
 
 
 def _profile() -> ServerBuildProfile:
@@ -84,9 +94,13 @@ class _Seams:
     make_calls: int = 0
     modules_install_calls: int = 0
     staging_roots: list[Path] = field(default_factory=list)
+    merged_fragments: list[bytes] = field(default_factory=list)
 
-    def checkout(self, run_id: UUID, profile: ServerBuildProfile, workspace: Path) -> None:
+    def checkout(
+        self, run_id: UUID, profile: ServerBuildProfile, workspace: Path, fragment_bytes: bytes
+    ) -> None:
         self.call_order.append("checkout")
+        self.merged_fragments.append(fragment_bytes)
 
     def run_olddefconfig(self, workspace: Path) -> int:
         self.call_order.append("olddefconfig")
@@ -118,7 +132,13 @@ class _Seams:
         return self.build_id_hex
 
 
-def _builder(store: _FakeStore, seams: _Seams, tmp_path: Path) -> RemoteLibvirtBuild:
+def _builder(
+    store: _FakeStore,
+    seams: _Seams,
+    tmp_path: Path,
+    *,
+    catalog_fetch: Any = None,
+) -> RemoteLibvirtBuild:
     return RemoteLibvirtBuild(
         workspace_root=tmp_path / "ws",
         store_factory=lambda: store,
@@ -131,6 +151,7 @@ def _builder(store: _FakeStore, seams: _Seams, tmp_path: Path) -> RemoteLibvirtB
         read_vmlinux=seams.read_vmlinux,
         read_build_id=seams.read_build_id,
         staging_factory=lambda: _make_staging(tmp_path),
+        catalog_fetch=catalog_fetch or (lambda _name: _FRAGMENT_BYTES),
     )
 
 
@@ -287,7 +308,7 @@ def test_validate_config_ref_rejects_file_outside_roots(tmp_path: Path) -> None:
     builder = RemoteLibvirtBuild(
         workspace_root=tmp_path / "ws",
         store_factory=lambda: _FakeStore(),
-        checkout=lambda _r, _p, _w: None,
+        checkout=lambda _r, _p, _w, _f: None,
         run_olddefconfig=lambda _w: 0,
         read_config=lambda _w: _GOOD_CONFIG,
         run_make=lambda _w: 0,
@@ -296,6 +317,7 @@ def test_validate_config_ref_rejects_file_outside_roots(tmp_path: Path) -> None:
         read_vmlinux=lambda _w: b"v",
         read_build_id=lambda _w: "deadbeef",
         staging_factory=lambda: _make_staging(tmp_path),
+        catalog_fetch=lambda _name: _FRAGMENT_BYTES,
         allowed_component_roots=[allowed],
     )
 
@@ -303,6 +325,90 @@ def test_validate_config_ref_rejects_file_outside_roots(tmp_path: Path) -> None:
         builder.validate_config_ref(LocalComponentRef(kind="local", path=str(outside)))
 
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+# --- config-ref resolution (local + catalog) -----------------------------------------
+
+
+def test_resolve_config_bytes_reads_local_file(tmp_path: Path) -> None:
+    root = tmp_path / "components"
+    root.mkdir()
+    config = root / "x.config"
+    config.write_bytes(b"CONFIG_FROM_REF=y\n")
+
+    data = _resolve_config_bytes(
+        LocalComponentRef(kind="local", path=str(config)),
+        allowed_component_roots=[root],
+        catalog_fetch=lambda _name: b"unused",
+    )
+
+    assert data == b"CONFIG_FROM_REF=y\n"
+
+
+def test_resolve_config_bytes_returns_injected_catalog_bytes() -> None:
+    data = _resolve_config_bytes(
+        CatalogComponentRef(kind="catalog", provider="system", name="kdump"),
+        allowed_component_roots=[Path("/unused")],
+        catalog_fetch=lambda name: f"CONFIG_{name.upper()}=y\n".encode(),
+    )
+
+    assert data == b"CONFIG_KDUMP=y\n"
+
+
+def test_resolve_config_bytes_rejects_artifact_kind() -> None:
+    with pytest.raises(CategorizedError) as caught:
+        _resolve_config_bytes(
+            ArtifactComponentRef(
+                kind="artifact",
+                artifact_id=UUID("00000000-0000-0000-0000-000000000001"),
+            ),
+            allowed_component_roots=[Path("/unused")],
+            catalog_fetch=lambda _name: b"unused",
+        )
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_build_with_no_config_resolves_kdump_default_via_catalog_fetch(tmp_path: Path) -> None:
+    # The build-path default fires when profile.config is None: the injected catalog_fetch is
+    # called with "kdump" and its bytes are what reach _checkout (merged onto defconfig).
+    fetched_names: list[str] = []
+
+    def _fetch(name: str) -> bytes:
+        fetched_names.append(name)
+        return _FRAGMENT_BYTES
+
+    store, seams = _FakeStore(), _Seams()
+    profile = BuildProfile.parse(
+        {
+            "schema_version": 1,
+            "kernel_source_ref": "git+https://git.kernel.org#v6.9",
+            "patch_ref": None,
+        }
+    )
+    assert isinstance(profile, ServerBuildProfile)
+    assert profile.config is None
+
+    _builder(store, seams, tmp_path, catalog_fetch=_fetch).build(_RUN, profile)
+
+    assert fetched_names == ["kdump"]
+    assert seams.merged_fragments == [_FRAGMENT_BYTES]
+
+
+def test_build_fails_when_fragment_symbol_dropped(tmp_path: Path) -> None:
+    # The injected fragment requests CONFIG_PROC_VMCORE, but the final .config (read seam) drops
+    # it: the survival check fails with CONFIGURATION_ERROR naming the dropped symbol, no make.
+    fragment = b"CONFIG_CRASH_DUMP=y\nCONFIG_DEBUG_INFO_DWARF5=y\nCONFIG_PROC_VMCORE=y\n"
+    final = "CONFIG_CRASH_DUMP=y\nCONFIG_DEBUG_INFO_DWARF5=y\n# CONFIG_PROC_VMCORE is not set\n"
+    store, seams = _FakeStore(), _Seams(config_text=final)
+
+    with pytest.raises(CategorizedError) as caught:
+        _builder(store, seams, tmp_path, catalog_fetch=lambda _n: fragment).build(_RUN, _profile())
+
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert caught.value.details == {"dropped": ["CONFIG_PROC_VMCORE"]}
+    assert seams.make_calls == 0
+    assert store.puts == []
 
 
 # --- real seams (host-free where possible) -------------------------------------------
@@ -431,8 +537,8 @@ def test_live_vm_real_make_bundle_has_modules() -> None:  # pragma: no cover - l
         builder = RemoteLibvirtBuild(
             workspace_root=Path(tmp),
             store_factory=lambda: store,
-            checkout=lambda _run, profile, ws: build_module._real_checkout(
-                src, profile, ws, secret_registry=SecretRegistry()
+            checkout=lambda run_id, profile, ws, fragment: build_module._real_checkout(
+                src, profile, ws, fragment, run_id=run_id, secret_registry=SecretRegistry()
             ),
             run_olddefconfig=build_module._real_run_olddefconfig,
             read_config=build_module._real_read_config,
@@ -442,6 +548,7 @@ def test_live_vm_real_make_bundle_has_modules() -> None:  # pragma: no cover - l
             read_vmlinux=build_module._real_read_vmlinux,
             read_build_id=build_module._real_read_build_id,
             staging_factory=lambda: Path(tempfile.mkdtemp(prefix="kdive-mod-")),
+            catalog_fetch=build_module.build_config_fetch_from_env(),
         )
         profile = BuildProfile.parse(
             {

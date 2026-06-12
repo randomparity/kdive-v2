@@ -187,6 +187,15 @@ ALLOWED_FILES = frozenset(
         # reconciler/loop.py (already allowlisted) gains the console liveness/reap _RepairSpec.
         "src/kdive/reconciler/console_hosting.py",
         "src/kdive/db/locks.py",
+        # Kdump config-fragment provisioning (ADR-0096): a provider-agnostic build input. The
+        # seeded build_config_catalog migration, the read-only buildconfig.get catalog tool, and
+        # the runs.build default-config substitution serve BOTH the local- and remote-libvirt
+        # build providers identically (the per-provider build-flow change lives under
+        # providers/*/build.py + the shared providers/build_common.py, outside CORE_PREFIXES).
+        # None of these three is provider-specific; the catalog is keyed by name alone.
+        "src/kdive/db/schema/0025_build_config_catalog.sql",
+        "src/kdive/mcp/tools/catalog/build_configs.py",
+        "src/kdive/mcp/tools/lifecycle/runs/build.py",
     }
 )
 

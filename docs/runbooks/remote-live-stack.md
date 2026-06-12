@@ -166,6 +166,14 @@ is the structural reason the two providers stay complementary rather than one su
 other. `#198` stays **open**; its final disposition (keep-default vs. reclassify-as-opt-in) is
 decided post-parity, informed by this capstone.
 
+## From-source build + four-method acceptance gate (kernel-build-config provisioning)
+
+The kernel-build-config provisioning milestone (ADR-0096) adds the `build_config_catalog` seeded
+fragment and makes a from-source build kdump-capable without an explicit config ref. The
+acceptance gate — a four-method live run on a System built from source with no explicit config —
+is documented in [four-method-live-run.md](four-method-live-run.md). Run it after the M2.5
+capstone prerequisites (steps 1–4 above) are in place.
+
 ## Non-goals
 
 In-guest drgn-**live** MCP routing is a deferred follow-up (#215). The remote spine's introspect

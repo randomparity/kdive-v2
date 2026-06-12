@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
+from kdive.provider_components.references import LocalComponentRef
 
 _VALID: dict[str, Any] = {
     "schema_version": 1,
@@ -37,6 +38,7 @@ def test_valid_profile_parses() -> None:
 
     assert profile.schema_version == 1
     assert profile.kernel_source_ref.startswith("git+https://")
+    assert isinstance(profile.config, LocalComponentRef)
     assert profile.config.kind == "local"
     assert profile.config.path == "/configs/x86_64-kdump.config"
     assert profile.patch_ref == "file:///patches/fix.patch"
@@ -57,6 +59,7 @@ def test_server_build_profile_parses_config_ref_and_profile_requirements() -> No
     )
 
     assert isinstance(profile, ServerBuildProfile)
+    assert profile.config is not None
     assert profile.config.kind == "local"
     assert profile.profile_requirements is not None
     assert profile.profile_requirements.name == "console-ready_x86_64"
@@ -72,11 +75,23 @@ def test_patch_ref_defaults_to_none() -> None:
     assert profile.patch_ref is None
 
 
-@pytest.mark.parametrize("field", ["schema_version", "kernel_source_ref", "config"])
+@pytest.mark.parametrize("field", ["schema_version", "kernel_source_ref"])
 def test_missing_required_field_raises_configuration_error(field: str) -> None:
     data = _valid()
     del data[field]
     _expect_configuration_error(data)
+
+
+def test_omitted_config_parses_as_none() -> None:
+    # config is optional (ADR-0096): an omitted ref is no longer a configuration error; it
+    # defaults to the kdump catalog fragment at the build boundary, so the profile carries None.
+    data = _valid()
+    del data["config"]
+
+    profile = BuildProfile.parse(data)
+
+    assert isinstance(profile, ServerBuildProfile)
+    assert profile.config is None
 
 
 def test_unknown_field_rejected() -> None:
