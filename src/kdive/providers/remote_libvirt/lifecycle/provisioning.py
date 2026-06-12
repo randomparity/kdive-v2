@@ -9,10 +9,10 @@ defines+starts the domain over the ADR-0077 mutual-TLS transport.
 The **domain definition is the gdbstub port registry**: the per-System port is allocated
 by enumerating the ports recorded in the defined ``kdive-`` domains' XML and rendered into
 ``<qemu:commandline>``, so the record is atomic with ``defineXML``, freed by ``undefine``,
-and read over the same TLS connection by the Connect plane (ADR-0079/0080). Domain XML is
-*constructed* with ``xml.etree.ElementTree`` (no string interpolation); XML *received from
-the host* (domain dumps polled for the agent channel state) is parsed with ``defusedxml``
-— it crosses the same trust boundary as discovery's capabilities XML.
+and read over the same TLS connection by the Connect plane (ADR-0079/0080). XML rendering,
+gdbstub port enumeration, overlay volume lifecycle, and guest-agent readiness polling live in
+focused provider-local collaborators; this facade owns remote config, connection scope, and
+define/start/teardown orchestration.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
@@ -34,6 +33,19 @@ from kdive.profiles.provisioning import (
     require_concrete_sizing,
 )
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.lifecycle.gdb import (
+    DOMAIN_PREFIX,
+    allocate_gdb_port,
+    used_gdb_ports,
+)
+from kdive.providers.remote_libvirt.lifecycle.readiness import Monotonic, Sleep, wait_for_agent
+from kdive.providers.remote_libvirt.lifecycle.storage import (
+    Pool,
+    cleanup_overlay_if_created,
+    delete_volume,
+    ensure_overlay,
+    lookup_pool,
+)
 from kdive.providers.remote_libvirt.lifecycle.xml import (
     KDIVE_METADATA_NS,
     QEMU_NS,
@@ -41,9 +53,6 @@ from kdive.providers.remote_libvirt.lifecycle.xml import (
     recorded_gdb_port,
     render_domain_xml,
     render_volume_xml,
-)
-from kdive.providers.remote_libvirt.lifecycle.xml import (
-    agent_channel_connected as _agent_channel_connected,
 )
 from kdive.providers.remote_libvirt.lifecycle.xml import (
     disk_pool as _disk_pool,
@@ -66,61 +75,12 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-_DOMAIN_PREFIX = "kdive-"
 # Bounded start-failure port advance (ADR-0080 §2): a squatted port or a define→start
 # race is skipped without message sniffing; an unrelated start fault fails fast after
 # this many attempts.
 _START_ATTEMPTS = 3
 _AGENT_TIMEOUT_S = 180.0
 _AGENT_POLL_S = 2.0
-
-
-def allocate_gdb_port(
-    used: dict[str, int],
-    *,
-    own_name: str,
-    port_min: int,
-    port_max: int,
-    exclude: set[int] | None = None,
-) -> int:
-    """Pick the System's gdbstub port from the configured range (ADR-0080 §2).
-
-    Reuses the System's own recorded in-range port (stable across retries); otherwise
-    the lowest port not recorded by another defined kdive domain and not in
-    ``exclude`` (ports already tried in this attempt's bounded start-failure advance).
-
-    Raises:
-        CategorizedError: ``PROVISIONING_FAILURE`` when the range is exhausted.
-    """
-    own = used.get(own_name)
-    if own is not None and port_min <= own <= port_max and (exclude is None or own not in exclude):
-        return own
-    taken = {port for name, port in used.items() if name != own_name}
-    if exclude:
-        taken |= exclude
-    for port in range(port_min, port_max + 1):
-        if port not in taken:
-            return port
-    raise CategorizedError(
-        "gdbstub port range is exhausted on the remote host",
-        category=ErrorCategory.PROVISIONING_FAILURE,
-        details={"port_min": port_min, "port_max": port_max, "in_use": len(taken)},
-    )
-
-
-class _Volume(Protocol):
-    """The storage-volume slice provisioning uses (duck-typed seam)."""
-
-    def path(self) -> str: ...
-    def info(self) -> list[int]: ...
-    def delete(self, flags: int = 0) -> int: ...
-
-
-class _Pool(Protocol):
-    """The storage-pool slice provisioning uses (duck-typed seam)."""
-
-    def storageVolLookupByName(self, name: str) -> _Volume: ...  # noqa: N802 - binding name
-    def createXML(self, xml: str, flags: int = 0) -> _Volume: ...  # noqa: N802 - binding name
 
 
 class _Domain(Protocol):
@@ -140,13 +100,11 @@ class _ProvisionConn(Protocol):
     def defineXML(self, xml: str) -> _Domain: ...  # noqa: N802 - binding name
     def lookupByName(self, name: str) -> _Domain: ...  # noqa: N802 - binding name
     def listAllDomains(self, flags: int = 0) -> list[_Domain]: ...  # noqa: N802 - binding name
-    def storagePoolLookupByName(self, name: str) -> _Pool: ...  # noqa: N802 - binding name
+    def storagePoolLookupByName(self, name: str) -> Pool: ...  # noqa: N802 - binding name
     def close(self) -> None: ...
 
 
 type OpenProvisionConnection = Callable[[str], _ProvisionConn]
-type Sleep = Callable[[float], None]
-type Monotonic = Callable[[], float]
 
 
 def open_libvirt_provision(uri: str) -> _ProvisionConn:
@@ -154,12 +112,6 @@ def open_libvirt_provision(uri: str) -> _ProvisionConn:
     # libvirt ships no type stubs; ty infers `virConnect`, which does not structurally
     # match the protocol. Duck-typed at the seam, as in transport.open_libvirt.
     return libvirt.open(uri)  # ty: ignore[invalid-return-type]
-
-
-@dataclass(frozen=True, slots=True)
-class _PreparedOverlay:
-    name: str
-    created: bool
 
 
 class RemoteLibvirtProvision:
@@ -224,8 +176,8 @@ class RemoteLibvirtProvision:
             )
         domain_name = domain_name_for(system_id)
         with self._connection(config) as conn:
-            pool = self._lookup_pool(conn, config.storage_pool)
-            overlay = self._ensure_overlay(pool, section.base_image_volume, system_id)
+            pool = lookup_pool(conn, config.storage_pool)
+            overlay = ensure_overlay(pool, section.base_image_volume, system_id)
             try:
                 self._define_and_start(
                     conn,
@@ -236,12 +188,19 @@ class RemoteLibvirtProvision:
                     overlay_name=overlay.name,
                 )
             except CategorizedError:
-                self._cleanup_overlay_if_created(pool, overlay)
+                cleanup_overlay_if_created(pool, overlay)
                 raise
             # Agent-gate failures deliberately leave the domain (and its overlay) in
             # place: the running/exited domain is the diagnosable artifact, and a
             # provision retry converges without tearing it down (ADR-0080 §4).
-            self._wait_for_agent(conn, domain_name)
+            wait_for_agent(
+                conn,
+                domain_name,
+                monotonic=self._monotonic,
+                sleep=self._sleep,
+                timeout_s=self._agent_timeout_s,
+                poll_s=self._agent_poll_s,
+            )
         return domain_name
 
     def reprovision(self, system_id: UUID, profile: ProvisioningProfile) -> str:
@@ -267,10 +226,10 @@ class RemoteLibvirtProvision:
                 operator config; ``TRANSPORT_FAILURE`` when the TLS connect fails.
         """
         config = self._config_factory()
-        overlay_name = overlay_volume_name(domain_name.removeprefix(_DOMAIN_PREFIX))
+        overlay_name = overlay_volume_name(domain_name.removeprefix(DOMAIN_PREFIX))
         with self._connection(config) as conn:
             recorded_pool = self._teardown_domain(conn, domain_name)
-            self._delete_volume(conn, recorded_pool or config.storage_pool, overlay_name)
+            delete_volume(conn, recorded_pool or config.storage_pool, overlay_name)
 
     def _connection(self, config: RemoteLibvirtConfig):  # noqa: ANN202 - contextmanager passthrough
         return remote_connection(
@@ -290,92 +249,6 @@ class RemoteLibvirtProvision:
             )
         return section
 
-    @staticmethod
-    def _lookup_pool(conn: _ProvisionConn, pool_name: str) -> _Pool:
-        try:
-            return conn.storagePoolLookupByName(pool_name)
-        except libvirt.libvirtError as exc:
-            if exc.get_error_code() == libvirt.VIR_ERR_NO_STORAGE_POOL:
-                raise CategorizedError(
-                    f"storage pool {pool_name!r} does not exist on the remote host",
-                    category=ErrorCategory.CONFIGURATION_ERROR,
-                    details={"pool": pool_name},
-                ) from exc
-            raise _infra("looking up storage pool", pool=pool_name) from exc
-
-    def _ensure_overlay(self, pool: _Pool, base_volume: str, system_id: UUID) -> _PreparedOverlay:
-        """Create the per-System overlay volume when absent; reuse it when present.
-
-        A present overlay may be held open by a running QEMU, so it is never
-        recreated (ADR-0080 §3).
-        """
-        name = overlay_volume_name(system_id)
-        if self._volume_exists(pool, name):
-            return _PreparedOverlay(name=name, created=False)
-        try:
-            base = pool.storageVolLookupByName(base_volume)
-        except libvirt.libvirtError as exc:
-            if exc.get_error_code() == libvirt.VIR_ERR_NO_STORAGE_VOL:
-                raise CategorizedError(
-                    f"base image volume {base_volume!r} is not staged on the remote "
-                    "host's storage pool (an operator prerequisite, ADR-0080)",
-                    category=ErrorCategory.CONFIGURATION_ERROR,
-                    details={"base_image_volume": base_volume},
-                ) from exc
-            raise _infra("looking up base image volume", volume=base_volume) from exc
-        try:
-            capacity = int(base.info()[1])
-            xml = render_volume_xml(name, capacity_bytes=capacity, backing_path=base.path())
-            pool.createXML(xml)
-        except libvirt.libvirtError as exc:
-            raise CategorizedError(
-                "could not create the per-System overlay volume",
-                category=ErrorCategory.PROVISIONING_FAILURE,
-                details={"volume": name},
-            ) from exc
-        return _PreparedOverlay(name=name, created=True)
-
-    @staticmethod
-    def _volume_exists(pool: _Pool, name: str) -> bool:
-        try:
-            pool.storageVolLookupByName(name)
-        except libvirt.libvirtError as exc:
-            if exc.get_error_code() == libvirt.VIR_ERR_NO_STORAGE_VOL:
-                return False
-            raise _infra("looking up overlay volume", volume=name) from exc
-        return True
-
-    def _cleanup_overlay_if_created(self, pool: _Pool, overlay: _PreparedOverlay) -> None:
-        """Reclaim an overlay this attempt created; never one a running System owns."""
-        if not overlay.created:
-            return
-        try:
-            pool.storageVolLookupByName(overlay.name).delete()
-        except libvirt.libvirtError:
-            _log.warning("failed to remove overlay volume %s after failed provision", overlay.name)
-
-    @staticmethod
-    def _used_gdb_ports(conn: _ProvisionConn) -> dict[str, int]:
-        """Ports recorded by defined kdive domains; a domain vanishing mid-walk is skipped."""
-        used: dict[str, int] = {}
-        try:
-            domains = conn.listAllDomains()
-        except libvirt.libvirtError as exc:
-            raise _infra("listing domains for gdbstub port enumeration") from exc
-        for domain in domains:
-            try:
-                name = domain.name()
-                if not name.startswith(_DOMAIN_PREFIX):
-                    continue
-                port = recorded_gdb_port(domain.XMLDesc())
-            except libvirt.libvirtError as exc:
-                if exc.get_error_code() == libvirt.VIR_ERR_NO_DOMAIN:
-                    continue  # being torn down concurrently; its port is being released
-                raise _infra("enumerating gdbstub ports") from exc
-            if port is not None:
-                used[name] = port
-        return used
-
     def _define_and_start(
         self,
         conn: _ProvisionConn,
@@ -394,7 +267,7 @@ class RemoteLibvirtProvision:
         fails the same way again and the bounded retry stops.
         """
         domain_name = domain_name_for(system_id)
-        used = self._used_gdb_ports(conn)
+        used = used_gdb_ports(conn)
         tried: set[int] = set()
         last_error: libvirt.libvirtError | None = None
         for _attempt in range(_START_ATTEMPTS):
@@ -444,36 +317,6 @@ class RemoteLibvirtProvision:
             details={"system_id": str(system_id), "attempts": _START_ATTEMPTS},
         ) from last_error
 
-    def _wait_for_agent(self, conn: _ProvisionConn, domain_name: str) -> None:
-        """Poll the live XML until the guest-agent channel reports connected.
-
-        Read-only (no agent command — the exec seam is the artifact-channel issue's);
-        fails fast if the domain exits during boot rather than burning the timeout.
-        """
-        deadline = self._monotonic() + self._agent_timeout_s
-        while True:
-            try:
-                domain = conn.lookupByName(domain_name)
-                running = bool(domain.isActive())
-                connected = running and _agent_channel_connected(domain.XMLDesc())
-            except libvirt.libvirtError as exc:
-                raise _infra("polling the guest-agent channel", domain=domain_name) from exc
-            if connected:
-                return
-            if not running:
-                raise CategorizedError(
-                    "domain exited during boot before the guest agent connected",
-                    category=ErrorCategory.PROVISIONING_FAILURE,
-                    details={"domain": domain_name},
-                )
-            if self._monotonic() >= deadline:
-                raise CategorizedError(
-                    f"guest agent did not connect within {self._agent_timeout_s:g}s",
-                    category=ErrorCategory.PROVISIONING_FAILURE,
-                    details={"domain": domain_name, "timeout_s": self._agent_timeout_s},
-                )
-            self._sleep(self._agent_poll_s)
-
     def _teardown_domain(self, conn: _ProvisionConn, domain_name: str) -> str | None:
         """Destroy+undefine; return the pool the domain's disk recorded, if readable.
 
@@ -501,25 +344,6 @@ class RemoteLibvirtProvision:
             if exc.get_error_code() != libvirt.VIR_ERR_NO_DOMAIN:
                 raise _infra("undefining", domain=domain_name) from exc
         return recorded_pool
-
-    @staticmethod
-    def _delete_volume(conn: _ProvisionConn, pool_name: str, volume_name: str) -> None:
-        try:
-            pool = conn.storagePoolLookupByName(pool_name)
-        except libvirt.libvirtError as exc:
-            if exc.get_error_code() == libvirt.VIR_ERR_NO_STORAGE_POOL:
-                return  # the pool is gone, and the volume with it
-            raise _infra("looking up storage pool", pool=pool_name) from exc
-        try:
-            volume = pool.storageVolLookupByName(volume_name)
-        except libvirt.libvirtError as exc:
-            if exc.get_error_code() == libvirt.VIR_ERR_NO_STORAGE_VOL:
-                return  # already gone: the achieved post-state
-            raise _infra("looking up overlay volume", volume=volume_name) from exc
-        try:
-            volume.delete()
-        except libvirt.libvirtError as exc:
-            raise _infra("deleting overlay volume", volume=volume_name) from exc
 
 
 def _infra(verb: str, **details: str) -> CategorizedError:
