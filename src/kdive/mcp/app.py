@@ -293,7 +293,7 @@ def build_app(
     composition = provider_composition or ProviderComposition(secret_registry=secret_registry)
     assembly = AppAssembly(
         resolver=composition.build_provider_resolver(),
-        secret_registry=secret_registry,
+        secret_registry=composition.secret_registry,
         reaper=composition.build_reconciler_reaper(),
         dump_volume_reaper=composition.build_reconciler_dump_volume_reaper(),
     )

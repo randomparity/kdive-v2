@@ -133,6 +133,11 @@ class ProviderComposition:
         self._faultinject_inventory = faultinject_inventory or FaultInjectInventory()
         self._secret_registry = secret_registry or SecretRegistry()
 
+    @property
+    def secret_registry(self) -> SecretRegistry:
+        """Return the redaction registry shared by provider-owned ports."""
+        return self._secret_registry
+
     def build_provider_resolver(
         self,
         *,

@@ -14,6 +14,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import JobKind
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.app import build_app, build_handler_registry
+from kdive.providers import composition
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.mcp.conftest import AUDIENCE, ISSUER, make_keypair
 
@@ -101,6 +102,34 @@ def test_build_app_produces_a_streamable_http_asgi_app() -> None:
     app = build_app(pool, verifier=_verifier(), secret_registry=SecretRegistry())
     asgi = app.http_app()
     assert callable(asgi)
+
+
+def test_build_app_uses_injected_composition_secret_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[app_module.AppAssembly] = []
+
+    def _capture_assembly(
+        _app: object,
+        _pool: AsyncConnectionPool,
+        assembly: app_module.AppAssembly,
+    ) -> None:
+        captured.append(assembly)
+
+    monkeypatch.setattr(app_module, "_PLANE_REGISTRARS", (_capture_assembly,))
+    pool = AsyncConnectionPool("postgresql://unused", open=False)
+    composition_registry = SecretRegistry()
+    caller_registry = SecretRegistry()
+    provider_composition = composition.ProviderComposition(secret_registry=composition_registry)
+
+    build_app(
+        pool,
+        verifier=_verifier(),
+        provider_composition=provider_composition,
+        secret_registry=caller_registry,
+    )
+
+    assert captured[0].secret_registry is composition_registry
 
 
 def test_build_handler_registry_binds_provisioning_and_build_handlers() -> None:
