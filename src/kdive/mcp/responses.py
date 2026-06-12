@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job
 from kdive.domain.state import JobState
+from kdive.serialization import JsonValue, validate_json_value
 
 # Literal next tool names by the job's state.
 # See the design doc's suggested_next_actions table.
@@ -32,29 +33,8 @@ _NEXT_ACTIONS: dict[JobState, list[str]] = {
 # tool-level `error` status; both require an error category, all others forbid one.
 _FAILURE_STATUSES = frozenset({JobState.FAILED.value, "error"})
 
-type JsonValue = str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
 ResponseData = dict[str, JsonValue]
 ResponseDataInput = Mapping[str, JsonValue]
-
-
-def _validate_json_value(value: object, *, path: str) -> None:
-    if value is None or isinstance(value, (str, bool, int)):
-        return
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError(f"{path} must be finite JSON number")
-        return
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            _validate_json_value(item, path=f"{path}[{index}]")
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise ValueError(f"{path} object keys must be strings")
-            _validate_json_value(item, path=f"{path}.{key}")
-        return
-    raise ValueError(f"{path} contains non-JSON value {type(value).__name__}")
 
 
 def current_status_data(current_status: str) -> dict[str, JsonValue]:
@@ -94,7 +74,7 @@ class ToolResponse(BaseModel):
         if not isinstance(data, dict):
             raise ValueError("data must be a JSON object")
         for key, value in data.items():
-            _validate_json_value(value, path=f"data.{key}")
+            validate_json_value(value, path=f"data.{key}")
         return data
 
     @model_validator(mode="after")
