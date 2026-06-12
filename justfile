@@ -156,6 +156,10 @@ set-version VERSION:
       exit 1
     fi
     uv version --no-sync "{{VERSION}}"
+    # Keep the Helm chart's appVersion locked to the pyproject version (spec A3 /
+    # chart-version-check). Done here so a version bump never trips the CI guard.
+    sed -i.bak -E 's/^appVersion:.*/appVersion: "{{VERSION}}"/' deploy/helm/kdive/Chart.yaml
+    rm -f deploy/helm/kdive/Chart.yaml.bak
     echo "Set version to {{VERSION}} (pyproject.toml + uv.lock). Commit on a branch."
 
 # Fail if uv.lock is out of date relative to pyproject.toml (a forgotten re-lock).
@@ -216,5 +220,20 @@ config-docs-check:
 config-guard:
     uv run python scripts/config_env_guard.py
 
+# Assert the Helm chart's appVersion tracks the pyproject version (spec A3). A drift
+# would let a cut release point the chart's default image tag at a tag that was never
+# published. Run in CI and `just ci`.
+chart-version-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pyproject="$(uv version --short)"
+    chart="$(grep -E '^appVersion:' deploy/helm/kdive/Chart.yaml | sed -E 's/^appVersion:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/')"
+    if [[ "$chart" != "$pyproject" ]]; then
+        echo "::error::Chart.yaml appVersion ($chart) != pyproject version ($pyproject)." >&2
+        echo "Run 'just set-version $pyproject' or align Chart.yaml appVersion." >&2
+        exit 1
+    fi
+    echo "appVersion == pyproject == $pyproject"
+
 # Run the full gate that PR CI runs, reproducible locally.
-ci: lint type lock-check lint-shell lint-workflows check-mermaid docs-check config-docs-check config-guard test
+ci: lint type lock-check lint-shell lint-workflows check-mermaid docs-check config-docs-check config-guard chart-version-check test

@@ -82,6 +82,12 @@ jobs:
         # because CI invokes recipes individually, so the ci recipe alone would not gate.
         run: just config-guard
 
+      - name: Chart appVersion guard
+        # Chart.yaml appVersion must equal the pyproject version (spec A3) so a cut
+        # release publishes an image at exactly the chart's default tag. Listed here
+        # because CI invokes recipes individually.
+        run: just chart-version-check
+
       - name: Set up Helm
         # The tests/helm render gate skips when helm is absent (a skip validates
         # nothing), so CI installs helm to actually exercise the chart (ADR-0088 §7).
