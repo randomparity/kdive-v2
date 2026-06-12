@@ -41,6 +41,7 @@ from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.debug import sessions as debug_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
+from kdive.providers.resolver import ProviderResolver
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.paths import PathSafetyError
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -634,6 +635,21 @@ class _OrderRecordingConnector(_FakeConnector):
         return super().open_transport(system, kind)
 
 
+class _FailingConnectorResolver(ProviderResolver):
+    """A ProviderResolver test double that fails before returning a connector."""
+
+    def __init__(self) -> None:
+        pass
+
+    async def runtime_for_run(self, conn: Any, run_id: UUID) -> Any:
+        del conn
+        raise CategorizedError(
+            "no test runtime",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"run_id": str(run_id)},
+        )
+
+
 class _ConnectionRecordingContext:
     def __init__(self, context: Any, log: list[str]) -> None:
         self._context = context
@@ -752,6 +768,38 @@ def test_start_session_ssh_resolves_credential_before_opening_transport(migrated
             assert backend.refs == ["ssh/guest-key"]
             # The credential is in the registry before the transport was used.
             assert "guest-ssh-secret" in registry.snapshot()
+
+    asyncio.run(_run())
+
+
+def test_start_session_ssh_resolves_connector_before_credential(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_ssh_system(pool, alloc_id)
+            run_id = await _seed_run(pool, sys_id)
+            log: list[str] = []
+            registry = SecretRegistry()
+            backend = _OrderRecordingBackend(log, registry=registry)
+            handlers = debug_tools.DebugSessionHandlers(
+                _FailingConnectorResolver(),
+                secret_backend_factory=lambda _session_id: backend,
+                secret_registry=registry,
+            )
+
+            resp = await handlers.start_session(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="drgn-live",
+            )
+            count = await _session_count(pool)
+
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert count == 0
+        assert backend.refs == []
+        assert log == []
+        assert "guest-ssh-secret" not in registry.snapshot()
 
     asyncio.run(_run())
 

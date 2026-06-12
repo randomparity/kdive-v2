@@ -318,13 +318,13 @@ class DebugSessionHandlers:
         system = await _attach_preconditions(conn, run, transport)
         if isinstance(system, ToolResponse):
             return system
+        connector = await self._connector_for_run(conn, run)
+        if isinstance(connector, ToolResponse):
+            return connector
         backend = self._credential_backend(session_id, transport)
         resolved = _resolve_credential(system, transport, backend)
         if isinstance(resolved, ToolResponse):
             return resolved
-        connector = await self._connector_for_run(conn, run)
-        if isinstance(connector, ToolResponse):
-            return connector
         return _AttachRequest(
             run=run,
             system=system,
