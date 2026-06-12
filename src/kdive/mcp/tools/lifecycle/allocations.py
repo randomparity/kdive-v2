@@ -12,22 +12,17 @@ envelope's failure-status set). RBAC: `request`/`release` require `operator`; re
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import Annotated, Any
 from uuid import UUID
 
 from fastmcp import FastMCP
-from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
 from kdive.db.repositories import ALLOCATIONS
-from kdive.domain.cost import Selector
-from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Allocation, Resource, ResourceKind
-from kdive.domain.pcie import parse_match_spec
-from kdive.domain.shapes import ResolvedSizing
+from kdive.domain.errors import ErrorCategory
+from kdive.domain.models import Allocation, Resource
 from kdive.domain.state import AllocationState
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
@@ -38,21 +33,19 @@ from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.security.authz.context import RequestContext, require_project
 from kdive.security.authz.rbac import Role, require_role
-from kdive.services.allocation.admission import (
-    AdmissionOutcome,
-    admit,
-)
-from kdive.services.allocation.admission import (
-    AllocationRequest as DomainAllocationRequest,
-)
-from kdive.services.allocation.placement import PlacementRequest, resolve_placement_candidates
+from kdive.services.allocation.admission import AdmissionOutcome
 from kdive.services.allocation.release import (
     ReleaseOutcome,
     ctx_audit_writer,
     release_with_backstops,
 )
 from kdive.services.allocation.renew import RenewOutcome, renew
-from kdive.services.allocation.sizing import resolve_request_sizing
+from kdive.services.allocation.request import (
+    AdmissionRequestSpec,
+    RequestAdmissionResult,
+    denial_details,
+    request_admission,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -76,27 +69,7 @@ def _envelope_for_allocation(alloc: Allocation) -> ToolResponse:
     )
 
 
-@dataclass(frozen=True, slots=True)
-class _Selection:
-    """A resolved placement target, or the typed denial category when none qualifies."""
-
-    resource: Resource | None
-    category: ErrorCategory = ErrorCategory.CONFIGURATION_ERROR
-
-
-@dataclass(frozen=True, slots=True)
-class _AdmissionPreparation:
-    payload: AllocationRequestPayload
-    object_id: str
-    resolved_id: UUID | None
-    kind: ResourceKind
-    sizing: ResolvedSizing
-    specs: tuple[str, ...]
-
-
-async def _prepare_admission_request(
-    conn: AsyncConnection, payload: AllocationRequestPayload
-) -> _AdmissionPreparation | ToolResponse:
+def _spec_from_payload(payload: AllocationRequestPayload) -> AdmissionRequestSpec | ToolResponse:
     resolved_id: UUID | None = None
     kind = ResourceByKind().kind
     if isinstance(payload.resource, ResourceById):
@@ -105,57 +78,17 @@ async def _prepare_admission_request(
             return _config_error(payload.resource.resource_id)
     else:
         kind = payload.resource.kind
-    object_id = str(resolved_id) if resolved_id is not None else kind.value
-    try:
-        sizing = await resolve_request_sizing(
-            conn,
-            shape=payload.shape,
-            vcpus=payload.vcpus,
-            memory_gb=payload.memory_gb,
-            disk_gb=payload.disk_gb,
-        )
-    except CategorizedError as exc:
-        return ToolResponse.failure_from_error(object_id, exc)
-    specs = tuple(payload.pcie_devices)
-    if sizing.pcie_match is not None:
-        specs = (*specs, sizing.pcie_match)
-    try:
-        for spec in specs:  # grammar validation only — pre-lock, no durable write
-            parse_match_spec(spec)
-    except CategorizedError as exc:
-        return ToolResponse.failure_from_error(object_id, exc)
-    return _AdmissionPreparation(
-        payload=payload,
-        object_id=object_id,
-        resolved_id=resolved_id,
+    return AdmissionRequestSpec(
+        resource_id=resolved_id,
         kind=kind,
-        sizing=sizing,
-        specs=specs,
+        shape=payload.shape,
+        vcpus=payload.vcpus,
+        memory_gb=payload.memory_gb,
+        disk_gb=payload.disk_gb,
+        window=payload.window,
+        pcie_devices=tuple(payload.pcie_devices),
+        on_capacity=payload.on_capacity,
     )
-
-
-async def _select_target(
-    conn: AsyncConnection, resource_id: UUID | None, kind: ResourceKind, specs: tuple[str, ...]
-) -> _Selection:
-    """Resolve the placement target, PCIe-aware when ``specs`` is non-empty (ADR-0068).
-
-    With no specs this is the PCIe-blind path: ``_resolve_resource`` picks a schedulable
-    host (a missing/non-schedulable target is a ``configuration_error``). With specs, the
-    candidate schedulable hosts are filtered to one that has a **free matching device for
-    every spec** — a best-effort pre-lock filter; the in-lock claim re-resolves
-    authoritatively. If a host has matching descriptors but every match is busy, this returns
-    that host so the shared admission gate can route ``on_capacity=queue`` through the normal
-    enqueue path. Only a spec that **no candidate host's descriptors match at all** returns a
-    ``configuration_error`` here.
-    """
-    candidates = await resolve_placement_candidates(
-        conn, PlacementRequest(resource_id=resource_id, kind=kind, pcie_specs=specs)
-    )
-    if candidates.resources:
-        return _Selection(candidates.resources[0])
-    if candidates.capacity_candidate is not None:
-        return _Selection(candidates.capacity_candidate)
-    return _Selection(None, ErrorCategory.CONFIGURATION_ERROR)
 
 
 async def request_allocation(
@@ -181,39 +114,35 @@ async def request_allocation(
     require_project(ctx, project)
     require_role(ctx, project, Role.OPERATOR)
     with bind_context(principal=ctx.principal):
+        spec = _spec_from_payload(request)
+        if isinstance(spec, ToolResponse):
+            return spec
         async with pool.connection() as conn:
-            prepared = await _prepare_admission_request(conn, request)
-            if isinstance(prepared, ToolResponse):
-                return prepared
-            selection = await _select_target(
-                conn, prepared.resolved_id, prepared.kind, prepared.specs
-            )
-            if selection.resource is None:
-                return ToolResponse.failure(prepared.object_id, selection.category, data={})
-            resource = selection.resource
-            outcome = await admit(
+            result = await request_admission(
                 conn,
-                DomainAllocationRequest(
-                    ctx=ctx,
-                    resource=resource,
-                    project=project,
-                    selector=Selector(
-                        vcpus=prepared.sizing.vcpus,
-                        memory_gb=prepared.sizing.memory_gb,
-                    ),
-                    window=prepared.payload.window,
-                    idempotency_key=idempotency_key,
-                    disk_gb=prepared.sizing.disk_gb,
-                    shape=prepared.sizing.shape,
-                    pcie_specs=prepared.specs,
-                    on_capacity=prepared.payload.on_capacity,
-                    requested_kind=None if prepared.resolved_id is not None else prepared.kind,
-                    requested_resource_id=prepared.resolved_id,
-                ),
+                ctx,
+                project=project,
+                spec=spec,
+                idempotency_key=idempotency_key,
             )
-        if outcome.granted and outcome.allocation is not None:
-            return _grant_or_enqueue_response(resource, project, outcome.allocation)
-        return _denial_response(resource.id, project, outcome)
+        return _request_response(result)
+
+
+def _request_response(result: RequestAdmissionResult) -> ToolResponse:
+    """Map service-level request admission output to the MCP response envelope."""
+    if result.error is not None:
+        return ToolResponse.failure_from_error(result.object_id, result.error)
+    if result.resource is None:
+        return ToolResponse.failure(
+            result.object_id,
+            result.category or ErrorCategory.CONFIGURATION_ERROR,
+            data={},
+        )
+    if result.allocation is not None:
+        return _grant_or_enqueue_response(result.resource, result.project, result.allocation)
+    if result.denial is not None:
+        return _denial_response(result.resource.id, result.project, result.denial)
+    return ToolResponse.failure(result.object_id, ErrorCategory.INFRASTRUCTURE_FAILURE)
 
 
 def _grant_or_enqueue_response(
@@ -239,13 +168,7 @@ def _grant_or_enqueue_response(
 def _denial_response(resource_id: UUID, project: str, outcome: AdmissionOutcome) -> ToolResponse:
     """Map a denial outcome to its typed failure envelope (category-specific)."""
     category = outcome.category or ErrorCategory.ALLOCATION_DENIED
-    data: dict[str, Any] = dict(outcome.details)
-    if outcome.reason is not None:
-        data["reason"] = outcome.reason
-    if outcome.cap is not None:
-        data["cap"] = str(outcome.cap)
-    if outcome.in_use is not None:
-        data["in_use"] = str(outcome.in_use)
+    data = denial_details(outcome)
     _log.info("allocation denied for project %s on resource %s: %s", project, resource_id, category)
     return ToolResponse.failure(
         str(resource_id),
