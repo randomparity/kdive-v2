@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import NamedTuple, Protocol
+from typing import Literal, NamedTuple, Protocol, cast
 from uuid import UUID
 
 from kdive.domain.capture import CaptureMethod
@@ -16,13 +16,14 @@ from kdive.providers.ports.handles import SystemHandle, TransportHandle
 # token set. Connectors emit: gdbstub (all), ssh (local drgn-live realization), drgn-live
 # (fault-inject). Remote drgn-live emits a bare domain name (unschemed) — never decoded here
 # (ADR-0085).
-_TRANSPORT_KINDS = frozenset({"gdbstub", "ssh", "drgn-live"})
+TransportHandleKind = Literal["gdbstub", "ssh", "drgn-live"]
+_TRANSPORT_KINDS: frozenset[TransportHandleKind] = frozenset(("gdbstub", "ssh", "drgn-live"))
 
 
 class TransportHandleData(NamedTuple):
     """A decoded transport handle: the transport kind and its loopback endpoint."""
 
-    kind: str
+    kind: TransportHandleKind
     host: str
     port: int
 
@@ -36,6 +37,7 @@ class TransportHandleData(NamedTuple):
         scheme, sep, remainder = raw.partition("://")
         if not sep or scheme not in _TRANSPORT_KINDS:
             raise config_error("transport handle has no known transport scheme")
+        kind = cast(TransportHandleKind, scheme)
         host, sep, port_text = remainder.rpartition(":")
         if not sep or not host:
             raise config_error("transport handle must be <kind>://host:port")
@@ -45,7 +47,7 @@ class TransportHandleData(NamedTuple):
             raise config_error("transport handle port must be numeric") from exc
         if port <= 0 or port > 65535:
             raise config_error("transport handle port is outside 1..65535")
-        return cls(scheme, host, port)
+        return cls(kind, host, port)
 
 
 @dataclass(frozen=True, slots=True)

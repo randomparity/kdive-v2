@@ -28,6 +28,7 @@ from kdive.providers.ports.lifecycle import (
     InstallRequest,
     Provisioner,
     TransportHandleData,
+    TransportHandleKind,
 )
 from kdive.providers.ports.retrieve import (
     CaptureOutput,
@@ -66,5 +67,6 @@ __all__ = [
     "SystemHandle",
     "TransportHandle",
     "TransportHandleData",
+    "TransportHandleKind",
     "VmcoreIntrospector",
 ]

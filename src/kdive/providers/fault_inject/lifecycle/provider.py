@@ -16,7 +16,7 @@ import hashlib
 from collections.abc import Callable
 from pathlib import Path
 from threading import Lock
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 from kdive.domain.capture import CaptureMethod
@@ -39,13 +39,13 @@ from kdive.providers.ports import (
     TransportHandle,
 )
 from kdive.providers.ports._common import config_error
-from kdive.providers.ports.lifecycle import TransportHandleData
+from kdive.providers.ports.lifecycle import TransportHandleData, TransportHandleKind
 from kdive.security.artifacts.crash_commands import validate_crash_commands
 
 _TENANT = "fault-inject"
 _RETENTION_CLASS = "vmcore"
 # The accepted transport-kind set for this connector (the agent-facing token, ADR-0085).
-_TRANSPORT_KINDS = frozenset({"gdbstub", "drgn-live"})
+_TRANSPORT_KINDS: frozenset[TransportHandleKind] = frozenset(("gdbstub", "drgn-live"))
 _LOOPBACK_HOST = "127.0.0.1"
 
 # A plausible 40-hex GNU build-id shared by build and capture so provenance holds.
@@ -132,7 +132,8 @@ class FaultInjectConnect:
     def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle:
         if kind not in _TRANSPORT_KINDS:
             raise config_error(f"unknown transport kind {kind!r}")
-        endpoint = TransportHandleData(kind, _LOOPBACK_HOST, _synthetic_port(str(system)))
+        handle_kind = cast(TransportHandleKind, kind)
+        endpoint = TransportHandleData(handle_kind, _LOOPBACK_HOST, _synthetic_port(str(system)))
         return TransportHandle(endpoint.encode())
 
     def close_transport(self, handle: TransportHandle) -> None:

@@ -13,7 +13,7 @@ import copy
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -42,7 +42,12 @@ from kdive.mcp.tools.debug import sessions as debug_tools
 from kdive.providers.fault_inject.profile_policy import FaultInjectProfilePolicy
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
-from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
+from kdive.providers.ports import (
+    SystemHandle,
+    TransportHandle,
+    TransportHandleData,
+    TransportHandleKind,
+)
 from kdive.providers.remote_libvirt.profile_policy import RemoteLibvirtProfilePolicy
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProfilePolicy
@@ -91,7 +96,10 @@ class _FakeConnector:
         if self._raises is not None:
             raise self._raises
         port = 22 if kind == "drgn-live" else 1234
-        return TransportHandle(TransportHandleData(kind=kind, host="127.0.0.1", port=port).encode())
+        handle_kind = cast(TransportHandleKind, kind)
+        return TransportHandle(
+            TransportHandleData(kind=handle_kind, host="127.0.0.1", port=port).encode()
+        )
 
     def close_transport(self, handle: TransportHandle) -> None:
         self.closed.append(str(handle))
@@ -284,6 +292,7 @@ async def _seed_session(
     transport: str = "gdbstub",
 ) -> str:
     port = 22 if transport == "drgn-live" else 1234
+    handle_kind = cast(TransportHandleKind, transport)
     async with pool.connection() as conn:
         session = await DEBUG_SESSIONS.insert(
             conn,
@@ -297,7 +306,7 @@ async def _seed_session(
                 state=state,
                 transport=transport,
                 transport_handle=TransportHandleData(
-                    kind=transport, host="127.0.0.1", port=port
+                    kind=handle_kind, host="127.0.0.1", port=port
                 ).encode(),
             ),
         )
