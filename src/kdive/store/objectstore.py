@@ -61,6 +61,14 @@ def _infrastructure_error(op: str, key: str, err: BotoCoreError | ClientError) -
     )
 
 
+def _local_stream_error(key: str, path: str, err: OSError) -> CategorizedError:
+    return CategorizedError(
+        f"object-store put_stream for {key!r} could not read {path!r}: {err.strerror}",
+        category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+        details={"op": "put_stream", "key": key, "path": path},
+    )
+
+
 class ObjectStore:
     """A synchronous S3-compatible artifact store bound to one bucket."""
 
@@ -135,6 +143,8 @@ class ObjectStore:
                 )
         except (BotoCoreError, ClientError) as err:
             raise _infrastructure_error("put_object", key, err) from err
+        except OSError as err:
+            raise _local_stream_error(key, str(request.path), err) from err
         return artifact_types.StoredArtifact(
             key,
             _normalize_etag(resp["ETag"]),
