@@ -19,6 +19,7 @@ contract). Coverage maps to the issue's falsifiable acceptance:
 from __future__ import annotations
 
 import asyncio
+import importlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -52,6 +53,7 @@ from kdive.services.images.upload import UploadObjectStore
 from tests.reconciler.conftest import connect, seed_system
 
 _TARGET_PROJECT = "tenant-x"
+_DELETE_MODULE = importlib.import_module("kdive.mcp.tools.ops.images.delete")
 
 
 class _FakeImageStore:
@@ -151,6 +153,21 @@ async def _insert_private_image(
                 "owner": owner,
                 "secs": expires_in.total_seconds(),
             },
+        )
+        row = await cur.fetchone()
+    assert row is not None
+    return row[0]
+
+
+async def _insert_public_image(pool: AsyncConnectionPool, *, name: str = "fedora") -> UUID:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "INSERT INTO image_catalog "
+            "(provider, name, arch, format, root_device, object_key, digest, visibility, "
+            " owner, expires_at, state, pending_since) "
+            "VALUES ('local-libvirt', %(name)s, 'x86_64', 'qcow2', '/dev/vda', %(key)s, "
+            " 'sha256:public', 'public', NULL, NULL, 'registered', now()) RETURNING id",
+            {"name": name, "key": f"images/local-libvirt/{name}/x86_64.qcow2"},
         )
         row = await cur.fetchone()
     assert row is not None
@@ -380,6 +397,48 @@ def test_delete_project_operator_removes_row_and_audits(migrated_url: str) -> No
     asyncio.run(_run())
 
 
+def test_delete_rejects_invalid_or_missing_image(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            invalid = await ops_images.delete(
+                pool, _member_ctx(role=Role.OPERATOR), image_id="not-a-uuid"
+            )
+            missing = await ops_images.delete(
+                pool, _member_ctx(role=Role.OPERATOR), image_id=str(UUID(int=1))
+            )
+        assert invalid.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert missing.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert await _audit_log_rows(migrated_url) == []
+
+    asyncio.run(_run())
+
+
+def test_delete_rejects_public_image_without_audit(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            image_id = await _insert_public_image(pool)
+            resp = await ops_images.delete(
+                pool, _member_ctx(role=Role.OPERATOR), image_id=str(image_id)
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert await _image_exists(migrated_url, image_id) is True
+        assert await _audit_log_rows(migrated_url) == []
+
+    asyncio.run(_run())
+
+
+def test_delete_owned_is_idempotent_when_locked_row_is_gone(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await _DELETE_MODULE._delete_owned(
+                pool, _member_ctx(role=Role.OPERATOR), UUID(int=1), project=_TARGET_PROJECT
+            )
+        assert resp.status == "deleted"
+        assert await _audit_log_rows(migrated_url) == []
+
+    asyncio.run(_run())
+
+
 def test_delete_member_overreach_denied_and_audited(migrated_url: str) -> None:
     # A viewer on the image's project lacks operator: denied, audited, row survives.
     async def _run() -> None:
@@ -509,6 +568,23 @@ def test_prune_expired_admin_runs_sweep_and_audits(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_prune_expired_blank_reason_rejects_before_sweep_or_audit(migrated_url: str) -> None:
+    store = _FakeImageStore()
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            expired = await _insert_private_image(pool, expires_in=timedelta(seconds=-3600))
+            resp = await ops_images.prune_expired(
+                pool, _admin_ctx(), reason="  ", image_store=store
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert await _image_exists(migrated_url, expired) is True
+        assert store.deleted == []
+        assert await _platform_audit_rows(migrated_url) == []
+
+    asyncio.run(_run())
+
+
 def test_prune_expired_operator_denied_and_audited(migrated_url: str) -> None:
     # platform_operator does NOT satisfy the platform_admin break-glass gate.
     async def _run() -> None:
@@ -539,6 +615,47 @@ def test_extend_admin_rearms_expiry_and_audits(migrated_url: str) -> None:
         assert after > before
         audit = await _platform_audit_rows(migrated_url)
         assert audit and audit[0][2] == "images.extend"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    ("seconds", "reason"),
+    [
+        (0, "keep"),
+        (-1, "keep"),
+        (3600, " "),
+    ],
+)
+def test_extend_rejects_invalid_seconds_or_reason_before_audit(
+    migrated_url: str, seconds: int, reason: str
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            image_id = await _insert_private_image(pool, expires_in=timedelta(minutes=1))
+            before = await _image_expires_at(migrated_url, image_id)
+            resp = await ops_images.extend(
+                pool, _admin_ctx(), image_id=str(image_id), seconds=seconds, reason=reason
+            )
+            after = await _image_expires_at(migrated_url, image_id)
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert after == before
+        assert await _platform_audit_rows(migrated_url) == []
+
+    asyncio.run(_run())
+
+
+def test_extend_rejects_public_image_after_breakglass_audit(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            image_id = await _insert_public_image(pool)
+            resp = await ops_images.extend(
+                pool, _admin_ctx(), image_id=str(image_id), seconds=3600, reason="keep"
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert await _image_exists(migrated_url, image_id) is True
+        audit = await _platform_audit_rows(migrated_url)
+        assert audit == [("ops-admin", "platform_admin", "images.extend", f"image:{image_id}")]
 
     asyncio.run(_run())
 
