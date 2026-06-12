@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -73,7 +74,8 @@ async def ensure_discovered_resource_registered(
     ):
         if await _resource_exists(conn, kind, resource_id):
             return
-        record = _select_record(discovery.list_resources(), kind=kind, resource_id=resource_id)
+        records = await asyncio.to_thread(discovery.list_resources)
+        record = _select_record(records, kind=kind, resource_id=resource_id)
         resource = _resource_from_record(record, pool=pool_name, cost_class=cost_class)
         async with conn.cursor(row_factory=dict_row) as cur:
             await _insert_resource(cur, resource)

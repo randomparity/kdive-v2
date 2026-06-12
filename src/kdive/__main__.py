@@ -53,6 +53,7 @@ _HEARTBEAT_STALE_SECONDS = 10.0
 # is sized above two intervals so a single slow-but-progressing pass never reads not-live,
 # while a wedged loop that misses two scheduled passes does.
 _RECONCILER_HEARTBEAT_STALE_SECONDS = 90.0
+_PROVIDER_DISCOVERY_TIMEOUT_SECONDS = 30.0
 
 _log = logging.getLogger(__name__)
 _S3_OPTIONAL_ENV_NAMES = frozenset({S3_ENDPOINT_URL.name, S3_BUCKET.name, S3_REGION.name})
@@ -243,9 +244,11 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
     aux_app = build_aux_app(heartbeat=heartbeat, probe=probe, metric_reader=telemetry.scrape_reader)
     aux_task = asyncio.create_task(serve_aux(aux_app, host=aux_host, port=aux_port))
     provider_composition = ProviderComposition(secret_registry=secret_registry)
-    await _register_provider_resources(pool, provider_composition.build_provider_resolver())
-    console_hosting = await build_console_hosting(secret_registry)
+    provider_resolver = provider_composition.build_provider_resolver()
+    discovery_task = asyncio.create_task(_register_provider_resources(pool, provider_resolver))
+    console_hosting = None
     try:
+        console_hosting = await build_console_hosting(secret_registry)
         reconciler = Reconciler(
             pool,
             provider_composition.build_reconciler_reaper(),
@@ -270,7 +273,7 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
             if console_hosting is not None:
                 await console_hosting.close()
     finally:
-        await _cancel(aux_task)
+        await _cancel(discovery_task, aux_task)
         secret_registry.clear()
         await pool.close()
 
@@ -313,9 +316,17 @@ async def _register_provider_resources(
     repairs still run, and the next startup retries; the failure is logged.
     """
     try:
-        await resolver.register_all_discovery(pool)
+        await asyncio.wait_for(
+            resolver.register_all_discovery(pool),
+            timeout=_PROVIDER_DISCOVERY_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        _log.warning(
+            "reconciler: provider discovery registration timed out after %ss",
+            _PROVIDER_DISCOVERY_TIMEOUT_SECONDS,
+        )
     except Exception:  # noqa: BLE001 - registration failure must not crash the reconciler
-        _log.warning("reconciler: provider discovery registration failed at startup", exc_info=True)
+        _log.warning("reconciler: provider discovery registration failed", exc_info=True)
 
 
 def main(argv: list[str] | None = None) -> None:

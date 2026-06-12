@@ -83,6 +83,7 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
     from kdive.reconciler import loop
 
     events: list[str] = []
+    discovery_release = asyncio.Event()
 
     class _FakePool:
         async def open(self) -> None:
@@ -105,7 +106,9 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
 
     class _FakeResolver:
         async def register_all_discovery(self, pool: object) -> None:
-            events.append("discover")
+            events.append("discover-start")
+            await discovery_release.wait()
+            events.append("discover-end")
 
     expected_reaper = object()
     expected_resetter = object()
@@ -140,13 +143,18 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
 
     async def _fake_run(self: object, stop: object) -> None:
         events.append("run")
+        discovery_release.set()
+        await asyncio.sleep(0)
 
     monkeypatch.setattr(loop.Reconciler, "__init__", _fake_init)
     monkeypatch.setattr(loop.Reconciler, "run", _fake_run)
 
     asyncio.run(__main__._run_reconciler(expected_registry, _fake_telemetry()))
 
-    assert events == ["open", "discover", "run", "close"]
+    assert events[0] == "open"
+    assert events[-1] == "close"
+    assert "discover-end" in events
+    assert events.index("run") < events.index("discover-end")
     assert constructed["reaper"] is expected_reaper
     assert constructed["resetter"] is expected_resetter
     assert constructed["dump_volume_reaper"] is expected_dump_volume_reaper
