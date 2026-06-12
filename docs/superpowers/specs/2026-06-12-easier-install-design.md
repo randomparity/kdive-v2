@@ -113,10 +113,14 @@ first. All demo resources are gated `{{- if .Values.bundledBackends }}` and stil
 a glibc built for `x86-64-v2`, so the demo requires nodes whose CPU clears that floor — a
 `qemu64`/`kvm64`-class guest (common in homelabs and some CI) aborts at startup with
 `Fatal glibc error: CPU does not support x86-64-v2`, which reads as an inscrutable
-`CrashLoopBackOff`. The chart README and `NOTES.txt` state this floor, and the `helm test`
-smoke pod runs a node-CPU preflight first (greps `/proc/cpuinfo` for the v2 feature set) so
-the failure surfaces as an actionable message, not a glibc abort. (This is why the kdive-dev
-e2e run is gated on the node-CPU fix already in flight.)
+`CrashLoopBackOff`. The chart README and `NOTES.txt` state this floor. The `helm test` smoke
+pod also greps `/proc/cpuinfo` for the v2 feature set — but as a **best-effort early hint
+only**: a single test pod sees just the node it lands on, so on a heterogeneous cluster it can
+pass while a backend crashed on a different node. The **authoritative** CPU-floor signal is the
+bounded readiness poll (B4) timing out and surfacing the crashed backend pod's
+status/`lastState` (`Fatal glibc error…`). A cluster-wide guarantee would need a per-node check
+(DaemonSet/node-label), which is out of scope for the demo. (This is why the kdive-dev e2e run
+is gated on the node-CPU fix already in flight.)
 
 **Demo access boundary (named, not assumed).** The bundled issuer mints valid `aud=kdive`
 tokens for any request, and kdive's tool surface includes destructive power/force-crash/
@@ -223,7 +227,7 @@ helm install (bundledBackends=true)
   -> post-install: migrate Job (wait-for-db -> schema)
   -> server/worker/reconciler roll out; /readyz turns green once DB+S3+OIDC reachable
 helm test
-  -> smoke pod: node-CPU preflight (x86-64-v2 floor) -> fail-fast if unmet
+  -> smoke pod: node-CPU preflight (x86-64-v2, best-effort: this pod's node only)
               -> poll MCP 8000 Service until it answers (401 on unauth = up;
                  conn-refused/503 = wait) — aux /readyz has no Service route
               -> POST oidc /default/token (aud=kdive) -> bearer
