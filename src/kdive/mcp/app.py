@@ -50,13 +50,13 @@ from kdive.mcp.tools.lifecycle.systems import registrar as systems_tools
 from kdive.mcp.tools.ops import audit as audit_tools
 from kdive.mcp.tools.ops import breakglass as ops_breakglass_tools
 from kdive.mcp.tools.ops import diagnostics as ops_diagnostics_tools
-from kdive.mcp.tools.ops import images as ops_images_tools
 from kdive.mcp.tools.ops import inventory as inventory_tools
 from kdive.mcp.tools.ops import queue as ops_queue_tools
 from kdive.mcp.tools.ops import reconcile as ops_reconcile_tools
 from kdive.mcp.tools.ops import resources as ops_resources_tools
 from kdive.mcp.tools.ops import secrets as ops_secrets_tools
 from kdive.mcp.tools.ops import tuning as ops_tuning_tools
+from kdive.mcp.tools.ops.images import registrar as ops_images_tools
 from kdive.providers.composition import ProviderComposition, build_provider_resolver
 from kdive.providers.reaping import DumpVolumeReaper, InfraReaper
 from kdive.providers.resolver import ProviderResolver
