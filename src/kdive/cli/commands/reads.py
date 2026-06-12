@@ -31,6 +31,11 @@ async def _fetch(name: str, arguments: Mapping[str, object]) -> Mapping[str, obj
     return result.data
 
 
+async def fetch_read_envelope(name: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
+    """Call read-only tool ``name`` for sibling command modules."""
+    return await _fetch(name, arguments)
+
+
 def _flatten(envelope: object) -> dict[str, object]:
     """Flatten one envelope into a row: ``id``/``state`` plus the envelope's ``data``.
 
@@ -54,6 +59,11 @@ def _rows(envelope: Mapping[str, object]) -> list[dict[str, object]]:
     if not isinstance(items, list):
         return []
     return [_flatten(item) for item in items]
+
+
+def flatten_collection_rows(envelope: Mapping[str, object]) -> list[dict[str, object]]:
+    """Flatten a collection response envelope for sibling command modules."""
+    return _rows(envelope)
 
 
 def _payload(args: argparse.Namespace, *names: str) -> dict[str, object]:

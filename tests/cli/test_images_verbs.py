@@ -14,6 +14,8 @@ import asyncio
 import pytest
 
 import kdive.cli.commands.images as images
+import kdive.cli.commands.mutations as mutations
+import kdive.cli.commands.reads as reads
 from kdive.cli.commands import REGISTRY
 
 
@@ -49,8 +51,9 @@ class _FakeSession:
 
 def _install(monkeypatch: pytest.MonkeyPatch, payload: dict | None = None) -> _FakeClient:
     client = _FakeClient(payload or {"object_id": "o", "status": "ok", "data": {}})
-    monkeypatch.setattr(images, "_session_factory", lambda: _FakeSession(client))
-    monkeypatch.setattr(images, "ensure_token_valid", lambda *a, **k: None)
+    monkeypatch.setattr(reads, "_session_factory", lambda: _FakeSession(client))
+    monkeypatch.setattr(mutations, "_session_factory", lambda: _FakeSession(client))
+    monkeypatch.setattr(mutations, "ensure_token_valid", lambda *a, **k: None)
     return client
 
 
@@ -249,7 +252,7 @@ def test_denied_envelope_maps_to_exit_3(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_mutating_image_verbs_run_preflight_first(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _FakeClient({"object_id": "o", "status": "ok", "data": {}})
-    monkeypatch.setattr(images, "_session_factory", lambda: _FakeSession(client))
+    monkeypatch.setattr(mutations, "_session_factory", lambda: _FakeSession(client))
 
     class _Boom(RuntimeError):
         pass
@@ -257,7 +260,7 @@ def test_mutating_image_verbs_run_preflight_first(monkeypatch: pytest.MonkeyPatc
     def _refuse(*_a: object, **_k: object) -> None:
         raise _Boom
 
-    monkeypatch.setattr(images, "ensure_token_valid", _refuse)
+    monkeypatch.setattr(mutations, "ensure_token_valid", _refuse)
     with pytest.raises(_Boom):
         asyncio.run(images.images_delete(_args(image_id="img-1")))
     assert client.calls == []

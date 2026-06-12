@@ -131,6 +131,11 @@ async def _run(name: str, arguments: Mapping[str, object], *, as_json: bool) -> 
     return _exit_code(envelope)
 
 
+async def run_mutating_tool(name: str, arguments: Mapping[str, object], *, as_json: bool) -> int:
+    """Run one mutating MCP tool for sibling command modules."""
+    return await _run(name, arguments, as_json=as_json)
+
+
 async def teardown(args: argparse.Namespace) -> int:
     """Break-glass teardown of a stuck System by id (requires ``--force``).
 
