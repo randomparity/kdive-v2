@@ -99,15 +99,16 @@ Two facts shape the packaging:
 
 7. **Helm chart.** `deploy/helm/kdive` deploys the three processes (Deployments + a server
    Service) with config/secret wiring via ConfigMap/Secret against operator-provided
-   backends, and a pre-install migrate Job. An off-by-default `bundledBackends` toggle pulls
-   Postgres/MinIO subchart dependencies for a turnkey demo.
+   backends, and a pre-install migrate Job. An off-by-default `bundledBackends` toggle renders
+   first-party in-chart demo backends for a turnkey demo.
 
-   **Bundled backends are ephemeral and demo-only — not a production path.** They back the
-   system-of-record on `emptyDir` (no PVC, no backup), so a pod restart drops all state by
-   design; the chart treats this as a feature of a throwaway demo, not a gap. To make the
-   footgun hard to fire, `bundledBackends: true` requires a co-set `demoAcknowledged: true`
-   (the chart fails to render otherwise) and the rendered notes state the data is
-   non-durable. Production runs against operator-provided backends with the toggle off.
+   **Bundled backends are first-party, in-chart, and ephemeral.** `bundledBackends=true`
+   (co-set with `demoAcknowledged=true`) renders first-party Postgres, MinIO, and a
+   mock-OIDC issuer as in-chart Deployments on `emptyDir` — a pod restart drops all state by
+   design. It is demo-only: the issuer mints valid `aud=kdive` tokens for any caller, so a
+   render-time gate forces `service.type=ClusterIP` (reach MCP via `kubectl port-forward`).
+   This replaces the earlier Bitnami-subchart approach, whose Docker Hub images were retired
+   in 2025 and which shipped no OIDC issuer.
 
    **Migrate-Job phase reconciles with bundled backends.** Decision 4's pre-install/
    pre-upgrade migrate Job assumes the backends **pre-exist** — true for the production path,
