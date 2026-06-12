@@ -887,7 +887,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from kdive.provider_components.references import LocalComponentRef
-from kdive.providers.local_libvirt.materialize import materialize_rootfs_base
+from kdive.providers.local_libvirt.lifecycle.materialize import materialize_rootfs_base
 
 
 def test_materialize_local_rootfs_validates_allowed_root(tmp_path: Path) -> None:
@@ -912,7 +912,7 @@ def test_materialize_local_rootfs_validates_allowed_root(tmp_path: Path) -> None
 
 Run: `uv run python -m pytest tests/providers/local_libvirt/test_materialize.py -q`
 
-Expected: FAIL with missing `kdive.providers.local_libvirt.materialize`.
+Expected: FAIL with missing `kdive.providers.local_libvirt.lifecycle.materialize`.
 
 - [ ] **Step 3: Implement local-backed materialization**
 
