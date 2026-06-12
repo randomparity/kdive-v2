@@ -114,7 +114,6 @@ def _object_owner_kind(request: PublishRequest) -> str:
 def _image_write_request(
     request: PublishRequest, data: bytes
 ) -> artifact_types.ArtifactWriteRequest:
-    """The owner-scoped object write for a catalog image under the ``images/`` prefix."""
     return artifact_types.ArtifactWriteRequest(
         tenant="images",
         owner_kind=_object_owner_kind(request),
@@ -236,12 +235,10 @@ def _verify_source_digest(data: bytes, digest: str) -> None:
 
 
 async def _write_object(store: ImageObjectStore, request: PublishRequest, data: bytes) -> None:
-    """Write the qcow2 object for ``request``'s scoped identity (offloaded; boto3 is sync)."""
     await asyncio.to_thread(store.put_artifact, _image_write_request(request, data))
 
 
 async def _registered(conn: AsyncConnection, row_id: UUID) -> ImageCatalogEntry:
-    """Flip ``row_id`` to ``registered`` and return the persisted row."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "UPDATE image_catalog SET state = %s WHERE id = %s RETURNING *",

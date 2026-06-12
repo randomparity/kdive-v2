@@ -86,7 +86,6 @@ class PrivateUploadRequest:
 
 
 def _clamp_expiry(expires_at: datetime, *, now: datetime) -> datetime:
-    """Clamp ``expires_at`` to the per-image lifetime ceiling (fail-closed on an over-long TTL)."""
     max_seconds = config.require(IMAGE_PRIVATE_LIFETIME_MAX)
     ceiling = now + timedelta(seconds=max_seconds)
     return min(expires_at, ceiling)
@@ -174,7 +173,6 @@ async def _audit_denial(
 
 
 def _validate_staged(source: Path, required: Sequence[str], inspect: InspectSeam) -> None:
-    """Guest-contract-validate the staged qcow2 (sync; the caller offloads via to_thread)."""
     validate_guest_contract(source, required=required, inspect=inspect)
 
 
@@ -330,7 +328,6 @@ async def _publish_under_quota(
 async def _audit_registration(
     conn: AsyncConnection, entry: ImageCatalogEntry, *, principal: str
 ) -> None:
-    """Append the success audit row attributing the upload to ``principal`` under the project."""
     if entry.owner is None:  # Invariant: a private image always carries its owning project.
         raise RuntimeError("registered private image has no owner project to audit under")
     await audit.record_system(
