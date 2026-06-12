@@ -78,11 +78,14 @@ Test environments
 
   These do **not** run on stock GitHub-hosted runners. CI marks `live_vm` as a
   separate, manually-triggered job on a self-hosted KVM runner.
-- **Kernel builds** are implemented for the local-libvirt provider. A server-side build
-  needs a kernel **toolchain** (gcc/clang, make, bc, flex, bison, libelf-dev), `git`,
-  `rsync`, and a warm kernel source tree pointed to by `KDIVE_KERNEL_SRC`. KDIVE copies
-  that warm tree into a per-Run workspace and builds incrementally there. External build
-  ingestion is also implemented through upload manifests and `runs.complete_build`.
+- **Kernel builds** are implemented for both the local-libvirt and remote-libvirt
+  providers. Server-side builds run on the worker and need a kernel **toolchain**
+  (gcc/clang, make, bc, flex, bison, libelf-dev), `git`, `rsync`, a writable build
+  workspace, and a warm kernel source tree pointed to by `KDIVE_KERNEL_SRC`. KDIVE
+  copies that warm tree into a per-Run workspace and builds incrementally there.
+  Remote-libvirt packages `boot/vmlinuz` plus `lib/modules/...` into the install bundle
+  so the guest can install the kernel in-target. External build ingestion is also
+  implemented through upload manifests and `runs.complete_build`.
 
 To run the gated suite once the prerequisites are present:
 
