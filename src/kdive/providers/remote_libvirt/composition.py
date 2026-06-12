@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from psycopg_pool import AsyncConnectionPool
-
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind
 from kdive.images.planes.remote_libvirt import RemoteLibvirtRootfsBuildPlane
@@ -16,6 +14,10 @@ from kdive.provider_components.references import (
 from kdive.provider_components.validation import ComponentSourceCapabilities
 from kdive.providers.debug_common.gdbmi import GdbMiEngine
 from kdive.providers.debug_common.hostpolicy import allow_acl_remote
+from kdive.providers.discovery_registration import (
+    DiscoveryRegistrationTarget,
+    ProviderDiscoveryRegistration,
+)
 from kdive.providers.reaping import DumpVolumeReaper
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.debug.gdbmi import remote_attach_seam
@@ -35,7 +37,6 @@ from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
 from kdive.providers.transport_reset import TransportResetter
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
-from kdive.services.resources.discovery import ensure_discovered_resource_registered
 
 _POOL = "remote-libvirt"
 # Reuses seeded `local`; a remote seed row would be DDL beyond migration 0020.
@@ -64,6 +65,20 @@ def build_dump_volume_reaper(*, secret_registry: SecretRegistry) -> DumpVolumeRe
     return RemoteLibvirtDumpVolumeReaper.from_env(secret_registry=secret_registry)
 
 
+def discovery_registration(*, secret_registry: SecretRegistry) -> ProviderDiscoveryRegistration:
+    return ProviderDiscoveryRegistration(
+        target_factory=lambda: _discovery_target(secret_registry),
+        kind=ResourceKind.REMOTE_LIBVIRT,
+        pool_name=_POOL,
+        cost_class=_COST_CLASS,
+    )
+
+
+def _discovery_target(secret_registry: SecretRegistry) -> DiscoveryRegistrationTarget:
+    discovery = RemoteLibvirtDiscovery.from_env(secret_registry=secret_registry)
+    return DiscoveryRegistrationTarget(discovery=discovery, resource_id=discovery.host_uri)
+
+
 def build_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
     """Build remote-libvirt ports; buildable without operator config (ADR-0076)."""
     builder = RemoteLibvirtBuild.from_env(secret_registry=secret_registry)
@@ -71,20 +86,6 @@ def build_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
     retriever = RemoteLibvirtRetrieve.from_env(secret_registry=secret_registry)
     vmcore_introspector = RemoteVmcoreIntrospect.from_env(secret_registry=secret_registry)
     live_introspector = RemoteLiveIntrospect.from_env(secret_registry=secret_registry)
-
-    async def register_remote_host(pool: AsyncConnectionPool) -> None:
-        # Known limitation: ensure_discovered_resource_registered calls
-        # discovery.list_resources() synchronously inside its async transaction, and
-        # the remote TLS connect has no pre-connect timeout. Async offload is deferred.
-        discovery = RemoteLibvirtDiscovery.from_env(secret_registry=secret_registry)
-        await ensure_discovered_resource_registered(
-            pool,
-            discovery,
-            kind=ResourceKind.REMOTE_LIBVIRT,
-            resource_id=discovery.host_uri,
-            pool_name=_POOL,
-            cost_class=_COST_CLASS,
-        )
 
     return ProviderRuntime(
         provisioner=RemoteLibvirtProvision(secret_registry=secret_registry),
@@ -105,7 +106,6 @@ def build_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
                 CaptureMethod.CONSOLE,
             }
         ),
-        discovery_registrar=register_remote_host,
         debug=DebugCapabilities(
             attach_seam=remote_attach_seam,
             engine=GdbMiEngine(

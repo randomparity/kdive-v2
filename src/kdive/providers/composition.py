@@ -7,10 +7,16 @@ runtime assembly lives next to each provider.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+from psycopg_pool import AsyncConnectionPool
+
 import kdive.config as config
 from kdive.config.core_settings import FAULT_INJECT
 from kdive.domain.models import ResourceKind
+from kdive.providers.discovery_registration import ProviderDiscoveryRegistration
 from kdive.providers.fault_inject import composition as faultinject_composition
+from kdive.providers.fault_inject.faulting.engine import FaultEngine
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
 from kdive.providers.local_libvirt import composition as local_composition
 from kdive.providers.reaping import (
@@ -23,14 +29,61 @@ from kdive.providers.reaping import (
 from kdive.providers.remote_libvirt import composition as remote_composition
 from kdive.providers.remote_libvirt.config import is_remote_libvirt_configured
 from kdive.providers.resolver import ProviderResolver
+from kdive.providers.runtime import DiscoveryRegistrar, ProviderRuntime
 from kdive.providers.transport_reset import NullResetter, TransportResetter
 from kdive.security.secrets.secret_registry import SecretRegistry
+from kdive.services.resources.discovery import ensure_discovered_resource_registered
 
-build_faultinject_runtime = faultinject_composition.build_runtime
-build_local_runtime = local_composition.build_runtime
-build_remote_runtime = remote_composition.build_runtime
-ensure_faultinject_resource_registered = faultinject_composition.ensure_resource_registered
-ensure_local_host_registered = local_composition.ensure_resource_registered
+
+def _discovery_registrar(registration: ProviderDiscoveryRegistration) -> DiscoveryRegistrar:
+    async def register(pool: AsyncConnectionPool) -> None:
+        # Known remote limitation: ensure_discovered_resource_registered calls
+        # discovery.list_resources() synchronously inside its async transaction, and
+        # remote TLS connect has no pre-connect timeout. Async offload is deferred.
+        target = registration.target_factory()
+        await ensure_discovered_resource_registered(
+            pool,
+            target.discovery,
+            kind=registration.kind,
+            resource_id=target.resource_id,
+            pool_name=registration.pool_name,
+            cost_class=registration.cost_class,
+        )
+
+    return register
+
+
+def _with_discovery_registration(
+    runtime: ProviderRuntime, registration: ProviderDiscoveryRegistration
+) -> ProviderRuntime:
+    return replace(runtime, discovery_registrar=_discovery_registrar(registration))
+
+
+def build_local_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
+    runtime = local_composition.build_runtime(secret_registry=secret_registry)
+    return _with_discovery_registration(runtime, local_composition.discovery_registration())
+
+
+def build_faultinject_runtime(
+    *, inventory: FaultInjectInventory | None = None, engine: FaultEngine | None = None
+) -> ProviderRuntime:
+    runtime = faultinject_composition.build_runtime(inventory=inventory, engine=engine)
+    return _with_discovery_registration(runtime, faultinject_composition.discovery_registration())
+
+
+def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
+    runtime = remote_composition.build_runtime(secret_registry=secret_registry)
+    return _with_discovery_registration(
+        runtime, remote_composition.discovery_registration(secret_registry=secret_registry)
+    )
+
+
+async def ensure_local_host_registered(pool: AsyncConnectionPool) -> None:
+    await _discovery_registrar(local_composition.discovery_registration())(pool)
+
+
+async def ensure_faultinject_resource_registered(pool: AsyncConnectionPool) -> None:
+    await _discovery_registrar(faultinject_composition.discovery_registration())(pool)
 
 
 def _fault_inject_enabled(enable_fault_inject: bool | None) -> bool:
@@ -84,16 +137,14 @@ class ProviderComposition:
     ) -> ProviderResolver:
         """Assemble the per-deployment ``ResourceKind -> ProviderRuntime`` registry."""
         runtimes = {
-            ResourceKind.LOCAL_LIBVIRT: local_composition.build_runtime(
-                secret_registry=self._secret_registry
-            )
+            ResourceKind.LOCAL_LIBVIRT: build_local_runtime(secret_registry=self._secret_registry)
         }
         if _fault_inject_enabled(enable_fault_inject):
-            runtimes[ResourceKind.FAULT_INJECT] = faultinject_composition.build_runtime(
+            runtimes[ResourceKind.FAULT_INJECT] = build_faultinject_runtime(
                 inventory=self._faultinject_inventory
             )
         if _remote_libvirt_enabled(enable_remote_libvirt):
-            runtimes[ResourceKind.REMOTE_LIBVIRT] = remote_composition.build_runtime(
+            runtimes[ResourceKind.REMOTE_LIBVIRT] = build_remote_runtime(
                 secret_registry=self._secret_registry
             )
         return ProviderResolver(runtimes)

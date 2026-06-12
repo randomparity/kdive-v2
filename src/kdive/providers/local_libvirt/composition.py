@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from psycopg_pool import AsyncConnectionPool
-
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind
 from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane
@@ -19,6 +17,10 @@ from kdive.provider_components.references import (
 )
 from kdive.provider_components.validation import ComponentSourceCapabilities
 from kdive.providers.debug_common.gdbmi import GdbMiEngine
+from kdive.providers.discovery_registration import (
+    DiscoveryRegistrationTarget,
+    ProviderDiscoveryRegistration,
+)
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.providers.local_libvirt.debug.gdbmi import default_attach_seam
 from kdive.providers.local_libvirt.debug.introspect import (
@@ -34,7 +36,6 @@ from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
 from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
-from kdive.services.resources.discovery import ensure_discovered_resource_registered
 
 _POOL = "local-libvirt"
 _COST_CLASS = "local"
@@ -55,16 +56,18 @@ def _component_sources() -> ComponentSourceCapabilities:
     )
 
 
-async def ensure_resource_registered(pool: AsyncConnectionPool) -> None:
-    discovery = LocalLibvirtDiscovery.from_env()
-    await ensure_discovered_resource_registered(
-        pool,
-        discovery,
+def discovery_registration() -> ProviderDiscoveryRegistration:
+    return ProviderDiscoveryRegistration(
+        target_factory=_discovery_target,
         kind=ResourceKind.LOCAL_LIBVIRT,
-        resource_id=discovery.host_uri,
         pool_name=_POOL,
         cost_class=_COST_CLASS,
     )
+
+
+def _discovery_target() -> DiscoveryRegistrationTarget:
+    discovery = LocalLibvirtDiscovery.from_env()
+    return DiscoveryRegistrationTarget(discovery=discovery, resource_id=discovery.host_uri)
 
 
 def build_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
@@ -91,7 +94,6 @@ def build_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
         supported_capture_methods=frozenset(
             {CaptureMethod.CONSOLE, CaptureMethod.HOST_DUMP, CaptureMethod.GDBSTUB}
         ),
-        discovery_registrar=ensure_resource_registered,
         debug=DebugCapabilities(
             attach_seam=default_attach_seam,
             engine=GdbMiEngine(redactor_factory=lambda: Redactor(registry=secret_registry)),

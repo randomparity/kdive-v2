@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from psycopg_pool import AsyncConnectionPool
-
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind
 from kdive.provider_components.references import (
@@ -17,6 +15,10 @@ from kdive.provider_components.references import (
     ComponentSourceKind,
 )
 from kdive.provider_components.validation import ComponentSourceCapabilities
+from kdive.providers.discovery_registration import (
+    DiscoveryRegistrationTarget,
+    ProviderDiscoveryRegistration,
+)
 from kdive.providers.fault_inject.discovery import FaultInjectDiscovery
 from kdive.providers.fault_inject.faulting.engine import FaultEngine
 from kdive.providers.fault_inject.inventory import FaultInjectInventory, FaultInjectReaper
@@ -34,7 +36,6 @@ from kdive.providers.fault_inject.lifecycle.provider import (
 )
 from kdive.providers.reaping import InfraReaper
 from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
-from kdive.services.resources.discovery import ensure_discovered_resource_registered
 from kdive.store.objectstore import object_store_from_env
 
 _POOL = "fault-inject"
@@ -57,19 +58,21 @@ def _component_sources() -> ComponentSourceCapabilities:
     )
 
 
-async def ensure_resource_registered(pool: AsyncConnectionPool) -> None:
+def discovery_registration() -> ProviderDiscoveryRegistration:
     # Insert-if-absent (like local): the happy path's capabilities are inert, so this never
     # updates an existing row. Mutable fault-inject resource config needs an explicit upsert
     # path or a fresh resource row, not a restart-only refresh.
-    discovery = FaultInjectDiscovery.from_env()
-    await ensure_discovered_resource_registered(
-        pool,
-        discovery,
+    return ProviderDiscoveryRegistration(
+        target_factory=_discovery_target,
         kind=ResourceKind.FAULT_INJECT,
-        resource_id=discovery.host_uri,
         pool_name=_POOL,
         cost_class=_COST_CLASS,
     )
+
+
+def _discovery_target() -> DiscoveryRegistrationTarget:
+    discovery = FaultInjectDiscovery.from_env()
+    return DiscoveryRegistrationTarget(discovery=discovery, resource_id=discovery.host_uri)
 
 
 def build_reaper(inventory: FaultInjectInventory) -> InfraReaper:
@@ -100,7 +103,6 @@ def build_runtime(
         supported_capture_methods=frozenset(
             {CaptureMethod.CONSOLE, CaptureMethod.HOST_DUMP, CaptureMethod.GDBSTUB}
         ),
-        discovery_registrar=ensure_resource_registered,
         debug=DebugCapabilities(
             attach_seam=fault_inject_attach_seam,
             engine=FaultInjectDebugEngine(),
