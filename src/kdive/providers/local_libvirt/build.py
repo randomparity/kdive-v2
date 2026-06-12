@@ -539,14 +539,21 @@ def _merge_config(  # pragma: no cover - live_vm
         raise _build_failure("make defconfig exited non-zero", run_id)
     fragment_path = workspace / "kdump.config.fragment"
     fragment_path.write_bytes(fragment_bytes)
-    merge = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["scripts/kconfig/merge_config.sh", "-m", ".config", str(fragment_path)],
-        cwd=workspace,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=_MAKE_TIMEOUT_S,
-    )
+    try:
+        merge = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["scripts/kconfig/merge_config.sh", "-m", ".config", str(fragment_path)],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_MAKE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _build_failure("merge_config.sh -m exceeded the build timeout", run_id) from exc
+    except OSError as exc:
+        raise _launch_failure(
+            "merge_config.sh", exc, category=ErrorCategory.INFRASTRUCTURE_FAILURE
+        ) from exc
     if merge.returncode != 0:
         raise _build_failure("merge_config.sh -m exited non-zero", run_id)
 
