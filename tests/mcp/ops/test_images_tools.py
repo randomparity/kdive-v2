@@ -31,6 +31,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.state import SystemState
+from kdive.jobs.payloads import ImageBuildPayload
 from kdive.mcp.tools.ops import images as ops_images
 from kdive.reconciler.images import ImageMtime
 from kdive.security.authz.context import RequestContext
@@ -191,14 +192,16 @@ def _build(pool: AsyncConnectionPool, ctx: RequestContext):
     return ops_images.build(
         pool,
         ctx,
-        provider="local-libvirt",
-        name="fedora-40",
-        arch="x86_64",
-        releasever="40",
-        source_image_digest="sha256:base",
-        capabilities=["agent", "kdump"],
-        format="qcow2",
-        root_device="/dev/vda",
+        payload=ImageBuildPayload(
+            provider="local-libvirt",
+            name="fedora-40",
+            arch="x86_64",
+            releasever="40",
+            source_image_digest="sha256:base",
+            capabilities=("agent", "kdump"),
+            format="qcow2",
+            root_device="/dev/vda",
+        ),
     )
 
 
@@ -206,14 +209,16 @@ def _publish(pool: AsyncConnectionPool, ctx: RequestContext):
     return ops_images.publish(
         pool,
         ctx,
-        provider="local-libvirt",
-        name="fedora-40",
-        arch="x86_64",
-        releasever="40",
-        source_image_digest="sha256:base",
-        capabilities=["agent", "kdump"],
-        format="qcow2",
-        root_device="/dev/vda",
+        payload=ImageBuildPayload(
+            provider="local-libvirt",
+            name="fedora-40",
+            arch="x86_64",
+            releasever="40",
+            source_image_digest="sha256:base",
+            capabilities=("agent", "kdump"),
+            format="qcow2",
+            root_device="/dev/vda",
+        ),
     )
 
 

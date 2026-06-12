@@ -58,7 +58,7 @@ from kdive.reconciler.images import (
     repair_leaked_images,
 )
 from kdive.services.images.publish import PublishRequest, publish_image
-from kdive.services.images.upload import register_private_upload
+from kdive.services.images.upload import PrivateUploadRequest, register_private_upload
 from tests.reconciler.conftest import connect, run_repair, seed_system
 
 _REQUIRED = ("agent", "kdump", "drgn", "helpers")
@@ -161,14 +161,16 @@ async def _register(
     return await register_private_upload(
         conn,
         store,
-        project=project,
-        principal=_PRINCIPAL,
-        name=name,
-        provider="local-libvirt",
-        arch="x86_64",
-        quarantine_key=quarantine_key,
-        expires_at=expires_at or (datetime.now(UTC) + timedelta(days=3)),
-        required=_REQUIRED,
+        request=PrivateUploadRequest(
+            project=project,
+            principal=_PRINCIPAL,
+            name=name,
+            provider="local-libvirt",
+            arch="x86_64",
+            quarantine_key=quarantine_key,
+            expires_at=expires_at or (datetime.now(UTC) + timedelta(days=3)),
+            required=_REQUIRED,
+        ),
         inspect=inspect or _conforming(),
     )
 

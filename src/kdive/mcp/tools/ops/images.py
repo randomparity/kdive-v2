@@ -65,7 +65,11 @@ from kdive.security.authz.rbac import (
     require_platform_role,
     require_role,
 )
-from kdive.services.images.upload import UploadObjectStore, register_private_upload
+from kdive.services.images.upload import (
+    PrivateUploadRequest,
+    UploadObjectStore,
+    register_private_upload,
+)
 
 if TYPE_CHECKING:
     from kdive.store.objectstore import ObjectStore
@@ -175,41 +179,19 @@ async def build(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
-    provider: str,
-    name: str,
-    arch: str,
-    releasever: str,
-    source_image_digest: str,
-    capabilities: list[str],
-    format: Literal["qcow2"],
-    root_device: str,
+    payload: ImageBuildPayload,
 ) -> ToolResponse:
     """Enqueue an ``IMAGE_BUILD`` job for a public base image. Requires ``platform_operator``."""
-    payload = ImageBuildPayload(
-        provider=provider,
-        name=name,
-        arch=arch,
-        releasever=releasever,
-        source_image_digest=source_image_digest,
-        capabilities=tuple(capabilities),
-        format=format,
-        root_device=root_device,
+    return await _operator_image_build(
+        pool, ctx, tool=_BUILD_TOOL, payload=payload, object_id=payload.name
     )
-    return await _operator_image_build(pool, ctx, tool=_BUILD_TOOL, payload=payload, object_id=name)
 
 
 async def publish(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
-    provider: str,
-    name: str,
-    arch: str,
-    releasever: str,
-    source_image_digest: str,
-    capabilities: list[str],
-    format: Literal["qcow2"],
-    root_device: str,
+    payload: ImageBuildPayload,
 ) -> ToolResponse:
     """Promote a built image to a public catalog row via ``IMAGE_BUILD``. Requires operator.
 
@@ -217,18 +199,8 @@ async def publish(
     realized ``defined`` baseline and a fresh build land through the one publish path; there is
     no second promote implementation.
     """
-    payload = ImageBuildPayload(
-        provider=provider,
-        name=name,
-        arch=arch,
-        releasever=releasever,
-        source_image_digest=source_image_digest,
-        capabilities=tuple(capabilities),
-        format=format,
-        root_device=root_device,
-    )
     return await _operator_image_build(
-        pool, ctx, tool=_PUBLISH_TOOL, payload=payload, object_id=name
+        pool, ctx, tool=_PUBLISH_TOOL, payload=payload, object_id=payload.name
     )
 
 
@@ -332,14 +304,16 @@ async def _register_upload(
             entry: ImageCatalogEntry = await register_private_upload(
                 conn,
                 store,
-                project=project,
-                principal=ctx.principal,
-                name=name,
-                provider="local-libvirt",
-                arch=arch,
-                quarantine_key=quarantine_key,
-                expires_at=expires_at,
-                required=_DEFAULT_REQUIRED_CONTRACT,
+                request=PrivateUploadRequest(
+                    project=project,
+                    principal=ctx.principal,
+                    name=name,
+                    provider="local-libvirt",
+                    arch=arch,
+                    quarantine_key=quarantine_key,
+                    expires_at=expires_at,
+                    required=_DEFAULT_REQUIRED_CONTRACT,
+                ),
             )
         except CategorizedError as exc:
             return ToolResponse.failure_from_error(name, exc)
@@ -612,14 +586,16 @@ def register(
         return await build(
             pool,
             current_context(),
-            provider=provider,
-            name=name,
-            arch=arch,
-            releasever=releasever,
-            source_image_digest=source_image_digest,
-            capabilities=capabilities,
-            format=format,
-            root_device=root_device,
+            payload=ImageBuildPayload(
+                provider=provider,
+                name=name,
+                arch=arch,
+                releasever=releasever,
+                source_image_digest=source_image_digest,
+                capabilities=tuple(capabilities),
+                format=format,
+                root_device=root_device,
+            ),
         )
 
     @app.tool(name=_PUBLISH_TOOL, annotations=_docmeta.mutating(), meta={"maturity": "implemented"})
@@ -641,14 +617,16 @@ def register(
         return await publish(
             pool,
             current_context(),
-            provider=provider,
-            name=name,
-            arch=arch,
-            releasever=releasever,
-            source_image_digest=source_image_digest,
-            capabilities=capabilities,
-            format=format,
-            root_device=root_device,
+            payload=ImageBuildPayload(
+                provider=provider,
+                name=name,
+                arch=arch,
+                releasever=releasever,
+                source_image_digest=source_image_digest,
+                capabilities=tuple(capabilities),
+                format=format,
+                root_device=root_device,
+            ),
         )
 
     @app.tool(name=_UPLOAD_TOOL, annotations=_docmeta.mutating(), meta={"maturity": "implemented"})

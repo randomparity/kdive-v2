@@ -30,7 +30,7 @@ from kdive.domain.models import ImageState, ImageVisibility, Sensitivity
 from kdive.images.catalog import resolve_rootfs
 from kdive.images.validation import GUEST_CONTRACT_PATHS, InspectSeam
 from kdive.provider_components import artifacts as artifact_types
-from kdive.services.images.upload import register_private_upload
+from kdive.services.images.upload import PrivateUploadRequest, register_private_upload
 
 _REQUIRED = ("agent", "kdump", "drgn", "helpers")
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -112,14 +112,16 @@ async def _register(
     return await register_private_upload(
         conn,
         store,
-        project=project,
-        principal=principal,
-        name=name,
-        provider="local-libvirt",
-        arch="x86_64",
-        quarantine_key=quarantine_key,
-        expires_at=expires_at or (_DT + timedelta(days=3)),
-        required=_REQUIRED,
+        request=PrivateUploadRequest(
+            project=project,
+            principal=principal,
+            name=name,
+            provider="local-libvirt",
+            arch="x86_64",
+            quarantine_key=quarantine_key,
+            expires_at=expires_at or (_DT + timedelta(days=3)),
+            required=_REQUIRED,
+        ),
         inspect=inspect or _conforming(),
     )
 
@@ -267,14 +269,16 @@ def test_traversal_bearing_arch_is_rejected_before_staging(migrated_url: str) ->
                 await register_private_upload(
                     conn,
                     store,
-                    project="proj",
-                    principal="alice",
-                    name="myrootfs",
-                    provider="local-libvirt",
-                    arch="../../etc/evil",
-                    quarantine_key="uploads/q/proj/rootfs.qcow2",
-                    expires_at=_DT + timedelta(days=3),
-                    required=_REQUIRED,
+                    request=PrivateUploadRequest(
+                        project="proj",
+                        principal="alice",
+                        name="myrootfs",
+                        provider="local-libvirt",
+                        arch="../../etc/evil",
+                        quarantine_key="uploads/q/proj/rootfs.qcow2",
+                        expires_at=_DT + timedelta(days=3),
+                        required=_REQUIRED,
+                    ),
                     inspect=_conforming(),
                 )
             assert err.value.category is ErrorCategory.CONFIGURATION_ERROR
