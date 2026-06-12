@@ -557,10 +557,9 @@ class _HostDumpCapturer:
             ) from exc
 
     def _enforce_ceiling(self, volume: Any, system_id: UUID) -> None:
-        """Reject an over-ceiling volume before any download; still clean the dump up."""
+        """Reject an over-ceiling volume before any download."""
         capacity = int(volume.info()[1])
         if capacity > self._options.max_core_bytes:
-            self._delete_volume(volume)
             raise CategorizedError(
                 "host_dump core exceeds the single-PUT 5 GiB ceiling",
                 category=ErrorCategory.CONFIGURATION_ERROR,

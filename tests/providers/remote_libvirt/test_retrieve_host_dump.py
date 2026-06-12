@@ -79,6 +79,7 @@ class FakeVolume:
         self._capacity = capacity
         self._payload = payload
         self.deleted = False
+        self.delete_calls = 0
         self.download_called = False
 
     def name(self) -> str:  # noqa: N802 - libvirt binding name
@@ -94,6 +95,7 @@ class FakeVolume:
 
     def delete(self, flags: int = 0) -> int:
         self.deleted = True
+        self.delete_calls += 1
         return 0
 
 
@@ -399,7 +401,7 @@ def test_host_dump_over_ceiling_volume_is_configuration_error_before_download(
 
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert not huge.download_called  # AC4: ceiling enforced before the stream
-    assert huge.deleted  # but the over-ceiling dump volume is still cleaned up
+    assert huge.delete_calls == 1  # cleanup is owned by _stream_and_store's finally block
 
 
 def test_host_dump_missing_vmcoreinfo_build_id_is_configuration_error(tmp_path: Path) -> None:
