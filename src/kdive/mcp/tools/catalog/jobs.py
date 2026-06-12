@@ -52,6 +52,18 @@ def _error(object_id: str, category: ErrorCategory) -> ToolResponse:
     return ToolResponse(object_id=object_id, status="error", error_category=category.value)
 
 
+def _job_response(job: Job) -> ToolResponse:
+    try:
+        return ToolResponse.from_job(job)
+    except ValueError:
+        _log.warning(
+            "job %s violates the response invariant; degraded",
+            job.id,
+            exc_info=True,
+        )
+        return _error(str(job.id), ErrorCategory.INFRASTRUCTURE_FAILURE)
+
+
 def _in_scope(job: Job, ctx: RequestContext) -> bool:
     """True iff ``job``'s owning project is granted to ``ctx``."""
     return job.authorizing["project"] in ctx.projects
@@ -104,7 +116,7 @@ async def get_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str) -
         denied = _require_job_role(job, ctx, Role.VIEWER, job_id)
         if denied is not None:
             return denied
-        return ToolResponse.from_job(job)
+        return _job_response(job)
 
 
 async def wait_job(
@@ -138,7 +150,7 @@ async def wait_job(
                 return denied
             now = loop.time()
             if job.state in _TERMINAL or now >= deadline:
-                return ToolResponse.from_job(job)
+                return _job_response(job)
             await sleep(min(POLL_INTERVAL_S, deadline - now))
 
 
@@ -191,17 +203,7 @@ async def list_jobs(pool: AsyncConnectionPool, ctx: RequestContext, *, limit: in
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             jobs = await queue.recent_jobs(conn, capped, _readable_projects(ctx))
-        responses: list[ToolResponse] = []
-        for job in jobs:
-            try:
-                responses.append(ToolResponse.from_job(job))
-            except ValueError:
-                _log.warning(
-                    "job %s violates the response invariant; degraded",
-                    job.id,
-                    exc_info=True,
-                )
-                responses.append(_error(str(job.id), ErrorCategory.INFRASTRUCTURE_FAILURE))
+        responses = [_job_response(job) for job in jobs]
         return ToolResponse.collection(
             "jobs",
             "ok",

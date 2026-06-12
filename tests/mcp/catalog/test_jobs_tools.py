@@ -60,6 +60,14 @@ async def _enqueue(pool: AsyncConnectionPool, dedup: str) -> str:
     return await _enqueue_in(pool, dedup, "proj")
 
 
+async def _mark_failed_without_category(pool: AsyncConnectionPool, job_id: str) -> None:
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute(
+            "UPDATE jobs SET state = 'failed', error_category = NULL WHERE id = %s",
+            (job_id,),
+        )
+
+
 def test_get_known_job_returns_status(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -78,6 +86,26 @@ def test_get_unknown_job_is_error_envelope(migrated_url: str) -> None:
             resp = await jobs_tools.get_job(pool, CTX, str(uuid4()))
         assert resp.status == "error"
         assert resp.error_category == "configuration_error"
+
+    asyncio.run(_run())
+
+
+def test_get_job_degrades_invariant_violating_row(
+    migrated_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            job_id = await _enqueue(pool, "bad-get")
+            await _mark_failed_without_category(pool, job_id)
+            caplog.set_level(logging.WARNING, logger=jobs_tools.__name__)
+            resp = await jobs_tools.get_job(pool, VIEWER_CTX, job_id)
+        assert resp.object_id == job_id
+        assert resp.status == "error"
+        assert resp.error_category == "infrastructure_failure"
+        assert any(
+            record.exc_info is not None and f"job {job_id}" in record.message
+            for record in caplog.records
+        )
 
     asyncio.run(_run())
 
@@ -134,6 +162,26 @@ def test_wait_zero_timeout_is_single_read(migrated_url: str) -> None:
             job_id = await _enqueue(pool, "d1")  # stays queued (no worker)
             resp = await jobs_tools.wait_job(pool, VIEWER_CTX, job_id, timeout_s=0.0)
         assert resp.status == "queued"  # one read, no wait
+
+    asyncio.run(_run())
+
+
+def test_wait_job_degrades_invariant_violating_terminal_row(
+    migrated_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            job_id = await _enqueue(pool, "bad-wait")
+            await _mark_failed_without_category(pool, job_id)
+            caplog.set_level(logging.WARNING, logger=jobs_tools.__name__)
+            resp = await jobs_tools.wait_job(pool, VIEWER_CTX, job_id, timeout_s=0.0)
+        assert resp.object_id == job_id
+        assert resp.status == "error"
+        assert resp.error_category == "infrastructure_failure"
+        assert any(
+            record.exc_info is not None and f"job {job_id}" in record.message
+            for record in caplog.records
+        )
 
     asyncio.run(_run())
 
@@ -240,11 +288,7 @@ def test_list_jobs_isolates_invariant_violating_row(
             good_id = await _enqueue(pool, "good")
             bad_id = await _enqueue(pool, "bad")
             # Force the bad row into a state that violates "category iff failed".
-            async with pool.connection() as conn, conn.transaction():
-                await conn.execute(
-                    "UPDATE jobs SET state = 'failed', error_category = NULL WHERE id = %s",
-                    (bad_id,),
-                )
+            await _mark_failed_without_category(pool, bad_id)
             caplog.set_level(logging.WARNING, logger=jobs_tools.__name__)
             resp = await jobs_tools.list_jobs(pool, VIEWER_CTX, limit=50)
         items = resp.items
