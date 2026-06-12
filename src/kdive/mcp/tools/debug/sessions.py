@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Any, LiteralString, Protocol
+from typing import Annotated, Any, LiteralString
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
@@ -94,73 +94,85 @@ class _DetachResources:
     runtime: DebugEngineRuntime | None = None
 
 
-class _DebugSessionProvider(Protocol):
-    async def connector_for_run(
-        self, conn: AsyncConnection, run: Run
-    ) -> Connector | ToolResponse: ...
-
-    async def detach_resources(
-        self, conn: AsyncConnection, session_id: UUID
-    ) -> _DetachResources | ToolResponse: ...
+type _ConnectorForRun = Callable[[AsyncConnection, Run], Awaitable[Connector | ToolResponse]]
+type _DetachResourcesForSession = Callable[
+    [AsyncConnection, UUID], Awaitable[_DetachResources | ToolResponse]
+]
 
 
-@dataclass(frozen=True)
-class _FixedDebugSessionProvider:
-    connector: Connector
-    runtime: DebugEngineRuntime | None = None
-
-    async def connector_for_run(self, conn: AsyncConnection, run: Run) -> Connector | ToolResponse:
+def _fixed_connector_for_run(connector: Connector) -> _ConnectorForRun:
+    async def connector_for_run(conn: AsyncConnection, run: Run) -> Connector | ToolResponse:
         del conn, run
-        return self.connector
+        return connector
 
-    async def detach_resources(
-        self, conn: AsyncConnection, session_id: UUID
-    ) -> _DetachResources | ToolResponse:
-        del conn, session_id
-        return _DetachResources(connector=self.connector, runtime=self.runtime)
+    return connector_for_run
 
 
-@dataclass(frozen=True)
-class _ResolvedDebugSessionProvider:
-    resolver: ProviderResolver
-    runtime: DebugRuntimeResolver | None = None
-
-    async def connector_for_run(self, conn: AsyncConnection, run: Run) -> Connector | ToolResponse:
+def _resolved_connector_for_run(resolver: ProviderResolver) -> _ConnectorForRun:
+    async def connector_for_run(conn: AsyncConnection, run: Run) -> Connector | ToolResponse:
         try:
-            runtime = await self.resolver.runtime_for_run(conn, run.id)
+            runtime = await resolver.runtime_for_run(conn, run.id)
         except CategorizedError as exc:
             return ToolResponse.failure_from_error(str(run.id), exc)
         return runtime.connector
 
+    return connector_for_run
+
+
+def _fixed_detach_resources(
+    connector: Connector, runtime: DebugEngineRuntime | None
+) -> _DetachResourcesForSession:
     async def detach_resources(
-        self, conn: AsyncConnection, session_id: UUID
+        conn: AsyncConnection, session_id: UUID
+    ) -> _DetachResources | ToolResponse:
+        del conn, session_id
+        return _DetachResources(connector=connector, runtime=runtime)
+
+    return detach_resources
+
+
+def _resolved_detach_resources(
+    resolver: ProviderResolver, runtime_resolver: DebugRuntimeResolver | None
+) -> _DetachResourcesForSession:
+    async def detach_resources(
+        conn: AsyncConnection, session_id: UUID
     ) -> _DetachResources | ToolResponse:
         try:
-            binding = await self.resolver.binding_for_session(conn, session_id)
+            binding = await resolver.binding_for_session(conn, session_id)
         except CategorizedError as exc:
             return ToolResponse.failure_from_error(str(session_id), exc)
         runtime: DebugEngineRuntime | None
-        if self.runtime is None:
+        if runtime_resolver is None:
             runtime = None
         else:
-            resolved_runtime = self.runtime.runtime_for_binding(binding, object_id=str(session_id))
+            resolved_runtime = runtime_resolver.runtime_for_binding(
+                binding, object_id=str(session_id)
+            )
             if isinstance(resolved_runtime, ToolResponse):
                 return resolved_runtime
             runtime = resolved_runtime
         return _DetachResources(connector=binding.runtime.connector, runtime=runtime)
 
+    return detach_resources
 
-def _debug_session_provider(
+
+def _debug_session_bindings(
     connector_source: ProviderResolver | Connector,
     runtime: DebugEngineRuntime | DebugRuntimeResolver | None,
-) -> _DebugSessionProvider:
+) -> tuple[_ConnectorForRun, _DetachResourcesForSession]:
     if isinstance(connector_source, ProviderResolver):
         if runtime is not None and not isinstance(runtime, DebugRuntimeResolver):
             raise RuntimeError("provider-resolved debug sessions require DebugRuntimeResolver")
-        return _ResolvedDebugSessionProvider(connector_source, runtime)
+        return (
+            _resolved_connector_for_run(connector_source),
+            _resolved_detach_resources(connector_source, runtime),
+        )
     if isinstance(runtime, DebugRuntimeResolver):
         raise RuntimeError("fixed-connector debug sessions require DebugEngineRuntime")
-    return _FixedDebugSessionProvider(connector_source, runtime)
+    return (
+        _fixed_connector_for_run(connector_source),
+        _fixed_detach_resources(connector_source, runtime),
+    )
 
 
 def _secret_scope(session_id: UUID) -> str:
@@ -238,7 +250,9 @@ class DebugSessionHandlers:
         secret_backend_factory: Callable[[UUID], SecretBackend] | None = None,
         secret_registry: SecretRegistry,
     ) -> None:
-        self._provider = _debug_session_provider(connector_source, runtime)
+        self._connector_for_run, self._detach_resources = _debug_session_bindings(
+            connector_source, runtime
+        )
         self._secret_backend_factory = secret_backend_factory
         self._secret_registry = secret_registry
 
@@ -308,7 +322,7 @@ class DebugSessionHandlers:
         resolved = _resolve_credential(system, transport, backend)
         if isinstance(resolved, ToolResponse):
             return resolved
-        connector = await self._provider.connector_for_run(conn, run)
+        connector = await self._connector_for_run(conn, run)
         if isinstance(connector, ToolResponse):
             return connector
         return _AttachRequest(
@@ -351,7 +365,7 @@ class DebugSessionHandlers:
                 if resolved is None:
                     return _config_error(session_id)
                 _, system_id = resolved
-                resources_or_response = await self._provider.detach_resources(conn, uid)
+                resources_or_response = await self._detach_resources(conn, uid)
                 if isinstance(resources_or_response, ToolResponse):
                     return resources_or_response
                 resources = resources_or_response
