@@ -407,10 +407,8 @@ def test_fault_inject_opt_in_reads_the_environment(monkeypatch: pytest.MonkeyPat
 
 
 def test_fault_inject_runtime_without_engine_uses_bare_happy_path_ports() -> None:
-    from kdive.providers.fault_inject.lifecycle.provider import (
-        FaultInjectInstall,
-        FaultInjectProvision,
-    )
+    from kdive.providers.fault_inject.lifecycle.install import FaultInjectInstall
+    from kdive.providers.fault_inject.lifecycle.provisioning import FaultInjectProvision
 
     runtime = composition.build_faultinject_runtime()
 

@@ -38,7 +38,8 @@ from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.fault_inject.faulting.engine import FaultEngine, FaultPlane
 from kdive.providers.fault_inject.inventory import FaultInjectInventory, FaultInjectReaper
 from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvision
-from kdive.providers.fault_inject.lifecycle.provider import FaultInjectInstall, FaultInjectProvision
+from kdive.providers.fault_inject.lifecycle.install import FaultInjectInstall
+from kdive.providers.fault_inject.lifecycle.provisioning import FaultInjectProvision
 from kdive.providers.ports import InstallRequest
 from kdive.reconciler import loop
 from tests.reconciler.conftest import (

@@ -19,22 +19,22 @@ from kdive.providers.discovery_registration import (
     DiscoveryRegistrationTarget,
     ProviderDiscoveryRegistration,
 )
+from kdive.providers.fault_inject.build import FaultInjectBuild
+from kdive.providers.fault_inject.debug.gdb import (
+    FaultInjectDebugEngine,
+    fault_inject_attach_seam,
+)
+from kdive.providers.fault_inject.debug.introspect import FaultInjectIntrospect
 from kdive.providers.fault_inject.discovery import FaultInjectDiscovery
 from kdive.providers.fault_inject.faulting.engine import FaultEngine
 from kdive.providers.fault_inject.inventory import FaultInjectInventory, FaultInjectReaper
+from kdive.providers.fault_inject.lifecycle.connect import FaultInjectConnect
+from kdive.providers.fault_inject.lifecycle.control import FaultInjectControl
 from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvision
-from kdive.providers.fault_inject.lifecycle.provider import (
-    FaultInjectBuild,
-    FaultInjectConnect,
-    FaultInjectControl,
-    FaultInjectDebugEngine,
-    FaultInjectInstall,
-    FaultInjectIntrospect,
-    FaultInjectProvision,
-    FaultInjectRetrieve,
-    fault_inject_attach_seam,
-)
+from kdive.providers.fault_inject.lifecycle.install import FaultInjectInstall
+from kdive.providers.fault_inject.lifecycle.provisioning import FaultInjectProvision
 from kdive.providers.fault_inject.profile_policy import FaultInjectProfilePolicy
+from kdive.providers.fault_inject.retrieve import FaultInjectRetrieve
 from kdive.providers.reaping import InfraReaper
 from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
 from kdive.store.objectstore import object_store_from_env

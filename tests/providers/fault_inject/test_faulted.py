@@ -23,7 +23,8 @@ from kdive.providers.fault_inject.lifecycle.faulted import (
     FaultedProvision,
     _apply,
 )
-from kdive.providers.fault_inject.lifecycle.provider import FaultInjectInstall, FaultInjectProvision
+from kdive.providers.fault_inject.lifecycle.install import FaultInjectInstall
+from kdive.providers.fault_inject.lifecycle.provisioning import FaultInjectProvision
 from kdive.providers.ports import InstallRequest
 
 _SYSTEM = UUID("00000000-0000-0000-0000-0000000000aa")

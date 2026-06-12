@@ -8,25 +8,25 @@ from uuid import UUID
 
 import pytest
 
-import kdive.providers.fault_inject.lifecycle.provider as provider_module
+import kdive.providers.fault_inject.lifecycle.connect as connect_module
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction, Sensitivity
 from kdive.profiles.build import ServerBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
-from kdive.providers.fault_inject.inventory import FaultInjectInventory
-from kdive.providers.fault_inject.lifecycle.provider import (
-    FaultInjectBuild,
-    FaultInjectConnect,
-    FaultInjectControl,
+from kdive.providers.fault_inject.build import FaultInjectBuild
+from kdive.providers.fault_inject.debug.gdb import (
     FaultInjectDebugEngine,
-    FaultInjectInstall,
-    FaultInjectIntrospect,
-    FaultInjectProvision,
-    FaultInjectRetrieve,
     fault_inject_attach_seam,
 )
+from kdive.providers.fault_inject.debug.introspect import FaultInjectIntrospect
+from kdive.providers.fault_inject.inventory import FaultInjectInventory
+from kdive.providers.fault_inject.lifecycle.connect import FaultInjectConnect
+from kdive.providers.fault_inject.lifecycle.control import FaultInjectControl
+from kdive.providers.fault_inject.lifecycle.install import FaultInjectInstall
+from kdive.providers.fault_inject.lifecycle.provisioning import FaultInjectProvision
+from kdive.providers.fault_inject.retrieve import FaultInjectRetrieve
 from kdive.providers.ports import InstallRequest, SystemHandle
 from kdive.providers.ports.lifecycle import TransportHandleData
 
@@ -128,9 +128,9 @@ def test_synthetic_port_includes_documented_upper_bound(
         assert digest_size == 2
         return _MaxDigest()
 
-    monkeypatch.setattr(provider_module.hashlib, "blake2b", blake2b)
+    monkeypatch.setattr(connect_module.hashlib, "blake2b", blake2b)
 
-    assert provider_module._synthetic_port("fault-inject-domain") == 65535
+    assert connect_module.synthetic_port("fault-inject-domain") == 65535
 
 
 def test_open_transport_returns_a_decodable_loopback_handle() -> None:
