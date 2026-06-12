@@ -71,7 +71,6 @@ def workspace_failure(op: str, path_label: str, exc: OSError) -> CategorizedErro
 
 
 def real_read_config(workspace: Path) -> str:  # pragma: no cover - live_vm
-    """Read the final kernel ``.config``."""
     return read_text_file(
         workspace / ".config",
         category=ErrorCategory.CONFIGURATION_ERROR,
@@ -80,7 +79,6 @@ def real_read_config(workspace: Path) -> str:  # pragma: no cover - live_vm
 
 
 def real_read_kernel_image(workspace: Path) -> bytes:  # pragma: no cover - live_vm
-    """Read the built x86 bzImage."""
     return read_bytes_file(
         workspace / "arch/x86/boot/bzImage",
         category=ErrorCategory.BUILD_FAILURE,
@@ -89,7 +87,6 @@ def real_read_kernel_image(workspace: Path) -> bytes:  # pragma: no cover - live
 
 
 def real_read_vmlinux(workspace: Path) -> bytes:  # pragma: no cover - live_vm
-    """Read the built ``vmlinux`` ELF."""
     return read_bytes_file(
         workspace / "vmlinux",
         category=ErrorCategory.BUILD_FAILURE,
@@ -116,12 +113,10 @@ def real_run_make(workspace: Path) -> int:  # pragma: no cover - live_vm
 
 
 def real_run_olddefconfig(workspace: Path) -> int:  # pragma: no cover - live_vm
-    """Run ``make olddefconfig``."""
     return run_make_target(workspace, ["olddefconfig"], "make olddefconfig")
 
 
 def real_run_modules_install(workspace: Path, mod_root: Path) -> int:  # pragma: no cover
-    """Run ``make modules_install INSTALL_MOD_PATH=<mod_root>``."""
     return run_make_target(
         workspace,
         [f"INSTALL_MOD_PATH={mod_root}", "modules_install"],
