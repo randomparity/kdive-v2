@@ -1,0 +1,55 @@
+{{- if .Values.bundledBackends }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kdive.fullname" . }}-postgres
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "kdive.fullname" . }}-postgres
+  template:
+    metadata:
+      labels:
+        app: {{ include "kdive.fullname" . }}-postgres
+        {{- include "kdive.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.demo.postgres.image }}
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.demoCredentials.postgresql.username | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.demoCredentials.postgresql.password | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.demoCredentials.postgresql.database | quote }}
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.demoCredentials.postgresql.username | quote }}, "-d", {{ .Values.demoCredentials.postgresql.database | quote }}]
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kdive.fullname" . }}-postgres
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ include "kdive.fullname" . }}-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+{{- end }}

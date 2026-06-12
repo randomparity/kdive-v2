@@ -1,0 +1,87 @@
+{{- if .Values.bundledBackends }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kdive.fullname" . }}-minio
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "kdive.fullname" . }}-minio
+  template:
+    metadata:
+      labels:
+        app: {{ include "kdive.fullname" . }}-minio
+        {{- include "kdive.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: minio
+          image: {{ .Values.demo.minio.image }}
+          args: ["server", "/data", "--console-address", ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              value: {{ .Values.demoCredentials.minio.rootUser | quote }}
+            - name: MINIO_ROOT_PASSWORD
+              value: {{ .Values.demoCredentials.minio.rootPassword | quote }}
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kdive.fullname" . }}-minio
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ include "kdive.fullname" . }}-minio
+  ports:
+    - port: 9000
+      targetPort: 9000
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "kdive.fullname" . }}-minio-init
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        {{- include "kdive.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: {{ .Values.demo.mc.image }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              until mc alias set local http://{{ include "kdive.fullname" . }}-minio:9000 "$MC_USER" "$MC_PASS"; do
+                echo "waiting for minio..."; sleep 3
+              done
+              mc mb --ignore-existing local/{{ .Values.config.KDIVE_S3_BUCKET }}
+          env:
+            - name: MC_USER
+              value: {{ .Values.demoCredentials.minio.rootUser | quote }}
+            - name: MC_PASS
+              value: {{ .Values.demoCredentials.minio.rootPassword | quote }}
+{{- end }}

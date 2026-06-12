@@ -1,0 +1,21 @@
+{{- if .Values.bundledBackends }}
+# Defense-in-depth: confine demo pods' ingress to the release namespace. The primary
+# exposure guard is the ClusterIP render-gate (a NodePort SNATs to a node IP that this
+# policy can't distinguish). No-op under a CNI that does not enforce NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kdive.fullname" . }}-demo
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+{{- end }}
