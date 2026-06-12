@@ -35,7 +35,7 @@ def _rows(catalog: FixtureCatalog) -> list[dict[str, str]]:
     ]
 
 
-async def list_fixtures_tool() -> ToolResponse:
+def list_fixtures_tool() -> ToolResponse:
     """Return the baseline rootfs catalog entries (provider, name, arch)."""
     catalog = load_fixture_catalog(PACKAGED_SEED_DATA_PATH)
     return ToolResponse.success(_OBJECT_ID, "ok", data={"fixtures": _rows(catalog)})
@@ -52,4 +52,4 @@ def register(app: FastMCP, _pool: AsyncConnectionPool) -> None:
     async def fixtures_list() -> ToolResponse:
         """List rootfs fixture catalog entries (provider, name, arch). Requires a valid token."""
         current_context()
-        return await list_fixtures_tool()
+        return list_fixtures_tool()
