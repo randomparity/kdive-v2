@@ -15,7 +15,6 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
-from kdive.provider_components import build_host
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.provider_components.build_validation import parse_gnu_build_id
 from kdive.provider_components.references import (
@@ -23,6 +22,7 @@ from kdive.provider_components.references import (
     CatalogComponentRef,
     LocalComponentRef,
 )
+from kdive.providers import build_host
 from kdive.providers.local_libvirt import build as build_module
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.security.secrets.secret_registry import SecretRegistry

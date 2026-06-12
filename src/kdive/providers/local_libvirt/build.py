@@ -31,13 +31,13 @@ from kdive.config.core_settings import BUILD_WORKSPACE, KERNEL_SRC
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
-from kdive.provider_components import build_host as _build_host
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.provider_components.build_results import BuildOutput
 from kdive.provider_components.references import (
     ComponentRef,
 )
 from kdive.provider_components.requirements import validate_config_requirements
+from kdive.providers import build_host as _build_host
 from kdive.providers.build_common import _dropped_fragment_symbols
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.store.objectstore import object_store_from_env

@@ -1,4 +1,4 @@
-"""Provider-neutral kernel build-host mechanics."""
+"""Provider build-host mechanics shared by provider build planes."""
 
 from __future__ import annotations
 
