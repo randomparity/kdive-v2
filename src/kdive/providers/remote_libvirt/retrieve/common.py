@@ -23,7 +23,7 @@ from kdive.provider_components.artifacts import (
 )
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig
 from kdive.providers.remote_libvirt.guest.agent import AgentExecResult
-from kdive.providers.remote_libvirt.transport import remote_connection
+from kdive.providers.remote_libvirt.transport import open_libvirt_protocol, remote_connection
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend
@@ -76,7 +76,7 @@ type CoreDmesgFromFile = Callable[[Path], bytes]
 
 def open_libvirt_capture(uri: str) -> RetrieveConn:
     """Production opener (live-host path; unit tests inject a fake)."""
-    return libvirt.open(uri)  # ty: ignore[invalid-return-type]
+    return open_libvirt_protocol(uri)
 
 
 def connection(

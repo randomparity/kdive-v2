@@ -57,7 +57,7 @@ from kdive.providers.remote_libvirt.lifecycle.xml import (
 from kdive.providers.remote_libvirt.lifecycle.xml import (
     disk_pool as _disk_pool,
 )
-from kdive.providers.remote_libvirt.transport import remote_connection
+from kdive.providers.remote_libvirt.transport import open_libvirt_protocol, remote_connection
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
@@ -109,9 +109,7 @@ type OpenProvisionConnection = Callable[[str], _ProvisionConn]
 
 def open_libvirt_provision(uri: str) -> _ProvisionConn:
     """The production opener (live-host path; unit tests inject a fake)."""
-    # libvirt ships no type stubs; ty infers `virConnect`, which does not structurally
-    # match the protocol. Duck-typed at the seam, as in transport.open_libvirt.
-    return libvirt.open(uri)  # ty: ignore[invalid-return-type]
+    return open_libvirt_protocol(uri)
 
 
 class RemoteLibvirtProvisioning:

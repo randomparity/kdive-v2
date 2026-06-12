@@ -26,7 +26,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction
 from kdive.providers.ports import Controller as Controller
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
-from kdive.providers.remote_libvirt.transport import remote_connection
+from kdive.providers.remote_libvirt.transport import open_libvirt_protocol, remote_connection
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
 
@@ -51,7 +51,7 @@ type OpenControlConnection = Callable[[str], _ControlConn]
 
 def open_libvirt_control(uri: str) -> _ControlConn:
     """Production opener (live-host path; unit tests inject a fake)."""
-    return libvirt.open(uri)  # ty: ignore[invalid-return-type]
+    return open_libvirt_protocol(uri)
 
 
 class RemoteLibvirtControl:

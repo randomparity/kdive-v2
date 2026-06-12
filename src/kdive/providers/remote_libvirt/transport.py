@@ -18,7 +18,7 @@ import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import libvirt
@@ -53,6 +53,14 @@ class _LibvirtConn(Protocol):
 
 
 type OpenConnection = Callable[[str], _LibvirtConn]
+
+
+def open_libvirt_protocol[C: ClosableConn](uri: str) -> C:
+    """Open libvirt and narrow the binding object to a provider-local connection slice."""
+    # libvirt-python's runtime object is duck-typed but its generated type does not
+    # structurally match our narrow protocols. Keep the cast at the host seam; callers
+    # receive only the operations their plane needs.
+    return cast("C", libvirt.open(uri))
 
 
 def compose_pkipath_uri(uri: str, pkipath: Path) -> str:
@@ -168,7 +176,4 @@ def remote_connection[C: ClosableConn](
 
 def open_libvirt(uri: str) -> _LibvirtConn:
     """The production opener (live-host path; unit tests inject a fake)."""
-    # libvirt ships no type stubs; ty infers `virConnect`, which does not structurally
-    # match the protocol. Duck-typed at the seam — scoped ignore, as in
-    # local_libvirt/discovery.py.
-    return libvirt.open(uri)  # ty: ignore[invalid-return-type]
+    return open_libvirt_protocol(uri)

@@ -36,7 +36,7 @@ from kdive.providers.remote_libvirt.guest.agent import (
     qemu_agent_command,
 )
 from kdive.providers.remote_libvirt.guest.artifact_channel import InTargetArtifactChannel
-from kdive.providers.remote_libvirt.transport import remote_connection
+from kdive.providers.remote_libvirt.transport import open_libvirt_protocol, remote_connection
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
@@ -87,9 +87,7 @@ type Monotonic = Callable[[], float]
 
 def open_libvirt_install(uri: str) -> _InstallConn:
     """The production opener (live-host path; unit tests inject a fake)."""
-    # libvirt ships no type stubs; ty infers virConnect, which does not structurally match the
-    # protocol. Duck-typed at the seam, as in transport.open_libvirt / provisioning.
-    return libvirt.open(uri)  # ty: ignore[invalid-return-type]
+    return open_libvirt_protocol(uri)
 
 
 class RemoteLibvirtInstall:
