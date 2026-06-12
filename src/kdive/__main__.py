@@ -22,13 +22,14 @@ from psycopg_pool import AsyncConnectionPool
 import kdive.config as config
 from kdive.config.core_settings import HTTP_HOST, HTTP_PORT, LOG_LEVEL
 from kdive.db.pool import create_pool
+from kdive.images.rootfs_command import add_build_rootfs_parser, run_build_rootfs
+from kdive.reconciler.console_assembly import build_console_hosting, start_console_hosting
 from kdive.version import full_version
 
 if TYPE_CHECKING:
     from kdive.health import HealthProbe, Heartbeat
     from kdive.observability import Telemetry
     from kdive.providers.resolver import ProviderResolver
-    from kdive.reconciler.console_hosting import CollectorRegistry
     from kdive.security.secrets.secret_registry import SecretRegistry
 
 _RUNNABLE = frozenset({"server", "worker", "reconciler", "migrate"})
@@ -73,37 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     seed.add_argument("--limit-kcu", default="1000000")
     seed.add_argument("--max-concurrent-allocations", type=int, default=4)
     seed.add_argument("--max-concurrent-systems", type=int, default=4)
-    _add_build_rootfs_parser(sub)
+    add_build_rootfs_parser(sub)
     return parser
-
-
-def _add_build_rootfs_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register `build-rootfs`: the operator's local-libvirt rootfs build (replaces the builder).
-
-    Drives the in-process :class:`LocalLibvirtRootfsBuildPlane` and writes the produced qcow2 to
-    ``--dest`` (default the live-stack guest-image path), printing its content digest. This is the
-    direct successor to the deleted bash rootfs builder; the RBAC-gated, publish-backed
-    ``kdivectl images build`` operator verb lands in M2.4/7 and enqueues an ``IMAGE_BUILD`` job
-    rather than building inline.
-    """
-    build = sub.add_parser(
-        "build-rootfs", help="build a local-libvirt kdive-ready rootfs qcow2 via the build plane"
-    )
-    build.add_argument(
-        "--dest",
-        default="/var/lib/kdive/rootfs/local/fedora-kdive-ready-43.qcow2",
-        help="destination qcow2 path (the produced image is moved here)",
-    )
-    build.add_argument("--name", default="fedora-kdive-ready-43", help="catalog image name")
-    build.add_argument("--arch", default="x86_64")
-    build.add_argument("--releasever", default="43", help="Fedora release the image is built from")
-    build.add_argument(
-        "--package",
-        action="append",
-        default=None,
-        dest="packages",
-        help="extra guest package (repeatable); defaults to drgn,kexec-tools,makedumpfile",
-    )
 
 
 async def _run_server(
@@ -248,7 +220,7 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
     aux_task = asyncio.create_task(serve_aux(aux_app, host=aux_host, port=aux_port))
     provider_composition = ProviderComposition()
     await _register_provider_resources(pool, provider_composition.build_provider_resolver())
-    console_hosting = await _build_console_hosting(secret_registry)
+    console_hosting = await build_console_hosting(secret_registry)
     try:
         reconciler = Reconciler(
             pool,
@@ -264,7 +236,7 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
                 meter=telemetry.meter_provider.get_meter("kdive.reconciler"),
             ),
         )
-        hosting_task = _start_console_hosting(console_hosting, stop)
+        hosting_task = start_console_hosting(console_hosting, stop)
         try:
             await reconciler.run(stop)
         finally:
@@ -275,129 +247,6 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
         await _cancel(aux_task)
         secret_registry.clear()
         await pool.close()
-
-
-# The continuous attach-watcher cadence (ADR-0095 AC4): sub-tick, decoupled from the 30s
-# repair pass so early-boot console is bounded by this latency, not a reconcile interval.
-_CONSOLE_ATTACH_TICK_SECONDS = 1.0
-
-
-class _ConsoleHosting:
-    """Holds the console hosting loop, its shared registry, and the dedicated leader connection.
-
-    The leader lock is held on ``leader_conn`` — a connection **outside** the ``min_size=1``
-    repair pool (holding a pooled connection for the process life would pin the pool's only
-    connection and starve repairs, ADR-0095). :meth:`close` releases the lock and the connection.
-    """
-
-    def __init__(
-        self,
-        loop: object,
-        registry: CollectorRegistry,
-        leader_conn: object,
-        host_pool: object,
-    ) -> None:
-        self.loop = loop
-        self.registry = registry
-        self._leader_conn = leader_conn
-        self._host_pool = host_pool
-
-    async def run(self, stop: object) -> None:
-        import asyncio as _asyncio
-
-        from kdive.reconciler.console_hosting import ConsoleHostingLoop
-
-        assert isinstance(self.loop, ConsoleHostingLoop)
-        assert isinstance(stop, _asyncio.Event)
-        try:
-            while not stop.is_set():
-                await self.loop.tick()
-                with contextlib.suppress(TimeoutError):
-                    await _asyncio.wait_for(stop.wait(), timeout=_CONSOLE_ATTACH_TICK_SECONDS)
-        finally:
-            await self.loop.stop()
-
-    async def close(self) -> None:
-        import psycopg
-
-        if isinstance(self._leader_conn, psycopg.AsyncConnection):
-            await self._leader_conn.close()
-        if isinstance(self._host_pool, AsyncConnectionPool):
-            await self._host_pool.close()
-
-
-async def _build_console_hosting(secret_registry: SecretRegistry) -> _ConsoleHosting | None:
-    """Build the single-leader console hosting loop, or ``None`` when its env is unconfigured.
-
-    Returns ``None`` (hosting disabled, like the off upload reaper) when the object store or
-    remote-libvirt config is unavailable — the rest of the reconciler still runs. The leader
-    lock is claimed lazily inside the loop's first tick; this only opens the dedicated
-    connection and constructs the injected seams.
-    """
-    import psycopg
-
-    from kdive.db.locks import CONSOLE_HOSTING_LEADER, SessionAdvisoryLock
-    from kdive.db.pool import database_url
-    from kdive.domain.errors import CategorizedError
-    from kdive.providers.remote_libvirt.config import remote_config_from_env
-    from kdive.providers.remote_libvirt.console_collector import ConsoleCollector
-    from kdive.providers.remote_libvirt.console_wiring import (
-        RemoteConsolePartStore,
-        open_remote_console,
-    )
-    from kdive.reconciler.console_hosting import (
-        AsyncioPumpRunner,
-        CollectorRegistry,
-        ConsoleHostingLoop,
-        DbRunningRemoteSystems,
-    )
-    from kdive.security.secrets.secrets import secret_backend_from_env
-    from kdive.store.objectstore import object_store_from_env
-
-    try:
-        conninfo = database_url()
-        store = object_store_from_env()
-        remote_config = remote_config_from_env()
-        secret_backend = secret_backend_from_env(registry=secret_registry)
-    except CategorizedError:
-        return None
-
-    part_store = RemoteConsolePartStore(store, conninfo)
-    leader_conn = await psycopg.AsyncConnection.connect(conninfo, autocommit=True)
-    lock = SessionAdvisoryLock(leader_conn, CONSOLE_HOSTING_LEADER)
-    runner = AsyncioPumpRunner()
-    registry = CollectorRegistry(pump_runner=runner)
-    host_pool = create_pool(min_size=1)
-    await host_pool.open()
-
-    def factory(system_id: object) -> ConsoleCollector:
-        from uuid import UUID
-
-        assert isinstance(system_id, UUID)
-        return ConsoleCollector(
-            system_id,
-            open_console=lambda sid: open_remote_console(remote_config, secret_backend, sid),
-            store=part_store,
-            secret_registry=secret_registry,
-        )
-
-    loop = ConsoleHostingLoop(
-        leader_lock=lock,
-        running_systems=DbRunningRemoteSystems(host_pool),
-        collector_factory=factory,
-        registry=registry,
-        pump_runner=runner,
-    )
-    return _ConsoleHosting(loop, registry, leader_conn, host_pool)
-
-
-def _start_console_hosting(
-    console_hosting: _ConsoleHosting | None, stop: object
-) -> asyncio.Task[None] | None:
-    """Start the hosting loop concurrently with ``Reconciler.run``, sharing the stop event."""
-    if console_hosting is None:
-        return None
-    return asyncio.create_task(console_hosting.run(stop))
 
 
 def _reconciler_probe(
@@ -424,39 +273,6 @@ async def _register_provider_resources(
         await resolver.register_all_discovery(pool)
     except Exception:  # noqa: BLE001 - registration failure must not crash the reconciler
         _log.warning("reconciler: provider discovery registration failed at startup", exc_info=True)
-
-
-_DEFAULT_ROOTFS_PACKAGES = ("drgn", "kexec-tools", "makedumpfile")
-
-
-def _run_build_rootfs(args: argparse.Namespace) -> None:
-    """Build a kdive-ready rootfs qcow2 via the local plane and move it to ``--dest``.
-
-    The plane writes the qcow2 into its own workspace; this moves it to the operator-chosen
-    destination and prints the content digest so it can be content-addressed downstream.
-    """
-    import shutil
-    from pathlib import Path
-
-    from kdive.images.planes.base import RootfsBuildSpec
-    from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane
-
-    packages = tuple(args.packages) if args.packages else _DEFAULT_ROOTFS_PACKAGES
-    spec = RootfsBuildSpec(
-        provider="local-libvirt",
-        name=args.name,
-        arch=args.arch,
-        releasever=args.releasever,
-        packages=packages,
-        source_image_digest=f"virt-builder:fedora-{args.releasever}",
-        capabilities=("agent", "kdump", "drgn"),
-    )
-    output = LocalLibvirtRootfsBuildPlane.from_env().build(spec)
-    dest = Path(args.dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(output.qcow2_path), str(dest))
-    dest.chmod(0o644)
-    _log.info("built rootfs %s digest=%s", dest, output.digest)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -517,7 +333,7 @@ def main(argv: list[str] | None = None) -> None:
             )
         )
     elif args.command == "build-rootfs":
-        _run_build_rootfs(args)
+        run_build_rootfs(args)
 
 
 if __name__ == "__main__":

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-import kdive.__main__ as main_module
 from kdive.__main__ import build_parser
 from kdive.images.planes.base import RootfsBuildOutput
+from kdive.images.rootfs_command import run_build_rootfs
 
 
 def test_server_subcommand_parses() -> None:
@@ -63,15 +63,13 @@ def test_run_build_rootfs_moves_plane_output_to_dest(
             seen_specs.append(spec)
             return RootfsBuildOutput(qcow2_path=produced, digest="sha256:abc", provenance={})
 
-    monkeypatch.setattr(
-        "kdive.images.planes.local_libvirt.LocalLibvirtRootfsBuildPlane", _FakePlane
-    )
+    monkeypatch.setattr("kdive.images.rootfs_command.LocalLibvirtRootfsBuildPlane", _FakePlane)
 
     dest = tmp_path / "rootfs" / "out.qcow2"
     args = build_parser().parse_args(
         ["build-rootfs", "--dest", str(dest), "--releasever", "42", "--package", "drgn"]
     )
-    main_module._run_build_rootfs(args)
+    run_build_rootfs(args)
 
     assert dest.read_bytes() == b"image-bytes"
     assert not produced.exists(), "the plane output is moved, not copied"
