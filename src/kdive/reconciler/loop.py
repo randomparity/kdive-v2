@@ -880,4 +880,6 @@ async def _tick_until_stop(heartbeat: Heartbeat, stop: asyncio.Event, interval: 
     while not stop.is_set():
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=interval)
+        if stop.is_set():
+            break
         heartbeat.tick()

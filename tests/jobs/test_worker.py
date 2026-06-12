@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import psycopg
@@ -17,13 +17,23 @@ from kdive.db.repositories import JOBS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
+from kdive.health import Heartbeat
 from kdive.jobs import queue
+from kdive.jobs import worker as worker_module
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import Authorizing, BuildPayload, load_payload
 from kdive.jobs.worker import Worker
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 _AUTHORIZING = Authorizing(principal="p", agent_session=None, project="a")
+
+
+class _CountingHeartbeat:
+    def __init__(self) -> None:
+        self.ticks = 0
+
+    def tick(self) -> None:
+        self.ticks += 1
 
 
 def _build_payload() -> BuildPayload:
@@ -660,6 +670,23 @@ def test_background_ticker_keeps_livez_live_across_a_long_blocking_job(
         monkeypatch.setattr(worker, "run_once", long_run_once)
         await asyncio.wait_for(worker.run(stop), timeout=2)
         assert live_during_job == [True]  # still live after a job that outlasted stale_after
+
+    asyncio.run(_run())
+
+
+def test_background_ticker_does_not_tick_after_stop() -> None:
+    async def _run() -> None:
+        heartbeat = _CountingHeartbeat()
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            worker_module._tick_until_stop(cast(Heartbeat, heartbeat), stop, 60.0)
+        )
+        await asyncio.sleep(0)
+        assert heartbeat.ticks == 1
+
+        stop.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert heartbeat.ticks == 1
 
     asyncio.run(_run())
 

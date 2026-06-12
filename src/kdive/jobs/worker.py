@@ -285,4 +285,6 @@ async def _tick_until_stop(heartbeat: Heartbeat, stop: asyncio.Event, interval: 
     heartbeat.tick()
     while not stop.is_set():
         await _sleep_until_stop(stop, interval)
+        if stop.is_set():
+            break
         heartbeat.tick()
