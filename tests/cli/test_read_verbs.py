@@ -14,7 +14,8 @@ import json
 
 import pytest
 
-from kdive.cli.commands import REGISTRY, reads
+import kdive.cli.commands.reads as reads
+from kdive.cli.commands import REGISTRY
 
 
 class _FakeResult:
@@ -177,6 +178,36 @@ def test_fixtures_list_renders_rows_from_data(monkeypatch: pytest.MonkeyPatch, c
     assert client.calls == [("fixtures.list", {})]
     out = capsys.readouterr().out
     assert "local-libvirt" in out and "base" in out
+
+
+def test_data_shaped_lists_ignore_malformed_rows(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    _install_session(
+        monkeypatch,
+        _data_envelope(
+            {
+                "fixtures": [
+                    {"provider": "local-libvirt", "name": "base", "arch": "x86_64"},
+                    "not-a-row",
+                ]
+            }
+        ),
+    )
+    asyncio.run(reads.fixtures_list(_args()))
+    out = capsys.readouterr().out
+    assert "local-libvirt" in out
+    assert "not-a-row" not in out
+
+
+def test_data_shaped_lists_ignore_missing_list_data(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _install_session(
+        monkeypatch,
+        _data_envelope({"secrets": "not-a-list"}),  # pragma: allowlist secret - key name only
+    )
+    asyncio.run(reads.secrets_list(_args()))
+    out = capsys.readouterr().out.strip()
+    assert out and len(out.splitlines()) == 1
 
 
 def test_every_registry_verb_has_a_handler() -> None:
