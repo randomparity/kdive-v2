@@ -30,7 +30,6 @@ from kdive.mcp.tools.accounting.estimate import register as register_accounting_
 from kdive.mcp.tools.accounting.reports import register as register_accounting_reports
 from kdive.mcp.tools.accounting.usage import register as register_accounting_usage
 from kdive.mcp.tools.catalog import (
-    artifacts,
     availability,
     build_configs,
     fixtures,
@@ -40,6 +39,7 @@ from kdive.mcp.tools.catalog import (
     shapes,
 )
 from kdive.mcp.tools.catalog import images as catalog_images
+from kdive.mcp.tools.catalog.artifacts import registrar as artifacts_tools
 from kdive.mcp.tools.debug import introspect
 from kdive.mcp.tools.debug import sessions as debug_tools
 from kdive.mcp.tools.lifecycle import allocations
@@ -116,7 +116,7 @@ def _register_control_tools(app: FastMCP, pool: AsyncConnectionPool, assembly: A
 def _register_artifact_tools(
     app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly
 ) -> None:
-    artifacts.register(app, pool, resolver=assembly.resolver)
+    artifacts_tools.register(app, pool, resolver=assembly.resolver)
 
 
 def _register_vmcore_tools(app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly) -> None:
