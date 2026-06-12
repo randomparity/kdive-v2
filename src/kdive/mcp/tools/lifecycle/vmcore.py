@@ -73,10 +73,8 @@ _VMCORE_METHODS: frozenset[CaptureMethod] = frozenset(
 class VmcoreHandlers:
     """vmcore/postmortem MCP handlers with provider seams bound at construction."""
 
-    resolver: ProviderResolver | None = None
-    supported_methods: frozenset[CaptureMethod] | None = None
-    crash: CrashPostmortem | None = None
-    secret_registry: SecretRegistry | None = None
+    resolver: ProviderResolver
+    secret_registry: SecretRegistry
 
     async def fetch_vmcore(
         self,
@@ -86,15 +84,6 @@ class VmcoreHandlers:
         system_id: str,
         method: str = "host_dump",
     ) -> ToolResponse:
-        if self.resolver is None:
-            supported_methods = self.supported_methods or frozenset()
-            return await _fetch_vmcore(
-                pool,
-                ctx,
-                system_id=system_id,
-                method=method,
-                supported_methods=supported_methods,
-            )
         return await with_runtime_for_system(
             pool,
             self.resolver,
@@ -150,19 +139,12 @@ class VmcoreHandlers:
         run_id: str,
         run: Callable[[CrashPostmortem, SecretRegistry], Awaitable[ToolResponse]],
     ) -> ToolResponse:
-        if self.secret_registry is None:
-            raise RuntimeError("vmcore handler requires an injected secret registry")
-        secret_registry = self.secret_registry
-        if self.resolver is not None:
-            return await with_runtime_for_run(
-                pool,
-                self.resolver,
-                run_id,
-                lambda runtime: run(runtime.crash_postmortem, secret_registry),
-            )
-        if self.crash is None:
-            raise RuntimeError("vmcore handler requires crash port or resolver")
-        return await run(self.crash, secret_registry)
+        return await with_runtime_for_run(
+            pool,
+            self.resolver,
+            run_id,
+            lambda runtime: run(runtime.crash_postmortem, self.secret_registry),
+        )
 
 
 async def _fetch_vmcore(

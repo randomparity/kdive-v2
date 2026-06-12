@@ -125,8 +125,10 @@ class _FakeCrash:
 
 def _vmcore_handlers(crash: CrashPostmortem | None = None) -> vmcore_tools.VmcoreHandlers:
     return vmcore_tools.VmcoreHandlers(
-        supported_methods=_TEST_CAPTURE_METHODS,
-        crash=crash or _FakeCrash(),
+        resolver=provider_resolver(
+            crash_postmortem=crash or _FakeCrash(),
+            supported_capture_methods=_TEST_CAPTURE_METHODS,
+        ),
         secret_registry=SecretRegistry(),
     )
 

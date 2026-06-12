@@ -266,8 +266,10 @@ def test_planted_secret_is_redacted(migrated_url: str) -> None:
             secret_registry = SecretRegistry()
             secret_registry.register(_SecretBearingCrash.PLANTED_SECRET, scope="test")
             handlers = vmcore_tools.VmcoreHandlers(
-                supported_methods=frozenset({CaptureMethod.HOST_DUMP}),
-                crash=_SecretBearingCrash(),
+                resolver=provider_resolver(
+                    crash_postmortem=_SecretBearingCrash(),
+                    supported_capture_methods=frozenset({CaptureMethod.HOST_DUMP}),
+                ),
                 secret_registry=secret_registry,
             )
             resp = await handlers.postmortem_crash(

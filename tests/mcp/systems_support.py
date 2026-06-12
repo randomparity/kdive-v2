@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import ALLOCATIONS, BUDGETS, QUOTAS
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Allocation, Budget, Job, JobKind, Quota, ResourceKind
 from kdive.domain.state import AllocationState
@@ -95,6 +96,8 @@ def provider_resolver(
     booter: object | None = None,
     controller: object | None = None,
     retriever: object | None = None,
+    crash_postmortem: object | None = None,
+    supported_capture_methods: frozenset[CaptureMethod] | None = None,
     profile_policy: object | None = None,
 ) -> ProviderResolver:
     """Return a local-libvirt resolver with optional fake runtime ports."""
@@ -110,9 +113,16 @@ def provider_resolver(
         connector=unused_port,
         controller=cast(Any, controller if controller is not None else unused_port),
         retriever=cast(Any, retriever if retriever is not None else unused_port),
-        crash_postmortem=unused_port,
+        crash_postmortem=cast(
+            Any, crash_postmortem if crash_postmortem is not None else unused_port
+        ),
         vmcore_introspector=unused_port,
         live_introspector=unused_port,
+        supported_capture_methods=(
+            supported_capture_methods
+            if supported_capture_methods is not None
+            else frozenset(CaptureMethod)
+        ),
         component_sources=TEST_COMPONENT_SOURCES,
         rootfs_validator=lambda _: None,
     )
