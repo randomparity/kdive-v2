@@ -33,7 +33,6 @@ from uuid import UUID
 
 import kdive.config as config
 from kdive.build_configs.defaults import (
-    DEFAULT_CONFIG_REF,
     CatalogConfigFetch,
     build_config_fetch_from_env,
 )
@@ -47,7 +46,7 @@ from kdive.provider_components.references import ComponentRef
 from kdive.providers import build_host_config as _build_config
 from kdive.providers import build_host_execution as _build_exec
 from kdive.providers import build_host_workspace as _build_workspace
-from kdive.providers.build_common import _dropped_fragment_symbols
+from kdive.providers.build_host_orchestration import BuildHostOrchestrator
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.store.objectstore import object_store_from_env
 
@@ -57,13 +56,6 @@ _RETENTION_CLASS = "build"
 # at absolute paths in the worker's build tree and must not enter the in-guest bundle.
 _MODULE_BACKREF_LINKS = frozenset({"build", "source"})
 
-# The kdump prerequisite is satisfied by CONFIG_CRASH_DUMP; symbolization needs DWARF or BTF
-# debuginfo. Each tuple is an OR-group: the config must enable at least one of each.
-_REQUIRED_CONFIG: tuple[tuple[str, ...], ...] = (
-    ("CONFIG_CRASH_DUMP",),
-    ("CONFIG_DEBUG_INFO_DWARF4", "CONFIG_DEBUG_INFO_DWARF5", "CONFIG_DEBUG_INFO_BTF"),
-)
-
 
 class _StorePort(Protocol):
     def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact: ...
@@ -71,11 +63,6 @@ class _StorePort(Protocol):
 
 type _BuildBundle = Callable[[Path, Path], bytes]
 type _StagingFactory = Callable[[], Path]
-
-
-def _missing_config_groups(config_text: str) -> list[tuple[str, ...]]:
-    """Return the required OR-groups not satisfied by ``config_text`` (``CONFIG_X=y``)."""
-    return _build_config.missing_config_groups(config_text, _REQUIRED_CONFIG)
 
 
 class RemoteLibvirtBuild:
@@ -102,13 +89,17 @@ class RemoteLibvirtBuild:
         self._allowed_component_roots = allowed_component_roots or [
             Path(_build_config.DEFAULT_BUILD_COMPONENT_ROOT)
         ]
+        self._orchestrator = BuildHostOrchestrator.create(
+            workspace_root=workspace_root,
+            catalog_fetch=catalog_fetch,
+            checkout=checkout,
+            run_olddefconfig=run_olddefconfig,
+            read_config=read_config,
+            run_make=run_make,
+            allowed_component_roots=self._allowed_component_roots,
+        )
         self._store_factory = store_factory
         self._store: _StorePort | None = None
-        self._catalog_fetch = catalog_fetch
-        self._checkout = checkout
-        self._run_olddefconfig = run_olddefconfig
-        self._read_config = read_config
-        self._run_make = run_make
         self._run_modules_install = run_modules_install
         self._build_bundle = build_bundle
         self._read_vmlinux = read_vmlinux
@@ -154,34 +145,7 @@ class RemoteLibvirtBuild:
                 non-zero ``make``/``olddefconfig``/``modules_install`` exit or a missing
                 build-id; ``INFRASTRUCTURE_FAILURE`` propagated from a failed artifact store.
         """
-        workspace = self._workspace_root / str(run_id)
-        config_ref = profile.config or DEFAULT_CONFIG_REF
-        fragment_bytes = _build_config.resolve_config_bytes(
-            config_ref,
-            allowed_component_roots=self._allowed_component_roots,
-            catalog_fetch=self._catalog_fetch,
-        )
-        fragment_text = fragment_bytes.decode()
-        self._checkout(run_id, profile, workspace, fragment_bytes)
-        if self._run_olddefconfig(workspace) != 0:
-            raise _build_exec.build_failure("make olddefconfig exited non-zero", run_id)
-        final_config = self._read_config(workspace)
-        dropped = _dropped_fragment_symbols(fragment_text, final_config)
-        if dropped:
-            raise CategorizedError(
-                "kdump fragment symbols were dropped by olddefconfig (unmet base dependency)",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"dropped": dropped},
-            )
-        missing = _missing_config_groups(final_config)
-        if missing:
-            raise CategorizedError(
-                "kernel .config omits a required kdump/debuginfo option",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"missing_any_of": [list(group) for group in missing]},
-            )
-        if self._run_make(workspace) != 0:
-            raise _build_exec.build_failure("make exited non-zero", run_id)
+        workspace = self._orchestrator.build_workspace(run_id, profile)
         mod_root = self._staging_factory()
         try:
             if self._run_modules_install(workspace, mod_root) != 0:
@@ -201,9 +165,7 @@ class RemoteLibvirtBuild:
         kind (its existence is checked when the build fetches it, since this seam owns no DB
         connection). Any other kind is a ``CONFIGURATION_ERROR``.
         """
-        _build_config.validate_config_ref(
-            ref, allowed_component_roots=self._allowed_component_roots
-        )
+        self._orchestrator.validate_config_ref(ref)
 
     def _put(self, run_id: UUID, name: str, data: bytes) -> StoredArtifact:
         if self._store is None:

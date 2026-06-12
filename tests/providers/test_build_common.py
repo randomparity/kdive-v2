@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
+from pathlib import Path
 from types import TracebackType
+from uuid import UUID
 
 import pytest
 
@@ -12,12 +15,16 @@ from kdive.build_configs.catalog import BuildConfigEntry
 from kdive.build_configs.defaults import DEFAULT_CONFIG_REF, build_config_fetch_from_env
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
+from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.provider_components.artifacts import FetchedArtifact
 from kdive.provider_components.references import CatalogComponentRef
 from kdive.providers.build_common import (
     _dropped_fragment_symbols,
     _fragment_symbols,
 )
+from kdive.providers.build_host_orchestration import BuildHostOrchestrator
+
+_RUN = UUID("44444444-4444-4444-4444-444444444444")
 
 
 def test_fragment_symbols_keeps_y_and_m_drops_comments_and_unset() -> None:
@@ -54,6 +61,54 @@ def test_default_config_ref_is_the_kdump_catalog_entry() -> None:
     assert (
         CatalogComponentRef(kind="catalog", provider="system", name="kdump") == DEFAULT_CONFIG_REF
     )
+
+
+def test_build_host_orchestrator_runs_neutral_build_sequence(tmp_path: Path) -> None:
+    profile = BuildProfile.parse(
+        {
+            "schema_version": 1,
+            "kernel_source_ref": "git+https://git.kernel.org/pub/scm/linux.git#v6.9",
+            "config": {"kind": "catalog", "provider": "system", "name": "kdump"},
+            "patch_ref": None,
+        }
+    )
+    assert isinstance(profile, ServerBuildProfile)
+    calls: list[str] = []
+    fragment = b"CONFIG_CRASH_DUMP=y\nCONFIG_DEBUG_INFO_DWARF5=y\n"
+
+    def checkout(
+        run_id: UUID, checkout_profile: ServerBuildProfile, workspace: Path, data: bytes
+    ) -> None:
+        assert run_id == _RUN
+        assert checkout_profile is profile
+        assert workspace == tmp_path / str(_RUN)
+        assert data == fragment
+        calls.append("checkout")
+
+    def step(name: str) -> Callable[[Path], int]:
+        def _run(workspace: Path) -> int:
+            assert workspace == tmp_path / str(_RUN)
+            calls.append(name)
+            return 0
+
+        return _run
+
+    def read_config(workspace: Path) -> str:
+        assert workspace == tmp_path / str(_RUN)
+        calls.append("read_config")
+        return fragment.decode()
+
+    orchestrator = BuildHostOrchestrator.create(
+        workspace_root=tmp_path,
+        catalog_fetch=lambda name: fragment if name == "kdump" else b"",
+        checkout=checkout,
+        run_olddefconfig=step("olddefconfig"),
+        read_config=read_config,
+        run_make=step("make"),
+    )
+
+    assert orchestrator.build_workspace(_RUN, profile) == tmp_path / str(_RUN)
+    assert calls == ["checkout", "olddefconfig", "read_config", "make"]
 
 
 # --- build_config_fetch_from_env wrapper ---------------------------------------------
