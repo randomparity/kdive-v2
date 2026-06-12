@@ -545,6 +545,7 @@ def test_domain_exited_treats_missing_kdive_domain_as_terminal(
             stderr="error: failed to get domain 'kdive-22222222-2222-2222-2222-222222222222'",
         )
 
+    monkeypatch.setattr(install.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(install.subprocess, "run", domstate_missing)
 
     assert install._domain_exited("kdive-22222222-2222-2222-2222-222222222222") is True
@@ -572,6 +573,7 @@ def test_real_readiness_reports_domstate_probe_timeout(
 
     monkeypatch.setattr(install, "read_console_log", lambda path: b"")
     monkeypatch.setattr(install.time, "sleep", lambda _: None)
+    monkeypatch.setattr(install.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(install.subprocess, "run", domstate_timeout)
 
     result = install._real_readiness(UUID("22222222-2222-2222-2222-222222222222"))

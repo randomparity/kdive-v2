@@ -430,6 +430,7 @@ def test_real_make_overlay_timeout_is_provisioning_failure(
         raise subprocess.TimeoutExpired(["qemu-img"], timeout=storage_module._QEMU_IMG_TIMEOUT_S)
 
     monkeypatch.setattr(storage_module.subprocess, "run", _timeout)
+    monkeypatch.setattr(storage_module.shutil, "which", lambda tool: f"/usr/bin/{tool}")
 
     with pytest.raises(CategorizedError) as caught:
         storage_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
@@ -481,6 +482,7 @@ def test_real_make_overlay_launch_oserror_is_infrastructure_failure(
         raise OSError("fork failed")
 
     monkeypatch.setattr(storage_module.subprocess, "run", _fork_failed)
+    monkeypatch.setattr(storage_module.shutil, "which", lambda tool: f"/usr/bin/{tool}")
 
     with pytest.raises(CategorizedError) as caught:
         storage_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
