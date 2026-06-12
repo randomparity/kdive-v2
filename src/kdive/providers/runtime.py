@@ -15,6 +15,7 @@ from typing import NoReturn
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.capture import CaptureMethod
+from kdive.images.planes.base import RootfsBuildPlane
 from kdive.profiles.provisioning import RootfsSource
 from kdive.provider_components.references import ComponentRef
 from kdive.provider_components.validation import ComponentSourceCapabilities
@@ -114,6 +115,7 @@ class ProviderRuntime:
     )
     build_config_validator: BuildConfigValidator | None = None
     rootfs_validator: RootfsValidator | None = None
+    rootfs_build_plane: RootfsBuildPlane | None = None
 
     async def register_discovery(self, pool: AsyncConnectionPool) -> None:
         if self.discovery_registrar is not None:

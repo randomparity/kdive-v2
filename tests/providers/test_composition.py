@@ -11,6 +11,8 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind, Sensitivity
+from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane
+from kdive.images.planes.remote_libvirt import RemoteLibvirtRootfsBuildPlane
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.provider_components.artifacts import StoredArtifact
@@ -187,6 +189,12 @@ def test_default_runtime_exposes_build_config_validator() -> None:
     runtime = composition.build_local_runtime(secret_registry=SecretRegistry())
 
     assert runtime.build_config_validator is not None
+
+
+def test_default_runtime_exposes_rootfs_build_plane() -> None:
+    runtime = composition.build_local_runtime(secret_registry=SecretRegistry())
+
+    assert isinstance(runtime.rootfs_build_plane, LocalLibvirtRootfsBuildPlane)
 
 
 def test_provider_runtime_discovery_hook_is_optional() -> None:
@@ -511,6 +519,14 @@ def test_remote_runtime_has_real_builder(monkeypatch: pytest.MonkeyPatch) -> Non
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
     assert isinstance(runtime.builder, RemoteLibvirtBuild)
+
+
+def test_remote_runtime_exposes_rootfs_build_plane(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
+
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert isinstance(runtime.rootfs_build_plane, RemoteLibvirtRootfsBuildPlane)
 
 
 def test_remote_runtime_has_real_installer_and_booter(monkeypatch: pytest.MonkeyPatch) -> None:

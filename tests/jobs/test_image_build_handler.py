@@ -13,6 +13,7 @@ import threading
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, cast
 
 import psycopg
 import pytest
@@ -20,7 +21,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import IMAGE_CATALOG, JOBS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import ImageState, JobKind
+from kdive.domain.models import ImageState, JobKind, ResourceKind
 from kdive.domain.state import JobState
 from kdive.images.planes.base import RootfsBuildOutput, RootfsBuildSpec
 from kdive.images.validation import GUEST_CONTRACT_PATHS
@@ -30,6 +31,8 @@ from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import Authorizing, ImageBuildPayload
 from kdive.jobs.worker import Worker
 from kdive.provider_components import artifacts as artifact_types
+from kdive.providers.resolver import ProviderResolver
+from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 _AUTHORIZING = Authorizing(principal="op", agent_session=None, project="platform")
@@ -80,6 +83,23 @@ def _none_present(_path: Path, _candidates: Sequence[str]) -> set[str]:
     return set()
 
 
+def _resolver_with_plane(plane: _FakePlane | None) -> ProviderResolver:
+    runtime = ProviderRuntime(
+        provisioner=cast(Any, object()),
+        builder=cast(Any, object()),
+        installer=cast(Any, object()),
+        booter=cast(Any, object()),
+        connector=cast(Any, object()),
+        controller=cast(Any, object()),
+        retriever=cast(Any, object()),
+        crash_postmortem=cast(Any, object()),
+        vmcore_introspector=cast(Any, object()),
+        live_introspector=cast(Any, object()),
+        rootfs_build_plane=plane,
+    )
+    return ProviderResolver({ResourceKind.LOCAL_LIBVIRT: runtime})
+
+
 def _payload(**kw: object) -> ImageBuildPayload:
     base: dict[str, object] = {
         "provider": "local-libvirt",
@@ -127,6 +147,29 @@ def test_handler_builds_validates_publishes_registered(migrated_url: str, tmp_pa
             # The build spec carried the payload's pinned inputs.
             assert plane.spec is not None
             assert plane.spec.releasever == "43"
+
+    asyncio.run(_run())
+
+
+def test_handler_resolves_build_plane_from_provider_runtime(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    plane = _FakePlane(tmp_path)
+    store = _FakeStore()
+    resolver = _resolver_with_plane(plane)
+
+    async def _run() -> None:
+        async with await psycopg.AsyncConnection.connect(migrated_url, autocommit=True) as conn:
+            job = await queue.enqueue(
+                conn, JobKind.IMAGE_BUILD, _payload(), _AUTHORIZING, "dedup-resolver"
+            )
+            ref = await image_build_handler(
+                conn, job, provider_resolver=resolver, store=store, inspect=_all_present
+            )
+
+            assert ref == "images/local-libvirt/base/x86_64.qcow2"
+            assert plane.spec is not None
+            assert plane.spec.provider == ResourceKind.LOCAL_LIBVIRT.value
 
     asyncio.run(_run())
 

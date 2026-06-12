@@ -136,7 +136,7 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
 
 
 def _register_image_build_handler(
-    registry: HandlerRegistry, _resolver: ProviderResolver, _secret_registry: SecretRegistry
+    registry: HandlerRegistry, resolver: ProviderResolver, _secret_registry: SecretRegistry
 ) -> None:
     """Bind the IMAGE_BUILD handler, preserving setup errors as job failures.
 
@@ -153,9 +153,7 @@ def _register_image_build_handler(
         return
     image_build.register_handlers(
         registry,
-        plane_resolver=ProviderComposition(
-            secret_registry=_secret_registry
-        ).build_rootfs_build_plane_resolver(),
+        provider_resolver=resolver,
         store=store,
     )
 
