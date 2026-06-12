@@ -47,6 +47,7 @@ _BEHAVIOR_TESTS_BY_TOOL = {
     "artifacts.list": ("tests/mcp/catalog/test_artifacts_tools.py",),
     "artifacts.search_text": ("tests/mcp/catalog/test_artifacts_tools.py",),
     "audit.query": ("tests/mcp/ops/test_audit_query.py",),
+    "buildconfig.get": ("tests/mcp/catalog/test_build_configs_tool.py",),
     "control.force_crash": ("tests/mcp/lifecycle/test_control_tools.py",),
     "control.power": ("tests/mcp/lifecycle/test_control_tools.py",),
     "debug.clear_breakpoint": ("tests/mcp/debug/test_debug_ops.py",),

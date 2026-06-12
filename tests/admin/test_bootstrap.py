@@ -12,6 +12,8 @@ from kdive.admin.bootstrap import (
     seed_demo,
     seed_project_statements,
 )
+from kdive.domain.models import Sensitivity
+from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 
 
 def test_seed_project_sql_contains_budget_and_quota_upserts() -> None:
@@ -96,6 +98,54 @@ def test_migrate_seeds_baseline_rootfs_idempotently(
     with psycopg.connect(postgres_url, autocommit=True) as conn:
         second = conn.execute("SELECT count(*) FROM image_catalog").fetchone()
     assert second is not None and second[0] == first[0]
+
+
+def test_migrate_without_s3_skips_build_config_seed(
+    monkeypatch: pytest.MonkeyPatch, postgres_url: str
+) -> None:
+    # No KDIVE_S3_* configured: migrate still applies the schema and seeds the baseline
+    # rootfs, but the object-store-backed build-config seed is skipped cleanly (ADR-0096).
+    with psycopg.connect(postgres_url, autocommit=True) as conn:
+        conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    for var in ("KDIVE_S3_ENDPOINT_URL", "KDIVE_S3_BUCKET", "KDIVE_S3_REGION"):
+        monkeypatch.delenv(var, raising=False)
+
+    migrate(postgres_url)
+
+    with psycopg.connect(postgres_url, autocommit=True) as conn:
+        rootfs = conn.execute(
+            "SELECT count(*) FROM image_catalog WHERE state = 'defined'"
+        ).fetchone()
+        configs = conn.execute("SELECT count(*) FROM build_config_catalog").fetchone()
+    assert rootfs is not None and rootfs[0] >= 1
+    assert configs is not None and configs[0] == 0
+
+
+class _FakeStore:
+    """Object-store double for the build-config seed (it only writes bytes via put_artifact)."""
+
+    def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact:
+        return StoredArtifact(
+            key=request.key(),
+            etag="fake-etag",
+            sensitivity=Sensitivity.REDACTED,
+            retention_class="build-config",
+        )
+
+
+def test_migrate_with_s3_seeds_build_config(
+    monkeypatch: pytest.MonkeyPatch, postgres_url: str
+) -> None:
+    # With an object store available, migrate seeds the packaged kdump fragment row.
+    with psycopg.connect(postgres_url, autocommit=True) as conn:
+        conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    monkeypatch.setattr("kdive.store.objectstore.object_store_from_env", lambda: _FakeStore())
+
+    migrate(postgres_url)
+
+    with psycopg.connect(postgres_url, autocommit=True) as conn:
+        row = conn.execute("SELECT name FROM build_config_catalog WHERE name = 'kdump'").fetchone()
+    assert row is not None and row[0] == "kdump"
 
 
 def test_install_fixtures_refuses_overwrite_without_force(tmp_path: Path) -> None:

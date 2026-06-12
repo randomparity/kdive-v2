@@ -57,20 +57,31 @@ def migrate(database_url: str | None = None) -> int:
 def _seed_build_configs_step(database_url: str) -> int:
     """Publish the packaged build-config fragments after migrating (ADR-0096).
 
-    Runs in the deploy ``migrate -> seed`` step. Idempotent (sha256-gated).
+    Runs in the deploy ``migrate -> seed`` step. Idempotent (sha256-gated). The fragments
+    live in the object store, so the seed is skipped when ``KDIVE_S3_*`` is unconfigured —
+    a no-S3 migrate (e.g. a schema-only test or a partial bring-up) degrades cleanly and the
+    fragment is seeded on a later migrate once the object store is available. Mirrors the
+    images-tool tolerance in :func:`kdive.mcp.tools.ops.images._resolve_object_store`.
 
     Args:
         database_url: A psycopg-compatible connection string for the application database.
 
     Returns:
-        The number of build-config fragments published (0 if already current).
+        The number of build-config fragments published (0 if already current or skipped).
     """
     import asyncio
 
     from kdive.build_configs.seed import seed_build_configs
+    from kdive.domain.errors import CategorizedError, ErrorCategory
     from kdive.store.objectstore import object_store_from_env
 
-    store = object_store_from_env()
+    try:
+        store = object_store_from_env()
+    except CategorizedError as exc:
+        if exc.category is not ErrorCategory.CONFIGURATION_ERROR:
+            raise
+        print("skipped build-config seed: object store not configured")
+        return 0
 
     async def _run() -> int:
         async with await psycopg.AsyncConnection.connect(database_url, autocommit=True) as conn:
