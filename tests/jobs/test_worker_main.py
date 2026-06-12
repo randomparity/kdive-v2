@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from kdive.jobs.worker import WorkerConfig
 from kdive.observability import Telemetry
 from kdive.security.secrets.secret_registry import SecretRegistry
 
@@ -68,6 +69,8 @@ def test_run_worker_wires_heartbeat_readiness_and_telemetry(
     asyncio.run(__main__._run_worker(SecretRegistry(), _fake_telemetry()))
 
     assert events == ["open", "run", "close"]
-    assert constructed["heartbeat"] is not None
-    assert constructed["readiness"] is not None
-    assert constructed["telemetry"] is not None
+    config = constructed["config"]
+    assert isinstance(config, WorkerConfig)
+    assert config.heartbeat is not None
+    assert config.readiness is not None
+    assert config.telemetry is not None

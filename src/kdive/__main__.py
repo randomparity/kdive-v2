@@ -183,7 +183,7 @@ def _readiness(probe: HealthProbe) -> Callable[[], Awaitable[bool]]:
 async def _run_worker(secret_registry: SecretRegistry, telemetry: Telemetry) -> None:
     from kdive.health import Heartbeat, build_aux_app, serve_aux
     from kdive.health.aux_bind import resolve_health_bind
-    from kdive.jobs.worker import Worker
+    from kdive.jobs.worker import Worker, WorkerConfig
     from kdive.jobs.worker_telemetry import WorkerTelemetry
     from kdive.mcp.app import build_handler_registry
     from kdive.process_health.server import build_postgres_ping
@@ -207,11 +207,13 @@ async def _run_worker(secret_registry: SecretRegistry, telemetry: Telemetry) -> 
             build_handler_registry(secret_registry=secret_registry),
             worker_id=worker_id,
             secret_registry=secret_registry,
-            heartbeat=heartbeat,
-            readiness=_readiness(probe),
-            telemetry=WorkerTelemetry(
-                tracer=telemetry.tracer_provider.get_tracer("kdive.worker"),
-                meter=telemetry.meter_provider.get_meter("kdive.worker"),
+            config=WorkerConfig(
+                heartbeat=heartbeat,
+                readiness=_readiness(probe),
+                telemetry=WorkerTelemetry(
+                    tracer=telemetry.tracer_provider.get_tracer("kdive.worker"),
+                    meter=telemetry.meter_provider.get_meter("kdive.worker"),
+                ),
             ),
         )
         await worker.run(stop)
