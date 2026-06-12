@@ -17,7 +17,8 @@ import os
 import signal
 import socket
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -42,8 +43,6 @@ if TYPE_CHECKING:
     from kdive.providers.resolver import ProviderResolver
     from kdive.security.secrets.secret_registry import SecretRegistry
     from kdive.store.objectstore import ObjectStore
-
-_RUNNABLE = frozenset({"server", "worker", "reconciler", "migrate"})
 
 # Server /livez heartbeat: ticked at this cadence, stale after the larger bound. The
 # server's "loop" is its asyncio event loop, so a stale tick means the loop is wedged.
@@ -75,7 +74,148 @@ class _VersionAction(argparse.Action):
         option_string: str | None = None,
     ) -> None:
         del namespace, values, option_string
-        parser.exit(message=f"kdive {full_version()}\n")
+        print(f"kdive {full_version()}")
+        parser.exit()
+
+
+type _CommandHandler = Callable[[argparse.Namespace, SecretRegistry, Telemetry | None], None]
+type _ArgumentAdder = Callable[[argparse.ArgumentParser], None]
+type _CommandRegistrar = Callable[[Any], None]
+
+
+@dataclass(frozen=True, slots=True)
+class _Command:
+    name: str
+    help: str
+    handler: _CommandHandler
+    runnable: bool = False
+    add_arguments: _ArgumentAdder | None = None
+    custom_register: _CommandRegistrar | None = None
+
+    def register(self, subparsers: Any) -> None:
+        if self.custom_register is not None:
+            self.custom_register(subparsers)
+            return
+        parser = subparsers.add_parser(self.name, help=self.help)
+        if self.add_arguments is not None:
+            self.add_arguments(parser)
+
+
+def _require_telemetry(command: str, telemetry: Telemetry | None) -> Telemetry:
+    if telemetry is None:
+        raise RuntimeError(f"{command} command requires telemetry bootstrap")
+    return telemetry
+
+
+def _add_install_fixtures_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dest", default="/etc/kdive/fixtures/local-libvirt")
+    parser.add_argument("--force", action="store_true", help="overwrite existing files")
+
+
+def _add_seed_demo_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project", default="demo")
+    parser.add_argument("--limit-kcu", default="1000000")
+    parser.add_argument("--max-concurrent-allocations", type=int, default=4)
+    parser.add_argument("--max-concurrent-systems", type=int, default=4)
+
+
+def _handle_server(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del args
+    initialized = _require_telemetry("server", telemetry)
+    host = config.require(HTTP_HOST)
+    port = config.require(HTTP_PORT)
+    asyncio.run(_run_server(host, port, secret_registry, initialized))
+
+
+def _handle_worker(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del args
+    asyncio.run(_run_worker(secret_registry, _require_telemetry("worker", telemetry)))
+
+
+def _handle_reconciler(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del args
+    asyncio.run(_run_reconciler(secret_registry, _require_telemetry("reconciler", telemetry)))
+
+
+def _handle_migrate(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del args, secret_registry, telemetry
+    from kdive.admin.bootstrap import migrate
+
+    migrate()
+
+
+def _handle_install_fixtures(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del secret_registry, telemetry
+    from pathlib import Path
+
+    from kdive.admin.bootstrap import install_fixtures
+
+    install_fixtures(Path(args.dest), force=args.force)
+
+
+def _handle_seed_demo(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del secret_registry, telemetry
+    from decimal import Decimal
+
+    from kdive.admin.bootstrap import seed_demo
+
+    asyncio.run(
+        seed_demo(
+            project=args.project,
+            limit_kcu=Decimal(args.limit_kcu),
+            max_concurrent_allocations=args.max_concurrent_allocations,
+            max_concurrent_systems=args.max_concurrent_systems,
+        )
+    )
+
+
+def _handle_build_rootfs(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del secret_registry, telemetry
+    run_build_rootfs(args)
+
+
+_COMMANDS: tuple[_Command, ...] = (
+    _Command("server", "run the MCP streamable-HTTP server", _handle_server, runnable=True),
+    _Command("worker", "run the job-queue worker loop", _handle_worker, runnable=True),
+    _Command(
+        "reconciler", "run the drift-repair reconciler loop", _handle_reconciler, runnable=True
+    ),
+    _Command("migrate", "apply database migrations", _handle_migrate, runnable=True),
+    _Command(
+        "install-fixtures",
+        "install default fixture catalog",
+        _handle_install_fixtures,
+        add_arguments=_add_install_fixtures_arguments,
+    ),
+    _Command(
+        "seed-demo",
+        "seed a project for local agent demos",
+        _handle_seed_demo,
+        add_arguments=_add_seed_demo_arguments,
+    ),
+    _Command(
+        "build-rootfs",
+        "build the default local-libvirt rootfs image",
+        _handle_build_rootfs,
+        custom_register=add_build_rootfs_parser,
+    ),
+)
+_COMMAND_BY_NAME = {command.name: command for command in _COMMANDS}
+_RUNNABLE = frozenset(command.name for command in _COMMANDS if command.runnable)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -91,19 +231,8 @@ def build_parser() -> argparse.ArgumentParser:
         action=_VersionAction,
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("server", help="run the MCP streamable-HTTP server")
-    sub.add_parser("worker", help="run the job-queue worker loop")
-    sub.add_parser("reconciler", help="run the drift-repair reconciler loop")
-    sub.add_parser("migrate", help="apply database migrations")
-    fixtures = sub.add_parser("install-fixtures", help="install default fixture catalog")
-    fixtures.add_argument("--dest", default="/etc/kdive/fixtures/local-libvirt")
-    fixtures.add_argument("--force", action="store_true", help="overwrite existing files")
-    seed = sub.add_parser("seed-demo", help="seed a project for local agent demos")
-    seed.add_argument("--project", default="demo")
-    seed.add_argument("--limit-kcu", default="1000000")
-    seed.add_argument("--max-concurrent-allocations", type=int, default=4)
-    seed.add_argument("--max-concurrent-systems", type=int, default=4)
-    add_build_rootfs_parser(sub)
+    for command in _COMMANDS:
+        command.register(sub)
     return parser
 
 
@@ -354,42 +483,7 @@ def main(argv: list[str] | None = None) -> None:
         # pipeline (which may construct an OTLP client) built and the floor handed over.
         telemetry = init_telemetry(args.command, secret_registry=secret_registry, level=level)
     _log.info("starting kdive %s (%s)", full_version(), args.command)
-    if args.command == "server":
-        assert telemetry is not None  # server is in _RUNNABLE, so telemetry was built
-        host = config.require(HTTP_HOST)
-        port = config.require(HTTP_PORT)
-        asyncio.run(_run_server(host, port, secret_registry, telemetry))
-    elif args.command == "worker":
-        assert telemetry is not None  # worker is in _RUNNABLE, so telemetry was built
-        asyncio.run(_run_worker(secret_registry, telemetry))
-    elif args.command == "reconciler":
-        assert telemetry is not None  # reconciler is in _RUNNABLE, so telemetry was built
-        asyncio.run(_run_reconciler(secret_registry, telemetry))
-    elif args.command == "migrate":
-        from kdive.admin.bootstrap import migrate
-
-        migrate()
-    elif args.command == "install-fixtures":
-        from pathlib import Path
-
-        from kdive.admin.bootstrap import install_fixtures
-
-        install_fixtures(Path(args.dest), force=args.force)
-    elif args.command == "seed-demo":
-        from decimal import Decimal
-
-        from kdive.admin.bootstrap import seed_demo
-
-        asyncio.run(
-            seed_demo(
-                project=args.project,
-                limit_kcu=Decimal(args.limit_kcu),
-                max_concurrent_allocations=args.max_concurrent_allocations,
-                max_concurrent_systems=args.max_concurrent_systems,
-            )
-        )
-    elif args.command == "build-rootfs":
-        run_build_rootfs(args)
+    _COMMAND_BY_NAME[args.command].handler(args, secret_registry, telemetry)
 
 
 if __name__ == "__main__":
