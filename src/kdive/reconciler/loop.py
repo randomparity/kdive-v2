@@ -41,13 +41,7 @@ from kdive.reconciler import jobs as job_repairs
 from kdive.reconciler import systems as system_repairs
 from kdive.reconciler.console_hosting import CollectorRegistry
 from kdive.reconciler.images import (
-    ImageSweepStore,
-)
-from kdive.reconciler.images import (
     repair_dangling_images as _repair_dangling_images,
-)
-from kdive.reconciler.images import (
-    repair_expired_private_images as _repair_expired_private_images,
 )
 from kdive.reconciler.images import (
     repair_leaked_images as _repair_leaked_images,
@@ -62,6 +56,12 @@ from kdive.reconciler.uploads import (
 )
 from kdive.reconciler.uploads import (
     repair_abandoned_uploads as _repair_abandoned_uploads,
+)
+from kdive.services.images.retention import (
+    ImageSweepStore,
+)
+from kdive.services.images.retention import (
+    repair_expired_private_images as _repair_expired_private_images,
 )
 
 if TYPE_CHECKING:

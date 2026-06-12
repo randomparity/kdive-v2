@@ -1,6 +1,6 @@
-"""Image-catalog drift repair for the reconciler (M2.4/6, ADR-0092, ADR-0093).
+"""Image-catalog object drift repair for the reconciler (M2.4/6, ADR-0092, ADR-0093).
 
-Three deadline-guarded sweeps, modeled on :func:`kdive.reconciler.uploads.repair_abandoned_uploads`
+Two deadline-guarded sweeps, modeled on :func:`kdive.reconciler.uploads.repair_abandoned_uploads`
 (a ``deadline < now()`` window + a table cross-check, never an eager delete), each isolated on a
 fresh pooled connection and each evaluating time in Postgres ``now()`` (never a Python clock):
 
@@ -12,11 +12,6 @@ fresh pooled connection and each evaluating time in Postgres ``now()`` (never a 
 * :func:`repair_dangling_images` — a non-``defined`` row (``object_key IS NOT NULL``) whose object
   HEAD is missing **past its publish deadline** (``pending_since + grace``): remove the row. An
   object-less ``defined`` baseline is object-less by design and never dangling — it is skipped.
-* :func:`repair_expired_private_images` — a ``private`` row with ``expires_at < now()``: delete
-  the object and the row, **reference-guarded** (an image a non-terminal System still references
-  through its ``provisioning_profile`` catalog rootfs is skipped, deferring its expiry) and
-  **extend-fenced** (the ``expires_at`` is re-read under a per-row lock, the ADR-0036 renew
-  analogue, so a concurrent operator extend committed after candidate selection is honored).
 """
 
 from __future__ import annotations
@@ -24,42 +19,23 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import timedelta
-from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from psycopg import AsyncConnection
-from psycopg.cursor_async import AsyncCursor
-from psycopg.rows import DictRow, dict_row
-from psycopg.types.json import Jsonb
+from psycopg.rows import dict_row
 
-from kdive.domain.models import ImageState, ImageVisibility, ResourceKind
-from kdive.domain.state import SystemState
+from kdive.domain.models import ImageState
 from kdive.provider_components.artifacts import ObjectListing
+from kdive.services.images.retention import ImageSweepStore
 
 _log = logging.getLogger(__name__)
 
 _DEFINED_STATE = ImageState.DEFINED.value
-_PRIVATE_VISIBILITY = ImageVisibility.PRIVATE.value
-_TERMINAL_SYSTEM_STATES = (SystemState.TORN_DOWN, SystemState.FAILED)
-_TERMINAL_SYSTEM_STATE_VALUES = tuple(state.value for state in _TERMINAL_SYSTEM_STATES)
-# A catalog rootfs only ever appears under the local-libvirt provider section (the remote
-# provider boots an operator-staged base image, the mock provider owns no rootfs), so the
-# reference-guard's JSONB-containment probe keys that section's catalog ref.
-_LOCAL_LIBVIRT_SECTION = ResourceKind.LOCAL_LIBVIRT.value
 
 
 # The image sweeps consume the shared object-listing value type (key + store mtime); the
 # alias keeps the reconciler tests' import surface stable while reusing one definition.
 ImageMtime = ObjectListing
-
-
-@runtime_checkable
-class ImageSweepStore(Protocol):
-    """The narrow object-store port the image sweeps consume."""
-
-    def list_image_objects(self) -> list[ObjectListing]: ...
-    def head_present(self, key: str) -> bool: ...
-    def delete(self, key: str) -> None: ...
 
 
 async def repair_leaked_images(
@@ -152,109 +128,3 @@ async def _remove_dangling_row(conn: AsyncConnection, row_id: UUID, grace: timed
             "reconciler: dangling image row %s removed (object missing past deadline)", row_id
         )
     return bool(removed)
-
-
-async def repair_expired_private_images(conn: AsyncConnection, store: ImageSweepStore) -> int:
-    """Delete object + row for expired private images, reference-guarded and extend-fenced.
-
-    Candidates are ``private`` rows with ``expires_at < now()`` (Postgres clock). Each is pruned
-    only if it is **not referenced** by a non-terminal System (a JSONB-containment check against
-    ``systems.provisioning_profile`` — a referenced image's expiry defers) and the per-row locked
-    re-read still observes it expired (the extend fence honors a concurrent operator extend). The
-    object is deleted before the row so a crash leaves a dangling row the dangling sweep heals,
-    never a rowless object the leaked sweep would re-discover under its grace.
-
-    Returns the number of images pruned; one structured-log line per prune.
-    """
-    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT id, object_key FROM image_catalog "
-            "WHERE visibility = %s AND expires_at IS NOT NULL AND expires_at < now()",
-            (_PRIVATE_VISIBILITY,),
-        )
-        candidates = await cur.fetchall()
-    pruned = 0
-    for cand in candidates:
-        if await expire_one_private_image(conn, store, cand["id"], cand["object_key"]):
-            pruned += 1
-    return pruned
-
-
-async def image_referenced_by_live_system(cur: AsyncCursor[DictRow], row_id: UUID) -> bool:
-    """True if a non-terminal System references this image's catalog rootfs.
-
-    The image's ``(provider, name)`` identity is folded into a JSONB-containment (``@>``) probe
-    of each non-terminal System's ``provisioning_profile``: a catalog rootfs is serialized under
-    the local-libvirt provider section as ``{"kind": "catalog", "provider": ..., "name": ...}``.
-    Containment is an FK-free reference check — an image is never hard-linked to a System, so a
-    referenced image's expiry simply defers rather than failing a delete. Runs on the caller's
-    cursor (which should already hold the per-row ``FOR UPDATE`` lock) so the reference predicate
-    is evaluated atomically with the prune/delete, closing the provision-races-removal window.
-    Shared by the reconciler's expired-private sweep and the operator ``images.delete`` tool so
-    both honor one reference guard.
-    """
-    await cur.execute("SELECT provider, name FROM image_catalog WHERE id = %s", (row_id,))
-    image = await cur.fetchone()
-    if image is None:
-        return False
-    probe = Jsonb(
-        {
-            "provider": {
-                _LOCAL_LIBVIRT_SECTION: {
-                    "rootfs": {
-                        "kind": "catalog",
-                        "provider": image["provider"],
-                        "name": image["name"],
-                    }
-                }
-            }
-        }
-    )
-    await cur.execute(
-        "SELECT 1 FROM systems WHERE state <> ALL(%s) AND provisioning_profile @> %s LIMIT 1",
-        (list(_TERMINAL_SYSTEM_STATE_VALUES), probe),
-    )
-    return await cur.fetchone() is not None
-
-
-async def expire_one_private_image(
-    conn: AsyncConnection, store: ImageSweepStore, row_id: UUID, object_key: str | None
-) -> bool:
-    """Delete one expired private image's object + row, reference-guarded and extend-fenced.
-
-    Opens one transaction holding the row's ``FOR UPDATE`` lock across both guards and both
-    deletes, so the prune is atomic against a concurrent extend **and** a concurrent provision:
-
-    * the locked ``expires_at < now()`` re-read is the **extend fence** (the ADR-0036 renew
-      analogue) — it declines a row whose ``expires_at`` was pushed into the future since
-      candidate selection, or that another pass already pruned;
-    * the **reference guard** (a JSONB-containment probe of non-terminal Systems) runs inside the
-      same locked transaction, so a System provisioned to reference this image after candidate
-      selection is observed and the prune defers rather than orphaning that System's rootfs.
-
-    The object delete (idempotent) precedes the row delete so a crash strands at most a dangling
-    row the dangling sweep heals, never a rowless object. Re-validated against Postgres ``now()``.
-
-    Returns ``True`` if this call pruned the image, ``False`` if a guard declined it.
-    """
-    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT 1 FROM image_catalog "
-            "WHERE id = %s AND visibility = %s "
-            "  AND expires_at IS NOT NULL AND expires_at < now() FOR UPDATE",
-            (row_id, _PRIVATE_VISIBILITY),
-        )
-        if await cur.fetchone() is None:
-            return False
-        if await image_referenced_by_live_system(cur, row_id):
-            _log.info(
-                "reconciler: expired private image %s referenced by a non-terminal System; "
-                "deferring expiry",
-                row_id,
-            )
-            return False
-        if object_key is not None:
-            await asyncio.to_thread(store.delete, object_key)
-        await cur.execute("DELETE FROM image_catalog WHERE id = %s", (row_id,))
-    _log.info("reconciler: expired private image %s pruned (object + row deleted)", row_id)
-    return True

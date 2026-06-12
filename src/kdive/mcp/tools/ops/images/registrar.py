@@ -33,7 +33,7 @@ from kdive.mcp.tools.ops.images.build_publish import BUILD_TOOL, PUBLISH_TOOL, b
 from kdive.mcp.tools.ops.images.delete import delete
 from kdive.mcp.tools.ops.images.retention import extend, prune_expired
 from kdive.mcp.tools.ops.images.upload import ImageUploadRequest, upload
-from kdive.reconciler.images import ImageSweepStore
+from kdive.services.images.retention import ImageSweepStore
 from kdive.services.images.upload import UploadObjectStore
 
 if TYPE_CHECKING:

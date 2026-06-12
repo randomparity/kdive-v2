@@ -21,10 +21,10 @@ from kdive.mcp.tools.ops.images._common import (
     audit_project_denial,
     denied,
 )
-from kdive.reconciler.images import image_referenced_by_live_system
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import AuthorizationError, Role, require_role
+from kdive.services.images.retention import image_referenced_by_live_system
 
 _log = logging.getLogger(__name__)
 

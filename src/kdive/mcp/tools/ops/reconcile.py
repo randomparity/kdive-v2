@@ -26,11 +26,11 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._platform_auth import actor_for, audit_platform_denial, held_platform_roles
 from kdive.providers.reaping import DumpVolumeReaper, InfraReaper, NullDumpVolumeReaper
-from kdive.reconciler.images import ImageSweepStore
 from kdive.reconciler.loop import ReconcileConfig, ReconcileReport, UploadStore, reconcile_once
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_platform_role
+from kdive.services.images.retention import ImageSweepStore
 from kdive.store.objectstore import ObjectStore
 
 # A module-level singleton so it can be a stateless default arg (ruff B008).

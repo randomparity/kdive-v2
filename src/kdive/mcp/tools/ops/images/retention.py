@@ -26,9 +26,9 @@ from kdive.mcp.tools.ops.images._common import (
     denied,
     record_admin_breakglass,
 )
-from kdive.reconciler.images import ImageSweepStore, repair_expired_private_images
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_platform_role
+from kdive.services.images.retention import ImageSweepStore, repair_expired_private_images
 
 _log = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ async def prune_expired(
     reason: str,
     image_store: ImageSweepStore,
 ) -> ToolResponse:
-    """Force the reconciler's expired-private-image sweep now. Requires ``platform_admin``."""
+    """Force the expired-private-image retention sweep now. Requires ``platform_admin``."""
     with bind_context(principal=ctx.principal):
         try:
             require_platform_role(ctx, PlatformRole.PLATFORM_ADMIN)
