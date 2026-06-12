@@ -6,10 +6,12 @@ It adopts the identity's existing ``defined``/``pending`` row (or inserts a fres
 row), sets its ``object_key``, writes the qcow2 to the image prefix, gates on ``store.head()``,
 then flips the row to ``registered`` and returns it.
 
-Publish is **idempotent on the identity ``(provider, name, arch)``**: a re-run after a crashed
-attempt adopts the in-flight ``pending`` row and re-arms its ``pending_since`` rather than
-colliding. The recovery path for a crash mid-publish is the reconciler, not a bespoke rollback —
-the leftover ``pending`` row and (possibly absent) object are swept by the deadline-guarded
+Publish is **idempotent on the scoped identity
+``(provider, name, arch, visibility, owner)``**: a re-run after a crashed attempt adopts that
+scope's in-flight ``pending`` row and re-arms its ``pending_since`` rather than colliding. Public
+and private rows, and private rows for different owners, intentionally do not adopt each other.
+The recovery path for a crash mid-publish is the reconciler, not a bespoke rollback — the leftover
+``pending`` row and (possibly absent) object are swept by the deadline-guarded
 ``leaked_images``/``dangling_images`` sweeps once past the publish grace.
 
 The blocking object-store calls (boto3) are offloaded via ``asyncio.to_thread`` so the worker
@@ -258,9 +260,11 @@ async def publish_image(
 
     Adopts the identity's existing ``defined``/``pending`` row (or inserts a ``pending`` row from
     ``request``), sets its ``object_key``, writes the object at ``source`` to the image prefix,
-    HEAD-gates, then flips the row to ``registered`` and returns it. Idempotent on
-    ``(provider, name, arch)``: a re-run adopts the in-flight ``pending`` row and re-arms its
-    ``pending_since``. Realizing a seeded ``defined`` baseline is this same path.
+    HEAD-gates, then flips the row to ``registered`` and returns it. Idempotent on the scoped
+    identity ``(provider, name, arch, visibility, owner)``: a re-run adopts that scope's in-flight
+    ``pending`` row and re-arms its ``pending_since``. Public and private rows, and private rows
+    for different owners, intentionally do not adopt each other. Realizing a seeded ``defined``
+    baseline is this same path.
 
     Args:
         conn: An async Postgres connection (autocommit; the adopt step opens its own
