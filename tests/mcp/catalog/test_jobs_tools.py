@@ -296,7 +296,7 @@ def test_get_job_requires_viewer_role(migrated_url: str) -> None:
             job_id = await _enqueue(pool, "d1")
             resp = await jobs_tools.get_job(pool, CTX, job_id)
         assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
+        assert resp.error_category == "authorization_denied"
         assert resp.object_id == job_id
 
     asyncio.run(_run())
@@ -308,7 +308,7 @@ def test_wait_job_requires_viewer_role(migrated_url: str) -> None:
             job_id = await _enqueue(pool, "d1")
             resp = await jobs_tools.wait_job(pool, CTX, job_id, timeout_s=0.0)
         assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
+        assert resp.error_category == "authorization_denied"
         assert resp.object_id == job_id
 
     asyncio.run(_run())
@@ -335,7 +335,7 @@ def test_cancel_job_requires_operator_role(migrated_url: str) -> None:
             denied = await jobs_tools.cancel_job(pool, VIEWER_CTX, job_id)
             owned = await jobs_tools.get_job(pool, VIEWER_CTX, job_id)
         assert denied.status == "error"
-        assert denied.error_category == "configuration_error"
+        assert denied.error_category == "authorization_denied"
         assert denied.object_id == job_id
         assert owned.status == "queued"
 
@@ -349,7 +349,7 @@ def test_cancel_job_requires_a_project_role(migrated_url: str) -> None:
             denied = await jobs_tools.cancel_job(pool, CTX, job_id)
             owned = await jobs_tools.get_job(pool, VIEWER_CTX, job_id)
         assert denied.status == "error"
-        assert denied.error_category == "configuration_error"
+        assert denied.error_category == "authorization_denied"
         assert denied.object_id == job_id
         assert owned.status == "queued"
 

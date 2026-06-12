@@ -82,7 +82,7 @@ def _require_job_role(
     try:
         require_role(ctx, _project(job), role)
     except AuthorizationError:
-        return _error(object_id, ErrorCategory.CONFIGURATION_ERROR)
+        return _error(object_id, ErrorCategory.AUTHORIZATION_DENIED)
     return None
 
 
