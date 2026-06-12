@@ -14,9 +14,11 @@ and the generic-cluster equivalent is given alongside.
 
 - A Kubernetes cluster and `kubectl`/`helm` (v3) configured against it. Tested on microk8s
   v1.35; any conformant cluster works.
-- A **container registry the cluster can pull from**. The chart defaults to
-  `ghcr.io/randomparity/kdive`, but no image is published there yet (`docker pull` 404s) — until
-  a signed release exists you build and push your own (step 1).
+- A cluster that can pull from `ghcr.io` (the default registry). The chart defaults to
+  `ghcr.io/randomparity/kdive`; `:edge` (rolling, from `main`) and signed `:X.Y.Z` release
+  tags are published there. From a source checkout pin `--set image.tag=edge` (the default
+  `appVersion` tag is unpublished until that version is cut). Only a fully offline cluster
+  needs the build-and-load path in step 1.
 - **External backends** the cluster can reach: Postgres, an S3-compatible object store
   (MinIO/AWS S3), and an OIDC issuer. The bundled-backend demo path (`bundledBackends=true`) is
   `emptyDir`-only and **not** for anything you want to keep (and its Bitnami subchart images were
@@ -24,11 +26,12 @@ and the generic-cluster equivalent is given alongside.
 - A `StorageClass` for the worker's build/install PVCs (microk8s: `microk8s enable
   hostpath-storage`).
 
-## 1. Build and push the image
+## 1. Build and push the image (offline-cluster fallback)
 
-No image is published to `ghcr.io/randomparity/kdive` yet, so build from your checkout, tag by
-git SHA (not the static `appVersion`, which is unpublished), and push to a registry the cluster
-pulls from.
+If your cluster can reach `ghcr.io`, skip this step: use the published image with `--set
+image.tag=edge` (or a signed `:X.Y.Z`) and go to step 2. Only a fully offline/air-gapped cluster
+needs to build its own — build from your checkout, tag by git SHA (not the static `appVersion`,
+which is unpublished), and push to a registry the cluster pulls from.
 
 ```bash
 SHA=$(git rev-parse --short=8 HEAD)

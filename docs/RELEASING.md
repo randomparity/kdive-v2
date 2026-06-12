@@ -33,6 +33,23 @@ Never hand-edit the version: editing `pyproject.toml` alone desyncs `uv.lock` an
    reopening the ambiguity the scheme exists to prevent ([ADR-0041](adr/0041-versioning-release-process.md)
    decision 3). Treat `main` as frozen for normal merges until the bump is in.
 
+## Container image publishing
+
+`release-image.yml` publishes the image to `ghcr.io/randomparity/kdive`:
+
+- **Every push to `main`** → a rolling `:edge` tag and an immutable `:sha-<short>`.
+- **Every `vX.Y.Z` tag** → `:X.Y.Z`, `:X.Y`, `:latest`, with an SBOM, max provenance, and
+  a cosign keyless signature on the digest.
+
+**One-time setup — make the package public.** GHCR packages are created private on first
+push and visibility cannot be set from the workflow. After the first `main` push publishes
+`:edge`, set the package public once: GitHub → your profile → Packages → `kdive` → Package
+settings → Change visibility → Public. Until then `docker pull` returns 404 to anonymous
+clients and the chart needs an `imagePullSecret`.
+
+**Verify a release image** (not `:edge`, which floats):
+`cosign verify ghcr.io/randomparity/kdive:X.Y.Z --certificate-identity-regexp '^https://github\.com/randomparity/kdive/\.github/workflows/release-image\.yml@' --certificate-oidc-issuer https://token.actions.githubusercontent.com`
+
 ## Commit conventions the changelog depends on
 
 git-cliff categorizes from the commit message, so two cases need an explicit marker or they
