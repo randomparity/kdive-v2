@@ -160,6 +160,9 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/mcp/tools/_docmeta.py",
                 "src/kdive/reconciler/console_hosting.py",
                 "src/kdive/db/locks.py",
+                "src/kdive/db/schema/0025_build_config_catalog.sql",
+                "src/kdive/mcp/tools/catalog/build_configs.py",
+                "src/kdive/mcp/tools/lifecycle/runs/build.py",
             }
         )
         == ALLOWED_FILES
