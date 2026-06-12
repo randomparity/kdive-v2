@@ -77,7 +77,9 @@ type PlaneRegistrar = Callable[[FastMCP, AsyncConnectionPool, AppAssembly], None
 type HandlerRegistrar = Callable[[HandlerRegistry, ProviderResolver, SecretRegistry], None]
 
 
-def _plain(register: Callable[[FastMCP, AsyncConnectionPool], None]) -> PlaneRegistrar:
+def _pool_only_plane_registrar(
+    register: Callable[[FastMCP, AsyncConnectionPool], None],
+) -> PlaneRegistrar:
     def _register(
         app: FastMCP,
         pool: AsyncConnectionPool,
@@ -184,34 +186,34 @@ def _register_vmcore_handlers(
 
 # Tool seam: each plane exposes register(app, pool); provider-aware planes receive AppAssembly.
 _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
-    _plain(jobs.register),
-    _plain(resources.register),
-    _plain(availability.register),
-    _plain(shapes.register),
-    _plain(register_accounting_estimate),
-    _plain(register_accounting_usage),
-    _plain(register_accounting_reports),
-    _plain(register_accounting_admin),
+    _pool_only_plane_registrar(jobs.register),
+    _pool_only_plane_registrar(resources.register),
+    _pool_only_plane_registrar(availability.register),
+    _pool_only_plane_registrar(shapes.register),
+    _pool_only_plane_registrar(register_accounting_estimate),
+    _pool_only_plane_registrar(register_accounting_usage),
+    _pool_only_plane_registrar(register_accounting_reports),
+    _pool_only_plane_registrar(register_accounting_admin),
     _register_reconcile_tools,
-    _plain(ops_resources_tools.register),
-    _plain(allocations.register),
-    _plain(ops_breakglass_tools.register),
+    _pool_only_plane_registrar(ops_resources_tools.register),
+    _pool_only_plane_registrar(allocations.register),
+    _pool_only_plane_registrar(ops_breakglass_tools.register),
     _register_systems_tools,
-    _plain(investigations.register),
+    _pool_only_plane_registrar(investigations.register),
     _register_runs_tools,
     _register_control_tools,
     _register_artifact_tools,
-    _plain(build_configs.register),
+    _pool_only_plane_registrar(build_configs.register),
     _register_vmcore_tools,
     _register_debug_tools,
     _register_introspection_tools,
-    _plain(ops_queue_tools.register),
-    _plain(ops_tuning_tools.register),
-    _plain(audit_tools.register),
+    _pool_only_plane_registrar(ops_queue_tools.register),
+    _pool_only_plane_registrar(ops_tuning_tools.register),
+    _pool_only_plane_registrar(audit_tools.register),
     _register_diagnostics_tools,
-    _plain(inventory_tools.register),
-    _plain(fixtures.register),
-    _plain(catalog_images.register),
+    _pool_only_plane_registrar(inventory_tools.register),
+    _pool_only_plane_registrar(fixtures.register),
+    _pool_only_plane_registrar(catalog_images.register),
     _register_ops_images_tools,
     _register_ops_secrets_tools,
 )
