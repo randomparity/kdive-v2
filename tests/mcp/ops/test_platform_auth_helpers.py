@@ -8,7 +8,11 @@ from contextlib import asynccontextmanager
 
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.mcp.tools.ops._auth import ALL_PROJECTS_SCOPE, audit_platform_denial, held_platform_roles
+from kdive.mcp.tools._platform_auth import (
+    ALL_PROJECTS_SCOPE,
+    audit_platform_denial,
+    held_platform_roles,
+)
 from kdive.security.audit import args_digest
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole

@@ -26,8 +26,8 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
-from kdive.mcp.tools.catalog.resources import _error, _resource_envelope
-from kdive.mcp.tools.ops._auth import actor_for, audit_platform_denial, held_platform_roles
+from kdive.mcp.tools._platform_auth import actor_for, audit_platform_denial, held_platform_roles
+from kdive.mcp.tools._resource_envelopes import resource_config_error, resource_envelope
 from kdive.mcp.tools.ops.breakglass import breakglass_release_allocation
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
@@ -106,22 +106,22 @@ async def set_resource_status(
         return _denied(resource_id)
     uid = _as_uuid(resource_id)
     if uid is None:
-        return _error(resource_id)
+        return resource_config_error(resource_id)
     try:
         new_status = ResourceStatus(status)
     except ValueError:
-        return _error(status)
+        return resource_config_error(status)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             resource = await RESOURCES.get(conn, uid)
             if resource is None:
-                return _error(resource_id)
+                return resource_config_error(resource_id)
             if resource.status is not new_status:
                 resource = await RESOURCES.update_state(conn, uid, new_status)
             await _audit_host_action(
                 conn, ctx, tool=_SET_STATUS_TOOL, resource_id=uid, detail=f"status={status}"
             )
-        return _resource_envelope(resource, next_actions=["resources.describe"])
+        return resource_envelope(resource, next_actions=["resources.describe"])
 
 
 async def _apply_cordon(conn: AsyncConnection, uid: UUID, *, cordoned: bool) -> Resource | None:
@@ -152,16 +152,16 @@ async def _set_cordoned(
         return _denied(resource_id)
     uid = _as_uuid(resource_id)
     if uid is None:
-        return _error(resource_id)
+        return resource_config_error(resource_id)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             resource = await _apply_cordon(conn, uid, cordoned=cordoned)
             if resource is None:
-                return _error(resource_id)
+                return resource_config_error(resource_id)
             await _audit_host_action(
                 conn, ctx, tool=tool, resource_id=uid, detail=f"cordoned={cordoned}"
             )
-        return _resource_envelope(resource, next_actions=["resources.describe"])
+        return resource_envelope(resource, next_actions=["resources.describe"])
 
 
 async def cordon_resource(
@@ -228,7 +228,7 @@ async def drain_resource(
 ) -> ToolResponse:
     """Cordon a host, then report or force-release its live allocations."""
     if mode not in _DRAIN_MODES:
-        return _error(mode)
+        return resource_config_error(mode)
     try:
         require_platform_role(ctx, _drain_role(mode))
     except AuthorizationError:
@@ -241,15 +241,15 @@ async def drain_resource(
         )
         return _denied(resource_id)
     if mode == "force_release" and not reason.strip():
-        return _error(resource_id)
+        return resource_config_error(resource_id)
     uid = _as_uuid(resource_id)
     if uid is None:
-        return _error(resource_id)
+        return resource_config_error(resource_id)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             resource = await _apply_cordon(conn, uid, cordoned=True)
             if resource is None:
-                return _error(resource_id)
+                return resource_config_error(resource_id)
             await _audit_host_action(
                 conn, ctx, tool=_DRAIN_TOOL, resource_id=uid, detail="cordoned=true"
             )

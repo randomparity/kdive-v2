@@ -1,4 +1,4 @@
-"""Shared platform authorization audit helpers for ``ops.*`` control tools."""
+"""Shared platform authorization audit helpers for operator tools."""
 
 from __future__ import annotations
 

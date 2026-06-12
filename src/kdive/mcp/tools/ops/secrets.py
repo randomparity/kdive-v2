@@ -19,7 +19,7 @@ from kdive.domain.errors import ErrorCategory
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools.ops._auth import (
+from kdive.mcp.tools._platform_auth import (
     ALL_PROJECTS_SCOPE,
     actor_for,
     audit_platform_denial,
