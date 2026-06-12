@@ -33,7 +33,7 @@ from kdive.providers.ports import (
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.lifecycle.control import RemoteLibvirtControl
 from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
-from kdive.providers.remote_libvirt.lifecycle.provisioning import RemoteLibvirtProvision
+from kdive.providers.remote_libvirt.lifecycle.provisioning import RemoteLibvirtProvisioning
 from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
 from kdive.providers.remote_libvirt.rootfs_build import RemoteLibvirtRootfsBuildPlane
 from kdive.providers.runtime import ProviderRuntime
@@ -498,7 +498,7 @@ def test_remote_runtime_has_real_provisioner(monkeypatch: pytest.MonkeyPatch) ->
 
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
-    assert isinstance(runtime.provisioner, RemoteLibvirtProvision)
+    assert isinstance(runtime.provisioner, RemoteLibvirtProvisioning)
 
 
 def test_remote_runtime_has_noop_rootfs_validator(monkeypatch: pytest.MonkeyPatch) -> None:

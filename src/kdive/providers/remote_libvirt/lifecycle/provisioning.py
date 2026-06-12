@@ -1,6 +1,6 @@
 """Remote-libvirt Provisioning plane: disk-image base-OS define/start over TLS (ADR-0080).
 
-`RemoteLibvirtProvision` realizes the `Provisioner` port against a remote `qemu+tls://`
+`RemoteLibvirtProvisioning` realizes the `Provisioner` port against a remote `qemu+tls://`
 host: it renders a gdbstub-enabled domain XML carrying the qemu-guest-agent virtio-serial
 channel, creates the per-System qcow2 overlay as a storage-pool volume backed by the
 operator-staged base image (no shared filesystem, so no worker-side ``qemu-img``), and
@@ -65,7 +65,7 @@ from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_en
 __all__ = [
     "KDIVE_METADATA_NS",
     "QEMU_NS",
-    "RemoteLibvirtProvision",
+    "RemoteLibvirtProvisioning",
     "allocate_gdb_port",
     "overlay_volume_name",
     "recorded_gdb_port",
@@ -114,7 +114,7 @@ def open_libvirt_provision(uri: str) -> _ProvisionConn:
     return libvirt.open(uri)  # ty: ignore[invalid-return-type]
 
 
-class RemoteLibvirtProvision:
+class RemoteLibvirtProvisioning:
     """The realized Provisioner port for a remote qemu+tls host (ADR-0080).
 
     Buildable without operator config (ADR-0076): the ``KDIVE_REMOTE_LIBVIRT_*``

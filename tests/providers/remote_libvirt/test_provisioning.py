@@ -18,7 +18,7 @@ from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRe
 from kdive.providers.remote_libvirt.lifecycle.provisioning import (
     KDIVE_METADATA_NS,
     QEMU_NS,
-    RemoteLibvirtProvision,
+    RemoteLibvirtProvisioning,
     allocate_gdb_port,
     overlay_volume_name,
     recorded_gdb_port,
@@ -254,7 +254,7 @@ def test_allocate_does_not_reuse_own_excluded_port() -> None:
     )
 
 
-# --- RemoteLibvirtProvision orchestration over fakes ---------------------------------
+# --- RemoteLibvirtProvisioning orchestration over fakes ------------------------------
 
 
 class FakeVolume:
@@ -441,7 +441,7 @@ def _provisioner(
     tmp_path: Path,
     config: RemoteLibvirtConfig | None = None,
     **overrides: Any,
-) -> tuple[RemoteLibvirtProvision, list[str]]:
+) -> tuple[RemoteLibvirtProvisioning, list[str]]:
     opened: list[str] = []
 
     def _open(uri: str) -> FakeProvisionConn:
@@ -458,7 +458,7 @@ def _provisioner(
         "monotonic": _ticker(),
         **overrides,
     }
-    return RemoteLibvirtProvision(**kwargs), opened
+    return RemoteLibvirtProvisioning(**kwargs), opened
 
 
 def test_provision_defines_starts_and_waits_for_agent(tmp_path: Path) -> None:
