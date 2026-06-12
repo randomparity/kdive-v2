@@ -17,7 +17,7 @@ This is Workstream A of `docs/superpowers/specs/2026-06-12-easier-install-design
 Implements spec A3. The guard asserts `Chart.yaml appVersion` equals the `pyproject` version (`uv version --short`), so a drift fails the PR and a cut release always has a published image at the chart's default tag.
 
 **Files:**
-- Modify: `justfile` (add a `chart-version-check` recipe; add it to the `ci` aggregate at line 220)
+- Modify: `justfile` (add a `chart-version-check` recipe; add it to the `ci:` aggregate recipe — find it by content, `ci: lint type lock-check …`, since inserting the recipe shifts line numbers)
 - Modify: `.github/workflows/ci.yml:80-83` (add a step after "Config env guard")
 - Modify: `justfile:151-159` (`set-version` recipe — also bump `appVersion`)
 
@@ -83,7 +83,7 @@ Expected: `appVersion: "0.3.1"` and `0.3.1`, then the checkout reverts the exper
         run: just chart-version-check
 ```
 
-- [ ] **Step 7: Add the recipe to the `ci` aggregate.** In `justfile:220`, append `chart-version-check`:
+- [ ] **Step 7: Add the recipe to the `ci` aggregate.** Find the `ci:` recipe in `justfile` by content (it reads `ci: lint type lock-check lint-shell lint-workflows check-mermaid docs-check config-docs-check config-guard test`; its line number shifted when Step 1 inserted the recipe). Append `chart-version-check` before `test`:
 
 ```just
 ci: lint type lock-check lint-shell lint-workflows check-mermaid docs-check config-docs-check config-guard chart-version-check test
@@ -128,7 +128,10 @@ on:
         with:
           images: ghcr.io/randomparity/kdive
           # On main: a moving :edge plus an immutable :sha-<short>. On a v* tag:
-          # :X.Y.Z, :X.Y, and :latest (latest only on the highest semver tag).
+          # :X.Y.Z, :X.Y, and :latest. NOTE: :latest is applied on EVERY release tag
+          # (metadata-action does not compare against other tags), so it tracks the most
+          # recently pushed release. This assumes forward-only releases; if you ever push a
+          # backport tag, drop `latest` for that release so it doesn't move backward.
           tags: |
             type=edge,branch=main
             type=sha,prefix=sha-,enable={{is_default_branch}}
@@ -207,7 +210,7 @@ settings → Change visibility → Public. Until then `docker pull` returns 404 
 clients and the chart needs an `imagePullSecret`.
 
 **Verify a release image** (not `:edge`, which floats):
-`cosign verify ghcr.io/randomparity/kdive:X.Y.Z --certificate-identity-regexp '...' --certificate-oidc-issuer https://token.actions.githubusercontent.com`
+`cosign verify ghcr.io/randomparity/kdive:X.Y.Z --certificate-identity-regexp '^https://github\.com/randomparity/kdive/\.github/workflows/release-image\.yml@' --certificate-oidc-issuer https://token.actions.githubusercontent.com`
 ```
 
 - [ ] **Step 2: Add the `:edge` from-checkout note to `deploy/helm/kdive/README.md`** under the "Install (external backends, production)" section, before the `helm install` block:

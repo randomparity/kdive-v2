@@ -564,17 +564,18 @@ spec:
           # poll below is the authoritative x86-64-v2 signal).
           if "sse4_2" not in open("/proc/cpuinfo").read():
               print("WARN: node lacks sse4_2 (x86-64-v2); demo backends may crash", file=sys.stderr)
-          # (2) poll the MCP Service until it answers (401/4xx = up; refused/503 = wait).
+          # (2) poll the MCP Service until it answers. ANY HTTP status means the server
+          # process is up (don't guess FastMCP's exact unauth/GET code — 401/400/406/307/405
+          # are all "up"); only connection-level errors mean "not yet". tools/list is static,
+          # so this proceeds correctly even while /readyz is still red (post-install migrate).
           for _ in range(60):
               try:
                   urllib.request.urlopen(mcp, timeout=3)
                   break
-              except urllib.error.HTTPError as e:
-                  if e.code in (400, 401, 406, 307):
-                      break
-                  time.sleep(2)
+              except urllib.error.HTTPError:
+                  break  # server responded with an HTTP status -> it is up
               except Exception:
-                  time.sleep(2)
+                  time.sleep(2)  # connection refused / no route / timeout -> wait
           else:
               sys.exit("MCP never became reachable")
           # (3) mint an aud=kdive token from the bundled issuer.
@@ -647,7 +648,8 @@ demoAcknowledged: true
 
 DEMO MODE (ephemeral — a pod restart drops all state).
 
-Verify the whole stack:
+Verify the whole stack (helm test waits for readiness itself; add --wait to the
+install above if you prefer the release to block until pods are Ready):
   helm test {{ .Release.Name }}
 
 Reach MCP (keep it cluster-internal — the demo issuer mints valid kdive tokens for
@@ -663,14 +665,16 @@ Then drive http://127.0.0.1:8000/mcp with an MCP client and `Authorization: Bear
 {{- end }}
 ```
 
-- [ ] **Step 3: Render NOTES for both paths.**
+- [ ] **Step 3: Render NOTES for both paths.** `helm template` does NOT render NOTES.txt
+  (and `--show-only templates/NOTES.txt` errors); only `install`/`upgrade` do, so use
+  `--dry-run`:
 
 Run:
 ```bash
-helm template kdive deploy/helm/kdive --set bundledBackends=true --set demoAcknowledged=true --show-only templates/NOTES.txt 2>/dev/null | grep -c "DEMO MODE" || \
-  helm template kdive deploy/helm/kdive --set bundledBackends=true --set demoAcknowledged=true | grep -c "DEMO MODE"
+helm install kdive deploy/helm/kdive -f deploy/helm/kdive/values-demo.yaml --dry-run 2>/dev/null | grep -c "DEMO MODE"
+helm install kdive deploy/helm/kdive --set config.KDIVE_DATABASE_URL=postgresql://x/y --dry-run 2>/dev/null | grep -c "DEMO MODE" || true
 ```
-Expected: `1` (NOTES.txt is not a manifest; if `--show-only` errors, the fallback `grep` over full render still finds it via the rendered NOTES in `helm install` output — confirm by `helm install --dry-run`).
+Expected: `1` for the demo install, `0` for the external install. (`--dry-run` renders NOTES without contacting the cluster.)
 
 - [ ] **Step 4: Commit.**
 
