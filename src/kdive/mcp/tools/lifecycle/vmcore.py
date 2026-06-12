@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
@@ -115,43 +116,40 @@ class VmcoreHandlers:
         run_id: str,
         commands: list[str],
     ) -> ToolResponse:
-        if self.resolver is None:
-            if self.crash is None:
-                raise RuntimeError("vmcore handler requires crash port or resolver")
-            crash = self.crash
-        if self.secret_registry is None:
-            raise RuntimeError("vmcore handler requires an injected secret registry")
-        secret_registry = self.secret_registry
-        if self.resolver is not None:
-            return await with_runtime_for_run(
-                pool,
-                self.resolver,
-                run_id,
-                lambda runtime: _postmortem_crash(
-                    pool,
-                    ctx,
-                    run_id=run_id,
-                    commands=commands,
-                    crash=runtime.crash_postmortem,
-                    secret_registry=secret_registry,
-                ),
-            )
-        return await _postmortem_crash(
+        return await self._with_postmortem_crash_port(
             pool,
-            ctx,
-            run_id=run_id,
-            commands=commands,
-            crash=crash,
-            secret_registry=secret_registry,
+            run_id,
+            lambda crash, secret_registry: _postmortem_crash(
+                pool,
+                ctx,
+                run_id=run_id,
+                commands=commands,
+                crash=crash,
+                secret_registry=secret_registry,
+            ),
         )
 
     async def postmortem_triage(
         self, pool: AsyncConnectionPool, ctx: RequestContext, *, run_id: str
     ) -> ToolResponse:
-        if self.resolver is None:
-            if self.crash is None:
-                raise RuntimeError("vmcore handler requires crash port or resolver")
-            crash = self.crash
+        return await self._with_postmortem_crash_port(
+            pool,
+            run_id,
+            lambda crash, secret_registry: _postmortem_triage(
+                pool,
+                ctx,
+                run_id=run_id,
+                crash=crash,
+                secret_registry=secret_registry,
+            ),
+        )
+
+    async def _with_postmortem_crash_port(
+        self,
+        pool: AsyncConnectionPool,
+        run_id: str,
+        run: Callable[[CrashPostmortem, SecretRegistry], Awaitable[ToolResponse]],
+    ) -> ToolResponse:
         if self.secret_registry is None:
             raise RuntimeError("vmcore handler requires an injected secret registry")
         secret_registry = self.secret_registry
@@ -160,21 +158,11 @@ class VmcoreHandlers:
                 pool,
                 self.resolver,
                 run_id,
-                lambda runtime: _postmortem_triage(
-                    pool,
-                    ctx,
-                    run_id=run_id,
-                    crash=runtime.crash_postmortem,
-                    secret_registry=secret_registry,
-                ),
+                lambda runtime: run(runtime.crash_postmortem, secret_registry),
             )
-        return await _postmortem_triage(
-            pool,
-            ctx,
-            run_id=run_id,
-            crash=crash,
-            secret_registry=secret_registry,
-        )
+        if self.crash is None:
+            raise RuntimeError("vmcore handler requires crash port or resolver")
+        return await run(self.crash, secret_registry)
 
 
 async def _fetch_vmcore(
