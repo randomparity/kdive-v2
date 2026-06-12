@@ -187,3 +187,70 @@ def test_fetch_checksum_mismatch_raises_infra(migrated_url: str, tmp_path: Path)
             assert list(tmp_path.iterdir()) == []
 
     asyncio.run(_run())
+
+
+def test_fetch_cache_mkdir_error_is_typed(migrated_url: str, tmp_path: Path) -> None:
+    from kdive.db.repositories import IMAGE_CATALOG
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.write_bytes(b"not-a-directory")
+    store = _FakeStore("images/local-libvirt/base/x86_64.qcow2", _QCOW2)
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await IMAGE_CATALOG.insert(conn, _entry())
+            with pytest.raises(CategorizedError) as err:
+                await fetch_registered_rootfs(
+                    conn,
+                    store,
+                    provider="local-libvirt",
+                    name="base",
+                    project="proj",
+                    cache_dir=cache_dir,
+                )
+
+            assert err.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+            assert err.value.details == {
+                "provider": "local-libvirt",
+                "name": "base",
+                "object_key": "images/local-libvirt/base/x86_64.qcow2",
+                "cache_path": str(cache_dir / f"{_DIGEST.removeprefix('sha256:')}.qcow2"),
+            }
+            assert isinstance(err.value.__cause__, OSError)
+            assert store.gets == []
+
+    asyncio.run(_run())
+
+
+def test_fetch_cache_replace_error_is_typed_and_removes_partial(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    from kdive.db.repositories import IMAGE_CATALOG
+
+    cached = tmp_path / f"{_DIGEST.removeprefix('sha256:')}.qcow2"
+    cached.mkdir()
+    partial = cached.with_suffix(".qcow2.partial")
+    store = _FakeStore("images/local-libvirt/base/x86_64.qcow2", _QCOW2)
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            await IMAGE_CATALOG.insert(conn, _entry())
+            with pytest.raises(CategorizedError) as err:
+                await fetch_registered_rootfs(
+                    conn,
+                    store,
+                    provider="local-libvirt",
+                    name="base",
+                    project="proj",
+                    cache_dir=tmp_path,
+                )
+
+            assert err.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+            assert err.value.details["provider"] == "local-libvirt"
+            assert err.value.details["name"] == "base"
+            assert err.value.details["object_key"] == "images/local-libvirt/base/x86_64.qcow2"
+            assert err.value.details["cache_path"] == str(cached)
+            assert isinstance(err.value.__cause__, OSError)
+            assert not partial.exists()
+
+    asyncio.run(_run())

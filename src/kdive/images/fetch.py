@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
 
@@ -43,6 +44,31 @@ def _cache_path(cache_dir: Path, digest: str) -> Path:
             details={"digest": digest},
         )
     return cache_dir / f"{digest.removeprefix('sha256:')}.qcow2"
+
+
+def _cache_io_error(
+    *,
+    provider: str,
+    name: str,
+    object_key: str,
+    cache_path: Path,
+    err: OSError,
+) -> CategorizedError:
+    return CategorizedError(
+        f"failed to write registered rootfs cache path {str(cache_path)!r}: {err.strerror}",
+        category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+        details={
+            "provider": provider,
+            "name": name,
+            "object_key": object_key,
+            "cache_path": str(cache_path),
+        },
+    )
+
+
+def _unlink_tmp_cache(tmp: Path) -> None:
+    with suppress(OSError):
+        tmp.unlink()
 
 
 async def fetch_registered_rootfs(
@@ -82,10 +108,19 @@ async def fetch_registered_rootfs(
             details={"provider": provider, "name": name},
         )
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
     cached = _cache_path(cache_dir, digest)
-    if cached.is_file():
-        return cached
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        if cached.is_file():
+            return cached
+    except OSError as err:
+        raise _cache_io_error(
+            provider=provider,
+            name=name,
+            object_key=object_key,
+            cache_path=cached,
+            err=err,
+        ) from err
 
     fetched = await asyncio.to_thread(store.get_artifact, object_key, None)
     actual = "sha256:" + hashlib.sha256(fetched.data).hexdigest()
@@ -98,6 +133,16 @@ async def fetch_registered_rootfs(
     # Write through a temp sibling then atomically rename so a partial/corrupt download never
     # surfaces as a cache hit (and a mismatch above leaves the cache empty).
     tmp = cached.with_suffix(".qcow2.partial")
-    tmp.write_bytes(fetched.data)
-    tmp.replace(cached)
+    try:
+        tmp.write_bytes(fetched.data)
+        tmp.replace(cached)
+    except OSError as err:
+        _unlink_tmp_cache(tmp)
+        raise _cache_io_error(
+            provider=provider,
+            name=name,
+            object_key=object_key,
+            cache_path=cached,
+            err=err,
+        ) from err
     return cached
