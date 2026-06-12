@@ -234,7 +234,7 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
     aux_host, aux_port = resolve_health_bind("reconciler")
     aux_app = build_aux_app(heartbeat=heartbeat, probe=probe, metric_reader=telemetry.scrape_reader)
     aux_task = asyncio.create_task(serve_aux(aux_app, host=aux_host, port=aux_port))
-    provider_composition = ProviderComposition()
+    provider_composition = ProviderComposition(secret_registry=secret_registry)
     await _register_provider_resources(pool, provider_composition.build_provider_resolver())
     console_hosting = await build_console_hosting(secret_registry)
     try:

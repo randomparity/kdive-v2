@@ -72,8 +72,12 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
     expected_reaper = object()
     expected_resetter = object()
     expected_dump_volume_reaper = object()
+    expected_registry = SecretRegistry()
 
     class _FakeProviderComposition:
+        def __init__(self, *, secret_registry: SecretRegistry | None = None) -> None:
+            assert secret_registry is expected_registry
+
         def build_provider_resolver(self) -> _FakeResolver:
             return _FakeResolver()
 
@@ -101,7 +105,7 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(loop.Reconciler, "__init__", _fake_init)
     monkeypatch.setattr(loop.Reconciler, "run", _fake_run)
 
-    asyncio.run(__main__._run_reconciler(SecretRegistry(), _fake_telemetry()))
+    asyncio.run(__main__._run_reconciler(expected_registry, _fake_telemetry()))
 
     assert events == ["open", "discover", "run", "close"]
     assert constructed["reaper"] is expected_reaper
