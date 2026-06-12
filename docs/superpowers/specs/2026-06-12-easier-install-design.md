@@ -106,11 +106,16 @@ e2e run is gated on the node-CPU fix already in flight.)
 
 **Demo access boundary (named, not assumed).** The bundled issuer mints valid `aud=kdive`
 tokens for any request, and kdive's tool surface includes destructive power/force-crash/
-teardown operations. The demo issuer Service is therefore `ClusterIP`-only, the chart ships a
-NetworkPolicy restricting the demo OIDC/MCP to in-cluster sources on the bundled path, and
-`NOTES.txt` warns that the demo MCP must never be exposed via NodePort/LoadBalancer/Ingress
-(the external-backend path, with a real IdP, is the only exposure-safe path). "Demo-only"
-governs access here, not just data durability.
+teardown operations — so an exposed demo MCP is an unauthenticated control plane. The
+**primary** guard is a render-time gate: when `bundledBackends=true`, the chart `fail`s if
+`service.type != ClusterIP` (and the demo issuer Service is always `ClusterIP`). This is the
+control that actually counters the threat — a NodePort/LoadBalancer with the default
+`externalTrafficPolicy: Cluster` SNATs external traffic to a node IP, which a pod-ingress
+NetworkPolicy cannot distinguish from in-cluster traffic, so a NetworkPolicy alone would give
+false assurance against exactly this path. A NetworkPolicy is still shipped as
+defense-in-depth (with the caveat that it is a no-op under a CNI that does not enforce it), and
+`NOTES.txt` states the demo must never be exposed. "Demo-only" governs access here, not just
+data durability.
 
 **B1. Drop the subcharts.** Remove the `postgresql` and `minio` dependencies from
 `Chart.yaml`, delete `Chart.lock`, drop the `helm dependency build` step from ci.yml, and
@@ -126,7 +131,9 @@ change. Policy: bump the chart `version` on any template or dependency change (d
   `demoCredentials.postgresql`.
 - `minio.yaml` — Deployment + Service, `emptyDir`, pinned `minio` image tag, credentials from
   `demoCredentials.minio`, plus a bundled-only bucket-create Job (`mc mb` for
-  `KDIVE_S3_BUCKET`).
+  `KDIVE_S3_BUCKET`). The Job waits for MinIO readiness before running — an init-container
+  poll or `mc` retry, mirroring the migrate Job's wait-for-db — so it does not race the MinIO
+  Deployment and burn its backoff on connection-refused.
 - `oidc.yaml` — **new** — Deployment + `ClusterIP` Service running `mock-oauth2-server`. A
   `JSON_CONFIG` (verified against `3.0.3`) pins the `default` issuer to mint `aud=kdive`
   deterministically via a wildcard token callback:
@@ -151,12 +158,17 @@ change. Policy: bump the chart `version` on any template or dependency change (d
 wait-for-db behavior; only the waited host name changes to `<fullname>-postgres`.
 
 **B4. Verification and token.** `templates/tests/smoke.yaml` (`helm.sh/hook: test`) runs a
-pod that (1) runs the node-CPU preflight, (2) **polls the server `/readyz` with a bounded
-retry until ready** — necessary because `helm install` does not `--wait` and `migrate` is a
-`post-install` hook, so the server is briefly `0/1` (readiness gated on the not-yet-migrated
-DB) when the test fires — then (3) mints a token from the in-cluster OIDC service and POSTs
-`tools/list` to the server service, asserting HTTP 200 and a non-empty tools array. Without
-the readiness poll the one-command proof would flap on a connection-refused/503 race.
+pod that (1) runs the node-CPU preflight, (2) **polls the MCP `8000` Service with a bounded
+retry until the server answers** — necessary because `helm install` does not `--wait` and
+`migrate` is a `post-install` hook, so the server is briefly `0/1` (readiness gated on the
+not-yet-migrated DB) when the test fires. The poll targets the MCP Service, not the aux
+`/readyz`: the chart fronts only port `8000` with a Service, and the aux `/readyz` (9464) is
+pod-local with no Service route, so a separate test pod cannot reach it. Readiness signal is
+the MCP endpoint answering at all — an unauthenticated `tools/list` returning `401` means the
+server is up and verifying tokens; `connection-refused`/`503` means keep waiting. Then (3) the
+pod mints a token from the in-cluster OIDC service and POSTs `tools/list` with it, asserting
+HTTP 200 and a non-empty tools array. Without the readiness poll the one-command proof would
+flap on a connection-refused/503 race.
 `helm test kdive` is the proof; the install docs also show `helm install --wait` as the
 belt-and-suspenders option. The test runs the kdive image (Python `urllib` for the token mint
 + MCP call — no extra tooling image). Bundled-path only (the external path needs the
@@ -177,13 +189,13 @@ helm test kdive          # mints a token, asserts tools/list == 200
 helm install (bundledBackends=true)
   -> pre-install: config ConfigMap (computed DB/S3/OIDC URLs, AWS_*)
   -> normal resources: postgres, minio, oidc Deployments+Services (emptyDir)
-  -> bucket-create Job (mc mb)
+  -> bucket-create Job (waits for minio ready, then mc mb)
   -> post-install: migrate Job (wait-for-db -> schema)
   -> server/worker/reconciler roll out; /readyz turns green once DB+S3+OIDC reachable
 helm test
   -> smoke pod: node-CPU preflight (x86-64-v2 floor) -> fail-fast if unmet
-              -> poll server /readyz until ready (bounded retry; covers the
-                 post-install migrate + no-`--wait` race)
+              -> poll MCP 8000 Service until it answers (401 on unauth = up;
+                 conn-refused/503 = wait) — aux /readyz has no Service route
               -> POST oidc /default/token (aud=kdive) -> bearer
               -> POST server /mcp tools/list with bearer -> assert 200 + tools[]
 ```
@@ -192,13 +204,14 @@ helm test
 
 - **Chart render** (`tests/helm/test_helm_render.py`, extended): bundled path renders
   postgres/minio/oidc + the NetworkPolicy, computes the OIDC issuer/JWKS and `AWS_*`, and the
-  OIDC/MCP Services stay `ClusterIP`; external path renders none of the demo resources and
-  passes `config.*` through unchanged; the `demoAcknowledged` gate still `fail`s when unset.
-  Pure `helm template`, no cluster.
+  OIDC/MCP Services stay `ClusterIP`; the new gate `fail`s when `bundledBackends=true` and
+  `service.type != ClusterIP`; external path renders none of the demo resources and passes
+  `config.*` through unchanged; the `demoAcknowledged` gate still `fail`s when unset. Pure
+  `helm template`, no cluster.
 - **CI guard**: the `appVersion == pyproject version` step fails on a deliberate mismatch
   (verified by breaking it once).
-- **Workflow lint**: existing `actionlint` + `zizmor` cover the `image.yml` edits; `:edge`
-  publishing is observed on the first push to main.
+- **Workflow lint**: existing `actionlint` + `zizmor` cover the `release-image.yml` edits;
+  `:edge` publishing is observed on the first push to main.
 - **End-to-end**: `helm test kdive` on the kdive-dev cluster is the e2e check — it resumes
   the Phase 1–3 validation via the supported demo path instead of hand-written manifests.
 
@@ -216,14 +229,14 @@ helm test
 
 ## Sequencing
 
-1. **PR1 (A)**: `image.yml` rolling+release, `appVersion` guard, `RELEASING.md`. Merge →
-   `:edge` pullable → package public → cut `v0.3.0`.
+1. **PR1 (A)**: `release-image.yml` rolling+release trigger, `appVersion` guard,
+   `RELEASING.md`. Merge → `:edge` pullable → package public → cut `v0.3.0`.
 2. **PR2 (B)**: ADR-0097, chart demo templates, `_helpers`/configmap, `helm test`,
    `NOTES.txt`, render tests, README/runbook updates. Cites the published image.
 
 ## Files touched (preview)
 
-`.github/workflows/image.yml` (renamed from `release-image.yml`), `.github/workflows/ci.yml`,
+`.github/workflows/release-image.yml` (add `main` trigger; not renamed), `.github/workflows/ci.yml`,
 `docs/RELEASING.md`, `docs/adr/0097-in-chart-demo-backends.md`,
 `deploy/helm/kdive/Chart.yaml` (version + appVersion), `deploy/helm/kdive/Chart.lock` (deleted),
 `deploy/helm/kdive/values.yaml`, `deploy/helm/kdive/templates/demo/{postgres,minio,oidc}.yaml`,
