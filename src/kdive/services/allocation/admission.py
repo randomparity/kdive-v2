@@ -241,7 +241,7 @@ class _GateResult:
     devices: list[PCIeClaim]
 
 
-async def capacity_gate(
+async def admission_gate(
     conn: AsyncConnection, request: AllocationRequest, *, estimate: Decimal
 ) -> _GateResult:
     """Replay the check-then-debit gate against the project + the chosen host.
@@ -301,7 +301,7 @@ async def _admit_under_project_lock(
 ) -> AdmissionOutcome:
     """Run idempotency + the shared check-then-debit holding the PROJECT lock.
 
-    Reuses :func:`capacity_gate` (the same gate the promotion sweep replays). On a queueable
+    Reuses :func:`admission_gate` (the same gate the promotion sweep replays). On a queueable
     capacity denial with ``on_capacity=queue`` it enqueues; a budget denial hard-denies; on
     success it grants. The gate acquires the nested ``RESOURCE`` lock.
     """
@@ -327,7 +327,7 @@ async def _admit_under_project_lock(
     # innermost. A queue-position enqueue holds no host, but running it under the already-held
     # RESOURCE lock is harmless and keeps the check-then-debit + insert in one locked scope.
     async with advisory_xact_lock(conn, LockScope.RESOURCE, request.resource.id):
-        gate = await capacity_gate(conn, request, estimate=estimate)
+        gate = await admission_gate(conn, request, estimate=estimate)
         if gate.denial is not None:
             return await _deny_or_enqueue(conn, request, gate.denial)
         return await _grant(
