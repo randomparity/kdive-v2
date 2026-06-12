@@ -32,15 +32,15 @@ from pydantic import Field
 
 import kdive.config as config
 from kdive.config.core_settings import DEBUG_DIR
-from kdive.db.repositories import DEBUG_SESSIONS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import DebugSession, ResourceKind
-from kdive.domain.state import DebugSessionState
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools._common import as_uuid as _as_uuid
+from kdive.mcp.tools.debug.session_context import (
+    resolve_debug_session_context,
+)
 from kdive.mcp.tools.debug.session_registry import GdbMiSessionRegistry
 from kdive.providers.ports import (
     AttachSeam,
@@ -50,7 +50,6 @@ from kdive.providers.ports import (
 )
 from kdive.providers.resolver import ProviderBinding, ProviderResolver
 from kdive.security.authz.context import RequestContext
-from kdive.security.authz.rbac import Role, require_role
 
 _EngineOp = Callable[[GdbMiEngine, GdbMiAttachment], ToolResponse]
 
@@ -165,28 +164,15 @@ def _op_failure(session_id: str, exc: CategorizedError) -> ToolResponse:
     return ToolResponse.failure_from_error(session_id, exc, category=category)
 
 
-def _coded_error(session_id: str, code: str, *, current_status: str | None = None) -> ToolResponse:
-    data = {"code": code}
-    if current_status is not None:
-        data["current_status"] = current_status
-    return ToolResponse.failure(session_id, ErrorCategory.CONFIGURATION_ERROR, data=data)
-
-
 async def _live_session(
     pool: AsyncConnectionPool, ctx: RequestContext, session_id: str
 ) -> DebugSession | ToolResponse:
     """UUID-parse, load, project/role-gate, and require ``live`` state (ADR-0034 §5a codes)."""
-    uid = _as_uuid(session_id)
-    if uid is None:
-        return _coded_error(session_id, "bad_session_id")
     async with pool.connection() as conn:
-        session = await DEBUG_SESSIONS.get(conn, uid)
-    if session is None or session.project not in ctx.projects:
-        return _coded_error(session_id, "unknown_session")
-    require_role(ctx, session.project, Role.OPERATOR)
-    if session.state is not DebugSessionState.LIVE:
-        return _coded_error(session_id, "not_live", current_status=session.state.value)
-    return session
+        resolved = await resolve_debug_session_context(conn, ctx, session_id, require_live=True)
+    if isinstance(resolved, ToolResponse):
+        return resolved
+    return resolved.session
 
 
 async def run_engine_op(

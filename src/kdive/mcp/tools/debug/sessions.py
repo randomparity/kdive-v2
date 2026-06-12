@@ -47,6 +47,7 @@ from kdive.mcp.tools.debug.ops import (
     DebugRuntimeResolver,
     _register_debug_ops,
 )
+from kdive.mcp.tools.debug.session_context import resolve_debug_session_context
 from kdive.profiles.provisioning import (
     ProvisioningProfile,
     drgn_live_requires_credential,
@@ -357,19 +358,20 @@ class DebugSessionHandlers:
         with bind_context(principal=ctx.principal):
             resources: _DetachResources
             async with pool.connection() as conn:
-                session = await DEBUG_SESSIONS.get(conn, uid)
-                if session is None or session.project not in ctx.projects:
+                resolved_session = await resolve_debug_session_context(
+                    conn, ctx, session_id, include_system=True
+                )
+                if isinstance(resolved_session, ToolResponse):
+                    return resolved_session
+                if resolved_session.system_id is None:
                     return _config_error(session_id)
-                require_role(ctx, session.project, Role.OPERATOR)
-                resolved = await _resolve_session_system(conn, uid)
-                if resolved is None:
-                    return _config_error(session_id)
-                _, system_id = resolved
                 resources_or_response = await self._detach_resources(conn, uid)
                 if isinstance(resources_or_response, ToolResponse):
                     return resources_or_response
                 resources = resources_or_response
-                envelope = await _detach_locked(conn, ctx, uid, system_id, resources.connector)
+                envelope = await _detach_locked(
+                    conn, ctx, uid, resolved_session.system_id, resources.connector
+                )
             if resources.runtime is not None:
                 async with resources.runtime.lock_for(session_id):
                     resources.runtime.reap(session_id)

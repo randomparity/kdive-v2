@@ -23,21 +23,18 @@ from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
-from kdive.db.repositories import DEBUG_SESSIONS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.state import DebugSessionState
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ResponseData, ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._runtime_resolution import with_runtime_for_run
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
+from kdive.mcp.tools.debug.session_context import resolve_debug_session_context
 from kdive.providers.ports import LiveIntrospector, VmcoreIntrospector
 from kdive.providers.resolver import ProviderResolver
 from kdive.security.authz.context import RequestContext
-from kdive.security.authz.rbac import Role, require_role
 
 # The fixed live-helper set (ADR-0033 §2 / ADR-0039 §3): the same three in-tree helpers as the
 # offline path. There is no caller-supplied drgn script — an unknown helper is rejected.
@@ -105,18 +102,16 @@ async def resolve_live_drgn_session(
     ADR-0085). The provider realizes drgn-live over SSH (local) or the guest agent (remote);
     core treats the resolved ``transport_handle`` as opaque.
     """
-    uid = _as_uuid(session_id)
-    if uid is None:
+    resolved = await resolve_debug_session_context(
+        conn,
+        ctx,
+        session_id,
+        required_transport=_DRGN_LIVE,
+        require_live=True,
+    )
+    if isinstance(resolved, ToolResponse) or resolved.transport_handle is None:
         raise _session_config_error()
-    session = await DEBUG_SESSIONS.get(conn, uid)
-    if session is None or session.project not in ctx.projects:
-        raise _session_config_error()
-    require_role(ctx, session.project, Role.OPERATOR)
-    if session.state is not DebugSessionState.LIVE or session.transport != _DRGN_LIVE:
-        raise _session_config_error()
-    if session.transport_handle is None:
-        raise _session_config_error()
-    return LiveDrgnSession(session.project, session.transport_handle, uid)
+    return LiveDrgnSession(resolved.project, resolved.transport_handle, resolved.session_id)
 
 
 def _session_config_error() -> CategorizedError:
