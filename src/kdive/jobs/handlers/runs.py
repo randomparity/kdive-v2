@@ -23,9 +23,9 @@ from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.provider_components.build_results import BuildOutput
-from kdive.providers.ports import Booter, Builder, Installer, InstallRequest
+from kdive.providers.ports import Booter, InstallRequest
 from kdive.providers.resolver import ProviderResolver
-from kdive.providers.runtime import ProfilePolicy, ProviderRuntime
+from kdive.providers.runtime import ProviderRuntime
 from kdive.providers.runtime_paths import console_log_path, read_console_log
 from kdive.security import audit
 from kdive.security.artifacts.artifact_search import ArtifactSearchInputError, search_text
@@ -93,20 +93,17 @@ async def _abandon_run_step_best_effort(conn: AsyncConnection, run_id: UUID, ste
 
 
 async def _run_runtime(
-    conn: AsyncConnection, run_id: UUID, resolver: ProviderResolver | None
+    conn: AsyncConnection, run_id: UUID, resolver: ProviderResolver
 ) -> ProviderRuntime:
     """Resolve the Run's provider runtime via its System's Resource kind."""
-    if resolver is None:
-        raise RuntimeError("runs handlers require a resolver or explicit run ports")
     return await resolver.runtime_for_run(conn, run_id)
 
 
 async def build_handler(
     conn: AsyncConnection,
     job: Job,
-    builder: Builder | None = None,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> str | None:
     """Build the Run's kernel and drive it `running -> succeeded` or failed."""
     payload = load_payload(job, BuildPayload)
@@ -127,8 +124,7 @@ async def build_handler(
         )
     result = await existing_build_result(conn, run_id)
     if result is None:
-        if builder is None:
-            builder = (await _run_runtime(conn, run_id, resolver)).builder
+        builder = (await _run_runtime(conn, run_id, resolver)).builder
         try:
             output: BuildOutput = await asyncio.to_thread(builder.build, run_id, parsed)
         except CategorizedError as exc:
@@ -147,10 +143,8 @@ async def build_handler(
 async def install_handler(
     conn: AsyncConnection,
     job: Job,
-    installer: Installer | None = None,
     *,
-    resolver: ProviderResolver | None = None,
-    profile_policy: ProfilePolicy | None = None,
+    resolver: ProviderResolver,
 ) -> str | None:
     """Stage the built kernel for direct-kernel boot, recording the `install` step."""
     run_id = UUID(load_payload(job, RunPayload).run_id)
@@ -168,15 +162,9 @@ async def install_handler(
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"run_id": str(run_id), "system_id": str(run.system_id)},
         )
-    if installer is None:
-        if resolver is None:
-            raise RuntimeError("runs handlers require a resolver or explicit run ports")
-        runtime = await resolver.runtime_for_system(conn, run.system_id)
-        installer = runtime.installer
-        profile_policy = runtime.profile_policy
-    elif profile_policy is None:
-        raise RuntimeError("install handler with explicit installer requires profile_policy")
-    method = install_method_for(system, profile_policy)
+    runtime = await resolver.runtime_for_system(conn, run.system_id)
+    installer = runtime.installer
+    method = install_method_for(system, runtime.profile_policy)
     kernel_ref = run.kernel_ref
     cmdline = await cmdline_for(conn, run, method)
     _log.info("install: run %s resolved cmdline %r (method %s)", run_id, cmdline, method.value)
@@ -399,9 +387,8 @@ async def _run_boot_and_capture_outcome(
 async def boot_handler(
     conn: AsyncConnection,
     job: Job,
-    booter: Booter | None = None,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
     secret_registry: SecretRegistry,
 ) -> str | None:
     """Boot the installed kernel and confirm run-readiness, recording the `boot` step."""
@@ -417,8 +404,7 @@ async def boot_handler(
     claim = await claim_run_step(conn, run_id, "boot")
     if not claim.claimed:
         return str(run_id)
-    if booter is None:
-        booter = (await _run_runtime(conn, run_id, resolver)).booter
+    booter = (await _run_runtime(conn, run_id, resolver)).booter
 
     try:
         result = await _run_boot_and_capture_outcome(conn, job_ctx, run, booter, secret_registry)
@@ -443,31 +429,18 @@ async def boot_handler(
 def register_handlers(
     registry: HandlerRegistry,
     *,
-    builder: Builder | None = None,
-    installer: Installer | None = None,
-    booter: Booter | None = None,
-    resolver: ProviderResolver | None = None,
-    profile_policy: ProfilePolicy | None = None,
+    resolver: ProviderResolver,
     secret_registry: SecretRegistry,
 ) -> None:
     """Bind the `build`/`install`/`boot` job handlers."""
-    if builder is None and installer is None and booter is None and resolver is None:
-        raise RuntimeError("runs handlers require a resolver or explicit run ports")
-    if installer is not None and profile_policy is None:
-        raise RuntimeError("runs handlers with explicit installer require profile_policy")
-
-    registry.register(
-        JobKind.BUILD, lambda conn, job: build_handler(conn, job, builder, resolver=resolver)
-    )
+    registry.register(JobKind.BUILD, lambda conn, job: build_handler(conn, job, resolver=resolver))
     registry.register(
         JobKind.INSTALL,
-        lambda conn, job: install_handler(
-            conn, job, installer, resolver=resolver, profile_policy=profile_policy
-        ),
+        lambda conn, job: install_handler(conn, job, resolver=resolver),
     )
     registry.register(
         JobKind.BOOT,
         lambda conn, job: boot_handler(
-            conn, job, booter, resolver=resolver, secret_registry=secret_registry
+            conn, job, resolver=resolver, secret_registry=secret_registry
         ),
     )

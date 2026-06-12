@@ -384,7 +384,9 @@ def test_power_handler_calls_provider_and_audits(migrated_url: str) -> None:
                 )
             ctrl = _FakeControl()
             async with pool.connection() as conn:
-                await control_plane.power_handler(conn, job, ctrl)
+                await control_plane.power_handler(
+                    conn, job, resolver=provider_resolver(controller=ctrl)
+                )
             assert ctrl.powered == [("kdive-x", "reset")]
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
@@ -415,7 +417,9 @@ def test_power_handler_missing_system_is_infra_failure(migrated_url: str) -> Non
             ctrl = _FakeControl()
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as exc:
-                    await control_plane.power_handler(conn, job, ctrl)
+                    await control_plane.power_handler(
+                        conn, job, resolver=provider_resolver(controller=ctrl)
+                    )
         assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
     asyncio.run(_run())
@@ -537,7 +541,9 @@ def test_force_crash_handler_crashes_and_detaches(migrated_url: str) -> None:
             job = await _enqueue_crash(pool, sys_id)
             ctrl = _FakeControl()
             async with pool.connection() as conn:
-                await control_plane.force_crash_handler(conn, job, ctrl)
+                await control_plane.force_crash_handler(
+                    conn, job, resolver=provider_resolver(controller=ctrl)
+                )
             assert ctrl.crashed == ["kdive-x"]
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
@@ -564,7 +570,9 @@ def test_force_crash_handler_no_session_is_noop_detach(migrated_url: str) -> Non
             job = await _enqueue_crash(pool, sys_id)
             ctrl = _FakeControl()
             async with pool.connection() as conn:
-                await control_plane.force_crash_handler(conn, job, ctrl)
+                await control_plane.force_crash_handler(
+                    conn, job, resolver=provider_resolver(controller=ctrl)
+                )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM systems WHERE id = %s", (sys_id,))
                 row = await cur.fetchone()
@@ -581,7 +589,9 @@ def test_force_crash_handler_already_crashed_is_idempotent(migrated_url: str) ->
             job = await _enqueue_crash(pool, sys_id)
             ctrl = _FakeControl()
             async with pool.connection() as conn:
-                await control_plane.force_crash_handler(conn, job, ctrl)  # no raise
+                await control_plane.force_crash_handler(
+                    conn, job, resolver=provider_resolver(controller=ctrl)
+                )  # no raise
             assert ctrl.crashed == ["kdive-x"]  # NMI re-attempted
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -603,7 +613,9 @@ def test_force_crash_handler_terminal_system_does_not_crash(migrated_url: str) -
             job = await _enqueue_crash(pool, sys_id)
             ctrl = _FakeControl()
             async with pool.connection() as conn:
-                await control_plane.force_crash_handler(conn, job, ctrl)
+                await control_plane.force_crash_handler(
+                    conn, job, resolver=provider_resolver(controller=ctrl)
+                )
             assert ctrl.crashed == []  # teardown won the race; no NMI
 
     asyncio.run(_run())
@@ -616,7 +628,9 @@ def test_force_crash_handler_missing_system_is_infra_failure(migrated_url: str) 
             ctrl = _FakeControl()
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as exc:
-                    await control_plane.force_crash_handler(conn, job, ctrl)
+                    await control_plane.force_crash_handler(
+                        conn, job, resolver=provider_resolver(controller=ctrl)
+                    )
         assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
     asyncio.run(_run())
@@ -627,12 +641,6 @@ def test_force_crash_handler_missing_system_is_infra_failure(migrated_url: str) 
 
 def test_register_handlers_binds_power_and_force_crash() -> None:
     registry = HandlerRegistry()
-    control_plane.register_handlers(registry, control=_FakeControl())
+    control_plane.register_handlers(registry, resolver=provider_resolver(controller=_FakeControl()))
     assert registry.get(JobKind.POWER) is not None
     assert registry.get(JobKind.FORCE_CRASH) is not None
-
-
-def test_register_handlers_requires_resolver_or_control() -> None:
-    registry = HandlerRegistry()
-    with pytest.raises(RuntimeError, match="resolver or an explicit controller"):
-        control_plane.register_handlers(registry)

@@ -213,10 +213,14 @@ def test_completed_step_replay_does_not_re_execute(migrated_url: str) -> None:
             job = await _enqueue_build(pool, run_id)
             builder = _RecordingBuilder()
             async with pool.connection() as conn:
-                await runs_handlers.build_handler(conn, job, builder)
+                await runs_handlers.build_handler(
+                    conn, job, resolver=provider_resolver(builder=builder)
+                )
             # Replay the same job: the (run_id, "build") ledger short-circuits the rebuild.
             async with pool.connection() as conn:
-                await runs_handlers.build_handler(conn, job, builder)
+                await runs_handlers.build_handler(
+                    conn, job, resolver=provider_resolver(builder=builder)
+                )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM runs WHERE id = %s", (run_id,))
                 run_row = await cur.fetchone()
@@ -256,7 +260,9 @@ def test_planted_secret_is_redacted(migrated_url: str) -> None:
             sys_id, run_id = await seed_crashed_system_with_run(pool)
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
-                await vmcore_plane.capture_handler(conn, job, _SecretBearingRetriever(sys_id))
+                await vmcore_plane.capture_handler(
+                    conn, job, resolver=provider_resolver(retriever=_SecretBearingRetriever(sys_id))
+                )
             secret_registry = SecretRegistry()
             secret_registry.register(_SecretBearingCrash.PLANTED_SECRET, scope="test")
             handlers = vmcore_tools.VmcoreHandlers(
@@ -286,7 +292,9 @@ def test_raw_vmcore_is_sensitive_and_unreachable(migrated_url: str) -> None:
             sys_id, _ = await seed_crashed_system_with_run(pool)
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
-                await vmcore_plane.capture_handler(conn, job, _SecretBearingRetriever(sys_id))
+                await vmcore_plane.capture_handler(
+                    conn, job, resolver=provider_resolver(retriever=_SecretBearingRetriever(sys_id))
+                )
             ctx = request_context()
             refs: list[str] = []
             vmcores = await vmcore_tools.list_vmcores(pool, ctx, system_id=sys_id)

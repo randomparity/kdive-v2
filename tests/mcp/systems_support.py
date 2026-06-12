@@ -87,18 +87,29 @@ def upload_profile() -> dict[str, Any]:
     return profile
 
 
-def provider_resolver() -> ProviderResolver:
-    """Return a local-libvirt resolver with inert ports for tests that only need policy."""
+def provider_resolver(
+    *,
+    provisioner: object | None = None,
+    builder: object | None = None,
+    installer: object | None = None,
+    booter: object | None = None,
+    controller: object | None = None,
+    retriever: object | None = None,
+    profile_policy: object | None = None,
+) -> ProviderResolver:
+    """Return a local-libvirt resolver with optional fake runtime ports."""
     unused_port = cast(Any, object())
     runtime = ProviderRuntime(
-        profile_policy=TEST_PROFILE_POLICY,
-        provisioner=unused_port,
-        builder=unused_port,
-        installer=unused_port,
-        booter=unused_port,
+        profile_policy=cast(
+            Any, profile_policy if profile_policy is not None else TEST_PROFILE_POLICY
+        ),
+        provisioner=cast(Any, provisioner if provisioner is not None else unused_port),
+        builder=cast(Any, builder if builder is not None else unused_port),
+        installer=cast(Any, installer if installer is not None else unused_port),
+        booter=cast(Any, booter if booter is not None else unused_port),
         connector=unused_port,
-        controller=unused_port,
-        retriever=unused_port,
+        controller=cast(Any, controller if controller is not None else unused_port),
+        retriever=cast(Any, retriever if retriever is not None else unused_port),
         crash_postmortem=unused_port,
         vmcore_introspector=unused_port,
         live_introspector=unused_port,

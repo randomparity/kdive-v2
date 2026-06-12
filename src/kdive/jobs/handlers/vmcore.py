@@ -17,7 +17,6 @@ from kdive.domain.models import Job, JobKind, System
 from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import CaptureVmcorePayload, load_payload
-from kdive.providers.ports import Retriever
 from kdive.providers.resolver import ProviderResolver
 from kdive.security import audit
 from kdive.store.objectstore import register_artifact_row
@@ -102,9 +101,8 @@ async def finalize_capture(
 async def capture_handler(
     conn: AsyncConnection,
     job: Job,
-    retriever: Retriever | None = None,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> str | None:
     """Capture the System's vmcore and store the raw + redacted rows."""
     payload = load_payload(job, CaptureVmcorePayload)
@@ -113,10 +111,7 @@ async def capture_handler(
     precheck = await precheck_system(conn, system_id, method)
     if isinstance(precheck, str):
         return precheck
-    if retriever is None:
-        if resolver is None:
-            raise RuntimeError("vmcore handlers require a resolver or an explicit retriever")
-        retriever = (await resolver.runtime_for_system(conn, system_id)).retriever
+    retriever = (await resolver.runtime_for_system(conn, system_id)).retriever
     output = await asyncio.to_thread(retriever.capture, system_id, method)
     return await finalize_capture(conn, job, precheck, method, output)
 
@@ -124,14 +119,10 @@ async def capture_handler(
 def register_handlers(
     registry: HandlerRegistry,
     *,
-    retriever: Retriever | None = None,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> None:
     """Bind the `capture_vmcore` job handler."""
-    if retriever is None and resolver is None:
-        raise RuntimeError("vmcore handlers require a resolver or an explicit retriever")
-
     registry.register(
         JobKind.CAPTURE_VMCORE,
-        lambda conn, job: capture_handler(conn, job, retriever, resolver=resolver),
+        lambda conn, job: capture_handler(conn, job, resolver=resolver),
     )

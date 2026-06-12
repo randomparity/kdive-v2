@@ -22,7 +22,6 @@ from kdive.jobs.payloads import ReprovisionPayload, SystemPayload, load_payload
 from kdive.profiles.provider_policy import rootfs_upload_window_allowed
 from kdive.profiles.provisioning import ProvisioningProfile, profile_digest
 from kdive.provider_components.artifacts import StoredArtifact
-from kdive.providers.ports import Provisioner
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProfilePolicy
 from kdive.providers.runtime_paths import domain_name_for
@@ -167,44 +166,11 @@ async def _commit_provision_result(
         return current
 
 
-async def _provisioner(
-    conn: AsyncConnection,
-    system_id: UUID,
-    explicit: Provisioner | None,
-    resolver: ProviderResolver | None,
-) -> Provisioner:
-    """Resolve the System's provisioner port, preferring an explicitly injected one."""
-    if explicit is not None:
-        return explicit
-    if resolver is None:
-        raise RuntimeError("provision handlers require an explicit provisioner or a resolver")
-    return (await resolver.runtime_for_system(conn, system_id)).provisioner
-
-
-async def _profile_policy(
-    conn: AsyncConnection,
-    system_id: UUID,
-    explicit: ProfilePolicy | None,
-    resolver: ProviderResolver | None,
-    *,
-    explicit_provisioner: bool,
-) -> ProfilePolicy:
-    if explicit is not None:
-        return explicit
-    if explicit_provisioner:
-        raise RuntimeError("provision handler with explicit provisioner requires profile_policy")
-    if resolver is None:
-        raise RuntimeError("provision handlers require a resolver or explicit profile_policy")
-    return (await resolver.runtime_for_system(conn, system_id)).profile_policy
-
-
 async def provision_handler(
     conn: AsyncConnection,
     job: Job,
-    provisioner: Provisioner | None = None,
     *,
-    resolver: ProviderResolver | None = None,
-    profile_policy: ProfilePolicy | None = None,
+    resolver: ProviderResolver,
 ) -> str | None:
     """Define+start the tagged domain and drive the System ``provisioning -> ready``."""
     system_id = UUID(load_payload(job, SystemPayload).system_id)
@@ -215,8 +181,8 @@ async def provision_handler(
             category=ErrorCategory.INFRASTRUCTURE_FAILURE,
             details={"system_id": str(system_id)},
         )
-    explicit_provisioner = provisioner is not None
-    provisioner = await _provisioner(conn, system_id, provisioner, resolver)
+    runtime = await resolver.runtime_for_system(conn, system_id)
+    provisioner = runtime.provisioner
     if system.state is not SystemState.PROVISIONING:
         if system.state in TERMINAL_SYSTEM_STATES:
             await asyncio.to_thread(
@@ -224,9 +190,6 @@ async def provision_handler(
             )
         return str(system_id)
     profile = ProvisioningProfile.parse(system.provisioning_profile)
-    profile_policy = await _profile_policy(
-        conn, system_id, profile_policy, resolver, explicit_provisioner=explicit_provisioner
-    )
     try:
         domain_name = await asyncio.to_thread(provisioner.provision, system_id, profile)
     except CategorizedError:
@@ -241,7 +204,7 @@ async def provision_handler(
         )
         raise
     current = await _commit_provision_result(
-        conn, job, system, profile, profile_policy, domain_name
+        conn, job, system, profile, runtime.profile_policy, domain_name
     )
     if current in TERMINAL_SYSTEM_STATES:
         await asyncio.to_thread(provisioner.teardown, domain_name)
@@ -252,9 +215,8 @@ async def provision_handler(
 async def reprovision_handler(
     conn: AsyncConnection,
     job: Job,
-    provisioner: Provisioner | None = None,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> str | None:
     """Apply the new profile in place and drive ``reprovisioning -> ready`` or failed."""
     system_id = UUID(load_payload(job, ReprovisionPayload).system_id)
@@ -265,7 +227,7 @@ async def reprovision_handler(
             category=ErrorCategory.INFRASTRUCTURE_FAILURE,
             details={"system_id": str(system_id)},
         )
-    provisioner = await _provisioner(conn, system_id, provisioner, resolver)
+    provisioner = (await resolver.runtime_for_system(conn, system_id)).provisioner
     if system.state is not SystemState.REPROVISIONING:
         return str(system_id)
     profile = ProvisioningProfile.parse(system.provisioning_profile)
@@ -313,9 +275,8 @@ async def reprovision_handler(
 async def teardown_handler(
     conn: AsyncConnection,
     job: Job,
-    provisioner: Provisioner | None = None,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> str | None:
     """Destroy+undefine the domain and drive the System ``-> torn_down``."""
     system_id = UUID(load_payload(job, SystemPayload).system_id)
@@ -335,7 +296,7 @@ async def teardown_handler(
                 transition=f"{old.value}->torn_down",
                 tool="systems.teardown",
             )
-    provisioner = await _provisioner(conn, system_id, provisioner, resolver)
+    provisioner = (await resolver.runtime_for_system(conn, system_id)).provisioner
     await asyncio.to_thread(provisioner.teardown, domain_name)
     return str(system_id)
 
@@ -343,27 +304,18 @@ async def teardown_handler(
 def register_handlers(
     registry: HandlerRegistry,
     *,
-    provisioner: Provisioner | None = None,
-    resolver: ProviderResolver | None = None,
-    profile_policy: ProfilePolicy | None = None,
+    resolver: ProviderResolver,
 ) -> None:
     """Bind the `provision`/`teardown`/`reprovision` job handlers."""
-    if provisioner is None and resolver is None:
-        raise RuntimeError("systems handlers require a resolver or an explicit provisioner")
-    if provisioner is not None and profile_policy is None:
-        raise RuntimeError("systems handlers with explicit provisioner require profile_policy")
-
     registry.register(
         JobKind.PROVISION,
-        lambda conn, job: provision_handler(
-            conn, job, provisioner, resolver=resolver, profile_policy=profile_policy
-        ),
+        lambda conn, job: provision_handler(conn, job, resolver=resolver),
     )
     registry.register(
         JobKind.TEARDOWN,
-        lambda conn, job: teardown_handler(conn, job, provisioner, resolver=resolver),
+        lambda conn, job: teardown_handler(conn, job, resolver=resolver),
     )
     registry.register(
         JobKind.REPROVISION,
-        lambda conn, job: reprovision_handler(conn, job, provisioner, resolver=resolver),
+        lambda conn, job: reprovision_handler(conn, job, resolver=resolver),
     )

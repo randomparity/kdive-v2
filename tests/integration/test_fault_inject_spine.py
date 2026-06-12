@@ -98,8 +98,8 @@ def test_provision_routes_to_the_fault_inject_runtime_and_records_its_domain(
                 job = await queue.enqueue(
                     conn, JobKind.PROVISION, SystemPayload(system_id=system_id), _AUTH, system_id
                 )
-            # No explicit provisioner: the handler must resolve the System's runtime by its
-            # Resource kind (fault-inject) through the opt-in resolver.
+            # The handler resolves the System's runtime by its Resource kind (fault-inject)
+            # through the opt-in resolver.
             resolver = build_provider_resolver(enable_fault_inject=True)
             async with pool.connection() as conn:
                 await systems_handlers.provision_handler(conn, job, resolver=resolver)
