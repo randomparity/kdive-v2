@@ -22,11 +22,12 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import psycopg
 import pytest
+from fastmcp import FastMCP
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
@@ -34,7 +35,16 @@ from kdive.config.core_settings import IMAGE_PRIVATE_LIFETIME_MAX
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.state import SystemState
 from kdive.jobs.payloads import ImageBuildPayload
+from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.ops import images as ops_images
+from kdive.mcp.tools.ops.images import registrar as images_registrar
+from kdive.mcp.tools.ops.images._common import (
+    DELETE_TOOL,
+    EXTEND_TOOL,
+    PRUNE_TOOL,
+    UPLOAD_TOOL,
+)
+from kdive.mcp.tools.ops.images.build_publish import BUILD_TOOL, PUBLISH_TOOL
 from kdive.reconciler.images import ImageMtime
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole, Role
@@ -190,6 +200,19 @@ async def _job_rows(url: str) -> list[tuple[object, ...]]:
         return list(await cur.fetchall())
 
 
+def _destructive_hint(tool: object) -> bool | None:
+    annotations = getattr(tool, "annotations", None)
+    value = getattr(annotations, "destructiveHint", None)
+    return value if isinstance(value, bool) else None
+
+
+async def _call_registered_tool(tool: object, *args: object) -> ToolResponse:
+    fn = cast(Any, tool).fn
+    result = await fn(*args)
+    assert isinstance(result, ToolResponse)
+    return result
+
+
 def _build(pool: AsyncConnectionPool, ctx: RequestContext):
     return ops_images.build(
         pool,
@@ -222,6 +245,55 @@ def _publish(pool: AsyncConnectionPool, ctx: RequestContext):
             root_device="/dev/vda",
         ),
     )
+
+
+# --- registrar boundary --------------------------------------------------------------------
+
+
+def test_images_registrar_exposes_annotations_and_invokes_wrappers(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            ctx = {"value": _operator_ctx()}
+            monkeypatch.setattr(images_registrar, "current_context", lambda: ctx["value"])
+            app = FastMCP("images-registrar-test")
+            images_registrar.register(
+                app,
+                pool,
+                image_store=_FakeImageStore(),
+                upload_store=cast(UploadObjectStore, _UnusedUploadStore()),
+            )
+            tools = {tool.name: tool for tool in await app.list_tools()}
+
+            assert set(tools) == {
+                BUILD_TOOL,
+                PUBLISH_TOOL,
+                UPLOAD_TOOL,
+                DELETE_TOOL,
+                PRUNE_TOOL,
+                EXTEND_TOOL,
+            }
+            assert _destructive_hint(tools[BUILD_TOOL]) is False
+            assert _destructive_hint(tools[PRUNE_TOOL]) is True
+
+            request = images_registrar.ImageBuildRequest(
+                provider="local-libvirt",
+                name="fedora-40",
+                arch="x86_64",
+                releasever="40",
+                source_image_digest="sha256:base",
+                capabilities=("agent", "kdump"),
+            )
+            build_resp = await _call_registered_tool(tools[BUILD_TOOL], request)
+            ctx["value"] = _admin_ctx()
+            prune_resp = await _call_registered_tool(tools[PRUNE_TOOL], "registrar boundary")
+
+        assert build_resp.status not in {"error", "failed"}
+        assert prune_resp.status == "pruned"
+        assert [kind for kind, _ in await _job_rows(migrated_url)] == ["image_build"]
+
+    asyncio.run(_run())
 
 
 # --- build / publish: platform_operator gate ------------------------------------------------
