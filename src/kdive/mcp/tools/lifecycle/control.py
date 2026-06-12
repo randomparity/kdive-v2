@@ -43,7 +43,6 @@ from kdive.mcp.tools._common import (
     config_error as _config_error,
 )
 from kdive.mcp.tools._common import job_envelope
-from kdive.profiles.provider_policy import destructive_opt_in
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.resolver import ProviderResolver
 from kdive.security import audit
@@ -156,7 +155,7 @@ async def _op_opt_in(
     """Resolve the gate's profile opt-in factor from the System's provisioning profile."""
     profile = ProvisioningProfile.parse(system.provisioning_profile)
     runtime = await resolver.runtime_for_system(conn, system.id)
-    return destructive_opt_in(runtime.profile_policy, profile, op_kind)
+    return runtime.profile_policy.destructive_opt_in(profile, op_kind)
 
 
 async def force_crash_system(

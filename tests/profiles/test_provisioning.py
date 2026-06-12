@@ -14,13 +14,8 @@ from kdive.domain.models import JobKind, ResourceKind
 from kdive.domain.sizing import AllocationSizing
 from kdive.profiles.provider_policy import (
     capture_method,
-    destructive_opt_in,
-    drgn_live_requires_credential,
     reject_rootfs_upload_without_window,
-    rootfs_source,
     rootfs_upload_window_allowed,
-    ssh_credential_ref,
-    validate_profile,
 )
 from kdive.profiles.provisioning import (
     BootMethod,
@@ -84,7 +79,7 @@ def test_valid_libvirt_profile_parses() -> None:
 def test_local_libvirt_policy_reports_profile_rootfs() -> None:
     profile = ProvisioningProfile.parse(_valid())
 
-    assert rootfs_source(_LOCAL_POLICY, profile) == profile.provider.local_libvirt.rootfs
+    assert _LOCAL_POLICY.rootfs_source(profile) == profile.provider.local_libvirt.rootfs
 
 
 def test_valid_fault_inject_profile_parses_and_dumps_alias() -> None:
@@ -100,7 +95,7 @@ def test_valid_fault_inject_profile_parses_and_dumps_alias() -> None:
 
     assert profile.provider.fault_inject.capture_method is CaptureMethod.HOST_DUMP
     assert profile.provider.kind is ResourceKind.FAULT_INJECT
-    assert destructive_opt_in(_FAULT_POLICY, profile, JobKind.REPROVISION) is True
+    assert _FAULT_POLICY.destructive_opt_in(profile, JobKind.REPROVISION) is True
     assert rootfs_upload_window_allowed(_FAULT_POLICY, profile) is False
     assert dump_profile(profile)["provider"] == {
         "fault-inject": {
@@ -142,7 +137,7 @@ def test_ssh_credential_ref_parses_when_present() -> None:
     data["provider"]["local-libvirt"]["ssh_credential_ref"] = "ssh/guest-key"
     profile = ProvisioningProfile.parse(data)
     assert profile.provider.local_libvirt.ssh_credential_ref == "ssh/guest-key"
-    assert ssh_credential_ref(_LOCAL_POLICY, profile) == "ssh/guest-key"
+    assert _LOCAL_POLICY.ssh_credential_ref(profile) == "ssh/guest-key"
 
 
 def test_ssh_credential_ref_returns_none_for_provider_without_ssh_credentials() -> None:
@@ -150,7 +145,7 @@ def test_ssh_credential_ref_returns_none_for_provider_without_ssh_credentials() 
     data["provider"] = {"fault-inject": {}}
     profile = ProvisioningProfile.parse(data)
 
-    assert ssh_credential_ref(_FAULT_POLICY, profile) is None
+    assert _FAULT_POLICY.ssh_credential_ref(profile) is None
 
 
 def test_ssh_credential_ref_rejects_blank() -> None:
@@ -395,8 +390,8 @@ def test_destructive_opt_in_reports_profile_gate() -> None:
     data["provider"]["local-libvirt"]["destructive_ops"] = ["force_crash"]
     profile = ProvisioningProfile.parse(data)
 
-    assert destructive_opt_in(_LOCAL_POLICY, profile, JobKind.FORCE_CRASH) is True
-    assert destructive_opt_in(_LOCAL_POLICY, profile, JobKind.REPROVISION) is False
+    assert _LOCAL_POLICY.destructive_opt_in(profile, JobKind.FORCE_CRASH) is True
+    assert _LOCAL_POLICY.destructive_opt_in(profile, JobKind.REPROVISION) is False
 
 
 def test_destructive_ops_rejects_blank_entry() -> None:
@@ -609,15 +604,15 @@ def test_remote_profile_capture_method_gdbstub_without_crashkernel() -> None:
 def test_remote_profile_destructive_opt_in() -> None:
     profile = ProvisioningProfile.parse(_valid_remote())
 
-    assert destructive_opt_in(_REMOTE_POLICY, profile, JobKind.FORCE_CRASH) is True
-    assert destructive_opt_in(_REMOTE_POLICY, profile, JobKind.REPROVISION) is False
+    assert _REMOTE_POLICY.destructive_opt_in(profile, JobKind.FORCE_CRASH) is True
+    assert _REMOTE_POLICY.destructive_opt_in(profile, JobKind.REPROVISION) is False
 
 
 def test_remote_profile_rootfs_and_ssh_are_none() -> None:
     profile = ProvisioningProfile.parse(_valid_remote())
 
-    assert rootfs_source(_REMOTE_POLICY, profile) is None
-    assert ssh_credential_ref(_REMOTE_POLICY, profile) is None
+    assert _REMOTE_POLICY.rootfs_source(profile) is None
+    assert _REMOTE_POLICY.ssh_credential_ref(profile) is None
 
 
 def test_remote_profile_rejects_unknown_fields() -> None:
@@ -631,21 +626,21 @@ def test_remote_profile_rejects_unknown_fields() -> None:
 
 
 def test_remote_profile_validate_profile_accepts_remote_section() -> None:
-    validate_profile(_REMOTE_POLICY, ProvisioningProfile.parse(_valid_remote()))
+    _REMOTE_POLICY.validate_profile(ProvisioningProfile.parse(_valid_remote()))
 
 
 def test_drgn_live_requires_credential_true_for_local_section() -> None:
     profile = ProvisioningProfile.parse(_valid())
-    assert drgn_live_requires_credential(_LOCAL_POLICY, profile) is True
+    assert _LOCAL_POLICY.drgn_live_requires_credential(profile) is True
 
 
 def test_drgn_live_requires_credential_false_for_remote_section() -> None:
     profile = ProvisioningProfile.parse(_valid_remote())
-    assert drgn_live_requires_credential(_REMOTE_POLICY, profile) is False
+    assert _REMOTE_POLICY.drgn_live_requires_credential(profile) is False
 
 
 def test_drgn_live_requires_credential_false_for_fault_inject_section() -> None:
     data = _valid()
     data["provider"] = {"fault-inject": {}}
     profile = ProvisioningProfile.parse(data)
-    assert drgn_live_requires_credential(_FAULT_POLICY, profile) is False
+    assert _FAULT_POLICY.drgn_live_requires_credential(profile) is False

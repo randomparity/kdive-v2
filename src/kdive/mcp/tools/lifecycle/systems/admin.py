@@ -24,7 +24,7 @@ from kdive.mcp.tools._common import authorizing as job_authorizing
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._common import job_envelope
 from kdive.mcp.tools._common import stale_handle as _stale_handle
-from kdive.profiles.provider_policy import destructive_opt_in, reject_rootfs_upload_without_window
+from kdive.profiles.provider_policy import reject_rootfs_upload_without_window
 from kdive.profiles.provisioning import ProvisioningProfile, dump_profile, profile_digest
 from kdive.profiles.types import ProvisioningProfileInput
 from kdive.provider_components.validation import ComponentSourceCapabilities
@@ -130,11 +130,11 @@ async def _reprovision_locked(
 
 def _reprovision_opt_in(profile_policy: ProfilePolicy, profile: ProvisioningProfile) -> bool:
     """Resolve the gate's profile opt-in factor from the target profile."""
-    return destructive_opt_in(profile_policy, profile, _REPROVISION)
+    return profile_policy.destructive_opt_in(profile, _REPROVISION)
 
 
 def _teardown_opt_in(profile_policy: ProfilePolicy, profile: ProvisioningProfile) -> bool:
-    return destructive_opt_in(profile_policy, profile, _TEARDOWN)
+    return profile_policy.destructive_opt_in(profile, _TEARDOWN)
 
 
 async def _audit_destructive_denied(

@@ -48,7 +48,6 @@ from kdive.mcp.tools.debug.ops import (
     _register_debug_ops,
 )
 from kdive.mcp.tools.debug.session_context import resolve_debug_session_context
-from kdive.profiles.provider_policy import drgn_live_requires_credential, ssh_credential_ref
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.ports import Connector, SystemHandle, TransportHandle
 from kdive.providers.resolver import ProviderResolver
@@ -408,8 +407,9 @@ def _resolve_credential(
     """Resolve + register the SSH credential before transport use (ADR-0039 §2 ordering).
 
     A credential is needed only for a ``drgn-live`` transport whose profile realizes it over
-    SSH — the local-libvirt section, per ``drgn_live_requires_credential`` (ADR-0085 Decision
-    2). Returns ``None`` when none is required (gdbstub, or a guest-agent realization such as
+    SSH — the local-libvirt section, per ``ProfilePolicy.drgn_live_requires_credential``
+    (ADR-0085 Decision 2). Returns ``None`` when none is required (gdbstub, or a guest-agent
+    realization such as
     remote) or resolution succeeded, or a failure envelope. The resolved value is registered
     into the redaction registry by the backend (a structural post-condition of
     ``FileRefBackend.resolve``) before this returns — so the connector that opens the SSH
@@ -421,9 +421,9 @@ def _resolve_credential(
         profile = ProvisioningProfile.parse(system.provisioning_profile)
     except CategorizedError as exc:
         return ToolResponse.failure_from_error(str(system.id), exc)
-    if not drgn_live_requires_credential(profile_policy, profile):
+    if not profile_policy.drgn_live_requires_credential(profile):
         return None
-    ref = ssh_credential_ref(profile_policy, profile)
+    ref = profile_policy.ssh_credential_ref(profile)
     if ref is None:
         return _config_error(str(system.id), data={"reason": "ssh_credential_ref_missing"})
     if secret_backend is None:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from kdive.profiles.provider_policy import rootfs_source, validate_profile
 from kdive.profiles.provisioning import ProvisioningProfile, RootfsSource, _UploadRootfs
 from kdive.provider_components.references import ROOTFS_COMPONENT
 from kdive.provider_components.validation import (
@@ -21,8 +20,8 @@ def validate_profile_for_provider(
     profile_policy: ProfilePolicy,
     capabilities: ComponentSourceCapabilities,
 ) -> None:
-    validate_profile(profile_policy, profile)
-    rootfs = rootfs_source(profile_policy, profile)
+    profile_policy.validate_profile(profile)
+    rootfs = profile_policy.rootfs_source(profile)
     if rootfs is None:
         return
     if isinstance(rootfs, _UploadRootfs):
@@ -39,7 +38,7 @@ def validate_rootfs_for_provider(
     profile_policy: ProfilePolicy,
     rootfs_validator: RootfsValidator,
 ) -> None:
-    rootfs = rootfs_source(profile_policy, profile)
+    rootfs = profile_policy.rootfs_source(profile)
     if rootfs is None:
         return
     if isinstance(rootfs, _UploadRootfs):
