@@ -11,25 +11,25 @@ from pydantic import Field
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools.catalog.artifacts_reads import (
+from kdive.mcp.tools.catalog.artifacts.reads import (
     ArtifactReadHandlers as _ArtifactReadHandlers,
 )
-from kdive.mcp.tools.catalog.artifacts_reads import (
+from kdive.mcp.tools.catalog.artifacts.reads import (
     ArtifactSearchRequest as _ArtifactSearchRequest,
 )
-from kdive.mcp.tools.catalog.artifacts_reads import (
+from kdive.mcp.tools.catalog.artifacts.reads import (
     artifacts_get as _artifacts_get,
 )
-from kdive.mcp.tools.catalog.artifacts_reads import (
+from kdive.mcp.tools.catalog.artifacts.reads import (
     artifacts_list as _artifacts_list,
 )
-from kdive.mcp.tools.catalog.artifacts_uploads import (
+from kdive.mcp.tools.catalog.artifacts.uploads import (
     ArtifactDeclaration as _ArtifactDeclaration,
 )
-from kdive.mcp.tools.catalog.artifacts_uploads import (
+from kdive.mcp.tools.catalog.artifacts.uploads import (
     create_run_upload as _create_run_upload,
 )
-from kdive.mcp.tools.catalog.artifacts_uploads import (
+from kdive.mcp.tools.catalog.artifacts.uploads import (
     create_system_upload as _create_system_upload,
 )
 from kdive.providers.resolver import ProviderResolver

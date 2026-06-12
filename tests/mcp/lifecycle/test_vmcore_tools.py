@@ -540,7 +540,7 @@ def test_no_raw_vmcore_key_in_any_read_response(migrated_url: str) -> None:
             async with pool.connection() as conn:
                 await vmcore_plane.capture_handler(conn, job, _FakeRetriever(sys_id))
             refs: list[str] = []
-            from kdive.mcp.tools.catalog.artifacts_reads import artifacts_get, artifacts_list
+            from kdive.mcp.tools.catalog.artifacts.reads import artifacts_get, artifacts_list
 
             vmcores = await vmcore_tools.list_vmcores(pool, _ctx(), system_id=sys_id)
             for r in vmcores.items:

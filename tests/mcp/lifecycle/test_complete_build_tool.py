@@ -10,7 +10,7 @@ from kdive.db import upload_manifest
 from kdive.db.repositories import RUNS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.state import RunState
-from kdive.mcp.tools.catalog.artifacts_uploads import create_run_upload
+from kdive.mcp.tools.catalog.artifacts.uploads import create_run_upload
 from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers
 from kdive.provider_components.artifacts import HeadResult, PresignedUpload, PresignPutRequest
 from kdive.provider_components.build_results import BuildOutput

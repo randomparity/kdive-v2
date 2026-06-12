@@ -23,9 +23,9 @@ from kdive.domain.models import Allocation, Budget, Investigation, Quota, Run, S
 from kdive.domain.state import AllocationState, InvestigationState, RunState, SystemState
 from kdive.mcp.app import build_app
 from kdive.mcp.responses import ToolResponse
-from kdive.mcp.tools.catalog import artifacts as artifacts_tools
-from kdive.mcp.tools.catalog import artifacts_uploads
 from kdive.mcp.tools.catalog import resources as resources_tools
+from kdive.mcp.tools.catalog.artifacts import registrar as artifacts_tools
+from kdive.mcp.tools.catalog.artifacts import uploads as artifact_upload_tools
 from kdive.mcp.tools.debug import ops as debug_ops_tools
 from kdive.mcp.tools.debug import sessions as debug_sessions_tools
 from kdive.mcp.tools.lifecycle import allocations as allocations_tools
@@ -492,7 +492,7 @@ def test_artifact_upload_wrapper_roundtrips_and_validates_through_fastmcp(
             store = _UploadStore()
             monkeypatch.setattr(systems_tools, "current_context", _ctx)
             monkeypatch.setattr(artifacts_tools, "current_context", _ctx)
-            monkeypatch.setattr(artifacts_uploads, "object_store_from_env", lambda: store)
+            monkeypatch.setattr(artifact_upload_tools, "object_store_from_env", lambda: store)
             app = build_app(pool, verifier=_verifier(), secret_registry=SecretRegistry())
             async with Client(app) as client:
                 defined = await _call_tool(

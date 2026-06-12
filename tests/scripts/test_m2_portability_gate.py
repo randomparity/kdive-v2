@@ -119,7 +119,7 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/db/pool.py",
                 "src/kdive/domain/lease.py",
                 "src/kdive/mcp/auth.py",
-                "src/kdive/mcp/tools/catalog/artifacts_uploads.py",
+                "src/kdive/mcp/tools/catalog/artifacts/uploads.py",
                 "src/kdive/mcp/tools/debug/ops.py",
                 "src/kdive/security/secrets/secrets.py",
                 "src/kdive/db/schema/0021_platform_audit_actor.sql",

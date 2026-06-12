@@ -33,7 +33,7 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.catalog.artifacts_uploads import create_run_upload, create_system_upload
+from kdive.mcp.tools.catalog.artifacts.uploads import create_run_upload, create_system_upload
 from kdive.provider_components.artifacts import PresignedUpload, PresignPutRequest
 from kdive.security.authz.rbac import AuthorizationError, Role
 from tests.mcp.systems_support import SYSTEM_PROVISION_HANDLERS
