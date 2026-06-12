@@ -212,9 +212,10 @@ def _register_image_build_handler(
 ) -> None:
     """Bind the IMAGE_BUILD handler, preserving setup errors as job failures.
 
-    The handler's build plane is the local-libvirt rootfs plane and the store is the S3 image
-    store. A worker with no ``KDIVE_S3_*`` env still binds IMAGE_BUILD so queued jobs fail with
-    the original configuration category instead of falling through to ``not_implemented``.
+    The handler resolves the provider's rootfs build plane through ``ProviderResolver``; the S3
+    image store is still assembled once at worker registration. A worker with no ``KDIVE_S3_*``
+    env still binds IMAGE_BUILD so queued jobs fail with the original configuration category
+    instead of falling through to ``not_implemented``.
     """
     from kdive.store.objectstore import object_store_from_env
 
