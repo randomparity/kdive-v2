@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 from fastmcp.server.middleware import Middleware
@@ -43,11 +44,54 @@ _log = logging.getLogger(__name__)
 
 #: Histogram bucket bounds (seconds) for per-tool request duration (the "D" in RED).
 _DURATION_BUCKETS = (0.005, 0.025, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0)
+_DROP_ARGUMENT = object()
 
 
 def _current_agent_session() -> str | None:
     """Read the in-flight request's ``agent_session`` from the verified token."""
     return current_context().agent_session
+
+
+def _json_argument(value: object) -> object:
+    """Return a JSON-native copy of ``value``, or ``_DROP_ARGUMENT`` if it is not safe."""
+    if value is None or isinstance(value, str | bool | int):
+        return value
+    if isinstance(value, float):
+        return value if isfinite(value) else _DROP_ARGUMENT
+    if isinstance(value, list):
+        values: list[object] = []
+        for item in value:
+            sanitized = _json_argument(item)
+            if sanitized is _DROP_ARGUMENT:
+                return _DROP_ARGUMENT
+            values.append(sanitized)
+        return values
+    if isinstance(value, dict):
+        values: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                return _DROP_ARGUMENT
+            sanitized = _json_argument(item)
+            if sanitized is _DROP_ARGUMENT:
+                return _DROP_ARGUMENT
+            values[key] = sanitized
+        return values
+    return _DROP_ARGUMENT
+
+
+def _audit_args_from_message(message: Any) -> dict[str, object]:
+    """Extract the JSON-native MCP call arguments for denial-audit digesting."""
+    raw = getattr(message, "arguments", None)
+    if not isinstance(raw, dict):
+        return {}
+    args: dict[str, object] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            continue
+        sanitized = _json_argument(value)
+        if sanitized is not _DROP_ARGUMENT:
+            args[key] = sanitized
+    return args
 
 
 class DenialAuditMiddleware(Middleware):
@@ -86,13 +130,16 @@ class DenialAuditMiddleware(Middleware):
             return await call_next(context)
         except RoleDenied as denial:
             tool = context.message.name
+            args = _audit_args_from_message(context.message)
             try:
-                await self._record(tool, denial)
+                await self._record(tool, denial, args=args)
             except Exception:
                 _log.warning("failed to audit RoleDenied for tool %s", tool, exc_info=True)
             return ToolResponse.failure(tool, ErrorCategory.AUTHORIZATION_DENIED)
 
-    async def _record(self, tool: str, denial: RoleDenied) -> None:
+    async def _record(
+        self, tool: str, denial: RoleDenied, *, args: dict[str, object] | None = None
+    ) -> None:
         async with self._pool.connection() as conn, conn.transaction():
             await audit.record_denial(
                 conn,
@@ -101,7 +148,7 @@ class DenialAuditMiddleware(Middleware):
                     agent_session=self._agent_session(),
                     project=denial.project,
                     tool=tool,
-                    args={},
+                    args={} if args is None else args,
                     reason=str(denial),
                 ),
             )
