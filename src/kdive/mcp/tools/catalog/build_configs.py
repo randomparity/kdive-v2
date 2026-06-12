@@ -105,4 +105,7 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         if _store is None:
             _store = _resolve_store()
         async with pool.connection() as conn:
-            return await read_build_config(conn, _store, name=name)
+            try:
+                return await read_build_config(conn, _store, name=name)
+            except CategorizedError as exc:
+                return ToolResponse.failure_from_error(name, exc, suggested_next_actions=[_TOOL])
