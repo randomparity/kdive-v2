@@ -11,6 +11,8 @@ job-duration metrics and per-job timeouts, not by liveness.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
+from typing import SupportsFloat
 
 
 class Heartbeat:
@@ -21,13 +23,15 @@ class Heartbeat:
         now: Monotonic clock (injected for tests); defaults to :func:`time.monotonic`.
     """
 
-    def __init__(self, *, stale_after: float, now: object = time.monotonic) -> None:
+    def __init__(
+        self, *, stale_after: float, now: Callable[[], SupportsFloat] = time.monotonic
+    ) -> None:
         self._stale_after = stale_after
         self._now = now
         self._last_tick = self._read_now()
 
     def _read_now(self) -> float:
-        return float(self._now())  # ty: ignore[call-non-callable]
+        return float(self._now())
 
     def tick(self) -> None:
         """Record that the owning loop made a scheduling pass (woke and is progressing)."""

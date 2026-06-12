@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from typing import cast
 from uuid import UUID
 
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, Run
 from kdive.domain.state import AllocationState, InvestigationState, RunState, SystemState
-from kdive.mcp.responses import ToolResponse
+from kdive.mcp.responses import JsonValue, ToolResponse
 from kdive.mcp.tools._common import job_envelope
 
 RUN_HOSTABLE = frozenset({SystemState.READY})
@@ -28,14 +29,14 @@ def envelope_for_run(run: Run, *, required_cmdline: str | None = None) -> ToolRe
         actions = ["runs.get", "runs.build"]
     else:
         actions = ["runs.get"]
-    data: dict[str, object] = {"project": run.project}
+    data: dict[str, JsonValue] = {"project": run.project}
     if required_cmdline is not None:
         data["required_cmdline"] = required_cmdline
     if run.expected_boot_failure is not None:
         kind = run.expected_boot_failure.get("kind")
         if isinstance(kind, str):
             data["expected_boot_failure"] = kind
-        data["expected_boot_failure_detail"] = run.expected_boot_failure
+        data["expected_boot_failure_detail"] = cast(JsonValue, run.expected_boot_failure)
     return ToolResponse.success(
         str(run.id), run.state.value, suggested_next_actions=actions, data=data
     )

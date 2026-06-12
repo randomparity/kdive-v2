@@ -70,6 +70,11 @@ class FakeDomain:
         self._maybe_raise("destroy")
         return 0
 
+    def undefine(self) -> int:
+        self.calls.append("undefine")
+        self._maybe_raise("undefine")
+        return 0
+
     def reset(self, flags: int = 0) -> int:
         self.calls.append("reset")
         self._maybe_raise("reset")

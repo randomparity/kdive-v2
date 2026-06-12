@@ -14,5 +14,4 @@ class ProviderModel(BaseModel):
 
 
 def config_error(message: str) -> CategorizedError:
-    """Build a provider-port configuration error."""
     return CategorizedError(message, category=ErrorCategory.CONFIGURATION_ERROR)

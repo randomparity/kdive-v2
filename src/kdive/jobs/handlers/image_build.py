@@ -15,11 +15,13 @@ import asyncio
 
 from psycopg import AsyncConnection
 
-from kdive.domain.models import Job, JobKind
+from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.models import Job, JobKind, ResourceKind
 from kdive.images.planes.base import RootfsBuildPlane, RootfsBuildSpec
 from kdive.images.validation import DEFAULT_INSPECT, InspectSeam, validate_guest_contract
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import ImageBuildPayload, load_payload
+from kdive.providers.resolver import ProviderResolver
 from kdive.services.images.publish import (
     ImageObjectStore,
     PublishRequest,
@@ -43,7 +45,7 @@ async def image_build_handler(
     conn: AsyncConnection,
     job: Job,
     *,
-    build_plane: RootfsBuildPlane,
+    provider_resolver: ProviderResolver,
     store: ImageObjectStore,
     inspect: InspectSeam = DEFAULT_INSPECT,
 ) -> str:
@@ -52,7 +54,7 @@ async def image_build_handler(
     Args:
         conn: The worker dispatch connection.
         job: The claimed ``IMAGE_BUILD`` job.
-        build_plane: The provider's rootfs build plane.
+        provider_resolver: Runtime resolver used by production assembly.
         store: The image object store.
         inspect: The libguestfs inspection seam threaded into the validator (tests inject a stub).
 
@@ -64,6 +66,7 @@ async def image_build_handler(
             the missing element), or publish fails — the worker dead-letters with the category.
     """
     payload = load_payload(job, ImageBuildPayload)
+    build_plane = _resolve_build_plane(provider_resolver, payload.provider)
     output = await asyncio.to_thread(build_plane.build, _spec(payload))
     await asyncio.to_thread(
         validate_guest_contract,
@@ -90,10 +93,29 @@ async def image_build_handler(
     return entry.object_key
 
 
+def _resolve_build_plane(resolver: ProviderResolver, provider: str) -> RootfsBuildPlane:
+    try:
+        kind = ResourceKind(provider)
+    except ValueError as exc:
+        raise CategorizedError(
+            "unsupported image build provider",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"provider": provider},
+        ) from exc
+    plane = resolver.resolve(kind).rootfs_build_plane
+    if plane is None:
+        raise CategorizedError(
+            "provider runtime does not support rootfs image builds",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"provider": provider},
+        )
+    return plane
+
+
 def register_handlers(
     registry: HandlerRegistry,
     *,
-    build_plane: RootfsBuildPlane,
+    provider_resolver: ProviderResolver,
     store: ImageObjectStore,
     inspect: InspectSeam = DEFAULT_INSPECT,
 ) -> None:
@@ -101,6 +123,10 @@ def register_handlers(
     registry.register(
         JobKind.IMAGE_BUILD,
         lambda conn, job: image_build_handler(
-            conn, job, build_plane=build_plane, store=store, inspect=inspect
+            conn,
+            job,
+            provider_resolver=provider_resolver,
+            store=store,
+            inspect=inspect,
         ),
     )

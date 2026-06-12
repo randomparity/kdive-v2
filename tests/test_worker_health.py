@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 
 from kdive.health import HealthProbe
-from kdive.worker_health import build_worker_probe
+from kdive.process_health.worker import build_worker_probe
 
 
 class _FakeStore:

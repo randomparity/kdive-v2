@@ -16,6 +16,7 @@ import contextlib
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -39,6 +40,22 @@ _CONTEXT_VALUE_MAX = 1000
 _CONTEXT_KEY = re.compile(r"[^a-zA-Z0-9_.-]+")
 
 
+@dataclass(frozen=True)
+class WorkerConfig:
+    """Timing, health, and telemetry collaborators for :class:`Worker`."""
+
+    lease: timedelta = queue.DEFAULT_LEASE
+    heartbeat_interval: timedelta = timedelta(seconds=30)
+    poll_interval: timedelta = timedelta(seconds=1)
+    heartbeat: Heartbeat | None = None
+    heartbeat_tick: timedelta = timedelta(seconds=1)
+    readiness: Callable[[], Awaitable[bool]] | None = None
+    telemetry: WorkerTelemetry | None = None
+
+
+DEFAULT_WORKER_CONFIG = WorkerConfig()
+
+
 class Worker:
     """Claims and dispatches durable jobs from the Postgres queue."""
 
@@ -48,29 +65,15 @@ class Worker:
         registry: HandlerRegistry,
         *,
         worker_id: str,
-        lease: timedelta = queue.DEFAULT_LEASE,
-        heartbeat_interval: timedelta = timedelta(seconds=30),
-        poll_interval: timedelta = timedelta(seconds=1),
         secret_registry: SecretRegistry,
-        heartbeat: Heartbeat | None = None,
-        heartbeat_tick: timedelta = timedelta(seconds=1),
-        readiness: Callable[[], Awaitable[bool]] | None = None,
-        telemetry: WorkerTelemetry | None = None,
+        config: WorkerConfig = DEFAULT_WORKER_CONFIG,
     ) -> None:
         """Build a worker.
 
         Args:
-            heartbeat: The ``/livez`` loop heartbeat bumped by a background ticker at
-                ``heartbeat_tick`` cadence (ADR-0090 §5), so a long-running job never makes
-                the worker read not-live. ``None`` in tests / a process without the aux
-                listener.
-            heartbeat_tick: The interval between background heartbeat bumps; must be well
-                under the heartbeat's ``stale_after`` so a healthy loop never reads stale.
-            readiness: A coroutine returning whether this process's backends are reachable
-                (the worker/reconciler set: PG + MinIO, no OIDC). When it returns ``False``
-                the worker pauses dequeuing new jobs while the backend is down rather than
-                failing them (ADR-0090 §5). ``None`` disables the gate (always dequeues).
-            telemetry: Per-job span + duration/queue-depth metrics; defaults to a no-op.
+            config: Lease timing plus optional ``/livez`` heartbeat, readiness gate, and
+                per-job telemetry. ``None`` values in the config disable the optional
+                collaborators (always ready, no background liveness ticker, no-op telemetry).
 
         Raises:
             ValueError: ``heartbeat_interval > lease / 3`` — too coarse to keep the
@@ -80,10 +83,10 @@ class Worker:
                 background heartbeat's), so a smaller pool would stall every dispatch
                 until the heartbeat acquisition timed out.
         """
-        if heartbeat_interval > lease / 3:
+        if config.heartbeat_interval > config.lease / 3:
             raise ValueError(
-                f"heartbeat_interval ({heartbeat_interval}) must be <= lease/3 "
-                f"({lease / 3}); a coarser interval risks mid-job reclaim and double-run"
+                f"heartbeat_interval ({config.heartbeat_interval}) must be <= lease/3 "
+                f"({config.lease / 3}); a coarser interval risks mid-job reclaim and double-run"
             )
         if pool.max_size < 2:
             raise ValueError(
@@ -93,14 +96,14 @@ class Worker:
         self._pool = pool
         self._registry = registry
         self._worker_id = worker_id
-        self._lease = lease
-        self._heartbeat_interval = heartbeat_interval
-        self._poll_interval = poll_interval
+        self._lease = config.lease
+        self._heartbeat_interval = config.heartbeat_interval
+        self._poll_interval = config.poll_interval
         self._secret_registry = secret_registry
-        self._heartbeat = heartbeat
-        self._heartbeat_tick = heartbeat_tick.total_seconds()
-        self._readiness = readiness
-        self._telemetry = telemetry or WorkerTelemetry.disabled()
+        self._heartbeat = config.heartbeat
+        self._heartbeat_tick = config.heartbeat_tick.total_seconds()
+        self._readiness = config.readiness
+        self._telemetry = config.telemetry or WorkerTelemetry.disabled()
 
     async def run_once(self) -> Job | None:
         """Claim and dispatch one job; return it, or ``None`` if idle.
@@ -285,4 +288,6 @@ async def _tick_until_stop(heartbeat: Heartbeat, stop: asyncio.Event, interval: 
     heartbeat.tick()
     while not stop.is_set():
         await _sleep_until_stop(stop, interval)
+        if stop.is_set():
+            break
         heartbeat.tick()

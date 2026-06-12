@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from typing import cast
 
 import pytest
 from opentelemetry.sdk.metrics import MeterProvider
@@ -18,7 +19,8 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from kdive.health import Heartbeat
 from kdive.providers.reaping import NullReaper
-from kdive.reconciler.loop import Reconciler, ReconcileReport
+from kdive.reconciler import loop as reconciler_loop
+from kdive.reconciler.loop import ReconcileConfig, Reconciler, ReconcileReport
 from kdive.reconciler.loop_telemetry import ReconcilerTelemetry
 
 
@@ -32,6 +34,14 @@ def _empty_report() -> ReconcileReport:
         idempotency_keys_gc_count=0,
         failures=(),
     )
+
+
+class _CountingHeartbeat:
+    def __init__(self) -> None:
+        self.ticks = 0
+
+    def tick(self) -> None:
+        self.ticks += 1
 
 
 def _telemetry() -> tuple[ReconcilerTelemetry, InMemoryMetricReader, InMemorySpanExporter]:
@@ -79,9 +89,11 @@ def test_background_ticker_keeps_livez_live_across_a_long_pass(
         reconciler = Reconciler(
             pool=_FakePool(),  # ty: ignore[invalid-argument-type]
             reaper=NullReaper(),
-            interval=timedelta(milliseconds=1),
-            heartbeat=hb,
-            heartbeat_tick=timedelta(milliseconds=5),
+            config=ReconcileConfig(
+                interval=timedelta(milliseconds=1),
+                heartbeat=hb,
+                heartbeat_tick=timedelta(milliseconds=5),
+            ),
         )
         stop = asyncio.Event()
         live_during_pass: list[bool] = []
@@ -95,6 +107,27 @@ def test_background_ticker_keeps_livez_live_across_a_long_pass(
         monkeypatch.setattr(reconciler, "run_once", long_run_once)
         await asyncio.wait_for(reconciler.run(stop), timeout=2)
         assert live_during_pass == [True]
+
+    asyncio.run(_run())
+
+
+def test_background_ticker_does_not_tick_after_stop() -> None:
+    async def _run() -> None:
+        heartbeat = _CountingHeartbeat()
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            reconciler_loop._tick_until_stop(
+                cast(Heartbeat, heartbeat),
+                stop,
+                60.0,
+            )
+        )
+        await asyncio.sleep(0)
+        assert heartbeat.ticks == 1
+
+        stop.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert heartbeat.ticks == 1
 
     asyncio.run(_run())
 

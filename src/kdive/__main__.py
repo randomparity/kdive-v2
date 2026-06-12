@@ -1,8 +1,10 @@
-"""Process entrypoints: `python -m kdive server|worker|reconciler`.
+"""CLI entrypoints for KDIVE processes and operator commands.
 
-`server` runs the FastMCP streamable-HTTP app; `worker` runs the job-queue worker
-loop; `reconciler` runs the drift-repair loop (ADR-0021). All three configure the
-structured logger first (ADR-0014).
+The long-running processes are `python -m kdive {server|worker|reconciler}`:
+`server` runs the FastMCP streamable-HTTP app, `worker` runs the job-queue worker
+loop, and `reconciler` runs the drift-repair loop (ADR-0021). One-shot operator
+commands share the same parser: `migrate`, `install-fixtures`, `seed-demo`, and
+`build-rootfs`. Every command configures the structured logger first (ADR-0014).
 """
 
 from __future__ import annotations
@@ -15,23 +17,32 @@ import os
 import signal
 import socket
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from psycopg_pool import AsyncConnectionPool
 
 import kdive.config as config
-from kdive.config.core_settings import HTTP_HOST, HTTP_PORT, LOG_LEVEL
+from kdive.config.core_settings import (
+    HTTP_HOST,
+    HTTP_PORT,
+    LOG_LEVEL,
+    S3_BUCKET,
+    S3_ENDPOINT_URL,
+    S3_REGION,
+)
 from kdive.db.pool import create_pool
+from kdive.domain.errors import CategorizedError
+from kdive.images.rootfs_command import add_build_rootfs_parser, run_build_rootfs
+from kdive.reconciler.console_assembly import start_console_hosting
 from kdive.version import full_version
 
 if TYPE_CHECKING:
     from kdive.health import HealthProbe, Heartbeat
     from kdive.observability import Telemetry
     from kdive.providers.resolver import ProviderResolver
-    from kdive.reconciler.console_hosting import CollectorRegistry
     from kdive.security.secrets.secret_registry import SecretRegistry
-
-_RUNNABLE = frozenset({"server", "worker", "reconciler", "migrate"})
+    from kdive.store.objectstore import ObjectStore
 
 # Server /livez heartbeat: ticked at this cadence, stale after the larger bound. The
 # server's "loop" is its asyncio event loop, so a stale tick means the loop is wedged.
@@ -43,12 +54,172 @@ _HEARTBEAT_STALE_SECONDS = 10.0
 # is sized above two intervals so a single slow-but-progressing pass never reads not-live,
 # while a wedged loop that misses two scheduled passes does.
 _RECONCILER_HEARTBEAT_STALE_SECONDS = 90.0
+_PROVIDER_DISCOVERY_TIMEOUT_SECONDS = 30.0
 
 _log = logging.getLogger(__name__)
+_S3_OPTIONAL_ENV_NAMES = frozenset({S3_ENDPOINT_URL.name, S3_BUCKET.name, S3_REGION.name})
+
+
+class _VersionAction(argparse.Action):
+    """Print the full version only when ``--version`` is selected."""
+
+    def __init__(self, option_strings: list[str], dest: str = argparse.SUPPRESS) -> None:
+        super().__init__(option_strings=option_strings, dest=dest, nargs=0)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        del namespace, values, option_string
+        print(f"kdive {full_version()}")
+        parser.exit()
+
+
+type _CommandHandler = Callable[[argparse.Namespace, SecretRegistry, Telemetry | None], None]
+type _ArgumentAdder = Callable[[argparse.ArgumentParser], None]
+type _CommandRegistrar = Callable[[Any], None]
+
+
+@dataclass(frozen=True, slots=True)
+class _Command:
+    name: str
+    help: str
+    handler: _CommandHandler
+    runnable: bool = False
+    add_arguments: _ArgumentAdder | None = None
+    custom_register: _CommandRegistrar | None = None
+
+    def register(self, subparsers: Any) -> None:
+        if self.custom_register is not None:
+            self.custom_register(subparsers)
+            return
+        parser = subparsers.add_parser(self.name, help=self.help)
+        if self.add_arguments is not None:
+            self.add_arguments(parser)
+
+
+def _require_telemetry(command: str, telemetry: Telemetry | None) -> Telemetry:
+    if telemetry is None:
+        raise RuntimeError(f"{command} command requires telemetry bootstrap")
+    return telemetry
+
+
+def _add_install_fixtures_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dest", default="/etc/kdive/fixtures/local-libvirt")
+    parser.add_argument("--force", action="store_true", help="overwrite existing files")
+
+
+def _add_seed_demo_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project", default="demo")
+    parser.add_argument("--limit-kcu", default="1000000")
+    parser.add_argument("--max-concurrent-allocations", type=int, default=4)
+    parser.add_argument("--max-concurrent-systems", type=int, default=4)
+
+
+def _handle_server(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del args
+    initialized = _require_telemetry("server", telemetry)
+    host = config.require(HTTP_HOST)
+    port = config.require(HTTP_PORT)
+    asyncio.run(_run_server(host, port, secret_registry, initialized))
+
+
+def _handle_worker(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del args
+    asyncio.run(_run_worker(secret_registry, _require_telemetry("worker", telemetry)))
+
+
+def _handle_reconciler(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del args
+    asyncio.run(_run_reconciler(secret_registry, _require_telemetry("reconciler", telemetry)))
+
+
+def _handle_migrate(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del args, secret_registry, telemetry
+    from kdive.admin.bootstrap import migrate
+
+    migrate()
+
+
+def _handle_install_fixtures(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del secret_registry, telemetry
+    from pathlib import Path
+
+    from kdive.admin.bootstrap import install_fixtures
+
+    install_fixtures(Path(args.dest), force=args.force)
+
+
+def _handle_seed_demo(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del secret_registry, telemetry
+    from decimal import Decimal
+
+    from kdive.admin.bootstrap import seed_demo
+
+    asyncio.run(
+        seed_demo(
+            project=args.project,
+            limit_kcu=Decimal(args.limit_kcu),
+            max_concurrent_allocations=args.max_concurrent_allocations,
+            max_concurrent_systems=args.max_concurrent_systems,
+        )
+    )
+
+
+def _handle_build_rootfs(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del secret_registry, telemetry
+    run_build_rootfs(args)
+
+
+_COMMANDS: tuple[_Command, ...] = (
+    _Command("server", "run the MCP streamable-HTTP server", _handle_server, runnable=True),
+    _Command("worker", "run the job-queue worker loop", _handle_worker, runnable=True),
+    _Command(
+        "reconciler", "run the drift-repair reconciler loop", _handle_reconciler, runnable=True
+    ),
+    _Command("migrate", "apply database migrations", _handle_migrate, runnable=True),
+    _Command(
+        "install-fixtures",
+        "install default fixture catalog",
+        _handle_install_fixtures,
+        add_arguments=_add_install_fixtures_arguments,
+    ),
+    _Command(
+        "seed-demo",
+        "seed a project for local agent demos",
+        _handle_seed_demo,
+        add_arguments=_add_seed_demo_arguments,
+    ),
+    _Command(
+        "build-rootfs",
+        "build the default local-libvirt rootfs image",
+        _handle_build_rootfs,
+        custom_register=add_build_rootfs_parser,
+    ),
+)
+_COMMAND_BY_NAME = {command.name: command for command in _COMMANDS}
+_RUNNABLE = frozenset(command.name for command in _COMMANDS if command.runnable)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the top-level argument parser with the `server`/`worker`/`reconciler` subcommands."""
+    """Build the top-level argument parser for process and operator subcommands."""
     parser = argparse.ArgumentParser(prog="kdive")
     parser.add_argument(
         "--log-level",
@@ -57,53 +228,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--version",
-        action="version",
-        version=f"kdive {full_version()}",
+        action=_VersionAction,
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("server", help="run the MCP streamable-HTTP server")
-    sub.add_parser("worker", help="run the job-queue worker loop")
-    sub.add_parser("reconciler", help="run the drift-repair reconciler loop")
-    sub.add_parser("migrate", help="apply database migrations")
-    fixtures = sub.add_parser("install-fixtures", help="install default fixture catalog")
-    fixtures.add_argument("--dest", default="/etc/kdive/fixtures/local-libvirt")
-    fixtures.add_argument("--force", action="store_true", help="overwrite existing files")
-    seed = sub.add_parser("seed-demo", help="seed a project for local agent demos")
-    seed.add_argument("--project", default="demo")
-    seed.add_argument("--limit-kcu", default="1000000")
-    seed.add_argument("--max-concurrent-allocations", type=int, default=4)
-    seed.add_argument("--max-concurrent-systems", type=int, default=4)
-    _add_build_rootfs_parser(sub)
+    for command in _COMMANDS:
+        command.register(sub)
     return parser
-
-
-def _add_build_rootfs_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register `build-rootfs`: the operator's local-libvirt rootfs build (replaces the builder).
-
-    Drives the in-process :class:`LocalLibvirtRootfsBuildPlane` and writes the produced qcow2 to
-    ``--dest`` (default the live-stack guest-image path), printing its content digest. This is the
-    direct successor to the deleted bash rootfs builder; the RBAC-gated, publish-backed
-    ``kdivectl images build`` operator verb lands in M2.4/7 and enqueues an ``IMAGE_BUILD`` job
-    rather than building inline.
-    """
-    build = sub.add_parser(
-        "build-rootfs", help="build a local-libvirt kdive-ready rootfs qcow2 via the build plane"
-    )
-    build.add_argument(
-        "--dest",
-        default="/var/lib/kdive/rootfs/local/fedora-kdive-ready-43.qcow2",
-        help="destination qcow2 path (the produced image is moved here)",
-    )
-    build.add_argument("--name", default="fedora-kdive-ready-43", help="catalog image name")
-    build.add_argument("--arch", default="x86_64")
-    build.add_argument("--releasever", default="43", help="Fedora release the image is built from")
-    build.add_argument(
-        "--package",
-        action="append",
-        default=None,
-        dest="packages",
-        help="extra guest package (repeatable); defaults to drgn,kexec-tools,makedumpfile",
-    )
 
 
 async def _run_server(
@@ -113,7 +243,7 @@ async def _run_server(
     from kdive.health.aux_bind import resolve_health_bind
     from kdive.health.server_checks import build_server_checks
     from kdive.mcp.app import build_app
-    from kdive.server_health import build_oidc_ping, build_postgres_ping
+    from kdive.process_health.server import build_oidc_ping, build_postgres_ping
     from kdive.store.objectstore import object_store_from_env
 
     pool = create_pool()
@@ -185,12 +315,12 @@ def _readiness(probe: HealthProbe) -> Callable[[], Awaitable[bool]]:
 async def _run_worker(secret_registry: SecretRegistry, telemetry: Telemetry) -> None:
     from kdive.health import Heartbeat, build_aux_app, serve_aux
     from kdive.health.aux_bind import resolve_health_bind
-    from kdive.jobs.worker import Worker
+    from kdive.jobs.worker import Worker, WorkerConfig
     from kdive.jobs.worker_telemetry import WorkerTelemetry
     from kdive.mcp.app import build_handler_registry
-    from kdive.server_health import build_postgres_ping
+    from kdive.process_health.server import build_postgres_ping
+    from kdive.process_health.worker import build_worker_probe
     from kdive.store.objectstore import object_store_from_env
-    from kdive.worker_health import build_worker_probe
 
     pool = create_pool(min_size=2, max_size=4)
     await pool.open()
@@ -209,11 +339,13 @@ async def _run_worker(secret_registry: SecretRegistry, telemetry: Telemetry) -> 
             build_handler_registry(secret_registry=secret_registry),
             worker_id=worker_id,
             secret_registry=secret_registry,
-            heartbeat=heartbeat,
-            readiness=_readiness(probe),
-            telemetry=WorkerTelemetry(
-                tracer=telemetry.tracer_provider.get_tracer("kdive.worker"),
-                meter=telemetry.meter_provider.get_meter("kdive.worker"),
+            config=WorkerConfig(
+                heartbeat=heartbeat,
+                readiness=_readiness(probe),
+                telemetry=WorkerTelemetry(
+                    tracer=telemetry.tracer_provider.get_tracer("kdive.worker"),
+                    meter=telemetry.meter_provider.get_meter("kdive.worker"),
+                ),
             ),
         )
         await worker.run(stop)
@@ -224,47 +356,47 @@ async def _run_worker(secret_registry: SecretRegistry, telemetry: Telemetry) -> 
 
 
 async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry) -> None:
-    from kdive.domain.errors import CategorizedError
     from kdive.health import Heartbeat, build_aux_app, serve_aux
     from kdive.health.aux_bind import resolve_health_bind
+    from kdive.process_health.server import build_postgres_ping
+    from kdive.process_health.worker import build_worker_probe
     from kdive.providers.composition import ProviderComposition
-    from kdive.reconciler.loop import Reconciler
+    from kdive.reconciler.loop import ReconcileConfig, Reconciler
     from kdive.reconciler.loop_telemetry import ReconcilerTelemetry
-    from kdive.server_health import build_postgres_ping
     from kdive.store.objectstore import object_store_from_env
-    from kdive.worker_health import build_worker_probe
 
     pool = create_pool(min_size=1)
     await pool.open()
     stop = _install_stop()
-    try:
-        upload_store = object_store_from_env()
-    except CategorizedError:
-        upload_store = None  # no S3 env: the upload reaper stays off, like NullReaper
+    upload_store = _optional_reconciler_object_store(object_store_from_env)
     heartbeat = Heartbeat(stale_after=_RECONCILER_HEARTBEAT_STALE_SECONDS)
     probe = _reconciler_probe(pool, build_postgres_ping, build_worker_probe, object_store_from_env)
     aux_host, aux_port = resolve_health_bind("reconciler")
     aux_app = build_aux_app(heartbeat=heartbeat, probe=probe, metric_reader=telemetry.scrape_reader)
     aux_task = asyncio.create_task(serve_aux(aux_app, host=aux_host, port=aux_port))
-    provider_composition = ProviderComposition()
-    await _register_provider_resources(pool, provider_composition.build_provider_resolver())
-    console_hosting = await _build_console_hosting(secret_registry)
+    provider_composition = ProviderComposition(secret_registry=secret_registry)
+    provider_resolver = provider_composition.build_provider_resolver()
+    discovery_task = asyncio.create_task(_register_provider_resources(pool, provider_resolver))
+    console_hosting = None
     try:
+        console_hosting = await provider_composition.build_reconciler_console_hosting()
         reconciler = Reconciler(
             pool,
             provider_composition.build_reconciler_reaper(),
-            upload_store=upload_store,
-            image_store=upload_store,
-            console_registry=console_hosting.registry if console_hosting else None,
-            resetter=provider_composition.build_reconciler_transport_resetter(),
-            dump_volume_reaper=provider_composition.build_reconciler_dump_volume_reaper(),
-            heartbeat=heartbeat,
-            telemetry=ReconcilerTelemetry(
-                tracer=telemetry.tracer_provider.get_tracer("kdive.reconciler"),
-                meter=telemetry.meter_provider.get_meter("kdive.reconciler"),
+            config=ReconcileConfig(
+                upload_store=upload_store,
+                image_store=upload_store,
+                console_registry=console_hosting.registry if console_hosting else None,
+                resetter=provider_composition.build_reconciler_transport_resetter(),
+                dump_volume_reaper=provider_composition.build_reconciler_dump_volume_reaper(),
+                heartbeat=heartbeat,
+                telemetry=ReconcilerTelemetry(
+                    tracer=telemetry.tracer_provider.get_tracer("kdive.reconciler"),
+                    meter=telemetry.meter_provider.get_meter("kdive.reconciler"),
+                ),
             ),
         )
-        hosting_task = _start_console_hosting(console_hosting, stop)
+        hosting_task = start_console_hosting(console_hosting, stop)
         try:
             await reconciler.run(stop)
         finally:
@@ -272,132 +404,26 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
             if console_hosting is not None:
                 await console_hosting.close()
     finally:
-        await _cancel(aux_task)
+        await _cancel(discovery_task, aux_task)
         secret_registry.clear()
         await pool.close()
 
 
-# The continuous attach-watcher cadence (ADR-0095 AC4): sub-tick, decoupled from the 30s
-# repair pass so early-boot console is bounded by this latency, not a reconcile interval.
-_CONSOLE_ATTACH_TICK_SECONDS = 1.0
-
-
-class _ConsoleHosting:
-    """Holds the console hosting loop, its shared registry, and the dedicated leader connection.
-
-    The leader lock is held on ``leader_conn`` — a connection **outside** the ``min_size=1``
-    repair pool (holding a pooled connection for the process life would pin the pool's only
-    connection and starve repairs, ADR-0095). :meth:`close` releases the lock and the connection.
-    """
-
-    def __init__(
-        self,
-        loop: object,
-        registry: CollectorRegistry,
-        leader_conn: object,
-        host_pool: object,
-    ) -> None:
-        self.loop = loop
-        self.registry = registry
-        self._leader_conn = leader_conn
-        self._host_pool = host_pool
-
-    async def run(self, stop: object) -> None:
-        import asyncio as _asyncio
-
-        from kdive.reconciler.console_hosting import ConsoleHostingLoop
-
-        assert isinstance(self.loop, ConsoleHostingLoop)
-        assert isinstance(stop, _asyncio.Event)
-        try:
-            while not stop.is_set():
-                await self.loop.tick()
-                with contextlib.suppress(TimeoutError):
-                    await _asyncio.wait_for(stop.wait(), timeout=_CONSOLE_ATTACH_TICK_SECONDS)
-        finally:
-            await self.loop.stop()
-
-    async def close(self) -> None:
-        import psycopg
-
-        if isinstance(self._leader_conn, psycopg.AsyncConnection):
-            await self._leader_conn.close()
-        if isinstance(self._host_pool, AsyncConnectionPool):
-            await self._host_pool.close()
-
-
-async def _build_console_hosting(secret_registry: SecretRegistry) -> _ConsoleHosting | None:
-    """Build the single-leader console hosting loop, or ``None`` when its env is unconfigured.
-
-    Returns ``None`` (hosting disabled, like the off upload reaper) when the object store or
-    remote-libvirt config is unavailable — the rest of the reconciler still runs. The leader
-    lock is claimed lazily inside the loop's first tick; this only opens the dedicated
-    connection and constructs the injected seams.
-    """
-    import psycopg
-
-    from kdive.db.locks import CONSOLE_HOSTING_LEADER, SessionAdvisoryLock
-    from kdive.db.pool import database_url
-    from kdive.domain.errors import CategorizedError
-    from kdive.providers.remote_libvirt.config import remote_config_from_env
-    from kdive.providers.remote_libvirt.console_collector import ConsoleCollector
-    from kdive.providers.remote_libvirt.console_wiring import (
-        RemoteConsolePartStore,
-        open_remote_console,
-    )
-    from kdive.reconciler.console_hosting import (
-        AsyncioPumpRunner,
-        CollectorRegistry,
-        ConsoleHostingLoop,
-        DbRunningRemoteSystems,
-    )
-    from kdive.security.secrets.secrets import secret_backend_from_env
-    from kdive.store.objectstore import object_store_from_env
-
+def _optional_reconciler_object_store(
+    store_factory: Callable[[], ObjectStore],
+) -> ObjectStore | None:
+    """Return the object store, or ``None`` only when S3 is wholly unconfigured."""
     try:
-        conninfo = database_url()
-        store = object_store_from_env()
-        remote_config = remote_config_from_env()
-        secret_backend = secret_backend_from_env(registry=secret_registry)
+        return store_factory()
     except CategorizedError:
-        return None
-
-    part_store = RemoteConsolePartStore(store, conninfo)
-    leader_conn = await psycopg.AsyncConnection.connect(conninfo, autocommit=True)
-    lock = SessionAdvisoryLock(leader_conn, CONSOLE_HOSTING_LEADER)
-    runner = AsyncioPumpRunner()
-    registry = CollectorRegistry(pump_runner=runner)
-    host_pool = create_pool(min_size=1)
-    await host_pool.open()
-
-    def factory(system_id: object) -> ConsoleCollector:
-        from uuid import UUID
-
-        assert isinstance(system_id, UUID)
-        return ConsoleCollector(
-            system_id,
-            open_console=lambda sid: open_remote_console(remote_config, secret_backend, sid),
-            store=part_store,
-            secret_registry=secret_registry,
-        )
-
-    loop = ConsoleHostingLoop(
-        leader_lock=lock,
-        running_systems=DbRunningRemoteSystems(host_pool),
-        collector_factory=factory,
-        registry=registry,
-        pump_runner=runner,
-    )
-    return _ConsoleHosting(loop, registry, leader_conn, host_pool)
+        if _s3_env_is_absent():
+            return None
+        raise
 
 
-def _start_console_hosting(
-    console_hosting: _ConsoleHosting | None, stop: object
-) -> asyncio.Task[None] | None:
-    """Start the hosting loop concurrently with ``Reconciler.run``, sharing the stop event."""
-    if console_hosting is None:
-        return None
-    return asyncio.create_task(console_hosting.run(stop))
+def _s3_env_is_absent() -> bool:
+    env = config.env_snapshot()
+    return _S3_OPTIONAL_ENV_NAMES.isdisjoint(env)
 
 
 def _reconciler_probe(
@@ -421,42 +447,17 @@ async def _register_provider_resources(
     repairs still run, and the next startup retries; the failure is logged.
     """
     try:
-        await resolver.register_all_discovery(pool)
+        await asyncio.wait_for(
+            resolver.register_all_discovery(pool),
+            timeout=_PROVIDER_DISCOVERY_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        _log.warning(
+            "reconciler: provider discovery registration timed out after %ss",
+            _PROVIDER_DISCOVERY_TIMEOUT_SECONDS,
+        )
     except Exception:  # noqa: BLE001 - registration failure must not crash the reconciler
-        _log.warning("reconciler: provider discovery registration failed at startup", exc_info=True)
-
-
-_DEFAULT_ROOTFS_PACKAGES = ("drgn", "kexec-tools", "makedumpfile")
-
-
-def _run_build_rootfs(args: argparse.Namespace) -> None:
-    """Build a kdive-ready rootfs qcow2 via the local plane and move it to ``--dest``.
-
-    The plane writes the qcow2 into its own workspace; this moves it to the operator-chosen
-    destination and prints the content digest so it can be content-addressed downstream.
-    """
-    import shutil
-    from pathlib import Path
-
-    from kdive.images.planes.base import RootfsBuildSpec
-    from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane
-
-    packages = tuple(args.packages) if args.packages else _DEFAULT_ROOTFS_PACKAGES
-    spec = RootfsBuildSpec(
-        provider="local-libvirt",
-        name=args.name,
-        arch=args.arch,
-        releasever=args.releasever,
-        packages=packages,
-        source_image_digest=f"virt-builder:fedora-{args.releasever}",
-        capabilities=("agent", "kdump", "drgn"),
-    )
-    output = LocalLibvirtRootfsBuildPlane.from_env().build(spec)
-    dest = Path(args.dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(output.qcow2_path), str(dest))
-    dest.chmod(0o644)
-    _log.info("built rootfs %s digest=%s", dest, output.digest)
+        _log.warning("reconciler: provider discovery registration failed", exc_info=True)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -482,42 +483,7 @@ def main(argv: list[str] | None = None) -> None:
         # pipeline (which may construct an OTLP client) built and the floor handed over.
         telemetry = init_telemetry(args.command, secret_registry=secret_registry, level=level)
     _log.info("starting kdive %s (%s)", full_version(), args.command)
-    if args.command == "server":
-        assert telemetry is not None  # server is in _RUNNABLE, so telemetry was built
-        host = config.require(HTTP_HOST)
-        port = config.require(HTTP_PORT)
-        asyncio.run(_run_server(host, port, secret_registry, telemetry))
-    elif args.command == "worker":
-        assert telemetry is not None  # worker is in _RUNNABLE, so telemetry was built
-        asyncio.run(_run_worker(secret_registry, telemetry))
-    elif args.command == "reconciler":
-        assert telemetry is not None  # reconciler is in _RUNNABLE, so telemetry was built
-        asyncio.run(_run_reconciler(secret_registry, telemetry))
-    elif args.command == "migrate":
-        from kdive.admin.bootstrap import migrate
-
-        migrate()
-    elif args.command == "install-fixtures":
-        from pathlib import Path
-
-        from kdive.admin.bootstrap import install_fixtures
-
-        install_fixtures(Path(args.dest), force=args.force)
-    elif args.command == "seed-demo":
-        from decimal import Decimal
-
-        from kdive.admin.bootstrap import seed_demo
-
-        asyncio.run(
-            seed_demo(
-                project=args.project,
-                limit_kcu=Decimal(args.limit_kcu),
-                max_concurrent_allocations=args.max_concurrent_allocations,
-                max_concurrent_systems=args.max_concurrent_systems,
-            )
-        )
-    elif args.command == "build-rootfs":
-        _run_build_rootfs(args)
+    _COMMAND_BY_NAME[args.command].handler(args, secret_registry, telemetry)
 
 
 if __name__ == "__main__":

@@ -227,7 +227,7 @@ import libvirt
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.providers.local_libvirt.control import (
+from kdive.providers.local_libvirt.lifecycle.control import (
     LocalLibvirtControl,
     PowerAction,
 )
@@ -295,7 +295,7 @@ def test_power_other_libvirt_error_is_control_failure() -> None:
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run python -m pytest tests/providers/local_libvirt/test_control.py -q`
-Expected: FAIL — `kdive.providers.local_libvirt.control` does not exist.
+Expected: FAIL — `kdive.providers.local_libvirt.lifecycle.control` does not exist.
 
 - [ ] **Step 3: Write the provider**
 
@@ -557,7 +557,7 @@ from kdive.jobs import queue
 from kdive.jobs.models import HandlerRegistry
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools import control as control_tools
-from kdive.providers.local_libvirt.control import PowerAction
+from kdive.providers.local_libvirt.lifecycle.control import PowerAction
 from kdive.providers.local_libvirt.discovery import (
     LocalLibvirtDiscovery,
     register_local_libvirt_resource,
@@ -778,8 +778,8 @@ from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.profiles.provisioning import ProvisioningProfile
-from kdive.providers.local_libvirt.control import Controller, LocalLibvirtControl, PowerAction
-from kdive.providers.local_libvirt.provisioning import domain_name_for
+from kdive.providers.local_libvirt.lifecycle.control import Controller, LocalLibvirtControl, PowerAction
+from kdive.providers.local_libvirt.lifecycle.provisioning import domain_name_for
 from kdive.security import audit
 from kdive.security.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
 from kdive.security.rbac import Role, require_role

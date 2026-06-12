@@ -44,14 +44,7 @@ class BuildConfigEntry:
 
 
 def parse_build_config_row(row: dict[str, Any]) -> BuildConfigEntry:
-    """Map a DB row mapping to a :class:`BuildConfigEntry`.
-
-    Args:
-        row: A dict-shaped DB row with keys name, object_key, sha256, description.
-
-    Returns:
-        The parsed catalog entry.
-    """
+    """Map a DB row to a catalog entry."""
     return BuildConfigEntry(
         name=row["name"],
         object_key=row["object_key"],
@@ -61,15 +54,7 @@ def parse_build_config_row(row: dict[str, Any]) -> BuildConfigEntry:
 
 
 async def get_build_config(conn: AsyncConnection, name: str) -> BuildConfigEntry | None:
-    """Return the catalog entry for ``name``, or ``None`` if absent (async, for the MCP tool).
-
-    Args:
-        conn: An open async psycopg connection.
-        name: The fragment name to look up (e.g. ``"kdump"``).
-
-    Returns:
-        The matching :class:`BuildConfigEntry`, or ``None`` if no row exists.
-    """
+    """Return the async MCP-tool catalog entry for ``name``, or ``None`` if absent."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(_SELECT, {"name": name})
         row = await cur.fetchone()
@@ -77,18 +62,7 @@ async def get_build_config(conn: AsyncConnection, name: str) -> BuildConfigEntry
 
 
 def get_build_config_sync(conn: Connection, name: str) -> BuildConfigEntry | None:
-    """Return the catalog entry for ``name``, or ``None`` (sync, for the build path).
-
-    The provider build runs off the event loop via ``asyncio.to_thread`` and cannot await, so
-    its catalog fetch uses a synchronous connection. Same query as the async variant.
-
-    Args:
-        conn: An open sync psycopg connection.
-        name: The fragment name to look up (e.g. ``"kdump"``).
-
-    Returns:
-        The matching :class:`BuildConfigEntry`, or ``None`` if no row exists.
-    """
+    """Return the sync build-path catalog entry for ``name``, or ``None`` if absent."""
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(_SELECT, {"name": name})
         row = cur.fetchone()

@@ -17,9 +17,12 @@ import pytest
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.profiles.provisioning import ProvisioningProfile, validate_profile
-from kdive.providers.local_libvirt import discovery
+from kdive.profiles.provisioning import ProvisioningProfile
+from kdive.providers import libvirt_xml as libvirt_xml_contract
+from kdive.providers.libvirt_xml import KDIVE_METADATA_NS, parse_metadata_system_id
 from kdive.providers.local_libvirt.lifecycle import provisioning as provisioning_module
+from kdive.providers.local_libvirt.lifecycle import storage as storage_module
+from kdive.providers.local_libvirt.lifecycle import xml as xml_module
 from kdive.providers.local_libvirt.lifecycle.provisioning import (
     LocalLibvirtProvisioning,
     ProvisioningFiles,
@@ -28,6 +31,7 @@ from kdive.providers.local_libvirt.lifecycle.provisioning import (
     overlay_path,
     render_domain_xml,
 )
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
 from tests.providers.local_libvirt.fakes import libvirt_error
 
 _SYS = UUID("11111111-1111-1111-1111-111111111111")
@@ -77,6 +81,7 @@ def test_import_does_not_register_elementtree_namespace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(libvirt_xml_contract, "_kdive_namespace_registered", False)
 
     def fake_register_namespace(prefix: str, uri: str) -> None:
         calls.append((prefix, uri))
@@ -89,8 +94,7 @@ def test_import_does_not_register_elementtree_namespace(
     reloaded.render_domain_xml(_SYS, _profile(), disk_path=_DISK)
     reloaded.render_domain_xml(_SYS, _profile(), disk_path=_DISK)
 
-    assert calls == [("kdive", discovery._KDIVE_METADATA_NS)]
-    reloaded.__dict__["_kdive_namespace_registered"] = False
+    assert calls == [("kdive", KDIVE_METADATA_NS)]
 
 
 def test_render_carries_name_memory_vcpu_machine_and_rootfs() -> None:
@@ -150,11 +154,19 @@ def test_render_has_no_kernel_or_cmdline() -> None:
     assert root.find("os/cmdline") is None
 
 
+def test_xml_module_render_domain_xml_exposes_kdive_metadata() -> None:
+    root = _safe_fromstring(xml_module.render_domain_xml(_SYS, _profile(), disk_path=_DISK))
+    tag = root.find(f"metadata/{{{KDIVE_METADATA_NS}}}system")
+
+    assert tag is not None
+    assert tag.text == str(_SYS)
+
+
 def test_render_metadata_tag_round_trips_through_discovery() -> None:
     root = _safe_fromstring(_render())
-    tag = root.find(f"metadata/{{{discovery._KDIVE_METADATA_NS}}}system")
+    tag = root.find(f"metadata/{{{KDIVE_METADATA_NS}}}system")
     assert tag is not None
-    assert discovery._parse_system_id(ET.tostring(tag, encoding="unicode")) == str(_SYS)
+    assert parse_metadata_system_id(ET.tostring(tag, encoding="unicode")) == str(_SYS)
 
 
 def test_render_defaults_machine_when_absent() -> None:
@@ -165,7 +177,9 @@ def test_render_defaults_machine_when_absent() -> None:
 
 def test_validate_profile_rejects_unknown_domain_xml_param() -> None:
     with pytest.raises(CategorizedError) as caught:
-        validate_profile(_profile(domain_xml_params={"machine": "q35", "bogus": "x"}))
+        LocalLibvirtProfilePolicy().validate_profile(
+            _profile(domain_xml_params={"machine": "q35", "bogus": "x"})
+        )
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
@@ -372,21 +386,57 @@ def test_provision_prepares_console_log_before_define() -> None:
     assert calls == [("prepare", f"{_SYS}.log"), ("define", "xml")]
 
 
+def test_prepare_overlay_reuses_existing_overlay_without_creation() -> None:
+    made: list[tuple[str, str]] = []
+    files = ProvisioningFiles(
+        make_overlay=lambda base, overlay: made.append((base, overlay)),
+        overlay_exists=lambda overlay: overlay == overlay_path(_SYS),
+    )
+
+    overlay = files.prepare_overlay(_SYS, base="/base.qcow2")
+
+    assert overlay.path == overlay_path(_SYS)
+    assert overlay.created is False
+    assert made == []
+
+
+def test_prepare_overlay_creates_missing_overlay() -> None:
+    made: list[tuple[str, str]] = []
+    files = ProvisioningFiles(
+        make_overlay=lambda base, overlay: made.append((base, overlay)),
+        overlay_exists=lambda _overlay: False,
+    )
+
+    overlay = files.prepare_overlay(_SYS, base="/base.qcow2")
+
+    assert overlay.created is True
+    assert made == [("/base.qcow2", overlay_path(_SYS))]
+
+
+def test_cleanup_overlay_if_created_removes_only_created_overlay() -> None:
+    removed: list[str] = []
+    files = ProvisioningFiles(remove_overlay=removed.append)
+
+    files.cleanup_overlay_if_created(storage_module.PreparedOverlay(overlay_path(_SYS), True))
+    files.cleanup_overlay_if_created(storage_module.PreparedOverlay("/existing.qcow2", False))
+
+    assert removed == [overlay_path(_SYS)]
+
+
 def test_real_make_overlay_timeout_is_provisioning_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
-        raise subprocess.TimeoutExpired(
-            ["qemu-img"], timeout=provisioning_module._QEMU_IMG_TIMEOUT_S
-        )
+        raise subprocess.TimeoutExpired(["qemu-img"], timeout=storage_module._QEMU_IMG_TIMEOUT_S)
 
-    monkeypatch.setattr(provisioning_module.subprocess, "run", _timeout)
+    monkeypatch.setattr(storage_module.subprocess, "run", _timeout)
+    monkeypatch.setattr(storage_module.shutil, "which", lambda tool: f"/usr/bin/{tool}")
 
     with pytest.raises(CategorizedError) as caught:
-        provisioning_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
+        storage_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
 
     assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE
-    assert caught.value.details["timeout_s"] == provisioning_module._QEMU_IMG_TIMEOUT_S
+    assert caught.value.details["timeout_s"] == storage_module._QEMU_IMG_TIMEOUT_S
 
 
 def test_real_make_overlay_missing_qemu_img_is_missing_dependency(
@@ -395,10 +445,10 @@ def test_real_make_overlay_missing_qemu_img_is_missing_dependency(
     def _missing(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
         raise FileNotFoundError("qemu-img")
 
-    monkeypatch.setattr(provisioning_module.subprocess, "run", _missing)
+    monkeypatch.setattr(storage_module.subprocess, "run", _missing)
 
     with pytest.raises(CategorizedError) as caught:
-        provisioning_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
+        storage_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
 
     assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
     assert caught.value.details == {
@@ -408,16 +458,34 @@ def test_real_make_overlay_missing_qemu_img_is_missing_dependency(
     }
 
 
+def test_real_make_overlay_uses_resolved_qemu_img_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(storage_module.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+
+    def _record(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(storage_module.subprocess, "run", _record)
+
+    storage_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
+
+    assert calls[0][0] == "/usr/bin/qemu-img"
+
+
 def test_real_make_overlay_launch_oserror_is_infrastructure_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _fork_failed(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
         raise OSError("fork failed")
 
-    monkeypatch.setattr(provisioning_module.subprocess, "run", _fork_failed)
+    monkeypatch.setattr(storage_module.subprocess, "run", _fork_failed)
+    monkeypatch.setattr(storage_module.shutil, "which", lambda tool: f"/usr/bin/{tool}")
 
     with pytest.raises(CategorizedError) as caught:
-        provisioning_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
+        storage_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
 
     assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
     assert caught.value.details == {
@@ -435,10 +503,10 @@ def test_real_remove_overlay_oserror_is_infrastructure_failure(
         del self, missing_ok
         raise PermissionError("permission denied")
 
-    monkeypatch.setattr(provisioning_module.Path, "unlink", _unlink_failed)
+    monkeypatch.setattr(storage_module.Path, "unlink", _unlink_failed)
 
     with pytest.raises(CategorizedError) as caught:
-        provisioning_module._real_remove_overlay("/rootfs/overlay.qcow2")
+        storage_module._real_remove_overlay("/rootfs/overlay.qcow2")
 
     assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
     assert caught.value.details == {

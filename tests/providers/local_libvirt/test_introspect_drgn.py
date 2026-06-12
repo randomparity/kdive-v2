@@ -21,7 +21,7 @@ from kdive.providers.debug_common.introspect import (
     helper_sysinfo,
     helper_tasks,
 )
-from kdive.providers.local_libvirt.debug.introspect_drgn import (
+from kdive.providers.local_libvirt.debug.introspect import (
     IntrospectOutput,
     LiveIntrospector,
     LocalLibvirtLiveIntrospect,

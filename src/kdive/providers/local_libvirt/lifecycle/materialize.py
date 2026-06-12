@@ -16,18 +16,16 @@ from pathlib import Path
 from uuid import UUID
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.profiles.provisioning import RootfsSource, _UploadRootfs
+from kdive.profiles.provisioning import _UploadRootfs
 from kdive.provider_components.local_paths import validate_local_component_path
 from kdive.provider_components.references import (
-    ArtifactComponentRef,
     CatalogComponentRef,
-    ComponentRef,
-    ComponentUploadRef,
     LocalComponentRef,
 )
 
 # Resolve a `catalog` reference to a provider-readable local path (DB row → object → cache).
 type CatalogFetch = Callable[[CatalogComponentRef], Path]
+type MaterializableRootfsRef = LocalComponentRef | CatalogComponentRef | _UploadRootfs
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +52,7 @@ class RootfsMaterializationContext:
 
 
 def materialize_rootfs_base(
-    ref: RootfsSource | ComponentRef,
+    ref: MaterializableRootfsRef,
     *,
     context: RootfsMaterializationContext,
 ) -> Path:
@@ -65,11 +63,6 @@ def materialize_rootfs_base(
         return _materialize_local_rootfs(ref, context)
     if isinstance(ref, CatalogComponentRef):
         return _materialize_catalog_rootfs(ref, context)
-    if isinstance(ref, ArtifactComponentRef | ComponentUploadRef):
-        raise CategorizedError(
-            "artifact-backed rootfs materialization is not wired yet",
-            category=ErrorCategory.MISSING_DEPENDENCY,
-        )
     raise CategorizedError(
         "unsupported rootfs component reference",
         category=ErrorCategory.CONFIGURATION_ERROR,

@@ -130,6 +130,32 @@ def test_put_stream_maps_transport_error_to_infrastructure_failure(tmp_path: Pat
     assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
 
+def test_put_stream_maps_local_source_error_to_infrastructure_failure(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-core"
+    request = ArtifactStreamRequest(
+        tenant="t",
+        owner_kind="vmcore",
+        owner_id="oid",
+        name="core",
+        path=missing,
+        sha256_b64="unused",
+        sensitivity=Sensitivity.SENSITIVE,
+        retention_class="vmcore",
+    )
+    store = ObjectStore(object(), "bucket")
+
+    with pytest.raises(CategorizedError) as excinfo:
+        store.put_stream(request)
+
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+    assert excinfo.value.details == {
+        "op": "put_stream",
+        "key": "t/vmcore/oid/core",
+        "path": str(missing),
+    }
+    assert isinstance(excinfo.value.__cause__, OSError)
+
+
 def test_get_artifact_maps_transport_error_to_infrastructure_failure() -> None:
     store = ObjectStore(_UnreachableClient(), "bucket")
     with pytest.raises(CategorizedError) as excinfo:

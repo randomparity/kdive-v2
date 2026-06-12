@@ -2,22 +2,11 @@
 
 from __future__ import annotations
 
-from typing import NamedTuple, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from kdive.profiles.build import ServerBuildProfile
-from kdive.provider_components.artifacts import HeadResult
-
-
-class BuildOutput(NamedTuple):
-    kernel_ref: str
-    debuginfo_ref: str
-    build_id: str
-
-
-class ValidatedUpload(NamedTuple):
-    output: BuildOutput
-    heads: dict[str, HeadResult]
+from kdive.provider_components.build_results import BuildOutput
 
 
 class Builder(Protocol):

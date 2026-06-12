@@ -23,6 +23,7 @@ from kdive.db.repositories import ALLOCATIONS, BUDGETS, RESOURCES, SYSTEMS
 from kdive.domain.models import Allocation, Budget, Resource, ResourceKind, System
 from kdive.domain.state import AllocationState, ResourceStatus, SystemState
 from kdive.providers.reaping import NullReaper
+from kdive.reconciler import allocations as allocation_repairs
 from kdive.reconciler import loop
 from kdive.services.accounting import ledger as accounting
 from tests.db_waits import wait_until_any_backend_waiting
@@ -125,7 +126,7 @@ def test_idle_expired_allocation_swept_to_expired_with_credit(migrated_url: str)
                 seed, state=AllocationState.ACTIVE, active_started_at=started
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._sweep_expired_allocations)
+            count = await run_repair(pool, allocation_repairs.sweep_expired_allocations)
         assert count == 1
         async with await connect(migrated_url) as check:
             assert await _alloc_state(check, alloc_id) == "expired"
@@ -171,8 +172,8 @@ def test_sweep_second_pass_is_noop(migrated_url: str) -> None:
         async with await connect(migrated_url) as seed:
             await _seed_expired_alloc(seed, state=AllocationState.ACTIVE)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            first = await run_repair(pool, loop._sweep_expired_allocations)
-            second = await run_repair(pool, loop._sweep_expired_allocations)
+            first = await run_repair(pool, allocation_repairs.sweep_expired_allocations)
+            second = await run_repair(pool, allocation_repairs.sweep_expired_allocations)
         assert first == 1
         assert second == 0  # already expired: nothing left to reclaim
 
@@ -184,8 +185,8 @@ def test_sweep_writes_exactly_one_reconciled_on_repeat(migrated_url: str) -> Non
         async with await connect(migrated_url) as seed:
             alloc_id = await _seed_expired_alloc(seed, state=AllocationState.GRANTED)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            await run_repair(pool, loop._sweep_expired_allocations)
-            await run_repair(pool, loop._sweep_expired_allocations)
+            await run_repair(pool, allocation_repairs.sweep_expired_allocations)
+            await run_repair(pool, allocation_repairs.sweep_expired_allocations)
         async with await connect(migrated_url) as check:
             reconciled = [k for k in await _ledger_kinds(check, alloc_id) if k == "reconciled"]
             assert len(reconciled) == 1  # idempotent: one credit despite two passes
@@ -200,7 +201,7 @@ def test_live_lease_not_swept(migrated_url: str) -> None:
                 seed, state=AllocationState.ACTIVE, lease_offset=timedelta(hours=1)
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._sweep_expired_allocations)
+            count = await run_repair(pool, allocation_repairs.sweep_expired_allocations)
         assert count == 0
         async with await connect(migrated_url) as check:
             assert await _alloc_state(check, alloc_id) == "active"  # untouched
@@ -213,7 +214,7 @@ def test_terminal_allocation_not_swept(migrated_url: str) -> None:
         async with await connect(migrated_url) as seed:
             alloc_id = await _seed_expired_alloc(seed, state=AllocationState.RELEASED)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._sweep_expired_allocations)
+            count = await run_repair(pool, allocation_repairs.sweep_expired_allocations)
         assert count == 0
         async with await connect(migrated_url) as check:
             assert await _alloc_state(check, alloc_id) == "released"
@@ -230,7 +231,7 @@ def test_unmetered_expired_allocation_swept_without_credit(migrated_url: str) ->
                 seed, state=AllocationState.ACTIVE, with_budget=False
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._sweep_expired_allocations)
+            count = await run_repair(pool, allocation_repairs.sweep_expired_allocations)
         assert count == 1
         async with await connect(migrated_url) as check:
             assert await _alloc_state(check, alloc_id) == "expired"
@@ -294,7 +295,7 @@ def test_unpriceable_allocation_does_not_starve_siblings(migrated_url: str) -> N
             )
             good = await _seed_expired_alloc(seed, state=AllocationState.GRANTED)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._sweep_expired_allocations)
+            count = await run_repair(pool, allocation_repairs.sweep_expired_allocations)
         assert count == 1  # only the good one
         async with await connect(migrated_url) as check:
             assert await _alloc_state(check, good) == "expired"
@@ -319,7 +320,9 @@ def test_concurrent_release_vs_sweep_reconciles_once(migrated_url: str) -> None:
                     advisory_xact_lock(holder, LockScope.PROJECT, "proj"),
                     advisory_xact_lock(holder, LockScope.ALLOCATION, alloc_id),
                 ):
-                    task = asyncio.ensure_future(run_repair(pool, loop._sweep_expired_allocations))
+                    task = asyncio.ensure_future(
+                        run_repair(pool, allocation_repairs.sweep_expired_allocations)
+                    )
                     await wait_until_any_backend_waiting(holder, locktype="advisory")
                     assert not task.done()  # blocked behind the held locks
                     await ALLOCATIONS.update_state(holder, alloc_id, AllocationState.RELEASING)

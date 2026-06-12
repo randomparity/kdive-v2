@@ -61,7 +61,7 @@ def _seed_build_configs_step(database_url: str) -> int:
     live in the object store, so the seed is skipped when ``KDIVE_S3_*`` is unconfigured —
     a no-S3 migrate (e.g. a schema-only test or a partial bring-up) degrades cleanly and the
     fragment is seeded on a later migrate once the object store is available. Mirrors the
-    images-tool tolerance in :func:`kdive.mcp.tools.ops.images._resolve_object_store`.
+    images-tool tolerance in :func:`kdive.mcp.tools.ops.images.registrar._resolve_object_store`.
 
     Args:
         database_url: A psycopg-compatible connection string for the application database.

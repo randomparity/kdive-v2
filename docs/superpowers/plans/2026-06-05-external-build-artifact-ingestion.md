@@ -2637,7 +2637,7 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import _CatalogRootfs, _PathRootfs, _UploadRootfs, _UrlRootfs
-from kdive.providers.local_libvirt.provisioning import (
+from kdive.providers.local_libvirt.lifecycle.provisioning import (
     resolve_rootfs_path,
     validate_rootfs_reference,
 )

@@ -29,7 +29,7 @@ from kdive.providers.remote_libvirt.settings import (
     REMOTE_LIBVIRT_STORAGE_POOL,
     REMOTE_LIBVIRT_URI,
 )
-from kdive.providers.remote_libvirt.transport import validate_remote_uri
+from kdive.providers.remote_libvirt.uri_validation import validate_remote_uri
 
 _DEFAULT_CAP = 1
 _DEFAULT_STORAGE_POOL = "default"

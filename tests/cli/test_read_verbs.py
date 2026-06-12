@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib
 import json
 
 import pytest
 
-from kdive.cli.commands import REGISTRY, reads
+import kdive.cli.commands.reads as reads
+from kdive.cli.commands.registry import REGISTRY
 
 
 class _FakeResult:
@@ -179,6 +179,36 @@ def test_fixtures_list_renders_rows_from_data(monkeypatch: pytest.MonkeyPatch, c
     assert "local-libvirt" in out and "base" in out
 
 
+def test_data_shaped_lists_ignore_malformed_rows(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    _install_session(
+        monkeypatch,
+        _data_envelope(
+            {
+                "fixtures": [
+                    {"provider": "local-libvirt", "name": "base", "arch": "x86_64"},
+                    "not-a-row",
+                ]
+            }
+        ),
+    )
+    asyncio.run(reads.fixtures_list(_args()))
+    out = capsys.readouterr().out
+    assert "local-libvirt" in out
+    assert "not-a-row" not in out
+
+
+def test_data_shaped_lists_ignore_missing_list_data(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _install_session(
+        monkeypatch,
+        _data_envelope({"secrets": "not-a-list"}),  # pragma: allowlist secret - key name only
+    )
+    asyncio.run(reads.secrets_list(_args()))
+    out = capsys.readouterr().out.strip()
+    assert out and len(out.splitlines()) == 1
+
+
 def test_every_registry_verb_has_a_handler() -> None:
     # The registry is the single source of truth; every entry must resolve to a callable.
     for verb in REGISTRY:
@@ -191,12 +221,9 @@ _READ_VERBS = [v for v in REGISTRY if v.read_only]
 @pytest.mark.parametrize("verb", _READ_VERBS, ids=lambda v: f"{v.group}.{v.sub}")
 def test_handler_calls_the_tool_the_registry_declares(verb, monkeypatch, capsys) -> None:
     # Bind verb.tool (what the read-only gate test checks) to the handler's real call, so a
-    # registry that declares a read-only tool but dispatches to another would fail here. The
-    # session seam is patched on the handler's own module (read verbs live in more than one
-    # command module now: reads.py and images.py).
+    # registry that declares a read-only tool but dispatches to another would fail here.
     client = _FakeClient(_collection([]))
-    handler_module = importlib.import_module(verb.handler.__module__)
-    monkeypatch.setattr(handler_module, "_session_factory", lambda: _FakeSession(client))
+    monkeypatch.setattr(reads, "_session_factory", lambda: _FakeSession(client))
     args = argparse.Namespace(json=False)
     for name in (*verb.positionals, *verb.options):
         setattr(args, name, f"{name}-val")

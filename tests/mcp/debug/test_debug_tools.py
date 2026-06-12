@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -39,8 +40,18 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.debug import sessions as debug_tools
+from kdive.providers.fault_inject.profile_policy import FaultInjectProfilePolicy
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
-from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
+from kdive.providers.ports import (
+    SystemHandle,
+    TransportHandle,
+    TransportHandleData,
+    TransportHandleKind,
+)
+from kdive.providers.remote_libvirt.profile_policy import RemoteLibvirtProfilePolicy
+from kdive.providers.resolver import ProviderResolver
+from kdive.providers.runtime import ProfilePolicy
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.paths import PathSafetyError
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -48,6 +59,9 @@ from kdive.services.resources.discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
+_PROFILE_POLICY = LocalLibvirtProfilePolicy()
+_FAULT_POLICY = FaultInjectProfilePolicy()
+_REMOTE_POLICY = RemoteLibvirtProfilePolicy()
 
 _PROFILE: dict[str, Any] = {
     "schema_version": 1,
@@ -83,7 +97,10 @@ class _FakeConnector:
         if self._raises is not None:
             raise self._raises
         port = 22 if kind == "drgn-live" else 1234
-        return TransportHandle(TransportHandleData(kind=kind, host="127.0.0.1", port=port).encode())
+        handle_kind = cast(TransportHandleKind, kind)
+        return TransportHandle(
+            TransportHandleData(kind=handle_kind, host="127.0.0.1", port=port).encode()
+        )
 
     def close_transport(self, handle: TransportHandle) -> None:
         self.closed.append(str(handle))
@@ -95,6 +112,14 @@ class _RaisingCloseConnector(_FakeConnector):
     def close_transport(self, handle: TransportHandle) -> None:
         super().close_transport(handle)
         raise CategorizedError("close blew up", category=ErrorCategory.TRANSPORT_FAILURE)
+
+
+class _UnexpectedRaisingCloseConnector(_FakeConnector):
+    """A connector whose close_transport raises an unexpected provider exception."""
+
+    def close_transport(self, handle: TransportHandle) -> None:
+        super().close_transport(handle)
+        raise RuntimeError("close blew up unexpectedly")
 
 
 def _ctx(
@@ -111,6 +136,7 @@ def _handlers(
     secret_backend: Any | None = None,
     secret_backend_factory: Any | None = None,
     secret_registry: SecretRegistry | None = None,
+    profile_policy: ProfilePolicy = _PROFILE_POLICY,
 ) -> debug_tools.DebugSessionHandlers:
     if secret_backend is not None:
 
@@ -119,8 +145,9 @@ def _handlers(
 
         secret_backend_factory = _backend_factory
     registry = secret_registry if secret_registry is not None else SecretRegistry()
-    return debug_tools.DebugSessionHandlers(
+    return debug_tools.DebugSessionHandlers.from_fixed_connector(
         connector,
+        profile_policy=profile_policy,
         runtime=runtime,
         secret_backend_factory=secret_backend_factory,
         secret_registry=registry,
@@ -137,12 +164,14 @@ async def _start_session(
     secret_backend: Any | None = None,
     secret_backend_factory: Any | None = None,
     secret_registry: SecretRegistry | None = None,
+    profile_policy: ProfilePolicy = _PROFILE_POLICY,
 ):
     return await _handlers(
         connector,
         secret_backend=secret_backend,
         secret_backend_factory=secret_backend_factory,
         secret_registry=secret_registry,
+        profile_policy=profile_policy,
     ).start_session(pool, ctx, run_id=run_id, transport=transport)
 
 
@@ -264,6 +293,7 @@ async def _seed_session(
     transport: str = "gdbstub",
 ) -> str:
     port = 22 if transport == "drgn-live" else 1234
+    handle_kind = cast(TransportHandleKind, transport)
     async with pool.connection() as conn:
         session = await DEBUG_SESSIONS.insert(
             conn,
@@ -277,7 +307,7 @@ async def _seed_session(
                 state=state,
                 transport=transport,
                 transport_handle=TransportHandleData(
-                    kind=transport, host="127.0.0.1", port=port
+                    kind=handle_kind, host="127.0.0.1", port=port
                 ).encode(),
             ),
         )
@@ -634,6 +664,21 @@ class _OrderRecordingConnector(_FakeConnector):
         return super().open_transport(system, kind)
 
 
+class _FailingConnectorResolver(ProviderResolver):
+    """A ProviderResolver test double that fails before returning a connector."""
+
+    def __init__(self) -> None:
+        pass
+
+    async def runtime_for_run(self, conn: Any, run_id: UUID) -> Any:
+        del conn
+        raise CategorizedError(
+            "no test runtime",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"run_id": str(run_id)},
+        )
+
+
 class _ConnectionRecordingContext:
     def __init__(self, context: Any, log: list[str]) -> None:
         self._context = context
@@ -756,6 +801,39 @@ def test_start_session_ssh_resolves_credential_before_opening_transport(migrated
     asyncio.run(_run())
 
 
+def test_start_session_ssh_resolves_connector_before_credential(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_ssh_system(pool, alloc_id)
+            run_id = await _seed_run(pool, sys_id)
+            log: list[str] = []
+            registry = SecretRegistry()
+            backend = _OrderRecordingBackend(log, registry=registry)
+            handlers = debug_tools.DebugSessionHandlers.from_resolver(
+                _FailingConnectorResolver(),
+                runtime_resolver=None,
+                secret_backend_factory=lambda _session_id: backend,
+                secret_registry=registry,
+            )
+
+            resp = await handlers.start_session(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="drgn-live",
+            )
+            count = await _session_count(pool)
+
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert count == 0
+        assert backend.refs == []
+        assert log == []
+        assert "guest-ssh-secret" not in registry.snapshot()
+
+    asyncio.run(_run())
+
+
 def test_start_session_opens_transport_between_db_connections(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -825,6 +903,7 @@ def test_start_session_drgn_live_fault_inject_skips_credential(migrated_url: str
                 transport="drgn-live",
                 connector=connector,
                 secret_backend=backend,
+                profile_policy=_FAULT_POLICY,
             )
         assert resp.status == "live"
         assert connector.opened == [("kdive-x", "drgn-live")]
@@ -1033,7 +1112,12 @@ def test_start_session_drgn_live_remote_skips_credential_and_stores_domain_handl
             connector = _DomainHandleConnector()
             # No secret_backend supplied: a remote drgn-live start must not need one.
             resp = await _start_session(
-                pool, _ctx(), run_id=run_id, transport="drgn-live", connector=connector
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="drgn-live",
+                connector=connector,
+                profile_policy=_REMOTE_POLICY,
             )
             assert resp.status == "live"
             assert connector.opened == [("kdive-x", "drgn-live")]
@@ -1141,14 +1225,44 @@ def test_end_session_detaches_attach(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_end_session_close_failure_still_detaches(migrated_url: str) -> None:
+def test_end_session_close_failure_still_detaches(
+    migrated_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             run_id = await _seed_run(pool, sys_id)
             session_id = await _seed_session(pool, run_id, DebugSessionState.LIVE)
-            resp = await _end_session(pool, _ctx(), session_id, connector=_RaisingCloseConnector())
+            with caplog.at_level(logging.WARNING, logger="kdive.mcp.tools.debug.sessions"):
+                resp = await _end_session(
+                    pool, _ctx(), session_id, connector=_RaisingCloseConnector()
+                )
+            assert resp.status == "detached"
+            async with pool.connection() as c, c.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM debug_sessions WHERE id = %s", (session_id,))
+                row = await cur.fetchone()
+        assert row is not None and row["state"] == "detached"
+        [record] = [
+            record
+            for record in caplog.records
+            if record.message == "debug transport close failed; continuing detach"
+        ]
+        assert record.exc_info is not None
+
+    asyncio.run(_run())
+
+
+def test_end_session_unexpected_close_failure_still_detaches(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            alloc_id = await _granted_allocation(pool)
+            sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
+            run_id = await _seed_run(pool, sys_id)
+            session_id = await _seed_session(pool, run_id, DebugSessionState.LIVE)
+            resp = await _end_session(
+                pool, _ctx(), session_id, connector=_UnexpectedRaisingCloseConnector()
+            )
             assert resp.status == "detached"
             async with pool.connection() as c, c.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM debug_sessions WHERE id = %s", (session_id,))

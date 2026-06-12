@@ -105,7 +105,7 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.local_libvirt import discovery
-from kdive.providers.local_libvirt.provisioning import (
+from kdive.providers.local_libvirt.lifecycle.provisioning import (
     LocalLibvirtProvisioning,
     domain_name_for,
     render_domain_xml,
@@ -192,7 +192,7 @@ def test_render_rejects_unknown_domain_xml_param() -> None:
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run python -m pytest tests/providers/local_libvirt/test_provisioning.py -q`
-Expected: FAIL with `ModuleNotFoundError: kdive.providers.local_libvirt.provisioning`.
+Expected: FAIL with `ModuleNotFoundError: kdive.providers.local_libvirt.lifecycle.provisioning`.
 
 - [ ] **Step 3: Write the rendering implementation**
 
@@ -717,7 +717,7 @@ from kdive.log import bind_context
 from kdive.mcp.auth import RequestContext, current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.profiles.provisioning import ProvisioningProfile
-from kdive.providers.local_libvirt.provisioning import (
+from kdive.providers.local_libvirt.lifecycle.provisioning import (
     LocalLibvirtProvisioning,
     domain_name_for,
     validate_profile,

@@ -32,7 +32,7 @@ from kdive.domain.state import IllegalTransition, JobState
 from kdive.jobs import queue
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
-from kdive.mcp.responses import ToolResponse
+from kdive.mcp.responses import JsonValue, ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.security.authz.context import RequestContext
@@ -50,6 +50,18 @@ _TERMINAL = frozenset({JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELED})
 
 def _error(object_id: str, category: ErrorCategory) -> ToolResponse:
     return ToolResponse(object_id=object_id, status="error", error_category=category.value)
+
+
+def _job_response(job: Job) -> ToolResponse:
+    try:
+        return ToolResponse.from_job(job)
+    except ValueError:
+        _log.warning(
+            "job %s violates the response invariant; degraded",
+            job.id,
+            exc_info=True,
+        )
+        return _error(str(job.id), ErrorCategory.INFRASTRUCTURE_FAILURE)
 
 
 def _in_scope(job: Job, ctx: RequestContext) -> bool:
@@ -82,7 +94,7 @@ def _require_job_role(
     try:
         require_role(ctx, _project(job), role)
     except AuthorizationError:
-        return _error(object_id, ErrorCategory.CONFIGURATION_ERROR)
+        return _error(object_id, ErrorCategory.AUTHORIZATION_DENIED)
     return None
 
 
@@ -104,7 +116,7 @@ async def get_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str) -
         denied = _require_job_role(job, ctx, Role.VIEWER, job_id)
         if denied is not None:
             return denied
-        return ToolResponse.from_job(job)
+        return _job_response(job)
 
 
 async def wait_job(
@@ -138,7 +150,7 @@ async def wait_job(
                 return denied
             now = loop.time()
             if job.state in _TERMINAL or now >= deadline:
-                return ToolResponse.from_job(job)
+                return _job_response(job)
             await sleep(min(POLL_INTERVAL_S, deadline - now))
 
 
@@ -175,7 +187,7 @@ async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str
         except IllegalTransition:
             async with pool.connection() as conn:
                 current = await JOBS.get(conn, uid)
-            data = {"current_status": current.state.value} if current else {}
+            data: dict[str, JsonValue] = {"current_status": current.state.value} if current else {}
             return ToolResponse(
                 object_id=job_id,
                 status="error",
@@ -191,17 +203,7 @@ async def list_jobs(pool: AsyncConnectionPool, ctx: RequestContext, *, limit: in
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             jobs = await queue.recent_jobs(conn, capped, _readable_projects(ctx))
-        responses: list[ToolResponse] = []
-        for job in jobs:
-            try:
-                responses.append(ToolResponse.from_job(job))
-            except ValueError:
-                _log.warning(
-                    "job %s violates the response invariant; degraded",
-                    job.id,
-                    exc_info=True,
-                )
-                responses.append(_error(str(job.id), ErrorCategory.INFRASTRUCTURE_FAILURE))
+        responses = [_job_response(job) for job in jobs]
         return ToolResponse.collection(
             "jobs",
             "ok",

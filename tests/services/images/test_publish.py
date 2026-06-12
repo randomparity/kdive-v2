@@ -68,7 +68,7 @@ class _FakeStore:
 
 def _request(
     *,
-    visibility: str = "public",
+    visibility: ImageVisibility = ImageVisibility.PUBLIC,
     owner: str | None = None,
     expires_at: datetime | None = None,
     digest: str = _DIGEST,
@@ -96,6 +96,17 @@ def _qcow2_source(tmp_path: Path) -> Path:
     src = tmp_path / "rootfs.qcow2"
     src.write_bytes(_QCOW2)
     return src
+
+
+def test_publish_request_rejects_scope_fields_that_do_not_match_visibility() -> None:
+    with pytest.raises(ValueError, match="owner must be set iff visibility is private"):
+        _request(visibility=ImageVisibility.PRIVATE, expires_at=_DT)
+
+    with pytest.raises(ValueError, match="expires_at must be set iff visibility is private"):
+        _request(visibility=ImageVisibility.PRIVATE, owner="proj")
+
+    with pytest.raises(ValueError, match="owner must be set iff visibility is private"):
+        _request(owner="proj")
 
 
 def test_publish_leaves_registered_row_that_heads_and_resolves(
@@ -259,13 +270,17 @@ def test_two_owners_same_identity_do_not_collide(migrated_url: str, tmp_path: Pa
             a = await publish_image(
                 conn,
                 store,
-                request=_request(visibility="private", owner="proj-a", expires_at=expires),
+                request=_request(
+                    visibility=ImageVisibility.PRIVATE, owner="proj-a", expires_at=expires
+                ),
                 source=source,
             )
             b = await publish_image(
                 conn,
                 store,
-                request=_request(visibility="private", owner="proj-b", expires_at=expires),
+                request=_request(
+                    visibility=ImageVisibility.PRIVATE, owner="proj-b", expires_at=expires
+                ),
                 source=source,
             )
             assert a.id != b.id
@@ -296,7 +311,9 @@ def test_public_publish_does_not_adopt_a_private_pending(migrated_url: str, tmp_
                 await publish_image(
                     conn,
                     failing,
-                    request=_request(visibility="private", owner="proj-a", expires_at=expires),
+                    request=_request(
+                        visibility=ImageVisibility.PRIVATE, owner="proj-a", expires_at=expires
+                    ),
                     source=source,
                 )
             private_pending = (await IMAGE_CATALOG.list_all(conn))[0]
@@ -324,7 +341,9 @@ def test_private_publish_records_owner_and_expiry(migrated_url: str, tmp_path: P
             entry = await publish_image(
                 conn,
                 store,
-                request=_request(visibility="private", owner="proj", expires_at=expires),
+                request=_request(
+                    visibility=ImageVisibility.PRIVATE, owner="proj", expires_at=expires
+                ),
                 source=source,
             )
             assert entry.visibility is ImageVisibility.PRIVATE

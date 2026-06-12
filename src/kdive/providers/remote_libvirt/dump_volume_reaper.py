@@ -27,7 +27,7 @@ from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from kdive.providers.reaping import DumpVolume
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
-from kdive.providers.remote_libvirt.transport import remote_connection
+from kdive.providers.remote_libvirt.transport import open_libvirt_protocol, remote_connection
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
 
@@ -63,7 +63,7 @@ type OpenReaperConnection = Callable[[str], _ReaperConn]
 
 def open_libvirt_reaper(uri: str) -> _ReaperConn:
     """Production opener (live-host path; unit tests inject a fake)."""
-    return libvirt.open(uri)  # ty: ignore[invalid-return-type]
+    return open_libvirt_protocol(uri)
 
 
 def system_id_from_dump_volume_name(name: str) -> UUID | None:

@@ -13,7 +13,7 @@ from kdive.config.core_settings import FIXTURE_CATALOG_PATH
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.provider_components.references import ComponentRef
 from kdive.provider_components.requirements import CmdlineRequirements, ConfigRequirements
-from kdive.provider_components.visibility import Visibility
+from kdive.provider_components.visibility import PUBLIC_VISIBILITY, Visibility
 
 DEFAULT_FIXTURE_CATALOG_PATH = Path(__file__).parents[3] / "fixtures" / "local-libvirt"
 
@@ -86,13 +86,17 @@ class FixtureCatalog(BaseModel):
         return [
             entry
             for entry in self.rootfs
-            if entry.provider == provider and entry.visibility == "public"
+            if entry.provider == provider and entry.visibility == PUBLIC_VISIBILITY
         ]
 
     def rootfs_entry(self, provider: str, name: str) -> RootfsCatalogEntry | None:
         """Return one visible rootfs catalog entry for ``provider`` and ``name``."""
         for entry in self.rootfs:
-            if entry.provider == provider and entry.name == name and entry.visibility == "public":
+            if (
+                entry.provider == provider
+                and entry.name == name
+                and entry.visibility == PUBLIC_VISIBILITY
+            ):
                 return entry
         return None
 

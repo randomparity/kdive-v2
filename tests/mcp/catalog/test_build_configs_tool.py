@@ -6,13 +6,18 @@ import asyncio
 import hashlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any, cast
 
 import pytest
+from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.build_configs.seed import KDUMP_FRAGMENT_PATH, seed_build_configs
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools.catalog import build_configs
 from kdive.mcp.tools.catalog.build_configs import read_build_config
+from kdive.security.authz.context import RequestContext
 from kdive.store.objectstore import ObjectStore
 
 
@@ -60,3 +65,33 @@ def test_buildconfig_get_unknown_name_is_configuration_error(
 
     asyncio.run(_run())
     assert caught[0].category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_buildconfig_get_tool_maps_unknown_name_to_failure_envelope(
+    migrated_url: str, minio_store: ObjectStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            monkeypatch.setattr(build_configs, "_resolve_store", lambda: minio_store)
+            monkeypatch.setattr(
+                build_configs,
+                "current_context",
+                lambda: RequestContext(
+                    principal="dev-1",
+                    agent_session="sess-dev",
+                    projects=(),
+                    roles={},
+                    platform_roles=frozenset(),
+                ),
+            )
+            app = FastMCP("build-config-test")
+            build_configs.register(app, pool)
+            tools = {tool.name: tool for tool in await app.list_tools()}
+            result = await cast(Any, tools["buildconfig.get"]).fn("nope")
+
+        assert isinstance(result, ToolResponse)
+        assert result.object_id == "nope"
+        assert result.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert result.suggested_next_actions == ["buildconfig.get"]
+
+    asyncio.run(_run())

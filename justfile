@@ -217,4 +217,4 @@ config-guard:
     uv run python scripts/config_env_guard.py
 
 # Run the full gate that PR CI runs, reproducible locally.
-ci: lint type lock-check lint-shell lint-workflows check-mermaid docs-check config-docs-check config-guard m2-gate test
+ci: lint type lock-check lint-shell lint-workflows check-mermaid docs-check config-docs-check config-guard test

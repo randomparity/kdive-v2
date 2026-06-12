@@ -33,10 +33,17 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.catalog.artifacts_uploads import create_run_upload, create_system_upload
+from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools.catalog.artifacts.uploads import (
+    ArtifactDeclaration,
+    create_system_upload,
+)
+from kdive.mcp.tools.catalog.artifacts.uploads import (
+    create_run_upload as _create_run_upload,
+)
 from kdive.provider_components.artifacts import PresignedUpload, PresignPutRequest
 from kdive.security.authz.rbac import AuthorizationError, Role
-from tests.mcp.systems_support import SYSTEM_PROVISION_HANDLERS
+from tests.mcp.systems_support import SYSTEM_PROVISION_HANDLERS, provider_resolver
 from tests.mcp.systems_support import granted_allocation as _granted_allocation
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -67,6 +74,24 @@ class _FailingStore:
     def presign_put(self, request: PresignPutRequest) -> PresignedUpload:
         del request
         raise CategorizedError("presign failed", category=ErrorCategory.INFRASTRUCTURE_FAILURE)
+
+
+async def create_run_upload(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    run_id: str,
+    artifacts: list[ArtifactDeclaration],
+    store: Any = None,
+) -> ToolResponse:
+    return await _create_run_upload(
+        pool,
+        ctx,
+        run_id=run_id,
+        artifacts=artifacts,
+        resolver=provider_resolver(),
+        store=store,
+    )
 
 
 def _ctx(
@@ -501,6 +526,7 @@ def test_create_upload_for_defined_system_mints_rootfs_and_persists(migrated_url
                 _ctx(),
                 system_id=sys_id,
                 artifacts=[{"name": "rootfs", "sha256": "aaa", "size_bytes": 100}],
+                resolver=provider_resolver(),
                 store=store,
             )
             items = responses.items
@@ -527,6 +553,7 @@ def test_create_upload_rejects_non_upload_kind_defined_system(migrated_url: str)
                 _ctx(),
                 system_id=sys_id,
                 artifacts=[{"name": "rootfs", "sha256": "aaa", "size_bytes": 100}],
+                resolver=provider_resolver(),
                 store=store,
             )
         assert responses.error_category == "configuration_error"
@@ -546,6 +573,7 @@ def test_create_upload_rejects_non_rootfs_name_for_system(migrated_url: str) -> 
                 _ctx(),
                 system_id=sys_id,
                 artifacts=[{"name": "kernel", "sha256": "aaa", "size_bytes": 100}],
+                resolver=provider_resolver(),
                 store=store,
             )
         assert out.error_category == ErrorCategory.CONFIGURATION_ERROR.value

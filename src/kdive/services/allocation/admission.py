@@ -60,6 +60,7 @@ from kdive.services.allocation.idempotency import (
     resolve_replay,
     within_budget,
 )
+from kdive.services.allocation.lease_bounds import configured_lease_bounds
 
 if TYPE_CHECKING:
     from kdive.security.authz.context import RequestContext
@@ -220,7 +221,7 @@ async def price_window_and_estimate(
         CategorizedError: ``CONFIGURATION_ERROR`` for a bad window/size/over-caps request,
             or a value-too-large estimate.
     """
-    window_hours = resolve_window_hours(request.window)
+    window_hours = resolve_window_hours(request.window, bounds=configured_lease_bounds())
     validate_size(request.selector)
     validate_against_resource(request.selector, request.resource)
     coeff = await resolve_coeff(conn, request.resource.cost_class)
@@ -241,7 +242,7 @@ class _GateResult:
     devices: list[PCIeClaim]
 
 
-async def capacity_gate(
+async def admission_gate(
     conn: AsyncConnection, request: AllocationRequest, *, estimate: Decimal
 ) -> _GateResult:
     """Replay the check-then-debit gate against the project + the chosen host.
@@ -301,7 +302,7 @@ async def _admit_under_project_lock(
 ) -> AdmissionOutcome:
     """Run idempotency + the shared check-then-debit holding the PROJECT lock.
 
-    Reuses :func:`capacity_gate` (the same gate the promotion sweep replays). On a queueable
+    Reuses :func:`admission_gate` (the same gate the promotion sweep replays). On a queueable
     capacity denial with ``on_capacity=queue`` it enqueues; a budget denial hard-denies; on
     success it grants. The gate acquires the nested ``RESOURCE`` lock.
     """
@@ -327,7 +328,7 @@ async def _admit_under_project_lock(
     # innermost. A queue-position enqueue holds no host, but running it under the already-held
     # RESOURCE lock is harmless and keeps the check-then-debit + insert in one locked scope.
     async with advisory_xact_lock(conn, LockScope.RESOURCE, request.resource.id):
-        gate = await capacity_gate(conn, request, estimate=estimate)
+        gate = await admission_gate(conn, request, estimate=estimate)
         if gate.denial is not None:
             return await _deny_or_enqueue(conn, request, gate.denial)
         return await _grant(

@@ -25,6 +25,8 @@ from kdive.providers.ports import CaptureOutput, CrashOutput, CrashPostmortem
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
+from tests.mcp.json_data import data_str
+from tests.mcp.systems_support import provider_resolver
 
 _AUTH = Authorizing(principal="u", agent_session="s", project="proj")
 _TEST_CAPTURE_METHODS = frozenset({CaptureMethod.HOST_DUMP})
@@ -123,8 +125,10 @@ class _FakeCrash:
 
 def _vmcore_handlers(crash: CrashPostmortem | None = None) -> vmcore_tools.VmcoreHandlers:
     return vmcore_tools.VmcoreHandlers(
-        supported_methods=_TEST_CAPTURE_METHODS,
-        crash=crash or _FakeCrash(),
+        resolver=provider_resolver(
+            crash_postmortem=crash or _FakeCrash(),
+            supported_capture_methods=_TEST_CAPTURE_METHODS,
+        ),
         secret_registry=SecretRegistry(),
     )
 
@@ -269,7 +273,9 @@ def test_capture_handler_stores_rows_and_returns_ref(migrated_url: str) -> None:
             job = await _enqueue_capture(pool, sys_id)
             retriever = _FakeRetriever(sys_id)
             async with pool.connection() as conn:
-                ref = await vmcore_plane.capture_handler(conn, job, retriever)
+                ref = await vmcore_plane.capture_handler(
+                    conn, job, resolver=provider_resolver(retriever=retriever)
+                )
             assert ref == f"local/systems/{sys_id}/vmcore-host_dump"
             assert retriever.calls == 1
             assert await _artifact_count(pool, sys_id) == 2
@@ -292,7 +298,9 @@ def test_capture_handler_plumbs_method_to_retriever(migrated_url: str) -> None:
             job = await _enqueue_capture(pool, sys_id, method="host_dump")
             retriever = _FakeRetriever(sys_id)
             async with pool.connection() as conn:
-                await vmcore_plane.capture_handler(conn, job, retriever)
+                await vmcore_plane.capture_handler(
+                    conn, job, resolver=provider_resolver(retriever=retriever)
+                )
         assert retriever.methods == [CaptureMethod.HOST_DUMP]
 
     asyncio.run(_run())
@@ -310,7 +318,9 @@ def test_capture_handler_idempotent_skips_recapture(migrated_url: str) -> None:
                 )
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
-                ref = await vmcore_plane.capture_handler(conn, job, _NoCaptureRetriever())
+                ref = await vmcore_plane.capture_handler(
+                    conn, job, resolver=provider_resolver(retriever=_NoCaptureRetriever())
+                )
             assert ref == f"local/systems/{sys_id}/vmcore-host_dump"
             assert await _artifact_count(pool, sys_id) == 1  # no second row
 
@@ -330,7 +340,9 @@ def test_capture_handler_rejects_different_method(migrated_url: str) -> None:
             job = await _enqueue_capture(pool, sys_id, method="kdump")
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as exc:
-                    await vmcore_plane.capture_handler(conn, job, _NoCaptureRetriever())
+                    await vmcore_plane.capture_handler(
+                        conn, job, resolver=provider_resolver(retriever=_NoCaptureRetriever())
+                    )
             assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
             assert exc.value.details["existing_method"] == "host_dump"
             assert exc.value.details["requested_method"] == "kdump"
@@ -354,7 +366,9 @@ def test_capture_handler_no_core_raises_readiness(migrated_url: str) -> None:
             retriever = _FakeRetriever(sys_id, raises=err)
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as exc:
-                    await vmcore_plane.capture_handler(conn, job, retriever)
+                    await vmcore_plane.capture_handler(
+                        conn, job, resolver=provider_resolver(retriever=retriever)
+                    )
             assert exc.value.category is ErrorCategory.READINESS_FAILURE
             assert await _artifact_count(pool, sys_id) == 0
 
@@ -368,7 +382,9 @@ def test_capture_handler_missing_system_is_infra_failure(migrated_url: str) -> N
             job = await _enqueue_capture(pool, ghost)
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as exc:
-                    await vmcore_plane.capture_handler(conn, job, _FakeRetriever(ghost))
+                    await vmcore_plane.capture_handler(
+                        conn, job, resolver=provider_resolver(retriever=_FakeRetriever(ghost))
+                    )
         assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
     asyncio.run(_run())
@@ -383,7 +399,9 @@ def test_list_vmcores_redacted_only(migrated_url: str) -> None:
             sys_id = await seed_crashed_system(pool)
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
-                await vmcore_plane.capture_handler(conn, job, _FakeRetriever(sys_id))
+                await vmcore_plane.capture_handler(
+                    conn, job, resolver=provider_resolver(retriever=_FakeRetriever(sys_id))
+                )
             resp = await vmcore_tools.list_vmcores(pool, _ctx(), system_id=sys_id)
         keys = {r.refs["object"] for r in resp.items}
         assert keys == {f"local/systems/{sys_id}/vmcore-host_dump-redacted"}
@@ -397,7 +415,9 @@ def test_list_vmcores_requires_viewer_role(migrated_url: str) -> None:
             sys_id = await seed_crashed_system(pool)
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
-                await vmcore_plane.capture_handler(conn, job, _FakeRetriever(sys_id))
+                await vmcore_plane.capture_handler(
+                    conn, job, resolver=provider_resolver(retriever=_FakeRetriever(sys_id))
+                )
             with pytest.raises(AuthorizationError):
                 await vmcore_tools.list_vmcores(pool, _ctx(role=None), system_id=sys_id)
 
@@ -414,7 +434,9 @@ async def _crashed_with_built_run(pool: AsyncConnectionPool) -> str:
     )
     job = await _enqueue_capture(pool, sys_id)
     async with pool.connection() as conn:
-        await vmcore_plane.capture_handler(conn, job, _FakeRetriever(sys_id))
+        await vmcore_plane.capture_handler(
+            conn, job, resolver=provider_resolver(retriever=_FakeRetriever(sys_id))
+        )
     return run_id
 
 
@@ -441,8 +463,9 @@ def test_postmortem_crash_runs_and_redacts(migrated_url: str) -> None:
                 pool, _ctx(), run_id=run_id, commands=["log"]
             )
         assert resp.status != "error"
-        assert "hunter2" not in resp.data["transcript"]
-        assert "[REDACTED]" in resp.data["transcript"]
+        transcript = data_str(resp, "transcript")
+        assert "hunter2" not in transcript
+        assert "[REDACTED]" in transcript
         assert crash.kwargs["expected_build_id"] == "deadbeef"
 
     asyncio.run(_run())
@@ -494,7 +517,7 @@ def test_postmortem_triage_runs_and_relabels_actions(migrated_url: str) -> None:
             crash = _FakeCrash()
             resp = await _vmcore_handlers(crash).postmortem_triage(pool, _ctx(), run_id=run_id)
         assert resp.status != "error"
-        assert "hunter2" not in resp.data["transcript"]
+        assert "hunter2" not in data_str(resp, "transcript")
         assert resp.suggested_next_actions == ["postmortem.triage", "artifacts.list"]
         assert crash.kwargs["commands"] == ["log", "bt"]  # the fixed triage batch
 
@@ -536,9 +559,11 @@ def test_no_raw_vmcore_key_in_any_read_response(migrated_url: str) -> None:
             sys_id = await seed_crashed_system(pool)
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
-                await vmcore_plane.capture_handler(conn, job, _FakeRetriever(sys_id))
+                await vmcore_plane.capture_handler(
+                    conn, job, resolver=provider_resolver(retriever=_FakeRetriever(sys_id))
+                )
             refs: list[str] = []
-            from kdive.mcp.tools.catalog.artifacts_reads import artifacts_get, artifacts_list
+            from kdive.mcp.tools.catalog.artifacts.reads import artifacts_get, artifacts_list
 
             vmcores = await vmcore_tools.list_vmcores(pool, _ctx(), system_id=sys_id)
             for r in vmcores.items:
@@ -562,11 +587,7 @@ def test_no_raw_vmcore_key_in_any_read_response(migrated_url: str) -> None:
 
 def test_register_handlers_binds_capture_vmcore() -> None:
     registry = HandlerRegistry()
-    vmcore_plane.register_handlers(registry, retriever=_FakeRetriever("x"))
+    vmcore_plane.register_handlers(
+        registry, resolver=provider_resolver(retriever=_FakeRetriever("x"))
+    )
     assert registry.get(JobKind.CAPTURE_VMCORE) is not None
-
-
-def test_register_handlers_requires_resolver_or_retriever() -> None:
-    registry = HandlerRegistry()
-    with pytest.raises(RuntimeError, match="resolver or an explicit retriever"):
-        vmcore_plane.register_handlers(registry)

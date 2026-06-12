@@ -587,7 +587,7 @@ from uuid import UUID
 # parsing is vulnerable to XXE/billion-laughs even on self-rendered strings in tests.
 from defusedxml.ElementTree import fromstring as safe_fromstring
 
-from kdive.providers.local_libvirt.provisioning import console_log_path, render_domain_xml
+from kdive.providers.local_libvirt.lifecycle.provisioning import console_log_path, render_domain_xml
 
 
 def test_domain_xml_has_serial_console_with_log() -> None:
@@ -652,7 +652,7 @@ Append to `tests/providers/local_libvirt/test_install.py`:
 ```python
 from pathlib import Path
 
-from kdive.providers.local_libvirt.install import read_console_log
+from kdive.providers.local_libvirt.lifecycle.install import read_console_log
 
 
 def test_read_console_log_returns_bytes(tmp_path: Path) -> None:
@@ -781,7 +781,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from kdive.domain.capture import CaptureMethod
-from kdive.providers.local_libvirt.install import LocalLibvirtInstall, ReadinessResult
+from kdive.providers.local_libvirt.lifecycle.install import LocalLibvirtInstall, ReadinessResult
 
 
 class _FakeDomain:

@@ -18,14 +18,14 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.images.seed import PACKAGED_SEED_DATA_PATH
 from kdive.mcp.auth import current_context
-from kdive.mcp.responses import ToolResponse
+from kdive.mcp.responses import JsonValue, ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.provider_components.catalog import FixtureCatalog, load_fixture_catalog
 
 _OBJECT_ID = "fixtures"
 
 
-def _rows(catalog: FixtureCatalog) -> list[dict[str, str]]:
+def _rows(catalog: FixtureCatalog) -> list[JsonValue]:
     """Flatten every provider's visible rootfs entries into presence rows."""
     providers = sorted({entry.provider for entry in catalog.rootfs})
     return [
@@ -35,7 +35,7 @@ def _rows(catalog: FixtureCatalog) -> list[dict[str, str]]:
     ]
 
 
-async def list_fixtures_tool() -> ToolResponse:
+def list_fixtures_tool() -> ToolResponse:
     """Return the baseline rootfs catalog entries (provider, name, arch)."""
     catalog = load_fixture_catalog(PACKAGED_SEED_DATA_PATH)
     return ToolResponse.success(_OBJECT_ID, "ok", data={"fixtures": _rows(catalog)})
@@ -52,4 +52,4 @@ def register(app: FastMCP, _pool: AsyncConnectionPool) -> None:
     async def fixtures_list() -> ToolResponse:
         """List rootfs fixture catalog entries (provider, name, arch). Requires a valid token."""
         current_context()
-        return await list_fixtures_tool()
+        return list_fixtures_tool()

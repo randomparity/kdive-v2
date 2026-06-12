@@ -15,20 +15,29 @@ from defusedxml.ElementTree import fromstring
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
-from kdive.providers.remote_libvirt.provisioning import (
+from kdive.providers.remote_libvirt.lifecycle.gdb import used_gdb_ports
+from kdive.providers.remote_libvirt.lifecycle.provisioning import (
     KDIVE_METADATA_NS,
     QEMU_NS,
-    RemoteLibvirtProvision,
+    RemoteLibvirtProvisioning,
     allocate_gdb_port,
     overlay_volume_name,
     recorded_gdb_port,
     render_domain_xml,
     render_volume_xml,
 )
+from kdive.providers.remote_libvirt.lifecycle.readiness import wait_for_agent
+from kdive.providers.remote_libvirt.lifecycle.xml import agent_channel_connected, disk_pool
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.providers.remote_libvirt.conftest import RecordingBackend, libvirt_error
 
 SYSTEM_ID = UUID("00000000-0000-0000-0000-00000000beef")
+
+_DOMAIN_BOMB = """<?xml version="1.0"?>
+<!DOCTYPE domain [ <!ENTITY boom "47007"> ]>
+<domain><qemu:commandline xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0">
+<qemu:arg value="-gdb"/><qemu:arg value="tcp:127.0.0.1:&boom;"/>
+</qemu:commandline></domain>"""
 
 
 def _remote_profile(**section_overrides: Any) -> ProvisioningProfile:
@@ -193,6 +202,12 @@ def test_recorded_gdb_port_tolerates_absent_or_malformed(xml: str) -> None:
     assert recorded_gdb_port(xml) is None
 
 
+def test_tolerant_domain_xml_helpers_handle_forbidden_xml() -> None:
+    assert recorded_gdb_port(_DOMAIN_BOMB) is None
+    assert agent_channel_connected(_DOMAIN_BOMB) is False
+    assert disk_pool(_DOMAIN_BOMB) is None
+
+
 def test_allocate_lowest_free_port_skips_used() -> None:
     used = {"kdive-a": 47000, "kdive-b": 47002}
     assert allocate_gdb_port(used, own_name="kdive-new", port_min=47000, port_max=47005) == 47001
@@ -254,7 +269,222 @@ def test_allocate_does_not_reuse_own_excluded_port() -> None:
     )
 
 
-# --- RemoteLibvirtProvision orchestration over fakes ---------------------------------
+# --- focused remote-libvirt lifecycle collaborators ----------------------------------------
+
+
+def test_used_gdb_ports_reports_only_kdive_domains_with_recorded_ports() -> None:
+    conn = _conn_with_base()
+    with_port = render_domain_xml(
+        UUID(int=1),
+        _remote_profile(),
+        pool="default",
+        volume="with-port-overlay",
+        gdb_addr="10.0.0.5",
+        gdb_port=47000,
+    )
+    without_port = "<domain><name>kdive-without-port</name></domain>"
+    foreign = render_domain_xml(
+        UUID(int=2),
+        _remote_profile(),
+        pool="default",
+        volume="foreign-overlay",
+        gdb_addr="10.0.0.5",
+        gdb_port=47001,
+    ).replace("<name>kdive-", "<name>not-kdive-", 1)
+    conn.defineXML(with_port)
+    conn.defineXML(without_port)
+    conn.defineXML(foreign)
+
+    assert used_gdb_ports(conn) == {f"kdive-{UUID(int=1)}": 47000}
+
+
+def test_used_gdb_ports_skips_domain_vanishing_during_enumeration() -> None:
+    conn = _conn_with_base()
+    vanished = render_domain_xml(
+        UUID(int=1),
+        _remote_profile(),
+        pool="default",
+        volume="vanished-overlay",
+        gdb_addr="10.0.0.5",
+        gdb_port=47000,
+    )
+    live = render_domain_xml(
+        UUID(int=2),
+        _remote_profile(),
+        pool="default",
+        volume="live-overlay",
+        gdb_addr="10.0.0.5",
+        gdb_port=47001,
+    )
+    conn.defineXML(vanished).xml_error = libvirt_error(libvirt.VIR_ERR_NO_DOMAIN)
+    conn.defineXML(live)
+
+    assert used_gdb_ports(conn) == {f"kdive-{UUID(int=2)}": 47001}
+
+
+def test_used_gdb_ports_maps_list_failure_to_infrastructure_failure() -> None:
+    class _ListFails(FakeProvisionConn):
+        def listAllDomains(self, flags: int = 0) -> list[FakeDomain]:  # noqa: N802
+            raise libvirt_error(libvirt.VIR_ERR_INTERNAL_ERROR)
+
+    with pytest.raises(CategorizedError) as excinfo:
+        used_gdb_ports(_ListFails())
+
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+def test_used_gdb_ports_maps_xml_failure_to_infrastructure_failure() -> None:
+    conn = _conn_with_base()
+    domain = conn.defineXML(
+        render_domain_xml(
+            UUID(int=1),
+            _remote_profile(),
+            pool="default",
+            volume="broken-overlay",
+            gdb_addr="10.0.0.5",
+            gdb_port=47000,
+        )
+    )
+    domain.xml_error = libvirt_error(libvirt.VIR_ERR_INTERNAL_ERROR)
+
+    with pytest.raises(CategorizedError) as excinfo:
+        used_gdb_ports(conn)
+
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+def test_wait_for_agent_returns_when_live_xml_reports_connected() -> None:
+    conn = _conn_with_base()
+    domain = conn.defineXML(
+        render_domain_xml(
+            SYSTEM_ID,
+            _remote_profile(),
+            pool="default",
+            volume=overlay_volume_name(SYSTEM_ID),
+            gdb_addr="10.0.0.5",
+            gdb_port=47000,
+        )
+    )
+    domain.active = True
+    domain.agent_states = ["disconnected", "connected"]
+    sleeps: list[float] = []
+
+    wait_for_agent(
+        conn,
+        DOMAIN_NAME,
+        monotonic=_ticker(),
+        sleep=sleeps.append,
+        timeout_s=10.0,
+        poll_s=0.25,
+    )
+
+    assert sleeps == [0.25]
+
+
+def test_wait_for_agent_fails_when_domain_exits_before_agent_connects() -> None:
+    conn = _conn_with_base()
+    domain = conn.defineXML(
+        render_domain_xml(
+            SYSTEM_ID,
+            _remote_profile(),
+            pool="default",
+            volume=overlay_volume_name(SYSTEM_ID),
+            gdb_addr="10.0.0.5",
+            gdb_port=47000,
+        )
+    )
+    domain.active = False
+
+    with pytest.raises(CategorizedError) as excinfo:
+        wait_for_agent(
+            conn,
+            DOMAIN_NAME,
+            monotonic=_ticker(),
+            sleep=lambda _s: None,
+            timeout_s=10.0,
+            poll_s=0.25,
+        )
+
+    assert excinfo.value.category is ErrorCategory.PROVISIONING_FAILURE
+    assert "exited" in str(excinfo.value).lower()
+
+
+def test_wait_for_agent_times_out_without_connection() -> None:
+    conn = _conn_with_base()
+    domain = conn.defineXML(
+        render_domain_xml(
+            SYSTEM_ID,
+            _remote_profile(),
+            pool="default",
+            volume=overlay_volume_name(SYSTEM_ID),
+            gdb_addr="10.0.0.5",
+            gdb_port=47000,
+        )
+    )
+    domain.active = True
+    domain.agent_states = ["disconnected"] * 10
+    sleeps: list[float] = []
+
+    with pytest.raises(CategorizedError) as excinfo:
+        wait_for_agent(
+            conn,
+            DOMAIN_NAME,
+            monotonic=_ticker(),
+            sleep=sleeps.append,
+            timeout_s=2.0,
+            poll_s=0.5,
+        )
+
+    assert excinfo.value.category is ErrorCategory.PROVISIONING_FAILURE
+    assert "2s" in str(excinfo.value)
+    assert sleeps == [0.5]
+
+
+def test_wait_for_agent_maps_lookup_failure_to_infrastructure_failure() -> None:
+    conn = _conn_with_base()
+
+    with pytest.raises(CategorizedError) as excinfo:
+        wait_for_agent(
+            conn,
+            DOMAIN_NAME,
+            monotonic=_ticker(),
+            sleep=lambda _s: None,
+            timeout_s=10.0,
+            poll_s=0.25,
+        )
+
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+def test_wait_for_agent_maps_xml_failure_to_infrastructure_failure() -> None:
+    conn = _conn_with_base()
+    domain = conn.defineXML(
+        render_domain_xml(
+            SYSTEM_ID,
+            _remote_profile(),
+            pool="default",
+            volume=overlay_volume_name(SYSTEM_ID),
+            gdb_addr="10.0.0.5",
+            gdb_port=47000,
+        )
+    )
+    domain.active = True
+    domain.xml_error = libvirt_error(libvirt.VIR_ERR_INTERNAL_ERROR)
+
+    with pytest.raises(CategorizedError) as excinfo:
+        wait_for_agent(
+            conn,
+            DOMAIN_NAME,
+            monotonic=_ticker(),
+            sleep=lambda _s: None,
+            timeout_s=10.0,
+            poll_s=0.25,
+        )
+
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+# --- RemoteLibvirtProvisioning orchestration over fakes ------------------------------
 
 
 class FakeVolume:
@@ -441,7 +671,7 @@ def _provisioner(
     tmp_path: Path,
     config: RemoteLibvirtConfig | None = None,
     **overrides: Any,
-) -> tuple[RemoteLibvirtProvision, list[str]]:
+) -> tuple[RemoteLibvirtProvisioning, list[str]]:
     opened: list[str] = []
 
     def _open(uri: str) -> FakeProvisionConn:
@@ -458,7 +688,7 @@ def _provisioner(
         "monotonic": _ticker(),
         **overrides,
     }
-    return RemoteLibvirtProvision(**kwargs), opened
+    return RemoteLibvirtProvisioning(**kwargs), opened
 
 
 def test_provision_defines_starts_and_waits_for_agent(tmp_path: Path) -> None:

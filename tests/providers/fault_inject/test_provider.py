@@ -8,25 +8,25 @@ from uuid import UUID
 
 import pytest
 
-import kdive.providers.fault_inject.lifecycle.provider as provider_module
+import kdive.providers.fault_inject.lifecycle.connect as connect_module
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction, Sensitivity
 from kdive.profiles.build import ServerBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
-from kdive.providers.fault_inject.inventory import FaultInjectInventory
-from kdive.providers.fault_inject.lifecycle.provider import (
-    FaultInjectBuild,
-    FaultInjectConnect,
-    FaultInjectControl,
+from kdive.providers.fault_inject.build import FaultInjectBuild
+from kdive.providers.fault_inject.debug.gdb import (
     FaultInjectDebugEngine,
-    FaultInjectInstall,
-    FaultInjectIntrospect,
-    FaultInjectProvision,
-    FaultInjectRetrieve,
     fault_inject_attach_seam,
 )
+from kdive.providers.fault_inject.debug.introspect import FaultInjectIntrospect
+from kdive.providers.fault_inject.inventory import FaultInjectInventory
+from kdive.providers.fault_inject.lifecycle.connect import FaultInjectConnect
+from kdive.providers.fault_inject.lifecycle.control import FaultInjectControl
+from kdive.providers.fault_inject.lifecycle.install import FaultInjectInstall
+from kdive.providers.fault_inject.lifecycle.provisioning import FaultInjectProvisioning
+from kdive.providers.fault_inject.retrieve import FaultInjectRetrieve
 from kdive.providers.ports import InstallRequest, SystemHandle
 from kdive.providers.ports.lifecycle import TransportHandleData
 
@@ -50,7 +50,7 @@ class _FakeStore:
 
 def test_provision_returns_a_synthetic_domain_and_records_it_as_owned() -> None:
     inventory = FaultInjectInventory()
-    provision = FaultInjectProvision(inventory)
+    provision = FaultInjectProvisioning(inventory)
 
     domain = provision.provision(_SYSTEM, profile=_PROVISIONING_PROFILE)
 
@@ -61,7 +61,7 @@ def test_provision_returns_a_synthetic_domain_and_records_it_as_owned() -> None:
 
 def test_teardown_forgets_the_domain_so_it_is_no_longer_owned() -> None:
     inventory = FaultInjectInventory()
-    provision = FaultInjectProvision(inventory)
+    provision = FaultInjectProvisioning(inventory)
     domain = provision.provision(_SYSTEM, profile=_PROVISIONING_PROFILE)
 
     provision.teardown(domain)
@@ -71,7 +71,7 @@ def test_teardown_forgets_the_domain_so_it_is_no_longer_owned() -> None:
 
 def test_reprovision_leaves_the_system_owning_exactly_one_domain() -> None:
     inventory = FaultInjectInventory()
-    provision = FaultInjectProvision(inventory)
+    provision = FaultInjectProvisioning(inventory)
     provision.provision(_SYSTEM, profile=_PROVISIONING_PROFILE)
 
     second = provision.reprovision(_SYSTEM, profile=_PROVISIONING_PROFILE)
@@ -128,9 +128,9 @@ def test_synthetic_port_includes_documented_upper_bound(
         assert digest_size == 2
         return _MaxDigest()
 
-    monkeypatch.setattr(provider_module.hashlib, "blake2b", blake2b)
+    monkeypatch.setattr(connect_module.hashlib, "blake2b", blake2b)
 
-    assert provider_module._synthetic_port("fault-inject-domain") == 65535
+    assert connect_module.synthetic_port("fault-inject-domain") == 65535
 
 
 def test_open_transport_returns_a_decodable_loopback_handle() -> None:
@@ -279,3 +279,20 @@ def test_debug_engine_set_and_list_breakpoints_round_trip(tmp_path: Path) -> Non
     listed = engine.list_breakpoints(attachment)
 
     assert ref.number in {b.number for b in listed}
+
+
+def test_debug_engine_breakpoints_are_isolated_per_attachment(tmp_path: Path) -> None:
+    engine = FaultInjectDebugEngine()
+    first = fault_inject_attach_seam(
+        host="127.0.0.1", port=1234, run_id=str(_RUN), transcript_path=tmp_path / "first.log"
+    )
+    second = fault_inject_attach_seam(
+        host="127.0.0.1", port=1234, run_id=str(_RUN), transcript_path=tmp_path / "second.log"
+    )
+
+    first_ref = engine.set_breakpoint(first, "vfs_read")
+    second_ref = engine.set_breakpoint(second, "do_exit")
+    engine.clear_breakpoint(first, first_ref.number)
+
+    assert [ref.number for ref in engine.list_breakpoints(first)] == []
+    assert [ref.number for ref in engine.list_breakpoints(second)] == [second_ref.number]

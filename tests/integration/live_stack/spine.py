@@ -28,8 +28,9 @@ from pathlib import Path
 import psycopg
 
 from kdive.domain.cost import quantize_kcu
-from kdive.mcp.responses import ToolResponse
+from kdive.mcp.responses import JsonValue, ToolResponse
 from tests.integration.live_stack.harness import LiveStackClient, OidcIssuer, mint_token
+from tests.mcp.json_data import data_str
 
 # Above the 300s jobs.wait cap and the 30s reconciler interval; teardown is the slowest phase.
 DRAIN_DEADLINE_S = 600.0
@@ -262,7 +263,7 @@ async def provision_to_ready(
         ),
         phase_name,
     )
-    system_id = env.data["system_id"]  # in data, NOT object_id (the job id)
+    system_id = data_str(env, "system_id")  # in data, NOT object_id (the job id)
     await await_system_state(client, phase_name, system_id, "ready")
     return system_id
 
@@ -368,7 +369,7 @@ def write_report_artifact(payload: dict[str, object], *, name: str) -> Path:
     return path
 
 
-def find_project_row(rows: list[dict[str, str]], project: str) -> dict[str, str]:
+def find_project_row(rows: list[dict[str, JsonValue]], project: str) -> dict[str, JsonValue]:
     """Return the rollup row for ``project``, or fail the phase if absent (no spend rolled up)."""
     for row in rows:
         if row.get("project") == project:

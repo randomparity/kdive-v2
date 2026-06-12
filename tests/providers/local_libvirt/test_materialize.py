@@ -7,12 +7,18 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import _UploadRootfs
-from kdive.provider_components.references import CatalogComponentRef, LocalComponentRef
+from kdive.provider_components.references import (
+    ArtifactComponentRef,
+    CatalogComponentRef,
+    LocalComponentRef,
+)
 from kdive.providers.local_libvirt.lifecycle.materialize import (
     RootfsMaterializationContext,
     RootfsUploadContext,
     materialize_rootfs_base,
 )
+from kdive.providers.local_libvirt.lifecycle.provisioning import LocalLibvirtProvisioning
+from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 
 def test_materialize_local_rootfs_validates_allowed_root(tmp_path: Path) -> None:
@@ -82,3 +88,14 @@ def test_materialize_uploaded_rootfs_requires_system_context(tmp_path: Path) -> 
         )
 
     assert error.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_provider_rejects_artifact_rootfs_before_materializer(tmp_path: Path) -> None:
+    provisioner = LocalLibvirtProvisioning(
+        connect=lambda: FakeLibvirtConn(), allowed_roots=[tmp_path]
+    )
+
+    with pytest.raises(CategorizedError) as error:
+        provisioner.validate_rootfs_ref(ArtifactComponentRef(kind="artifact", artifact_id=uuid4()))
+
+    assert error.value.category is ErrorCategory.MISSING_DEPENDENCY

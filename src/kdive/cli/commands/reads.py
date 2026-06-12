@@ -31,6 +31,11 @@ async def _fetch(name: str, arguments: Mapping[str, object]) -> Mapping[str, obj
     return result.data
 
 
+async def fetch_read_envelope(name: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
+    """Call read-only tool ``name`` for sibling command modules."""
+    return await _fetch(name, arguments)
+
+
 def _flatten(envelope: object) -> dict[str, object]:
     """Flatten one envelope into a row: ``id``/``state`` plus the envelope's ``data``.
 
@@ -54,6 +59,11 @@ def _rows(envelope: Mapping[str, object]) -> list[dict[str, object]]:
     if not isinstance(items, list):
         return []
     return [_flatten(item) for item in items]
+
+
+def flatten_collection_rows(envelope: Mapping[str, object]) -> list[dict[str, object]]:
+    """Flatten a collection response envelope for sibling command modules."""
+    return _rows(envelope)
 
 
 def _payload(args: argparse.Namespace, *names: str) -> dict[str, object]:
@@ -81,47 +91,38 @@ async def _record(name: str, args: argparse.Namespace, payload: Mapping[str, obj
 
 
 async def resources_list(args: argparse.Namespace) -> int:
-    """List Resources (optionally filtered by ``--kind``)."""
     return await _list("resources.list", args, ["id", "kind", "host"], "kind")
 
 
 async def resources_describe(args: argparse.Namespace) -> int:
-    """Describe one Resource by id."""
     return await _record("resources.describe", args, {"resource_id": args.resource_id})
 
 
 async def allocations_list(args: argparse.Namespace) -> int:
-    """List a project's Allocations."""
     return await _list("allocations.list", args, ["id", "project", "system", "state"], "project")
 
 
 async def allocations_get(args: argparse.Namespace) -> int:
-    """Get one Allocation by id."""
     return await _record("allocations.get", args, {"allocation_id": args.allocation_id})
 
 
 async def systems_list(args: argparse.Namespace) -> int:
-    """List the caller's Systems (optionally filtered by ``--state``)."""
     return await _list("systems.list", args, ["id", "project", "state"], "state")
 
 
 async def systems_show(args: argparse.Namespace) -> int:
-    """Show one System by id."""
     return await _record("systems.get", args, {"system_id": args.system_id})
 
 
 async def runs_show(args: argparse.Namespace) -> int:
-    """Show one Run by id."""
     return await _record("runs.get", args, {"run_id": args.run_id})
 
 
 async def jobs_list(args: argparse.Namespace) -> int:
-    """List the newest Jobs visible to the caller."""
     return await _list("jobs.list", args, ["id", "kind", "state"])
 
 
 async def jobs_get(args: argparse.Namespace) -> int:
-    """Get one Job by id."""
     return await _record("jobs.get", args, {"job_id": args.job_id})
 
 
@@ -160,10 +161,8 @@ async def fixtures_list(args: argparse.Namespace) -> int:
 
 
 async def ledger_show(args: argparse.Namespace) -> int:
-    """Show a project's usage rollup (the accounting ledger)."""
     return await _record("accounting.usage_project", args, {"project": args.project})
 
 
 async def inventory_show(args: argparse.Namespace) -> int:
-    """Show the cross-project inventory summary (optionally filtered by ``--project``)."""
     return await _list("inventory.list", args, ["key", "backend", "status"], "project")

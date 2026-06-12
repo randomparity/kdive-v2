@@ -25,6 +25,7 @@ from kdive.provider_components.catalog import (
     fixture_catalog_path_from_env,
     load_fixture_catalog,
 )
+from kdive.provider_components.visibility import PUBLIC_VISIBILITY
 
 PACKAGED_SEED_DATA_PATH = Path(__file__).parent / "seed_data"
 
@@ -155,7 +156,7 @@ async def seed_defined_rootfs(conn: AsyncConnection, path: Path | None = None) -
     catalog = load_fixture_catalog(_seed_path(path))
     registered = 0
     for entry in catalog.rootfs:
-        if entry.visibility != "public":
+        if entry.visibility != PUBLIC_VISIBILITY:
             continue
         if await _identity_present(conn, entry):
             continue

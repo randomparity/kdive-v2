@@ -324,7 +324,7 @@ git mv src/kdive/providers/local_libvirt/debug/execution.py src/kdive/providers/
 git mv src/kdive/providers/local_libvirt/debug/transcript.py src/kdive/providers/debug_common/transcript.py
 ```
 
-Then in `debug_common/gdbmi.py`: update its internal imports (`from kdive.providers.local_libvirt.debug.execution import ...` → `from kdive.providers.debug_common.execution import ...`, likewise transcript and the RSP/introspect moves). Update `execution.py`/`transcript.py` internal imports the same way. **Remove** from `gdbmi.py` the local-only `default_attach_seam` and `_resolve_debuginfo_ref` — they go back into local (Step 3). The module docstring's "Local-libvirt" framing becomes provider-neutral.
+Then in `debug_common/gdbmi.py`: update its internal imports (`from kdive.providers.local_libvirt.debug.gdbmi.execution import ...` → `from kdive.providers.debug_common.execution import ...`, likewise transcript and the RSP/introspect moves). Update `execution.py`/`transcript.py` internal imports the same way. **Remove** from `gdbmi.py` the local-only `default_attach_seam` and `_resolve_debuginfo_ref` — they go back into local (Step 3). The module docstring's "Local-libvirt" framing becomes provider-neutral.
 
 - [ ] **Step 2: Parametrize the host policy (the one behavioral change)**
 
@@ -405,7 +405,7 @@ In `composition.py`, change:
 
 ```python
 from kdive.providers.debug_common.gdbmi import GdbMiEngine as LocalGdbMiEngine
-from kdive.providers.local_libvirt.debug.debug_gdbmi import default_attach_seam
+from kdive.providers.local_libvirt.debug.gdbmi.debug_gdbmi import default_attach_seam
 ```
 
 (the `default_attach_seam` import stays at the local module; only the engine import moves).

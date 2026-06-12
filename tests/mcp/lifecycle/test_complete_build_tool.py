@@ -3,19 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 
 from kdive.db import upload_manifest
 from kdive.db.repositories import RUNS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.state import RunState
-from kdive.mcp.tools.catalog.artifacts_uploads import create_run_upload
+from kdive.mcp.auth import RequestContext
+from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools.catalog.artifacts.uploads import (
+    ArtifactDeclaration,
+)
+from kdive.mcp.tools.catalog.artifacts.uploads import (
+    create_run_upload as _create_run_upload,
+)
 from kdive.mcp.tools.lifecycle.runs.build import RunBuildHandlers
 from kdive.provider_components.artifacts import HeadResult, PresignedUpload, PresignPutRequest
+from kdive.provider_components.build_results import BuildOutput
 from kdive.provider_components.uploads import ManifestEntry
 from kdive.provider_components.validation import ComponentSourceCapabilities
-from kdive.providers.ports import BuildOutput
 from tests.mcp.complete_build_support import (
     FakeValidator as _FakeValidator,
 )
@@ -37,6 +46,7 @@ from tests.mcp.complete_build_support import (
 from tests.mcp.complete_build_support import (
     seed_server_run as _seed_server_run,
 )
+from tests.mcp.systems_support import provider_resolver
 
 _BZIMAGE_HEAD = b"\x00" * 0x202 + b"HdrS"
 _EXTERNAL_PROFILE_WITH_REQUIREMENTS = {
@@ -52,6 +62,24 @@ _TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
     accepted_component_sources={"config": frozenset({"local"})},
 )
 _DEFAULT_BUILD_HANDLERS = RunBuildHandlers(_TEST_COMPONENT_SOURCES)
+
+
+async def create_run_upload(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    run_id: str,
+    artifacts: list[ArtifactDeclaration],
+    store: Any = None,
+) -> ToolResponse:
+    return await _create_run_upload(
+        pool,
+        ctx,
+        run_id=run_id,
+        artifacts=artifacts,
+        resolver=provider_resolver(),
+        store=store,
+    )
 
 
 def _build_handlers(validator) -> RunBuildHandlers:

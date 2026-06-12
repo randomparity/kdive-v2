@@ -7,14 +7,15 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.repositories import ALLOCATIONS, BUDGETS, QUOTAS
+from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Allocation, Budget, Job, JobKind, Quota
+from kdive.domain.models import Allocation, Budget, Job, JobKind, Quota, ResourceKind
 from kdive.domain.state import AllocationState
 from kdive.jobs import queue
 from kdive.jobs.payloads import SystemPayload
@@ -23,11 +24,15 @@ from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers
 from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers
 from kdive.provider_components.validation import ComponentSourceCapabilities
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
+from kdive.providers.resolver import ProviderResolver
+from kdive.providers.runtime import ProviderRuntime
 from kdive.security.authz.rbac import Role
 from kdive.services.resources.discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 TEST_DT = datetime(2026, 1, 1, tzinfo=UTC)
+TEST_PROFILE_POLICY = LocalLibvirtProfilePolicy()
 TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
     provider="test-provider",
     accepted_component_sources={
@@ -36,10 +41,12 @@ TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
     },
 )
 SYSTEM_PROVISION_HANDLERS = SystemProvisionHandlers(
+    TEST_PROFILE_POLICY,
     TEST_COMPONENT_SOURCES,
     lambda _: None,
 )
 SYSTEM_ADMIN_HANDLERS = SystemAdminHandlers(
+    TEST_PROFILE_POLICY,
     TEST_COMPONENT_SOURCES,
     lambda _: None,
 )
@@ -79,6 +86,47 @@ def upload_profile() -> dict[str, Any]:
     profile = provisioning_profile()
     profile["provider"]["local-libvirt"]["rootfs"] = {"kind": "upload"}
     return profile
+
+
+def provider_resolver(
+    *,
+    provisioner: object | None = None,
+    builder: object | None = None,
+    installer: object | None = None,
+    booter: object | None = None,
+    controller: object | None = None,
+    retriever: object | None = None,
+    crash_postmortem: object | None = None,
+    supported_capture_methods: frozenset[CaptureMethod] | None = None,
+    profile_policy: object | None = None,
+) -> ProviderResolver:
+    """Return a local-libvirt resolver with optional fake runtime ports."""
+    unused_port = cast(Any, object())
+    runtime = ProviderRuntime(
+        profile_policy=cast(
+            Any, profile_policy if profile_policy is not None else TEST_PROFILE_POLICY
+        ),
+        provisioner=cast(Any, provisioner if provisioner is not None else unused_port),
+        builder=cast(Any, builder if builder is not None else unused_port),
+        installer=cast(Any, installer if installer is not None else unused_port),
+        booter=cast(Any, booter if booter is not None else unused_port),
+        connector=unused_port,
+        controller=cast(Any, controller if controller is not None else unused_port),
+        retriever=cast(Any, retriever if retriever is not None else unused_port),
+        crash_postmortem=cast(
+            Any, crash_postmortem if crash_postmortem is not None else unused_port
+        ),
+        vmcore_introspector=unused_port,
+        live_introspector=unused_port,
+        supported_capture_methods=(
+            supported_capture_methods
+            if supported_capture_methods is not None
+            else frozenset(CaptureMethod)
+        ),
+        component_sources=TEST_COMPONENT_SOURCES,
+        rootfs_validator=lambda _: None,
+    )
+    return ProviderResolver({ResourceKind.LOCAL_LIBVIRT: runtime})
 
 
 def ctx(

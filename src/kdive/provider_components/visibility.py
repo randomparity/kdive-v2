@@ -5,3 +5,5 @@ from __future__ import annotations
 from typing import Literal
 
 type Visibility = Literal["public", "project", "host-policy"]
+
+PUBLIC_VISIBILITY: Visibility = "public"

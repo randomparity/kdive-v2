@@ -123,7 +123,7 @@ In `tests/providers/local_libvirt/test_rootfs_resolve.py`, replace the import li
 Imports become:
 
 ```python
-from kdive.providers.local_libvirt.provisioning import (
+from kdive.providers.local_libvirt.lifecycle.provisioning import (
     reject_rootfs_without_upload_window,
     resolve_rootfs_path,
     validate_rootfs_reference,
@@ -246,7 +246,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 `validate_profile` no longer rejects `upload` (Task 2), so `reprovision_system` must reject it explicitly — a `ready` System has no upload window.
 
 **Files:**
-- Modify: `src/kdive/mcp/tools/systems.py` — the `from kdive.providers.local_libvirt.provisioning import (...)` block, and the validation block inside `reprovision_system`. (Anchor edits on these snippets, not line numbers — earlier tasks shift line numbers in this file.)
+- Modify: `src/kdive/mcp/tools/systems.py` — the `from kdive.providers.local_libvirt.lifecycle.provisioning import (...)` block, and the validation block inside `reprovision_system`. (Anchor edits on these snippets, not line numbers — earlier tasks shift line numbers in this file.)
 - Test: `tests/mcp/test_systems_tools.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -279,10 +279,10 @@ Expected: FAIL — without the guard, validation passes and the System advances 
 
 - [ ] **Step 3: Import the guard and call it in `reprovision_system`**
 
-In `src/kdive/mcp/tools/systems.py`, extend the `from kdive.providers.local_libvirt.provisioning import (...)` block to add `reject_rootfs_without_upload_window`:
+In `src/kdive/mcp/tools/systems.py`, extend the `from kdive.providers.local_libvirt.lifecycle.provisioning import (...)` block to add `reject_rootfs_without_upload_window`:
 
 ```python
-from kdive.providers.local_libvirt.provisioning import (
+from kdive.providers.local_libvirt.lifecycle.provisioning import (
     LocalLibvirtProvisioning,
     Provisioner,
     domain_name_for,

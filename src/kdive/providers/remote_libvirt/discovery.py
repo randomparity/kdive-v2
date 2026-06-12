@@ -9,24 +9,20 @@ The env config is authoritative for connections; the capabilities row is adverti
 (insert-if-absent, refreshed only by re-registration). Later issues must not read
 connection config from the row without an explicit upsert design.
 
-The XML parse is duplicated from local-libvirt deliberately: no shared
-``libvirt_common`` layer (ADR-0076 — local-libvirt is headed for removal). PCIe
-enumeration and ``list_owned`` reaping are deferred to the provisioning issue, which
-creates the domains they would inspect.
+PCIe enumeration and ``list_owned`` reaping are deferred to the provisioning issue,
+which creates the domains they would inspect.
 """
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
-
-from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from kdive.domain.discovery import ResourceRecord
 from kdive.domain.models import ResourceKind
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import ResourceStatus
+from kdive.providers.libvirt_xml import parse_capabilities_arch
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
 from kdive.providers.remote_libvirt.transport import (
     OpenConnection,
@@ -35,20 +31,6 @@ from kdive.providers.remote_libvirt.transport import (
 )
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
-
-
-def _parse_arch(caps_xml: str) -> str:
-    """Read ``<host><cpu><arch>``; ``unknown`` if absent or malformed.
-
-    Parsed with ``defusedxml`` — the XML crosses a trust boundary (it is emitted by the
-    remote libvirtd process), so entity-expansion DoS is neutralized; a malformed
-    document returns ``unknown``, an *attack* document raises (fail loud).
-    """
-    try:
-        root: ET.Element = _safe_fromstring(caps_xml)
-    except ET.ParseError:
-        return "unknown"
-    return root.findtext("./host/cpu/arch") or "unknown"
 
 
 class RemoteLibvirtDiscovery:
@@ -96,7 +78,7 @@ class RemoteLibvirtDiscovery:
             pki_base_dir=self._pki_base_dir,
         ) as conn:
             info = conn.getInfo()
-            arch = _parse_arch(conn.getCapabilities())
+            arch = parse_capabilities_arch(conn.getCapabilities())
         refs = self._config.cert_refs
         capabilities: dict[str, Any] = {
             "arch": arch,

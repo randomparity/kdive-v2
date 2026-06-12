@@ -14,7 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.catalog.artifacts_reads import (
+from kdive.mcp.tools.catalog.artifacts.reads import (
     ArtifactReadHandlers,
     ArtifactSearchRequest,
     artifacts_get,
@@ -23,6 +23,7 @@ from kdive.mcp.tools.catalog.artifacts_reads import (
 from kdive.provider_components.artifacts import FetchedArtifact, HeadResult
 from kdive.security.authz.rbac import AuthorizationError, Role
 from tests.mcp._seed import seed_crashed_system
+from tests.mcp.json_data import data_str
 
 
 def _ctx(
@@ -161,7 +162,7 @@ def test_artifacts_search_text_returns_bounded_matches(migrated_url: str) -> Non
             )
         assert resp.status == "searched"
         assert resp.data["match_count"] == "1"
-        matches = json.loads(resp.data["matches_json"])
+        matches = json.loads(data_str(resp, "matches_json"))
         assert matches[0]["line"] == 2
         assert matches[0]["before"] == ["before"]
         assert matches[0]["after"] == ["after"]

@@ -26,37 +26,10 @@ from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
+from kdive.mcp.tools._resource_envelopes import resource_config_error, resource_envelope
 from kdive.security.authz.context import RequestContext
 
 _log = logging.getLogger(__name__)
-
-_FLAT_CAP_KEYS = ("arch", "vcpus", "memory_mb", "concurrent_allocation_cap")
-
-
-def _error(object_id: str) -> ToolResponse:
-    return ToolResponse.failure(object_id, ErrorCategory.CONFIGURATION_ERROR)
-
-
-def _resource_capability_data(resource: Resource) -> dict[str, str]:
-    """Flatten the capabilities jsonb to string values for the envelope."""
-    caps = resource.capabilities
-    data: dict[str, str] = {"kind": resource.kind.value}
-    for key in _FLAT_CAP_KEYS:
-        if key in caps:
-            data[key] = str(caps[key])
-    transports = caps.get("transports")
-    if isinstance(transports, (list, tuple)):
-        data["transports"] = ",".join(str(t) for t in transports)
-    return data
-
-
-def _resource_envelope(resource: Resource, *, next_actions: list[str]) -> ToolResponse:
-    return ToolResponse.success(
-        str(resource.id),
-        resource.status.value,
-        suggested_next_actions=next_actions,
-        data=_resource_capability_data(resource),
-    )
 
 
 async def _fetch_resource_rows(
@@ -91,7 +64,7 @@ async def list_resources_tool(
         try:
             resource_kind = ResourceKind(kind)
         except ValueError:
-            return ToolResponse.failure("resources.list", ErrorCategory.CONFIGURATION_ERROR)
+            return resource_config_error("resources.list")
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             rows = await _fetch_resource_rows(conn, resource_kind)
@@ -100,7 +73,7 @@ async def list_resources_tool(
             try:
                 resource = Resource.model_validate(row)
                 responses.append(
-                    _resource_envelope(
+                    resource_envelope(
                         resource, next_actions=["resources.describe", "allocations.request"]
                     )
                 )
@@ -126,13 +99,13 @@ async def describe_resource(
     try:
         uid = UUID(resource_id)
     except ValueError:
-        return _error(resource_id)
+        return resource_config_error(resource_id)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
             resource = await RESOURCES.get(conn, uid)
         if resource is None:
-            return _error(resource_id)
-        envelope = _resource_envelope(resource, next_actions=["allocations.request"])
+            return resource_config_error(resource_id)
+        envelope = resource_envelope(resource, next_actions=["allocations.request"])
         envelope.data["pool"] = resource.pool
         envelope.data["cost_class"] = resource.cost_class
         envelope.data["host_uri"] = resource.host_uri

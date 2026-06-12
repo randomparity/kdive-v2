@@ -32,10 +32,11 @@ from kdive.jobs.handlers import runs as runs_handlers
 from kdive.jobs.handlers import vmcore as vmcore_plane
 from kdive.jobs.payloads import Authorizing, BuildPayload, CaptureVmcorePayload
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.catalog.artifacts_reads import artifacts_get, artifacts_list
+from kdive.mcp.tools.catalog.artifacts.reads import artifacts_get, artifacts_list
 from kdive.mcp.tools.lifecycle import control as control_tools
 from kdive.mcp.tools.lifecycle import vmcore as vmcore_tools
-from kdive.providers.ports import BuildOutput, CaptureOutput, CrashOutput
+from kdive.provider_components.build_results import BuildOutput
+from kdive.providers.ports import CaptureOutput, CrashOutput
 from kdive.security.authz.rbac import Role
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.integration._seed import (
@@ -45,6 +46,8 @@ from tests.integration._seed import (
     seed_system,
 )
 from tests.integration.conftest import open_pool, request_context
+from tests.mcp.json_data import data_str
+from tests.mcp.systems_support import provider_resolver
 
 _AUTH = Authorizing(principal="user-1", agent_session="sess-1", project="proj")
 
@@ -139,7 +142,9 @@ def test_force_crash_refused_when_gate_check_absent(
                 pool, alloc_id, SystemState.READY, destructive_ops=ops, domain_name="kdive-x"
             )
             ctx = _admin_ctx() if is_admin else request_context(Role.OPERATOR)
-            resp = await control_tools.force_crash_system(pool, ctx, system_id=sys_id)
+            resp = await control_tools.force_crash_system(
+                pool, ctx, system_id=sys_id, resolver=provider_resolver()
+            )
             assert resp.status == "error"
             assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -172,7 +177,9 @@ def test_force_crash_allowed_when_all_gate_checks_present(migrated_url: str) -> 
                 destructive_ops=["force_crash"],
                 domain_name="kdive-x",
             )
-            resp = await control_tools.force_crash_system(pool, _admin_ctx(), system_id=sys_id)
+            resp = await control_tools.force_crash_system(
+                pool, _admin_ctx(), system_id=sys_id, resolver=provider_resolver()
+            )
             assert resp.status == "queued"
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -206,10 +213,14 @@ def test_completed_step_replay_does_not_re_execute(migrated_url: str) -> None:
             job = await _enqueue_build(pool, run_id)
             builder = _RecordingBuilder()
             async with pool.connection() as conn:
-                await runs_handlers.build_handler(conn, job, builder)
+                await runs_handlers.build_handler(
+                    conn, job, resolver=provider_resolver(builder=builder)
+                )
             # Replay the same job: the (run_id, "build") ledger short-circuits the rebuild.
             async with pool.connection() as conn:
-                await runs_handlers.build_handler(conn, job, builder)
+                await runs_handlers.build_handler(
+                    conn, job, resolver=provider_resolver(builder=builder)
+                )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM runs WHERE id = %s", (run_id,))
                 run_row = await cur.fetchone()
@@ -249,12 +260,16 @@ def test_planted_secret_is_redacted(migrated_url: str) -> None:
             sys_id, run_id = await seed_crashed_system_with_run(pool)
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
-                await vmcore_plane.capture_handler(conn, job, _SecretBearingRetriever(sys_id))
+                await vmcore_plane.capture_handler(
+                    conn, job, resolver=provider_resolver(retriever=_SecretBearingRetriever(sys_id))
+                )
             secret_registry = SecretRegistry()
             secret_registry.register(_SecretBearingCrash.PLANTED_SECRET, scope="test")
             handlers = vmcore_tools.VmcoreHandlers(
-                supported_methods=frozenset({CaptureMethod.HOST_DUMP}),
-                crash=_SecretBearingCrash(),
+                resolver=provider_resolver(
+                    crash_postmortem=_SecretBearingCrash(),
+                    supported_capture_methods=frozenset({CaptureMethod.HOST_DUMP}),
+                ),
                 secret_registry=secret_registry,
             )
             resp = await handlers.postmortem_crash(
@@ -264,7 +279,7 @@ def test_planted_secret_is_redacted(migrated_url: str) -> None:
                 commands=["log"],
             )
             assert resp.status != "error"
-            transcript = resp.data["transcript"]
+            transcript = data_str(resp, "transcript")
             assert _SecretBearingCrash.PLANTED_SECRET not in transcript
             assert "[REDACTED]" in transcript
 
@@ -279,7 +294,9 @@ def test_raw_vmcore_is_sensitive_and_unreachable(migrated_url: str) -> None:
             sys_id, _ = await seed_crashed_system_with_run(pool)
             job = await _enqueue_capture(pool, sys_id)
             async with pool.connection() as conn:
-                await vmcore_plane.capture_handler(conn, job, _SecretBearingRetriever(sys_id))
+                await vmcore_plane.capture_handler(
+                    conn, job, resolver=provider_resolver(retriever=_SecretBearingRetriever(sys_id))
+                )
             ctx = request_context()
             refs: list[str] = []
             vmcores = await vmcore_tools.list_vmcores(pool, ctx, system_id=sys_id)

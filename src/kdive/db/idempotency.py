@@ -22,14 +22,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any, NamedTuple
+from typing import NamedTuple
 from uuid import UUID
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-JsonValue = dict[str, Any] | list[Any] | str | int | float | bool | None
+from kdive.serialization import JsonValue, ensure_json_value
 
 _STEP_WAIT_POLL_SEC = 0.05
 _STALE_RUNNING_INTERVAL = "30 minutes"
@@ -40,6 +40,11 @@ class StepClaim(NamedTuple):
 
     claimed: bool
     result: JsonValue
+
+
+def _step_result(value: object, *, run_id: UUID, step: str) -> JsonValue:
+    path = f"run_steps[{run_id!s}].{step}.result"
+    return ensure_json_value(value, path=path)
 
 
 async def run_step(
@@ -71,8 +76,8 @@ async def run_step(
         )
         existing = await cur.fetchone()
         if existing is not None:
-            return existing["result"]
-        result = await fn()
+            return _step_result(existing["result"], run_id=run_id, step=step)
+        result = _step_result(await fn(), run_id=run_id, step=step)
         await cur.execute(
             "INSERT INTO run_steps (run_id, step, state, result) "
             "VALUES (%s, %s, 'succeeded', %s) "
@@ -81,14 +86,14 @@ async def run_step(
         )
         inserted = await cur.fetchone()
         if inserted is not None:
-            return inserted["result"]
+            return _step_result(inserted["result"], run_id=run_id, step=step)
         await cur.execute(
             "SELECT result FROM run_steps WHERE run_id = %s AND step = %s", (run_id, step)
         )
         winner = await cur.fetchone()
     if winner is None:  # Invariant: ON CONFLICT fired, so a committed row exists.
         raise RuntimeError(f"run_step ({run_id}, {step}) conflicted but found no row")
-    return winner["result"]
+    return _step_result(winner["result"], run_id=run_id, step=step)
 
 
 async def claim_run_step(conn: AsyncConnection, run_id: UUID, step: str) -> StepClaim:
@@ -123,7 +128,7 @@ async def claim_run_step(conn: AsyncConnection, run_id: UUID, step: str) -> Step
                     return StepClaim(True, None)
                 continue
             if existing["state"] == "succeeded":
-                return StepClaim(False, existing["result"])
+                return StepClaim(False, _step_result(existing["result"], run_id=run_id, step=step))
         await asyncio.sleep(_STEP_WAIT_POLL_SEC)
 
 
@@ -131,6 +136,7 @@ async def complete_run_step(
     conn: AsyncConnection, run_id: UUID, step: str, result: JsonValue
 ) -> JsonValue:
     """Mark a claimed run step succeeded and return the JSONB-round-tripped result."""
+    result = _step_result(result, run_id=run_id, step=step)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "UPDATE run_steps SET state = 'succeeded', result = %s "
@@ -140,7 +146,7 @@ async def complete_run_step(
         row = await cur.fetchone()
     if row is None:
         raise RuntimeError(f"run_step ({run_id}, {step}) was not running at completion")
-    return row["result"]
+    return _step_result(row["result"], run_id=run_id, step=step)
 
 
 async def abandon_run_step(conn: AsyncConnection, run_id: UUID, step: str) -> None:

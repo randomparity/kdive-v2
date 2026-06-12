@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
+import shutil
 import subprocess  # noqa: S404 - virsh domstate is invoked with a fixed argv, no shell
 import time
 import xml.etree.ElementTree as ET  # noqa: S405 - constructs/edits self-owned domain XML only
@@ -57,6 +58,7 @@ _DEFAULT_BOOT_WINDOW_POLLS = 30
 _POLL_INTERVAL_SECONDS = 5.0
 _DOMSTATE_PROBE_TIMEOUT = 10
 _TERMINAL_DOMSTATES = frozenset({"shut off", "crashed"})
+_VIRSH = "virsh"
 
 _READINESS_MARKER = "kdive-ready"
 # Fatal/stall-grade kernel crash signatures (ADR-0055 §4). Fail-closed and additive.
@@ -269,14 +271,12 @@ class LocalLibvirtInstall:
             raise self._install_failure("power-cycling", domain_name) from exc
 
     def _await_ready(self, system_id: UUID) -> None:
-        answered = False
         first_probe_error: str | None = None
         for _ in range(self._boot_window_polls):
             result = self._readiness(system_id)
             if first_probe_error is None and result.probe_error is not None:
                 first_probe_error = result.probe_error
             if result.answered:
-                answered = True
                 if result.ok:
                     return
                 details: dict[str, object] = {"system_id": str(system_id)}
@@ -287,13 +287,12 @@ class LocalLibvirtInstall:
                     category=ErrorCategory.READINESS_FAILURE,
                     details=details,
                 )
-        category = ErrorCategory.READINESS_FAILURE if answered else ErrorCategory.BOOT_TIMEOUT
         details: dict[str, object] = {"system_id": str(system_id)}
         if first_probe_error is not None:
             details["probe_error"] = first_probe_error
         raise CategorizedError(
             "System did not become ready within the boot window",
-            category=category,
+            category=ErrorCategory.BOOT_TIMEOUT,
             details=details,
         )
 
@@ -412,9 +411,12 @@ def _domain_exit_probe(domain_name: str) -> _DomainExitProbe:  # pragma: no cove
     probe.
     """
     uri = config.require(LIBVIRT_URI)
+    virsh = shutil.which(_VIRSH)
+    if virsh is None:
+        return _DomainExitProbe(False, "virsh executable not found")
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            ["virsh", "-c", uri, "domstate", domain_name],
+            [virsh, "-c", uri, "domstate", domain_name],
             capture_output=True,
             text=True,
             timeout=_DOMSTATE_PROBE_TIMEOUT,

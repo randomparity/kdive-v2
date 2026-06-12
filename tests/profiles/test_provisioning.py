@@ -10,24 +10,28 @@ from pydantic import ValidationError
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import JobKind
+from kdive.domain.models import JobKind, ResourceKind
 from kdive.domain.sizing import AllocationSizing
+from kdive.profiles.provider_policy import (
+    capture_method,
+    reject_rootfs_upload_without_window,
+    rootfs_upload_window_allowed,
+)
 from kdive.profiles.provisioning import (
     BootMethod,
     ProvisioningProfile,
-    capture_method,
-    destructive_opt_in,
-    drgn_live_requires_credential,
     dump_profile,
     profile_digest,
     reconcile_profile_sizing,
-    reject_rootfs_upload_without_window,
     require_concrete_sizing,
-    rootfs_source,
-    rootfs_upload_window_allowed,
-    ssh_credential_ref,
-    validate_profile,
 )
+from kdive.providers.fault_inject.profile_policy import FaultInjectProfilePolicy
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
+from kdive.providers.remote_libvirt.profile_policy import RemoteLibvirtProfilePolicy
+
+_LOCAL_POLICY = LocalLibvirtProfilePolicy()
+_FAULT_POLICY = FaultInjectProfilePolicy()
+_REMOTE_POLICY = RemoteLibvirtProfilePolicy()
 
 _VALID: dict[str, Any] = {
     "schema_version": 1,
@@ -69,6 +73,13 @@ def test_valid_libvirt_profile_parses() -> None:
     rootfs = profile.provider.local_libvirt.rootfs
     assert rootfs.kind == "local"
     assert rootfs.path == "/var/lib/kdive/rootfs/fedora-40.qcow2"
+    assert profile.provider.kind is ResourceKind.LOCAL_LIBVIRT
+
+
+def test_local_libvirt_policy_reports_profile_rootfs() -> None:
+    profile = ProvisioningProfile.parse(_valid())
+
+    assert _LOCAL_POLICY.rootfs_source(profile) == profile.provider.local_libvirt.rootfs
 
 
 def test_valid_fault_inject_profile_parses_and_dumps_alias() -> None:
@@ -83,8 +94,9 @@ def test_valid_fault_inject_profile_parses_and_dumps_alias() -> None:
     profile = ProvisioningProfile.parse(data)
 
     assert profile.provider.fault_inject.capture_method is CaptureMethod.HOST_DUMP
-    assert destructive_opt_in(profile, JobKind.REPROVISION) is True
-    assert rootfs_upload_window_allowed(profile) is False
+    assert profile.provider.kind is ResourceKind.FAULT_INJECT
+    assert _FAULT_POLICY.destructive_opt_in(profile, JobKind.REPROVISION) is True
+    assert rootfs_upload_window_allowed(_FAULT_POLICY, profile) is False
     assert dump_profile(profile)["provider"] == {
         "fault-inject": {
             "capture_method": "host_dump",
@@ -102,7 +114,7 @@ def test_provider_section_rejects_multiple_providers() -> None:
 def test_fault_inject_capture_method_defaults_to_console() -> None:
     data = _valid()
     data["provider"] = {"fault-inject": {}}
-    assert capture_method(data) is CaptureMethod.CONSOLE
+    assert capture_method(_FAULT_POLICY, data) is CaptureMethod.CONSOLE
 
 
 def test_crashkernel_is_present() -> None:
@@ -125,7 +137,7 @@ def test_ssh_credential_ref_parses_when_present() -> None:
     data["provider"]["local-libvirt"]["ssh_credential_ref"] = "ssh/guest-key"
     profile = ProvisioningProfile.parse(data)
     assert profile.provider.local_libvirt.ssh_credential_ref == "ssh/guest-key"
-    assert ssh_credential_ref(profile) == "ssh/guest-key"
+    assert _LOCAL_POLICY.ssh_credential_ref(profile) == "ssh/guest-key"
 
 
 def test_ssh_credential_ref_returns_none_for_provider_without_ssh_credentials() -> None:
@@ -133,7 +145,7 @@ def test_ssh_credential_ref_returns_none_for_provider_without_ssh_credentials() 
     data["provider"] = {"fault-inject": {}}
     profile = ProvisioningProfile.parse(data)
 
-    assert ssh_credential_ref(profile) is None
+    assert _FAULT_POLICY.ssh_credential_ref(profile) is None
 
 
 def test_ssh_credential_ref_rejects_blank() -> None:
@@ -378,8 +390,8 @@ def test_destructive_opt_in_reports_profile_gate() -> None:
     data["provider"]["local-libvirt"]["destructive_ops"] = ["force_crash"]
     profile = ProvisioningProfile.parse(data)
 
-    assert destructive_opt_in(profile, JobKind.FORCE_CRASH) is True
-    assert destructive_opt_in(profile, JobKind.REPROVISION) is False
+    assert _LOCAL_POLICY.destructive_opt_in(profile, JobKind.FORCE_CRASH) is True
+    assert _LOCAL_POLICY.destructive_opt_in(profile, JobKind.REPROVISION) is False
 
 
 def test_destructive_ops_rejects_blank_entry() -> None:
@@ -422,12 +434,12 @@ def test_capture_method_reports_profile_capture_tier(
     data["provider"]["local-libvirt"].pop("crashkernel")
     data["provider"]["local-libvirt"].update(section)
 
-    assert capture_method(ProvisioningProfile.parse(data)) is expected
+    assert capture_method(_LOCAL_POLICY, ProvisioningProfile.parse(data)) is expected
 
 
 def test_capture_method_rejects_malformed_stored_mapping() -> None:
     with pytest.raises(CategorizedError) as exc:
-        capture_method({"schema_version": 1})
+        capture_method(_LOCAL_POLICY, {"schema_version": 1})
 
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
@@ -452,17 +464,17 @@ def test_rootfs_upload_window_helpers_report_and_reject_upload_profiles() -> Non
     data["provider"]["local-libvirt"]["rootfs"] = {"kind": "upload"}
     profile = ProvisioningProfile.parse(data)
 
-    assert rootfs_upload_window_allowed(profile) is True
+    assert rootfs_upload_window_allowed(_LOCAL_POLICY, profile) is True
     with pytest.raises(CategorizedError) as exc:
-        reject_rootfs_upload_without_window(profile)
+        reject_rootfs_upload_without_window(_LOCAL_POLICY, profile)
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
 def test_rootfs_upload_window_helpers_allow_non_upload_profiles() -> None:
     profile = ProvisioningProfile.parse(_valid())
 
-    assert rootfs_upload_window_allowed(profile) is False
-    reject_rootfs_upload_without_window(profile)
+    assert rootfs_upload_window_allowed(_LOCAL_POLICY, profile) is False
+    reject_rootfs_upload_without_window(_LOCAL_POLICY, profile)
 
 
 # --- ADR-0024 sizing reconciliation (#161) --------------------------------------------
@@ -548,6 +560,7 @@ def _valid_remote() -> dict[str, Any]:
 def test_valid_remote_profile_parses() -> None:
     profile = ProvisioningProfile.parse(_valid_remote())
 
+    assert profile.provider.kind is ResourceKind.REMOTE_LIBVIRT
     assert profile.boot_method is BootMethod.DISK_IMAGE
     section = profile.provider.remote_libvirt
     assert section.base_image_volume == "kdive-base-fedora-42.qcow2"
@@ -575,28 +588,31 @@ def test_disk_image_boot_requires_remote_section() -> None:
 
 
 def test_remote_profile_capture_method_kdump_with_crashkernel() -> None:
-    assert capture_method(ProvisioningProfile.parse(_valid_remote())) is CaptureMethod.KDUMP
+    assert (
+        capture_method(_REMOTE_POLICY, ProvisioningProfile.parse(_valid_remote()))
+        is CaptureMethod.KDUMP
+    )
 
 
 def test_remote_profile_capture_method_gdbstub_without_crashkernel() -> None:
     data = _valid_remote()
     del data["provider"]["remote-libvirt"]["crashkernel"]
 
-    assert capture_method(ProvisioningProfile.parse(data)) is CaptureMethod.GDBSTUB
+    assert capture_method(_REMOTE_POLICY, ProvisioningProfile.parse(data)) is CaptureMethod.GDBSTUB
 
 
 def test_remote_profile_destructive_opt_in() -> None:
     profile = ProvisioningProfile.parse(_valid_remote())
 
-    assert destructive_opt_in(profile, JobKind.FORCE_CRASH) is True
-    assert destructive_opt_in(profile, JobKind.REPROVISION) is False
+    assert _REMOTE_POLICY.destructive_opt_in(profile, JobKind.FORCE_CRASH) is True
+    assert _REMOTE_POLICY.destructive_opt_in(profile, JobKind.REPROVISION) is False
 
 
 def test_remote_profile_rootfs_and_ssh_are_none() -> None:
     profile = ProvisioningProfile.parse(_valid_remote())
 
-    assert rootfs_source(profile) is None
-    assert ssh_credential_ref(profile) is None
+    assert _REMOTE_POLICY.rootfs_source(profile) is None
+    assert _REMOTE_POLICY.ssh_credential_ref(profile) is None
 
 
 def test_remote_profile_rejects_unknown_fields() -> None:
@@ -610,21 +626,21 @@ def test_remote_profile_rejects_unknown_fields() -> None:
 
 
 def test_remote_profile_validate_profile_accepts_remote_section() -> None:
-    validate_profile(ProvisioningProfile.parse(_valid_remote()))
+    _REMOTE_POLICY.validate_profile(ProvisioningProfile.parse(_valid_remote()))
 
 
 def test_drgn_live_requires_credential_true_for_local_section() -> None:
     profile = ProvisioningProfile.parse(_valid())
-    assert drgn_live_requires_credential(profile) is True
+    assert _LOCAL_POLICY.drgn_live_requires_credential(profile) is True
 
 
 def test_drgn_live_requires_credential_false_for_remote_section() -> None:
     profile = ProvisioningProfile.parse(_valid_remote())
-    assert drgn_live_requires_credential(profile) is False
+    assert _REMOTE_POLICY.drgn_live_requires_credential(profile) is False
 
 
 def test_drgn_live_requires_credential_false_for_fault_inject_section() -> None:
     data = _valid()
     data["provider"] = {"fault-inject": {}}
     profile = ProvisioningProfile.parse(data)
-    assert drgn_live_requires_credential(profile) is False
+    assert _FAULT_POLICY.drgn_live_requires_credential(profile) is False

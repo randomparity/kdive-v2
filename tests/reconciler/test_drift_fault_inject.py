@@ -37,8 +37,9 @@ from kdive.domain.state import (
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.fault_inject.faulting.engine import FaultEngine, FaultPlane
 from kdive.providers.fault_inject.inventory import FaultInjectInventory, FaultInjectReaper
-from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvision
-from kdive.providers.fault_inject.lifecycle.provider import FaultInjectInstall, FaultInjectProvision
+from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvisioning
+from kdive.providers.fault_inject.lifecycle.install import FaultInjectInstall
+from kdive.providers.fault_inject.lifecycle.provisioning import FaultInjectProvisioning
 from kdive.providers.ports import InstallRequest
 from kdive.reconciler import loop
 from tests.reconciler.conftest import (
@@ -78,7 +79,7 @@ def test_leaked_fault_inject_domain_is_reaped(migrated_url: str) -> None:
         inventory = FaultInjectInventory()
         orphan_system = uuid4()
         domain = f"fault-inject-{orphan_system}"
-        FaultInjectProvision(inventory).provision(orphan_system, _PROFILE)
+        FaultInjectProvisioning(inventory).provision(orphan_system, _PROFILE)
         assert any(d.name == domain for d in inventory.owned_domains())
         reaper = FaultInjectReaper(inventory)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
@@ -96,7 +97,7 @@ def test_fault_inject_domain_with_live_row_not_reaped(migrated_url: str) -> None
             system_id = await seed_system(seed, system_state=SystemState.READY)
         inventory = FaultInjectInventory()
         domain = f"fault-inject-{system_id}"
-        FaultInjectProvision(inventory).provision(system_id, _PROFILE)
+        FaultInjectProvisioning(inventory).provision(system_id, _PROFILE)
         reaper = FaultInjectReaper(inventory)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(pool, lambda conn: loop._repair_leaked_domains(conn, reaper))
@@ -118,8 +119,8 @@ def test_orphaned_system_after_successful_fault_inject_provision(migrated_url: s
                 seed, system_state=SystemState.READY, alloc_state=AllocationState.ACTIVE
             )
         inventory = FaultInjectInventory()
-        wrapper = FaultedProvision(
-            FaultInjectProvision(inventory),
+        wrapper = FaultedProvisioning(
+            FaultInjectProvisioning(inventory),
             _no_fail_engine(FaultPlane.PROVISION),
             sleep_s=_noop_sleep,
         )

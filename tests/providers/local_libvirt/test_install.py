@@ -545,9 +545,24 @@ def test_domain_exited_treats_missing_kdive_domain_as_terminal(
             stderr="error: failed to get domain 'kdive-22222222-2222-2222-2222-222222222222'",
         )
 
+    monkeypatch.setattr(install.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(install.subprocess, "run", domstate_missing)
 
     assert install._domain_exited("kdive-22222222-2222-2222-2222-222222222222") is True
+
+
+def test_domain_exit_probe_uses_resolved_virsh_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(install.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+
+    def domstate_running(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="running", stderr="")
+
+    monkeypatch.setattr(install.subprocess, "run", domstate_running)
+
+    assert install._domain_exited("kdive-22222222-2222-2222-2222-222222222222") is False
+    assert calls[0][0] == "/usr/bin/virsh"
 
 
 def test_real_readiness_reports_domstate_probe_timeout(
@@ -558,6 +573,7 @@ def test_real_readiness_reports_domstate_probe_timeout(
 
     monkeypatch.setattr(install, "read_console_log", lambda path: b"")
     monkeypatch.setattr(install.time, "sleep", lambda _: None)
+    monkeypatch.setattr(install.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(install.subprocess, "run", domstate_timeout)
 
     result = install._real_readiness(UUID("22222222-2222-2222-2222-222222222222"))

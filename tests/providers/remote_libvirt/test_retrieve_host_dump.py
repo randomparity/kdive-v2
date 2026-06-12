@@ -31,9 +31,13 @@ from kdive.provider_components.artifacts import (
 )
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
 from kdive.providers.remote_libvirt.retrieve import (
-    _DMESG_UNAVAILABLE,
     RemoteLibvirtRetrieve,
     host_dump_volume_name,
+)
+from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
+    DMESG_UNAVAILABLE,
+    HostDumpCapturer,
+    HostDumpOptions,
 )
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -54,6 +58,14 @@ _LVM_POOL_XML = f"""
 <pool type='logical'>
   <name>{_POOL}</name>
   <target><path>/dev/{_POOL}</path></target>
+</pool>
+"""
+
+_POOL_BOMB = f"""<?xml version="1.0"?>
+<!DOCTYPE pool [ <!ENTITY path "{_POOL_DIR}"> ]>
+<pool type='dir'>
+  <name>{_POOL}</name>
+  <target><path>&path;</path></target>
 </pool>
 """
 
@@ -79,6 +91,7 @@ class FakeVolume:
         self._capacity = capacity
         self._payload = payload
         self.deleted = False
+        self.delete_calls = 0
         self.download_called = False
 
     def name(self) -> str:  # noqa: N802 - libvirt binding name
@@ -94,6 +107,7 @@ class FakeVolume:
 
     def delete(self, flags: int = 0) -> int:
         self.deleted = True
+        self.delete_calls += 1
         return 0
 
 
@@ -132,8 +146,10 @@ class FakePool:
         self._volume = volume
         self.refreshed = False
         self.looked_up: list[str] = []
+        self.xml_desc_calls = 0
 
     def XMLDesc(self, flags: int = 0) -> str:  # noqa: N802 - binding name
+        self.xml_desc_calls += 1
         return self._xml
 
     def refresh(self, flags: int = 0) -> int:
@@ -251,16 +267,27 @@ def _retrieve(
         assert path.exists()
         return dmesg
 
-    return RemoteLibvirtRetrieve(
+    host_dump = HostDumpCapturer(
         secret_registry=SecretRegistry(),
         config_factory=_config,
         open_connection=lambda uri: conn,
         store_factory=lambda: store,
         secret_backend_factory=RecordingBackend,
         pki_base_dir=tmp_path,
-        core_build_id_from_file=_read_build_id,
-        core_dmesg_from_file=_read_dmesg,
-        max_core_bytes=max_core_bytes,
+        options=HostDumpOptions(
+            core_build_id_from_file=_read_build_id,
+            core_dmesg_from_file=_read_dmesg,
+            dump_format=0,
+            max_core_bytes=max_core_bytes,
+        ),
+    )
+    return RemoteLibvirtRetrieve(
+        secret_registry=SecretRegistry(),
+        config_factory=_config,
+        store_factory=lambda: store,
+        secret_backend_factory=RecordingBackend,
+        pki_base_dir=tmp_path,
+        host_dump_capturer=host_dump,
     )
 
 
@@ -326,7 +353,7 @@ def test_host_dump_dmesg_extraction_failure_degrades_to_placeholder(tmp_path: Pa
     assert vol.deleted
     # the redacted artifact carries the honest placeholder, not a misleading empty log.
     assert store.put_requests
-    assert store.put_requests[0].data == _DMESG_UNAVAILABLE
+    assert store.put_requests[0].data == DMESG_UNAVAILABLE
 
 
 def test_host_dump_missing_drgn_dependency_is_not_degraded(tmp_path: Path) -> None:
@@ -384,6 +411,23 @@ def test_host_dump_non_dir_pool_is_configuration_error_before_dump(tmp_path: Pat
 
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert not conn.domain.core_dumps  # AC3: no dump into a void
+    assert pool.xml_desc_calls == 1
+
+
+def test_host_dump_forbidden_pool_xml_is_configuration_error_before_dump(
+    tmp_path: Path,
+) -> None:
+    vol = FakeVolume(host_dump_volume_name(_SID), capacity=4096)
+    pool = FakePool(xml=_POOL_BOMB, volume=vol)
+    conn = FakeHostDumpConn(pool=pool)
+    store = FakeStore(head=None)
+
+    with pytest.raises(CategorizedError) as exc:
+        _retrieve(conn, store, tmp_path).capture(_SID, CaptureMethod.HOST_DUMP)
+
+    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert not conn.domain.core_dumps
+    assert pool.xml_desc_calls == 1
 
 
 def test_host_dump_over_ceiling_volume_is_configuration_error_before_download(
@@ -399,7 +443,7 @@ def test_host_dump_over_ceiling_volume_is_configuration_error_before_download(
 
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert not huge.download_called  # AC4: ceiling enforced before the stream
-    assert huge.deleted  # but the over-ceiling dump volume is still cleaned up
+    assert huge.delete_calls == 1  # cleanup is owned by _stream_and_store's finally block
 
 
 def test_host_dump_missing_vmcoreinfo_build_id_is_configuration_error(tmp_path: Path) -> None:

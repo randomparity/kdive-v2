@@ -37,7 +37,7 @@ Advertised capture methods per provider, of the 4-method vocabulary (`console`, 
 | 74 | `src/kdive/mcp/middleware.py` |
 | 3 | `src/kdive/mcp/tools/_docmeta.py` |
 | 3 | `src/kdive/mcp/tools/accounting/reports.py` |
-| 11 | `src/kdive/mcp/tools/catalog/artifacts_uploads.py` |
+| 11 | `src/kdive/mcp/tools/catalog/artifacts/uploads.py` |
 | 69 | `src/kdive/mcp/tools/catalog/fixtures.py` |
 | 82 | `src/kdive/mcp/tools/catalog/images.py` |
 | 3 | `src/kdive/mcp/tools/catalog/shapes.py` |

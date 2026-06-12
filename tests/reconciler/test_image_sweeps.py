@@ -32,16 +32,16 @@ from kdive.reconciler.images import (
     ImageMtime,
 )
 from kdive.reconciler.images import (
-    expire_one_private_image as _expire_one_private_image,
-)
-from kdive.reconciler.images import (
     repair_dangling_images as _repair_dangling_images,
 )
 from kdive.reconciler.images import (
-    repair_expired_private_images as _repair_expired_private_images,
-)
-from kdive.reconciler.images import (
     repair_leaked_images as _repair_leaked_images,
+)
+from kdive.services.images.retention import (
+    expire_one_private_image as _expire_one_private_image,
+)
+from kdive.services.images.retention import (
+    repair_expired_private_images as _repair_expired_private_images,
 )
 from tests.reconciler.conftest import connect, run_repair, seed_system
 

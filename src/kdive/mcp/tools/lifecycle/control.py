@@ -43,7 +43,8 @@ from kdive.mcp.tools._common import (
     config_error as _config_error,
 )
 from kdive.mcp.tools._common import job_envelope
-from kdive.profiles.provisioning import ProvisioningProfile, destructive_opt_in
+from kdive.profiles.provisioning import ProvisioningProfile
+from kdive.providers.resolver import ProviderResolver
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
@@ -65,7 +66,12 @@ def _power_required_role(action: PowerAction) -> Role:
 
 
 async def power_system(
-    pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str, action: str
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    system_id: str,
+    action: str,
+    resolver: ProviderResolver,
 ) -> ToolResponse:
     """Admit a power op on a started System and enqueue a `power` job.
 
@@ -89,7 +95,7 @@ async def power_system(
                 return _config_error(system_id)
             if power_action in _DESTRUCTIVE_POWER_ACTIONS:
                 gated = await _authorize_destructive(
-                    conn, ctx, system, uid, _POWER, tool="control.power"
+                    conn, ctx, system, uid, _POWER, resolver=resolver, tool="control.power"
                 )
                 if isinstance(gated, ToolResponse):
                     return gated
@@ -114,12 +120,15 @@ async def _authorize_destructive(
     system_uid: UUID,
     op_kind: DestructiveJobKind,
     *,
+    resolver: ProviderResolver,
     tool: str,
 ) -> ToolResponse | None:
     allocation = await ALLOCATIONS.get(conn, system.allocation_id)
     if allocation is None or allocation.project not in ctx.projects:
         return _config_error(str(system_uid))
-    op = DestructiveOp(kind=op_kind, profile_opt_in=_op_opt_in(system, op_kind))
+    op = DestructiveOp(
+        kind=op_kind, profile_opt_in=await _op_opt_in(conn, system, op_kind, resolver)
+    )
     try:
         assert_destructive_allowed(ctx, allocation, op)
     except DestructiveOpDenied as denied:
@@ -140,14 +149,21 @@ async def _authorize_destructive(
     return None
 
 
-def _op_opt_in(system: System, op_kind: DestructiveJobKind) -> bool:
+async def _op_opt_in(
+    conn: AsyncConnection, system: System, op_kind: DestructiveJobKind, resolver: ProviderResolver
+) -> bool:
     """Resolve the gate's profile opt-in factor from the System's provisioning profile."""
     profile = ProvisioningProfile.parse(system.provisioning_profile)
-    return destructive_opt_in(profile, op_kind)
+    runtime = await resolver.runtime_for_system(conn, system.id)
+    return runtime.profile_policy.destructive_opt_in(profile, op_kind)
 
 
 async def force_crash_system(
-    pool: AsyncConnectionPool, ctx: RequestContext, *, system_id: str
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    system_id: str,
+    resolver: ProviderResolver,
 ) -> ToolResponse:
     """Gate, admit, and enqueue a `force_crash` job for a `ready` System (admin + gate).
 
@@ -163,7 +179,7 @@ async def force_crash_system(
             if system is None or system.project not in ctx.projects:
                 return _config_error(system_id)
             gated = await _authorize_destructive(
-                conn, ctx, system, uid, _FORCE_CRASH, tool="control.force_crash"
+                conn, ctx, system, uid, _FORCE_CRASH, resolver=resolver, tool="control.force_crash"
             )
             if isinstance(gated, ToolResponse):
                 return gated
@@ -179,7 +195,7 @@ async def force_crash_system(
         return job_envelope(job, "system_id", uid)
 
 
-def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
+def register(app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResolver) -> None:
     """Register the `control.*` tools on ``app``, bound to ``pool``."""
 
     @app.tool(
@@ -196,7 +212,9 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     ) -> ToolResponse:
         """Power action on a started System: `on` is reversible (operator); off/cycle/reset
         are destructive (admin). Enqueues a power job."""
-        return await power_system(pool, current_context(), system_id=system_id, action=action)
+        return await power_system(
+            pool, current_context(), system_id=system_id, action=action, resolver=resolver
+        )
 
     @app.tool(
         name="control.force_crash",
@@ -207,4 +225,6 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         system_id: Annotated[str, Field(description="The ready System to force-crash via NMI.")],
     ) -> ToolResponse:
         """Inject an NMI to crash a ready System; drives ready->crashed. Requires admin + gate."""
-        return await force_crash_system(pool, current_context(), system_id=system_id)
+        return await force_crash_system(
+            pool, current_context(), system_id=system_id, resolver=resolver
+        )

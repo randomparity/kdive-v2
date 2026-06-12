@@ -19,14 +19,11 @@ from kdive.domain.state import IllegalTransition, SystemState
 from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import ReprovisionPayload, SystemPayload, load_payload
-from kdive.profiles.provisioning import (
-    ProvisioningProfile,
-    profile_digest,
-    rootfs_upload_window_allowed,
-)
+from kdive.profiles.provider_policy import rootfs_upload_window_allowed
+from kdive.profiles.provisioning import ProvisioningProfile, profile_digest
 from kdive.provider_components.artifacts import StoredArtifact
-from kdive.providers.ports import Provisioner
 from kdive.providers.resolver import ProviderResolver
+from kdive.providers.runtime import ProfilePolicy
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security import audit
 from kdive.store import objectstore as _objectstore
@@ -69,10 +66,13 @@ async def open_billing_interval(conn: AsyncConnection, allocation_id: UUID) -> N
 
 
 async def _commit_uploaded_rootfs(
-    conn: AsyncConnection, system: System, profile: ProvisioningProfile
+    conn: AsyncConnection,
+    system: System,
+    profile: ProvisioningProfile,
+    profile_policy: ProfilePolicy,
 ) -> None:
     """Commit the write-once artifacts row for an 'upload'-kind rootfs (ADR-0048 §6)."""
-    if not rootfs_upload_window_allowed(profile):
+    if not rootfs_upload_window_allowed(profile_policy, profile):
         return
     key = artifact_key("local", "systems", str(system.id), "rootfs")
     head = await asyncio.to_thread(object_store_from_env().head, key)
@@ -90,9 +90,13 @@ async def _commit_uploaded_rootfs(
 
 
 async def _finalize_provision_ready(
-    conn: AsyncConnection, job: Job, system: System, profile: ProvisioningProfile
+    conn: AsyncConnection,
+    job: Job,
+    system: System,
+    profile: ProvisioningProfile,
+    profile_policy: ProfilePolicy,
 ) -> None:
-    await _commit_uploaded_rootfs(conn, system, profile)
+    await _commit_uploaded_rootfs(conn, system, profile, profile_policy)
     await open_billing_interval(conn, system.allocation_id)
     await audit_transition(
         conn,
@@ -148,6 +152,7 @@ async def _commit_provision_result(
     job: Job,
     system: System,
     profile: ProvisioningProfile,
+    profile_policy: ProfilePolicy,
     domain_name: str,
 ) -> SystemState | None:
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system.id):
@@ -157,30 +162,15 @@ async def _commit_provision_result(
                 "UPDATE systems SET state = %s, domain_name = %s WHERE id = %s",
                 (SystemState.READY.value, domain_name, system.id),
             )
-            await _finalize_provision_ready(conn, job, system, profile)
+            await _finalize_provision_ready(conn, job, system, profile, profile_policy)
         return current
-
-
-async def _provisioner(
-    conn: AsyncConnection,
-    system_id: UUID,
-    explicit: Provisioner | None,
-    resolver: ProviderResolver | None,
-) -> Provisioner:
-    """Resolve the System's provisioner port, preferring an explicitly injected one."""
-    if explicit is not None:
-        return explicit
-    if resolver is None:
-        raise RuntimeError("provision handlers require an explicit provisioner or a resolver")
-    return (await resolver.runtime_for_system(conn, system_id)).provisioner
 
 
 async def provision_handler(
     conn: AsyncConnection,
     job: Job,
-    provisioning: Provisioner | None = None,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> str | None:
     """Define+start the tagged domain and drive the System ``provisioning -> ready``."""
     system_id = UUID(load_payload(job, SystemPayload).system_id)
@@ -191,16 +181,17 @@ async def provision_handler(
             category=ErrorCategory.INFRASTRUCTURE_FAILURE,
             details={"system_id": str(system_id)},
         )
-    provisioning = await _provisioner(conn, system_id, provisioning, resolver)
+    runtime = await resolver.runtime_for_system(conn, system_id)
+    provisioner = runtime.provisioner
     if system.state is not SystemState.PROVISIONING:
         if system.state in TERMINAL_SYSTEM_STATES:
             await asyncio.to_thread(
-                provisioning.teardown, system.domain_name or domain_name_for(system_id)
+                provisioner.teardown, system.domain_name or domain_name_for(system_id)
             )
         return str(system_id)
     profile = ProvisioningProfile.parse(system.provisioning_profile)
     try:
-        domain_name = await asyncio.to_thread(provisioning.provision, system_id, profile)
+        domain_name = await asyncio.to_thread(provisioner.provision, system_id, profile)
     except CategorizedError:
         await _record_system_failure(
             conn,
@@ -212,9 +203,11 @@ async def provision_handler(
             operation="provision",
         )
         raise
-    current = await _commit_provision_result(conn, job, system, profile, domain_name)
+    current = await _commit_provision_result(
+        conn, job, system, profile, runtime.profile_policy, domain_name
+    )
     if current in TERMINAL_SYSTEM_STATES:
-        await asyncio.to_thread(provisioning.teardown, domain_name)
+        await asyncio.to_thread(provisioner.teardown, domain_name)
         _log.info("provision of system %s superseded by teardown; domain reaped", system_id)
     return str(system_id)
 
@@ -222,9 +215,8 @@ async def provision_handler(
 async def reprovision_handler(
     conn: AsyncConnection,
     job: Job,
-    provisioning: Provisioner | None = None,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> str | None:
     """Apply the new profile in place and drive ``reprovisioning -> ready`` or failed."""
     system_id = UUID(load_payload(job, ReprovisionPayload).system_id)
@@ -235,12 +227,12 @@ async def reprovision_handler(
             category=ErrorCategory.INFRASTRUCTURE_FAILURE,
             details={"system_id": str(system_id)},
         )
-    provisioning = await _provisioner(conn, system_id, provisioning, resolver)
+    provisioner = (await resolver.runtime_for_system(conn, system_id)).provisioner
     if system.state is not SystemState.REPROVISIONING:
         return str(system_id)
     profile = ProvisioningProfile.parse(system.provisioning_profile)
     try:
-        domain_name = await asyncio.to_thread(provisioning.reprovision, system_id, profile)
+        domain_name = await asyncio.to_thread(provisioner.reprovision, system_id, profile)
     except CategorizedError:
         await _record_system_failure(
             conn,
@@ -275,7 +267,7 @@ async def reprovision_handler(
                 tool="systems.reprovision",
             )
     if current in TERMINAL_SYSTEM_STATES:
-        await asyncio.to_thread(provisioning.teardown, domain_name)
+        await asyncio.to_thread(provisioner.teardown, domain_name)
         _log.info("reprovision of system %s superseded by teardown; domain reaped", system_id)
     return str(system_id)
 
@@ -283,9 +275,8 @@ async def reprovision_handler(
 async def teardown_handler(
     conn: AsyncConnection,
     job: Job,
-    provisioning: Provisioner | None = None,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> str | None:
     """Destroy+undefine the domain and drive the System ``-> torn_down``."""
     system_id = UUID(load_payload(job, SystemPayload).system_id)
@@ -305,30 +296,26 @@ async def teardown_handler(
                 transition=f"{old.value}->torn_down",
                 tool="systems.teardown",
             )
-    provisioning = await _provisioner(conn, system_id, provisioning, resolver)
-    await asyncio.to_thread(provisioning.teardown, domain_name)
+    provisioner = (await resolver.runtime_for_system(conn, system_id)).provisioner
+    await asyncio.to_thread(provisioner.teardown, domain_name)
     return str(system_id)
 
 
 def register_handlers(
     registry: HandlerRegistry,
     *,
-    provisioning: Provisioner | None = None,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> None:
     """Bind the `provision`/`teardown`/`reprovision` job handlers."""
-    if provisioning is None and resolver is None:
-        raise RuntimeError("systems handlers require a resolver or an explicit provisioner")
-
     registry.register(
         JobKind.PROVISION,
-        lambda conn, job: provision_handler(conn, job, provisioning, resolver=resolver),
+        lambda conn, job: provision_handler(conn, job, resolver=resolver),
     )
     registry.register(
         JobKind.TEARDOWN,
-        lambda conn, job: teardown_handler(conn, job, provisioning, resolver=resolver),
+        lambda conn, job: teardown_handler(conn, job, resolver=resolver),
     )
     registry.register(
         JobKind.REPROVISION,
-        lambda conn, job: reprovision_handler(conn, job, provisioning, resolver=resolver),
+        lambda conn, job: reprovision_handler(conn, job, resolver=resolver),
     )

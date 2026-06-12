@@ -54,11 +54,11 @@ from kdive.provider_components import artifacts as artifact_types
 from kdive.provider_components.artifacts import ObjectListing
 from kdive.reconciler.images import (
     repair_dangling_images,
-    repair_expired_private_images,
     repair_leaked_images,
 )
 from kdive.services.images.publish import PublishRequest, publish_image
-from kdive.services.images.upload import register_private_upload
+from kdive.services.images.retention import repair_expired_private_images
+from kdive.services.images.upload import PrivateUploadRequest, register_private_upload
 from tests.reconciler.conftest import connect, run_repair, seed_system
 
 _REQUIRED = ("agent", "kdump", "drgn", "helpers")
@@ -161,14 +161,16 @@ async def _register(
     return await register_private_upload(
         conn,
         store,
-        project=project,
-        principal=_PRINCIPAL,
-        name=name,
-        provider="local-libvirt",
-        arch="x86_64",
-        quarantine_key=quarantine_key,
-        expires_at=expires_at or (datetime.now(UTC) + timedelta(days=3)),
-        required=_REQUIRED,
+        request=PrivateUploadRequest(
+            project=project,
+            principal=_PRINCIPAL,
+            name=name,
+            provider="local-libvirt",
+            arch="x86_64",
+            quarantine_key=quarantine_key,
+            expires_at=expires_at or (datetime.now(UTC) + timedelta(days=3)),
+            required=_REQUIRED,
+        ),
         inspect=inspect or _conforming(),
     )
 
@@ -190,7 +192,7 @@ async def _publish_public(
             digest="sha256:" + hashlib.sha256(payload).hexdigest(),
             capabilities=(),
             provenance={},
-            visibility="public",
+            visibility=ImageVisibility.PUBLIC,
         ),
         source=src,
     )

@@ -15,7 +15,7 @@ drgn-backed seams disabled; the live runner injects them only on hosts prepared 
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated, NamedTuple
+from typing import Annotated, NamedTuple, cast
 from uuid import UUID
 
 from fastmcp import FastMCP
@@ -23,21 +23,18 @@ from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import Field
 
-from kdive.db.repositories import DEBUG_SESSIONS
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.state import DebugSessionState
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
-from kdive.mcp.responses import ToolResponse
+from kdive.mcp.responses import ResponseData, ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._runtime_resolution import with_runtime_for_run
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
+from kdive.mcp.tools.debug.session_context import resolve_debug_session_context
 from kdive.providers.ports import LiveIntrospector, VmcoreIntrospector
 from kdive.providers.resolver import ProviderResolver
 from kdive.security.authz.context import RequestContext
-from kdive.security.authz.rbac import Role, require_role
 
 # The fixed live-helper set (ADR-0033 §2 / ADR-0039 §3): the same three in-tree helpers as the
 # offline path. There is no caller-supplied drgn script — an unknown helper is rejected.
@@ -80,7 +77,10 @@ async def introspect_from_vmcore(
             run_id,
             "succeeded",
             suggested_next_actions=["introspect.from_vmcore", "artifacts.list"],
-            data={"report": report, "truncated": str(output.truncated).lower()},
+            data=cast(
+                ResponseData,
+                {"report": report, "truncated": str(output.truncated).lower()},
+            ),
         )
 
 
@@ -102,18 +102,16 @@ async def resolve_live_drgn_session(
     ADR-0085). The provider realizes drgn-live over SSH (local) or the guest agent (remote);
     core treats the resolved ``transport_handle`` as opaque.
     """
-    uid = _as_uuid(session_id)
-    if uid is None:
+    resolved = await resolve_debug_session_context(
+        conn,
+        ctx,
+        session_id,
+        required_transport=_DRGN_LIVE,
+        require_live=True,
+    )
+    if isinstance(resolved, ToolResponse) or resolved.transport_handle is None:
         raise _session_config_error()
-    session = await DEBUG_SESSIONS.get(conn, uid)
-    if session is None or session.project not in ctx.projects:
-        raise _session_config_error()
-    require_role(ctx, session.project, Role.OPERATOR)
-    if session.state is not DebugSessionState.LIVE or session.transport != _DRGN_LIVE:
-        raise _session_config_error()
-    if session.transport_handle is None:
-        raise _session_config_error()
-    return LiveDrgnSession(session.project, session.transport_handle, uid)
+    return LiveDrgnSession(resolved.project, resolved.transport_handle, resolved.session_id)
 
 
 def _session_config_error() -> CategorizedError:
@@ -179,20 +177,19 @@ async def _introspect_live_session(
         response_id,
         "succeeded",
         suggested_next_actions=["introspect.run", "debug.end_session"],
-        data={
-            "report": report,
-            "truncated": str(output.truncated).lower(),
-            "transcript_sensitivity": "sensitive",
-        },
+        data=cast(
+            ResponseData,
+            {
+                "report": report,
+                "truncated": str(output.truncated).lower(),
+                "transcript_sensitivity": "sensitive",
+            },
+        ),
     )
 
 
-def register(
-    app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResolver | None = None
-) -> None:
+def register(app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResolver) -> None:
     """Register the `introspect.from_vmcore` and `introspect.run` tools on ``app``."""
-    if resolver is None:
-        raise RuntimeError("introspect registrar requires an injected provider resolver")
 
     @app.tool(
         name="introspect.from_vmcore",

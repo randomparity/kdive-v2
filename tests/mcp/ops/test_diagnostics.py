@@ -27,6 +27,7 @@ from kdive.diagnostics.service import DiagnosticsService
 from kdive.mcp.tools.ops import diagnostics
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole, Role
+from tests.mcp.json_data import data_str
 
 _CLI_CLIENT_ID = "kdivectl"
 
@@ -248,7 +249,7 @@ def test_down_dependency_is_error_not_failure(migrated_url: str) -> None:
         item = resp.items[0]
         assert item.data["status"] == "error"
         assert item.data["fix"] is None
-        assert "unreachable" in item.data["detail"]
+        assert "unreachable" in data_str(item, "detail")
         # An error is reported distinctly and never inflated into a contract failure.
         assert resp.data["has_error"] == "true"
         assert resp.data["has_failure"] == "false"
@@ -271,7 +272,7 @@ def test_secret_ref_aggregate_carries_no_per_tenant_ref(migrated_url: str) -> No
             ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}))
             resp = await diagnostics.run_diagnostics(pool, _factory(results), ctx)
         item = resp.items[0]
-        assert "project/" not in item.data["detail"]
+        assert "project/" not in data_str(item, "detail")
         assert item.data["status"] == "fail"
 
     asyncio.run(_run())

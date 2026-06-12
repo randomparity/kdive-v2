@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
-import kdive.__main__ as main_module
 from kdive.__main__ import build_parser
+from kdive.domain.models import ResourceKind
 from kdive.images.planes.base import RootfsBuildOutput
+from kdive.images.rootfs_command import run_build_rootfs
+from kdive.providers.runtime import ProviderRuntime
 
 
 def test_server_subcommand_parses() -> None:
@@ -55,23 +58,38 @@ def test_run_build_rootfs_moves_plane_output_to_dest(
     seen_specs = []
 
     class _FakePlane:
-        @classmethod
-        def from_env(cls) -> _FakePlane:
-            return cls()
-
         def build(self, spec: object) -> RootfsBuildOutput:
             seen_specs.append(spec)
             return RootfsBuildOutput(qcow2_path=produced, digest="sha256:abc", provenance={})
 
+    class _FakeResolver:
+        def resolve(self, kind: ResourceKind) -> ProviderRuntime:
+            assert kind is ResourceKind.LOCAL_LIBVIRT
+            unused = cast(Any, object())
+            return ProviderRuntime(
+                profile_policy=unused,
+                provisioner=unused,
+                builder=unused,
+                installer=unused,
+                booter=unused,
+                connector=unused,
+                controller=unused,
+                retriever=unused,
+                crash_postmortem=unused,
+                vmcore_introspector=unused,
+                live_introspector=unused,
+                rootfs_build_plane=_FakePlane(),
+            )
+
     monkeypatch.setattr(
-        "kdive.images.planes.local_libvirt.LocalLibvirtRootfsBuildPlane", _FakePlane
+        "kdive.images.rootfs_command.build_provider_resolver", lambda: _FakeResolver()
     )
 
     dest = tmp_path / "rootfs" / "out.qcow2"
     args = build_parser().parse_args(
         ["build-rootfs", "--dest", str(dest), "--releasever", "42", "--package", "drgn"]
     )
-    main_module._run_build_rootfs(args)
+    run_build_rootfs(args)
 
     assert dest.read_bytes() == b"image-bytes"
     assert not produced.exists(), "the plane output is moved, not copied"

@@ -10,8 +10,9 @@ identifiers. A backend that cannot be reached at all is `error`, not a contract 
 from __future__ import annotations
 
 import asyncio
+import time
 
-from kdive.diagnostics.checks import CheckStatus, SecretRefCheck
+from kdive.diagnostics.checks import CheckStatus, SecretRefCheck, run_check
 
 _PLATFORM_REF = "platform/oidc-secret"
 _PROJECT_REF = "project/acme/db-password"
@@ -88,3 +89,13 @@ def test_no_configured_refs_is_pass() -> None:
     check = SecretRefCheck(refs=[], resolve=lambda ref: None)
     result = asyncio.run(check.run())
     assert result.status is CheckStatus.PASS
+
+
+def test_blocking_resolver_is_bounded_by_run_check_timeout() -> None:
+    def _resolve(ref: str) -> None:
+        time.sleep(0.05)
+
+    check = SecretRefCheck(refs=_refs(), resolve=_resolve)
+    result = asyncio.run(run_check(check, timeout=0.01))
+    assert result.status is CheckStatus.ERROR
+    assert "did not respond within" in result.detail

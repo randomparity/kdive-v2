@@ -23,8 +23,13 @@ from kdive.provider_components.artifacts import (
 )
 from kdive.providers.ports import CrashResult
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
-from kdive.providers.remote_libvirt.guest_agent import AgentExecResult
+from kdive.providers.remote_libvirt.guest.agent import AgentExecResult, qemu_agent_command
 from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
+from kdive.providers.remote_libvirt.retrieve.kdump_capture import (
+    DEFAULT_PUT_EXPIRY_S,
+    DEFAULT_READINESS_POLL_S,
+    KdumpCapturer,
+)
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.providers.remote_libvirt.conftest import RecordingBackend
@@ -119,17 +124,28 @@ def _retrieve(
     readiness_timeout_s: float = 300.0,
 ) -> RemoteLibvirtRetrieve:
     conn = FakeControlConn({_domain_name(): FakeDomain(_domain_name())})
-    return RemoteLibvirtRetrieve(
+    kdump = KdumpCapturer(
         secret_registry=SecretRegistry(),
         config_factory=_config,
         open_connection=lambda uri: conn,
         store_factory=lambda: store,
+        agent_command=qemu_agent_command,
         agent_exec_factory=lambda timeout_s: agent_exec,
         secret_backend_factory=RecordingBackend,
         pki_base_dir=tmp_path,
+        put_expiry_s=DEFAULT_PUT_EXPIRY_S,
         readiness_timeout_s=readiness_timeout_s,
-        readiness_poll_s=0.0,
+        readiness_poll_s=DEFAULT_READINESS_POLL_S,
         sleep=lambda _s: None,
+        monotonic=lambda: 0.0,
+    )
+    return RemoteLibvirtRetrieve(
+        secret_registry=SecretRegistry(),
+        config_factory=_config,
+        store_factory=lambda: store,
+        secret_backend_factory=RecordingBackend,
+        pki_base_dir=tmp_path,
+        kdump_capturer=kdump,
     )
 
 

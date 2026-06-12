@@ -13,7 +13,7 @@ from pydantic import Field
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
-from kdive.mcp.responses import ToolResponse
+from kdive.mcp.responses import JsonValue, ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.security.authz.context import RequestContext, require_project
 from kdive.security.authz.rbac import Role, require_role
@@ -93,7 +93,9 @@ async def _resolve_investigation_project(conn: AsyncConnection, inv_id: UUID) ->
 
 
 def _usage_response(project: str, rollup: accounting_domain.ProjectUsage) -> ToolResponse:
-    by_cost_class = {cls: str(val) for cls, val in rollup.by_cost_class.items()}
+    by_cost_class: dict[str, JsonValue] = {
+        cls: str(val) for cls, val in rollup.by_cost_class.items()
+    }
     return ToolResponse.success(
         _USAGE_OBJECT_ID,
         "ok",

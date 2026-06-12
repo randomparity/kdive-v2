@@ -1,1 +1,1 @@
-"""Local-libvirt lifecycle provider ports."""
+"""Local-libvirt lifecycle provider planes."""

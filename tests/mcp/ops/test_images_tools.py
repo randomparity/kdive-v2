@@ -8,8 +8,8 @@ contract). Coverage maps to the issue's falsifiable acceptance:
   ``platform_audit_log``; a non-operator (including a bare ``platform_admin``) is denied
   and audited before any pool mutation;
 * ``images.delete`` is project-scoped (an ``operator`` on the image's owning project);
-  a member-over-reach or cross-project caller is denied and audited, and the catalog row
-  survives;
+  a member-over-reach caller is denied and audited; a non-member is denied without writing
+  an audit row under an ungranted project, and the catalog row survives;
 * ``images.prune_expired``/``images.extend`` route the ``platform_admin`` break-glass
   path (NOT the per-allocation gate); a ``platform_operator`` is denied and audited;
 * every authorized mutating call writes one ``platform_audit_log`` row before/independent
@@ -19,19 +19,33 @@ contract). Coverage maps to the issue's falsifiable acceptance:
 from __future__ import annotations
 
 import asyncio
+import importlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
-from typing import cast
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from uuid import UUID
 
 import psycopg
+import pytest
+from fastmcp import FastMCP
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.config.core_settings import IMAGE_PRIVATE_LIFETIME_MAX
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.state import SystemState
+from kdive.jobs.payloads import ImageBuildPayload
+from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.ops import images as ops_images
+from kdive.mcp.tools.ops.images import registrar as images_registrar
+from kdive.mcp.tools.ops.images._common import (
+    DELETE_TOOL,
+    EXTEND_TOOL,
+    PRUNE_TOOL,
+    UPLOAD_TOOL,
+)
+from kdive.mcp.tools.ops.images.build_publish import BUILD_TOOL, PUBLISH_TOOL
 from kdive.reconciler.images import ImageMtime
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole, Role
@@ -39,6 +53,7 @@ from kdive.services.images.upload import UploadObjectStore
 from tests.reconciler.conftest import connect, seed_system
 
 _TARGET_PROJECT = "tenant-x"
+_DELETE_MODULE = importlib.import_module("kdive.mcp.tools.ops.images.delete")
 
 
 class _FakeImageStore:
@@ -144,6 +159,21 @@ async def _insert_private_image(
     return row[0]
 
 
+async def _insert_public_image(pool: AsyncConnectionPool, *, name: str = "fedora") -> UUID:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "INSERT INTO image_catalog "
+            "(provider, name, arch, format, root_device, object_key, digest, visibility, "
+            " owner, expires_at, state, pending_since) "
+            "VALUES ('local-libvirt', %(name)s, 'x86_64', 'qcow2', '/dev/vda', %(key)s, "
+            " 'sha256:public', 'public', NULL, NULL, 'registered', now()) RETURNING id",
+            {"name": name, "key": f"images/local-libvirt/{name}/x86_64.qcow2"},
+        )
+        row = await cur.fetchone()
+    assert row is not None
+    return row[0]
+
+
 async def _platform_audit_rows(url: str) -> list[tuple[object, ...]]:
     conn = await psycopg.AsyncConnection.connect(url, autocommit=True)
     async with conn, conn.cursor() as cur:
@@ -187,18 +217,33 @@ async def _job_rows(url: str) -> list[tuple[object, ...]]:
         return list(await cur.fetchall())
 
 
+def _destructive_hint(tool: object) -> bool | None:
+    annotations = getattr(tool, "annotations", None)
+    value = getattr(annotations, "destructiveHint", None)
+    return value if isinstance(value, bool) else None
+
+
+async def _call_registered_tool(tool: object, *args: object) -> ToolResponse:
+    fn = cast(Any, tool).fn
+    result = await fn(*args)
+    assert isinstance(result, ToolResponse)
+    return result
+
+
 def _build(pool: AsyncConnectionPool, ctx: RequestContext):
     return ops_images.build(
         pool,
         ctx,
-        provider="local-libvirt",
-        name="fedora-40",
-        arch="x86_64",
-        releasever="40",
-        source_image_digest="sha256:base",
-        capabilities=["agent", "kdump"],
-        format="qcow2",
-        root_device="/dev/vda",
+        payload=ImageBuildPayload(
+            provider="local-libvirt",
+            name="fedora-40",
+            arch="x86_64",
+            releasever="40",
+            source_image_digest="sha256:base",
+            capabilities=("agent", "kdump"),
+            format="qcow2",
+            root_device="/dev/vda",
+        ),
     )
 
 
@@ -206,15 +251,66 @@ def _publish(pool: AsyncConnectionPool, ctx: RequestContext):
     return ops_images.publish(
         pool,
         ctx,
-        provider="local-libvirt",
-        name="fedora-40",
-        arch="x86_64",
-        releasever="40",
-        source_image_digest="sha256:base",
-        capabilities=["agent", "kdump"],
-        format="qcow2",
-        root_device="/dev/vda",
+        payload=ImageBuildPayload(
+            provider="local-libvirt",
+            name="fedora-40",
+            arch="x86_64",
+            releasever="40",
+            source_image_digest="sha256:base",
+            capabilities=("agent", "kdump"),
+            format="qcow2",
+            root_device="/dev/vda",
+        ),
     )
+
+
+# --- registrar boundary --------------------------------------------------------------------
+
+
+def test_images_registrar_exposes_annotations_and_invokes_wrappers(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            ctx = {"value": _operator_ctx()}
+            monkeypatch.setattr(images_registrar, "current_context", lambda: ctx["value"])
+            app = FastMCP("images-registrar-test")
+            images_registrar.register(
+                app,
+                pool,
+                image_store=_FakeImageStore(),
+                upload_store=cast(UploadObjectStore, _UnusedUploadStore()),
+            )
+            tools = {tool.name: tool for tool in await app.list_tools()}
+
+            assert set(tools) == {
+                BUILD_TOOL,
+                PUBLISH_TOOL,
+                UPLOAD_TOOL,
+                DELETE_TOOL,
+                PRUNE_TOOL,
+                EXTEND_TOOL,
+            }
+            assert _destructive_hint(tools[BUILD_TOOL]) is False
+            assert _destructive_hint(tools[PRUNE_TOOL]) is True
+
+            request = images_registrar.ImageBuildRequest(
+                provider="local-libvirt",
+                name="fedora-40",
+                arch="x86_64",
+                releasever="40",
+                source_image_digest="sha256:base",
+                capabilities=("agent", "kdump"),
+            )
+            build_resp = await _call_registered_tool(tools[BUILD_TOOL], request)
+            ctx["value"] = _admin_ctx()
+            prune_resp = await _call_registered_tool(tools[PRUNE_TOOL], "registrar boundary")
+
+        assert build_resp.status not in {"error", "failed"}
+        assert prune_resp.status == "pruned"
+        assert [kind for kind, _ in await _job_rows(migrated_url)] == ["image_build"]
+
+    asyncio.run(_run())
 
 
 # --- build / publish: platform_operator gate ------------------------------------------------
@@ -301,6 +397,48 @@ def test_delete_project_operator_removes_row_and_audits(migrated_url: str) -> No
     asyncio.run(_run())
 
 
+def test_delete_rejects_invalid_or_missing_image(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            invalid = await ops_images.delete(
+                pool, _member_ctx(role=Role.OPERATOR), image_id="not-a-uuid"
+            )
+            missing = await ops_images.delete(
+                pool, _member_ctx(role=Role.OPERATOR), image_id=str(UUID(int=1))
+            )
+        assert invalid.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert missing.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert await _audit_log_rows(migrated_url) == []
+
+    asyncio.run(_run())
+
+
+def test_delete_rejects_public_image_without_audit(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            image_id = await _insert_public_image(pool)
+            resp = await ops_images.delete(
+                pool, _member_ctx(role=Role.OPERATOR), image_id=str(image_id)
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert await _image_exists(migrated_url, image_id) is True
+        assert await _audit_log_rows(migrated_url) == []
+
+    asyncio.run(_run())
+
+
+def test_delete_owned_is_idempotent_when_locked_row_is_gone(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await _DELETE_MODULE._delete_owned(
+                pool, _member_ctx(role=Role.OPERATOR), UUID(int=1), project=_TARGET_PROJECT
+            )
+        assert resp.status == "deleted"
+        assert await _audit_log_rows(migrated_url) == []
+
+    asyncio.run(_run())
+
+
 def test_delete_member_overreach_denied_and_audited(migrated_url: str) -> None:
     # A viewer on the image's project lacks operator: denied, audited, row survives.
     async def _run() -> None:
@@ -317,9 +455,9 @@ def test_delete_member_overreach_denied_and_audited(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_delete_cross_project_denied_and_audited(migrated_url: str) -> None:
-    # A caller who is not a member of the image's owning project is denied; the row
-    # survives and the denial is audited before any catalog mutation.
+def test_delete_cross_project_denied_without_project_audit(migrated_url: str) -> None:
+    # A caller who is not a member of the image's owning project is denied, but must not
+    # create an audit_log row under a project absent from ctx.projects.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             image_id = await _insert_private_image(pool, owner="tenant-x")
@@ -330,8 +468,7 @@ def test_delete_cross_project_denied_and_audited(migrated_url: str) -> None:
             )
         assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
         assert await _image_exists(migrated_url, image_id) is True
-        audit = await _audit_log_rows(migrated_url)
-        assert audit == [("dev-1", "tenant-x", "images.delete", "denied")]
+        assert await _audit_log_rows(migrated_url) == []
 
     asyncio.run(_run())
 
@@ -376,15 +513,38 @@ def test_upload_unprivileged_denied_audited_even_without_store(migrated_url: str
                 pool,
                 _member_ctx(role=Role.VIEWER),
                 None,
-                project=_TARGET_PROJECT,
-                name="custom",
-                arch="x86_64",
-                quarantine_key="quarantine/abc",
-                lifetime_seconds=None,
+                ops_images.ImageUploadRequest(
+                    project=_TARGET_PROJECT,
+                    name="custom",
+                    arch="x86_64",
+                    quarantine_key="quarantine/abc",
+                ),
             )
         assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
         audit = await _audit_log_rows(migrated_url)
         assert audit == [("dev-1", _TARGET_PROJECT, "images.upload", "denied")]
+
+    asyncio.run(_run())
+
+
+def test_upload_cross_project_denied_without_project_audit(migrated_url: str) -> None:
+    # Non-members are denied before store access, but must not write audit_log rows under
+    # arbitrary requested project names.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await ops_images.upload(
+                pool,
+                _member_ctx(project="tenant-y", role=Role.OPERATOR),
+                None,
+                ops_images.ImageUploadRequest(
+                    project=_TARGET_PROJECT,
+                    name="custom",
+                    arch="x86_64",
+                    quarantine_key="quarantine/abc",
+                ),
+            )
+        assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
+        assert await _audit_log_rows(migrated_url) == []
 
     asyncio.run(_run())
 
@@ -398,11 +558,12 @@ def test_upload_rejects_quarantine_key_in_published_prefix(migrated_url: str) ->
                 pool,
                 _member_ctx(role=Role.OPERATOR),
                 cast(UploadObjectStore, _UnusedUploadStore()),
-                project=_TARGET_PROJECT,
-                name="evil",
-                arch="x86_64",
-                quarantine_key="images/local-libvirt__tenant-y/secret/x86_64.qcow2",
-                lifetime_seconds=None,
+                ops_images.ImageUploadRequest(
+                    project=_TARGET_PROJECT,
+                    name="evil",
+                    arch="x86_64",
+                    quarantine_key="images/local-libvirt__tenant-y/secret/x86_64.qcow2",
+                ),
             )
         assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
@@ -424,6 +585,23 @@ def test_prune_expired_admin_runs_sweep_and_audits(migrated_url: str) -> None:
         assert await _image_exists(migrated_url, expired) is False
         audit = await _platform_audit_rows(migrated_url)
         assert audit and audit[0][2] == "images.prune_expired"
+
+    asyncio.run(_run())
+
+
+def test_prune_expired_blank_reason_rejects_before_sweep_or_audit(migrated_url: str) -> None:
+    store = _FakeImageStore()
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            expired = await _insert_private_image(pool, expires_in=timedelta(seconds=-3600))
+            resp = await ops_images.prune_expired(
+                pool, _admin_ctx(), reason="  ", image_store=store
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert await _image_exists(migrated_url, expired) is True
+        assert store.deleted == []
+        assert await _platform_audit_rows(migrated_url) == []
 
     asyncio.run(_run())
 
@@ -462,19 +640,74 @@ def test_extend_admin_rearms_expiry_and_audits(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_extend_clamps_to_lifetime_ceiling(migrated_url: str) -> None:
-    # The extend ceiling is the per-image lifetime max; a request past it is clamped.
+@pytest.mark.parametrize(
+    ("seconds", "reason"),
+    [
+        (0, "keep"),
+        (-1, "keep"),
+        (3600, " "),
+    ],
+)
+def test_extend_rejects_invalid_seconds_or_reason_before_audit(
+    migrated_url: str, seconds: int, reason: str
+) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             image_id = await _insert_private_image(pool, expires_in=timedelta(minutes=1))
+            before = await _image_expires_at(migrated_url, image_id)
+            resp = await ops_images.extend(
+                pool, _admin_ctx(), image_id=str(image_id), seconds=seconds, reason=reason
+            )
+            after = await _image_expires_at(migrated_url, image_id)
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert after == before
+        assert await _platform_audit_rows(migrated_url) == []
+
+    asyncio.run(_run())
+
+
+def test_extend_rejects_public_image_after_breakglass_audit(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            image_id = await _insert_public_image(pool)
+            resp = await ops_images.extend(
+                pool, _admin_ctx(), image_id=str(image_id), seconds=3600, reason="keep"
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert await _image_exists(migrated_url, image_id) is True
+        audit = await _platform_audit_rows(migrated_url)
+        assert audit == [("ops-admin", "platform_admin", "images.extend", f"image:{image_id}")]
+
+    asyncio.run(_run())
+
+
+def test_extend_clamps_to_lifetime_ceiling(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The extend ceiling is the per-image lifetime max; a request past it is clamped.
+    max_seconds = 120
+    requested_seconds = 10 * 365 * 24 * 3600
+    monkeypatch.setenv(IMAGE_PRIVATE_LIFETIME_MAX.name, str(max_seconds))
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            image_id = await _insert_private_image(pool, expires_in=timedelta(minutes=1))
+            before = datetime.now(UTC)
             resp = await ops_images.extend(
                 pool,
                 _admin_ctx(),
                 image_id=str(image_id),
-                seconds=10 * 365 * 24 * 3600,
+                seconds=requested_seconds,
                 reason="forever",
             )
+            after = await _image_expires_at(migrated_url, image_id)
+        requested_deadline = before + timedelta(seconds=requested_seconds)
+        clamped_floor = before + timedelta(seconds=max_seconds)
+        clamped_ceiling = datetime.now(UTC) + timedelta(seconds=max_seconds)
+
         assert resp.status not in {"error", "failed"}
+        assert clamped_floor <= after <= clamped_ceiling
+        assert after < requested_deadline - timedelta(days=1)
 
     asyncio.run(_run())
 

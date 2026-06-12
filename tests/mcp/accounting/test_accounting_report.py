@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import cast
 from uuid import UUID, uuid4
 
 import psycopg
@@ -31,6 +32,7 @@ from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.accounting.reports import report_all_projects, report_granted_set
 from kdive.security.authz.rbac import AuthorizationError, PlatformRole, Role
+from tests.mcp.json_data import data_str
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -162,17 +164,17 @@ async def _platform_audit_rows(url: str) -> list[tuple[object, ...]]:
         return list(await cur.fetchall())
 
 
-def _rows(resp: ToolResponse) -> list[dict[str, str]]:
-    return [item.data for item in resp.items]
+def _rows(resp: ToolResponse) -> list[dict[str, object]]:
+    return [cast(dict[str, object], item.data) for item in resp.items]
 
 
 def _total(resp: ToolResponse) -> dict[str, str]:
     return {
-        "project": resp.data["total_project"],
-        "principal": resp.data["total_principal"],
-        "reserved": resp.data["total_reserved"],
-        "reconciled": resp.data["total_reconciled"],
-        "variance": resp.data["total_variance"],
+        "project": data_str(resp, "total_project"),
+        "principal": data_str(resp, "total_principal"),
+        "reserved": data_str(resp, "total_reserved"),
+        "reconciled": data_str(resp, "total_reconciled"),
+        "variance": data_str(resp, "total_variance"),
     }
 
 

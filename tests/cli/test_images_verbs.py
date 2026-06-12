@@ -13,7 +13,10 @@ import asyncio
 
 import pytest
 
-from kdive.cli.commands import REGISTRY, images
+import kdive.cli.commands.images as images
+import kdive.cli.commands.mutations as mutations
+import kdive.cli.commands.reads as reads
+from kdive.cli.commands.registry import REGISTRY
 
 
 class _FakeResult:
@@ -48,8 +51,9 @@ class _FakeSession:
 
 def _install(monkeypatch: pytest.MonkeyPatch, payload: dict | None = None) -> _FakeClient:
     client = _FakeClient(payload or {"object_id": "o", "status": "ok", "data": {}})
-    monkeypatch.setattr(images, "_session_factory", lambda: _FakeSession(client))
-    monkeypatch.setattr(images, "ensure_token_valid", lambda *a, **k: None)
+    monkeypatch.setattr(reads, "_session_factory", lambda: _FakeSession(client))
+    monkeypatch.setattr(mutations, "_session_factory", lambda: _FakeSession(client))
+    monkeypatch.setattr(mutations, "ensure_token_valid", lambda *a, **k: None)
     return client
 
 
@@ -106,6 +110,32 @@ def test_upload_calls_images_upload_with_payload(monkeypatch: pytest.MonkeyPatch
     ]
 
 
+def test_upload_omits_lifetime_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _install(monkeypatch)
+    asyncio.run(
+        images.images_upload(
+            _args(
+                project="proj-a",
+                name="custom",
+                arch="x86_64",
+                quarantine_key="quarantine/abc",
+                lifetime_seconds=None,
+            )
+        )
+    )
+    assert client.calls == [
+        (
+            "images.upload",
+            {
+                "project": "proj-a",
+                "name": "custom",
+                "arch": "x86_64",
+                "quarantine_key": "quarantine/abc",
+            },
+        )
+    ]
+
+
 def test_delete_calls_images_delete(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _install(monkeypatch)
     asyncio.run(images.images_delete(_args(image_id="img-1")))
@@ -130,6 +160,37 @@ def test_build_calls_images_build(monkeypatch: pytest.MonkeyPatch) -> None:
         (
             "images.build",
             {
+                "request": {
+                    "provider": "local-libvirt",
+                    "name": "fedora-40",
+                    "arch": "x86_64",
+                    "releasever": "40",
+                    "source_image_digest": "sha256:base",
+                    "capabilities": ["agent", "kdump"],
+                },
+            },
+        )
+    ]
+
+
+def test_build_trims_blank_capability_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _install(monkeypatch)
+    asyncio.run(
+        images.images_build(
+            _args(
+                provider="local-libvirt",
+                name="fedora-40",
+                arch="x86_64",
+                releasever="40",
+                source_image_digest="sha256:base",
+                capabilities=" agent, ,kdump, ",
+            )
+        )
+    )
+    assert client.calls[0] == (
+        "images.build",
+        {
+            "request": {
                 "provider": "local-libvirt",
                 "name": "fedora-40",
                 "arch": "x86_64",
@@ -137,8 +198,8 @@ def test_build_calls_images_build(monkeypatch: pytest.MonkeyPatch) -> None:
                 "source_image_digest": "sha256:base",
                 "capabilities": ["agent", "kdump"],
             },
-        )
-    ]
+        },
+    )
 
 
 def test_publish_calls_images_publish(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,7 +256,7 @@ def test_denied_envelope_maps_to_exit_3(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_mutating_image_verbs_run_preflight_first(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _FakeClient({"object_id": "o", "status": "ok", "data": {}})
-    monkeypatch.setattr(images, "_session_factory", lambda: _FakeSession(client))
+    monkeypatch.setattr(mutations, "_session_factory", lambda: _FakeSession(client))
 
     class _Boom(RuntimeError):
         pass
@@ -203,7 +264,7 @@ def test_mutating_image_verbs_run_preflight_first(monkeypatch: pytest.MonkeyPatc
     def _refuse(*_a: object, **_k: object) -> None:
         raise _Boom
 
-    monkeypatch.setattr(images, "ensure_token_valid", _refuse)
+    monkeypatch.setattr(mutations, "ensure_token_valid", _refuse)
     with pytest.raises(_Boom):
         asyncio.run(images.images_delete(_args(image_id="img-1")))
     assert client.calls == []

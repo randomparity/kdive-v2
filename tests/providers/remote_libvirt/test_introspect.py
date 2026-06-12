@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
-from kdive.providers.remote_libvirt.guest_agent import AgentExecResult
-from kdive.providers.remote_libvirt.introspect import RemoteLiveIntrospect, RemoteVmcoreIntrospect
+from kdive.providers.remote_libvirt.debug.introspect import (
+    RemoteLibvirtLiveIntrospect,
+    RemoteLibvirtVmcoreIntrospect,
+)
+from kdive.providers.remote_libvirt.guest.agent import AgentExecResult
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.providers.remote_libvirt.conftest import RecordingBackend
 
@@ -42,7 +46,7 @@ class _FakeProgram:
 
 
 def _vmcore_introspect(*, open_program=None, run_helper=None, fetch=None, build_id=lambda b: "BID"):
-    return RemoteVmcoreIntrospect(
+    return RemoteLibvirtVmcoreIntrospect(
         fetch_object=fetch or (lambda ref: b"core" if "core" in ref else b"vmlinux"),
         read_vmcore_build_id=build_id,
         secret_registry=SecretRegistry(),
@@ -55,6 +59,15 @@ def test_from_vmcore_off_gate_is_missing_dependency():
     introspect = _vmcore_introspect()  # no drgn seams
     with pytest.raises(CategorizedError) as exc:
         introspect.from_vmcore(vmcore_ref="core", debuginfo_ref="vmlinux", expected_build_id="BID")
+    assert exc.value.category is ErrorCategory.MISSING_DEPENDENCY
+
+
+def test_open_without_drgn_opener_is_missing_dependency():
+    introspect = _vmcore_introspect(run_helper=lambda prog, name: {})
+
+    with pytest.raises(CategorizedError) as exc:
+        introspect._open(Path("core"), Path("vmlinux"))
+
     assert exc.value.category is ErrorCategory.MISSING_DEPENDENCY
 
 
@@ -158,7 +171,7 @@ def _config_remote():
 
 def _live(agent):
     # RecordingBackend + a real GuestAgentExec run; only the libvirt opener is faked.
-    return RemoteLiveIntrospect(
+    return RemoteLibvirtLiveIntrospect(
         secret_registry=SecretRegistry(),
         config_factory=_config_remote,
         open_connection=lambda _uri: _FakeConn(),

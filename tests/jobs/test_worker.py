@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import psycopg
@@ -17,13 +17,23 @@ from kdive.db.repositories import JOBS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
+from kdive.health import Heartbeat
 from kdive.jobs import queue
+from kdive.jobs import worker as worker_module
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import Authorizing, BuildPayload, load_payload
-from kdive.jobs.worker import Worker
+from kdive.jobs.worker import Worker, WorkerConfig
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 _AUTHORIZING = Authorizing(principal="p", agent_session=None, project="a")
+
+
+class _CountingHeartbeat:
+    def __init__(self) -> None:
+        self.ticks = 0
+
+    def tick(self) -> None:
+        self.ticks += 1
 
 
 def _build_payload() -> BuildPayload:
@@ -60,8 +70,10 @@ def test_init_rejects_interval_above_third_of_lease() -> None:
             _unopened_pool(),
             HandlerRegistry(),
             worker_id="w1",
-            lease=timedelta(seconds=3),
-            heartbeat_interval=timedelta(seconds=2),
+            config=WorkerConfig(
+                lease=timedelta(seconds=3),
+                heartbeat_interval=timedelta(seconds=2),
+            ),
         )
 
 
@@ -70,8 +82,10 @@ def test_init_accepts_interval_at_third_of_lease() -> None:
         _unopened_pool(),
         HandlerRegistry(),
         worker_id="w1",
-        lease=timedelta(seconds=3),
-        heartbeat_interval=timedelta(seconds=1),
+        config=WorkerConfig(
+            lease=timedelta(seconds=3),
+            heartbeat_interval=timedelta(seconds=1),
+        ),
     )
 
 
@@ -328,8 +342,10 @@ def test_heartbeat_renews_live_lease(migrated_url: str, monkeypatch: pytest.Monk
                 pool,
                 reg,
                 worker_id="w1",
-                lease=timedelta(seconds=1),
-                heartbeat_interval=timedelta(milliseconds=250),
+                config=WorkerConfig(
+                    lease=timedelta(seconds=1),
+                    heartbeat_interval=timedelta(milliseconds=250),
+                ),
             )
             async with pool.connection() as conn:
                 job = await queue.enqueue(
@@ -383,8 +399,10 @@ def test_heartbeat_error_does_not_crash_dispatch(
                 pool,
                 reg,
                 worker_id="w1",
-                lease=timedelta(seconds=1),
-                heartbeat_interval=timedelta(milliseconds=100),
+                config=WorkerConfig(
+                    lease=timedelta(seconds=1),
+                    heartbeat_interval=timedelta(milliseconds=100),
+                ),
             )
             async with pool.connection() as conn:
                 job = await queue.enqueue(
@@ -476,8 +494,10 @@ def test_paused_worker_completes_job_already_in_flight(migrated_url: str) -> Non
                 pool,
                 reg,
                 worker_id="w1",
-                lease=timedelta(seconds=2),
-                heartbeat_interval=timedelta(milliseconds=200),
+                config=WorkerConfig(
+                    lease=timedelta(seconds=2),
+                    heartbeat_interval=timedelta(milliseconds=200),
+                ),
             )
             async with pool.connection() as conn:
                 in_flight = await queue.enqueue(
@@ -510,7 +530,10 @@ def test_run_survives_run_once_error(migrated_url: str, monkeypatch: pytest.Monk
     async def _run() -> None:
         async with AsyncConnectionPool(migrated_url, min_size=2, max_size=10) as pool:
             worker = _worker(
-                pool, HandlerRegistry(), worker_id="w1", poll_interval=timedelta(milliseconds=10)
+                pool,
+                HandlerRegistry(),
+                worker_id="w1",
+                config=WorkerConfig(poll_interval=timedelta(milliseconds=10)),
             )
             stop = asyncio.Event()
             calls = 0
@@ -536,7 +559,7 @@ def test_run_stops_while_idle_sleep_is_pending(monkeypatch: pytest.MonkeyPatch) 
             _unopened_pool(),
             HandlerRegistry(),
             worker_id="w1",
-            poll_interval=timedelta(seconds=30),
+            config=WorkerConfig(poll_interval=timedelta(seconds=30)),
         )
         stop = asyncio.Event()
         idle_reached = asyncio.Event()
@@ -560,7 +583,7 @@ def test_run_stops_while_error_sleep_is_pending(monkeypatch: pytest.MonkeyPatch)
             _unopened_pool(),
             HandlerRegistry(),
             worker_id="w1",
-            poll_interval=timedelta(seconds=30),
+            config=WorkerConfig(poll_interval=timedelta(seconds=30)),
         )
         stop = asyncio.Event()
         error_reached = asyncio.Event()
@@ -589,7 +612,7 @@ def test_run_once_pauses_dequeue_when_not_ready(monkeypatch: pytest.MonkeyPatch)
             _unopened_pool(),  # an unopened pool would raise if dequeue tried to connect
             HandlerRegistry(),
             worker_id="w1",
-            readiness=not_ready,
+            config=WorkerConfig(readiness=not_ready),
         )
         assert await worker.run_once() is None
 
@@ -611,7 +634,7 @@ def test_run_once_dequeues_when_ready_again(migrated_url: str) -> None:
 
             reg = HandlerRegistry()
             reg.register(JobKind.BUILD, handler)
-            worker = _worker(pool, reg, worker_id="w1", readiness=readiness)
+            worker = _worker(pool, reg, worker_id="w1", config=WorkerConfig(readiness=readiness))
             async with pool.connection() as conn:
                 job = await queue.enqueue(
                     conn, JobKind.BUILD, _build_payload(), _AUTHORIZING, "dk-notready"
@@ -644,8 +667,7 @@ def test_background_ticker_keeps_livez_live_across_a_long_blocking_job(
             _unopened_pool(),
             HandlerRegistry(),
             worker_id="w1",
-            heartbeat=hb,
-            heartbeat_tick=timedelta(milliseconds=5),
+            config=WorkerConfig(heartbeat=hb, heartbeat_tick=timedelta(milliseconds=5)),
         )
         stop = asyncio.Event()
         live_during_job: list[bool] = []
@@ -660,6 +682,23 @@ def test_background_ticker_keeps_livez_live_across_a_long_blocking_job(
         monkeypatch.setattr(worker, "run_once", long_run_once)
         await asyncio.wait_for(worker.run(stop), timeout=2)
         assert live_during_job == [True]  # still live after a job that outlasted stale_after
+
+    asyncio.run(_run())
+
+
+def test_background_ticker_does_not_tick_after_stop() -> None:
+    async def _run() -> None:
+        heartbeat = _CountingHeartbeat()
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            worker_module._tick_until_stop(cast(Heartbeat, heartbeat), stop, 60.0)
+        )
+        await asyncio.sleep(0)
+        assert heartbeat.ticks == 1
+
+        stop.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert heartbeat.ticks == 1
 
     asyncio.run(_run())
 

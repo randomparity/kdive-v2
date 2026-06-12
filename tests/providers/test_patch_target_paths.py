@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kdive.providers.build_validation import patch_target_paths
+from kdive.provider_components.build_validation import patch_target_paths
 
 _MODIFY = "--- a/fs/dcache.c\n+++ b/fs/dcache.c\n@@ -1,2 +1,2 @@\n line1\n-line2\n+line2-patched\n"
 

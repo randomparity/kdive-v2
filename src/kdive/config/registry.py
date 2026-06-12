@@ -92,8 +92,10 @@ class Registry:
             import os
 
             self.load(os.environ)
-        assert self._snapshot is not None
-        return self._snapshot
+        snapshot = self._snapshot
+        if snapshot is None:
+            raise RuntimeError("configuration registry did not capture an environment snapshot")
+        return snapshot
 
     def all_settings(self) -> tuple[Setting[Any], ...]:
         return self._settings

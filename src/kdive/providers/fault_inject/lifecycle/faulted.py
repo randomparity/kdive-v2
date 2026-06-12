@@ -13,7 +13,7 @@ delegating, so a seeded fault actually perturbs the spine op:
 - ``attempt`` is a caller-supplied **durable** input (``attempt_for``, default first attempt),
   never a wrapper-held counter (ADR-0072's determinism leg).
 
-A wrapper is assembled only when fault config is present (``build_faultinject_runtime`` with a
+A wrapper is assembled only when fault config is present (``build_fault_inject_runtime`` with a
 non-None ``engine``); the happy-path composition stays unchanged when no fault is configured.
 """
 
@@ -26,7 +26,8 @@ from uuid import UUID
 from kdive.domain.errors import CategorizedError
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.fault_inject.faulting.engine import FaultDecision, FaultEngine, FaultPlane
-from kdive.providers.fault_inject.lifecycle.provider import FaultInjectInstall, FaultInjectProvision
+from kdive.providers.fault_inject.lifecycle.install import FaultInjectInstall
+from kdive.providers.fault_inject.lifecycle.provisioning import FaultInjectProvisioning
 from kdive.providers.ports import InstallRequest
 
 _FIRST_ATTEMPT: Callable[[UUID], int] = lambda _system_id: 1  # noqa: E731 - a tiny default port
@@ -44,19 +45,20 @@ def _apply(decision: FaultDecision, sleep_s: _SyncSleep) -> None:
     if decision.latency_s > 0.0:
         sleep_s(decision.latency_s)
     if decision.fail:
-        assert decision.category is not None  # noqa: S101 - engine invariant: fail => category
+        if decision.category is None:
+            raise RuntimeError("fault engine returned a failing decision without a category")
         raise CategorizedError(
             f"fault-inject drew a {decision.category.value} failure",
             category=decision.category,
         )
 
 
-class FaultedProvision:
-    """A :class:`FaultInjectProvision` that draws provision-plane faults before delegating."""
+class FaultedProvisioning:
+    """A :class:`FaultInjectProvisioning` that draws provision-plane faults before delegating."""
 
     def __init__(
         self,
-        inner: FaultInjectProvision,
+        inner: FaultInjectProvisioning,
         engine: FaultEngine,
         *,
         attempt_for: _AttemptFor = _FIRST_ATTEMPT,

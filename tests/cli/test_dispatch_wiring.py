@@ -9,7 +9,7 @@ import pytest
 
 from kdive.cli import dispatch
 from kdive.cli.__main__ import build_parser
-from kdive.cli.commands import REGISTRY
+from kdive.cli.commands.registry import REGISTRY
 
 
 def test_curated_verb_is_a_known_subcommand() -> None:

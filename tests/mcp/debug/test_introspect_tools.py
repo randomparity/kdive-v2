@@ -27,6 +27,7 @@ from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.authz.rbac import AuthorizationError, Role
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
+from tests.mcp.json_data import data_mapping, json_mapping, json_sequence
 
 
 def _ctx(
@@ -105,9 +106,9 @@ def test_from_vmcore_happy_path_returns_redacted_report(migrated_url: str) -> No
                 pool, _ctx(), run_id=run_id, introspector=port
             )
         assert resp.status != "error"
-        report = resp.data["report"]
-        assert isinstance(report, dict)
-        assert report["sysinfo"]["release"] == "6.8.0"
+        report = data_mapping(resp, "report")
+        sysinfo = json_mapping(report["sysinfo"])
+        assert sysinfo["release"] == "6.8.0"
         assert resp.data["truncated"] == "false"
         assert port.kwargs["expected_build_id"] == "deadbeef"
         assert port.kwargs["debuginfo_ref"] == "k/runs/r/vmlinux"
@@ -142,9 +143,10 @@ def test_from_vmcore_passes_through_port_redacted_report(migrated_url: str) -> N
                 pool, _ctx(), run_id=run_id, introspector=port
             )
         assert resp.status != "error"
-        report = resp.data["report"]
-        assert isinstance(report, dict)
-        assert report["tasks"]["tasks"][0]["comm"] == "[REDACTED]"
+        report = data_mapping(resp, "report")
+        tasks = json_mapping(report["tasks"])
+        first_task = json_mapping(json_sequence(tasks["tasks"])[0])
+        assert first_task["comm"] == "[REDACTED]"
 
     asyncio.run(_run())
 
@@ -358,10 +360,11 @@ def test_run_live_happy_path_returns_redacted_report(migrated_url: str) -> None:
                 pool, _live_ctx(), session_id=session_id, helper="tasks", introspector=port
             )
         assert resp.status != "error"
-        report = resp.data["report"]
-        assert isinstance(report, dict)
+        report = data_mapping(resp, "report")
         assert set(report) == {"tasks"}
-        assert report["tasks"]["tasks"][0]["pid"] == 1
+        tasks = json_mapping(report["tasks"])
+        first_task = json_mapping(json_sequence(tasks["tasks"])[0])
+        assert first_task["pid"] == 1
         assert port.kwargs == {"transport_handle": "drgn-live://127.0.0.1:22", "helper": "tasks"}
 
     asyncio.run(_run())
@@ -421,9 +424,10 @@ def test_run_live_masks_planted_secret_in_response(migrated_url: str) -> None:
             resp = await introspect_tools.introspect_run(
                 pool, _live_ctx(), session_id=session_id, helper="tasks", introspector=port
             )
-        report = resp.data["report"]
-        assert isinstance(report, dict)
-        assert report["tasks"]["tasks"][0]["comm"] == "[REDACTED]"
+        report = data_mapping(resp, "report")
+        tasks = json_mapping(report["tasks"])
+        first_task = json_mapping(json_sequence(tasks["tasks"])[0])
+        assert first_task["comm"] == "[REDACTED]"
 
     asyncio.run(_run())
 

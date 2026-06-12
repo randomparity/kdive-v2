@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.lease import clamp_extension_hours, resolve_window_hours
+from kdive.domain.lease import LeaseBounds, clamp_extension_hours, resolve_window_hours
 
 _NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
@@ -36,28 +36,14 @@ def test_non_positive_or_non_finite_window_is_config_error(bad: object) -> None:
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
-def test_default_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("KDIVE_LEASE_DEFAULT", "8")
-    assert resolve_window_hours(None) == Decimal(8)
+def test_custom_default_bound_is_used_for_omitted_window() -> None:
+    bounds = LeaseBounds(default_hours=Decimal(8), max_hours=Decimal(24))
+    assert resolve_window_hours(None, bounds=bounds) == Decimal(8)
 
 
-def test_max_env_override_tightens_clamp(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("KDIVE_LEASE_MAX", "2")
-    assert resolve_window_hours(10) == Decimal(2)
-
-
-def test_malformed_default_env_is_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("KDIVE_LEASE_DEFAULT", "nope")
-    with pytest.raises(CategorizedError) as exc:
-        resolve_window_hours(None)
-    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
-
-
-def test_malformed_max_env_is_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("KDIVE_LEASE_MAX", "0")
-    with pytest.raises(CategorizedError) as exc:
-        resolve_window_hours(5)
-    assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+def test_custom_max_bound_tightens_clamp() -> None:
+    bounds = LeaseBounds(default_hours=Decimal(4), max_hours=Decimal(2))
+    assert resolve_window_hours(10, bounds=bounds) == Decimal(2)
 
 
 def test_extension_under_cap_bills_full_extend() -> None:
@@ -92,9 +78,13 @@ def test_extension_on_expired_lease_bills_from_now_to_cap() -> None:
     assert result.new_expiry == _NOW + timedelta(hours=24)
 
 
-def test_extension_respects_max_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("KDIVE_LEASE_MAX", "2")
+def test_extension_respects_custom_max_bound() -> None:
     expiry = _NOW + timedelta(hours=1)
-    result = clamp_extension_hours(expiry, Decimal(5), _NOW)
+    result = clamp_extension_hours(
+        expiry,
+        Decimal(5),
+        _NOW,
+        bounds=LeaseBounds(default_hours=Decimal(4), max_hours=Decimal(2)),
+    )
     assert result.added_hours == Decimal(1)
     assert result.new_expiry == _NOW + timedelta(hours=2)

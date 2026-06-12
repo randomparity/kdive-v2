@@ -25,6 +25,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.catalog import availability as availability_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.services.resources.discovery import register_discovered_resource
+from tests.mcp.json_data import data_mapping, data_sequence, json_mapping
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 CTX = RequestContext(principal="user-1", agent_session="s", projects=("proj",))
@@ -260,9 +261,9 @@ def test_fits_now_needs_headroom_and_free_device(migrated_url: str) -> None:
             await _add_shape(pool, "nic-shape", pcie_match="8086:1572")
             resp = await availability_tools.availability_tool(pool, CTX, pcie=None, shape=None)
         item = _host_item(resp, res_id)
-        assert "nic-shape" in item.data["fits"]
+        assert "nic-shape" in data_sequence(item, "fits")
         # Fleet-level fits set also carries it.
-        assert "nic-shape" in resp.data["fits_now"]
+        assert "nic-shape" in data_sequence(resp, "fits_now")
 
     asyncio.run(_run())
 
@@ -275,7 +276,7 @@ def test_no_fit_when_device_absent(migrated_url: str) -> None:
             await _add_shape(pool, "nic-shape", pcie_match="8086:1572")
             resp = await availability_tools.availability_tool(pool, CTX, pcie=None, shape=None)
         item = _host_item(resp, res_id)
-        assert "nic-shape" not in item.data["fits"]
+        assert "nic-shape" not in data_sequence(item, "fits")
 
     asyncio.run(_run())
 
@@ -290,7 +291,7 @@ def test_no_fit_when_no_headroom(migrated_url: str) -> None:
             resp = await availability_tools.availability_tool(pool, CTX, pcie=None, shape=None)
         item = _host_item(resp, res_id)
         assert item.data["headroom"] == 0
-        assert "tiny" not in item.data["fits"]
+        assert "tiny" not in data_sequence(item, "fits")
 
     asyncio.run(_run())
 
@@ -368,9 +369,10 @@ def test_queue_depth_counts_by_kind_and_by_id(migrated_url: str) -> None:
                 requested_resource_id=UUID(res_id),
             )
             resp = await availability_tools.availability_tool(pool, CTX, pcie=None, shape=None)
-        queue = resp.data["queue_depth"]
+        queue = data_mapping(resp, "queue_depth")
         assert queue["total"] == 3
-        assert queue["by_kind"]["local-libvirt"] == 2
+        by_kind = json_mapping(queue["by_kind"])
+        assert by_kind["local-libvirt"] == 2
         assert queue["by_id"] == 1
 
     asyncio.run(_run())

@@ -21,11 +21,13 @@ from contextlib import asynccontextmanager
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
+import kdive.config as config
 from kdive.db.locks import LockScope, advisory_xact_lock
+from kdive.domain.errors import CategorizedError
 from kdive.domain.state import AllocationState, SystemState
 from kdive.mcp.tools.ops import reconcile as ops_reconcile
 from kdive.providers.reaping import NullReaper
-from kdive.reconciler.loop import reconcile_once
+from kdive.reconciler.loop import ReconcileConfig, reconcile_once
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole
 from tests.db_waits import wait_until_any_backend_waiting
@@ -263,7 +265,7 @@ def test_concurrent_on_demand_and_periodic_pass_enqueue_one_teardown(migrated_ur
             on_demand = ops_reconcile.reconcile_now(
                 pool, _ctx(platform_roles=_OPERATOR), reaper=NullReaper(), upload_store=None
             )
-            periodic = reconcile_once(pool, NullReaper(), upload_store=None)
+            periodic = reconcile_once(pool, NullReaper(), config=ReconcileConfig())
             results = await asyncio.gather(on_demand, periodic)
         assert results[0].status == "ok"
         assert await _teardown_job_count(migrated_url) == 1
@@ -278,3 +280,21 @@ def test_register_resolves_upload_store_off_without_s3_env(monkeypatch: pytest.M
     monkeypatch.delenv("KDIVE_S3_ENDPOINT_URL", raising=False)
     monkeypatch.delenv("KDIVE_S3_BUCKET", raising=False)
     assert ops_reconcile.resolve_upload_store() is None
+
+
+@pytest.mark.usefixtures("migrated_url")
+def test_register_resolves_image_store_off_without_s3_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KDIVE_S3_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("KDIVE_S3_BUCKET", raising=False)
+    assert ops_reconcile.resolve_image_store() is None
+
+
+@pytest.mark.parametrize("helper_name", ["resolve_upload_store", "resolve_image_store"])
+def test_register_reraises_partial_s3_config(helper_name: str) -> None:
+    try:
+        config.load({"KDIVE_S3_ENDPOINT_URL": "http://localhost:9000"})
+        helper = getattr(ops_reconcile, helper_name)
+        with pytest.raises(CategorizedError):
+            helper()
+    finally:
+        config.reset()

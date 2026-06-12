@@ -33,7 +33,7 @@ Two wiring decisions ADR-0072 left open, both with viable alternatives:
 
 ## Decision
 
-**A `FaultedProvision` / `FaultedInstall` decorator wraps the happy-path mock ports.** The
+**A `FaultedProvisioning` / `FaultedInstall` decorator wraps the happy-path mock ports.** The
 happy-path ports (ADR-0072 issue 2) stay untouched and synthetic; a thin faulting wrapper
 consults a `FaultEngine` before delegating. The wrapper is constructed in
 `build_faultinject_runtime` only when the resource `capabilities` carry a non-empty
@@ -132,7 +132,7 @@ latency path both terminate in *already-shipped* transitions.
   the seam changes only timing, and the lapsed-lease seed pattern is already the repo's
   reconciler-test convention.
 - **Fold the engine consult into the existing happy-path ports** (a single
-  `FaultInjectProvision` that both mints the domain and draws faults). Fewer types, but it
+  `FaultInjectProvisioning` that both mints the domain and draws faults). Fewer types, but it
   collapses the happy-path regression surface and the fault surface into one unbisectable
   unit — exactly what the spec's "happy-path first, don't fold the fault engine in" rule
   forbids. Rejected for the decorator split.

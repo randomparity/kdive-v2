@@ -11,10 +11,15 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import ProvisioningProfile, RootfsSource
 from kdive.provider_components.references import ROOTFS_COMPONENT, ComponentSourceKind
 from kdive.provider_components.validation import ComponentSourceCapabilities
+from kdive.providers.fault_inject.profile_policy import FaultInjectProfilePolicy
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
 from kdive.services.systems.validation import (
     validate_profile_for_provider,
     validate_rootfs_for_provider,
 )
+
+_LOCAL_POLICY = LocalLibvirtProfilePolicy()
+_FAULT_POLICY = FaultInjectProfilePolicy()
 
 _VALID_PROFILE: dict[str, Any] = {
     "schema_version": 1,
@@ -52,12 +57,12 @@ def _capabilities(*accepted_rootfs_sources: ComponentSourceKind) -> ComponentSou
 
 
 def test_validate_profile_for_provider_accepts_advertised_rootfs_source() -> None:
-    validate_profile_for_provider(_profile(), _capabilities("local"))
+    validate_profile_for_provider(_profile(), _LOCAL_POLICY, _capabilities("local"))
 
 
 def test_validate_profile_for_provider_rejects_unsupported_rootfs_source() -> None:
     with pytest.raises(CategorizedError) as exc_info:
-        validate_profile_for_provider(_profile(), _capabilities("catalog"))
+        validate_profile_for_provider(_profile(), _LOCAL_POLICY, _capabilities("catalog"))
 
     error = exc_info.value
     assert error.category is ErrorCategory.CONFIGURATION_ERROR
@@ -76,7 +81,7 @@ def test_validate_profile_for_provider_runs_static_profile_validation_first() ->
     invalid_profile = ProvisioningProfile.parse(data)
 
     with pytest.raises(CategorizedError) as exc_info:
-        validate_profile_for_provider(invalid_profile, _capabilities("local"))
+        validate_profile_for_provider(invalid_profile, _LOCAL_POLICY, _capabilities("local"))
 
     error = exc_info.value
     assert error.category is ErrorCategory.CONFIGURATION_ERROR
@@ -92,7 +97,7 @@ def test_validate_rootfs_for_provider_invokes_validator_for_regular_rootfs() -> 
     def validate(rootfs: RootfsSource) -> None:
         calls.append(rootfs)
 
-    validate_rootfs_for_provider(_profile(), validate)
+    validate_rootfs_for_provider(_profile(), _LOCAL_POLICY, validate)
 
     assert [rootfs.kind for rootfs in calls] == ["local"]
 
@@ -101,8 +106,8 @@ def test_validate_rootfs_for_provider_skips_upload_rootfs() -> None:
     def fail_on_call(_: RootfsSource) -> None:
         raise AssertionError("upload-kind rootfs is system-owned and not provider-validated")
 
-    validate_rootfs_for_provider(_profile({"kind": "upload"}), fail_on_call)
-    validate_profile_for_provider(_profile({"kind": "upload"}), _capabilities())
+    validate_rootfs_for_provider(_profile({"kind": "upload"}), _LOCAL_POLICY, fail_on_call)
+    validate_profile_for_provider(_profile({"kind": "upload"}), _LOCAL_POLICY, _capabilities())
 
 
 def test_validate_rootfs_for_provider_propagates_validator_error() -> None:
@@ -114,7 +119,7 @@ def test_validate_rootfs_for_provider_propagates_validator_error() -> None:
         )
 
     with pytest.raises(CategorizedError) as exc_info:
-        validate_rootfs_for_provider(_profile(), reject)
+        validate_rootfs_for_provider(_profile(), _LOCAL_POLICY, reject)
 
     assert exc_info.value.details == {"path": "/tmp/rootfs.qcow2"}
 
@@ -127,5 +132,5 @@ def test_validate_rootfs_for_provider_skips_providers_without_rootfs() -> None:
     def fail_on_call(_: RootfsSource) -> None:
         pytest.fail("fault-inject profiles do not expose a provider rootfs")
 
-    validate_rootfs_for_provider(profile, fail_on_call)
-    validate_profile_for_provider(profile, _capabilities())
+    validate_rootfs_for_provider(profile, _FAULT_POLICY, fail_on_call)
+    validate_profile_for_provider(profile, _FAULT_POLICY, _capabilities())

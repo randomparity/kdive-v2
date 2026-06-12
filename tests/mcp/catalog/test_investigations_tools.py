@@ -296,7 +296,9 @@ def test_link_then_unlink_round_trip(migrated_url: str) -> None:
             }
             await inv_tools.link_external_ref(pool, _ctx(), inv_id, ref)
             after_link = await _refs_of(pool, inv_id)()
-            await inv_tools.unlink_external_ref(pool, _ctx(), inv_id, ref)
+            await inv_tools.unlink_external_ref(
+                pool, _ctx(), inv_id, {"tracker": ref["tracker"], "id": ref["id"]}
+            )
             after_unlink = await _refs_of(pool, inv_id)()
         assert after_link == {("bz", "7"): "https://bz/7"}
         assert after_unlink == {}
@@ -351,6 +353,16 @@ def test_unlink_absent_is_idempotent_no_audit(migrated_url: str) -> None:
                 )
                 audit = await cur.fetchone()
         assert audit is not None and audit["n"] == 0
+
+    asyncio.run(_run())
+
+
+def test_unlink_malformed_ref_key_is_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            inv_id = (await _open(pool, _ctx(), project="proj", title="t")).object_id
+            resp = await inv_tools.unlink_external_ref(pool, _ctx(), inv_id, {"tracker": "bz"})
+        assert resp.status == "error" and resp.error_category == "configuration_error"
 
     asyncio.run(_run())
 

@@ -20,18 +20,20 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.mcp.middleware import DenialAuditMiddleware
 from kdive.mcp.responses import ToolResponse
+from kdive.security.audit import args_digest
 from kdive.security.authz.gate import DestructiveOpDenied
 from kdive.security.authz.rbac import AuthorizationError, Role, RoleDenied
 
 
 class _FakeMessage:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, arguments: dict[str, object] | None = None) -> None:
         self.name = name
+        self.arguments = arguments
 
 
 class _FakeContext:
-    def __init__(self, tool: str) -> None:
-        self.message = _FakeMessage(tool)
+    def __init__(self, tool: str, arguments: dict[str, object] | None = None) -> None:
+        self.message = _FakeMessage(tool, arguments)
 
 
 def _role_denied() -> RoleDenied:
@@ -90,6 +92,7 @@ def _drive_role_denied(
     denial: RoleDenied,
     *,
     agent_session: str | None = "sess-1",
+    arguments: dict[str, object] | None = None,
 ) -> tuple[ToolResponse, list[tuple[Any, ...]]]:
     async def _run() -> tuple[ToolResponse, list[tuple[Any, ...]]]:
         async with AsyncConnectionPool(migrated_url, open=False) as pool:
@@ -99,7 +102,9 @@ def _drive_role_denied(
             async def _call_next(_ctx: Any) -> None:
                 raise denial
 
-            result = await mw.on_call_tool(_FakeContext("allocations.release"), _call_next)
+            result = await mw.on_call_tool(
+                _FakeContext("allocations.release", arguments), _call_next
+            )
             async with pool.connection() as conn, conn.cursor() as cur:
                 await cur.execute(
                     "SELECT principal, agent_session, project, tool, object_kind, "
@@ -131,8 +136,10 @@ def test_role_denied_audit_failure_still_returns_envelope(
     migrated_url: str,
 ) -> None:
     class _FailingRecordMiddleware(DenialAuditMiddleware):
-        async def _record(self, tool: str, denial: RoleDenied) -> None:
-            _ = (tool, denial)
+        async def _record(
+            self, tool: str, denial: RoleDenied, *, args: dict[str, object] | None = None
+        ) -> None:
+            _ = (tool, denial, args)
             raise RuntimeError("audit unavailable")
 
     async def _run() -> None:
@@ -159,6 +166,41 @@ def test_role_denied_project_comes_from_exception_not_call_args(migrated_url: st
     _resp, rows = _drive_role_denied(migrated_url, denial)
     assert len(rows) == 1
     assert rows[0][2] == "resolved-from-row"
+
+
+def test_role_denied_audit_digest_uses_json_native_call_args(migrated_url: str) -> None:
+    arguments = {
+        "allocation_id": "al-1",
+        "force": True,
+        "tags": ["fast", "debug"],
+        "limits": {"cpus": 2, "ratio": 1.5},
+        "non_json": object(),
+    }
+
+    async def _run() -> str:
+        async with AsyncConnectionPool(migrated_url, open=False) as pool:
+            await pool.open()
+            mw = DenialAuditMiddleware(pool, agent_session=lambda: "sess-1")
+
+            async def _call_next(_ctx: Any) -> None:
+                raise _role_denied()
+
+            await mw.on_call_tool(_FakeContext("allocations.release", arguments), _call_next)
+            async with pool.connection() as conn, conn.cursor() as cur:
+                await cur.execute("SELECT args_digest FROM audit_log")
+                row = await cur.fetchone()
+        assert row is not None
+        return str(row[0])
+
+    expected = args_digest(
+        {
+            "allocation_id": "al-1",
+            "force": True,
+            "tags": ["fast", "debug"],
+            "limits": {"cpus": 2, "ratio": 1.5},
+        }
+    )
+    assert asyncio.run(_run()) == expected
 
 
 def test_null_agent_session_persists(migrated_url: str) -> None:

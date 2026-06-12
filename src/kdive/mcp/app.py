@@ -3,23 +3,26 @@
 Tool registration and worker-handler registration are both table-driven. A plane adds
 tool registrars to ``_PLANE_REGISTRARS`` and long-running job handlers to
 ``_HANDLER_REGISTRARS``; the entrypoint stays stable. Provider-aware registrars receive
-the injected provider resolver (ADR-0071), while read-only/cancel-only tool groups
-register no job handler because they do not own a ``JobKind``.
+the assembled provider/env ports (ADR-0071), while read-only/cancel-only tool groups register
+no job handler because they do not own a ``JobKind``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from opentelemetry import metrics, trace
+from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.diagnostics.service import default_service_factory
 from kdive.domain.errors import CategorizedError
+from kdive.domain.models import Job, JobKind
 from kdive.jobs.handlers import control, image_build, runs, systems, vmcore
-from kdive.jobs.models import HandlerRegistry
+from kdive.jobs.models import HandlerRegistry, JobHandler
 from kdive.mcp.auth import build_verifier
 from kdive.mcp.middleware import DenialAuditMiddleware, TelemetryMiddleware
 from kdive.mcp.tools.accounting.admin import register as register_accounting_admin
@@ -27,7 +30,6 @@ from kdive.mcp.tools.accounting.estimate import register as register_accounting_
 from kdive.mcp.tools.accounting.reports import register as register_accounting_reports
 from kdive.mcp.tools.accounting.usage import register as register_accounting_usage
 from kdive.mcp.tools.catalog import (
-    artifacts,
     availability,
     build_configs,
     fixtures,
@@ -37,6 +39,7 @@ from kdive.mcp.tools.catalog import (
     shapes,
 )
 from kdive.mcp.tools.catalog import images as catalog_images
+from kdive.mcp.tools.catalog.artifacts import registrar as artifacts_tools
 from kdive.mcp.tools.debug import introspect
 from kdive.mcp.tools.debug import sessions as debug_tools
 from kdive.mcp.tools.lifecycle import allocations
@@ -47,112 +50,206 @@ from kdive.mcp.tools.lifecycle.systems import registrar as systems_tools
 from kdive.mcp.tools.ops import audit as audit_tools
 from kdive.mcp.tools.ops import breakglass as ops_breakglass_tools
 from kdive.mcp.tools.ops import diagnostics as ops_diagnostics_tools
-from kdive.mcp.tools.ops import images as ops_images_tools
 from kdive.mcp.tools.ops import inventory as inventory_tools
 from kdive.mcp.tools.ops import queue as ops_queue_tools
 from kdive.mcp.tools.ops import reconcile as ops_reconcile_tools
 from kdive.mcp.tools.ops import resources as ops_resources_tools
 from kdive.mcp.tools.ops import secrets as ops_secrets_tools
 from kdive.mcp.tools.ops import tuning as ops_tuning_tools
+from kdive.mcp.tools.ops.images import registrar as ops_images_tools
 from kdive.providers.composition import ProviderComposition, build_provider_resolver
-from kdive.providers.reaping import InfraReaper
+from kdive.providers.reaping import DumpVolumeReaper, InfraReaper
 from kdive.providers.resolver import ProviderResolver
 from kdive.security.secrets.secret_registry import SecretRegistry
 
-type PlaneRegistrar = Callable[
-    [FastMCP, AsyncConnectionPool, ProviderResolver, SecretRegistry, InfraReaper], None
-]
+
+@dataclass(frozen=True, slots=True)
+class AppAssembly:
+    """Provider/env ports assembled once for MCP tool registration."""
+
+    resolver: ProviderResolver
+    secret_registry: SecretRegistry
+    reaper: InfraReaper
+    dump_volume_reaper: DumpVolumeReaper
+
+
+type PlaneRegistrar = Callable[[FastMCP, AsyncConnectionPool, AppAssembly], None]
 type HandlerRegistrar = Callable[[HandlerRegistry, ProviderResolver, SecretRegistry], None]
 
 
-def _plain(register: Callable[[FastMCP, AsyncConnectionPool], None]) -> PlaneRegistrar:
+def _pool_only_plane_registrar(
+    register: Callable[[FastMCP, AsyncConnectionPool], None],
+) -> PlaneRegistrar:
     def _register(
         app: FastMCP,
         pool: AsyncConnectionPool,
-        _: ProviderResolver,
-        __: SecretRegistry,
-        ___: InfraReaper,
+        _: AppAssembly,
     ) -> None:
         register(app, pool)
 
     return _register
 
 
-# Tool seam: each plane exposes register(app, pool); provider-aware planes receive the resolver.
-_PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
-    _plain(jobs.register),
-    _plain(resources.register),
-    _plain(availability.register),
-    _plain(shapes.register),
-    _plain(register_accounting_estimate),
-    _plain(register_accounting_usage),
-    _plain(register_accounting_reports),
-    _plain(register_accounting_admin),
-    lambda app, pool, resolver, registry, reaper: ops_reconcile_tools.register_with_reaper(
+def _register_reconcile_tools(
+    app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly
+) -> None:
+    ops_reconcile_tools.register_with_reaper(
         app,
         pool,
-        reaper=reaper,
+        reaper=assembly.reaper,
         upload_store=ops_reconcile_tools.resolve_upload_store(),
         image_store=ops_reconcile_tools.resolve_image_store(),
-        dump_volume_reaper=ProviderComposition(
-            secret_registry=registry
-        ).build_reconciler_dump_volume_reaper(),
-    ),
-    _plain(ops_resources_tools.register),
-    _plain(allocations.register),
-    _plain(ops_breakglass_tools.register),
-    lambda app, pool, resolver, registry, reaper: systems_tools.register(
-        app, pool, resolver=resolver
-    ),
-    _plain(investigations.register),
-    lambda app, pool, resolver, registry, reaper: runs_tools.register(app, pool, resolver=resolver),
-    _plain(control_tools.register),
-    _plain(artifacts.register),
-    _plain(build_configs.register),
-    lambda app, pool, resolver, registry, reaper: vmcore_tools.register(
-        app, pool, resolver=resolver, secret_registry=registry
-    ),
-    lambda app, pool, resolver, registry, reaper: debug_tools.register(
+        dump_volume_reaper=assembly.dump_volume_reaper,
+    )
+
+
+def _register_systems_tools(app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly) -> None:
+    systems_tools.register(app, pool, resolver=assembly.resolver)
+
+
+def _register_runs_tools(app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly) -> None:
+    runs_tools.register(app, pool, resolver=assembly.resolver)
+
+
+def _register_control_tools(app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly) -> None:
+    control_tools.register(app, pool, resolver=assembly.resolver)
+
+
+def _register_artifact_tools(
+    app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly
+) -> None:
+    artifacts_tools.register(app, pool, resolver=assembly.resolver)
+
+
+def _register_vmcore_tools(app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly) -> None:
+    vmcore_tools.register(
+        app, pool, resolver=assembly.resolver, secret_registry=assembly.secret_registry
+    )
+
+
+def _register_debug_tools(app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly) -> None:
+    debug_tools.register(
         app,
         pool,
-        resolver=resolver,
-        secret_registry=registry,
-    ),
-    lambda app, pool, resolver, registry, reaper: introspect.register(app, pool, resolver=resolver),
-    _plain(ops_queue_tools.register),
-    _plain(ops_tuning_tools.register),
-    _plain(audit_tools.register),
-    lambda app, pool, resolver, registry, reaper: ops_diagnostics_tools.register(
-        app, pool, default_service_factory
-    ),
-    _plain(inventory_tools.register),
-    _plain(fixtures.register),
-    _plain(catalog_images.register),
-    lambda app, pool, resolver, registry, reaper: ops_images_tools.register_from_env(app, pool),
-    lambda app, pool, resolver, registry, reaper: ops_secrets_tools.register(app, pool, registry),
+        resolver=assembly.resolver,
+        secret_registry=assembly.secret_registry,
+    )
+
+
+def _register_introspection_tools(
+    app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly
+) -> None:
+    introspect.register(app, pool, resolver=assembly.resolver)
+
+
+def _register_diagnostics_tools(
+    app: FastMCP, pool: AsyncConnectionPool, _assembly: AppAssembly
+) -> None:
+    ops_diagnostics_tools.register(app, pool, default_service_factory)
+
+
+def _register_ops_images_tools(
+    app: FastMCP, pool: AsyncConnectionPool, _assembly: AppAssembly
+) -> None:
+    ops_images_tools.register_from_env(app, pool)
+
+
+def _register_ops_secrets_tools(
+    app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly
+) -> None:
+    ops_secrets_tools.register(app, pool, assembly.secret_registry)
+
+
+def _register_system_handlers(
+    registry: HandlerRegistry, resolver: ProviderResolver, _secret_registry: SecretRegistry
+) -> None:
+    systems.register_handlers(registry, resolver=resolver)
+
+
+def _register_run_handlers(
+    registry: HandlerRegistry, resolver: ProviderResolver, secret_registry: SecretRegistry
+) -> None:
+    runs.register_handlers(registry, resolver=resolver, secret_registry=secret_registry)
+
+
+def _register_control_handlers(
+    registry: HandlerRegistry, resolver: ProviderResolver, _secret_registry: SecretRegistry
+) -> None:
+    control.register_handlers(registry, resolver=resolver)
+
+
+def _register_vmcore_handlers(
+    registry: HandlerRegistry, resolver: ProviderResolver, _secret_registry: SecretRegistry
+) -> None:
+    vmcore.register_handlers(registry, resolver=resolver)
+
+
+# Tool seam: each plane exposes register(app, pool); provider-aware planes receive AppAssembly.
+_PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
+    _pool_only_plane_registrar(jobs.register),
+    _pool_only_plane_registrar(resources.register),
+    _pool_only_plane_registrar(availability.register),
+    _pool_only_plane_registrar(shapes.register),
+    _pool_only_plane_registrar(register_accounting_estimate),
+    _pool_only_plane_registrar(register_accounting_usage),
+    _pool_only_plane_registrar(register_accounting_reports),
+    _pool_only_plane_registrar(register_accounting_admin),
+    _register_reconcile_tools,
+    _pool_only_plane_registrar(ops_resources_tools.register),
+    _pool_only_plane_registrar(allocations.register),
+    _pool_only_plane_registrar(ops_breakglass_tools.register),
+    _register_systems_tools,
+    _pool_only_plane_registrar(investigations.register),
+    _register_runs_tools,
+    _register_control_tools,
+    _register_artifact_tools,
+    _pool_only_plane_registrar(build_configs.register),
+    _register_vmcore_tools,
+    _register_debug_tools,
+    _register_introspection_tools,
+    _pool_only_plane_registrar(ops_queue_tools.register),
+    _pool_only_plane_registrar(ops_tuning_tools.register),
+    _pool_only_plane_registrar(audit_tools.register),
+    _register_diagnostics_tools,
+    _pool_only_plane_registrar(inventory_tools.register),
+    _pool_only_plane_registrar(fixtures.register),
+    _pool_only_plane_registrar(catalog_images.register),
+    _register_ops_images_tools,
+    _register_ops_secrets_tools,
 )
 
 
 def _register_image_build_handler(
-    registry: HandlerRegistry, _resolver: ProviderResolver, _secret_registry: SecretRegistry
+    registry: HandlerRegistry, resolver: ProviderResolver, _secret_registry: SecretRegistry
 ) -> None:
-    """Bind the IMAGE_BUILD handler when an image object store is configured.
+    """Bind the IMAGE_BUILD handler, preserving setup errors as job failures.
 
-    The handler's build plane is the local-libvirt rootfs plane and the store is the S3 image
-    store. A worker with no ``KDIVE_S3_*`` env cannot publish an image, so it does not bind the
-    handler — exactly as the abandoned-upload reaper stays off without S3 (see
-    ``ops.reconcile.resolve_upload_store``).
+    The handler resolves the provider's rootfs build plane through ``ProviderResolver``; the S3
+    image store is still assembled once at worker registration. A worker with no ``KDIVE_S3_*``
+    env still binds IMAGE_BUILD so queued jobs fail with the original configuration category
+    instead of falling through to ``not_implemented``.
     """
-    from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane
     from kdive.store.objectstore import object_store_from_env
 
     try:
         store = object_store_from_env()
-    except CategorizedError:
+    except CategorizedError as exc:
+        registry.register(JobKind.IMAGE_BUILD, _unconfigured_image_build_handler(exc))
         return
     image_build.register_handlers(
-        registry, build_plane=LocalLibvirtRootfsBuildPlane.from_env(), store=store
+        registry,
+        provider_resolver=resolver,
+        store=store,
     )
+
+
+def _unconfigured_image_build_handler(
+    error: CategorizedError,
+) -> JobHandler:
+    async def _handler(_conn: AsyncConnection, _job: Job) -> str | None:
+        raise CategorizedError(str(error), category=error.category, details=error.details)
+
+    return _handler
 
 
 # Handler seam: worker modules expose register_handlers(registry). Long-running lifecycle,
@@ -160,18 +257,10 @@ def _register_image_build_handler(
 # register only in _PLANE_REGISTRARS. Handler construction receives the provider resolver and
 # redaction registry without opening provider or toolchain connections at registration time.
 _HANDLER_REGISTRARS: tuple[HandlerRegistrar, ...] = (
-    lambda registry, resolver, secret_registry: systems.register_handlers(
-        registry, resolver=resolver
-    ),
-    lambda registry, resolver, secret_registry: runs.register_handlers(
-        registry, resolver=resolver, secret_registry=secret_registry
-    ),
-    lambda registry, resolver, secret_registry: control.register_handlers(
-        registry, resolver=resolver
-    ),
-    lambda registry, resolver, secret_registry: vmcore.register_handlers(
-        registry, resolver=resolver
-    ),
+    _register_system_handlers,
+    _register_run_handlers,
+    _register_control_handlers,
+    _register_vmcore_handlers,
     _register_image_build_handler,
 )
 
@@ -204,10 +293,14 @@ def build_app(
     )
     app.add_middleware(DenialAuditMiddleware(pool))
     composition = provider_composition or ProviderComposition(secret_registry=secret_registry)
-    resolver = composition.build_provider_resolver()
-    reaper = composition.build_reconciler_reaper()
+    assembly = AppAssembly(
+        resolver=composition.build_provider_resolver(),
+        secret_registry=composition.secret_registry,
+        reaper=composition.build_reconciler_reaper(),
+        dump_volume_reaper=composition.build_reconciler_dump_volume_reaper(),
+    )
     for register in _PLANE_REGISTRARS:
-        register(app, pool, resolver, secret_registry, reaper)
+        register(app, pool, assembly)
     return app
 
 

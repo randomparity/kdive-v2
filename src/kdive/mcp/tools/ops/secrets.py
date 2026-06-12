@@ -17,9 +17,9 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.errors import ErrorCategory
 from kdive.mcp.auth import current_context
-from kdive.mcp.responses import ToolResponse
+from kdive.mcp.responses import JsonValue, ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools.ops._auth import (
+from kdive.mcp.tools._platform_auth import (
     ALL_PROJECTS_SCOPE,
     actor_for,
     audit_platform_denial,
@@ -56,7 +56,9 @@ async def list_secrets_tool(
     except AuthorizationError:
         await audit_platform_denial(pool, ctx, tool=_TOOL, scope=ALL_PROJECTS_SCOPE)
         return _denied()
-    refs = sorted(registry.scope_refs())
+    refs: list[JsonValue] = []
+    for ref in sorted(registry.scope_refs()):
+        refs.append(ref)
     async with pool.connection() as conn, conn.transaction():
         await audit.record_platform(
             conn,

@@ -19,13 +19,12 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from defusedxml.common import DefusedXmlException
 from hypothesis import given
 from hypothesis import strategies as st
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.provisioning import ProvisioningProfile
-from kdive.providers.local_libvirt.discovery import _parse_arch, _parse_system_id
+from kdive.providers.libvirt_xml import parse_capabilities_arch, parse_metadata_system_id
 from kdive.providers.local_libvirt.lifecycle.install import LocalLibvirtInstall, ReadinessResult
 from kdive.providers.local_libvirt.lifecycle.provisioning import render_domain_xml
 from kdive.providers.ports import InstallRequest
@@ -166,25 +165,22 @@ _META_BOMB = """<?xml version="1.0"?>
 
 def test_parse_arch_reads_valid_caps_and_unknowns_malformed() -> None:
     valid = "<capabilities><host><cpu><arch>aarch64</arch></cpu></host></capabilities>"
-    assert _parse_arch(valid) == "aarch64"
-    assert _parse_arch("<capabilities><host/></capabilities>") == "unknown"  # arch absent
-    assert _parse_arch("<not-closed") == "unknown"  # malformed → unknown, not a crash
+    assert parse_capabilities_arch(valid) == "aarch64"
+    assert parse_capabilities_arch("<capabilities><host/></capabilities>") == "unknown"
+    assert parse_capabilities_arch("<not-closed") == "unknown"
 
 
-def test_parse_arch_refuses_entity_expansion_fail_loud() -> None:
-    # The docstring promises an *attack* document raises (fail loud), not silent "unknown".
-    with pytest.raises(DefusedXmlException):
-        _parse_arch(_CAPS_BOMB)
+def test_parse_arch_returns_unknown_for_forbidden_xml() -> None:
+    assert parse_capabilities_arch(_CAPS_BOMB) == "unknown"
 
 
 def test_parse_system_id_reads_valid_and_none_on_malformed() -> None:
     meta = '<kdive:system xmlns:kdive="https://kdive.dev/libvirt/1">abc-123</kdive:system>'
-    assert _parse_system_id(meta) == "abc-123"
+    assert parse_metadata_system_id(meta) == "abc-123"
     empty = '<kdive:system xmlns:kdive="https://kdive.dev/libvirt/1"></kdive:system>'
-    assert _parse_system_id(empty) is None
-    assert _parse_system_id("<broken") is None
+    assert parse_metadata_system_id(empty) is None
+    assert parse_metadata_system_id("<broken") is None
 
 
-def test_parse_system_id_refuses_entity_expansion_fail_loud() -> None:
-    with pytest.raises(DefusedXmlException):
-        _parse_system_id(_META_BOMB)
+def test_parse_system_id_returns_none_for_forbidden_xml() -> None:
+    assert parse_metadata_system_id(_META_BOMB) is None

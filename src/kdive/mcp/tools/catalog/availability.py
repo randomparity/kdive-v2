@@ -23,7 +23,7 @@ host-derived PCIe labels are not returned (only the portable `bdf/vendor/device`
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
 from fastmcp import FastMCP
 from psycopg import AsyncConnection
@@ -45,7 +45,7 @@ from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
-from kdive.mcp.responses import ToolResponse
+from kdive.mcp.responses import JsonValue, ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.services.allocation import pcie_claim
 from kdive.services.allocation.admission import OCCUPYING_VALUES
@@ -58,6 +58,11 @@ _log = logging.getLogger(__name__)
 _TOOL = "resources.availability"
 _REQUESTED = AllocationState.REQUESTED.value
 _NEXT_ACTIONS = ["resources.describe", "allocations.request"]
+
+
+class _HostAvailability(NamedTuple):
+    response: ToolResponse
+    fits: list[str]
 
 
 def _resolve_cap(resource: Resource) -> int | None:
@@ -92,7 +97,7 @@ async def _occupancy_by_resource(conn: AsyncConnection) -> dict[Any, int]:
     return {row[0]: int(row[1]) for row in rows}
 
 
-async def _queue_depth(conn: AsyncConnection) -> dict[str, Any]:
+async def _queue_depth(conn: AsyncConnection) -> dict[str, JsonValue]:
     """Report pending-queue depth at fleet/kind granularity (ADR-0070).
 
     A queued ``requested`` row has ``resource_id`` NULL, so it is not host-attributable. The
@@ -111,7 +116,7 @@ async def _queue_depth(conn: AsyncConnection) -> dict[str, Any]:
         )
         kind_rows = await cur.fetchall()
     total = int(total_row[0]) if total_row is not None else 0
-    by_kind: dict[str, int] = {}
+    by_kind: dict[str, JsonValue] = {}
     by_id = 0
     for kind, count in kind_rows:
         if kind is None:
@@ -153,7 +158,7 @@ def _free_descriptors(resource: Resource, claims: list[PCIeClaim]) -> list[PCIeD
     return [d for d in descriptors if d["bdf"] not in claimed]
 
 
-def _redact_descriptor(descriptor: PCIeDescriptor) -> dict[str, str]:
+def _redact_descriptor(descriptor: PCIeDescriptor) -> dict[str, JsonValue]:
     """Project a descriptor to the portable identity; drop the untrusted host-local label."""
     return {
         "bdf": descriptor["bdf"],
@@ -185,7 +190,7 @@ def _host_item(
     occupancy: int,
     free: list[PCIeDescriptor],
     shapes: list[SystemShape],
-) -> ToolResponse:
+) -> _HostAvailability:
     """Build one per-host availability item (headroom, free PCIe, fitting shapes)."""
     cap = _resolve_cap(resource)
     schedulable = (
@@ -197,7 +202,9 @@ def _host_item(
         for shape in shapes
         if _shape_fits(shape, schedulable=schedulable, headroom=headroom, free=free)
     ]
-    data: dict[str, Any] = {
+    free_devices: list[JsonValue] = [_redact_descriptor(d) for d in free]
+    fits_json: list[JsonValue] = list(fits)
+    data: dict[str, JsonValue] = {
         "kind": resource.kind.value,
         "status": resource.status.value,
         "cordoned": resource.cordoned,
@@ -206,10 +213,10 @@ def _host_item(
         "in_use": occupancy,
         "headroom": headroom,
         "free_pcie": len(free),
-        "free_devices": [_redact_descriptor(d) for d in free],
-        "fits": fits,
+        "free_devices": free_devices,
+        "fits": fits_json,
     }
-    return ToolResponse.success(str(resource.id), "available", data=data)
+    return _HostAvailability(ToolResponse.success(str(resource.id), "available", data=data), fits)
 
 
 async def _resolve_shapes(conn: AsyncConnection, shape: str | None) -> list[SystemShape]:
@@ -291,14 +298,17 @@ async def availability_tool(
             item = _host_item(
                 resource, occupancy=occupancy.get(resource.id, 0), free=free, shapes=shapes
             )
-            items.append(item)
-            global_fits.update(item.data["fits"])
+            items.append(item.response)
+            global_fits.update(item.fits)
+        fits_now: list[JsonValue] = []
+        for shape_name in sorted(global_fits):
+            fits_now.append(shape_name)
         return ToolResponse.collection(
             "resources",
             "ok",
             items,
             suggested_next_actions=_NEXT_ACTIONS,
-            data={"queue_depth": queue, "fits_now": sorted(global_fits)},
+            data={"queue_depth": queue, "fits_now": fits_now},
         )
 
 

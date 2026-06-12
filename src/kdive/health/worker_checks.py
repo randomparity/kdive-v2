@@ -19,8 +19,7 @@ from kdive.health.probe import BackendCheck
 
 
 class _Pingable(Protocol):
-    def ping(self) -> None:
-        """Probe the dependency, raising on failure."""
+    def ping(self) -> None: ...
 
 
 def build_worker_checks(

@@ -15,8 +15,8 @@ from kdive.providers.remote_libvirt.transport import (
     compose_pkipath_uri,
     materialized_pkipath,
     remote_connection,
-    validate_remote_uri,
 )
+from kdive.providers.remote_libvirt.uri_validation import validate_remote_uri
 from kdive.security.secrets.paths import PathSafetyError
 from tests.providers.remote_libvirt.conftest import FakeConn, RecordingBackend
 

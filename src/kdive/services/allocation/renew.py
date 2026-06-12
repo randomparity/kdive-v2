@@ -57,6 +57,7 @@ from kdive.services.allocation.idempotency import (
     resolve_replay,
     within_budget,
 )
+from kdive.services.allocation.lease_bounds import configured_lease_bounds
 
 if TYPE_CHECKING:
     from kdive.security.authz.context import RequestContext
@@ -197,7 +198,9 @@ async def _renew_under_project_lock(
             renewed=False, allocation=None, category=ErrorCategory.CONFIGURATION_ERROR
         )
     now = datetime.now(UTC)
-    extension = clamp_extension_hours(alloc.lease_expiry, extend_hours, now)
+    extension = clamp_extension_hours(
+        alloc.lease_expiry, extend_hours, now, bounds=configured_lease_bounds()
+    )
     if extension.added_hours <= 0:
         # The lease is already at the KDIVE_LEASE_MAX ceiling: nothing to extend or charge.
         return RenewOutcome(

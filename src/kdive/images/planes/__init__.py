@@ -1,1 +1,1 @@
-"""Per-provider `RootfsBuildPlane` implementations and the shared port (ADR-0092)."""
+"""The neutral `RootfsBuildPlane` contract and shared rootfs-build helpers (ADR-0092)."""

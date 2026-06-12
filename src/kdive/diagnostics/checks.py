@@ -177,7 +177,7 @@ class SecretRefCheck(Check):
         unresolved_count = 0
         try:
             for ref, is_platform in self._refs:
-                if not self._resolves(ref):
+                if not await self._resolves(ref):
                     unresolved_count += 1
                     if is_platform:
                         unresolved_platform.append(ref)
@@ -189,9 +189,9 @@ class SecretRefCheck(Check):
             )
         return self._verdict(unresolved_count, unresolved_platform)
 
-    def _resolves(self, ref: str) -> bool:
+    async def _resolves(self, ref: str) -> bool:
         try:
-            self._resolve(ref)
+            await asyncio.to_thread(self._resolve, ref)
         except self._unreachable_types():
             raise
         except Exception:  # noqa: BLE001 - any per-ref resolution failure is an unresolved ref

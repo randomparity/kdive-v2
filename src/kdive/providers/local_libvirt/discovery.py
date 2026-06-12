@@ -23,10 +23,14 @@ from kdive.domain.models import ResourceKind
 from kdive.domain.pcie import PCIE_DEVICES_KEY, PCIeDescriptor
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import ResourceStatus
+from kdive.providers.libvirt_xml import (
+    KDIVE_METADATA_NS,
+    parse_capabilities_arch,
+    parse_metadata_system_id,
+)
 from kdive.providers.local_libvirt.settings import LIBVIRT_ALLOCATION_CAP, LIBVIRT_URI
 from kdive.providers.ports import OwnedInfra
 
-_KDIVE_METADATA_NS = "https://kdive.dev/libvirt/1"
 _log = logging.getLogger(__name__)
 
 
@@ -48,20 +52,6 @@ class _LibvirtConn(Protocol):
 
 
 type Connect = Callable[[], _LibvirtConn]
-
-
-def _parse_arch(caps_xml: str) -> str:
-    """Read ``<host><cpu><arch>`` from the capabilities XML; ``unknown`` if absent.
-
-    Parsed with ``defusedxml`` — the XML crosses a trust boundary (it is emitted by the
-    libvirtd process), so entity-expansion DoS (billion-laughs) is neutralized; a
-    malformed document returns ``unknown``, an *attack* document raises (fail loud).
-    """
-    try:
-        root: ET.Element = _safe_fromstring(caps_xml)
-    except ET.ParseError:
-        return "unknown"
-    return root.findtext("./host/cpu/arch") or "unknown"
 
 
 def _hex_id(raw: str) -> str:
@@ -124,20 +114,6 @@ def _compose_bdf(cap: ET.Element) -> str:
     return f"{domain:04x}:{bus:02x}:{slot:02x}.{function:x}"
 
 
-def _parse_system_id(meta_xml: str) -> str | None:
-    """Read the System uuid from a kdive metadata element; ``None`` if empty/malformed.
-
-    ``defusedxml`` parse (trust boundary, as ``_parse_arch``): malformed → ``None``;
-    an attack document raises rather than being silently skipped as "untagged".
-    """
-    try:
-        element: ET.Element = _safe_fromstring(meta_xml)
-    except ET.ParseError:
-        return None
-    text = (element.text or "").strip()
-    return text or None
-
-
 class LocalLibvirtDiscovery:
     """The realized discovery port for the local libvirt host."""
 
@@ -176,7 +152,7 @@ class LocalLibvirtDiscovery:
         conn = self._connect()
         info = conn.getInfo()
         capabilities: dict[str, Any] = {
-            "arch": _parse_arch(conn.getCapabilities()),
+            "arch": parse_capabilities_arch(conn.getCapabilities()),
             "vcpus": int(info[2]),
             "memory_mb": int(info[1]),
             "transports": ["gdbstub"],
@@ -220,7 +196,7 @@ class LocalLibvirtDiscovery:
         owned: list[OwnedInfra] = []
         for domain in conn.listAllDomains():
             try:
-                meta = domain.metadata(libvirt.VIR_DOMAIN_METADATA_ELEMENT, _KDIVE_METADATA_NS, 0)
+                meta = domain.metadata(libvirt.VIR_DOMAIN_METADATA_ELEMENT, KDIVE_METADATA_NS, 0)
             except libvirt.libvirtError as exc:
                 if exc.get_error_code() == libvirt.VIR_ERR_NO_DOMAIN_METADATA:
                     continue  # untagged → not ours
@@ -229,7 +205,7 @@ class LocalLibvirtDiscovery:
                     category=ErrorCategory.INFRASTRUCTURE_FAILURE,
                     details={"domain": domain.name()},
                 ) from exc
-            system_id = _parse_system_id(meta)
+            system_id = parse_metadata_system_id(meta)
             if system_id is None:
                 continue
             owned.append(OwnedInfra(system_id=system_id, domain_name=domain.name()))

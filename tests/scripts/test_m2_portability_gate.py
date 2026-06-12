@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import scripts.m2_portability_gate as gate
 from scripts.m2_portability_gate import (
     ALLOWED_FILES,
     CAPTURE_COVERAGE,
@@ -118,7 +119,7 @@ def test_allowlist_is_exactly_the_named_touch_points() -> None:
                 "src/kdive/db/pool.py",
                 "src/kdive/domain/lease.py",
                 "src/kdive/mcp/auth.py",
-                "src/kdive/mcp/tools/catalog/artifacts_uploads.py",
+                "src/kdive/mcp/tools/catalog/artifacts/uploads.py",
                 "src/kdive/mcp/tools/debug/ops.py",
                 "src/kdive/security/secrets/secrets.py",
                 "src/kdive/db/schema/0021_platform_audit_actor.sql",
@@ -239,6 +240,16 @@ def test_gate_errors_usefully_without_the_tag(tmp_path: Path) -> None:
     result = _run_gate(repo)
     assert result.returncode == 2
     assert "pre-M2" in result.stderr
+
+
+def test_measure_errors_usefully_when_git_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gate.shutil, "which", lambda _name: None)
+
+    assert gate._measure() is None
+
+    assert "git executable is unavailable" in capsys.readouterr().err
 
 
 def test_gate_catches_core_change_introduced_only_in_a_merge_commit(gate_repo: Path) -> None:

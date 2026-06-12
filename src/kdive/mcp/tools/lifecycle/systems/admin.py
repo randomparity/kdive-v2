@@ -24,15 +24,12 @@ from kdive.mcp.tools._common import authorizing as job_authorizing
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._common import job_envelope
 from kdive.mcp.tools._common import stale_handle as _stale_handle
-from kdive.profiles.provisioning import (
-    ProvisioningProfile,
-    destructive_opt_in,
-    dump_profile,
-    profile_digest,
-    reject_rootfs_upload_without_window,
-)
+from kdive.profiles.provider_policy import reject_rootfs_upload_without_window
+from kdive.profiles.provisioning import ProvisioningProfile, dump_profile, profile_digest
 from kdive.profiles.types import ProvisioningProfileInput
 from kdive.provider_components.validation import ComponentSourceCapabilities
+from kdive.providers.resolver import ProviderResolver
+from kdive.providers.runtime import ProfilePolicy
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.gate import DestructiveOp, DestructiveOpDenied, assert_destructive_allowed
@@ -52,6 +49,7 @@ _TEARDOWN = JobKind.TEARDOWN
 class SystemAdminHandlers:
     """Destructive system handlers with provider validation seams bound at construction."""
 
+    profile_policy: ProfilePolicy
     component_sources: ComponentSourceCapabilities
     rootfs_validator: RootfsValidator
 
@@ -69,13 +67,15 @@ class SystemAdminHandlers:
             return _config_error(system_id)
         try:
             parsed = ProvisioningProfile.parse(profile)
-            validate_profile_for_provider(parsed, self.component_sources)
-            reject_rootfs_upload_without_window(parsed)
+            validate_profile_for_provider(parsed, self.profile_policy, self.component_sources)
+            reject_rootfs_upload_without_window(self.profile_policy, parsed)
         except CategorizedError as exc:
             return ToolResponse.failure_from_error(system_id, exc)
         with bind_context(principal=ctx.principal):
             try:
-                return await _reprovision_locked(pool, ctx, uid, parsed, self.rootfs_validator)
+                return await _reprovision_locked(
+                    pool, ctx, uid, parsed, self.profile_policy, self.rootfs_validator
+                )
             except IllegalTransition:
                 async with pool.connection() as conn:
                     latest = await SYSTEMS.get(conn, uid)
@@ -88,6 +88,7 @@ async def _reprovision_locked(
     ctx: RequestContext,
     system_id: UUID,
     profile: ProvisioningProfile,
+    profile_policy: ProfilePolicy,
     rootfs_validator: RootfsValidator,
 ) -> ToolResponse:
     async with (
@@ -101,7 +102,9 @@ async def _reprovision_locked(
         allocation = await ALLOCATIONS.get(conn, system.allocation_id)
         if allocation is None or allocation.project not in ctx.projects:
             return _config_error(str(system_id))
-        op = DestructiveOp(kind=_REPROVISION, profile_opt_in=_reprovision_opt_in(profile))
+        op = DestructiveOp(
+            kind=_REPROVISION, profile_opt_in=_reprovision_opt_in(profile_policy, profile)
+        )
         try:
             assert_destructive_allowed(ctx, allocation, op, required_role=Role.OPERATOR)
         except DestructiveOpDenied as denied:
@@ -119,19 +122,19 @@ async def _reprovision_locked(
         if await _has_live_run(conn, system_id):
             return _stale_handle(str(system_id), current_status=system.state.value)
         try:
-            validate_rootfs_for_provider(profile, rootfs_validator)
+            validate_rootfs_for_provider(profile, profile_policy, rootfs_validator)
         except CategorizedError as exc:
             return ToolResponse.failure_from_error(str(system_id), exc)
         return await _admit_reprovision(conn, ctx, system, profile, digest, dedup_key)
 
 
-def _reprovision_opt_in(profile: ProvisioningProfile) -> bool:
+def _reprovision_opt_in(profile_policy: ProfilePolicy, profile: ProvisioningProfile) -> bool:
     """Resolve the gate's profile opt-in factor from the target profile."""
-    return destructive_opt_in(profile, _REPROVISION)
+    return profile_policy.destructive_opt_in(profile, _REPROVISION)
 
 
-def _teardown_opt_in(profile: ProvisioningProfile) -> bool:
-    return destructive_opt_in(profile, _TEARDOWN)
+def _teardown_opt_in(profile_policy: ProfilePolicy, profile: ProvisioningProfile) -> bool:
+    return profile_policy.destructive_opt_in(profile, _TEARDOWN)
 
 
 async def _audit_destructive_denied(
@@ -208,7 +211,11 @@ async def _admit_reprovision(
 
 
 async def teardown_system(
-    pool: AsyncConnectionPool, ctx: RequestContext, system_id: str
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    system_id: str,
+    *,
+    resolver: ProviderResolver,
 ) -> ToolResponse:
     """Enqueue an idempotent teardown for a System the caller's project owns."""
     uid = _as_uuid(system_id)
@@ -230,7 +237,11 @@ async def teardown_system(
                 profile = ProvisioningProfile.parse(system.provisioning_profile)
             except CategorizedError as exc:
                 return ToolResponse.failure_from_error(system_id, exc)
-            op = DestructiveOp(kind=_TEARDOWN, profile_opt_in=_teardown_opt_in(profile))
+            runtime = await resolver.runtime_for_system(conn, uid)
+            op = DestructiveOp(
+                kind=_TEARDOWN,
+                profile_opt_in=_teardown_opt_in(runtime.profile_policy, profile),
+            )
             try:
                 assert_destructive_allowed(ctx, allocation, op, required_role=Role.ADMIN)
             except DestructiveOpDenied as denied:

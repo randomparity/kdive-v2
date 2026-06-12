@@ -2,8 +2,8 @@
 
 The generic read-only ``tool call`` passthrough lives here. It lists the server's tools,
 fail-closed-gates the requested tool on ``readOnlyHint``, calls it, and prints the
-structured result. ``login`` mints and caches a bearer token; curated read verbs route
-through ``commands.run_verb``; the curated mutating verbs are wired by other M2.2 tasks.
+structured result. ``login`` mints and caches a bearer token; curated verbs route through
+``commands.run_verb``.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from kdive.cli import commands
+from kdive.cli.commands import registry as commands
 from kdive.cli.passthrough import NotReadOnlyError, assert_read_only
 from kdive.cli.transport import Session
 

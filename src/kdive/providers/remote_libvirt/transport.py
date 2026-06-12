@@ -18,19 +18,19 @@ import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
-from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from typing import TYPE_CHECKING, Any, Protocol, cast
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import libvirt
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.providers.remote_libvirt.uri_validation import validate_remote_uri
 from kdive.security.secrets.paths import PathSafetyError
 from kdive.security.secrets.secrets import SecretBackend
 
 if TYPE_CHECKING:
     from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
 
-_REQUIRED_SCHEME = "qemu+tls"
 # libvirt resolves exactly these names inside a pkipath.
 _CLIENT_CERT_NAME = "clientcert.pem"
 _CLIENT_KEY_NAME = "clientkey.pem"  # pragma: allowlist secret - libvirt file name
@@ -55,49 +55,12 @@ class _LibvirtConn(Protocol):
 type OpenConnection = Callable[[str], _LibvirtConn]
 
 
-def _query_param_names(query: str) -> set[str]:
-    """The lowercased parameter names of a URI query, split the way libvirt splits it.
-
-    libvirt's URI parser treats both ``&`` and ``;`` as separators, percent-unescapes
-    parameter names, and matches them case-insensitively (``STRCASEEQ`` in the remote
-    driver), so the fail-closed check must see every spelling libvirt would honor.
-    """
-    names: set[str] = set()
-    for chunk in query.replace(";", "&").split("&"):
-        if not chunk:
-            continue
-        names.add(unquote(chunk.split("=", 1)[0]).lower())
-    return names
-
-
-def validate_remote_uri(uri: str) -> None:
-    """Reject any URI that would weaken mutual TLS (fail-closed, ADR-0077).
-
-    Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` for a non-``qemu+tls`` scheme, a
-            ``no_verify`` parameter (server-cert verification must stay on), or an
-            operator-set ``pkipath`` (each op composes its own private pkipath) —
-            in any casing or ``;``-separated spelling libvirt would accept.
-    """
-    parsed = urlsplit(uri)
-    if parsed.scheme != _REQUIRED_SCHEME:
-        raise CategorizedError(
-            f"remote-libvirt URI {uri!r} must use the qemu+tls:// scheme",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    names = _query_param_names(parsed.query)
-    if "no_verify" in names:
-        raise CategorizedError(
-            "no_verify is forbidden on the remote-libvirt URI: server-cert "
-            "verification is mandatory (ADR-0077)",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-    if "pkipath" in names:
-        raise CategorizedError(
-            "pkipath must not be set on the remote-libvirt URI: each op "
-            "materializes its own private pkipath (ADR-0077)",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
+def open_libvirt_protocol[C: ClosableConn](uri: str) -> C:
+    """Open libvirt and narrow the binding object to a provider-local connection slice."""
+    # libvirt-python's runtime object is duck-typed but its generated type does not
+    # structurally match our narrow protocols. Keep the cast at the host seam; callers
+    # receive only the operations their plane needs.
+    return cast("C", libvirt.open(uri))
 
 
 def compose_pkipath_uri(uri: str, pkipath: Path) -> str:
@@ -213,7 +176,4 @@ def remote_connection[C: ClosableConn](
 
 def open_libvirt(uri: str) -> _LibvirtConn:
     """The production opener (live-host path; unit tests inject a fake)."""
-    # libvirt ships no type stubs; ty infers `virConnect`, which does not structurally
-    # match the protocol. Duck-typed at the seam — scoped ignore, as in
-    # local_libvirt/discovery.py.
-    return libvirt.open(uri)  # ty: ignore[invalid-return-type]
+    return open_libvirt_protocol(uri)

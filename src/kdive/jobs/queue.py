@@ -3,7 +3,7 @@
 ``enqueue`` admits a job idempotently on ``dedup_key``; ``dequeue`` claims the oldest
 eligible job with ``FOR UPDATE SKIP LOCKED``, charging an attempt and reclaiming a
 lapsed lease; ``heartbeat`` renews a lease; ``complete`` and ``fail`` finalize a
-claimed job. Every post-claim write is fenced on ``worker_id`` + ``state = 'running'``
+claimed job. Every post-claim write is fenced on ``worker_id`` + the running state
 so a worker that lost its lease cannot mutate a job another worker now owns. Each
 function wraps its statements in ``conn.transaction()`` so it self-commits on any
 connection, and all assume READ COMMITTED (psycopg's default).
@@ -59,9 +59,16 @@ async def enqueue(
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "INSERT INTO jobs (kind, payload, state, max_attempts, authorizing, dedup_key) "
-            "VALUES (%s, %s, 'queued', %s, %s, %s) "
+            "VALUES (%s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (dedup_key) DO NOTHING",
-            (kind, Jsonb(payload_json), max_attempts, Jsonb(authorizing), dedup_key),
+            (
+                kind,
+                Jsonb(payload_json),
+                JobState.QUEUED.value,
+                max_attempts,
+                Jsonb(authorizing),
+                dedup_key,
+            ),
         )
         await cur.execute("SELECT * FROM jobs WHERE dedup_key = %s", (dedup_key,))
         row = await cur.fetchone()
@@ -88,19 +95,25 @@ async def dequeue(
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "UPDATE jobs SET "
-            "    state = 'running', worker_id = %s, attempt = attempt + 1, "
+            "    state = %s, worker_id = %s, attempt = attempt + 1, "
             "    lease_expires_at = now() + %s, heartbeat_at = now() "
             "WHERE id = ( "
             "    SELECT id FROM jobs "
-            "    WHERE (state = 'queued' "
-            "           OR (state = 'running' AND lease_expires_at < now())) "
+            "    WHERE (state = %s "
+            "           OR (state = %s AND lease_expires_at < now())) "
             "      AND attempt < max_attempts "
             "    ORDER BY created_at "
             "    FOR UPDATE SKIP LOCKED "
             "    LIMIT 1 "
             ") "
             "RETURNING *",
-            (worker_id, lease),
+            (
+                JobState.RUNNING.value,
+                worker_id,
+                lease,
+                JobState.QUEUED.value,
+                JobState.RUNNING.value,
+            ),
         )
         row = await cur.fetchone()
     return None if row is None else Job.model_validate(row)
@@ -117,8 +130,9 @@ async def count_claimable(conn: AsyncConnection) -> int:
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT count(*) FROM jobs "
-            "WHERE (state = 'queued' OR (state = 'running' AND lease_expires_at < now())) "
-            "  AND attempt < max_attempts"
+            "WHERE (state = %s OR (state = %s AND lease_expires_at < now())) "
+            "  AND attempt < max_attempts",
+            (JobState.QUEUED.value, JobState.RUNNING.value),
         )
         row = await cur.fetchone()
     return int(row[0]) if row is not None else 0
@@ -136,9 +150,9 @@ async def heartbeat(
     async with conn.transaction(), conn.cursor() as cur:
         await cur.execute(
             "UPDATE jobs SET heartbeat_at = now(), lease_expires_at = now() + %s "
-            "WHERE id = %s AND worker_id = %s AND state = 'running' "
+            "WHERE id = %s AND worker_id = %s AND state = %s "
             "RETURNING id",
-            (lease, job_id, worker_id),
+            (lease, job_id, worker_id, JobState.RUNNING.value),
         )
         row = await cur.fetchone()
     return row is not None
@@ -155,10 +169,16 @@ async def complete(
     """
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "UPDATE jobs SET state = 'succeeded', result_ref = %s "
-            "WHERE id = %s AND worker_id = %s AND state = 'running' "
+            "UPDATE jobs SET state = %s, result_ref = %s "
+            "WHERE id = %s AND worker_id = %s AND state = %s "
             "RETURNING *",
-            (result_ref, job_id, worker_id),
+            (
+                JobState.SUCCEEDED.value,
+                result_ref,
+                job_id,
+                worker_id,
+                JobState.RUNNING.value,
+            ),
         )
         row = await cur.fetchone()
     return None if row is None else Job.model_validate(row)
@@ -185,22 +205,24 @@ async def fail(
     """
     if terminal or job.attempt >= job.max_attempts:
         query = (
-            "UPDATE jobs SET state = 'failed', error_category = %s, failure_context = %s "
-            "WHERE id = %s AND worker_id = %s AND state = 'running' RETURNING *"
+            "UPDATE jobs SET state = %s, error_category = %s, failure_context = %s "
+            "WHERE id = %s AND worker_id = %s AND state = %s RETURNING *"
         )
         params: tuple[object, ...] = (
+            JobState.FAILED.value,
             error_category,
             Jsonb(dict(failure_context or {})),
             job.id,
             job.worker_id,
+            JobState.RUNNING.value,
         )
     else:
         query = (
-            "UPDATE jobs SET state = 'queued', worker_id = NULL, "
+            "UPDATE jobs SET state = %s, worker_id = NULL, "
             "    lease_expires_at = NULL, heartbeat_at = NULL, failure_context = '{}'::jsonb "
-            "WHERE id = %s AND worker_id = %s AND state = 'running' RETURNING *"
+            "WHERE id = %s AND worker_id = %s AND state = %s RETURNING *"
         )
-        params = (job.id, job.worker_id)
+        params = (JobState.QUEUED.value, job.id, job.worker_id, JobState.RUNNING.value)
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(query, params)
         row = await cur.fetchone()

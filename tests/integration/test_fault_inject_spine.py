@@ -31,7 +31,7 @@ _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _AUTH = Authorizing(principal="alice", agent_session="s", project="proj")
 
 
-async def _seed_faultinject_system(pool: AsyncConnectionPool) -> str:
+async def _seed_fault_inject_system(pool: AsyncConnectionPool) -> str:
     """Insert a fault-inject Resource + granted Allocation + a `provisioning` System."""
     async with pool.connection() as conn:
         resource = await RESOURCES.insert(
@@ -93,13 +93,13 @@ def test_provision_routes_to_the_fault_inject_runtime_and_records_its_domain(
         pool = AsyncConnectionPool(migrated_url, min_size=1, max_size=2, open=False)
         await pool.open()
         try:
-            system_id = await _seed_faultinject_system(pool)
+            system_id = await _seed_fault_inject_system(pool)
             async with pool.connection() as conn:
                 job = await queue.enqueue(
                     conn, JobKind.PROVISION, SystemPayload(system_id=system_id), _AUTH, system_id
                 )
-            # No explicit provisioner: the handler must resolve the System's runtime by its
-            # Resource kind (fault-inject) through the opt-in resolver.
+            # The handler resolves the System's runtime by its Resource kind (fault-inject)
+            # through the opt-in resolver.
             resolver = build_provider_resolver(enable_fault_inject=True)
             async with pool.connection() as conn:
                 await systems_handlers.provision_handler(conn, job, resolver=resolver)

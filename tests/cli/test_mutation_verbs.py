@@ -13,7 +13,8 @@ import asyncio
 
 import pytest
 
-from kdive.cli.commands import REGISTRY, mutations
+from kdive.cli.commands import mutations
+from kdive.cli.commands.registry import REGISTRY
 
 
 class _FakeResult:

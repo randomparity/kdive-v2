@@ -34,7 +34,7 @@ First add `classify_console` to the **existing** install import block in
 (line 12) and `import os` (line 5), so do **not** add either again:
 
 ```python
-from kdive.providers.local_libvirt.install import (
+from kdive.providers.local_libvirt.lifecycle.install import (
     LocalLibvirtInstall,
     ReadinessResult,
     _stage_object,
@@ -443,7 +443,7 @@ import time
 Add `console_log_path` to the provisioning import:
 
 ```python
-from kdive.providers.local_libvirt.provisioning import console_log_path, domain_name_for
+from kdive.providers.local_libvirt.lifecycle.provisioning import console_log_path, domain_name_for
 ```
 
 Add next to `_DEFAULT_BOOT_WINDOW_POLLS` (with a comment that their product is the window, ADR-0055 §7):

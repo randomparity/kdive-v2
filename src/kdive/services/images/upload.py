@@ -23,9 +23,10 @@ import asyncio
 import hashlib
 import tempfile
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
@@ -51,7 +52,7 @@ from kdive.services.images.publish import (
 
 _UPLOAD_TOOL = "images.upload"
 _OBJECT_KIND = "image_catalog"
-_QCOW2_FORMAT = "qcow2"
+_QCOW2_FORMAT: Literal["qcow2"] = "qcow2"
 _ROOT_DEVICE = "/dev/vda"
 
 # A project's live private images are the ones that occupy quota: a registered row, or a publish
@@ -70,8 +71,21 @@ class UploadObjectStore(ImageObjectStore, Protocol):
     def get_artifact(self, key: str, etag: str | None) -> artifact_types.FetchedArtifact: ...
 
 
+@dataclass(frozen=True, slots=True)
+class PrivateUploadRequest:
+    """Project-private image upload inputs before validation and publish."""
+
+    project: str
+    principal: str
+    name: str
+    provider: str
+    arch: str
+    quarantine_key: str
+    expires_at: datetime
+    required: tuple[str, ...]
+
+
 def _clamp_expiry(expires_at: datetime, *, now: datetime) -> datetime:
-    """Clamp ``expires_at`` to the per-image lifetime ceiling (fail-closed on an over-long TTL)."""
     max_seconds = config.require(IMAGE_PRIVATE_LIFETIME_MAX)
     ceiling = now + timedelta(seconds=max_seconds)
     return min(expires_at, ceiling)
@@ -159,7 +173,6 @@ async def _audit_denial(
 
 
 def _validate_staged(source: Path, required: Sequence[str], inspect: InspectSeam) -> None:
-    """Guest-contract-validate the staged qcow2 (sync; the caller offloads via to_thread)."""
     validate_guest_contract(source, required=required, inspect=inspect)
 
 
@@ -195,14 +208,7 @@ async def register_private_upload(
     conn: AsyncConnection,
     store: UploadObjectStore,
     *,
-    project: str,
-    principal: str,
-    name: str,
-    provider: str,
-    arch: str,
-    quarantine_key: str,
-    expires_at: datetime,
-    required: Sequence[str],
+    request: PrivateUploadRequest,
     inspect: InspectSeam = DEFAULT_INSPECT,
 ) -> ImageCatalogEntry:
     """Register a quarantined upload as a project-private catalog image under the project lock.
@@ -218,14 +224,8 @@ async def register_private_upload(
         conn: An async Postgres connection (autocommit; this function opens its own transaction
             to hold the project lock).
         store: The object store holding the quarantined object and receiving the published image.
-        project: The owning project — the registered image resolves only within it.
-        principal: The uploading principal, recorded for audit (not the image owner).
-        name: The catalog image name.
-        provider: The provider key the image targets (e.g. ``local-libvirt``).
-        arch: The target architecture.
-        quarantine_key: The object-store key of the quarantined upload.
-        expires_at: The requested TTL deadline; clamped to the per-image lifetime ceiling.
-        required: The guest-contract element tags the image must satisfy.
+        request: The upload identity, owning project, source key, expiry, and required guest
+            contract tags.
         inspect: The libguestfs inspection seam (defaults to a real ``guestfish`` probe; tests
             inject a stub).
 
@@ -242,41 +242,48 @@ async def register_private_upload(
     # could otherwise traverse out of the temp directory. publish_image re-validates at key
     # construction, but the staged write happens first, so the guard belongs here.
     for label, value in (
-        ("provider", provider),
-        ("name", name),
-        ("arch", arch),
-        ("owner", project),
+        ("provider", request.provider),
+        ("name", request.name),
+        ("arch", request.arch),
+        ("owner", request.project),
     ):
         validate_key_component(label, value)
 
-    await _reject_oversize_upload(store, quarantine_key)
-    fetched = await asyncio.to_thread(store.get_artifact, quarantine_key, None)
+    await _reject_oversize_upload(store, request.quarantine_key)
+    fetched = await asyncio.to_thread(store.get_artifact, request.quarantine_key, None)
     data = fetched.data
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
     now = datetime.now(UTC)
-    clamped_expiry = _clamp_expiry(expires_at, now=now)
+    clamped_expiry = _clamp_expiry(request.expires_at, now=now)
 
-    request = PublishRequest(
-        provider=provider,
-        name=name,
-        arch=arch,
+    publish_request = PublishRequest(
+        provider=request.provider,
+        name=request.name,
+        arch=request.arch,
         format=_QCOW2_FORMAT,
         root_device=_ROOT_DEVICE,
         digest=digest,
-        capabilities=tuple(required),
-        provenance={"upload": {"principal": principal, "quarantine_key": quarantine_key}},
-        visibility=ImageVisibility.PRIVATE.value,
-        owner=project,
+        capabilities=request.required,
+        provenance={
+            "upload": {"principal": request.principal, "quarantine_key": request.quarantine_key}
+        },
+        visibility=ImageVisibility.PRIVATE,
+        owner=request.project,
         expires_at=clamped_expiry,
     )
 
     with tempfile.TemporaryDirectory(prefix="kdive-upload-") as workdir:
-        source = Path(workdir) / f"{arch}.qcow2"
+        source = Path(workdir) / f"{request.arch}.qcow2"
         await asyncio.to_thread(source.write_bytes, data)
-        await asyncio.to_thread(_validate_staged, source, required, inspect)
+        await asyncio.to_thread(_validate_staged, source, request.required, inspect)
 
         entry = await _publish_under_quota(
-            conn, store, request=request, source=source, principal=principal, new_bytes=len(data)
+            conn,
+            store,
+            request=publish_request,
+            source=source,
+            principal=request.principal,
+            new_bytes=len(data),
         )
     return entry
 
@@ -321,7 +328,6 @@ async def _publish_under_quota(
 async def _audit_registration(
     conn: AsyncConnection, entry: ImageCatalogEntry, *, principal: str
 ) -> None:
-    """Append the success audit row attributing the upload to ``principal`` under the project."""
     if entry.owner is None:  # Invariant: a private image always carries its owning project.
         raise RuntimeError("registered private image has no owner project to audit under")
     await audit.record_system(

@@ -17,6 +17,7 @@ Stdlib-only: CI runs it without a synced environment (``just m2-gate``).
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 
@@ -69,7 +70,7 @@ ALLOWED_FILES = frozenset(
         "src/kdive/db/pool.py",
         "src/kdive/domain/lease.py",
         "src/kdive/mcp/auth.py",
-        "src/kdive/mcp/tools/catalog/artifacts_uploads.py",
+        "src/kdive/mcp/tools/catalog/artifacts/uploads.py",
         "src/kdive/mcp/tools/debug/ops.py",
         "src/kdive/security/secrets/secrets.py",
         # Operator-CLI audit attribution (#248, ADR-0089): the milestone's only non-cli core
@@ -293,13 +294,28 @@ def render_report(touched: dict[str, int]) -> str:
     return "\n".join(lines)
 
 
+def _find_git() -> str | None:
+    git = shutil.which("git")
+    if git is None:
+        print(
+            "error: git executable is unavailable; install git or set PATH before running "
+            "the M2 portability gate",
+            file=sys.stderr,
+        )
+        return None
+    return git
+
+
 def _measure() -> dict[str, int] | None:
     """Compute the cumulative touched map, or None if the baseline tag is unavailable."""
+    git = _find_git()
+    if git is None:
+        return None
     tag_check = subprocess.run(
-        ["git", "rev-parse", "--verify", f"{BASELINE_TAG}^{{commit}}"],
+        [git, "rev-parse", "--verify", f"{BASELINE_TAG}^{{commit}}"],
         capture_output=True,
         text=True,
-    )
+    )  # nosec B603 - git is resolved once via shutil.which; arguments are fixed by this script.
     if tag_check.returncode != 0:
         print(
             f"error: baseline tag {BASELINE_TAG!r} is unavailable; fetch tags/history "
@@ -309,7 +325,7 @@ def _measure() -> dict[str, int] | None:
         return None
     log = subprocess.run(
         [
-            "git",
+            git,
             "log",
             "--numstat",
             "--no-merges",
@@ -322,13 +338,13 @@ def _measure() -> dict[str, int] | None:
         capture_output=True,
         text=True,
         check=True,
-    )
+    )  # nosec B603 - git is resolved once via shutil.which; arguments are fixed by this script.
     touched = parse_numstat(log.stdout)
     # Union in the net diff: it sees merge-commit-only changes the per-commit walk
     # misses, while the per-commit sum keeps reverted changes counted.
     net = subprocess.run(
         [
-            "git",
+            git,
             "diff",
             "--numstat",
             "--no-renames",
@@ -339,7 +355,7 @@ def _measure() -> dict[str, int] | None:
         capture_output=True,
         text=True,
         check=True,
-    )
+    )  # nosec B603 - git is resolved once via shutil.which; arguments are fixed by this script.
     for path, count in parse_numstat(net.stdout).items():
         touched[path] = max(touched.get(path, 0), count)
     return touched

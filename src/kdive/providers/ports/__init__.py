@@ -9,7 +9,7 @@ split by provider plane in sibling modules.
 
 from __future__ import annotations
 
-from kdive.providers.ports.build import Builder, BuildOutput, ValidatedUpload
+from kdive.providers.ports.build import Builder
 from kdive.providers.ports.debug import (
     AttachSeam,
     GdbBreakpointRef,
@@ -28,6 +28,7 @@ from kdive.providers.ports.lifecycle import (
     InstallRequest,
     Provisioner,
     TransportHandleData,
+    TransportHandleKind,
 )
 from kdive.providers.ports.retrieve import (
     CaptureOutput,
@@ -44,7 +45,6 @@ __all__ = [
     "AttachSeam",
     "Booter",
     "Builder",
-    "BuildOutput",
     "CaptureOutput",
     "Connector",
     "Controller",
@@ -67,6 +67,6 @@ __all__ = [
     "SystemHandle",
     "TransportHandle",
     "TransportHandleData",
-    "ValidatedUpload",
+    "TransportHandleKind",
     "VmcoreIntrospector",
 ]

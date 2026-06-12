@@ -6,9 +6,10 @@ This file provides guidance to coding agents when working with code in this repo
 
 KDIVE (Kernel Debug, Inspect, Validate, Explore) is an MCP platform that gives agentic
 coding environments a full Linux kernel build → boot → debug lifecycle across
-heterogeneous resources (local VMs first; remote libvirt / cloud / bare-metal / PowerVM
-planned). It is a greenfield rewrite of a single-user stdio PoC into a multi-user HTTP
-service. Python 3.13, managed with `uv`.
+heterogeneous resources. Local VMs are the default; remote libvirt is an
+operator-configured opt-in provider; cloud, bare-metal, and PowerVM remain future targets.
+It is a greenfield rewrite of a single-user stdio PoC into a multi-user HTTP service.
+Python 3.13, managed with `uv`.
 
 Read `docs/specs/top-level-design.md` first — it is the authoritative architecture. The
 current milestone plans are `docs/plans/m0-implementation.md` and
@@ -79,19 +80,22 @@ its Allocation. See the design doc's "Domain model" section for the precise life
 The active M0/M1 provider seam is `ProviderRuntime` typed ports (ADR-0063). Production
 assembly happens in `providers/composition.py`, which builds a `ProviderResolver` over the
 registered runtimes. The default production resolver registers local-libvirt; fault-inject is
-a concrete opt-in provider registered through the same resolver/runtime seam. A provider
-still implements narrow port protocols for the planes it supports (Discovery, Provisioning,
-Build, Install, Connect, Debug, Control, Retrieve; Allocation is core, not a provider plane),
-but runtime code calls those typed ports directly.
+a concrete test/failure-path opt-in provider; remote-libvirt is an operator-configured
+opt-in provider wired through the same resolver/runtime seam. A provider still implements
+narrow port protocols for the planes it supports (Discovery, Provisioning, Build, Install,
+Connect, Debug, Control, Retrieve; Allocation is core, not a provider plane), but runtime
+code calls those typed ports directly.
 
 The old `CapabilityRegistry` / `OpContract` dispatch design now exists only in historical
 ADRs and planning records (ADR-0066 removed the in-tree prototype). It is not the current
 production assembly path. Production defaults to `providers/local_libvirt/`; fault-injection
-deployments also register `providers/fault_inject/`.
+deployments also register `providers/fault_inject/`, and remote deployments register
+`providers/remote_libvirt/` when the operator supplies remote-libvirt configuration.
 
-The falsifiable design hypothesis: adding a new provider (e.g. remote libvirt in M2)
-is mostly a provider implementation plus `ProviderRuntime` wiring; broader registry-based
-dispatch would need a new ADR before it becomes runtime infrastructure.
+The falsifiable design hypothesis held for remote-libvirt: adding that provider was mostly
+a provider implementation plus `ProviderRuntime` wiring. Future provider families such as
+cloud, bare-metal, or PowerVM should follow that path unless a new ADR justifies broader
+registry-based dispatch.
 
 ### Two registrar seams keep the entrypoint stable
 

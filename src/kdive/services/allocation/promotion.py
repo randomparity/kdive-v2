@@ -5,7 +5,7 @@ selection for each queued ``requested`` allocation from its persisted inputs (PC
 cordon-skipping — the host is chosen *at promotion*, never frozen at enqueue) and promotes
 the **oldest *placeable*** request per resource to ``granted``: under
 ``PROJECT → RESOURCE → ALLOCATION`` it replays the **shared** admission gate
-(:func:`kdive.services.allocation.admission.capacity_gate` — no forked grant path), stamps
+(:func:`kdive.services.allocation.admission.admission_gate` — no forked grant path), stamps
 ``resource_id``, transitions ``requested → granted``, writes the ``reserved`` debit, and
 sets the lease window. Each candidate runs in its own committed transaction so a sibling's
 grant is observed by the next candidate's capacity replay — the per-host cap and the
@@ -47,7 +47,7 @@ from kdive.security.authz.context import RequestContext
 from kdive.services.accounting import ledger as accounting
 from kdive.services.allocation.admission import (
     AllocationRequest,
-    capacity_gate,
+    admission_gate,
     price_window_and_estimate,
 )
 from kdive.services.allocation.placement import PlacementRequest, resolve_placement_candidates
@@ -116,7 +116,7 @@ async def _place_or_terminate(conn: AsyncConnection, alloc: Allocation) -> bool:
     """Re-resolve candidate hosts and promote onto the first placeable one, or terminate.
 
     Holds the PROJECT lock (the caller). Per candidate host, under RESOURCE → ALLOCATION,
-    replays the shared :func:`capacity_gate`: on success grants; on a non-queueable budget
+    replays the shared :func:`admission_gate`: on success grants; on a non-queueable budget
     denial terminates and stops (waiting frees no budget); on any other denial tries the
     next host. After all hosts: leave ``requested`` (a wait).
     """
@@ -148,7 +148,7 @@ async def _try_one_host(
         advisory_xact_lock(conn, LockScope.RESOURCE, resource.id),
         advisory_xact_lock(conn, LockScope.ALLOCATION, alloc.id),
     ):
-        gate = await capacity_gate(conn, request, estimate=estimate)
+        gate = await admission_gate(conn, request, estimate=estimate)
         if gate.denial is None:
             granted = await _grant_queued(
                 conn,

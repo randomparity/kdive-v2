@@ -45,35 +45,28 @@ _REGISTRY = _build_registry()
 
 
 def load(env: Mapping[str, str] | None = None) -> None:
-    """Snapshot the environment (defaults to ``os.environ``) into the registry."""
     _REGISTRY.load(os.environ if env is None else env)
 
 
 def reset() -> None:
-    """Drop the snapshot so the next read re-snapshots from ``os.environ``."""
     _REGISTRY.reset()
 
 
 def get[T](setting: Setting[T]) -> T | None:
-    """Return the parsed value for ``setting`` (see :meth:`Registry.get`)."""
     return _REGISTRY.get(setting)
 
 
 def require[T](setting: Setting[T]) -> T:
-    """Return the value for ``setting``, failing if unset (see :meth:`Registry.require`)."""
     return _REGISTRY.require(setting)
 
 
 def validate(process: str) -> None:
-    """Fail fast on missing/malformed settings ``process`` requires."""
     _REGISTRY.validate(process)
 
 
 def all_settings() -> tuple[Setting, ...]:
-    """Return every declared setting across the manifest."""
     return _REGISTRY.all_settings()
 
 
 def env_snapshot() -> dict[str, str]:
-    """Return a copy of the ``KDIVE_*`` environment snapshot (see :meth:`Registry.env_snapshot`)."""
     return _REGISTRY.env_snapshot()

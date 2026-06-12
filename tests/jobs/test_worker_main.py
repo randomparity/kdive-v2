@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from kdive.jobs.worker import WorkerConfig
 from kdive.observability import Telemetry
 from kdive.security.secrets.secret_registry import SecretRegistry
 
@@ -45,7 +46,9 @@ def test_run_worker_wires_heartbeat_readiness_and_telemetry(
     monkeypatch.setattr(__main__, "_install_stop", lambda: asyncio.Event())
     monkeypatch.setattr("kdive.mcp.app.build_handler_registry", lambda **kw: object())
     monkeypatch.setattr("kdive.store.objectstore.object_store_from_env", lambda: object())
-    monkeypatch.setattr("kdive.server_health.build_postgres_ping", lambda pool: lambda: None)
+    monkeypatch.setattr(
+        "kdive.process_health.server.build_postgres_ping", lambda pool: lambda: None
+    )
 
     async def _no_serve(*a: object, **k: object) -> None:
         return None
@@ -66,6 +69,8 @@ def test_run_worker_wires_heartbeat_readiness_and_telemetry(
     asyncio.run(__main__._run_worker(SecretRegistry(), _fake_telemetry()))
 
     assert events == ["open", "run", "close"]
-    assert constructed["heartbeat"] is not None
-    assert constructed["readiness"] is not None
-    assert constructed["telemetry"] is not None
+    config = constructed["config"]
+    assert isinstance(config, WorkerConfig)
+    assert config.heartbeat is not None
+    assert config.readiness is not None
+    assert config.telemetry is not None

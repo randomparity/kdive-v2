@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 
 from kdive.domain.capture import CaptureMethod
-from kdive.domain.models import Job, JobKind, PowerAction
+from kdive.domain.models import ImageVisibility, Job, JobKind, PowerAction
 from kdive.domain.state import JobState
 from kdive.jobs.payloads import (
     Authorizing,
@@ -130,6 +130,48 @@ def test_power_payload_dumps_json_and_loads_enum() -> None:
 
     assert payload == {"system_id": str(system_id), "action": "reset"}
     assert decoded.action is PowerAction.RESET
+
+
+def test_image_build_payload_narrows_format_visibility_and_scope() -> None:
+    expires_at = datetime(2026, 1, 1, tzinfo=UTC)
+    payload = dump_payload(
+        JobKind.IMAGE_BUILD,
+        {
+            "provider": "local-libvirt",
+            "name": "base",
+            "arch": "x86_64",
+            "releasever": "43",
+            "source_image_digest": "sha256:" + "0" * 64,
+            "format": "qcow2",
+            "root_device": "/dev/vda",
+            "visibility": ImageVisibility.PRIVATE,
+            "owner": "proj",
+            "expires_at": expires_at,
+        },
+    )
+
+    assert payload["format"] == "qcow2"
+    assert payload["visibility"] == "private"
+    assert payload["owner"] == "proj"
+    assert payload["expires_at"] == "2026-01-01T00:00:00Z"
+
+
+def test_image_build_payload_rejects_invalid_format_and_scope() -> None:
+    base = {
+        "provider": "local-libvirt",
+        "name": "base",
+        "arch": "x86_64",
+        "releasever": "43",
+        "source_image_digest": "sha256:" + "0" * 64,
+        "format": "raw",
+        "root_device": "/dev/vda",
+    }
+    with pytest.raises(PayloadValidationError, match="invalid image_build payload"):
+        dump_payload(JobKind.IMAGE_BUILD, base)
+
+    bad_scope = base | {"format": "qcow2", "visibility": "private", "owner": "proj"}
+    with pytest.raises(PayloadValidationError, match="expires_at must be set iff"):
+        dump_payload(JobKind.IMAGE_BUILD, bad_scope)
 
 
 def test_authorizing_requires_project_at_enqueue_boundary() -> None:

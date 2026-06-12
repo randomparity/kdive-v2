@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Literal, cast
 
@@ -34,7 +33,7 @@ from pydantic import (
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import DestructiveJobKind, ResourceKind
+from kdive.domain.models import ResourceKind
 from kdive.domain.profile_documents import SerializedProvisioningProfile
 from kdive.domain.sizing import AllocationSizing
 from kdive.profiles._schema import schema_version_validator
@@ -72,7 +71,7 @@ class _ProfileBase(BaseModel):
 
 class _UploadRootfs(_ProfileBase):
     # A System-owned uploaded qcow2; opened by systems.define + artifacts.create_system_upload and
-    # committed at provisioning->ready (ADR-0048 §5). path/url/catalog are alternatives.
+    # committed at provisioning->ready (ADR-0048 §5). local/artifact/catalog are alternatives.
     kind: Literal["upload"]
 
 
@@ -100,9 +99,11 @@ class LibvirtProfile(_ProfileBase):
 
     ``domain_xml_params`` is an optionally-empty map whose values are non-empty;
     ``rootfs`` is the discriminated rootfs source (ADR-0048 §3) keyed by ``kind`` —
-    ``path`` (a declared file), ``upload`` (a System-owned uploaded object), ``url``
-    (a content-addressed fetch), or ``catalog`` (a curated image by name); the resolver
-    maps it to the libvirt-readable disk path at provisioning. ``crashkernel`` is an
+    ``local`` (an allowlisted provider-local file), ``artifact`` (parsed for the shared
+    component contract but currently rejected by local-libvirt materialization),
+    ``catalog`` (a curated image by name), or ``upload`` (a System-owned uploaded
+    object); the resolver maps supported references to the libvirt-readable disk path
+    at provisioning. ``crashkernel`` is an
     optional opaque non-empty token (the kdump prerequisite — the booted kernel is the
     arbiter of its grammar); ``None`` when the System is not provisioned for kdump.
     ``destructive_ops`` is the optionally-empty list of destructive op kinds this profile
@@ -187,6 +188,17 @@ class ProviderSection(_ProfileBase):
         if sum(present) != 1:
             raise ValueError("profile provider must contain exactly one provider section")
         return self
+
+    @property
+    def kind(self) -> ResourceKind:
+        """Return the resource kind for the profile's concrete provider section."""
+        if self.local_libvirt_section is not None:
+            return ResourceKind.LOCAL_LIBVIRT
+        if self.remote_libvirt_section is not None:
+            return ResourceKind.REMOTE_LIBVIRT
+        if self.fault_inject_section is not None:
+            return ResourceKind.FAULT_INJECT
+        raise AttributeError("profile has no provider section")
 
     @property
     def local_libvirt(self) -> LibvirtProfile:
@@ -363,35 +375,6 @@ def profile_digest(profile: ProvisioningProfile) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _parsed_profile(profile: ProvisioningProfile | Mapping[str, object]) -> ProvisioningProfile:
-    if isinstance(profile, ProvisioningProfile):
-        return profile
-    return ProvisioningProfile.parse(profile)
-
-
-def rootfs_upload_window_allowed(profile: ProvisioningProfile) -> bool:
-    """Return whether the profile's rootfs expects a System upload window."""
-    rootfs = rootfs_source(profile)
-    return rootfs is not None and rootfs.kind == "upload"
-
-
-def reject_rootfs_upload_without_window(profile: ProvisioningProfile) -> None:
-    """Reject a profile whose rootfs needs a System upload window in a no-window lane.
-
-    ``systems.define`` opens the window for a System-owned rootfs upload. Direct provision and
-    reprovision do not, so accepting an upload-kind rootfs there would enqueue work that cannot
-    commit its disk artifact.
-
-    Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` when the profile needs an upload window.
-    """
-    if rootfs_upload_window_allowed(profile):
-        raise CategorizedError(
-            "upload-kind rootfs requires systems.define upload window",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-
-
 def validate_rootfs_reference(rootfs: RootfsSource) -> None:
     """Validate a rootfs reference's static resolvability.
 
@@ -411,73 +394,3 @@ def validate_rootfs_reference(rootfs: RootfsSource) -> None:
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"provider": rootfs.provider, "name": rootfs.name},
         )
-
-
-def rootfs_source(profile: ProvisioningProfile) -> RootfsSource | None:
-    """Return the profile's rootfs source, or ``None`` for providers that do not use one."""
-    section = profile.provider.local_libvirt_section
-    return section.rootfs if section is not None else None
-
-
-def ssh_credential_ref(profile: ProvisioningProfile) -> str | None:
-    """Return the SSH credential reference for providers with credential-backed SSH."""
-    section = profile.provider.local_libvirt_section
-    return section.ssh_credential_ref if section is not None else None
-
-
-def drgn_live_requires_credential(profile: ProvisioningProfile) -> bool:
-    """Return whether this profile's drgn-live transport needs a core-resolved credential.
-
-    True for a local-libvirt section (drgn-live is realized over SSH, ADR-0039); False
-    otherwise (remote reaches the guest agent over qemu+tls; fault-inject is synthetic). Keeps
-    the credential decision provider-agnostic in core, which only asks this predicate
-    (ADR-0085 Decision 2).
-    """
-    return profile.provider.local_libvirt_section is not None
-
-
-def validate_profile(profile: ProvisioningProfile) -> None:
-    """Reject unsupported provider params and unresolvable rootfs references."""
-    section = profile.provider.local_libvirt_section
-    if section is None:
-        return
-    params = section.domain_xml_params
-    unknown = sorted(set(params) - SUPPORTED_DOMAIN_XML_PARAMS)
-    if unknown:
-        raise CategorizedError(
-            f"unsupported domain_xml_params: {', '.join(unknown)}",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"unsupported": unknown, "supported": sorted(SUPPORTED_DOMAIN_XML_PARAMS)},
-        )
-    validate_rootfs_reference(section.rootfs)
-
-
-def destructive_opt_in(profile: ProvisioningProfile, op: DestructiveJobKind) -> bool:
-    """Return whether the profile opts into a destructive operation."""
-    if profile.provider.local_libvirt_section is not None:
-        return op.value in profile.provider.local_libvirt_section.destructive_ops
-    if profile.provider.remote_libvirt_section is not None:
-        return op.value in profile.provider.remote_libvirt_section.destructive_ops
-    return op.value in profile.provider.fault_inject.destructive_ops
-
-
-def capture_method(profile: ProvisioningProfile | Mapping[str, object]) -> CaptureMethod:
-    """Resolve the crash-capture method a provisioning profile enables."""
-    parsed = _parsed_profile(profile)
-    remote = parsed.provider.remote_libvirt_section
-    if remote is not None:
-        # The gdbstub is unconditionally enabled for every remote System (ADR-0079/0080),
-        # so kdump opts in via crashkernel and the gdbstub is the floor, never console.
-        if remote.crashkernel is not None:
-            return CaptureMethod.KDUMP
-        return CaptureMethod.GDBSTUB
-    section = parsed.provider.local_libvirt_section
-    if section is None:
-        return parsed.provider.fault_inject.capture_method
-    if section.crashkernel is not None:
-        return CaptureMethod.KDUMP
-    if section.debug.gdbstub:
-        return CaptureMethod.GDBSTUB
-    if section.debug.preserve_on_crash:
-        return CaptureMethod.HOST_DUMP
-    return CaptureMethod.CONSOLE

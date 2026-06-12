@@ -94,11 +94,11 @@ async def create_run(
     PCIe requirements it discovered via ``systems.list`` — closing the list→create TOCTOU.
     Omitted or empty requirements mean only the unconditional preconditions apply.
     """
-    inv_uid = _as_uuid(request.investigation_id)
-    if inv_uid is None:
+    investigation_id = _as_uuid(request.investigation_id)
+    if investigation_id is None:
         return _config_error(request.investigation_id)
-    sys_uid = _as_uuid(request.system_id)
-    if sys_uid is None:
+    system_id = _as_uuid(request.system_id)
+    if system_id is None:
         return _config_error(request.system_id)
     try:
         parsed_build_profile = BuildProfile.parse(request.build_profile)
@@ -113,7 +113,7 @@ async def create_run(
         return ToolResponse.failure_from_error(request.system_id, exc)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
-            resolved = await _resolve_targets(conn, ctx, inv_uid, sys_uid)
+            resolved = await _resolve_targets(conn, ctx, investigation_id, system_id)
             if isinstance(resolved, ToolResponse):
                 return resolved
             targets, project = resolved
@@ -129,7 +129,7 @@ async def create_run(
 
 
 async def _resolve_targets(
-    conn: AsyncConnection, ctx: RequestContext, inv_uid: UUID, sys_uid: UUID
+    conn: AsyncConnection, ctx: RequestContext, investigation_id: UUID, system_id: UUID
 ) -> tuple[_CreateTargets, str] | ToolResponse:
     """Pre-lock fetch + fast-fail checks; resolves the ALLOCATION lock key before locking.
 
@@ -137,20 +137,22 @@ async def _resolve_targets(
     ALLOCATION before SYSTEM), so it is read here from the System and carried into the
     locked section, where the allocation is re-read under its lock as the authority.
     """
-    inv = await INVESTIGATIONS.get(conn, inv_uid)
+    inv = await INVESTIGATIONS.get(conn, investigation_id)
     if inv is None or inv.project not in ctx.projects:
-        return _config_error(str(inv_uid))
+        return _config_error(str(investigation_id))
     require_role(ctx, inv.project, Role.OPERATOR)
-    system = await SYSTEMS.get(conn, sys_uid)
+    system = await SYSTEMS.get(conn, system_id)
     if system is None or system.project not in ctx.projects:
-        return _config_error(str(sys_uid))
+        return _config_error(str(system_id))
     if system.project != inv.project:
-        return _config_error(str(sys_uid))
+        return _config_error(str(system_id))
     alloc = await ALLOCATIONS.get(conn, system.allocation_id)
     if alloc is None or alloc.state not in ALLOC_HOSTABLE:
         current = alloc.state.value if alloc is not None else "missing"
-        return _stale_handle(str(sys_uid), current_status=current)
-    return _CreateTargets(inv_uid=inv_uid, sys_uid=sys_uid, alloc_uid=alloc.id), inv.project
+        return _stale_handle(str(system_id), current_status=current)
+    return _CreateTargets(
+        investigation_id=investigation_id, system_id=system_id, allocation_id=alloc.id
+    ), inv.project
 
 
 def _parse_expected_boot_failure(
@@ -173,12 +175,12 @@ def _parse_expected_boot_failure(
 class _CreateTargets:
     """The three locked object ids for a ``runs.create``, carried into the locked section."""
 
-    __slots__ = ("alloc_uid", "inv_uid", "sys_uid")
+    __slots__ = ("allocation_id", "investigation_id", "system_id")
 
-    def __init__(self, *, inv_uid: UUID, sys_uid: UUID, alloc_uid: UUID) -> None:
-        self.inv_uid = inv_uid
-        self.sys_uid = sys_uid
-        self.alloc_uid = alloc_uid
+    def __init__(self, *, investigation_id: UUID, system_id: UUID, allocation_id: UUID) -> None:
+        self.investigation_id = investigation_id
+        self.system_id = system_id
+        self.allocation_id = allocation_id
 
 
 async def _investigation_for_update(conn: AsyncConnection, uid: UUID) -> Investigation | None:
@@ -188,11 +190,11 @@ async def _investigation_for_update(conn: AsyncConnection, uid: UUID) -> Investi
     return Investigation.model_validate(row) if row else None
 
 
-async def _count_non_terminal_runs(conn: AsyncConnection, sys_uid: UUID) -> int:
+async def _count_non_terminal_runs(conn: AsyncConnection, system_id: UUID) -> int:
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT count(*) FROM runs WHERE system_id = %s AND state = ANY(%s)",
-            (sys_uid, [s.value for s in RUN_NON_TERMINAL]),
+            (system_id, [s.value for s in RUN_NON_TERMINAL]),
         )
         row = await cur.fetchone()
     if row is None:  # Invariant: count(*) always yields a row.
@@ -200,29 +202,29 @@ async def _count_non_terminal_runs(conn: AsyncConnection, sys_uid: UUID) -> int:
     return int(row[0])
 
 
-def _system_block_response(system: System | None, sys_uid: UUID) -> ToolResponse | None:
+def _system_block_response(system: System | None, system_id: UUID) -> ToolResponse | None:
     """Re-validate the System under the lock; return a failure envelope or ``None`` if ok."""
     if system is None:
-        return _config_error(str(sys_uid))
+        return _config_error(str(system_id))
     if system.state in SYSTEM_GONE:
-        return _stale_handle(str(sys_uid), current_status=system.state.value)
+        return _stale_handle(str(system_id), current_status=system.state.value)
     if system.state not in RUN_HOSTABLE:
-        return _config_error(str(sys_uid), data={"current_status": system.state.value})
+        return _config_error(str(system_id), data={"current_status": system.state.value})
     return None
 
 
-def _allocation_block_response(alloc: Allocation | None, sys_uid: UUID) -> ToolResponse | None:
+def _allocation_block_response(alloc: Allocation | None, system_id: UUID) -> ToolResponse | None:
     """Re-validate the Allocation under its lock (live + lease not lapsed), or ``None``.
 
     A terminal/expiring Allocation (non-``ACTIVE``, or ``ACTIVE`` whose ``lease_expiry`` has
     already elapsed — the ADR-0021 orphan-reaping window) is ``stale_handle`` (ADR-0070).
     """
     if alloc is None:
-        return _stale_handle(str(sys_uid), current_status="missing")
+        return _stale_handle(str(system_id), current_status="missing")
     if alloc.state not in ALLOC_HOSTABLE:
-        return _stale_handle(str(sys_uid), current_status=alloc.state.value)
+        return _stale_handle(str(system_id), current_status=alloc.state.value)
     if alloc.lease_expiry is not None and alloc.lease_expiry < datetime.now(UTC):
-        return _stale_handle(str(sys_uid), current_status="lease_expired")
+        return _stale_handle(str(system_id), current_status="lease_expired")
     return None
 
 
@@ -239,20 +241,20 @@ async def _preconditions_block_response(
     allocation, single project, one-Run-per-System — so a stale/conflicting System returns
     its precondition error, never a sizing error.
     """
-    system = await SYSTEMS.get(conn, targets.sys_uid)
-    blocked = _system_block_response(system, targets.sys_uid)
+    system = await SYSTEMS.get(conn, targets.system_id)
+    blocked = _system_block_response(system, targets.system_id)
     if blocked is not None or system is None:
-        return blocked or _config_error(str(targets.sys_uid)), None
-    alloc = await ALLOCATIONS.get(conn, targets.alloc_uid)
-    blocked = _allocation_block_response(alloc, targets.sys_uid)
+        return blocked or _config_error(str(targets.system_id)), None
+    alloc = await ALLOCATIONS.get(conn, targets.allocation_id)
+    blocked = _allocation_block_response(alloc, targets.system_id)
     if blocked is not None or alloc is None:
-        return blocked or _stale_handle(str(targets.sys_uid), current_status="missing"), None
+        return blocked or _stale_handle(str(targets.system_id), current_status="missing"), None
     if system.project != project:
-        return _config_error(str(targets.sys_uid)), None
-    if await _count_non_terminal_runs(conn, targets.sys_uid) > 0:
+        return _config_error(str(targets.system_id)), None
+    if await _count_non_terminal_runs(conn, targets.system_id) > 0:
         return (
             ToolResponse.failure(
-                str(targets.sys_uid),
+                str(targets.system_id),
                 ErrorCategory.TRANSPORT_CONFLICT,
                 data={"reason": "system_has_live_run"},
             ),
@@ -298,24 +300,26 @@ async def _create_locked(
     # id is resolved pre-lock (create_run) and re-read under its lock as the authority.
     async with (
         conn.transaction(),
-        advisory_xact_lock(conn, LockScope.ALLOCATION, targets.alloc_uid),
-        advisory_xact_lock(conn, LockScope.SYSTEM, targets.sys_uid),
-        advisory_xact_lock(conn, LockScope.INVESTIGATION, targets.inv_uid),
+        advisory_xact_lock(conn, LockScope.ALLOCATION, targets.allocation_id),
+        advisory_xact_lock(conn, LockScope.SYSTEM, targets.system_id),
+        advisory_xact_lock(conn, LockScope.INVESTIGATION, targets.investigation_id),
     ):
         blocked, ok = await _preconditions_block_response(conn, targets, project=project)
         if blocked is not None or ok is None:
-            return blocked or _config_error(str(targets.sys_uid))
+            return blocked or _config_error(str(targets.system_id))
         system, alloc = ok
         assertion_block = _assertion_block_response(system, alloc, requirement)
         if assertion_block is not None:
             return assertion_block
-        inv = await _investigation_for_update(conn, targets.inv_uid)
+        inv = await _investigation_for_update(conn, targets.investigation_id)
         if inv is None:
-            return _config_error(str(targets.inv_uid))
+            return _config_error(str(targets.investigation_id))
         if inv.state not in INVESTIGATION_OPEN_FOR_RUN:
-            return _config_error(str(targets.inv_uid), data={"current_status": inv.state.value})
+            return _config_error(
+                str(targets.investigation_id), data={"current_status": inv.state.value}
+            )
         run = await _insert_run(conn, ctx, targets, build_profile, expected_boot_failure, project)
-        await _flip_investigation_if_open(conn, ctx, inv, targets.inv_uid, project)
+        await _flip_investigation_if_open(conn, ctx, inv, targets.investigation_id, project)
     return _created_response(run, targets, expected_boot_failure, project)
 
 
@@ -337,8 +341,8 @@ async def _insert_run(
             principal=ctx.principal,
             agent_session=ctx.agent_session,
             project=project,
-            investigation_id=targets.inv_uid,
-            system_id=targets.sys_uid,
+            investigation_id=targets.investigation_id,
+            system_id=targets.system_id,
             state=RunState.CREATED,
             build_profile=dump_build_profile(build_profile),
             expected_boot_failure=expected_boot_failure,
@@ -352,7 +356,10 @@ async def _insert_run(
             object_kind="runs",
             object_id=run.id,
             transition="->created",
-            args={"investigation_id": str(targets.inv_uid), "system_id": str(targets.sys_uid)},
+            args={
+                "investigation_id": str(targets.investigation_id),
+                "system_id": str(targets.system_id),
+            },
             project=project,
         ),
     )
@@ -363,24 +370,26 @@ async def _flip_investigation_if_open(
     conn: AsyncConnection,
     ctx: RequestContext,
     inv: Investigation,
-    inv_uid: UUID,
+    investigation_id: UUID,
     project: str,
 ) -> None:
     if inv.state is InvestigationState.OPEN:
-        await INVESTIGATIONS.update_state(conn, inv_uid, InvestigationState.ACTIVE)
+        await INVESTIGATIONS.update_state(conn, investigation_id, InvestigationState.ACTIVE)
         await audit.record(
             conn,
             ctx,
             audit.AuditEvent(
                 tool="runs.create",
                 object_kind="investigations",
-                object_id=inv_uid,
+                object_id=investigation_id,
                 transition="open->active",
-                args={"investigation_id": str(inv_uid)},
+                args={"investigation_id": str(investigation_id)},
                 project=project,
             ),
         )
-    await conn.execute("UPDATE investigations SET last_run_at = now() WHERE id = %s", (inv_uid,))
+    await conn.execute(
+        "UPDATE investigations SET last_run_at = now() WHERE id = %s", (investigation_id,)
+    )
 
 
 def _created_response(
@@ -395,8 +404,8 @@ def _created_response(
         suggested_next_actions=["runs.get", "runs.build"],
         data={
             "project": project,
-            "investigation_id": str(targets.inv_uid),
-            "system_id": str(targets.sys_uid),
+            "investigation_id": str(targets.investigation_id),
+            "system_id": str(targets.system_id),
             **(
                 {"expected_boot_failure": str(expected_boot_failure["kind"])}
                 if expected_boot_failure is not None

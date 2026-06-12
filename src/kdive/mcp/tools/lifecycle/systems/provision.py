@@ -10,11 +10,12 @@ in ``kdive.jobs.handlers.systems``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.log import bind_context
-from kdive.mcp.responses import ToolResponse
+from kdive.mcp.responses import ResponseData, ToolResponse
 from kdive.mcp.tools._common import (
     as_uuid as _as_uuid,
 )
@@ -25,6 +26,7 @@ from kdive.mcp.tools._common import job_envelope
 from kdive.mcp.tools.lifecycle.systems.view import defined_system_envelope
 from kdive.profiles.types import ProvisioningProfileInput
 from kdive.provider_components.validation import ComponentSourceCapabilities
+from kdive.providers.runtime import ProfilePolicy
 from kdive.security.authz.context import RequestContext
 from kdive.services.systems.admission import (
     AdmissionFailure,
@@ -44,7 +46,7 @@ def _admission_response(result: AdmissionResult) -> ToolResponse:
             result.object_id,
             result.category,
             suggested_next_actions=list(result.suggested_next_actions),
-            data=result.data,
+            data=cast(ResponseData, result.data),
         )
     if isinstance(result, ProvisionJobAdmitted):
         return job_envelope(result.job, "system_id", result.system_id)
@@ -57,11 +59,12 @@ def _admission_response(result: AdmissionResult) -> ToolResponse:
 class SystemProvisionHandlers:
     """Provisioning handlers with provider validation seams bound at construction."""
 
+    profile_policy: ProfilePolicy
     component_sources: ComponentSourceCapabilities
     rootfs_validator: RootfsValidator
 
     def _admission(self) -> SystemAdmission:
-        return SystemAdmission(self.component_sources, self.rootfs_validator)
+        return SystemAdmission(self.profile_policy, self.component_sources, self.rootfs_validator)
 
     async def provision_system(
         self,

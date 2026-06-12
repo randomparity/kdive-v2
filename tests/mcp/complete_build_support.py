@@ -22,8 +22,8 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.provider_components.artifacts import HeadResult
+from kdive.provider_components.build_results import BuildOutput, ValidatedUpload
 from kdive.provider_components.uploads import ManifestEntry
-from kdive.providers.ports import BuildOutput, ValidatedUpload
 from kdive.security.authz.rbac import Role
 
 TEST_DT = datetime(2026, 1, 1, tzinfo=UTC)

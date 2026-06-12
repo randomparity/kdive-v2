@@ -573,7 +573,9 @@ def test_aged_but_placeable_is_promoted_not_reaped(migrated_url: str) -> None:
             await ALLOCATIONS.update_state(seed, holder.id, AllocationState.RELEASED)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             report = await loop.reconcile_once(
-                pool, NullReaper(), queue_max_wait=timedelta(hours=24)
+                pool,
+                NullReaper(),
+                config=loop.ReconcileConfig(queue_max_wait=timedelta(hours=24)),
             )
         assert report.promoted_allocations == 1
         assert report.queue_timeouts == 0

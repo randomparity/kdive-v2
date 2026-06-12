@@ -9,7 +9,7 @@ from uuid import UUID
 import psycopg
 import pytest
 
-from kdive.db.idempotency import run_step
+from kdive.db.idempotency import JsonValue, run_step
 
 
 async def _connect(url: str) -> psycopg.AsyncConnection:
@@ -56,7 +56,7 @@ def test_runs_fn_once_across_replays(migrated_url: str) -> None:
             run_id = await _seed_run(conn)
             calls = 0
 
-            async def fn() -> dict[str, int]:
+            async def fn() -> JsonValue:
                 nonlocal calls
                 calls += 1
                 return {"v": 1}
@@ -88,7 +88,7 @@ def test_none_result_is_recorded(migrated_url: str) -> None:
     asyncio.run(_run_test())
 
 
-def test_noncanonical_result_returns_stored_form(migrated_url: str) -> None:
+def test_non_json_result_is_rejected_before_storage(migrated_url: str) -> None:
     async def _run_test() -> None:
         async with await _connect(migrated_url) as conn:
             run_id = await _seed_run(conn)
@@ -97,12 +97,14 @@ def test_noncanonical_result_returns_stored_form(migrated_url: str) -> None:
             async def fn() -> Any:
                 nonlocal calls
                 calls += 1
-                return (1, 2)  # a tuple; jsonb returns it as a list
+                return (1, 2)
 
-            first = await run_step(conn, run_id, "t", fn)
-            second = await run_step(conn, run_id, "t", fn)
-            assert first == [1, 2]
-            assert second == [1, 2]
+            async def ok() -> JsonValue:
+                return [1, 2]
+
+            with pytest.raises(ValueError, match="non-JSON value tuple"):
+                await run_step(conn, run_id, "t", fn)
+            assert await run_step(conn, run_id, "t", ok) == [1, 2]
             assert calls == 1
 
     asyncio.run(_run_test())
@@ -113,10 +115,10 @@ def test_distinct_steps_are_independent(migrated_url: str) -> None:
         async with await _connect(migrated_url) as conn:
             run_id = await _seed_run(conn)
 
-            async def fn_a() -> dict[str, str]:
+            async def fn_a() -> JsonValue:
                 return {"step": "a"}
 
-            async def fn_b() -> dict[str, str]:
+            async def fn_b() -> JsonValue:
                 return {"step": "b"}
 
             assert await run_step(conn, run_id, "a", fn_a) == {"step": "a"}
@@ -131,12 +133,12 @@ def test_failed_fn_is_not_recorded(migrated_url: str) -> None:
             run_id = await _seed_run(conn)
             calls = 0
 
-            async def boom() -> dict[str, int]:
+            async def boom() -> JsonValue:
                 nonlocal calls
                 calls += 1
                 raise ValueError("boom")
 
-            async def ok() -> dict[str, bool]:
+            async def ok() -> JsonValue:
                 nonlocal calls
                 calls += 1
                 return {"ok": True}
@@ -159,7 +161,7 @@ def test_concurrent_first_call_resolves_to_one_result(migrated_url: str) -> None
         ):
 
             async def go(conn: psycopg.AsyncConnection, tag: str) -> Any:
-                async def fn() -> dict[str, str]:
+                async def fn() -> JsonValue:
                     await asyncio.sleep(0.05)  # widen the race so both miss the cache
                     return {"by": tag}
 

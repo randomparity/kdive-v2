@@ -21,13 +21,13 @@ from typing import TYPE_CHECKING
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.mcp.tools._time_window import parse_timestamptz_window
-from kdive.mcp.tools.ops._auth import (
+from kdive.mcp.tools._platform_auth import (
     ALL_PROJECTS_SCOPE,
     actor_for,
     audit_platform_denial,
     held_platform_roles,
 )
+from kdive.mcp.tools._time_window import parse_timestamptz_window
 from kdive.security import audit
 
 if TYPE_CHECKING:

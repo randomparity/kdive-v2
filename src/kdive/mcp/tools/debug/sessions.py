@@ -18,11 +18,11 @@ insert, and a lost race closes the just-opened transport (ADR-0032 §6a). The
 from __future__ import annotations
 
 import asyncio
-import contextlib
-from collections.abc import Callable
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Any, LiteralString, Protocol
+from typing import Annotated, Any, LiteralString
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
@@ -47,13 +47,11 @@ from kdive.mcp.tools.debug.ops import (
     DebugRuntimeResolver,
     _register_debug_ops,
 )
-from kdive.profiles.provisioning import (
-    ProvisioningProfile,
-    drgn_live_requires_credential,
-    ssh_credential_ref,
-)
+from kdive.mcp.tools.debug.session_context import resolve_debug_session_context
+from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.ports import Connector, SystemHandle, TransportHandle
 from kdive.providers.resolver import ProviderResolver
+from kdive.providers.runtime import ProfilePolicy
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
@@ -64,6 +62,7 @@ from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_en
 _GDBSTUB = "gdbstub"
 _DRGN_LIVE = "drgn-live"
 _TRANSPORTS = frozenset({_GDBSTUB, _DRGN_LIVE})
+_log = logging.getLogger(__name__)
 # An attach failure maps these provider categories onto the response envelope. A
 # MISSING_DEPENDENCY (no live_vm host / unresolvable endpoint) surfaces as an attach failure:
 # the agent cannot attach either way.
@@ -94,66 +93,74 @@ class _DetachResources:
     runtime: DebugEngineRuntime | None = None
 
 
-class _DebugSessionProvider(Protocol):
-    async def connector_for_run(
-        self, conn: AsyncConnection, run: Run
-    ) -> Connector | ToolResponse: ...
-
-    async def detach_resources(
-        self, conn: AsyncConnection, session_id: UUID
-    ) -> _DetachResources | ToolResponse: ...
-
-
 @dataclass(frozen=True)
-class _FixedDebugSessionProvider:
+class _AttachResources:
     connector: Connector
-    runtime: DebugEngineRuntime | None = None
+    profile_policy: ProfilePolicy
 
-    async def connector_for_run(self, conn: AsyncConnection, run: Run) -> Connector | ToolResponse:
+
+type _ConnectorForRun = Callable[[AsyncConnection, Run], Awaitable[_AttachResources | ToolResponse]]
+type _DetachResourcesForSession = Callable[
+    [AsyncConnection, UUID], Awaitable[_DetachResources | ToolResponse]
+]
+
+
+def _fixed_connector_for_run(
+    connector: Connector, profile_policy: ProfilePolicy
+) -> _ConnectorForRun:
+    async def connector_for_run(conn: AsyncConnection, run: Run) -> _AttachResources | ToolResponse:
         del conn, run
-        return self.connector
+        return _AttachResources(connector=connector, profile_policy=profile_policy)
 
-    async def detach_resources(
-        self, conn: AsyncConnection, session_id: UUID
-    ) -> _DetachResources | ToolResponse:
-        del conn, session_id
-        return _DetachResources(connector=self.connector, runtime=self.runtime)
+    return connector_for_run
 
 
-@dataclass(frozen=True)
-class _ResolvedDebugSessionProvider:
-    resolver: ProviderResolver
-    runtime: DebugRuntimeResolver | None = None
-
-    async def connector_for_run(self, conn: AsyncConnection, run: Run) -> Connector | ToolResponse:
+def _resolved_connector_for_run(resolver: ProviderResolver) -> _ConnectorForRun:
+    async def connector_for_run(conn: AsyncConnection, run: Run) -> _AttachResources | ToolResponse:
         try:
-            runtime = await self.resolver.runtime_for_run(conn, run.id)
+            runtime = await resolver.runtime_for_run(conn, run.id)
         except CategorizedError as exc:
             return ToolResponse.failure_from_error(str(run.id), exc)
-        return runtime.connector
+        return _AttachResources(connector=runtime.connector, profile_policy=runtime.profile_policy)
 
+    return connector_for_run
+
+
+def _fixed_detach_resources(
+    connector: Connector, runtime: DebugEngineRuntime | None
+) -> _DetachResourcesForSession:
     async def detach_resources(
-        self, conn: AsyncConnection, session_id: UUID
+        conn: AsyncConnection, session_id: UUID
+    ) -> _DetachResources | ToolResponse:
+        del conn, session_id
+        return _DetachResources(connector=connector, runtime=runtime)
+
+    return detach_resources
+
+
+def _resolved_detach_resources(
+    resolver: ProviderResolver, runtime_resolver: DebugRuntimeResolver | None
+) -> _DetachResourcesForSession:
+    async def detach_resources(
+        conn: AsyncConnection, session_id: UUID
     ) -> _DetachResources | ToolResponse:
         try:
-            binding = await self.resolver.binding_for_session(conn, session_id)
+            binding = await resolver.binding_for_session(conn, session_id)
         except CategorizedError as exc:
             return ToolResponse.failure_from_error(str(session_id), exc)
-        runtime = self.runtime.runtime_for_binding(binding) if self.runtime is not None else None
+        runtime: DebugEngineRuntime | None
+        if runtime_resolver is None:
+            runtime = None
+        else:
+            resolved_runtime = runtime_resolver.runtime_for_binding(
+                binding, object_id=str(session_id)
+            )
+            if isinstance(resolved_runtime, ToolResponse):
+                return resolved_runtime
+            runtime = resolved_runtime
         return _DetachResources(connector=binding.runtime.connector, runtime=runtime)
 
-
-def _debug_session_provider(
-    connector_source: ProviderResolver | Connector,
-    runtime: DebugEngineRuntime | DebugRuntimeResolver | None,
-) -> _DebugSessionProvider:
-    if isinstance(connector_source, ProviderResolver):
-        if runtime is not None and not isinstance(runtime, DebugRuntimeResolver):
-            raise RuntimeError("provider-resolved debug sessions require DebugRuntimeResolver")
-        return _ResolvedDebugSessionProvider(connector_source, runtime)
-    if isinstance(runtime, DebugRuntimeResolver):
-        raise RuntimeError("fixed-connector debug sessions require DebugEngineRuntime")
-    return _FixedDebugSessionProvider(connector_source, runtime)
+    return detach_resources
 
 
 def _secret_scope(session_id: UUID) -> str:
@@ -225,15 +232,49 @@ class DebugSessionHandlers:
 
     def __init__(
         self,
-        connector_source: ProviderResolver | Connector,
         *,
-        runtime: DebugEngineRuntime | DebugRuntimeResolver | None = None,
+        connector_for_run: _ConnectorForRun,
+        detach_resources: _DetachResourcesForSession,
         secret_backend_factory: Callable[[UUID], SecretBackend] | None = None,
         secret_registry: SecretRegistry,
     ) -> None:
-        self._provider = _debug_session_provider(connector_source, runtime)
+        self._connector_for_run = connector_for_run
+        self._detach_resources = detach_resources
         self._secret_backend_factory = secret_backend_factory
         self._secret_registry = secret_registry
+
+    @classmethod
+    def from_resolver(
+        cls,
+        resolver: ProviderResolver,
+        *,
+        runtime_resolver: DebugRuntimeResolver | None,
+        secret_backend_factory: Callable[[UUID], SecretBackend] | None = None,
+        secret_registry: SecretRegistry,
+    ) -> DebugSessionHandlers:
+        return cls(
+            connector_for_run=_resolved_connector_for_run(resolver),
+            detach_resources=_resolved_detach_resources(resolver, runtime_resolver),
+            secret_backend_factory=secret_backend_factory,
+            secret_registry=secret_registry,
+        )
+
+    @classmethod
+    def from_fixed_connector(
+        cls,
+        connector: Connector,
+        *,
+        profile_policy: ProfilePolicy,
+        runtime: DebugEngineRuntime | None = None,
+        secret_backend_factory: Callable[[UUID], SecretBackend] | None = None,
+        secret_registry: SecretRegistry,
+    ) -> DebugSessionHandlers:
+        return cls(
+            connector_for_run=_fixed_connector_for_run(connector, profile_policy),
+            detach_resources=_fixed_detach_resources(connector, runtime),
+            secret_backend_factory=secret_backend_factory,
+            secret_registry=secret_registry,
+        )
 
     async def start_session(
         self,
@@ -297,19 +338,19 @@ class DebugSessionHandlers:
         system = await _attach_preconditions(conn, run, transport)
         if isinstance(system, ToolResponse):
             return system
+        resources = await self._connector_for_run(conn, run)
+        if isinstance(resources, ToolResponse):
+            return resources
         backend = self._credential_backend(session_id, transport)
-        resolved = _resolve_credential(system, transport, backend)
+        resolved = _resolve_credential(system, transport, resources.profile_policy, backend)
         if isinstance(resolved, ToolResponse):
             return resolved
-        connector = await self._provider.connector_for_run(conn, run)
-        if isinstance(connector, ToolResponse):
-            return connector
         return _AttachRequest(
             run=run,
             system=system,
             session_id=session_id,
             transport=transport,
-            connector=connector,
+            connector=resources.connector,
         )
 
     def _credential_backend(self, session_id: UUID, transport: str) -> SecretBackend | None:
@@ -336,19 +377,20 @@ class DebugSessionHandlers:
         with bind_context(principal=ctx.principal):
             resources: _DetachResources
             async with pool.connection() as conn:
-                session = await DEBUG_SESSIONS.get(conn, uid)
-                if session is None or session.project not in ctx.projects:
+                resolved_session = await resolve_debug_session_context(
+                    conn, ctx, session_id, include_system=True
+                )
+                if isinstance(resolved_session, ToolResponse):
+                    return resolved_session
+                if resolved_session.system_id is None:
                     return _config_error(session_id)
-                require_role(ctx, session.project, Role.OPERATOR)
-                resolved = await _resolve_session_system(conn, uid)
-                if resolved is None:
-                    return _config_error(session_id)
-                _, system_id = resolved
-                resources_or_response = await self._provider.detach_resources(conn, uid)
+                resources_or_response = await self._detach_resources(conn, uid)
                 if isinstance(resources_or_response, ToolResponse):
                     return resources_or_response
                 resources = resources_or_response
-                envelope = await _detach_locked(conn, ctx, uid, system_id, resources.connector)
+                envelope = await _detach_locked(
+                    conn, ctx, uid, resolved_session.system_id, resources.connector
+                )
             if resources.runtime is not None:
                 async with resources.runtime.lock_for(session_id):
                     resources.runtime.reap(session_id)
@@ -357,13 +399,17 @@ class DebugSessionHandlers:
 
 
 def _resolve_credential(
-    system: System, transport: str, secret_backend: SecretBackend | None
+    system: System,
+    transport: str,
+    profile_policy: ProfilePolicy,
+    secret_backend: SecretBackend | None,
 ) -> None | ToolResponse:
     """Resolve + register the SSH credential before transport use (ADR-0039 §2 ordering).
 
     A credential is needed only for a ``drgn-live`` transport whose profile realizes it over
-    SSH — the local-libvirt section, per ``drgn_live_requires_credential`` (ADR-0085 Decision
-    2). Returns ``None`` when none is required (gdbstub, or a guest-agent realization such as
+    SSH — the local-libvirt section, per ``ProfilePolicy.drgn_live_requires_credential``
+    (ADR-0085 Decision 2). Returns ``None`` when none is required (gdbstub, or a guest-agent
+    realization such as
     remote) or resolution succeeded, or a failure envelope. The resolved value is registered
     into the redaction registry by the backend (a structural post-condition of
     ``FileRefBackend.resolve``) before this returns — so the connector that opens the SSH
@@ -375,9 +421,9 @@ def _resolve_credential(
         profile = ProvisioningProfile.parse(system.provisioning_profile)
     except CategorizedError as exc:
         return ToolResponse.failure_from_error(str(system.id), exc)
-    if not drgn_live_requires_credential(profile):
+    if not profile_policy.drgn_live_requires_credential(profile):
         return None
-    ref = ssh_credential_ref(profile)
+    ref = profile_policy.ssh_credential_ref(profile)
     if ref is None:
         return _config_error(str(system.id), data={"reason": "ssh_credential_ref_missing"})
     if secret_backend is None:
@@ -496,19 +542,6 @@ async def _insert_session_locked(
     )
 
 
-async def _resolve_session_system(
-    conn: AsyncConnection, session_id: UUID
-) -> tuple[DebugSession, UUID] | None:
-    """Resolve a session and its System id via the `debug_sessions -> runs` join."""
-    session = await DEBUG_SESSIONS.get(conn, session_id)
-    if session is None:
-        return None
-    run = await RUNS.get(conn, session.run_id)
-    if run is None:
-        return None
-    return session, run.system_id
-
-
 async def _detach_locked(
     conn: AsyncConnection,
     ctx: RequestContext,
@@ -548,8 +581,14 @@ async def _close(connector: Connector, handle: str | None) -> None:
     """Close the transport best-effort; a missing/failing close never blocks the detach."""
     if handle is None:
         return
-    with contextlib.suppress(CategorizedError):
+    try:
         await asyncio.to_thread(connector.close_transport, TransportHandle(handle))
+    except Exception:
+        _log.warning(
+            "debug transport close failed; continuing detach",
+            extra={"handle": handle},
+            exc_info=True,
+        )
 
 
 def _detached_envelope(session_id: UUID, project: str) -> ToolResponse:
@@ -562,7 +601,7 @@ def register(
     app: FastMCP,
     pool: AsyncConnectionPool,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
     secret_registry: SecretRegistry,
 ) -> None:
     """Register the `debug.*` tools on ``app``, bound to ``pool``.
@@ -573,12 +612,10 @@ def register(
     :class:`DebugEngineRuntime` per provider kind; its seven tools register here too, so
     `app.py` is untouched. `end_session` reaps the lazy engine via the same provider cache.
     """
-    if resolver is None:
-        raise RuntimeError("debug registrar requires an injected provider resolver")
     runtime = DebugRuntimeResolver(resolver)
-    handlers = DebugSessionHandlers(
+    handlers = DebugSessionHandlers.from_resolver(
         resolver,
-        runtime=runtime,
+        runtime_resolver=runtime,
         secret_backend_factory=lambda session_id: secret_backend_from_env(
             registry=secret_registry, scope=_secret_scope(session_id)
         ),

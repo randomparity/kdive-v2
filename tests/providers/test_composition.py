@@ -14,14 +14,17 @@ from kdive.domain.models import ResourceKind, Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.provider_components.artifacts import StoredArtifact
+from kdive.provider_components.build_results import BuildOutput
 from kdive.provider_components.references import (
     CONFIG_COMPONENT,
     PATCH_COMPONENT,
     LocalComponentRef,
 )
 from kdive.providers import composition
+from kdive.providers.fault_inject.profile_policy import FaultInjectProfilePolicy
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
+from kdive.providers.local_libvirt.rootfs_build import LocalLibvirtRootfsBuildPlane
 from kdive.providers.ports import (
-    BuildOutput,
     CaptureOutput,
     CrashOutput,
     InstallRequest,
@@ -30,10 +33,12 @@ from kdive.providers.ports import (
     TransportHandle,
 )
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
-from kdive.providers.remote_libvirt.control import RemoteLibvirtControl
-from kdive.providers.remote_libvirt.install import RemoteLibvirtInstall
-from kdive.providers.remote_libvirt.provisioning import RemoteLibvirtProvision
+from kdive.providers.remote_libvirt.lifecycle.control import RemoteLibvirtControl
+from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
+from kdive.providers.remote_libvirt.lifecycle.provisioning import RemoteLibvirtProvisioning
+from kdive.providers.remote_libvirt.profile_policy import RemoteLibvirtProfilePolicy
 from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
+from kdive.providers.remote_libvirt.rootfs_build import RemoteLibvirtRootfsBuildPlane
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.secret_registry import SecretRegistry
 
@@ -149,6 +154,7 @@ def test_provider_runtime_returns_typed_provider_ports_directly() -> None:
     retrieve = _RetrieveProvider()
     introspect = _IntrospectorProvider()
     runtime = ProviderRuntime(
+        profile_policy=LocalLibvirtProfilePolicy(),
         provisioner=_ProvisionProvider(),
         builder=builder,
         installer=install,
@@ -172,6 +178,7 @@ def test_provider_runtime_returns_typed_provider_ports_directly() -> None:
 def test_default_runtime_advertises_implemented_component_sources_only() -> None:
     runtime = composition.build_local_runtime(secret_registry=SecretRegistry())
 
+    assert isinstance(runtime.profile_policy, LocalLibvirtProfilePolicy)
     assert runtime.component_sources.provider == "local-libvirt"
     assert runtime.component_sources.accepted_component_sources == {
         "rootfs": frozenset({"catalog", "local"}),
@@ -189,6 +196,12 @@ def test_default_runtime_exposes_build_config_validator() -> None:
     assert runtime.build_config_validator is not None
 
 
+def test_default_runtime_exposes_rootfs_build_plane() -> None:
+    runtime = composition.build_local_runtime(secret_registry=SecretRegistry())
+
+    assert isinstance(runtime.rootfs_build_plane, LocalLibvirtRootfsBuildPlane)
+
+
 def test_provider_runtime_discovery_hook_is_optional() -> None:
     install = _InstallProvider()
     retrieve = _RetrieveProvider()
@@ -199,6 +212,7 @@ def test_provider_runtime_discovery_hook_is_optional() -> None:
         calls.append(pool)
 
     runtime = ProviderRuntime(
+        profile_policy=LocalLibvirtProfilePolicy(),
         provisioner=_ProvisionProvider(),
         builder=_BuildProvider(),
         installer=install,
@@ -223,6 +237,7 @@ def test_provider_runtime_discovery_hook_noops_when_absent() -> None:
     retrieve = _RetrieveProvider()
     introspect = _IntrospectorProvider()
     runtime = ProviderRuntime(
+        profile_policy=LocalLibvirtProfilePolicy(),
         provisioner=_ProvisionProvider(),
         builder=_BuildProvider(),
         installer=install,
@@ -258,8 +273,9 @@ def test_enabling_fault_inject_registers_both_kinds() -> None:
 
 
 def test_fault_inject_runtime_advertises_its_provider_identity() -> None:
-    runtime = composition.build_faultinject_runtime()
+    runtime = composition.build_fault_inject_runtime()
 
+    assert isinstance(runtime.profile_policy, FaultInjectProfilePolicy)
     assert runtime.component_sources.provider == "fault-inject"
     assert runtime.discovery_registrar is not None
 
@@ -271,7 +287,7 @@ def test_fault_inject_runtime_provision_is_visible_to_a_reaper_on_the_same_inven
     from kdive.providers.fault_inject.inventory import FaultInjectInventory, FaultInjectReaper
 
     inventory = FaultInjectInventory()
-    runtime = composition.build_faultinject_runtime(inventory=inventory)
+    runtime = composition.build_fault_inject_runtime(inventory=inventory)
     system_id = UUID("33333333-3333-3333-3333-333333333333")
 
     domain = runtime.provisioner.provision(system_id, _provisioning_profile())
@@ -334,6 +350,40 @@ def test_dump_volume_reaper_is_remote_when_enabled() -> None:
     assert isinstance(reaper, RemoteLibvirtDumpVolumeReaper)
 
 
+def test_console_hosting_is_none_without_remote() -> None:
+    import asyncio
+
+    comp = composition.ProviderComposition()
+
+    assert asyncio.run(comp.build_reconciler_console_hosting(enable_remote_libvirt=False)) is None
+
+
+def test_console_hosting_delegates_to_remote_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    expected_hosting = object()
+    expected_registry = SecretRegistry()
+    seen: dict[str, object] = {}
+
+    async def _build_console_hosting(*, secret_registry: SecretRegistry) -> object:
+        seen["secret_registry"] = secret_registry
+        return expected_hosting
+
+    monkeypatch.setattr(
+        composition.remote_composition, "build_console_hosting", _build_console_hosting
+    )
+
+    comp = composition.ProviderComposition(secret_registry=expected_registry)
+
+    assert (
+        asyncio.run(comp.build_reconciler_console_hosting(enable_remote_libvirt=True))
+        is expected_hosting
+    )
+    assert seen["secret_registry"] is expected_registry
+
+
 def test_reconciler_reaper_defaults_to_null_when_fault_inject_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -357,27 +407,25 @@ def test_fault_inject_opt_in_reads_the_environment(monkeypatch: pytest.MonkeyPat
 
 
 def test_fault_inject_runtime_without_engine_uses_bare_happy_path_ports() -> None:
-    from kdive.providers.fault_inject.lifecycle.provider import (
-        FaultInjectInstall,
-        FaultInjectProvision,
-    )
+    from kdive.providers.fault_inject.lifecycle.install import FaultInjectInstall
+    from kdive.providers.fault_inject.lifecycle.provisioning import FaultInjectProvisioning
 
-    runtime = composition.build_faultinject_runtime()
+    runtime = composition.build_fault_inject_runtime()
 
     # No engine -> the happy-path ports are used unchanged (no faulting wrapper).
-    assert isinstance(runtime.provisioner, FaultInjectProvision)
+    assert isinstance(runtime.provisioner, FaultInjectProvisioning)
     assert isinstance(runtime.installer, FaultInjectInstall)
     assert isinstance(runtime.booter, FaultInjectInstall)
 
 
 def test_fault_inject_runtime_with_engine_wraps_ports_in_faulting_decorators() -> None:
     from kdive.providers.fault_inject.faulting.engine import FaultEngine
-    from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvision
+    from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, FaultedProvisioning
 
     engine = FaultEngine(seed=7, fault_rate={"provision": 1.0}, max_latency_s={})
-    runtime = composition.build_faultinject_runtime(engine=engine)
+    runtime = composition.build_fault_inject_runtime(engine=engine)
 
-    assert isinstance(runtime.provisioner, FaultedProvision)
+    assert isinstance(runtime.provisioner, FaultedProvisioning)
     assert isinstance(runtime.installer, FaultedInstall)
     assert isinstance(runtime.booter, FaultedInstall)
 
@@ -465,18 +513,20 @@ def test_remote_runtime_gdbstub_debug_path_is_unchanged(
     # AC2 no-regression: advertising GDBSTUB does not alter the existing connect/attach
     # debug path (ADR-0083/0085) — the remote attach seam and connector are unchanged.
     monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
-    from kdive.providers.remote_libvirt.connect import RemoteLibvirtConnect
-    from kdive.providers.remote_libvirt.debug import remote_attach_seam
+    from kdive.providers.remote_libvirt.debug.gdbmi import remote_attach_seam
+    from kdive.providers.remote_libvirt.lifecycle.connect import RemoteLibvirtConnect
 
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
-    assert runtime.attach_seam is remote_attach_seam
+    assert runtime.debug is not None
+    assert runtime.debug.attach_seam is remote_attach_seam
     assert isinstance(runtime.connector, RemoteLibvirtConnect)
 
 
 def test_remote_runtime_has_real_control_and_retrieve() -> None:
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
+    assert isinstance(runtime.profile_policy, RemoteLibvirtProfilePolicy)
     assert isinstance(runtime.controller, RemoteLibvirtControl)
     assert isinstance(runtime.retriever, RemoteLibvirtRetrieve)
     assert runtime.crash_postmortem is runtime.retriever
@@ -489,7 +539,7 @@ def test_remote_runtime_has_real_provisioner(monkeypatch: pytest.MonkeyPatch) ->
 
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
-    assert isinstance(runtime.provisioner, RemoteLibvirtProvision)
+    assert isinstance(runtime.provisioner, RemoteLibvirtProvisioning)
 
 
 def test_remote_runtime_has_noop_rootfs_validator(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -513,6 +563,14 @@ def test_remote_runtime_has_real_builder(monkeypatch: pytest.MonkeyPatch) -> Non
     assert isinstance(runtime.builder, RemoteLibvirtBuild)
 
 
+def test_remote_runtime_exposes_rootfs_build_plane(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
+
+    runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
+
+    assert isinstance(runtime.rootfs_build_plane, RemoteLibvirtRootfsBuildPlane)
+
+
 def test_remote_runtime_has_real_installer_and_booter(monkeypatch: pytest.MonkeyPatch) -> None:
     # The remote Install/Boot plane is real from this issue on (ADR-0082); it must construct
     # without operator config, and one object realizes both ports (as local does).
@@ -530,19 +588,20 @@ def test_remote_runtime_wires_connect_and_introspect_ports(
     # The connect/debug + introspection planes are real (ADR-0083); control/retrieve are
     # real from issue #206 on (ADR-0084), asserted in test_remote_runtime_has_real_control_*.
     monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
-    from kdive.providers.remote_libvirt.connect import RemoteLibvirtConnect
-    from kdive.providers.remote_libvirt.debug import remote_attach_seam
-    from kdive.providers.remote_libvirt.introspect import (
-        RemoteLiveIntrospect,
-        RemoteVmcoreIntrospect,
+    from kdive.providers.remote_libvirt.debug.gdbmi import remote_attach_seam
+    from kdive.providers.remote_libvirt.debug.introspect import (
+        RemoteLibvirtLiveIntrospect,
+        RemoteLibvirtVmcoreIntrospect,
     )
+    from kdive.providers.remote_libvirt.lifecycle.connect import RemoteLibvirtConnect
 
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
     assert isinstance(runtime.connector, RemoteLibvirtConnect)
-    assert runtime.attach_seam is remote_attach_seam
-    assert isinstance(runtime.vmcore_introspector, RemoteVmcoreIntrospect)
-    assert isinstance(runtime.live_introspector, RemoteLiveIntrospect)
+    assert runtime.debug is not None
+    assert runtime.debug.attach_seam is remote_attach_seam
+    assert isinstance(runtime.vmcore_introspector, RemoteLibvirtVmcoreIntrospect)
+    assert isinstance(runtime.live_introspector, RemoteLibvirtLiveIntrospect)
 
 
 def test_remote_runtime_wires_build_config_validator(monkeypatch: pytest.MonkeyPatch) -> None:

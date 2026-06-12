@@ -28,7 +28,7 @@ from kdive.log import bind_context
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools.ops._auth import (
+from kdive.mcp.tools._platform_auth import (
     ALL_PROJECTS_SCOPE,
     actor_for,
     audit_platform_denial,
@@ -98,15 +98,15 @@ async def run_diagnostics(
                 args=_audit_args(provider, with_egress),
             )
             return _denied()
-        report = await _build_and_run(service_factory, provider, with_egress)
+        report = await _diagnostics_report_from_service(service_factory, provider, with_egress)
         await _audit_run(pool, ctx, provider, with_egress)
         return _verdict(report.results, report.has_failure, report.has_error)
 
 
-async def _build_and_run(
+async def _diagnostics_report_from_service(
     service_factory: ServiceFactory, provider: str | None, with_egress: bool
 ) -> DiagnosticsReport:
-    """Build the service for ``provider`` and run it; map a build failure to an ``error``.
+    """Run the diagnostics service, mapping assembly failures to an ``error`` verdict.
 
     Assembling the service can fail before any check runs (e.g. a malformed ``KDIVE_*``
     secret value the registry cannot parse). That is a check-cannot-run condition, not a

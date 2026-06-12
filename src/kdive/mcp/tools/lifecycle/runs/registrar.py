@@ -32,12 +32,10 @@ def register(
     app: FastMCP,
     pool: AsyncConnectionPool,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> None:
     """Register the `runs.*` tools on ``app``, bound to ``pool``."""
-    if resolver is None:
-        raise RuntimeError("runs registrar requires an injected provider resolver")
-    _register_runs_get(app, pool)
+    _register_runs_get(app, pool, resolver)
     _register_runs_create(app, pool)
     _register_runs_build(app, pool, resolver)
     _register_runs_complete_build(app, pool, resolver)
@@ -52,7 +50,7 @@ def _build_handlers(runtime: ProviderRuntime) -> _RunBuildHandlers:
     )
 
 
-def _register_runs_get(app: FastMCP, pool: AsyncConnectionPool) -> None:
+def _register_runs_get(app: FastMCP, pool: AsyncConnectionPool, resolver: ProviderResolver) -> None:
     @app.tool(
         name="runs.get",
         annotations=_docmeta.read_only(),
@@ -62,7 +60,7 @@ def _register_runs_get(app: FastMCP, pool: AsyncConnectionPool) -> None:
         run_id: Annotated[str, Field(description="The Run to render.")],
     ) -> ToolResponse:
         """Render a Run; a failed Run maps to a failure envelope. Requires viewer."""
-        return await _get_run(pool, current_context(), run_id)
+        return await _get_run(pool, current_context(), run_id, resolver=resolver)
 
 
 def _register_runs_create(app: FastMCP, pool: AsyncConnectionPool) -> None:

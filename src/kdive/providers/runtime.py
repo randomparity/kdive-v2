@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import NoReturn
+from typing import Protocol
 
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.capture import CaptureMethod
-from kdive.profiles.provisioning import RootfsSource
+from kdive.domain.models import DestructiveJobKind
+from kdive.images.planes.base import RootfsBuildPlane
+from kdive.profiles.provisioning import ProvisioningProfile, RootfsSource
 from kdive.provider_components.references import ComponentRef
 from kdive.provider_components.validation import ComponentSourceCapabilities
 from kdive.providers.ports import (
@@ -25,10 +26,7 @@ from kdive.providers.ports import (
     Connector,
     Controller,
     CrashPostmortem,
-    GdbBreakpointRef,
-    GdbMiAttachment,
     GdbMiEngine,
-    GdbStopRecord,
     Installer,
     LiveIntrospector,
     Provisioner,
@@ -45,54 +43,41 @@ def _unconfigured_component_sources() -> ComponentSourceCapabilities:
     return ComponentSourceCapabilities(provider="unconfigured", accepted_component_sources={})
 
 
-def _missing_attach_seam(
-    *,
-    host: str,
-    port: int,
-    run_id: str,
-    transcript_path: Path,
-) -> GdbMiAttachment:
-    raise RuntimeError(
-        "debug attach seam is not configured for this ProviderRuntime; "
-        "build the runtime through kdive.providers.composition"
-    )
+@dataclass(frozen=True, slots=True)
+class DebugCapabilities:
+    """Optional live-debug capability group for providers that support gdb/MI."""
+
+    attach_seam: AttachSeam
+    engine: GdbMiEngine
 
 
-class _UnavailableGdbMiEngine:
-    def _raise(self) -> NoReturn:
-        raise RuntimeError(
-            "gdb/MI engine is not configured for this ProviderRuntime; "
-            "build the runtime through kdive.providers.composition"
-        )
+class ProfilePolicy(Protocol):
+    """Provider-owned behavior derived from a parsed provisioning profile."""
 
-    def set_breakpoint(self, attachment: GdbMiAttachment, location: str) -> GdbBreakpointRef:
-        self._raise()
+    def rootfs_source(self, profile: ProvisioningProfile) -> RootfsSource | None:
+        """Return the rootfs source used by this provider, if any."""
 
-    def clear_breakpoint(self, attachment: GdbMiAttachment, number: str) -> None:
-        self._raise()
+    def ssh_credential_ref(self, profile: ProvisioningProfile) -> str | None:
+        """Return the live-SSH credential reference used by this provider, if any."""
 
-    def list_breakpoints(self, attachment: GdbMiAttachment) -> list[GdbBreakpointRef]:
-        self._raise()
+    def drgn_live_requires_credential(self, profile: ProvisioningProfile) -> bool:
+        """Return whether drgn-live needs a profile credential."""
 
-    def read_memory(self, attachment: GdbMiAttachment, *, address: int, byte_count: int) -> bytes:
-        self._raise()
+    def validate_profile(self, profile: ProvisioningProfile) -> None:
+        """Run provider-specific static profile validation."""
 
-    def read_registers(
-        self, attachment: GdbMiAttachment, register_names: list[str]
-    ) -> dict[str, object]:
-        self._raise()
+    def destructive_opt_in(self, profile: ProvisioningProfile, op: DestructiveJobKind) -> bool:
+        """Return whether the profile opts into a destructive operation."""
 
-    def continue_(self, attachment: GdbMiAttachment, *, timeout_sec: float) -> GdbStopRecord:
-        self._raise()
-
-    def interrupt(self, attachment: GdbMiAttachment) -> GdbStopRecord | None:
-        self._raise()
+    def capture_method(self, profile: ProvisioningProfile) -> CaptureMethod:
+        """Resolve the crash-capture method enabled by the profile."""
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderRuntime:
     """Typed provider ports for the active runtime."""
 
+    profile_policy: ProfilePolicy
     provisioner: Provisioner
     builder: Builder
     installer: Installer
@@ -107,13 +92,13 @@ class ProviderRuntime:
         default_factory=lambda: frozenset(CaptureMethod)
     )
     discovery_registrar: DiscoveryRegistrar | None = None
-    attach_seam: AttachSeam = _missing_attach_seam
-    debug_engine: GdbMiEngine = field(default_factory=_UnavailableGdbMiEngine)
+    debug: DebugCapabilities | None = None
     component_sources: ComponentSourceCapabilities = field(
         default_factory=_unconfigured_component_sources
     )
     build_config_validator: BuildConfigValidator | None = None
     rootfs_validator: RootfsValidator | None = None
+    rootfs_build_plane: RootfsBuildPlane | None = None
 
     async def register_discovery(self, pool: AsyncConnectionPool) -> None:
         if self.discovery_registrar is not None:
