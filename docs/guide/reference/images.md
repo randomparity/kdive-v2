@@ -10,14 +10,7 @@ Enqueue an IMAGE_BUILD job for a public base image. Requires platform_operator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `arch` | `string` | yes | The target architecture. |
-| `capabilities` | `array` | yes | The guest-contract tags the image must satisfy. |
-| `format` | `string` | no | The image format (e.g. qcow2). |
-| `name` | `string` | yes | The catalog image name. |
-| `provider` | `string` | yes | The provider whose plane builds the image. |
-| `releasever` | `string` | yes | The distro release version to build. |
-| `root_device` | `string` | no | The guest root device path. |
-| `source_image_digest` | `string` | yes | The base image content digest. |
+| `request` | `object` | yes | Public image build request. |
 
 ## `images.delete`
 
@@ -33,7 +26,7 @@ Delete a project-private image. Requires operator on the image's project.
 
 `implemented` · `destructive`
 
-Re-arm a private image's expiry. Requires platform_admin (break-glass).
+Re-arm a private image's expiry. Requires platform_admin.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -51,7 +44,7 @@ List catalog images visible to the caller (public + own-project private). Auth o
 
 `implemented` · `destructive`
 
-Force the expired-private-image sweep now. Requires platform_admin (break-glass).
+Force the expired-private-image sweep now. Requires platform_admin.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -65,14 +58,7 @@ Promote a built image to a public catalog row. Requires platform_operator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `arch` | `string` | yes | The target architecture. |
-| `capabilities` | `array` | yes | The guest-contract tags the image must satisfy. |
-| `format` | `string` | no | The image format (e.g. qcow2). |
-| `name` | `string` | yes | The catalog image name. |
-| `provider` | `string` | yes | The provider whose plane built the image. |
-| `releasever` | `string` | yes | The distro release version. |
-| `root_device` | `string` | no | The guest root device path. |
-| `source_image_digest` | `string` | yes | The base image content digest. |
+| `request` | `object` | yes | Public image publish request. |
 
 ## `images.upload`
 
@@ -82,8 +68,4 @@ Register a quarantined upload as a project-private image. Requires operator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `arch` | `string` | yes | The target architecture. |
-| `lifetime_seconds` | `any` | no | TTL seconds (clamped to the ceiling); default applies. |
-| `name` | `string` | yes | The catalog image name. |
-| `project` | `string` | yes | The owning project for the private image. |
-| `quarantine_key` | `string` | yes | The object-store key of the quarantined upload. |
+| `request` | `object` | yes | Private image upload registration request. |

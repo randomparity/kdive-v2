@@ -7,8 +7,9 @@ import logging
 import shutil
 from pathlib import Path
 
+from kdive.domain.models import ResourceKind
 from kdive.images.planes.base import RootfsBuildSpec
-from kdive.providers.local_libvirt.rootfs_build import LocalLibvirtRootfsBuildPlane
+from kdive.providers.composition import build_provider_resolver
 
 _log = logging.getLogger(__name__)
 
@@ -49,7 +50,10 @@ def run_build_rootfs(args: argparse.Namespace) -> None:
         source_image_digest=f"virt-builder:fedora-{args.releasever}",
         capabilities=("agent", "kdump", "drgn"),
     )
-    output = LocalLibvirtRootfsBuildPlane.from_env().build(spec)
+    plane = build_provider_resolver().resolve(ResourceKind.LOCAL_LIBVIRT).rootfs_build_plane
+    if plane is None:
+        raise RuntimeError("local-libvirt runtime has no rootfs build plane")
+    output = plane.build(spec)
     dest = Path(args.dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(output.qcow2_path), str(dest))
