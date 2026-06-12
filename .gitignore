@@ -36,3 +36,6 @@ kdive-live-stack-artifacts/
 # Helm subchart tarballs — regenerated from Chart.lock by `helm dependency build`
 # (the demo-only bundledBackends path); Chart.lock pins the exact versions/digests.
 /deploy/helm/kdive/charts/
+
+# Local operator deploy artifacts (may embed backend credentials)
+.live-deploy/
