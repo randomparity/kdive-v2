@@ -601,7 +601,7 @@ def register(
     app: FastMCP,
     pool: AsyncConnectionPool,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
     secret_registry: SecretRegistry,
 ) -> None:
     """Register the `debug.*` tools on ``app``, bound to ``pool``.
@@ -612,8 +612,6 @@ def register(
     :class:`DebugEngineRuntime` per provider kind; its seven tools register here too, so
     `app.py` is untouched. `end_session` reaps the lazy engine via the same provider cache.
     """
-    if resolver is None:
-        raise RuntimeError("debug registrar requires an injected provider resolver")
     runtime = DebugRuntimeResolver(resolver)
     handlers = DebugSessionHandlers.from_resolver(
         resolver,

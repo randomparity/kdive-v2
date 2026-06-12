@@ -188,12 +188,8 @@ async def _introspect_live_session(
     )
 
 
-def register(
-    app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResolver | None = None
-) -> None:
+def register(app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResolver) -> None:
     """Register the `introspect.from_vmcore` and `introspect.run` tools on ``app``."""
-    if resolver is None:
-        raise RuntimeError("introspect registrar requires an injected provider resolver")
 
     @app.tool(
         name="introspect.from_vmcore",

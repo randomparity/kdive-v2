@@ -32,11 +32,9 @@ def register(
     app: FastMCP,
     pool: AsyncConnectionPool,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
 ) -> None:
     """Register the `runs.*` tools on ``app``, bound to ``pool``."""
-    if resolver is None:
-        raise RuntimeError("runs registrar requires an injected provider resolver")
     _register_runs_get(app, pool, resolver)
     _register_runs_create(app, pool)
     _register_runs_build(app, pool, resolver)

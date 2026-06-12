@@ -38,12 +38,8 @@ from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 
 
-def register(
-    app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResolver | None = None
-) -> None:
+def register(app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResolver) -> None:
     """Register the `systems.*` tools on ``app``, bound to ``pool``."""
-    if resolver is None:
-        raise RuntimeError("systems registrar requires an injected provider resolver")
     _register_systems_define(app, pool, resolver)
     _register_systems_provision(app, pool, resolver)
     _register_systems_provision_defined(app, pool, resolver)

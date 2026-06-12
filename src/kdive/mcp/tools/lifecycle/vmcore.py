@@ -312,12 +312,10 @@ def register(
     app: FastMCP,
     pool: AsyncConnectionPool,
     *,
-    resolver: ProviderResolver | None = None,
+    resolver: ProviderResolver,
     secret_registry: SecretRegistry,
 ) -> None:
     """Register the `vmcore.*` / `postmortem.*` tools on ``app``, bound to ``pool``."""
-    if resolver is None:
-        raise RuntimeError("vmcore registrar requires an injected provider resolver")
     handlers = VmcoreHandlers(resolver=resolver, secret_registry=secret_registry)
 
     @app.tool(

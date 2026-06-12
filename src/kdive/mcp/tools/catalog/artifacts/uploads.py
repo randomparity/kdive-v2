@@ -81,7 +81,7 @@ class _UploadOwnerSpec:
     allowed_names: frozenset[str]
     next_action: str
     project: Callable[[AsyncConnection, UUID], Awaitable[str | None]]
-    accepts_upload: Callable[[AsyncConnection, UUID, ProviderResolver | None], Awaitable[bool]]
+    accepts_upload: Callable[[AsyncConnection, UUID, ProviderResolver], Awaitable[bool]]
 
 
 def _validate_artifact_declarations(
@@ -149,7 +149,7 @@ async def _system_project(conn: AsyncConnection, owner_id: UUID) -> str | None:
 
 
 async def _run_accepts_upload(
-    conn: AsyncConnection, owner_id: UUID, _resolver: ProviderResolver | None
+    conn: AsyncConnection, owner_id: UUID, _resolver: ProviderResolver
 ) -> bool:
     run = await RUNS.get(conn, owner_id)
     if run is None or run.state is not RunState.CREATED:
@@ -159,10 +159,8 @@ async def _run_accepts_upload(
 
 
 async def _system_accepts_upload(
-    conn: AsyncConnection, owner_id: UUID, resolver: ProviderResolver | None
+    conn: AsyncConnection, owner_id: UUID, resolver: ProviderResolver
 ) -> bool:
-    if resolver is None:
-        raise RuntimeError("system upload admission requires a resolver")
     system = await SYSTEMS.get(conn, owner_id)
     if system is None or system.state is not SystemState.DEFINED:
         return False
@@ -196,8 +194,8 @@ async def _create_upload(
     spec: _UploadOwnerSpec,
     owner_id: str,
     artifacts: Sequence[ArtifactDeclaration],
+    resolver: ProviderResolver,
     store: _PresignStore | None = None,
-    resolver: ProviderResolver | None = None,
 ) -> ToolResponse:
     store = store or object_store_from_env()
     uid = _as_uuid(owner_id)
@@ -275,6 +273,7 @@ async def create_run_upload(
     *,
     run_id: str,
     artifacts: Sequence[ArtifactDeclaration],
+    resolver: ProviderResolver,
     store: _PresignStore | None = None,
 ) -> ToolResponse:
     """Mint presigned PUTs for an external Run's declared build artifacts."""
@@ -284,6 +283,7 @@ async def create_run_upload(
         spec=_RUN_UPLOAD,
         owner_id=run_id,
         artifacts=artifacts,
+        resolver=resolver,
         store=store,
     )
 
@@ -304,6 +304,6 @@ async def create_system_upload(
         spec=_SYSTEM_UPLOAD,
         owner_id=system_id,
         artifacts=artifacts,
-        store=store,
         resolver=resolver,
+        store=store,
     )

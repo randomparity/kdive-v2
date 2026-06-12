@@ -107,7 +107,13 @@ def register(app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResol
         ],
     ) -> ToolResponse:
         """Mint presigned PUTs for an external Run's build artifacts. Requires operator."""
-        return await _create_run_upload(pool, current_context(), run_id=run_id, artifacts=artifacts)
+        return await _create_run_upload(
+            pool,
+            current_context(),
+            run_id=run_id,
+            artifacts=artifacts,
+            resolver=resolver,
+        )
 
     @app.tool(
         name="artifacts.create_system_upload",

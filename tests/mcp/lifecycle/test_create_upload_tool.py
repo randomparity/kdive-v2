@@ -33,7 +33,14 @@ from kdive.domain.state import (
     SystemState,
 )
 from kdive.mcp.auth import RequestContext
-from kdive.mcp.tools.catalog.artifacts.uploads import create_run_upload, create_system_upload
+from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools.catalog.artifacts.uploads import (
+    ArtifactDeclaration,
+    create_system_upload,
+)
+from kdive.mcp.tools.catalog.artifacts.uploads import (
+    create_run_upload as _create_run_upload,
+)
 from kdive.provider_components.artifacts import PresignedUpload, PresignPutRequest
 from kdive.security.authz.rbac import AuthorizationError, Role
 from tests.mcp.systems_support import SYSTEM_PROVISION_HANDLERS, provider_resolver
@@ -67,6 +74,24 @@ class _FailingStore:
     def presign_put(self, request: PresignPutRequest) -> PresignedUpload:
         del request
         raise CategorizedError("presign failed", category=ErrorCategory.INFRASTRUCTURE_FAILURE)
+
+
+async def create_run_upload(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    run_id: str,
+    artifacts: list[ArtifactDeclaration],
+    store: Any = None,
+) -> ToolResponse:
+    return await _create_run_upload(
+        pool,
+        ctx,
+        run_id=run_id,
+        artifacts=artifacts,
+        resolver=provider_resolver(),
+        store=store,
+    )
 
 
 def _ctx(
