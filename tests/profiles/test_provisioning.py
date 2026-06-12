@@ -10,8 +10,9 @@ from pydantic import ValidationError
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import JobKind
+from kdive.domain.models import JobKind, ResourceKind
 from kdive.domain.sizing import AllocationSizing
+from kdive.profiles.provider_policy import policy_for_profile
 from kdive.profiles.provisioning import (
     BootMethod,
     ProvisioningProfile,
@@ -28,6 +29,9 @@ from kdive.profiles.provisioning import (
     ssh_credential_ref,
     validate_profile,
 )
+from kdive.providers.fault_inject.profile_policy import FaultInjectProfilePolicy
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
+from kdive.providers.remote_libvirt.profile_policy import RemoteLibvirtProfilePolicy
 
 _VALID: dict[str, Any] = {
     "schema_version": 1,
@@ -69,6 +73,13 @@ def test_valid_libvirt_profile_parses() -> None:
     rootfs = profile.provider.local_libvirt.rootfs
     assert rootfs.kind == "local"
     assert rootfs.path == "/var/lib/kdive/rootfs/fedora-40.qcow2"
+    assert profile.provider.kind is ResourceKind.LOCAL_LIBVIRT
+
+
+def test_policy_for_profile_resolves_local_libvirt_adapter() -> None:
+    profile = ProvisioningProfile.parse(_valid())
+
+    assert isinstance(policy_for_profile(profile), LocalLibvirtProfilePolicy)
 
 
 def test_valid_fault_inject_profile_parses_and_dumps_alias() -> None:
@@ -83,6 +94,8 @@ def test_valid_fault_inject_profile_parses_and_dumps_alias() -> None:
     profile = ProvisioningProfile.parse(data)
 
     assert profile.provider.fault_inject.capture_method is CaptureMethod.HOST_DUMP
+    assert profile.provider.kind is ResourceKind.FAULT_INJECT
+    assert isinstance(policy_for_profile(profile), FaultInjectProfilePolicy)
     assert destructive_opt_in(profile, JobKind.REPROVISION) is True
     assert rootfs_upload_window_allowed(profile) is False
     assert dump_profile(profile)["provider"] == {
@@ -548,6 +561,8 @@ def _valid_remote() -> dict[str, Any]:
 def test_valid_remote_profile_parses() -> None:
     profile = ProvisioningProfile.parse(_valid_remote())
 
+    assert profile.provider.kind is ResourceKind.REMOTE_LIBVIRT
+    assert isinstance(policy_for_profile(profile), RemoteLibvirtProfilePolicy)
     assert profile.boot_method is BootMethod.DISK_IMAGE
     section = profile.provider.remote_libvirt
     assert section.base_image_volume == "kdive-base-fedora-42.qcow2"

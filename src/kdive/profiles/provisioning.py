@@ -191,6 +191,17 @@ class ProviderSection(_ProfileBase):
         return self
 
     @property
+    def kind(self) -> ResourceKind:
+        """Return the resource kind for the profile's concrete provider section."""
+        if self.local_libvirt_section is not None:
+            return ResourceKind.LOCAL_LIBVIRT
+        if self.remote_libvirt_section is not None:
+            return ResourceKind.REMOTE_LIBVIRT
+        if self.fault_inject_section is not None:
+            return ResourceKind.FAULT_INJECT
+        raise AttributeError("profile has no provider section")
+
+    @property
     def local_libvirt(self) -> LibvirtProfile:
         """Return the local-libvirt section for local-libvirt-specific callers."""
         if self.local_libvirt_section is None:
@@ -417,14 +428,16 @@ def validate_rootfs_reference(rootfs: RootfsSource) -> None:
 
 def rootfs_source(profile: ProvisioningProfile) -> RootfsSource | None:
     """Return the profile's rootfs source, or ``None`` for providers that do not use one."""
-    section = profile.provider.local_libvirt_section
-    return section.rootfs if section is not None else None
+    from kdive.profiles.provider_policy import policy_for_profile
+
+    return policy_for_profile(profile).rootfs_source(profile)
 
 
 def ssh_credential_ref(profile: ProvisioningProfile) -> str | None:
     """Return the SSH credential reference for providers with credential-backed SSH."""
-    section = profile.provider.local_libvirt_section
-    return section.ssh_credential_ref if section is not None else None
+    from kdive.profiles.provider_policy import policy_for_profile
+
+    return policy_for_profile(profile).ssh_credential_ref(profile)
 
 
 def drgn_live_requires_credential(profile: ProvisioningProfile) -> bool:
@@ -435,51 +448,28 @@ def drgn_live_requires_credential(profile: ProvisioningProfile) -> bool:
     the credential decision provider-agnostic in core, which only asks this predicate
     (ADR-0085 Decision 2).
     """
-    return profile.provider.local_libvirt_section is not None
+    from kdive.profiles.provider_policy import policy_for_profile
+
+    return policy_for_profile(profile).drgn_live_requires_credential(profile)
 
 
 def validate_profile(profile: ProvisioningProfile) -> None:
     """Reject unsupported provider params and unresolvable rootfs references."""
-    section = profile.provider.local_libvirt_section
-    if section is None:
-        return
-    params = section.domain_xml_params
-    unknown = sorted(set(params) - SUPPORTED_DOMAIN_XML_PARAMS)
-    if unknown:
-        raise CategorizedError(
-            f"unsupported domain_xml_params: {', '.join(unknown)}",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"unsupported": unknown, "supported": sorted(SUPPORTED_DOMAIN_XML_PARAMS)},
-        )
-    validate_rootfs_reference(section.rootfs)
+    from kdive.profiles.provider_policy import policy_for_profile
+
+    policy_for_profile(profile).validate_profile(profile)
 
 
 def destructive_opt_in(profile: ProvisioningProfile, op: DestructiveJobKind) -> bool:
     """Return whether the profile opts into a destructive operation."""
-    if profile.provider.local_libvirt_section is not None:
-        return op.value in profile.provider.local_libvirt_section.destructive_ops
-    if profile.provider.remote_libvirt_section is not None:
-        return op.value in profile.provider.remote_libvirt_section.destructive_ops
-    return op.value in profile.provider.fault_inject.destructive_ops
+    from kdive.profiles.provider_policy import policy_for_profile
+
+    return policy_for_profile(profile).destructive_opt_in(profile, op)
 
 
 def capture_method(profile: ProvisioningProfile | Mapping[str, object]) -> CaptureMethod:
     """Resolve the crash-capture method a provisioning profile enables."""
     parsed = _parsed_profile(profile)
-    remote = parsed.provider.remote_libvirt_section
-    if remote is not None:
-        # The gdbstub is unconditionally enabled for every remote System (ADR-0079/0080),
-        # so kdump opts in via crashkernel and the gdbstub is the floor, never console.
-        if remote.crashkernel is not None:
-            return CaptureMethod.KDUMP
-        return CaptureMethod.GDBSTUB
-    section = parsed.provider.local_libvirt_section
-    if section is None:
-        return parsed.provider.fault_inject.capture_method
-    if section.crashkernel is not None:
-        return CaptureMethod.KDUMP
-    if section.debug.gdbstub:
-        return CaptureMethod.GDBSTUB
-    if section.debug.preserve_on_crash:
-        return CaptureMethod.HOST_DUMP
-    return CaptureMethod.CONSOLE
+    from kdive.profiles.provider_policy import policy_for_profile
+
+    return policy_for_profile(parsed).capture_method(parsed)
