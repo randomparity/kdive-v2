@@ -15,6 +15,7 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
+from kdive.provider_components import build_host
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.provider_components.build_validation import parse_gnu_build_id
 from kdive.provider_components.references import (
@@ -561,7 +562,7 @@ def test_live_vm_real_make_build_id_matches_readelf() -> None:  # pragma: no cov
             tenant=_TENANT,
             workspace_root=Path(tmp),
             store_factory=lambda: store,
-            checkout=lambda run_id, profile, ws, fragment: build_module._real_checkout(
+            checkout=lambda run_id, profile, ws, fragment: build_host.real_checkout(
                 src, profile, ws, fragment, run_id=run_id, secret_registry=SecretRegistry()
             ),
             run_olddefconfig=build_module._real_run_olddefconfig,
@@ -1080,13 +1081,13 @@ def test_real_checkout_calls_steps_in_order_with_right_args(
         order.append("patch")
         seen["patch"] = (patch_ref, ws)
 
-    monkeypatch.setattr(build_module, "_sync_tree", _sync)
-    monkeypatch.setattr(build_module, "_merge_config", _merge)
-    monkeypatch.setattr(build_module, "_apply_patch", _patch)
+    monkeypatch.setattr(build_host, "sync_tree", _sync)
+    monkeypatch.setattr(build_host, "merge_config", _merge)
+    monkeypatch.setattr(build_host, "apply_patch", _patch)
 
     profile = BuildProfile.parse({**_VALID_PROFILE, "patch_ref": "/patches/p"})
     assert isinstance(profile, ServerBuildProfile)
-    build_module._real_checkout(
+    build_host.real_checkout(
         "/src/linux",
         profile,
         workspace,
@@ -1105,16 +1106,16 @@ def test_real_checkout_skips_patch_when_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     order: list[str] = []
-    monkeypatch.setattr(build_module, "_sync_tree", lambda *_: order.append("sync"))
+    monkeypatch.setattr(build_host, "sync_tree", lambda *_: order.append("sync"))
     monkeypatch.setattr(
-        build_module,
-        "_merge_config",
+        build_host,
+        "merge_config",
         lambda *_, **__: order.append("merge"),
     )
-    monkeypatch.setattr(build_module, "_apply_patch", lambda *_: order.append("patch"))
+    monkeypatch.setattr(build_host, "apply_patch", lambda *_: order.append("patch"))
 
     profile = _profile()  # patch_ref is None
-    build_module._real_checkout(
+    build_host.real_checkout(
         "/src/linux",
         profile,
         tmp_path / "ws",

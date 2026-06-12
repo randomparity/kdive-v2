@@ -55,9 +55,6 @@ from kdive.provider_components.build_host import (
     load_profile_config_requirements as _load_profile_config_requirements,
 )
 from kdive.provider_components.build_host import (
-    make_checkout as _shared_make_checkout,
-)
-from kdive.provider_components.build_host import (
     missing_config_groups,
     validate_config_ref,
 )
@@ -179,7 +176,7 @@ class LocalLibvirtBuild:
             tenant="local",
             workspace_root=workspace_root,
             store_factory=object_store_from_env,
-            checkout=_make_checkout(kernel_src, allowed_component_roots, secret_registry),
+            checkout=_build_host.make_checkout(kernel_src, secret_registry),
             run_olddefconfig=_real_run_olddefconfig,
             read_config=_real_read_config,
             run_make=_real_run_make,
@@ -270,29 +267,6 @@ class LocalLibvirtBuild:
                 retention_class=_RETENTION_CLASS,
             )
         )
-
-
-def _make_checkout(
-    kernel_src: str, allowed_component_roots: list[Path], secret_registry: SecretRegistry
-) -> _Checkout:
-    del allowed_component_roots  # config resolution moved to build(); kept for the env caller
-    return _shared_make_checkout(kernel_src, secret_registry)
-
-
-def _real_checkout(
-    kernel_src: str,
-    profile: ServerBuildProfile,
-    workspace: Path,
-    fragment_bytes: bytes,
-    *,
-    run_id: UUID,
-    secret_registry: SecretRegistry,
-) -> None:
-    """Compatibility seam for provider-local checkout tests; implementation is shared."""
-    _sync_tree(kernel_src, workspace, secret_registry)
-    _merge_config(fragment_bytes, workspace, run_id)
-    if profile.patch_ref is not None:
-        _apply_patch(profile.patch_ref, workspace, secret_registry)
 
 
 __all__ = [
