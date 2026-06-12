@@ -39,7 +39,7 @@ spec:
             - -c
             - |
               import socket, time, sys
-              host = "{{ .Release.Name }}-postgresql"
+              host = "{{ include "kdive.fullname" . }}-postgres"
               for _ in range(60):
                   try:
                       socket.create_connection((host, 5432), timeout=2).close()
