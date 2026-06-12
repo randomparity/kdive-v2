@@ -65,23 +65,13 @@ demoCredentials:
     rootUser: kdive
     rootPassword: kdive-demo-secret # pragma: allowlist secret
 
-# Subchart overrides for the demo-only bundledBackends path. Persistence is forced
-# off so the system-of-record runs on emptyDir: a pod restart drops all state by
-# design (ADR-0088 decision 7). Credentials match demoCredentials so the derived
-# KDIVE_DATABASE_URL / KDIVE_S3_* connect. Reached only when bundledBackends=true.
-postgresql:
-  auth:
-    username: kdive
-    password: kdive-demo # pragma: allowlist secret
-    database: kdive
-  primary:
-    persistence:
-      enabled: false
-minio:
-  auth:
-    rootUser: kdive
-    rootPassword: kdive-demo-secret # pragma: allowlist secret
-  defaultBuckets: kdive-artifacts
-  persistence:
-    enabled: false
-  mode: standalone
+# Image pins for the first-party demo backends (bundledBackends path only).
+demo:
+  postgres:
+    image: postgres:17
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+  mc:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+  oidc:
+    image: ghcr.io/navikt/mock-oauth2-server:3.0.3
