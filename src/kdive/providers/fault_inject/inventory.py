@@ -39,11 +39,9 @@ class FaultInjectInventory:
         self._orphaned: set[str] = set()
 
     def record(self, system_id: UUID, domain_name: str) -> None:
-        """Register a synthetic domain as owned by ``system_id`` (idempotent per name)."""
         self._domains[domain_name] = system_id
 
     def forget(self, domain_name: str) -> None:
-        """Drop a domain (and any orphan flag) from the inventory; a missing name is a no-op."""
         self._domains.pop(domain_name, None)
         self._orphaned.discard(domain_name)
 
@@ -58,11 +56,9 @@ class FaultInjectInventory:
         self._orphaned.add(domain_name)
 
     def is_orphaned(self, domain_name: str) -> bool:
-        """Return whether ``domain_name`` was orphan-flagged by a cancel (False if unknown)."""
         return domain_name in self._orphaned
 
     def owned_domains(self) -> list[OwnedDomain]:
-        """Return every owned domain, newest registrations last."""
         return [OwnedDomain(name=name, system_id=sid) for name, sid in self._domains.items()]
 
 
@@ -73,9 +69,7 @@ class FaultInjectReaper:
         self._inventory = inventory
 
     async def list_owned(self) -> list[ReaperOwnedDomain]:
-        """Return the synthetic domains the mock currently owns (the reaper port shape)."""
         return list(self._inventory.owned_domains())
 
     async def destroy(self, name: str) -> None:
-        """Reap a synthetic domain; destroying an unknown name is a no-op (idempotent)."""
         self._inventory.forget(name)
