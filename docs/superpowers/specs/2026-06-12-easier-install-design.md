@@ -101,8 +101,12 @@ default tag.
 ### Workstream B — turnkey demo path (item 3)
 
 Replaces ADR-0088 decision 7 (Bitnami subcharts on `emptyDir`, no OIDC) with first-party,
-ephemeral, in-chart backends, recorded in **ADR-0097 superseding that decision**. All demo
-resources are gated `{{- if .Values.bundledBackends }}` and still require
+ephemeral, in-chart backends. **The ADR action depends on 0088's status at implementation
+time:** ADR-0088 is currently `Status: Proposed`, and the supersede-don't-edit convention
+applies to *accepted* decisions — so if 0088 is still Proposed, amend decision 7 (and the
+bundled-backends sections) in place; only if 0088 has been accepted by then, write a new
+**ADR-0097 superseding decision 7** (and add the back-reference on 0088). Check the status
+first. All demo resources are gated `{{- if .Values.bundledBackends }}` and still require
 `demoAcknowledged=true` (the existing render-time `fail` gate is unchanged).
 
 **Demo prerequisites (named, not assumed).** The `minio` and `mock-oauth2-server` images ship
@@ -179,17 +183,23 @@ retry until the server answers** — necessary because `helm install` does not `
 not-yet-migrated DB) when the test fires. The poll targets the MCP Service, not the aux
 `/readyz`: the chart fronts only port `8000` with a Service, and the aux `/readyz` (9464) is
 pod-local with no Service route, so a separate test pod cannot reach it. Readiness signal is
-the MCP endpoint answering at all — an unauthenticated `tools/list` returning `401` means the
+the MCP endpoint answering at all — an unauthenticated request returning `401` means the
 server is up and verifying tokens; `connection-refused`/`503` means keep waiting. Then (3) the
-pod mints a token from the in-cluster OIDC service and POSTs `tools/list` with it, asserting
-HTTP 200 and a non-empty tools array. Without the readiness poll the one-command proof would
-flap on a connection-refused/503 race.
-`helm test kdive` is the proof; the install docs also show `helm install --wait` as the
-belt-and-suspenders option. The test runs the kdive image (Python `urllib` for the token mint
-+ MCP call — no extra tooling image). Bundled-path only (the external path needs the
-operator's real IdP). `NOTES.txt` prints, on the bundled path, a copy-paste `curl` that mints
-a token from the bundled issuer and calls `/mcp`, and notes the token's expiry; the external
-path keeps today's reach-MCP guidance.
+pod mints a token from the in-cluster OIDC service and lists tools over MCP, asserting a
+non-empty tools array. Without the readiness poll the one-command proof would flap on a
+connection-refused/503 race.
+
+**The list-tools call must go through the MCP session handshake, not a one-shot POST.** The
+server is `FastMCP(name="kdive", auth=…)` with no `stateless_http`, so the streamable-HTTP
+transport is session-based (the runbook notes a bare request yields a `307`/session error). A
+lone `tools/list` POST without a prior `initialize` (which issues the `Mcp-Session-Id`) fails
+even on a healthy server. So the smoke test uses the **MCP client already in the kdive image**
+(it negotiates `initialize` → `list_tools()` for us); minting the bearer first with `urllib`
+needs no extra tooling image. `helm test kdive` is the proof; the install docs also show
+`helm install --wait` as the belt-and-suspenders option. Bundled-path only (the external path
+needs the operator's real IdP). `NOTES.txt` shows the same flow — mint a token from the bundled
+issuer, then drive `/mcp` with an MCP client (not a raw `tools/list` curl), and notes the
+token's expiry; the external path keeps today's reach-MCP guidance.
 
 **B5. Install becomes:**
 
@@ -217,7 +227,8 @@ helm test
               -> poll MCP 8000 Service until it answers (401 on unauth = up;
                  conn-refused/503 = wait) — aux /readyz has no Service route
               -> POST oidc /default/token (aud=kdive) -> bearer
-              -> POST server /mcp tools/list with bearer -> assert 200 + tools[]
+              -> MCP client (initialize -> list_tools) with bearer -> assert tools[]
+                 (session handshake required; a one-shot tools/list POST 307s)
 ```
 
 ## Testing
@@ -251,13 +262,15 @@ helm test
 
 1. **PR1 (A)**: `release-image.yml` rolling+release trigger, `appVersion` guard,
    `RELEASING.md`. Merge → `:edge` pullable → package public → cut `v0.3.0`.
-2. **PR2 (B)**: ADR-0097, chart demo templates, `_helpers`/configmap, `helm test`,
-   `NOTES.txt`, render tests, README/runbook updates. Cites the published image.
+2. **PR2 (B)**: the ADR action (amend 0088 decision 7 if still Proposed, else new ADR-0097),
+   chart demo templates, `_helpers`/configmap, `helm test`, `NOTES.txt`, render tests,
+   README/runbook updates. Cites the published image.
 
 ## Files touched (preview)
 
 `.github/workflows/release-image.yml` (add `main` trigger; not renamed), `.github/workflows/ci.yml`,
-`docs/RELEASING.md`, `docs/adr/0097-in-chart-demo-backends.md`,
+`docs/RELEASING.md`, the ADR record (`docs/adr/0088-*.md` amended if still Proposed, else new
+`docs/adr/0097-in-chart-demo-backends.md`),
 `deploy/helm/kdive/Chart.yaml` (version + appVersion), `deploy/helm/kdive/Chart.lock` (deleted),
 `deploy/helm/kdive/values.yaml` (drop dead subchart blocks), `deploy/helm/kdive/values-demo.yaml` (new),
 `deploy/helm/kdive/templates/demo/{postgres,minio,oidc}.yaml`,
