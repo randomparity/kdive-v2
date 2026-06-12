@@ -44,7 +44,9 @@ from kdive.profiles.build import ServerBuildProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.provider_components.build_results import BuildOutput
 from kdive.provider_components.references import ComponentRef
-from kdive.providers import build_host as _build_host
+from kdive.providers import build_host_config as _build_config
+from kdive.providers import build_host_execution as _build_exec
+from kdive.providers import build_host_workspace as _build_workspace
 from kdive.providers.build_common import _dropped_fragment_symbols
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.store.objectstore import object_store_from_env
@@ -73,7 +75,7 @@ type _StagingFactory = Callable[[], Path]
 
 def _missing_config_groups(config_text: str) -> list[tuple[str, ...]]:
     """Return the required OR-groups not satisfied by ``config_text`` (``CONFIG_X=y``)."""
-    return _build_host.missing_config_groups(config_text, _REQUIRED_CONFIG)
+    return _build_config.missing_config_groups(config_text, _REQUIRED_CONFIG)
 
 
 class RemoteLibvirtBuild:
@@ -84,21 +86,21 @@ class RemoteLibvirtBuild:
         *,
         workspace_root: Path,
         store_factory: Callable[[], _StorePort],
-        checkout: _build_host.Checkout,
-        run_olddefconfig: _build_host.RunStep,
-        read_config: _build_host.ReadConfig,
-        run_make: _build_host.RunStep,
-        run_modules_install: _build_host.RunModulesInstall,
+        checkout: _build_workspace.Checkout,
+        run_olddefconfig: _build_exec.RunStep,
+        read_config: _build_exec.ReadConfig,
+        run_make: _build_exec.RunStep,
+        run_modules_install: _build_exec.RunModulesInstall,
         build_bundle: _BuildBundle,
-        read_vmlinux: _build_host.ReadBytes,
-        read_build_id: _build_host.ReadBuildId,
+        read_vmlinux: _build_exec.ReadBytes,
+        read_build_id: _build_exec.ReadBuildId,
         staging_factory: _StagingFactory,
         catalog_fetch: CatalogConfigFetch,
         allowed_component_roots: list[Path] | None = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._allowed_component_roots = allowed_component_roots or [
-            Path(_build_host.DEFAULT_BUILD_COMPONENT_ROOT)
+            Path(_build_config.DEFAULT_BUILD_COMPONENT_ROOT)
         ]
         self._store_factory = store_factory
         self._store: _StorePort | None = None
@@ -126,18 +128,18 @@ class RemoteLibvirtBuild:
         """
         workspace_root = Path(config.require(BUILD_WORKSPACE))
         kernel_src = config.require(KERNEL_SRC)
-        allowed_component_roots = _build_host.build_component_roots_from_env()
+        allowed_component_roots = _build_config.build_component_roots_from_env()
         return cls(
             workspace_root=workspace_root,
             store_factory=object_store_from_env,
-            checkout=_build_host.make_checkout(kernel_src, secret_registry),
-            run_olddefconfig=_build_host.real_run_olddefconfig,
-            read_config=_build_host.real_read_config,
-            run_make=_build_host.real_run_make,
-            run_modules_install=_build_host.real_run_modules_install,
+            checkout=_build_workspace.make_checkout(kernel_src, secret_registry),
+            run_olddefconfig=_build_exec.real_run_olddefconfig,
+            read_config=_build_exec.real_read_config,
+            run_make=_build_exec.real_run_make,
+            run_modules_install=_build_exec.real_run_modules_install,
             build_bundle=_real_build_bundle,
-            read_vmlinux=_build_host.real_read_vmlinux,
-            read_build_id=_build_host.real_read_build_id,
+            read_vmlinux=_build_exec.real_read_vmlinux,
+            read_build_id=_build_exec.real_read_build_id,
             staging_factory=_real_staging_factory,
             catalog_fetch=build_config_fetch_from_env(),
             allowed_component_roots=allowed_component_roots,
@@ -154,7 +156,7 @@ class RemoteLibvirtBuild:
         """
         workspace = self._workspace_root / str(run_id)
         config_ref = profile.config or DEFAULT_CONFIG_REF
-        fragment_bytes = _build_host.resolve_config_bytes(
+        fragment_bytes = _build_config.resolve_config_bytes(
             config_ref,
             allowed_component_roots=self._allowed_component_roots,
             catalog_fetch=self._catalog_fetch,
@@ -162,7 +164,7 @@ class RemoteLibvirtBuild:
         fragment_text = fragment_bytes.decode()
         self._checkout(run_id, profile, workspace, fragment_bytes)
         if self._run_olddefconfig(workspace) != 0:
-            raise _build_host.build_failure("make olddefconfig exited non-zero", run_id)
+            raise _build_exec.build_failure("make olddefconfig exited non-zero", run_id)
         final_config = self._read_config(workspace)
         dropped = _dropped_fragment_symbols(fragment_text, final_config)
         if dropped:
@@ -179,11 +181,11 @@ class RemoteLibvirtBuild:
                 details={"missing_any_of": [list(group) for group in missing]},
             )
         if self._run_make(workspace) != 0:
-            raise _build_host.build_failure("make exited non-zero", run_id)
+            raise _build_exec.build_failure("make exited non-zero", run_id)
         mod_root = self._staging_factory()
         try:
             if self._run_modules_install(workspace, mod_root) != 0:
-                raise _build_host.build_failure("make modules_install exited non-zero", run_id)
+                raise _build_exec.build_failure("make modules_install exited non-zero", run_id)
             build_id = self._read_build_id(workspace)
             bundle = self._build_bundle(workspace, mod_root)
         finally:
@@ -199,7 +201,9 @@ class RemoteLibvirtBuild:
         kind (its existence is checked when the build fetches it, since this seam owns no DB
         connection). Any other kind is a ``CONFIGURATION_ERROR``.
         """
-        _build_host.validate_config_ref(ref, allowed_component_roots=self._allowed_component_roots)
+        _build_config.validate_config_ref(
+            ref, allowed_component_roots=self._allowed_component_roots
+        )
 
     def _put(self, run_id: UUID, name: str, data: bytes) -> StoredArtifact:
         if self._store is None:

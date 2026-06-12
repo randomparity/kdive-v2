@@ -29,7 +29,7 @@ from kdive.provider_components.references import (
     CatalogComponentRef,
     LocalComponentRef,
 )
-from kdive.providers import build_host
+from kdive.providers import build_host, build_host_workspace
 from kdive.providers.remote_libvirt import build as build_module
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -600,14 +600,14 @@ def test_apply_patch_silent_skip_no_tree_change_is_configuration_error(
     original = (workspace / "init" / "main.c").read_text()
     patch = tmp_path / "fix.patch"
     patch.write_text(_GOOD_PATCH)
-    monkeypatch.setattr(build_host.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(build_host_workspace.shutil, "which", lambda _name: "/usr/bin/git")
 
     def _skip(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr="Skipped patch 'init/main.c'.\n"
         )
 
-    monkeypatch.setattr(build_host.subprocess, "run", _skip)
+    monkeypatch.setattr(build_host_workspace.subprocess, "run", _skip)
 
     with pytest.raises(CategorizedError) as caught:
         build_host.apply_patch(str(patch), workspace, SecretRegistry())

@@ -22,7 +22,7 @@ from kdive.provider_components.references import (
     CatalogComponentRef,
     LocalComponentRef,
 )
-from kdive.providers import build_host
+from kdive.providers import build_host, build_host_workspace
 from kdive.providers.local_libvirt import build as build_module
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -808,7 +808,7 @@ def test_apply_patch_missing_git_is_missing_dependency(
     workspace = _workspace_with_target(tmp_path)
     patch = tmp_path / "fix.patch"
     patch.write_text(_GOOD_PATCH)
-    monkeypatch.setattr(build_host.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(build_host_workspace.shutil, "which", lambda _name: None)
 
     with pytest.raises(CategorizedError) as caught:
         build_host.apply_patch(str(patch), workspace)
@@ -821,12 +821,12 @@ def test_apply_patch_timeout_is_configuration_error(
     workspace = _workspace_with_target(tmp_path)
     patch = tmp_path / "fix.patch"
     patch.write_text(_GOOD_PATCH)
-    monkeypatch.setattr(build_host.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(build_host_workspace.shutil, "which", lambda _name: "/usr/bin/git")
 
     def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(["git", "apply"], timeout=build_host.GIT_APPLY_TIMEOUT_S)
 
-    monkeypatch.setattr(build_host.subprocess, "run", _timeout)
+    monkeypatch.setattr(build_host_workspace.subprocess, "run", _timeout)
 
     with pytest.raises(CategorizedError) as caught:
         build_host.apply_patch(str(patch), workspace)
@@ -845,12 +845,12 @@ def test_apply_patch_no_tree_change_is_configuration_error(
     original = (workspace / "init" / "main.c").read_text()
     patch = tmp_path / "fix.patch"
     patch.write_text(_GOOD_PATCH)
-    monkeypatch.setattr(build_host.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(build_host_workspace.shutil, "which", lambda _name: "/usr/bin/git")
 
     def _noop(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(build_host.subprocess, "run", _noop)
+    monkeypatch.setattr(build_host_workspace.subprocess, "run", _noop)
 
     with pytest.raises(CategorizedError) as caught:
         build_host.apply_patch(str(patch), workspace)
@@ -872,7 +872,7 @@ def test_apply_patch_stderr_skipped_patch_fails_even_when_a_file_changed(
     patch.write_text(
         _GOOD_PATCH + "--- a/kernel/sched.c\n+++ b/kernel/sched.c\n@@ -1 +1 @@\n-a\n+b\n"
     )
-    monkeypatch.setattr(build_host.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(build_host_workspace.shutil, "which", lambda _name: "/usr/bin/git")
 
     def _partial_skip(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
         (workspace / "kernel" / "sched.c").write_text("b\n")  # one file applies...
@@ -883,7 +883,7 @@ def test_apply_patch_stderr_skipped_patch_fails_even_when_a_file_changed(
             stderr="Skipped patch 'init/main.c'.\nApplied patch kernel/sched.c cleanly.\n",
         )
 
-    monkeypatch.setattr(build_host.subprocess, "run", _partial_skip)
+    monkeypatch.setattr(build_host_workspace.subprocess, "run", _partial_skip)
 
     with pytest.raises(CategorizedError) as caught:
         build_host.apply_patch(str(patch), workspace)
@@ -957,7 +957,7 @@ def test_sync_tree_missing_rsync_is_missing_dependency(
 ) -> None:
     src = tmp_path / "linux"
     src.mkdir()
-    monkeypatch.setattr(build_host.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(build_host_workspace.shutil, "which", lambda _name: None)
     with pytest.raises(CategorizedError) as caught:
         build_host.sync_tree(str(src), tmp_path / "ws")
     assert caught.value.category is ErrorCategory.MISSING_DEPENDENCY
@@ -968,12 +968,12 @@ def test_sync_tree_timeout_is_infrastructure_failure(
 ) -> None:
     src = tmp_path / "linux"
     src.mkdir()
-    monkeypatch.setattr(build_host.shutil, "which", lambda _name: "/usr/bin/rsync")
+    monkeypatch.setattr(build_host_workspace.shutil, "which", lambda _name: "/usr/bin/rsync")
 
     def _timeout(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(["rsync"], timeout=build_host.RSYNC_TIMEOUT_S)
 
-    monkeypatch.setattr(build_host.subprocess, "run", _timeout)
+    monkeypatch.setattr(build_host_workspace.subprocess, "run", _timeout)
 
     with pytest.raises(CategorizedError) as caught:
         build_host.sync_tree(str(src), tmp_path / "ws")
@@ -994,8 +994,8 @@ def test_sync_tree_creates_workspace_and_invokes_rsync(
         calls.append(argv)
         return _ok_run()
 
-    monkeypatch.setattr(build_host.shutil, "which", lambda _name: "/usr/bin/rsync")
-    monkeypatch.setattr(build_host.subprocess, "run", _record)
+    monkeypatch.setattr(build_host_workspace.shutil, "which", lambda _name: "/usr/bin/rsync")
+    monkeypatch.setattr(build_host_workspace.subprocess, "run", _record)
 
     build_host.sync_tree(str(src), workspace)
 
@@ -1019,7 +1019,7 @@ def test_sync_tree_workspace_mkdir_fault_is_infrastructure_failure(
             raise OSError("permission denied")
         original_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
 
-    monkeypatch.setattr(build_host.shutil, "which", lambda _name: "/usr/bin/rsync")
+    monkeypatch.setattr(build_host_workspace.shutil, "which", lambda _name: "/usr/bin/rsync")
     monkeypatch.setattr(Path, "mkdir", _mkdir_fault)
 
     with pytest.raises(CategorizedError) as caught:
@@ -1040,8 +1040,8 @@ def test_sync_tree_rsync_nonzero_is_infrastructure_failure(
             args=[], returncode=23, stdout="", stderr="rsync: disk full"
         )
 
-    monkeypatch.setattr(build_host.shutil, "which", lambda _name: "/usr/bin/rsync")
-    monkeypatch.setattr(build_host.subprocess, "run", _fail)
+    monkeypatch.setattr(build_host_workspace.shutil, "which", lambda _name: "/usr/bin/rsync")
+    monkeypatch.setattr(build_host_workspace.subprocess, "run", _fail)
 
     with pytest.raises(CategorizedError) as caught:
         build_host.sync_tree(str(src), tmp_path / "ws")
@@ -1073,9 +1073,9 @@ def test_real_checkout_calls_steps_in_order_with_right_args(
         order.append("patch")
         seen["patch"] = (patch_ref, ws)
 
-    monkeypatch.setattr(build_host, "sync_tree", _sync)
-    monkeypatch.setattr(build_host, "merge_config", _merge)
-    monkeypatch.setattr(build_host, "apply_patch", _patch)
+    monkeypatch.setattr(build_host_workspace, "sync_tree", _sync)
+    monkeypatch.setattr(build_host_workspace, "merge_config", _merge)
+    monkeypatch.setattr(build_host_workspace, "apply_patch", _patch)
 
     profile = BuildProfile.parse({**_VALID_PROFILE, "patch_ref": "/patches/p"})
     assert isinstance(profile, ServerBuildProfile)
@@ -1098,13 +1098,13 @@ def test_real_checkout_skips_patch_when_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     order: list[str] = []
-    monkeypatch.setattr(build_host, "sync_tree", lambda *_: order.append("sync"))
+    monkeypatch.setattr(build_host_workspace, "sync_tree", lambda *_: order.append("sync"))
     monkeypatch.setattr(
-        build_host,
+        build_host_workspace,
         "merge_config",
         lambda *_, **__: order.append("merge"),
     )
-    monkeypatch.setattr(build_host, "apply_patch", lambda *_: order.append("patch"))
+    monkeypatch.setattr(build_host_workspace, "apply_patch", lambda *_: order.append("patch"))
 
     profile = _profile()  # patch_ref is None
     build_host.real_checkout(

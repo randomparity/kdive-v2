@@ -37,7 +37,9 @@ from kdive.provider_components.references import (
     ComponentRef,
 )
 from kdive.provider_components.requirements import validate_config_requirements
-from kdive.providers import build_host as _build_host
+from kdive.providers import build_host_config as _build_config
+from kdive.providers import build_host_execution as _build_exec
+from kdive.providers import build_host_workspace as _build_workspace
 from kdive.providers.build_common import _dropped_fragment_symbols
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.store.objectstore import object_store_from_env
@@ -58,12 +60,12 @@ class _StorePort(Protocol):
 
 def _missing_config_groups(config_text: str) -> list[tuple[str, ...]]:
     """Return the required OR-groups not satisfied by ``config_text`` (``CONFIG_X=y``)."""
-    return _build_host.missing_config_groups(config_text, _REQUIRED_CONFIG)
+    return _build_config.missing_config_groups(config_text, _REQUIRED_CONFIG)
 
 
 type _Checkout = Callable[[UUID, ServerBuildProfile, Path, bytes], None]
-type _RunOlddefconfig = _build_host.RunStep
-type _RunMake = _build_host.RunStep
+type _RunOlddefconfig = _build_exec.RunStep
+type _RunMake = _build_exec.RunStep
 
 
 class LocalLibvirtBuild:
@@ -77,11 +79,11 @@ class LocalLibvirtBuild:
         store_factory: Callable[[], _StorePort],
         checkout: _Checkout,
         run_olddefconfig: _RunOlddefconfig,
-        read_config: _build_host.ReadConfig,
+        read_config: _build_exec.ReadConfig,
         run_make: _RunMake,
-        read_kernel_image: _build_host.ReadBytes,
-        read_vmlinux: _build_host.ReadBytes,
-        read_build_id: _build_host.ReadBuildId,
+        read_kernel_image: _build_exec.ReadBytes,
+        read_vmlinux: _build_exec.ReadBytes,
+        read_build_id: _build_exec.ReadBuildId,
         secret_registry: SecretRegistry,
         catalog_fetch: CatalogConfigFetch,
         allowed_component_roots: list[Path] | None = None,
@@ -89,7 +91,7 @@ class LocalLibvirtBuild:
         self._tenant = tenant
         self._workspace_root = workspace_root
         self._allowed_component_roots = allowed_component_roots or [
-            Path(_build_host.DEFAULT_BUILD_COMPONENT_ROOT)
+            Path(_build_config.DEFAULT_BUILD_COMPONENT_ROOT)
         ]
         self._store_factory = store_factory
         self._store: _StorePort | None = None
@@ -115,18 +117,18 @@ class LocalLibvirtBuild:
         """
         workspace_root = Path(config.require(BUILD_WORKSPACE))
         kernel_src = config.require(KERNEL_SRC)
-        allowed_component_roots = _build_host.build_component_roots_from_env()
+        allowed_component_roots = _build_config.build_component_roots_from_env()
         return cls(
             tenant="local",
             workspace_root=workspace_root,
             store_factory=object_store_from_env,
-            checkout=_build_host.make_checkout(kernel_src, secret_registry),
-            run_olddefconfig=_build_host.real_run_olddefconfig,
-            read_config=_build_host.real_read_config,
-            run_make=_build_host.real_run_make,
-            read_kernel_image=_build_host.real_read_kernel_image,
-            read_vmlinux=_build_host.real_read_vmlinux,
-            read_build_id=_build_host.real_read_build_id,
+            checkout=_build_workspace.make_checkout(kernel_src, secret_registry),
+            run_olddefconfig=_build_exec.real_run_olddefconfig,
+            read_config=_build_exec.real_read_config,
+            run_make=_build_exec.real_run_make,
+            read_kernel_image=_build_exec.real_read_kernel_image,
+            read_vmlinux=_build_exec.real_read_vmlinux,
+            read_build_id=_build_exec.real_read_build_id,
             catalog_fetch=build_config_fetch_from_env(),
             allowed_component_roots=allowed_component_roots,
             secret_registry=secret_registry,
@@ -143,7 +145,7 @@ class LocalLibvirtBuild:
         """
         workspace = self._workspace_root / str(run_id)
         config_ref = profile.config or DEFAULT_CONFIG_REF
-        fragment_bytes = _build_host.resolve_config_bytes(
+        fragment_bytes = _build_config.resolve_config_bytes(
             config_ref,
             allowed_component_roots=self._allowed_component_roots,
             catalog_fetch=self._catalog_fetch,
@@ -172,7 +174,7 @@ class LocalLibvirtBuild:
                 details={"missing_any_of": [list(group) for group in missing]},
             )
         if profile.profile_requirements is not None:
-            requirements = _build_host.load_profile_config_requirements(
+            requirements = _build_config.load_profile_config_requirements(
                 provider=profile.profile_requirements.provider,
                 name=profile.profile_requirements.name,
             )
@@ -195,7 +197,9 @@ class LocalLibvirtBuild:
         kind (its existence is checked when the build fetches it, since this seam owns no DB
         connection). Any other kind is a ``CONFIGURATION_ERROR``.
         """
-        _build_host.validate_config_ref(ref, allowed_component_roots=self._allowed_component_roots)
+        _build_config.validate_config_ref(
+            ref, allowed_component_roots=self._allowed_component_roots
+        )
 
     def _put(self, run_id: UUID, name: str, data: bytes) -> StoredArtifact:
         if self._store is None:
