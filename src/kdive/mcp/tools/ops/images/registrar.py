@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from kdive.domain.errors import CategorizedError
 from kdive.jobs.payloads import ImageBuildPayload
@@ -38,6 +38,36 @@ from kdive.services.images.upload import UploadObjectStore
 
 if TYPE_CHECKING:
     from kdive.store.objectstore import ObjectStore
+
+
+class ImageBuildRequest(BaseModel):
+    """MCP-facing public image build/publish request shared by both tools."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(description="The provider whose plane builds or built the image.")
+    name: str = Field(description="The catalog image name.")
+    arch: str = Field(description="The target architecture.")
+    releasever: str = Field(description="The distro release version.")
+    source_image_digest: str = Field(description="The base image content digest.")
+    capabilities: tuple[str, ...] = Field(
+        default=(), description="The guest-contract tags the image must satisfy."
+    )
+    format: Literal["qcow2"] = Field(default="qcow2", description="The image format.")
+    root_device: str = Field(default="/dev/vda", description="The guest root device path.")
+
+    def to_payload(self) -> ImageBuildPayload:
+        """Convert the MCP request into the durable IMAGE_BUILD job payload."""
+        return ImageBuildPayload(
+            provider=self.provider,
+            name=self.name,
+            arch=self.arch,
+            releasever=self.releasever,
+            source_image_digest=self.source_image_digest,
+            capabilities=self.capabilities,
+            format=self.format,
+            root_device=self.root_device,
+        )
 
 
 def _resolve_object_store() -> ObjectStore | None:
@@ -67,65 +97,23 @@ def register(
 
     @app.tool(name=BUILD_TOOL, annotations=_docmeta.mutating(), meta={"maturity": "implemented"})
     async def images_build(
-        provider: Annotated[str, Field(description="The provider whose plane builds the image.")],
-        name: Annotated[str, Field(description="The catalog image name.")],
-        arch: Annotated[str, Field(description="The target architecture.")],
-        releasever: Annotated[str, Field(description="The distro release version to build.")],
-        source_image_digest: Annotated[str, Field(description="The base image content digest.")],
-        capabilities: Annotated[
-            list[str], Field(description="The guest-contract tags the image must satisfy.")
+        request: Annotated[
+            ImageBuildRequest,
+            Field(description="Public image build request."),
         ],
-        format: Annotated[
-            Literal["qcow2"], Field(description="The only supported image format.")
-        ] = "qcow2",
-        root_device: Annotated[str, Field(description="The guest root device path.")] = "/dev/vda",
     ) -> ToolResponse:
         """Enqueue an IMAGE_BUILD job for a public base image. Requires platform_operator."""
-        return await build(
-            pool,
-            current_context(),
-            payload=ImageBuildPayload(
-                provider=provider,
-                name=name,
-                arch=arch,
-                releasever=releasever,
-                source_image_digest=source_image_digest,
-                capabilities=tuple(capabilities),
-                format=format,
-                root_device=root_device,
-            ),
-        )
+        return await build(pool, current_context(), payload=request.to_payload())
 
     @app.tool(name=PUBLISH_TOOL, annotations=_docmeta.mutating(), meta={"maturity": "implemented"})
     async def images_publish(
-        provider: Annotated[str, Field(description="The provider whose plane built the image.")],
-        name: Annotated[str, Field(description="The catalog image name.")],
-        arch: Annotated[str, Field(description="The target architecture.")],
-        releasever: Annotated[str, Field(description="The distro release version.")],
-        source_image_digest: Annotated[str, Field(description="The base image content digest.")],
-        capabilities: Annotated[
-            list[str], Field(description="The guest-contract tags the image must satisfy.")
+        request: Annotated[
+            ImageBuildRequest,
+            Field(description="Public image publish request."),
         ],
-        format: Annotated[
-            Literal["qcow2"], Field(description="The only supported image format.")
-        ] = "qcow2",
-        root_device: Annotated[str, Field(description="The guest root device path.")] = "/dev/vda",
     ) -> ToolResponse:
         """Promote a built image to a public catalog row. Requires platform_operator."""
-        return await publish(
-            pool,
-            current_context(),
-            payload=ImageBuildPayload(
-                provider=provider,
-                name=name,
-                arch=arch,
-                releasever=releasever,
-                source_image_digest=source_image_digest,
-                capabilities=tuple(capabilities),
-                format=format,
-                root_device=root_device,
-            ),
-        )
+        return await publish(pool, current_context(), payload=request.to_payload())
 
     @app.tool(name=UPLOAD_TOOL, annotations=_docmeta.mutating(), meta={"maturity": "implemented"})
     async def images_upload(
@@ -188,6 +176,7 @@ def register(
 
 
 __all__ = [
+    "ImageBuildRequest",
     "register",
     "register_from_env",
 ]

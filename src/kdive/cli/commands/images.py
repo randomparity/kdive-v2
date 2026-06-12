@@ -27,6 +27,17 @@ def _capabilities(args: argparse.Namespace) -> list[str]:
     return [tag.strip() for tag in str(raw).split(",") if tag.strip()]
 
 
+def _public_image_request(args: argparse.Namespace) -> dict[str, object]:
+    return {
+        "provider": args.provider,
+        "name": args.name,
+        "arch": args.arch,
+        "releasever": args.releasever,
+        "source_image_digest": args.source_image_digest,
+        "capabilities": _capabilities(args),
+    }
+
+
 async def images_list(args: argparse.Namespace) -> int:
     envelope = await fetch_read_envelope("images.list", {})
     render(
@@ -58,14 +69,7 @@ async def images_delete(args: argparse.Namespace) -> int:
 async def images_build(args: argparse.Namespace) -> int:
     return await run_mutating_tool(
         "images.build",
-        {
-            "provider": args.provider,
-            "name": args.name,
-            "arch": args.arch,
-            "releasever": args.releasever,
-            "source_image_digest": args.source_image_digest,
-            "capabilities": _capabilities(args),
-        },
+        {"request": _public_image_request(args)},
         as_json=args.json,
     )
 
@@ -73,14 +77,7 @@ async def images_build(args: argparse.Namespace) -> int:
 async def images_publish(args: argparse.Namespace) -> int:
     return await run_mutating_tool(
         "images.publish",
-        {
-            "provider": args.provider,
-            "name": args.name,
-            "arch": args.arch,
-            "releasever": args.releasever,
-            "source_image_digest": args.source_image_digest,
-            "capabilities": _capabilities(args),
-        },
+        {"request": _public_image_request(args)},
         as_json=args.json,
     )
 

@@ -160,12 +160,14 @@ def test_build_calls_images_build(monkeypatch: pytest.MonkeyPatch) -> None:
         (
             "images.build",
             {
-                "provider": "local-libvirt",
-                "name": "fedora-40",
-                "arch": "x86_64",
-                "releasever": "40",
-                "source_image_digest": "sha256:base",
-                "capabilities": ["agent", "kdump"],
+                "request": {
+                    "provider": "local-libvirt",
+                    "name": "fedora-40",
+                    "arch": "x86_64",
+                    "releasever": "40",
+                    "source_image_digest": "sha256:base",
+                    "capabilities": ["agent", "kdump"],
+                },
             },
         )
     ]
@@ -188,12 +190,14 @@ def test_build_trims_blank_capability_entries(monkeypatch: pytest.MonkeyPatch) -
     assert client.calls[0] == (
         "images.build",
         {
-            "provider": "local-libvirt",
-            "name": "fedora-40",
-            "arch": "x86_64",
-            "releasever": "40",
-            "source_image_digest": "sha256:base",
-            "capabilities": ["agent", "kdump"],
+            "request": {
+                "provider": "local-libvirt",
+                "name": "fedora-40",
+                "arch": "x86_64",
+                "releasever": "40",
+                "source_image_digest": "sha256:base",
+                "capabilities": ["agent", "kdump"],
+            },
         },
     )
 
