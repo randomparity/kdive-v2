@@ -10,7 +10,7 @@ rather than per-plane discipline.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -32,8 +32,9 @@ _NEXT_ACTIONS: dict[JobState, list[str]] = {
 # tool-level `error` status; both require an error category, all others forbid one.
 _FAILURE_STATUSES = frozenset({JobState.FAILED.value, "error"})
 
-type JsonValue = str | int | float | bool | None | Sequence[JsonValue] | Mapping[str, JsonValue]
-ResponseData = Mapping[str, JsonValue]
+type JsonValue = str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
+ResponseData = dict[str, JsonValue]
+ResponseDataInput = Mapping[str, JsonValue]
 
 
 def _validate_json_value(value: object, *, path: str) -> None:
@@ -119,7 +120,7 @@ class ToolResponse(BaseModel):
         *,
         suggested_next_actions: list[str] | None = None,
         refs: dict[str, str] | None = None,
-        data: ResponseData | None = None,
+        data: ResponseDataInput | None = None,
     ) -> ToolResponse:
         """Build a non-failure envelope.
 
@@ -143,7 +144,7 @@ class ToolResponse(BaseModel):
         *,
         suggested_next_actions: list[str] | None = None,
         refs: dict[str, str] | None = None,
-        data: ResponseData | None = None,
+        data: ResponseDataInput | None = None,
     ) -> ToolResponse:
         """Build one envelope for a collection-returning tool."""
         payload = dict(data or {})
@@ -164,7 +165,7 @@ class ToolResponse(BaseModel):
         category: ErrorCategory,
         *,
         suggested_next_actions: list[str] | None = None,
-        data: ResponseData | None = None,
+        data: ResponseDataInput | None = None,
     ) -> ToolResponse:
         return cls(
             object_id=object_id,
@@ -182,7 +183,7 @@ class ToolResponse(BaseModel):
         *,
         category: ErrorCategory | None = None,
         suggested_next_actions: list[str] | None = None,
-        data: ResponseData | None = None,
+        data: ResponseDataInput | None = None,
     ) -> ToolResponse:
         payload = _safe_error_details(exc.details)
         payload.update(data or {})

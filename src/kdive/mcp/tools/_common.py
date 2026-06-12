@@ -7,7 +7,7 @@ from uuid import UUID
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job
 from kdive.jobs.context import authorizing, context_from_job
-from kdive.mcp.responses import ResponseData, ToolResponse, current_status_data
+from kdive.mcp.responses import ResponseDataInput, ToolResponse, current_status_data
 
 
 def as_uuid(value: str) -> UUID | None:
@@ -17,7 +17,7 @@ def as_uuid(value: str) -> UUID | None:
         return None
 
 
-def config_error(object_id: str, *, data: ResponseData | None = None) -> ToolResponse:
+def config_error(object_id: str, *, data: ResponseDataInput | None = None) -> ToolResponse:
     return ToolResponse.failure(object_id, ErrorCategory.CONFIGURATION_ERROR, data=data or {})
 
 

@@ -116,7 +116,7 @@ async def _queue_depth(conn: AsyncConnection) -> dict[str, JsonValue]:
         )
         kind_rows = await cur.fetchall()
     total = int(total_row[0]) if total_row is not None else 0
-    by_kind: dict[str, int] = {}
+    by_kind: dict[str, JsonValue] = {}
     by_id = 0
     for kind, count in kind_rows:
         if kind is None:
@@ -158,7 +158,7 @@ def _free_descriptors(resource: Resource, claims: list[PCIeClaim]) -> list[PCIeD
     return [d for d in descriptors if d["bdf"] not in claimed]
 
 
-def _redact_descriptor(descriptor: PCIeDescriptor) -> dict[str, str]:
+def _redact_descriptor(descriptor: PCIeDescriptor) -> dict[str, JsonValue]:
     """Project a descriptor to the portable identity; drop the untrusted host-local label."""
     return {
         "bdf": descriptor["bdf"],
@@ -202,6 +202,8 @@ def _host_item(
         for shape in shapes
         if _shape_fits(shape, schedulable=schedulable, headroom=headroom, free=free)
     ]
+    free_devices: list[JsonValue] = [_redact_descriptor(d) for d in free]
+    fits_json: list[JsonValue] = list(fits)
     data: dict[str, JsonValue] = {
         "kind": resource.kind.value,
         "status": resource.status.value,
@@ -211,8 +213,8 @@ def _host_item(
         "in_use": occupancy,
         "headroom": headroom,
         "free_pcie": len(free),
-        "free_devices": [_redact_descriptor(d) for d in free],
-        "fits": fits,
+        "free_devices": free_devices,
+        "fits": fits_json,
     }
     return _HostAvailability(ToolResponse.success(str(resource.id), "available", data=data), fits)
 
@@ -298,12 +300,15 @@ async def availability_tool(
             )
             items.append(item.response)
             global_fits.update(item.fits)
+        fits_now: list[JsonValue] = []
+        for shape_name in sorted(global_fits):
+            fits_now.append(shape_name)
         return ToolResponse.collection(
             "resources",
             "ok",
             items,
             suggested_next_actions=_NEXT_ACTIONS,
-            data={"queue_depth": queue, "fits_now": sorted(global_fits)},
+            data={"queue_depth": queue, "fits_now": fits_now},
         )
 
 
