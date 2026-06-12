@@ -16,7 +16,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools.ops.images._common import UPLOAD_TOOL, audit_project_denial, denied
 from kdive.security.authz.context import RequestContext
-from kdive.security.authz.rbac import AuthorizationError, Role, require_role
+from kdive.security.authz.rbac import AuthorizationError, Role, RoleDenied, require_role
 from kdive.services.images.upload import (
     PrivateUploadRequest,
     UploadObjectStore,
@@ -68,10 +68,12 @@ async def upload(
     with bind_context(principal=ctx.principal):
         try:
             require_role(ctx, request.project, Role.OPERATOR)
-        except AuthorizationError:
+        except RoleDenied:
             await audit_project_denial(
                 pool, ctx, tool=UPLOAD_TOOL, project=request.project, args={"name": request.name}
             )
+            return denied(request.name, UPLOAD_TOOL)
+        except AuthorizationError:
             return denied(request.name, UPLOAD_TOOL)
         if store is None:
             return _config_error(request.name)

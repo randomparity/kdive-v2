@@ -23,7 +23,7 @@ from kdive.mcp.tools.ops.images._common import (
 )
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
-from kdive.security.authz.rbac import AuthorizationError, Role, require_role
+from kdive.security.authz.rbac import AuthorizationError, Role, RoleDenied, require_role
 from kdive.services.images.retention import image_referenced_by_live_system
 
 _log = logging.getLogger(__name__)
@@ -48,10 +48,12 @@ async def delete(pool: AsyncConnectionPool, ctx: RequestContext, *, image_id: st
             return _config_error(image_id)
         try:
             require_role(ctx, entry.owner, Role.OPERATOR)
-        except AuthorizationError:
+        except RoleDenied:
             await audit_project_denial(
                 pool, ctx, tool=DELETE_TOOL, project=entry.owner, args={"image_id": image_id}
             )
+            return denied(image_id, DELETE_TOOL)
+        except AuthorizationError:
             return denied(image_id, DELETE_TOOL)
         return await _delete_owned(pool, ctx, uid, project=entry.owner)
 

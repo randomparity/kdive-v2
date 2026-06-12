@@ -8,8 +8,8 @@ contract). Coverage maps to the issue's falsifiable acceptance:
   ``platform_audit_log``; a non-operator (including a bare ``platform_admin``) is denied
   and audited before any pool mutation;
 * ``images.delete`` is project-scoped (an ``operator`` on the image's owning project);
-  a member-over-reach or cross-project caller is denied and audited, and the catalog row
-  survives;
+  a member-over-reach caller is denied and audited; a non-member is denied without writing
+  an audit row under an ungranted project, and the catalog row survives;
 * ``images.prune_expired``/``images.extend`` route the ``platform_admin`` break-glass
   path (NOT the per-allocation gate); a ``platform_operator`` is denied and audited;
 * every authorized mutating call writes one ``platform_audit_log`` row before/independent
@@ -455,9 +455,9 @@ def test_delete_member_overreach_denied_and_audited(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_delete_cross_project_denied_and_audited(migrated_url: str) -> None:
-    # A caller who is not a member of the image's owning project is denied; the row
-    # survives and the denial is audited before any catalog mutation.
+def test_delete_cross_project_denied_without_project_audit(migrated_url: str) -> None:
+    # A caller who is not a member of the image's owning project is denied, but must not
+    # create an audit_log row under a project absent from ctx.projects.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             image_id = await _insert_private_image(pool, owner="tenant-x")
@@ -468,8 +468,7 @@ def test_delete_cross_project_denied_and_audited(migrated_url: str) -> None:
             )
         assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
         assert await _image_exists(migrated_url, image_id) is True
-        audit = await _audit_log_rows(migrated_url)
-        assert audit == [("dev-1", "tenant-x", "images.delete", "denied")]
+        assert await _audit_log_rows(migrated_url) == []
 
     asyncio.run(_run())
 
@@ -524,6 +523,28 @@ def test_upload_unprivileged_denied_audited_even_without_store(migrated_url: str
         assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
         audit = await _audit_log_rows(migrated_url)
         assert audit == [("dev-1", _TARGET_PROJECT, "images.upload", "denied")]
+
+    asyncio.run(_run())
+
+
+def test_upload_cross_project_denied_without_project_audit(migrated_url: str) -> None:
+    # Non-members are denied before store access, but must not write audit_log rows under
+    # arbitrary requested project names.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await ops_images.upload(
+                pool,
+                _member_ctx(project="tenant-y", role=Role.OPERATOR),
+                None,
+                ops_images.ImageUploadRequest(
+                    project=_TARGET_PROJECT,
+                    name="custom",
+                    arch="x86_64",
+                    quarantine_key="quarantine/abc",
+                ),
+            )
+        assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
+        assert await _audit_log_rows(migrated_url) == []
 
     asyncio.run(_run())
 
