@@ -269,14 +269,12 @@ class LocalLibvirtInstall:
             raise self._install_failure("power-cycling", domain_name) from exc
 
     def _await_ready(self, system_id: UUID) -> None:
-        answered = False
         first_probe_error: str | None = None
         for _ in range(self._boot_window_polls):
             result = self._readiness(system_id)
             if first_probe_error is None and result.probe_error is not None:
                 first_probe_error = result.probe_error
             if result.answered:
-                answered = True
                 if result.ok:
                     return
                 details: dict[str, object] = {"system_id": str(system_id)}
@@ -287,13 +285,12 @@ class LocalLibvirtInstall:
                     category=ErrorCategory.READINESS_FAILURE,
                     details=details,
                 )
-        category = ErrorCategory.READINESS_FAILURE if answered else ErrorCategory.BOOT_TIMEOUT
         details: dict[str, object] = {"system_id": str(system_id)}
         if first_probe_error is not None:
             details["probe_error"] = first_probe_error
         raise CategorizedError(
             "System did not become ready within the boot window",
-            category=category,
+            category=ErrorCategory.BOOT_TIMEOUT,
             details=details,
         )
 
