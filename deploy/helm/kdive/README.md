@@ -10,6 +10,12 @@ follow [`docs/runbooks/kubernetes-deploy.md`](../../../docs/runbooks/kubernetes-
 
 ## Install (external backends, production)
 
+> **Installing from a source checkout?** The chart's default image tag is `appVersion`,
+> which tracks the *next unreleased* version (ADR-0041) and has no published image until
+> that version is cut — a bare install would `ImagePullBackOff`. From a checkout, pin the
+> rolling image: add `--set image.tag=edge`. A bare `appVersion` default is correct only
+> when you install a cut release / published chart.
+
 ```sh
 helm dependency build deploy/helm/kdive   # populate charts/ from Chart.lock
 helm install kdive deploy/helm/kdive \
