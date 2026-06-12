@@ -549,8 +549,8 @@ def test_remote_runtime_wires_connect_and_introspect_ports(
     monkeypatch.delenv("KDIVE_REMOTE_LIBVIRT_URI", raising=False)
     from kdive.providers.remote_libvirt.debug.gdbmi import remote_attach_seam
     from kdive.providers.remote_libvirt.debug.introspect import (
-        RemoteLiveIntrospect,
-        RemoteVmcoreIntrospect,
+        RemoteLibvirtLiveIntrospect,
+        RemoteLibvirtVmcoreIntrospect,
     )
     from kdive.providers.remote_libvirt.lifecycle.connect import RemoteLibvirtConnect
 
@@ -559,8 +559,8 @@ def test_remote_runtime_wires_connect_and_introspect_ports(
     assert isinstance(runtime.connector, RemoteLibvirtConnect)
     assert runtime.debug is not None
     assert runtime.debug.attach_seam is remote_attach_seam
-    assert isinstance(runtime.vmcore_introspector, RemoteVmcoreIntrospect)
-    assert isinstance(runtime.live_introspector, RemoteLiveIntrospect)
+    assert isinstance(runtime.vmcore_introspector, RemoteLibvirtVmcoreIntrospect)
+    assert isinstance(runtime.live_introspector, RemoteLibvirtLiveIntrospect)
 
 
 def test_remote_runtime_wires_build_config_validator(monkeypatch: pytest.MonkeyPatch) -> None:

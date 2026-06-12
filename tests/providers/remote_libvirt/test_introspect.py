@@ -17,8 +17,8 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
 from kdive.providers.remote_libvirt.debug.introspect import (
-    RemoteLiveIntrospect,
-    RemoteVmcoreIntrospect,
+    RemoteLibvirtLiveIntrospect,
+    RemoteLibvirtVmcoreIntrospect,
 )
 from kdive.providers.remote_libvirt.guest.agent import AgentExecResult
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -46,7 +46,7 @@ class _FakeProgram:
 
 
 def _vmcore_introspect(*, open_program=None, run_helper=None, fetch=None, build_id=lambda b: "BID"):
-    return RemoteVmcoreIntrospect(
+    return RemoteLibvirtVmcoreIntrospect(
         fetch_object=fetch or (lambda ref: b"core" if "core" in ref else b"vmlinux"),
         read_vmcore_build_id=build_id,
         secret_registry=SecretRegistry(),
@@ -171,7 +171,7 @@ def _config_remote():
 
 def _live(agent):
     # RecordingBackend + a real GuestAgentExec run; only the libvirt opener is faked.
-    return RemoteLiveIntrospect(
+    return RemoteLibvirtLiveIntrospect(
         secret_registry=SecretRegistry(),
         config_factory=_config_remote,
         open_connection=lambda _uri: _FakeConn(),

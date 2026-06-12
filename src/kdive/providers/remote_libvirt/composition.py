@@ -21,8 +21,8 @@ from kdive.providers.reaping import DumpVolumeReaper
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.debug.gdbmi import remote_attach_seam
 from kdive.providers.remote_libvirt.debug.introspect import (
-    RemoteLiveIntrospect,
-    RemoteVmcoreIntrospect,
+    RemoteLibvirtLiveIntrospect,
+    RemoteLibvirtVmcoreIntrospect,
 )
 from kdive.providers.remote_libvirt.discovery import RemoteLibvirtDiscovery
 from kdive.providers.remote_libvirt.dump_volume_reaper import RemoteLibvirtDumpVolumeReaper
@@ -84,8 +84,8 @@ def build_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
     builder = RemoteLibvirtBuild.from_env(secret_registry=secret_registry)
     installer = RemoteLibvirtInstall.from_env(secret_registry=secret_registry)
     retriever = RemoteLibvirtRetrieve.from_env(secret_registry=secret_registry)
-    vmcore_introspector = RemoteVmcoreIntrospect.from_env(secret_registry=secret_registry)
-    live_introspector = RemoteLiveIntrospect.from_env(secret_registry=secret_registry)
+    vmcore_introspector = RemoteLibvirtVmcoreIntrospect.from_env(secret_registry=secret_registry)
+    live_introspector = RemoteLibvirtLiveIntrospect.from_env(secret_registry=secret_registry)
 
     return ProviderRuntime(
         provisioner=RemoteLibvirtProvisioning(secret_registry=secret_registry),

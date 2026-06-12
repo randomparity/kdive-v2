@@ -1,8 +1,9 @@
 """Remote-libvirt introspection ports (ADR-0079/0083).
 
-`RemoteVmcoreIntrospect` runs the offline drgn path on the worker (fetch core + vmlinux, verify
-build-id provenance, run the shared helpers, redact + byte-cap) — no live reachability.
-`RemoteLiveIntrospect` runs the in-guest drgn helper via the guest-agent seam. Both reuse
+`RemoteLibvirtVmcoreIntrospect` runs the offline drgn path on the worker (fetch core +
+vmlinux, verify build-id provenance, run the shared helpers, redact + byte-cap) — no live
+reachability.
+`RemoteLibvirtLiveIntrospect` runs the in-guest drgn helper via the guest-agent seam. Both reuse
 ``debug_common.introspect.assemble_report`` as the single redaction boundary. The drgn open/exec
 paths are ``live_vm``-gated; orchestration, provenance, and error contracts are unit-tested with
 fakes.
@@ -62,7 +63,7 @@ type _OpenProgram = Callable[[Path, Path], _Program]
 type _RunHelper = Callable[[_Program, str], dict[str, object]]
 
 
-class RemoteVmcoreIntrospect:
+class RemoteLibvirtVmcoreIntrospect:
     """Worker-side offline drgn introspection of a remote-captured vmcore (ADR-0033/0083)."""
 
     def __init__(
@@ -81,7 +82,7 @@ class RemoteVmcoreIntrospect:
         self._run_helper = run_helper
 
     @classmethod
-    def from_env(cls, *, secret_registry: SecretRegistry) -> RemoteVmcoreIntrospect:
+    def from_env(cls, *, secret_registry: SecretRegistry) -> RemoteLibvirtVmcoreIntrospect:
         """Build from env with the real drgn seams (lazy: drgn imports on first use).
 
         drgn stays an operator-provided live-host prerequisite — the seams import it
@@ -165,7 +166,7 @@ def _real_fetch_object(ref: str) -> bytes:  # pragma: no cover - live_vm
     return object_store_from_env().get_artifact(ref, None).data
 
 
-class RemoteLiveIntrospect:
+class RemoteLibvirtLiveIntrospect:
     """In-guest drgn-live over the qemu-guest-agent seam (ADR-0079/0083 §4).
 
     ``transport_handle`` carries the guest **domain name** (the pinned ADR-0083 §4 contract).
@@ -194,7 +195,7 @@ class RemoteLiveIntrospect:
         )
 
     @classmethod
-    def from_env(cls, *, secret_registry: SecretRegistry) -> RemoteLiveIntrospect:
+    def from_env(cls, *, secret_registry: SecretRegistry) -> RemoteLibvirtLiveIntrospect:
         """Build from env; opens no connection (config read per op)."""
         return cls(secret_registry=secret_registry)
 
@@ -275,4 +276,4 @@ def _open_libvirt(uri: str) -> Any:  # pragma: no cover - live_vm
     return libvirt.open(uri)
 
 
-__all__ = ["RemoteLiveIntrospect", "RemoteVmcoreIntrospect"]
+__all__ = ["RemoteLibvirtLiveIntrospect", "RemoteLibvirtVmcoreIntrospect"]
