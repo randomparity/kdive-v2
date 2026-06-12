@@ -21,14 +21,16 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import UUID
 
 import psycopg
+import pytest
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.config.core_settings import IMAGE_PRIVATE_LIFETIME_MAX
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.state import SystemState
 from kdive.jobs.payloads import ImageBuildPayload
@@ -467,19 +469,33 @@ def test_extend_admin_rearms_expiry_and_audits(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_extend_clamps_to_lifetime_ceiling(migrated_url: str) -> None:
+def test_extend_clamps_to_lifetime_ceiling(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # The extend ceiling is the per-image lifetime max; a request past it is clamped.
+    max_seconds = 120
+    requested_seconds = 10 * 365 * 24 * 3600
+    monkeypatch.setenv(IMAGE_PRIVATE_LIFETIME_MAX.name, str(max_seconds))
+
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             image_id = await _insert_private_image(pool, expires_in=timedelta(minutes=1))
+            before = datetime.now(UTC)
             resp = await ops_images.extend(
                 pool,
                 _admin_ctx(),
                 image_id=str(image_id),
-                seconds=10 * 365 * 24 * 3600,
+                seconds=requested_seconds,
                 reason="forever",
             )
+            after = await _image_expires_at(migrated_url, image_id)
+        requested_deadline = before + timedelta(seconds=requested_seconds)
+        clamped_floor = before + timedelta(seconds=max_seconds)
+        clamped_ceiling = datetime.now(UTC) + timedelta(seconds=max_seconds)
+
         assert resp.status not in {"error", "failed"}
+        assert clamped_floor <= after <= clamped_ceiling
+        assert after < requested_deadline - timedelta(days=1)
 
     asyncio.run(_run())
 
