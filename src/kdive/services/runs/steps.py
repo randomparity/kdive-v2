@@ -13,6 +13,8 @@ from psycopg.rows import dict_row
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import Run, System
 from kdive.profiles.provider_policy import capture_method
+from kdive.profiles.provisioning import ProvisioningProfile
+from kdive.providers.runtime import ProfilePolicy
 
 _REQUIRED_BASE_CMDLINE = "console=ttyS0 root=/dev/vda"
 _KDUMP_CRASHKERNEL = "crashkernel=256M"
@@ -109,5 +111,6 @@ async def cmdline_for(conn: AsyncConnection, run: Run, method: CaptureMethod) ->
     return required
 
 
-def install_method_for(system: System) -> CaptureMethod:
-    return capture_method(system.provisioning_profile)
+def install_method_for(system: System, profile_policy: ProfilePolicy) -> CaptureMethod:
+    profile = ProvisioningProfile.parse(system.provisioning_profile)
+    return capture_method(profile_policy, profile)

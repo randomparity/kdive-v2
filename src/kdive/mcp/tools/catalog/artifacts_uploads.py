@@ -30,6 +30,8 @@ from kdive.profiles.provider_policy import rootfs_upload_window_allowed
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.provider_components.artifacts import PresignedUpload, PresignPutRequest
 from kdive.provider_components.uploads import ManifestEntry
+from kdive.providers.composition import build_provider_resolver
+from kdive.providers.resolver import ProviderResolver
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 from kdive.store.objectstore import (
@@ -80,7 +82,7 @@ class _UploadOwnerSpec:
     allowed_names: frozenset[str]
     next_action: str
     project: Callable[[AsyncConnection, UUID], Awaitable[str | None]]
-    accepts_upload: Callable[[AsyncConnection, UUID], Awaitable[bool]]
+    accepts_upload: Callable[[AsyncConnection, UUID, ProviderResolver | None], Awaitable[bool]]
 
 
 def _validate_artifact_declarations(
@@ -147,7 +149,9 @@ async def _system_project(conn: AsyncConnection, owner_id: UUID) -> str | None:
     return row["project"] if row else None
 
 
-async def _run_accepts_upload(conn: AsyncConnection, owner_id: UUID) -> bool:
+async def _run_accepts_upload(
+    conn: AsyncConnection, owner_id: UUID, _resolver: ProviderResolver | None
+) -> bool:
     run = await RUNS.get(conn, owner_id)
     if run is None or run.state is not RunState.CREATED:
         return False
@@ -155,12 +159,17 @@ async def _run_accepts_upload(conn: AsyncConnection, owner_id: UUID) -> bool:
     return isinstance(parsed, ExternalBuildProfile)
 
 
-async def _system_accepts_upload(conn: AsyncConnection, owner_id: UUID) -> bool:
+async def _system_accepts_upload(
+    conn: AsyncConnection, owner_id: UUID, resolver: ProviderResolver | None
+) -> bool:
+    if resolver is None:
+        raise RuntimeError("system upload admission requires a resolver")
     system = await SYSTEMS.get(conn, owner_id)
     if system is None or system.state is not SystemState.DEFINED:
         return False
     parsed = ProvisioningProfile.parse(system.provisioning_profile)
-    return rootfs_upload_window_allowed(parsed)
+    runtime = await resolver.runtime_for_system(conn, owner_id)
+    return rootfs_upload_window_allowed(runtime.profile_policy, parsed)
 
 
 _RUN_UPLOAD = _UploadOwnerSpec(
@@ -189,6 +198,7 @@ async def _create_upload(
     owner_id: str,
     artifacts: Sequence[ArtifactDeclaration],
     store: _PresignStore | None = None,
+    resolver: ProviderResolver | None = None,
 ) -> ToolResponse:
     store = store or object_store_from_env()
     uid = _as_uuid(owner_id)
@@ -212,7 +222,7 @@ async def _create_upload(
             prefix = owner_prefix(_TENANT, spec.owner_kind, str(uid))
             try:
                 async with conn.transaction(), advisory_xact_lock(conn, spec.lock_scope, uid):
-                    if not await spec.accepts_upload(conn, uid):
+                    if not await spec.accepts_upload(conn, uid, resolver):
                         return _config_error(
                             owner_id, data={"reason": "owner_not_accepting_upload"}
                         )
@@ -285,6 +295,7 @@ async def create_system_upload(
     *,
     system_id: str,
     artifacts: Sequence[ArtifactDeclaration],
+    resolver: ProviderResolver | None = None,
     store: _PresignStore | None = None,
 ) -> ToolResponse:
     """Mint presigned PUTs for a DEFINED System's uploaded rootfs."""
@@ -295,4 +306,5 @@ async def create_system_upload(
         owner_id=system_id,
         artifacts=artifacts,
         store=store,
+        resolver=resolver or build_provider_resolver(),
     )

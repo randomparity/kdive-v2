@@ -34,6 +34,7 @@ from kdive.providers.fault_inject.lifecycle.provider import (
     FaultInjectRetrieve,
     fault_inject_attach_seam,
 )
+from kdive.providers.fault_inject.profile_policy import FaultInjectProfilePolicy
 from kdive.providers.reaping import InfraReaper
 from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
 from kdive.store.objectstore import object_store_from_env
@@ -90,6 +91,7 @@ def build_runtime(
     introspect = FaultInjectIntrospect()
     faulted_install = FaultedInstall(install, engine) if engine is not None else install
     return ProviderRuntime(
+        profile_policy=FaultInjectProfilePolicy(),
         provisioner=FaultedProvision(provisioner, engine) if engine is not None else provisioner,
         builder=FaultInjectBuild(store_factory=object_store_from_env),
         installer=faulted_install,

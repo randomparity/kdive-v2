@@ -109,6 +109,16 @@ def _register_runs_tools(app: FastMCP, pool: AsyncConnectionPool, assembly: AppA
     runs_tools.register(app, pool, resolver=assembly.resolver)
 
 
+def _register_control_tools(app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly) -> None:
+    control_tools.register(app, pool, resolver=assembly.resolver)
+
+
+def _register_artifact_tools(
+    app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly
+) -> None:
+    artifacts.register(app, pool, resolver=assembly.resolver)
+
+
 def _register_vmcore_tools(app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly) -> None:
     vmcore_tools.register(
         app, pool, resolver=assembly.resolver, secret_registry=assembly.secret_registry
@@ -189,8 +199,8 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _register_systems_tools,
     _plain(investigations.register),
     _register_runs_tools,
-    _plain(control_tools.register),
-    _plain(artifacts.register),
+    _register_control_tools,
+    _register_artifact_tools,
     _plain(build_configs.register),
     _register_vmcore_tools,
     _register_debug_tools,

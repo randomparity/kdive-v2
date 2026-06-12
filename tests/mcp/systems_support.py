@@ -23,11 +23,13 @@ from kdive.mcp.tools.lifecycle.systems.admin import SystemAdminHandlers
 from kdive.mcp.tools.lifecycle.systems.provision import SystemProvisionHandlers
 from kdive.provider_components.validation import ComponentSourceCapabilities
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
 from kdive.security.authz.rbac import Role
 from kdive.services.resources.discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 TEST_DT = datetime(2026, 1, 1, tzinfo=UTC)
+TEST_PROFILE_POLICY = LocalLibvirtProfilePolicy()
 TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
     provider="test-provider",
     accepted_component_sources={
@@ -36,10 +38,12 @@ TEST_COMPONENT_SOURCES = ComponentSourceCapabilities(
     },
 )
 SYSTEM_PROVISION_HANDLERS = SystemProvisionHandlers(
+    TEST_PROFILE_POLICY,
     TEST_COMPONENT_SOURCES,
     lambda _: None,
 )
 SYSTEM_ADMIN_HANDLERS = SystemAdminHandlers(
+    TEST_PROFILE_POLICY,
     TEST_COMPONENT_SOURCES,
     lambda _: None,
 )

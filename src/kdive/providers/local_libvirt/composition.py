@@ -31,6 +31,7 @@ from kdive.providers.local_libvirt.lifecycle.connect import LocalLibvirtConnect
 from kdive.providers.local_libvirt.lifecycle.control import LocalLibvirtControl
 from kdive.providers.local_libvirt.lifecycle.install import LocalLibvirtInstall
 from kdive.providers.local_libvirt.lifecycle.provisioning import LocalLibvirtProvisioning
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
 from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
 from kdive.providers.local_libvirt.rootfs_build import LocalLibvirtRootfsBuildPlane
 from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
@@ -81,6 +82,7 @@ def build_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
     vmcore_introspector = LocalLibvirtVmcoreIntrospect.from_env(secret_registry=secret_registry)
     live_introspector = LocalLibvirtLiveIntrospect.from_env(secret_registry=secret_registry)
     return ProviderRuntime(
+        profile_policy=LocalLibvirtProfilePolicy(),
         provisioner=provisioner,
         builder=builder,
         installer=install,

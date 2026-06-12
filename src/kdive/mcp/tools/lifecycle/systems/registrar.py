@@ -49,7 +49,7 @@ def register(
     _register_systems_provision_defined(app, pool, resolver)
     _register_systems_get(app, pool)
     _register_systems_list(app, pool)
-    _register_systems_teardown(app, pool)
+    _register_systems_teardown(app, pool, resolver)
     _register_systems_reprovision(app, pool, resolver)
 
 
@@ -60,11 +60,15 @@ def _rootfs_validator(runtime: ProviderRuntime):
 
 
 def _provision_handlers(runtime: ProviderRuntime) -> _SystemProvisionHandlers:
-    return _SystemProvisionHandlers(runtime.component_sources, _rootfs_validator(runtime))
+    return _SystemProvisionHandlers(
+        runtime.profile_policy, runtime.component_sources, _rootfs_validator(runtime)
+    )
 
 
 def _admin_handlers(runtime: ProviderRuntime) -> _SystemAdminHandlers:
-    return _SystemAdminHandlers(runtime.component_sources, _rootfs_validator(runtime))
+    return _SystemAdminHandlers(
+        runtime.profile_policy, runtime.component_sources, _rootfs_validator(runtime)
+    )
 
 
 def _register_systems_define(
@@ -218,7 +222,9 @@ def _register_systems_list(app: FastMCP, pool: AsyncConnectionPool) -> None:
         )
 
 
-def _register_systems_teardown(app: FastMCP, pool: AsyncConnectionPool) -> None:
+def _register_systems_teardown(
+    app: FastMCP, pool: AsyncConnectionPool, resolver: ProviderResolver
+) -> None:
     @app.tool(
         name="systems.teardown",
         annotations=_docmeta.destructive(),
@@ -228,7 +234,7 @@ def _register_systems_teardown(app: FastMCP, pool: AsyncConnectionPool) -> None:
         system_id: Annotated[str, Field(description="The System to tear down.")],
     ) -> ToolResponse:
         """Enqueue teardown for a System. Requires admin and destructive-op opt-in."""
-        return await _teardown_system(pool, current_context(), system_id)
+        return await _teardown_system(pool, current_context(), system_id, resolver=resolver)
 
 
 def _register_systems_reprovision(

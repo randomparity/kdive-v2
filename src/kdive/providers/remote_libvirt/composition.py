@@ -30,6 +30,7 @@ from kdive.providers.remote_libvirt.lifecycle.connect import RemoteLibvirtConnec
 from kdive.providers.remote_libvirt.lifecycle.control import RemoteLibvirtControl
 from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
 from kdive.providers.remote_libvirt.lifecycle.provisioning import RemoteLibvirtProvisioning
+from kdive.providers.remote_libvirt.profile_policy import RemoteLibvirtProfilePolicy
 from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
 from kdive.providers.remote_libvirt.rootfs_build import RemoteLibvirtRootfsBuildPlane
 from kdive.providers.remote_libvirt.transport_reset import RemoteLibvirtTransportResetter
@@ -88,6 +89,7 @@ def build_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
     live_introspector = RemoteLibvirtLiveIntrospect.from_env(secret_registry=secret_registry)
 
     return ProviderRuntime(
+        profile_policy=RemoteLibvirtProfilePolicy(),
         provisioner=RemoteLibvirtProvisioning(secret_registry=secret_registry),
         builder=builder,
         installer=installer,

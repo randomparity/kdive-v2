@@ -39,6 +39,7 @@ from kdive.profiles.provisioning import (
 )
 from kdive.profiles.types import ProvisioningProfileInput
 from kdive.provider_components.validation import ComponentSourceCapabilities
+from kdive.providers.runtime import ProfilePolicy
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
@@ -171,6 +172,7 @@ def _stored_profile_for(
 class SystemAdmission:
     """Admission service with provider validation seams bound at construction."""
 
+    profile_policy: ProfilePolicy
     component_sources: ComponentSourceCapabilities
     rootfs_validator: RootfsValidator
 
@@ -185,6 +187,7 @@ class SystemAdmission:
             pool,
             ctx,
             request.system_id,
+            profile_policy=self.profile_policy,
             component_sources=self.component_sources,
             rootfs_validator=self.rootfs_validator,
         )
@@ -205,7 +208,7 @@ class SystemAdmission:
         """
         try:
             parsed = ProvisioningProfile.parse(request.profile)
-            validate_profile_for_provider(parsed, self.component_sources)
+            validate_profile_for_provider(parsed, self.profile_policy, self.component_sources)
         except CategorizedError as exc:
             return _failure_from_error(request.allocation_id, exc)
         try:
@@ -224,6 +227,7 @@ class SystemAdmission:
                         alloc,
                         existing,
                         profile=stored,
+                        profile_policy=self.profile_policy,
                         rootfs_validator=self.rootfs_validator,
                     )
                 return await _define_create_response(
@@ -232,6 +236,7 @@ class SystemAdmission:
                     alloc,
                     existing,
                     profile=stored,
+                    profile_policy=self.profile_policy,
                     rootfs_validator=self.rootfs_validator,
                 )
         except IllegalTransition:
@@ -316,10 +321,13 @@ async def _provision_create_response(
     existing: System | None,
     *,
     profile: ProvisioningProfile,
+    profile_policy: ProfilePolicy,
     rootfs_validator: RootfsValidator,
 ) -> AdmissionResult:
     if existing is None:
-        return await _insert_provisioning_system(conn, ctx, alloc, profile, rootfs_validator)
+        return await _insert_provisioning_system(
+            conn, ctx, alloc, profile, profile_policy, rootfs_validator
+        )
     if existing.state is SystemState.DEFINED:
         return _failure(
             existing.id,
@@ -346,10 +354,13 @@ async def _define_create_response(
     existing: System | None,
     *,
     profile: ProvisioningProfile,
+    profile_policy: ProfilePolicy,
     rootfs_validator: RootfsValidator,
 ) -> AdmissionResult:
     if existing is None:
-        return await _insert_defined_system(conn, ctx, alloc, profile, rootfs_validator)
+        return await _insert_defined_system(
+            conn, ctx, alloc, profile, profile_policy, rootfs_validator
+        )
     if existing.state is SystemState.DEFINED:
         return DefinedSystemAdmitted(existing)  # idempotent re-define
     return _failure(existing.id, data={"current_status": existing.state.value})
@@ -412,6 +423,7 @@ async def _provision_defined_locked(
     ctx: RequestContext,
     system_id: UUID,
     *,
+    profile_policy: ProfilePolicy,
     component_sources: ComponentSourceCapabilities,
     rootfs_validator: RootfsValidator,
 ) -> AdmissionResult:
@@ -439,6 +451,7 @@ async def _provision_defined_locked(
             ctx,
             system,
             alloc,
+            profile_policy=profile_policy,
             component_sources=component_sources,
             rootfs_validator=rootfs_validator,
         )
@@ -450,6 +463,7 @@ async def _provision_defined_response(
     system: System,
     alloc: Allocation,
     *,
+    profile_policy: ProfilePolicy,
     component_sources: ComponentSourceCapabilities,
     rootfs_validator: RootfsValidator,
 ) -> AdmissionResult:
@@ -465,8 +479,8 @@ async def _provision_defined_response(
         return _failure(system.id, data={"current_status": system.state.value})
     try:
         parsed = ProvisioningProfile.parse(system.provisioning_profile)
-        validate_profile_for_provider(parsed, component_sources)
-        validate_rootfs_for_provider(parsed, rootfs_validator)
+        validate_profile_for_provider(parsed, profile_policy, component_sources)
+        validate_rootfs_for_provider(parsed, profile_policy, rootfs_validator)
     except CategorizedError as exc:
         return _failure_from_error(system.id, exc)
     if alloc.state is not AllocationState.ACTIVE:
@@ -478,6 +492,7 @@ async def _new_system_allowed(
     conn: AsyncConnection,
     alloc: Allocation,
     profile: ProvisioningProfile,
+    profile_policy: ProfilePolicy,
     rootfs_validator: RootfsValidator,
 ) -> AdmissionFailure | None:
     if alloc.state is not AllocationState.GRANTED:
@@ -492,7 +507,7 @@ async def _new_system_allowed(
             suggested_next_actions=("systems.get", "allocations.list"),
         )
     try:
-        validate_rootfs_for_provider(profile, rootfs_validator)
+        validate_rootfs_for_provider(profile, profile_policy, rootfs_validator)
     except CategorizedError as exc:
         return _failure_from_error(alloc.id, exc)
     return None
@@ -557,9 +572,10 @@ async def _insert_defined_system(
     ctx: RequestContext,
     alloc: Allocation,
     profile: ProvisioningProfile,
+    profile_policy: ProfilePolicy,
     rootfs_validator: RootfsValidator,
 ) -> AdmissionResult:
-    blocked = await _new_system_allowed(conn, alloc, profile, rootfs_validator)
+    blocked = await _new_system_allowed(conn, alloc, profile, profile_policy, rootfs_validator)
     if blocked is not None:
         return blocked
     system = await _insert_system_and_activate(
@@ -579,13 +595,14 @@ async def _insert_provisioning_system(
     ctx: RequestContext,
     alloc: Allocation,
     profile: ProvisioningProfile,
+    profile_policy: ProfilePolicy,
     rootfs_validator: RootfsValidator,
 ) -> AdmissionResult:
     try:
-        reject_rootfs_upload_without_window(profile)
+        reject_rootfs_upload_without_window(profile_policy, profile)
     except CategorizedError as exc:
         return _failure_from_error(alloc.id, exc)
-    blocked = await _new_system_allowed(conn, alloc, profile, rootfs_validator)
+    blocked = await _new_system_allowed(conn, alloc, profile, profile_policy, rootfs_validator)
     if blocked is not None:
         return blocked
     system = await _insert_system_and_activate(

@@ -32,9 +32,10 @@ from kdive.mcp.tools.catalog.artifacts_uploads import (
 from kdive.mcp.tools.catalog.artifacts_uploads import (
     create_system_upload as _create_system_upload,
 )
+from kdive.providers.resolver import ProviderResolver
 
 
-def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
+def register(app: FastMCP, pool: AsyncConnectionPool, *, resolver: ProviderResolver) -> None:
     """Register the `artifacts.*` tools on ``app``, bound to ``pool``."""
     read_handlers = _ArtifactReadHandlers()
 
@@ -122,5 +123,9 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     ) -> ToolResponse:
         """Mint a presigned PUT for a DEFINED System's rootfs. Requires operator."""
         return await _create_system_upload(
-            pool, current_context(), system_id=system_id, artifacts=artifacts
+            pool,
+            current_context(),
+            system_id=system_id,
+            artifacts=artifacts,
+            resolver=resolver,
         )

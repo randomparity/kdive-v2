@@ -74,14 +74,19 @@ from tests.mcp.roles import PROJECT_A, PROJECT_B, make_role_fixture
 from tests.mcp.systems_support import (
     TEST_COMPONENT_SOURCES as _TEST_COMPONENT_SOURCES,
 )
+from tests.mcp.systems_support import (
+    TEST_PROFILE_POLICY as _TEST_PROFILE_POLICY,
+)
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _COEFF_LOCAL = Decimal("1.0")
 _SYSTEM_PROVISION_HANDLERS = SystemProvisionHandlers(
+    _TEST_PROFILE_POLICY,
     _TEST_COMPONENT_SOURCES,
     lambda _: None,
 )
 _SYSTEM_ADMIN_HANDLERS = SystemAdminHandlers(
+    _TEST_PROFILE_POLICY,
     _TEST_COMPONENT_SOURCES,
     lambda _: None,
 )

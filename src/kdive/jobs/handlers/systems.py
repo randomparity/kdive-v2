@@ -22,8 +22,10 @@ from kdive.jobs.payloads import ReprovisionPayload, SystemPayload, load_payload
 from kdive.profiles.provider_policy import rootfs_upload_window_allowed
 from kdive.profiles.provisioning import ProvisioningProfile, profile_digest
 from kdive.provider_components.artifacts import StoredArtifact
+from kdive.providers.composition import build_provider_resolver
 from kdive.providers.ports import Provisioner
 from kdive.providers.resolver import ProviderResolver
+from kdive.providers.runtime import ProfilePolicy
 from kdive.providers.runtime_paths import domain_name_for
 from kdive.security import audit
 from kdive.store import objectstore as _objectstore
@@ -66,10 +68,13 @@ async def open_billing_interval(conn: AsyncConnection, allocation_id: UUID) -> N
 
 
 async def _commit_uploaded_rootfs(
-    conn: AsyncConnection, system: System, profile: ProvisioningProfile
+    conn: AsyncConnection,
+    system: System,
+    profile: ProvisioningProfile,
+    profile_policy: ProfilePolicy,
 ) -> None:
     """Commit the write-once artifacts row for an 'upload'-kind rootfs (ADR-0048 §6)."""
-    if not rootfs_upload_window_allowed(profile):
+    if not rootfs_upload_window_allowed(profile_policy, profile):
         return
     key = artifact_key("local", "systems", str(system.id), "rootfs")
     head = await asyncio.to_thread(object_store_from_env().head, key)
@@ -87,9 +92,13 @@ async def _commit_uploaded_rootfs(
 
 
 async def _finalize_provision_ready(
-    conn: AsyncConnection, job: Job, system: System, profile: ProvisioningProfile
+    conn: AsyncConnection,
+    job: Job,
+    system: System,
+    profile: ProvisioningProfile,
+    profile_policy: ProfilePolicy,
 ) -> None:
-    await _commit_uploaded_rootfs(conn, system, profile)
+    await _commit_uploaded_rootfs(conn, system, profile, profile_policy)
     await open_billing_interval(conn, system.allocation_id)
     await audit_transition(
         conn,
@@ -145,6 +154,7 @@ async def _commit_provision_result(
     job: Job,
     system: System,
     profile: ProvisioningProfile,
+    profile_policy: ProfilePolicy,
     domain_name: str,
 ) -> SystemState | None:
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.SYSTEM, system.id):
@@ -154,7 +164,7 @@ async def _commit_provision_result(
                 "UPDATE systems SET state = %s, domain_name = %s WHERE id = %s",
                 (SystemState.READY.value, domain_name, system.id),
             )
-            await _finalize_provision_ready(conn, job, system, profile)
+            await _finalize_provision_ready(conn, job, system, profile, profile_policy)
         return current
 
 
@@ -172,12 +182,25 @@ async def _provisioner(
     return (await resolver.runtime_for_system(conn, system_id)).provisioner
 
 
+async def _profile_policy(
+    conn: AsyncConnection,
+    system_id: UUID,
+    explicit: ProfilePolicy | None,
+    resolver: ProviderResolver | None,
+) -> ProfilePolicy:
+    if explicit is not None:
+        return explicit
+    resolver = resolver or build_provider_resolver()
+    return (await resolver.runtime_for_system(conn, system_id)).profile_policy
+
+
 async def provision_handler(
     conn: AsyncConnection,
     job: Job,
     provisioner: Provisioner | None = None,
     *,
     resolver: ProviderResolver | None = None,
+    profile_policy: ProfilePolicy | None = None,
 ) -> str | None:
     """Define+start the tagged domain and drive the System ``provisioning -> ready``."""
     system_id = UUID(load_payload(job, SystemPayload).system_id)
@@ -196,6 +219,7 @@ async def provision_handler(
             )
         return str(system_id)
     profile = ProvisioningProfile.parse(system.provisioning_profile)
+    profile_policy = await _profile_policy(conn, system_id, profile_policy, resolver)
     try:
         domain_name = await asyncio.to_thread(provisioner.provision, system_id, profile)
     except CategorizedError:
@@ -209,7 +233,9 @@ async def provision_handler(
             operation="provision",
         )
         raise
-    current = await _commit_provision_result(conn, job, system, profile, domain_name)
+    current = await _commit_provision_result(
+        conn, job, system, profile, profile_policy, domain_name
+    )
     if current in TERMINAL_SYSTEM_STATES:
         await asyncio.to_thread(provisioner.teardown, domain_name)
         _log.info("provision of system %s superseded by teardown; domain reaped", system_id)

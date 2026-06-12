@@ -39,9 +39,13 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.debug import sessions as debug_tools
+from kdive.providers.fault_inject.profile_policy import FaultInjectProfilePolicy
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
 from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
+from kdive.providers.remote_libvirt.profile_policy import RemoteLibvirtProfilePolicy
 from kdive.providers.resolver import ProviderResolver
+from kdive.providers.runtime import ProfilePolicy
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.paths import PathSafetyError
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -49,6 +53,9 @@ from kdive.services.resources.discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
+_PROFILE_POLICY = LocalLibvirtProfilePolicy()
+_FAULT_POLICY = FaultInjectProfilePolicy()
+_REMOTE_POLICY = RemoteLibvirtProfilePolicy()
 
 _PROFILE: dict[str, Any] = {
     "schema_version": 1,
@@ -112,6 +119,7 @@ def _handlers(
     secret_backend: Any | None = None,
     secret_backend_factory: Any | None = None,
     secret_registry: SecretRegistry | None = None,
+    profile_policy: ProfilePolicy = _PROFILE_POLICY,
 ) -> debug_tools.DebugSessionHandlers:
     if secret_backend is not None:
 
@@ -122,6 +130,7 @@ def _handlers(
     registry = secret_registry if secret_registry is not None else SecretRegistry()
     return debug_tools.DebugSessionHandlers.from_fixed_connector(
         connector,
+        profile_policy=profile_policy,
         runtime=runtime,
         secret_backend_factory=secret_backend_factory,
         secret_registry=registry,
@@ -138,12 +147,14 @@ async def _start_session(
     secret_backend: Any | None = None,
     secret_backend_factory: Any | None = None,
     secret_registry: SecretRegistry | None = None,
+    profile_policy: ProfilePolicy = _PROFILE_POLICY,
 ):
     return await _handlers(
         connector,
         secret_backend=secret_backend,
         secret_backend_factory=secret_backend_factory,
         secret_registry=secret_registry,
+        profile_policy=profile_policy,
     ).start_session(pool, ctx, run_id=run_id, transport=transport)
 
 
@@ -874,6 +885,7 @@ def test_start_session_drgn_live_fault_inject_skips_credential(migrated_url: str
                 transport="drgn-live",
                 connector=connector,
                 secret_backend=backend,
+                profile_policy=_FAULT_POLICY,
             )
         assert resp.status == "live"
         assert connector.opened == [("kdive-x", "drgn-live")]
@@ -1082,7 +1094,12 @@ def test_start_session_drgn_live_remote_skips_credential_and_stores_domain_handl
             connector = _DomainHandleConnector()
             # No secret_backend supplied: a remote drgn-live start must not need one.
             resp = await _start_session(
-                pool, _ctx(), run_id=run_id, transport="drgn-live", connector=connector
+                pool,
+                _ctx(),
+                run_id=run_id,
+                transport="drgn-live",
+                connector=connector,
+                profile_policy=_REMOTE_POLICY,
             )
             assert resp.status == "live"
             assert connector.opened == [("kdive-x", "drgn-live")]

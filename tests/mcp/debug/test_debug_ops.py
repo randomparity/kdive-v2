@@ -43,6 +43,7 @@ from kdive.mcp.tools.debug.ops import (
 )
 from kdive.providers.debug_common.gdbmi import GdbMiEngine
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
 from kdive.providers.ports import GdbMiAttachment, TransportHandleData
 from kdive.providers.resolver import ProviderBinding, ProviderResolver
 from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
@@ -52,6 +53,7 @@ from kdive.services.resources.discovery import register_discovered_resource
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
+_PROFILE_POLICY = LocalLibvirtProfilePolicy()
 
 _PROFILE: dict[str, Any] = {
     "schema_version": 1,
@@ -575,7 +577,10 @@ def test_end_session_reaps_engine(migrated_url: str) -> None:
             )
             # The engine is registered; end_session must exit + drop it.
             handlers = debug_tools.DebugSessionHandlers.from_fixed_connector(
-                _FakeConnector(), runtime=runtime, secret_registry=SecretRegistry()
+                _FakeConnector(),
+                profile_policy=_PROFILE_POLICY,
+                runtime=runtime,
+                secret_registry=SecretRegistry(),
             )
             resp = await handlers.end_session(pool, _ctx(), session_id)
             assert resp.status == "detached"
@@ -595,7 +600,10 @@ def test_end_session_reap_is_noop_without_engine(migrated_url: str) -> None:
             session_id = await _seed_live_session(pool, state=DebugSessionState.LIVE)
             runtime = _runtime(_CountingAttach())
             handlers = debug_tools.DebugSessionHandlers.from_fixed_connector(
-                _FakeConnector(), runtime=runtime, secret_registry=SecretRegistry()
+                _FakeConnector(),
+                profile_policy=_PROFILE_POLICY,
+                runtime=runtime,
+                secret_registry=SecretRegistry(),
             )
             resp = await handlers.end_session(pool, _ctx(), session_id)
         assert resp.status == "detached"  # reap of a never-attached session is a no-op

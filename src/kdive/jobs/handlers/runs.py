@@ -23,9 +23,10 @@ from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.provider_components.build_results import BuildOutput
+from kdive.providers.composition import build_provider_resolver
 from kdive.providers.ports import Booter, Builder, Installer, InstallRequest
 from kdive.providers.resolver import ProviderResolver
-from kdive.providers.runtime import ProviderRuntime
+from kdive.providers.runtime import ProfilePolicy, ProviderRuntime
 from kdive.providers.runtime_paths import console_log_path, read_console_log
 from kdive.security import audit
 from kdive.security.artifacts.artifact_search import ArtifactSearchInputError, search_text
@@ -150,6 +151,7 @@ async def install_handler(
     installer: Installer | None = None,
     *,
     resolver: ProviderResolver | None = None,
+    profile_policy: ProfilePolicy | None = None,
 ) -> str | None:
     """Stage the built kernel for direct-kernel boot, recording the `install` step."""
     run_id = UUID(load_payload(job, RunPayload).run_id)
@@ -167,7 +169,17 @@ async def install_handler(
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"run_id": str(run_id), "system_id": str(run.system_id)},
         )
-    method = install_method_for(system)
+    if installer is None:
+        if resolver is None:
+            raise RuntimeError("runs handlers require a resolver or explicit run ports")
+        runtime = await resolver.runtime_for_system(conn, run.system_id)
+        installer = runtime.installer
+        profile_policy = runtime.profile_policy
+    else:
+        if profile_policy is None:
+            resolver = resolver or build_provider_resolver()
+            profile_policy = (await resolver.runtime_for_system(conn, run.system_id)).profile_policy
+    method = install_method_for(system, profile_policy)
     kernel_ref = run.kernel_ref
     cmdline = await cmdline_for(conn, run, method)
     _log.info("install: run %s resolved cmdline %r (method %s)", run_id, cmdline, method.value)
@@ -176,10 +188,6 @@ async def install_handler(
     claim = await claim_run_step(conn, run_id, "install")
     if not claim.claimed:
         return str(run_id)
-    if installer is None:
-        if resolver is None:
-            raise RuntimeError("runs handlers require a resolver or explicit run ports")
-        installer = (await resolver.runtime_for_system(conn, run.system_id)).installer
     try:
         await asyncio.to_thread(
             installer.install,

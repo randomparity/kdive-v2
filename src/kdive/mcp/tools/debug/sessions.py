@@ -52,6 +52,7 @@ from kdive.profiles.provider_policy import drgn_live_requires_credential, ssh_cr
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.providers.ports import Connector, SystemHandle, TransportHandle
 from kdive.providers.resolver import ProviderResolver
+from kdive.providers.runtime import ProfilePolicy
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
@@ -92,27 +93,35 @@ class _DetachResources:
     runtime: DebugEngineRuntime | None = None
 
 
-type _ConnectorForRun = Callable[[AsyncConnection, Run], Awaitable[Connector | ToolResponse]]
+@dataclass(frozen=True)
+class _AttachResources:
+    connector: Connector
+    profile_policy: ProfilePolicy
+
+
+type _ConnectorForRun = Callable[[AsyncConnection, Run], Awaitable[_AttachResources | ToolResponse]]
 type _DetachResourcesForSession = Callable[
     [AsyncConnection, UUID], Awaitable[_DetachResources | ToolResponse]
 ]
 
 
-def _fixed_connector_for_run(connector: Connector) -> _ConnectorForRun:
-    async def connector_for_run(conn: AsyncConnection, run: Run) -> Connector | ToolResponse:
+def _fixed_connector_for_run(
+    connector: Connector, profile_policy: ProfilePolicy
+) -> _ConnectorForRun:
+    async def connector_for_run(conn: AsyncConnection, run: Run) -> _AttachResources | ToolResponse:
         del conn, run
-        return connector
+        return _AttachResources(connector=connector, profile_policy=profile_policy)
 
     return connector_for_run
 
 
 def _resolved_connector_for_run(resolver: ProviderResolver) -> _ConnectorForRun:
-    async def connector_for_run(conn: AsyncConnection, run: Run) -> Connector | ToolResponse:
+    async def connector_for_run(conn: AsyncConnection, run: Run) -> _AttachResources | ToolResponse:
         try:
             runtime = await resolver.runtime_for_run(conn, run.id)
         except CategorizedError as exc:
             return ToolResponse.failure_from_error(str(run.id), exc)
-        return runtime.connector
+        return _AttachResources(connector=runtime.connector, profile_policy=runtime.profile_policy)
 
     return connector_for_run
 
@@ -255,12 +264,13 @@ class DebugSessionHandlers:
         cls,
         connector: Connector,
         *,
+        profile_policy: ProfilePolicy,
         runtime: DebugEngineRuntime | None = None,
         secret_backend_factory: Callable[[UUID], SecretBackend] | None = None,
         secret_registry: SecretRegistry,
     ) -> DebugSessionHandlers:
         return cls(
-            connector_for_run=_fixed_connector_for_run(connector),
+            connector_for_run=_fixed_connector_for_run(connector, profile_policy),
             detach_resources=_fixed_detach_resources(connector, runtime),
             secret_backend_factory=secret_backend_factory,
             secret_registry=secret_registry,
@@ -328,11 +338,11 @@ class DebugSessionHandlers:
         system = await _attach_preconditions(conn, run, transport)
         if isinstance(system, ToolResponse):
             return system
-        connector = await self._connector_for_run(conn, run)
-        if isinstance(connector, ToolResponse):
-            return connector
+        resources = await self._connector_for_run(conn, run)
+        if isinstance(resources, ToolResponse):
+            return resources
         backend = self._credential_backend(session_id, transport)
-        resolved = _resolve_credential(system, transport, backend)
+        resolved = _resolve_credential(system, transport, resources.profile_policy, backend)
         if isinstance(resolved, ToolResponse):
             return resolved
         return _AttachRequest(
@@ -340,7 +350,7 @@ class DebugSessionHandlers:
             system=system,
             session_id=session_id,
             transport=transport,
-            connector=connector,
+            connector=resources.connector,
         )
 
     def _credential_backend(self, session_id: UUID, transport: str) -> SecretBackend | None:
@@ -389,7 +399,10 @@ class DebugSessionHandlers:
 
 
 def _resolve_credential(
-    system: System, transport: str, secret_backend: SecretBackend | None
+    system: System,
+    transport: str,
+    profile_policy: ProfilePolicy,
+    secret_backend: SecretBackend | None,
 ) -> None | ToolResponse:
     """Resolve + register the SSH credential before transport use (ADR-0039 §2 ordering).
 
@@ -407,9 +420,9 @@ def _resolve_credential(
         profile = ProvisioningProfile.parse(system.provisioning_profile)
     except CategorizedError as exc:
         return ToolResponse.failure_from_error(str(system.id), exc)
-    if not drgn_live_requires_credential(profile):
+    if not drgn_live_requires_credential(profile_policy, profile):
         return None
-    ref = ssh_credential_ref(profile)
+    ref = ssh_credential_ref(profile_policy, profile)
     if ref is None:
         return _config_error(str(system.id), data={"reason": "ssh_credential_ref_missing"})
     if secret_backend is None:

@@ -31,6 +31,7 @@ from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import Authorizing, ImageBuildPayload
 from kdive.jobs.worker import Worker
 from kdive.provider_components import artifacts as artifact_types
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -85,6 +86,7 @@ def _none_present(_path: Path, _candidates: Sequence[str]) -> set[str]:
 
 def _resolver_with_plane(plane: _FakePlane | None) -> ProviderResolver:
     runtime = ProviderRuntime(
+        profile_policy=LocalLibvirtProfilePolicy(),
         provisioner=cast(Any, object()),
         builder=cast(Any, object()),
         installer=cast(Any, object()),

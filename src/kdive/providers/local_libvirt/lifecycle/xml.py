@@ -5,12 +5,13 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from uuid import UUID
 
-from kdive.profiles.provider_policy import validate_profile as _validate_profile
 from kdive.profiles.provisioning import ProvisioningProfile, require_concrete_sizing
 from kdive.providers.libvirt_xml import KDIVE_METADATA_NS, register_kdive_namespace
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
 from kdive.providers.runtime_paths import console_log_path, domain_name_for
 
 _DEFAULT_MACHINE = "q35"
+_PROFILE_POLICY = LocalLibvirtProfilePolicy()
 
 
 def _ensure_kdive_namespace_registered() -> None:
@@ -23,7 +24,7 @@ def _ensure_kdive_namespace_registered() -> None:
 def render_domain_xml(system_id: UUID, profile: ProvisioningProfile, *, disk_path: str) -> str:
     """Render the tagged libvirt domain XML for a System (ADR-0025 §3)."""
     _ensure_kdive_namespace_registered()
-    _validate_profile(profile)
+    _PROFILE_POLICY.validate_profile(profile)
     require_concrete_sizing(profile)
     section = profile.provider.local_libvirt
     machine = section.domain_xml_params.get("machine", _DEFAULT_MACHINE)

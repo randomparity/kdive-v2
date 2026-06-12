@@ -21,6 +21,8 @@ from kdive.provider_components.references import (
     LocalComponentRef,
 )
 from kdive.providers import composition
+from kdive.providers.fault_inject.profile_policy import FaultInjectProfilePolicy
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
 from kdive.providers.local_libvirt.rootfs_build import LocalLibvirtRootfsBuildPlane
 from kdive.providers.ports import (
     CaptureOutput,
@@ -34,6 +36,7 @@ from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.lifecycle.control import RemoteLibvirtControl
 from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
 from kdive.providers.remote_libvirt.lifecycle.provisioning import RemoteLibvirtProvisioning
+from kdive.providers.remote_libvirt.profile_policy import RemoteLibvirtProfilePolicy
 from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
 from kdive.providers.remote_libvirt.rootfs_build import RemoteLibvirtRootfsBuildPlane
 from kdive.providers.runtime import ProviderRuntime
@@ -151,6 +154,7 @@ def test_provider_runtime_returns_typed_provider_ports_directly() -> None:
     retrieve = _RetrieveProvider()
     introspect = _IntrospectorProvider()
     runtime = ProviderRuntime(
+        profile_policy=LocalLibvirtProfilePolicy(),
         provisioner=_ProvisionProvider(),
         builder=builder,
         installer=install,
@@ -174,6 +178,7 @@ def test_provider_runtime_returns_typed_provider_ports_directly() -> None:
 def test_default_runtime_advertises_implemented_component_sources_only() -> None:
     runtime = composition.build_local_runtime(secret_registry=SecretRegistry())
 
+    assert isinstance(runtime.profile_policy, LocalLibvirtProfilePolicy)
     assert runtime.component_sources.provider == "local-libvirt"
     assert runtime.component_sources.accepted_component_sources == {
         "rootfs": frozenset({"catalog", "local"}),
@@ -207,6 +212,7 @@ def test_provider_runtime_discovery_hook_is_optional() -> None:
         calls.append(pool)
 
     runtime = ProviderRuntime(
+        profile_policy=LocalLibvirtProfilePolicy(),
         provisioner=_ProvisionProvider(),
         builder=_BuildProvider(),
         installer=install,
@@ -231,6 +237,7 @@ def test_provider_runtime_discovery_hook_noops_when_absent() -> None:
     retrieve = _RetrieveProvider()
     introspect = _IntrospectorProvider()
     runtime = ProviderRuntime(
+        profile_policy=LocalLibvirtProfilePolicy(),
         provisioner=_ProvisionProvider(),
         builder=_BuildProvider(),
         installer=install,
@@ -268,6 +275,7 @@ def test_enabling_fault_inject_registers_both_kinds() -> None:
 def test_fault_inject_runtime_advertises_its_provider_identity() -> None:
     runtime = composition.build_faultinject_runtime()
 
+    assert isinstance(runtime.profile_policy, FaultInjectProfilePolicy)
     assert runtime.component_sources.provider == "fault-inject"
     assert runtime.discovery_registrar is not None
 
@@ -486,6 +494,7 @@ def test_remote_runtime_gdbstub_debug_path_is_unchanged(
 def test_remote_runtime_has_real_control_and_retrieve() -> None:
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
+    assert isinstance(runtime.profile_policy, RemoteLibvirtProfilePolicy)
     assert isinstance(runtime.controller, RemoteLibvirtControl)
     assert isinstance(runtime.retriever, RemoteLibvirtRetrieve)
     assert runtime.crash_postmortem is runtime.retriever

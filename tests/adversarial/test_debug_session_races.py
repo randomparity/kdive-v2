@@ -42,12 +42,14 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.debug import sessions as debug_tools
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
 from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
 from kdive.security.authz.rbac import Role
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.adversarial.conftest import seed_allocation, seed_resource
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
+_PROFILE_POLICY = LocalLibvirtProfilePolicy()
 
 _PROFILE: dict[str, Any] = {
     "schema_version": 1,
@@ -214,7 +216,7 @@ def test_concurrent_start_session_keeps_single_attach_and_leaks_no_transport(
                 run_b = await _seed_booted_run(pool, system_id)
                 conn = _TrackingConnector()
                 handlers = debug_tools.DebugSessionHandlers.from_fixed_connector(
-                    conn, secret_registry=SecretRegistry()
+                    conn, profile_policy=_PROFILE_POLICY, secret_registry=SecretRegistry()
                 )
 
                 async def start(
@@ -244,7 +246,7 @@ def test_concurrent_end_session_is_idempotent_and_closes_once(migrated_url: str)
                 session_id = await _seed_live_session(pool, run_id)
                 conn = _TrackingConnector()
                 handlers = debug_tools.DebugSessionHandlers.from_fixed_connector(
-                    conn, secret_registry=SecretRegistry()
+                    conn, profile_policy=_PROFILE_POLICY, secret_registry=SecretRegistry()
                 )
 
                 async def end(

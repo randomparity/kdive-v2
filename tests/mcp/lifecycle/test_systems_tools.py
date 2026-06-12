@@ -66,6 +66,9 @@ from tests.mcp.systems_support import (
     TEST_DT as _DT,
 )
 from tests.mcp.systems_support import (
+    TEST_PROFILE_POLICY as _TEST_PROFILE_POLICY,
+)
+from tests.mcp.systems_support import (
     FakeProvisioning as _FakeProvisioning,
 )
 from tests.mcp.systems_support import (
@@ -199,13 +202,13 @@ def _noop_rootfs_validator(_: RootfsSource) -> None:
 def _provision_handlers(
     rootfs_validator: Callable[[RootfsSource], None] = _noop_rootfs_validator,
 ) -> SystemProvisionHandlers:
-    return SystemProvisionHandlers(_TEST_COMPONENT_SOURCES, rootfs_validator)
+    return SystemProvisionHandlers(_TEST_PROFILE_POLICY, _TEST_COMPONENT_SOURCES, rootfs_validator)
 
 
 def _admin_handlers(
     rootfs_validator: Callable[[RootfsSource], None] = _noop_rootfs_validator,
 ) -> SystemAdminHandlers:
-    return SystemAdminHandlers(_TEST_COMPONENT_SOURCES, rootfs_validator)
+    return SystemAdminHandlers(_TEST_PROFILE_POLICY, _TEST_COMPONENT_SOURCES, rootfs_validator)
 
 
 async def _provision_defined(pool: AsyncConnectionPool, ctx: RequestContext, system_id: str):

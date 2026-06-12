@@ -1751,8 +1751,10 @@ def test_register_handlers_requires_resolver_or_run_ports() -> None:
 # --- runs.install / runs.boot (install + boot plane, #19) ----------------------------
 
 from kdive.domain.capture import CaptureMethod  # noqa: E402
+from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy  # noqa: E402
 from kdive.providers.ports import Booter, Installer, InstallRequest  # noqa: E402
 
+_LOCAL_POLICY = LocalLibvirtProfilePolicy()
 _SUCCEEDED_BUILD: dict[str, Any] = {
     **_VALID_BUILD,
     "cmdline": "console=ttyS0 crashkernel=256M",
@@ -2850,28 +2852,28 @@ def _profile_dump_sized(*, vcpu: int, memory_mb: int, disk_gb: int) -> dict[str,
 
 def test_install_method_kdump_when_crashkernel_set() -> None:
     system = _system_with_profile(_profile_dump(crashkernel="256M"))
-    assert run_steps.install_method_for(system) is CaptureMethod.KDUMP
+    assert run_steps.install_method_for(system, _LOCAL_POLICY) is CaptureMethod.KDUMP
 
 
 def test_install_method_gdbstub_when_flag_set() -> None:
     system = _system_with_profile(_profile_dump(debug={"gdbstub": True}))
-    assert run_steps.install_method_for(system) is CaptureMethod.GDBSTUB
+    assert run_steps.install_method_for(system, _LOCAL_POLICY) is CaptureMethod.GDBSTUB
 
 
 def test_install_method_host_dump_when_preserve_on_crash() -> None:
     system = _system_with_profile(_profile_dump(debug={"preserve_on_crash": True}))
-    assert run_steps.install_method_for(system) is CaptureMethod.HOST_DUMP
+    assert run_steps.install_method_for(system, _LOCAL_POLICY) is CaptureMethod.HOST_DUMP
 
 
 def test_install_method_console_for_bare_system() -> None:
     system = _system_with_profile(_profile_dump())
-    assert run_steps.install_method_for(system) is CaptureMethod.CONSOLE
+    assert run_steps.install_method_for(system, _LOCAL_POLICY) is CaptureMethod.CONSOLE
 
 
 def test_install_method_rejects_partial_profile() -> None:
     system = _system_with_profile({"schema_version": 1})
     with pytest.raises(CategorizedError) as exc:
-        run_steps.install_method_for(system)
+        run_steps.install_method_for(system, _LOCAL_POLICY)
 
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
@@ -2879,7 +2881,7 @@ def test_install_method_rejects_partial_profile() -> None:
 def test_install_method_rejects_attribute_spelling() -> None:
     system = _system_with_profile({"provider": {"local_libvirt": {"crashkernel": "256M"}}})
     with pytest.raises(CategorizedError) as exc:
-        run_steps.install_method_for(system)
+        run_steps.install_method_for(system, _LOCAL_POLICY)
 
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
