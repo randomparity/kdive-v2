@@ -8,13 +8,13 @@ sharing raw dict key conventions across modules.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 from kdive.domain.capture import CaptureMethod
-from kdive.domain.models import Job, JobAuthorizing, JobKind, PowerAction
+from kdive.domain.models import ImageVisibility, Job, JobAuthorizing, JobKind, PowerAction
 
 
 class PayloadValidationError(ValueError):
@@ -83,7 +83,7 @@ class ImageBuildPayload(_PayloadBase):
     """The inputs an ``IMAGE_BUILD`` job carries: build spec + the publish row's scope.
 
     The spec fields drive ``RootfsBuildPlane.build`` and the row fields drive
-    ``publish_image``. ``visibility`` is ``"public"`` for an operator base image; a private
+    ``publish_image``. ``visibility`` is ``public`` for an operator base image; a private
     image carries ``owner`` and ``expires_at`` (the handler validates the pairing through the
     publish service and the DB CHECK constraints).
     """
@@ -95,11 +95,20 @@ class ImageBuildPayload(_PayloadBase):
     packages: tuple[str, ...] = ()
     source_image_digest: str
     capabilities: tuple[str, ...] = ()
-    format: str
+    format: Literal["qcow2"]
     root_device: str
-    visibility: str = "public"
+    visibility: ImageVisibility = ImageVisibility.PUBLIC
     owner: str | None = None
     expires_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _scope_fields_match_visibility(self) -> ImageBuildPayload:
+        private = self.visibility is ImageVisibility.PRIVATE
+        if private != (self.owner is not None):
+            raise ValueError("owner must be set iff visibility is private")
+        if private != (self.expires_at is not None):
+            raise ValueError("expires_at must be set iff visibility is private")
+        return self
 
 
 _PayloadModel = (

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Literal
 from uuid import UUID
 
 from fastmcp import FastMCP
@@ -181,7 +181,7 @@ async def build(
     releasever: str,
     source_image_digest: str,
     capabilities: list[str],
-    format: str,
+    format: Literal["qcow2"],
     root_device: str,
 ) -> ToolResponse:
     """Enqueue an ``IMAGE_BUILD`` job for a public base image. Requires ``platform_operator``."""
@@ -208,7 +208,7 @@ async def publish(
     releasever: str,
     source_image_digest: str,
     capabilities: list[str],
-    format: str,
+    format: Literal["qcow2"],
     root_device: str,
 ) -> ToolResponse:
     """Promote a built image to a public catalog row via ``IMAGE_BUILD``. Requires operator.
@@ -603,7 +603,9 @@ def register(
         capabilities: Annotated[
             list[str], Field(description="The guest-contract tags the image must satisfy.")
         ],
-        format: Annotated[str, Field(description="The image format (e.g. qcow2).")] = "qcow2",
+        format: Annotated[
+            Literal["qcow2"], Field(description="The only supported image format.")
+        ] = "qcow2",
         root_device: Annotated[str, Field(description="The guest root device path.")] = "/dev/vda",
     ) -> ToolResponse:
         """Enqueue an IMAGE_BUILD job for a public base image. Requires platform_operator."""
@@ -630,7 +632,9 @@ def register(
         capabilities: Annotated[
             list[str], Field(description="The guest-contract tags the image must satisfy.")
         ],
-        format: Annotated[str, Field(description="The image format (e.g. qcow2).")] = "qcow2",
+        format: Annotated[
+            Literal["qcow2"], Field(description="The only supported image format.")
+        ] = "qcow2",
         root_device: Annotated[str, Field(description="The guest root device path.")] = "/dev/vda",
     ) -> ToolResponse:
         """Promote a built image to a public catalog row. Requires platform_operator."""

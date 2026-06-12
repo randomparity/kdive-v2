@@ -178,7 +178,7 @@ def test_private_shadows_public_on_same_provider_name(migrated_url: str) -> None
                     digest="sha256:" + hashlib.sha256(b"public-rootfs").hexdigest(),
                     capabilities=(),
                     provenance={},
-                    visibility="public",
+                    visibility=ImageVisibility.PUBLIC,
                 ),
                 source=pub_src,
             )

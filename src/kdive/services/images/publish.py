@@ -23,7 +23,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from psycopg import AsyncConnection, sql
@@ -64,13 +64,13 @@ class PublishRequest:
         provider: The provider whose plane built the image (e.g. ``"local-libvirt"``).
         name: The catalog image name.
         arch: The target architecture.
-        format: The image format (e.g. ``"qcow2"``).
+        format: The image format. Only ``"qcow2"`` is supported.
         root_device: The guest root device path (e.g. ``"/dev/vda"``).
         digest: The qcow2 content digest (``"sha256:<hex>"``) — the image identity, which the
             materialization fetch verifies the downloaded bytes against.
         capabilities: The guest-contract tags the image satisfies.
         provenance: The pinned build inputs/args, JSONB-serializable for the row.
-        visibility: ``"public"`` or ``"private"``.
+        visibility: ``ImageVisibility.PUBLIC`` or ``ImageVisibility.PRIVATE``.
         owner: The owning project — set iff ``visibility`` is ``"private"``.
         expires_at: The private-image TTL deadline — set iff ``visibility`` is ``"private"``.
     """
@@ -78,14 +78,21 @@ class PublishRequest:
     provider: str
     name: str
     arch: str
-    format: str
+    format: Literal["qcow2"]
     root_device: str
     digest: str
     capabilities: tuple[str, ...]
     provenance: dict[str, object]
-    visibility: str
+    visibility: ImageVisibility
     owner: str | None = None
     expires_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        private = self.visibility is ImageVisibility.PRIVATE
+        if private != (self.owner is not None):
+            raise ValueError("owner must be set iff visibility is private")
+        if private != (self.expires_at is not None):
+            raise ValueError("expires_at must be set iff visibility is private")
 
 
 def _object_owner_kind(request: PublishRequest) -> str:
@@ -97,7 +104,7 @@ def _object_owner_kind(request: PublishRequest) -> str:
     provider/project name, so the segment stays unambiguous and slash-free (``artifact_key``
     rejects slashes in a component).
     """
-    if request.visibility == ImageVisibility.PRIVATE.value and request.owner is not None:
+    if request.visibility is ImageVisibility.PRIVATE and request.owner is not None:
         return f"{request.provider}__{request.owner}"
     return request.provider
 
@@ -154,7 +161,7 @@ async def _adopt_or_insert_pending(
         "provider": request.provider,
         "name": request.name,
         "arch": request.arch,
-        "visibility": request.visibility,
+        "visibility": request.visibility.value,
         "owner": request.owner,
         "defined": ImageState.DEFINED.value,
         "pending": ImageState.PENDING.value,
@@ -197,7 +204,7 @@ async def _insert_pending(
         "digest": request.digest,
         "capabilities": list(request.capabilities),
         "provenance": Jsonb(request.provenance),
-        "visibility": request.visibility,
+        "visibility": request.visibility.value,
         "owner": request.owner,
         "expires_at": request.expires_at,
         "state": ImageState.PENDING.value,
@@ -271,7 +278,6 @@ async def publish_image(
             ``INFRASTRUCTURE_FAILURE`` if the object write or HEAD gate fails (the row stays
             ``pending`` for the reconciler to recover).
     """
-    _ = ImageVisibility(request.visibility)  # fail-fast on an invalid visibility string
     object_key = image_object_key(request)
     row_id = await _adopt_or_insert_pending(conn, request, object_key)
 

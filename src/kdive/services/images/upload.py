@@ -25,7 +25,7 @@ import tempfile
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
@@ -51,7 +51,7 @@ from kdive.services.images.publish import (
 
 _UPLOAD_TOOL = "images.upload"
 _OBJECT_KIND = "image_catalog"
-_QCOW2_FORMAT = "qcow2"
+_QCOW2_FORMAT: Literal["qcow2"] = "qcow2"
 _ROOT_DEVICE = "/dev/vda"
 
 # A project's live private images are the ones that occupy quota: a registered row, or a publish
@@ -265,7 +265,7 @@ async def register_private_upload(
         digest=digest,
         capabilities=tuple(required),
         provenance={"upload": {"principal": principal, "quarantine_key": quarantine_key}},
-        visibility=ImageVisibility.PRIVATE.value,
+        visibility=ImageVisibility.PRIVATE,
         owner=project,
         expires_at=clamped_expiry,
     )

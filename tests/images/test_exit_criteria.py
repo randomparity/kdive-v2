@@ -190,7 +190,7 @@ async def _publish_public(
             digest="sha256:" + hashlib.sha256(payload).hexdigest(),
             capabilities=(),
             provenance={},
-            visibility="public",
+            visibility=ImageVisibility.PUBLIC,
         ),
         source=src,
     )
