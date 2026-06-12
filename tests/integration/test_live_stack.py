@@ -26,6 +26,7 @@ The shared phase-naming contract has its own non-gated unit tests in
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -51,6 +52,7 @@ from tests.integration.live_stack.spine import (
     seed_metering,
     system_torn_down,
 )
+from tests.mcp.json_data import data_mapping, data_str
 
 _GUEST_IMAGE_ENV = "KDIVE_GUEST_IMAGE"
 _KERNEL_TREE_ENV = "KDIVE_KERNEL_SRC"
@@ -232,7 +234,7 @@ def test_spine_over_the_wire() -> None:
                     ),
                     "provision",
                 )
-                system_id = env.data["system_id"]  # in data, NOT object_id (the job id)
+                system_id = data_str(env, "system_id")  # in data, NOT object_id (the job id)
                 await await_system_state(op, "provision", system_id, "ready")
             async with phase("open-investigation"):
                 env = ok(
@@ -288,7 +290,7 @@ def test_spine_over_the_wire() -> None:
                 )
             async with phase("introspect"):
                 env = ok(await scalar(op, "introspect.from_vmcore", run_id=run_id), "introspect")
-                report = env.data.get("report", "")
+                report = json.dumps(data_mapping(env, "report"), sort_keys=True)
                 assert "hunter2" not in report and "password=" not in report, "secret leaked (#3)"
             async with phase("release"):
                 ok(

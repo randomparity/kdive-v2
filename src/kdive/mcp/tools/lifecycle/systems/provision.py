@@ -10,11 +10,12 @@ in ``kdive.jobs.handlers.systems``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.log import bind_context
-from kdive.mcp.responses import ToolResponse
+from kdive.mcp.responses import ResponseData, ToolResponse
 from kdive.mcp.tools._common import (
     as_uuid as _as_uuid,
 )
@@ -44,7 +45,7 @@ def _admission_response(result: AdmissionResult) -> ToolResponse:
             result.object_id,
             result.category,
             suggested_next_actions=list(result.suggested_next_actions),
-            data=result.data,
+            data=cast(ResponseData, result.data),
         )
     if isinstance(result, ProvisionJobAdmitted):
         return job_envelope(result.job, "system_id", result.system_id)

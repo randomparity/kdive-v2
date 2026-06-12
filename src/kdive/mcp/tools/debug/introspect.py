@@ -15,7 +15,7 @@ drgn-backed seams disabled; the live runner injects them only on hosts prepared 
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated, NamedTuple
+from typing import Annotated, NamedTuple, cast
 from uuid import UUID
 
 from fastmcp import FastMCP
@@ -28,7 +28,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.state import DebugSessionState
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
-from kdive.mcp.responses import ToolResponse
+from kdive.mcp.responses import ResponseData, ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
@@ -80,7 +80,10 @@ async def introspect_from_vmcore(
             run_id,
             "succeeded",
             suggested_next_actions=["introspect.from_vmcore", "artifacts.list"],
-            data={"report": report, "truncated": str(output.truncated).lower()},
+            data=cast(
+                ResponseData,
+                {"report": report, "truncated": str(output.truncated).lower()},
+            ),
         )
 
 
@@ -179,11 +182,14 @@ async def _introspect_live_session(
         response_id,
         "succeeded",
         suggested_next_actions=["introspect.run", "debug.end_session"],
-        data={
-            "report": report,
-            "truncated": str(output.truncated).lower(),
-            "transcript_sensitivity": "sensitive",
-        },
+        data=cast(
+            ResponseData,
+            {
+                "report": report,
+                "truncated": str(output.truncated).lower(),
+                "transcript_sensitivity": "sensitive",
+            },
+        ),
     )
 
 

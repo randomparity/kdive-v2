@@ -28,6 +28,7 @@ from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.ops import queue as ops_queue
 from kdive.security.authz.rbac import PlatformRole
+from tests.mcp.json_data import data_str
 
 
 def _ctx(
@@ -92,7 +93,7 @@ def test_pause_sets_flag_and_audits(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             resp = await ops_queue.queue_pause(pool, _ctx(platform_roles=_OPERATOR))
         assert resp.status == "paused"
-        assert json.loads(resp.data["queue_paused"]) is True
+        assert json.loads(data_str(resp, "queue_paused")) is True
         assert await _paused(migrated_url) is True
         rows = await _platform_audit_rows(migrated_url)
         assert len(rows) == 1
@@ -171,7 +172,7 @@ def test_jobs_list_returns_cross_project_state(migrated_url: str) -> None:
             resp = await ops_queue.jobs_list(pool, _ctx(platform_roles=_OPERATOR))
         assert resp.status == "ok"
         depth = {
-            key.removeprefix("depth_"): int(value)
+            key.removeprefix("depth_"): int(data_str(resp, key))
             for key, value in resp.data.items()
             if key.startswith("depth_")
         }
@@ -205,7 +206,7 @@ def test_jobs_list_filters_by_state(migrated_url: str) -> None:
         jobs = [item.data for item in resp.items]
         assert [j["state"] for j in jobs] == ["running"]  # filtered per-job rows
         depth = {
-            key.removeprefix("depth_"): int(value)
+            key.removeprefix("depth_"): int(data_str(resp, key))
             for key, value in resp.data.items()
             if key.startswith("depth_")
         }

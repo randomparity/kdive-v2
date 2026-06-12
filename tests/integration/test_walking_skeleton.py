@@ -46,6 +46,7 @@ from tests.integration._seed import (
     seed_system,
 )
 from tests.integration.conftest import open_pool, request_context
+from tests.mcp.json_data import data_str
 
 _AUTH = Authorizing(principal="user-1", agent_session="sess-1", project="proj")
 
@@ -265,7 +266,7 @@ def test_planted_secret_is_redacted(migrated_url: str) -> None:
                 commands=["log"],
             )
             assert resp.status != "error"
-            transcript = resp.data["transcript"]
+            transcript = data_str(resp, "transcript")
             assert _SecretBearingCrash.PLANTED_SECRET not in transcript
             assert "[REDACTED]" in transcript
 

@@ -25,6 +25,7 @@ per-run runtime via ``with_runtime_for_run`` and so routes to the remote runtime
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 
@@ -52,6 +53,7 @@ from tests.integration.live_stack.spine import (
     scalar,
     seed_metering,
 )
+from tests.mcp.json_data import data_mapping, data_str
 
 _REMOTE_URI_ENV = "KDIVE_REMOTE_LIBVIRT_URI"
 # Test/runbook input feeding the provision profile's base_image_volume — NOT provider config.
@@ -229,7 +231,7 @@ def test_remote_spine_over_the_wire() -> None:
                     ),
                     "provision",
                 )
-                system_id = env.data["system_id"]  # in data, NOT object_id (the job id)
+                system_id = data_str(env, "system_id")  # in data, NOT object_id (the job id)
                 await await_system_state(op, "provision", system_id, "ready")
             async with phase("open-investigation"):
                 env = ok(
@@ -289,7 +291,7 @@ def test_remote_spine_over_the_wire() -> None:
                 )
             async with phase("introspect"):
                 env = ok(await scalar(op, "introspect.from_vmcore", run_id=run_id), "introspect")
-                report = env.data.get("report", "")
+                report = json.dumps(data_mapping(env, "report"), sort_keys=True)
                 assert report, "empty postmortem report (introspect did not route to remote run)"
                 assert "hunter2" not in report and "password=" not in report, "secret leaked (#3)"
             async with phase("release"):

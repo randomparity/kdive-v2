@@ -25,6 +25,7 @@ from kdive.providers.ports import CaptureOutput, CrashOutput, CrashPostmortem
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.mcp._seed import seed_crashed_system, seed_run_on_system
+from tests.mcp.json_data import data_str
 
 _AUTH = Authorizing(principal="u", agent_session="s", project="proj")
 _TEST_CAPTURE_METHODS = frozenset({CaptureMethod.HOST_DUMP})
@@ -441,8 +442,9 @@ def test_postmortem_crash_runs_and_redacts(migrated_url: str) -> None:
                 pool, _ctx(), run_id=run_id, commands=["log"]
             )
         assert resp.status != "error"
-        assert "hunter2" not in resp.data["transcript"]
-        assert "[REDACTED]" in resp.data["transcript"]
+        transcript = data_str(resp, "transcript")
+        assert "hunter2" not in transcript
+        assert "[REDACTED]" in transcript
         assert crash.kwargs["expected_build_id"] == "deadbeef"
 
     asyncio.run(_run())
@@ -494,7 +496,7 @@ def test_postmortem_triage_runs_and_relabels_actions(migrated_url: str) -> None:
             crash = _FakeCrash()
             resp = await _vmcore_handlers(crash).postmortem_triage(pool, _ctx(), run_id=run_id)
         assert resp.status != "error"
-        assert "hunter2" not in resp.data["transcript"]
+        assert "hunter2" not in data_str(resp, "transcript")
         assert resp.suggested_next_actions == ["postmortem.triage", "artifacts.list"]
         assert crash.kwargs["commands"] == ["log", "bt"]  # the fixed triage batch
 

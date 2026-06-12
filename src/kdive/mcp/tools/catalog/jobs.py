@@ -32,7 +32,7 @@ from kdive.domain.state import IllegalTransition, JobState
 from kdive.jobs import queue
 from kdive.log import bind_context
 from kdive.mcp.auth import current_context
-from kdive.mcp.responses import ToolResponse
+from kdive.mcp.responses import JsonValue, ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.security.authz.context import RequestContext
@@ -175,7 +175,7 @@ async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str
         except IllegalTransition:
             async with pool.connection() as conn:
                 current = await JOBS.get(conn, uid)
-            data = {"current_status": current.state.value} if current else {}
+            data: dict[str, JsonValue] = {"current_status": current.state.value} if current else {}
             return ToolResponse(
                 object_id=job_id,
                 status="error",

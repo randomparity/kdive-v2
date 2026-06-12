@@ -69,6 +69,7 @@ from tests.integration._seed import (
     seed_project_limits,
 )
 from tests.integration.conftest import open_pool, request_context
+from tests.mcp.json_data import data_str
 from tests.mcp.roles import PROJECT_A, PROJECT_B, make_role_fixture
 from tests.mcp.systems_support import (
     TEST_COMPONENT_SOURCES as _TEST_COMPONENT_SOURCES,
@@ -462,7 +463,7 @@ def test_c3_estimate_equals_reserved_row(migrated_url: str) -> None:
                 pool, _operator_ctx(), project="proj", vcpus=2, memory_gb=4, window=3
             )
             reserved = (await _ledger_events(pool, UUID(grant.object_id)))[0][1]
-            assert Decimal(est.data["estimate_kcu"]) == reserved == _estimate(2, 4, 3)
+            assert Decimal(data_str(est, "estimate_kcu")) == reserved == _estimate(2, 4, 3)
 
     asyncio.run(_run())
 
@@ -519,7 +520,7 @@ def test_c3_reconciliation_nets_to_actual_and_usage_matches(migrated_url: str) -
                 profile=provisioning_profile(vcpu=2, memory_mb=4096, disk_gb=10),
             )
             assert prov.status == "queued"
-            job = await _provision_job_for_system(pool, prov.data["system_id"])
+            job = await _provision_job_for_system(pool, data_str(prov, "system_id"))
             async with pool.connection() as conn:
                 await systems_handlers.provision_handler(conn, job, _FakeProvisioner())
             # The handler stamped active_started_at on ready; back-date it 2h to simulate
@@ -540,7 +541,7 @@ def test_c3_reconciliation_nets_to_actual_and_usage_matches(migrated_url: str) -
             assert actual != estimate  # the lease did not run the full 3h window
             assert net != Decimal(0)  # the bug would have netted 0 (active_hours = 0)
             usage = await usage_project(pool, _viewer_ctx(), project="proj")
-            assert Decimal(usage.data["spent_kcu"]) == net
+            assert Decimal(data_str(usage, "spent_kcu")) == net
 
     asyncio.run(_run())
 
@@ -885,7 +886,7 @@ def test_c6_operator_refused_admin_ops(migrated_url: str) -> None:
                 allocation_id=grant.object_id,
                 profile=provisioning_profile(vcpu=2, memory_mb=4096, disk_gb=10),
             )
-            sys_id = prov.data["system_id"]
+            sys_id = data_str(prov, "system_id")
             async with pool.connection() as conn:
                 await conn.execute("UPDATE systems SET state = 'ready' WHERE id = %s", (sys_id,))
             power = await control_tools.power_system(pool, op, system_id=sys_id, action="off")
@@ -916,7 +917,7 @@ def test_c6_operator_force_crash_returns_authorization_denied_envelope(migrated_
                     destructive_ops=["force_crash"], vcpu=2, memory_mb=4096, disk_gb=10
                 ),
             )
-            sys_id = prov.data["system_id"]
+            sys_id = data_str(prov, "system_id")
             async with pool.connection() as conn:
                 await conn.execute("UPDATE systems SET state = 'ready' WHERE id = %s", (sys_id,))
                 await conn.execute(
@@ -963,7 +964,7 @@ def test_c6_admin_and_operator_succeed_on_their_surfaces(migrated_url: str) -> N
                     destructive_ops=["reprovision"], vcpu=2, memory_mb=4096, disk_gb=10
                 ),
             )
-            sys_id = prov.data["system_id"]
+            sys_id = data_str(prov, "system_id")
             async with pool.connection() as conn:
                 await conn.execute("UPDATE systems SET state = 'ready' WHERE id = %s", (sys_id,))
                 await conn.execute(
@@ -1048,7 +1049,7 @@ def test_c7_reprovision_in_place_cycle(migrated_url: str) -> None:
                     destructive_ops=["reprovision"], vcpu=2, memory_mb=4096, disk_gb=10
                 ),
             )
-            sys_id = prov.data["system_id"]
+            sys_id = data_str(prov, "system_id")
             async with pool.connection() as conn:
                 await conn.execute(
                     "UPDATE systems SET state = 'ready', domain_name = %s WHERE id = %s",

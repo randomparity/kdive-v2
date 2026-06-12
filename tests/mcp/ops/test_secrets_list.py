@@ -25,6 +25,7 @@ from kdive.mcp.tools.ops import secrets
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole, Role
 from kdive.security.secrets.secret_registry import SecretRegistry
+from tests.mcp.json_data import data_sequence
 
 _SECRET_VALUE = "s3cr3t-value"  # pragma: allowlist secret - test fixture, not a real secret
 _REF = "ref://build/key"
@@ -111,7 +112,7 @@ def test_platform_operator_gets_presence_only_and_audits(migrated_url: str) -> N
         async with _pool(migrated_url) as pool:
             resp = await secrets.list_secrets_tool(pool, _registry_with_secret(), _OPERATOR)
             assert resp.status == "ok"
-            assert _REF in resp.data["secrets"]  # the reference (scope key) — presence
+            assert _REF in data_sequence(resp, "secrets")  # the reference (scope key)
             assert _SECRET_VALUE not in str(resp.model_dump())  # never the value
         rows = await _platform_audit_rows(migrated_url)
         assert len(rows) == 1

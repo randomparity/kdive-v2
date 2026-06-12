@@ -17,6 +17,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID, uuid4
 
 import psycopg
@@ -165,11 +166,17 @@ async def _platform_audit_rows(url: str) -> list[tuple[object, ...]]:
 
 
 def _systems(resp: ToolResponse) -> list[dict[str, object]]:
-    return [item.data for item in resp.items if item.data["kind"] == "system"]
+    return [
+        cast(dict[str, object], item.data) for item in resp.items if item.data["kind"] == "system"
+    ]
 
 
 def _allocations(resp: ToolResponse) -> list[dict[str, object]]:
-    return [item.data for item in resp.items if item.data["kind"] == "allocation"]
+    return [
+        cast(dict[str, object], item.data)
+        for item in resp.items
+        if item.data["kind"] == "allocation"
+    ]
 
 
 # ---- authorization ----------------------------------------------------------------

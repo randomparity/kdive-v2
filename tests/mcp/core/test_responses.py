@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
-from kdive.mcp.responses import ToolResponse, current_status_data, reason_data
+from kdive.mcp.responses import ResponseData, ToolResponse, current_status_data, reason_data
 from kdive.mcp.tools import _common
 
 _NOW = dt.datetime(2026, 6, 3, 12, 0, tzinfo=dt.UTC)
@@ -118,7 +119,7 @@ def test_data_accepts_nested_json_values_and_rejects_other_objects() -> None:
 
     assert resp.data["rows"] == [{"id": "a", "count": 1, "enabled": True, "note": None}]
     with pytest.raises(ValueError, match="non-JSON"):
-        ToolResponse.success("bad", "ok", data={"when": _NOW})
+        ToolResponse.success("bad", "ok", data=cast(ResponseData, {"when": _NOW}))
 
 
 def test_success_factory_on_failure_status_raises() -> None:
