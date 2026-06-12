@@ -152,6 +152,17 @@ async def get_investigation(
         return _envelope_for_investigation(inv)
 
 
+async def _resolve_operator_investigation(
+    conn: AsyncConnection, ctx: RequestContext, uid: UUID, raw_id: str
+) -> Investigation | ToolResponse:
+    """Resolve an operator-owned Investigation row or return the not-found-shaped error."""
+    inv = await INVESTIGATIONS.get(conn, uid)
+    if inv is None or inv.project not in ctx.projects:
+        return _config_error(raw_id)
+    require_role(ctx, inv.project, Role.OPERATOR)
+    return inv
+
+
 async def _close_locked(
     conn: AsyncConnection, ctx: RequestContext, uid: UUID, *, project: str
 ) -> ToolResponse:
@@ -196,10 +207,9 @@ async def close_investigation(
         return _config_error(investigation_id)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
-            inv = await INVESTIGATIONS.get(conn, uid)
-            if inv is None or inv.project not in ctx.projects:
-                return _config_error(investigation_id)
-            require_role(ctx, inv.project, Role.OPERATOR)
+            inv = await _resolve_operator_investigation(conn, ctx, uid, investigation_id)
+            if isinstance(inv, ToolResponse):
+                return inv
             try:
                 return await _close_locked(conn, ctx, uid, project=inv.project)
             except IllegalTransition:
@@ -217,6 +227,18 @@ async def _get_for_update(conn: AsyncConnection, uid: UUID) -> Investigation | N
         await cur.execute("SELECT * FROM investigations WHERE id = %s FOR UPDATE", (uid,))
         row = await cur.fetchone()
     return Investigation.model_validate(row) if row else None
+
+
+async def _get_mutable_investigation_locked(
+    conn: AsyncConnection, uid: UUID
+) -> Investigation | ToolResponse:
+    """Return a locked non-terminal Investigation, or the mutation config error."""
+    current = await _get_for_update(conn, uid)
+    if current is None:
+        return _config_error(str(uid))
+    if current.state in _TERMINAL_INVESTIGATION:
+        return _config_error(str(uid), data={"current_status": current.state.value})
+    return current
 
 
 def _natural_key(ref: ExternalRefKey) -> tuple[str, str] | None:
@@ -241,11 +263,9 @@ async def _link_locked(
     conn: AsyncConnection, ctx: RequestContext, uid: UUID, ref: ExternalRef, *, project: str
 ) -> ToolResponse:
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.INVESTIGATION, uid):
-        current = await _get_for_update(conn, uid)
-        if current is None:
-            return _config_error(str(uid))
-        if current.state in _TERMINAL_INVESTIGATION:
-            return _config_error(str(uid), data={"current_status": current.state.value})
+        current = await _get_mutable_investigation_locked(conn, uid)
+        if isinstance(current, ToolResponse):
+            return current
         kept = [r for r in current.external_refs if (r.tracker, r.id) != (ref.tracker, ref.id)]
         kept.append(ref)
         await conn.execute(
@@ -276,11 +296,9 @@ async def _unlink_locked(
     project: str,
 ) -> ToolResponse:
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.INVESTIGATION, uid):
-        current = await _get_for_update(conn, uid)
-        if current is None:
-            return _config_error(str(uid))
-        if current.state in _TERMINAL_INVESTIGATION:
-            return _config_error(str(uid), data={"current_status": current.state.value})
+        current = await _get_mutable_investigation_locked(conn, uid)
+        if isinstance(current, ToolResponse):
+            return current
         kept = [r for r in current.external_refs if (r.tracker, r.id) != key]
         if len(kept) != len(current.external_refs):
             await conn.execute(
@@ -316,10 +334,9 @@ async def link_external_ref(
         return _config_error(investigation_id)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
-            inv = await INVESTIGATIONS.get(conn, uid)
-            if inv is None or inv.project not in ctx.projects:
-                return _config_error(investigation_id)
-            require_role(ctx, inv.project, Role.OPERATOR)
+            inv = await _resolve_operator_investigation(conn, ctx, uid, investigation_id)
+            if isinstance(inv, ToolResponse):
+                return inv
             return await _link_locked(conn, ctx, uid, parsed, project=inv.project)
 
 
@@ -335,10 +352,9 @@ async def unlink_external_ref(
         return _config_error(investigation_id)
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
-            inv = await INVESTIGATIONS.get(conn, uid)
-            if inv is None or inv.project not in ctx.projects:
-                return _config_error(investigation_id)
-            require_role(ctx, inv.project, Role.OPERATOR)
+            inv = await _resolve_operator_investigation(conn, ctx, uid, investigation_id)
+            if isinstance(inv, ToolResponse):
+                return inv
             return await _unlink_locked(conn, ctx, uid, key, project=inv.project)
 
 
