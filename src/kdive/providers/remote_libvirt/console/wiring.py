@@ -21,6 +21,8 @@ import psycopg
 from kdive.domain.models import Sensitivity
 from kdive.provider_components.artifacts import (
     ArtifactWriteRequest,
+    FetchedArtifact,
+    StoredArtifact,
     artifact_key,
     owner_prefix,
 )
@@ -42,11 +44,9 @@ _PARTS_PREFIX = "console-parts-"
 
 
 class _StorePort(Protocol):
-    def put_artifact(self, request: ArtifactWriteRequest):  # noqa: ANN201 - StoredArtifact
-        ...
+    def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact: ...
 
-    def get_artifact(self, key: str, etag: str | None):  # noqa: ANN201 - FetchedArtifact
-        ...
+    def get_artifact(self, key: str, etag: str | None) -> FetchedArtifact: ...
 
     def list_prefix(self, prefix: str) -> list[str]: ...
     def delete(self, key: str) -> None: ...
