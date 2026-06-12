@@ -24,15 +24,19 @@ is synchronous — the worker offloads the whole call via ``asyncio.to_thread`` 
 
 from __future__ import annotations
 
-import hashlib
-import re
-import subprocess  # noqa: S404 - libguestfs tools invoked with fixed argv, no shell
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.images.planes._build_common import (
+    build_workspace,
+    digest_file,
+    publish_qcow2,
+    run_guestfs_tool,
+    validate_image_name,
+)
 from kdive.images.planes.base import RootfsBuildOutput, RootfsBuildSpec
 from kdive.prereqs.managed_ssh_key import (
     ManagedKeyError,
@@ -42,11 +46,7 @@ from kdive.prereqs.managed_ssh_key import (
 
 _DEFAULT_WORKSPACE = "/var/lib/kdive/build/images"
 _DEFAULT_IMAGE_SIZE = "6G"
-# The image name becomes the qcow2 filename under the workspace; restrict it so it cannot carry
-# a path separator or `..` that would write the image outside the workspace.
-_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 _READINESS_MARKER = "kdive-ready"
-_DIGEST_CHUNK = 1024 * 1024
 _VIRT_BUILDER_TIMEOUT_S = 30 * 60
 _REPACK_TIMEOUT_S = 30 * 60
 _GUESTFISH_TIMEOUT_S = 5 * 60
@@ -83,34 +83,12 @@ def _resolve_managed_public_key() -> Path:
 
 def _run(argv: list[str], *, stage: str, timeout_s: int) -> None:
     """Run a fixed-argv libguestfs tool, mapping failure onto a categorized error."""
-    try:
-        result = subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted inputs
-            argv, capture_output=True, text=True, timeout=timeout_s, check=False
-        )
-    except FileNotFoundError as exc:
-        raise CategorizedError(
-            f"{argv[0]} is not installed; cannot build the rootfs image",
-            category=ErrorCategory.MISSING_DEPENDENCY,
-            details={"stage": stage, "tool": argv[0]},
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise CategorizedError(
-            f"{stage} exceeded its timeout",
-            category=ErrorCategory.PROVISIONING_FAILURE,
-            details={"stage": stage, "tool": argv[0], "timeout_s": timeout_s},
-        ) from exc
-    except OSError as exc:
-        raise CategorizedError(
-            f"failed to launch {argv[0]} for {stage}",
-            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-            details={"stage": stage, "tool": argv[0], "error": type(exc).__name__},
-        ) from exc
-    if result.returncode != 0:
-        raise CategorizedError(
-            f"{stage} failed",
-            category=ErrorCategory.PROVISIONING_FAILURE,
-            details={"stage": stage, "tool": argv[0], "stderr": result.stderr[-2000:]},
-        )
+    run_guestfs_tool(
+        argv,
+        stage=stage,
+        timeout_s=timeout_s,
+        missing_message=f"{argv[0]} is not installed; cannot build the rootfs image",
+    )
 
 
 def _real_virt_builder(
@@ -197,33 +175,14 @@ def _real_normalize_guest(qcow2: Path) -> None:
 
 
 def _run_guestfish(qcow2: Path, script: str) -> None:
-    try:
-        result = subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted paths
-            ["guestfish", "--rw", "-a", str(qcow2), "-i"],
-            input=script,
-            capture_output=True,
-            text=True,
-            timeout=_GUESTFISH_TIMEOUT_S,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise CategorizedError(
-            "guestfish is not installed; cannot normalize the rootfs image",
-            category=ErrorCategory.MISSING_DEPENDENCY,
-            details={"stage": "guestfish", "tool": "guestfish"},
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise CategorizedError(
-            "guestfish normalization exceeded its timeout",
-            category=ErrorCategory.PROVISIONING_FAILURE,
-            details={"stage": "guestfish", "timeout_s": _GUESTFISH_TIMEOUT_S},
-        ) from exc
-    if result.returncode != 0:
-        raise CategorizedError(
-            "guestfish normalization failed",
-            category=ErrorCategory.PROVISIONING_FAILURE,
-            details={"stage": "guestfish", "stderr": result.stderr[-2000:]},
-        )
+    run_guestfs_tool(
+        ["guestfish", "--rw", "-a", str(qcow2), "-i"],
+        stage="guestfish",
+        timeout_s=_GUESTFISH_TIMEOUT_S,
+        missing_message="guestfish is not installed; cannot normalize the rootfs image",
+        failure_message="guestfish normalization failed",
+        input_text=script,
+    )
 
 
 type ResolveAuthorizedKey = Callable[[], Path]
@@ -269,12 +228,7 @@ class LocalLibvirtRootfsBuildPlane:
                 ``MISSING_DEPENDENCY`` for absent libguestfs tooling, or ``PROVISIONING_FAILURE``
                 for a build-stage failure.
         """
-        if not _NAME_RE.fullmatch(spec.name):
-            raise CategorizedError(
-                "image name must match ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ (it becomes a filename)",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"name": spec.name},
-            )
+        validate_image_name(spec.name)
         authorized_key = self._tools.resolve_authorized_key()
         if not authorized_key.is_file():
             raise CategorizedError(
@@ -282,9 +236,7 @@ class LocalLibvirtRootfsBuildPlane:
                 category=ErrorCategory.CONFIGURATION_ERROR,
                 details={"authorized_key": str(authorized_key)},
             )
-        self._workspace.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=self._workspace, prefix="rootfs-build-") as work:
-            work_dir = Path(work)
+        with build_workspace(self._workspace, prefix="rootfs-build-") as work_dir:
             scratch = work_dir / "scratch.qcow2"
             self._tools.virt_builder(
                 releasever=spec.releasever,
@@ -293,24 +245,16 @@ class LocalLibvirtRootfsBuildPlane:
                 scratch=scratch,
                 size=self._size,
             )
-            qcow2 = self._workspace / f"{spec.name}.qcow2"
-            self._tools.repack_whole_disk_ext4(scratch=scratch, qcow2=qcow2, size=self._size)
-            self._tools.normalize_guest(qcow2)
-        digest = _digest_file(qcow2)
+            staged = work_dir / f"{spec.name}.qcow2"
+            self._tools.repack_whole_disk_ext4(scratch=scratch, qcow2=staged, size=self._size)
+            self._tools.normalize_guest(staged)
+            qcow2 = publish_qcow2(self._workspace, image_name=spec.name, scratch=staged)
+        digest = digest_file(qcow2)
         return RootfsBuildOutput(
             qcow2_path=qcow2,
             digest=digest,
             provenance=_provenance(spec, size=self._size, authorized_key=authorized_key),
         )
-
-
-def _digest_file(path: Path) -> str:
-    """Return the ``sha256:<hex>`` content digest of ``path`` (the image identity)."""
-    hasher = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(_DIGEST_CHUNK), b""):
-            hasher.update(chunk)
-    return f"sha256:{hasher.hexdigest()}"
 
 
 def _provenance(spec: RootfsBuildSpec, *, size: str, authorized_key: Path) -> dict[str, object]:
@@ -319,7 +263,7 @@ def _provenance(spec: RootfsBuildSpec, *, size: str, authorized_key: Path) -> di
     ``source_image_digest`` is the caller-declared base/template pin recorded as requested — the
     plane does not re-fetch and checksum the virt-builder template, so it names what was *asked
     for*, not a plane-verified hash. The image's verifiable identity is the output qcow2 content
-    digest (:func:`_digest_file`), per ADR-0092.
+    digest (:func:`kdive.images.planes._build_common.digest_file`), per ADR-0092.
     """
     return {
         "plane": "local-libvirt",

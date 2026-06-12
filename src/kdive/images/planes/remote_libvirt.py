@@ -28,15 +28,18 @@ contract is the recorded provenance, and the image identity is the output qcow2 
 
 from __future__ import annotations
 
-import hashlib
-import re
-import subprocess  # noqa: S404 - libguestfs tools invoked with fixed argv, no shell
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.images.planes._build_common import (
+    build_workspace,
+    digest_file,
+    publish_qcow2,
+    run_guestfs_tool,
+    validate_image_name,
+)
 from kdive.images.planes.base import RootfsBuildOutput, RootfsBuildSpec
 
 # The kdive-published remote provisioning base image's catalog name (ADR-0092). The remote
@@ -51,43 +54,17 @@ _GUEST_AGENT_PACKAGE = "qemu-guest-agent"
 
 _DEFAULT_WORKSPACE = "/var/lib/kdive/build/images"
 _DEFAULT_IMAGE_SIZE = "10G"
-# The image name becomes the qcow2 filename under the workspace; restrict it so it cannot carry
-# a path separator or `..` that would write the image outside the workspace.
-_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
-_DIGEST_CHUNK = 1024 * 1024
 _VIRT_BUILDER_TIMEOUT_S = 30 * 60
 
 
 def _run(argv: list[str], *, stage: str, timeout_s: int) -> None:
     """Run a fixed-argv libguestfs tool, mapping failure onto a categorized error."""
-    try:
-        result = subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted inputs
-            argv, capture_output=True, text=True, timeout=timeout_s, check=False
-        )
-    except FileNotFoundError as exc:
-        raise CategorizedError(
-            f"{argv[0]} is not installed; cannot build the remote base image",
-            category=ErrorCategory.MISSING_DEPENDENCY,
-            details={"stage": stage, "tool": argv[0]},
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise CategorizedError(
-            f"{stage} exceeded its timeout",
-            category=ErrorCategory.PROVISIONING_FAILURE,
-            details={"stage": stage, "tool": argv[0], "timeout_s": timeout_s},
-        ) from exc
-    except OSError as exc:
-        raise CategorizedError(
-            f"failed to launch {argv[0]} for {stage}",
-            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-            details={"stage": stage, "tool": argv[0], "error": type(exc).__name__},
-        ) from exc
-    if result.returncode != 0:
-        raise CategorizedError(
-            f"{stage} failed",
-            category=ErrorCategory.PROVISIONING_FAILURE,
-            details={"stage": stage, "tool": argv[0], "stderr": result.stderr[-2000:]},
-        )
+    run_guestfs_tool(
+        argv,
+        stage=stage,
+        timeout_s=timeout_s,
+        missing_message=f"{argv[0]} is not installed; cannot build the remote base image",
+    )
 
 
 def _guest_agent_packages(packages: tuple[str, ...]) -> tuple[str, ...]:
@@ -156,15 +133,9 @@ class RemoteLibvirtRootfsBuildPlane:
                 for a build-stage failure or an absent output image, or ``INFRASTRUCTURE_FAILURE``
                 for a non-``FileNotFound`` launch error.
         """
-        if not _NAME_RE.fullmatch(spec.name):
-            raise CategorizedError(
-                "image name must match ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ (it becomes a filename)",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"name": spec.name},
-            )
-        self._workspace.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=self._workspace, prefix="remote-build-") as work:
-            scratch = Path(work) / f"{spec.name}.qcow2"
+        validate_image_name(spec.name)
+        with build_workspace(self._workspace, prefix="remote-build-") as work_dir:
+            scratch = work_dir / f"{spec.name}.qcow2"
             self._tools.virt_builder(
                 releasever=spec.releasever,
                 packages=spec.packages,
@@ -177,21 +148,11 @@ class RemoteLibvirtRootfsBuildPlane:
                     category=ErrorCategory.PROVISIONING_FAILURE,
                     details={"stage": "virt-builder"},
                 )
-            qcow2 = self._workspace / f"{spec.name}.qcow2"
-            scratch.replace(qcow2)
-        digest = _digest_file(qcow2)
+            qcow2 = publish_qcow2(self._workspace, image_name=spec.name, scratch=scratch)
+        digest = digest_file(qcow2)
         return RootfsBuildOutput(
             qcow2_path=qcow2, digest=digest, provenance=_provenance(spec, size=self._size)
         )
-
-
-def _digest_file(path: Path) -> str:
-    """Return the ``sha256:<hex>`` content digest of ``path`` (the image identity)."""
-    hasher = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(_DIGEST_CHUNK), b""):
-            hasher.update(chunk)
-    return f"sha256:{hasher.hexdigest()}"
 
 
 def _provenance(spec: RootfsBuildSpec, *, size: str) -> dict[str, object]:
@@ -200,7 +161,7 @@ def _provenance(spec: RootfsBuildSpec, *, size: str) -> dict[str, object]:
     ``source_image_digest`` is the caller-declared base/template pin recorded as requested — the
     plane does not re-fetch and checksum the virt-builder template, so it names what was *asked
     for*, not a plane-verified hash. The image's verifiable identity is the output qcow2 content
-    digest (:func:`_digest_file`), per ADR-0092.
+    digest (:func:`kdive.images.planes._build_common.digest_file`), per ADR-0092.
     """
     return {
         "plane": "remote-libvirt",

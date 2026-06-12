@@ -122,7 +122,11 @@ def test_build_drives_the_layout_stages_in_order(tmp_path: Path) -> None:
     assert tools.builder_calls[0]["packages"] == ("openssh-server", "drgn")
     assert tools.builder_calls[0]["authorized_key"] == key
     assert len(tools.repack_calls) == 1, "repacked to a whole-disk ext4 qcow2 once"
-    assert tools.normalize_calls == [out.qcow2_path], "fstab/crypttab/SELinux normalized on output"
+    staged_qcow2 = tools.repack_calls[0][1]
+    assert tools.normalize_calls == [staged_qcow2], (
+        "fstab/crypttab/SELinux normalized before publish"
+    )
+    assert out.qcow2_path.name == staged_qcow2.name
 
 
 def test_build_fails_fast_when_authorized_key_unresolved(tmp_path: Path) -> None:
