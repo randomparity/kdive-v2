@@ -31,11 +31,11 @@ from kdive.provider_components.artifacts import (
 )
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
 from kdive.providers.remote_libvirt.retrieve import (
-    _DMESG_UNAVAILABLE,
     RemoteLibvirtRetrieve,
     host_dump_volume_name,
 )
 from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
+    DMESG_UNAVAILABLE,
     HostDumpCapturer,
     HostDumpOptions,
 )
@@ -353,7 +353,7 @@ def test_host_dump_dmesg_extraction_failure_degrades_to_placeholder(tmp_path: Pa
     assert vol.deleted
     # the redacted artifact carries the honest placeholder, not a misleading empty log.
     assert store.put_requests
-    assert store.put_requests[0].data == _DMESG_UNAVAILABLE
+    assert store.put_requests[0].data == DMESG_UNAVAILABLE
 
 
 def test_host_dump_missing_drgn_dependency_is_not_degraded(tmp_path: Path) -> None:

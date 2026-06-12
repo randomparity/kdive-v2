@@ -31,9 +31,6 @@ from kdive.providers.remote_libvirt.retrieve.common import (
     open_libvirt_capture,
 )
 from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
-    DMESG_UNAVAILABLE as _DMESG_UNAVAILABLE,
-)
-from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
     HostDumpCapturer,
     HostDumpOptions,
     host_dump_volume_name,
@@ -189,7 +186,6 @@ class RemoteLibvirtRetrieve:
 
 __all__ = [
     "RemoteLibvirtRetrieve",
-    "_DMESG_UNAVAILABLE",
     "_file_sha256_b64",
     "_pool_type_and_target",
     "host_dump_volume_name",
