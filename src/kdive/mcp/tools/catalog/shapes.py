@@ -187,7 +187,6 @@ def _build_shape(request: ShapeSetRequest) -> SystemShape:
 
 
 def _shape_envelope(shape: SystemShape) -> ToolResponse:
-    """Build the success envelope for one shape (object_id = name)."""
     return ToolResponse.success(
         shape.name,
         "ok",
@@ -216,7 +215,6 @@ async def _audit_applied(
     name: str,
     values: dict[str, str],
 ) -> None:
-    """Write the success ``platform_audit_log`` row (scope = the shape name)."""
     await audit.record_platform(
         conn,
         principal=ctx.principal,
