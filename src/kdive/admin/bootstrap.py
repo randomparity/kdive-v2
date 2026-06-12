@@ -49,7 +49,34 @@ def migrate(database_url: str | None = None) -> int:
     print(f"applied {len(applied)} migration(s)")
     seeded = _seed_baseline_rootfs(url)
     print(f"seeded {seeded} baseline rootfs image(s)")
+    seeded_configs = _seed_build_configs_step(url)
+    print(f"seeded {seeded_configs} build-config fragment(s)")
     return len(applied)
+
+
+def _seed_build_configs_step(database_url: str) -> int:
+    """Publish the packaged build-config fragments after migrating (ADR-0096).
+
+    Runs in the deploy ``migrate -> seed`` step. Idempotent (sha256-gated).
+
+    Args:
+        database_url: A psycopg-compatible connection string for the application database.
+
+    Returns:
+        The number of build-config fragments published (0 if already current).
+    """
+    import asyncio
+
+    from kdive.build_configs.seed import seed_build_configs
+    from kdive.store.objectstore import object_store_from_env
+
+    store = object_store_from_env()
+
+    async def _run() -> int:
+        async with await psycopg.AsyncConnection.connect(database_url, autocommit=True) as conn:
+            return await seed_build_configs(conn, store)
+
+    return asyncio.run(_run())
 
 
 def _seed_baseline_rootfs(database_url: str) -> int:
