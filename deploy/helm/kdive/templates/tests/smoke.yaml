@@ -1,0 +1,61 @@
+{{- if .Values.bundledBackends }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "kdive.fullname" . }}-smoke
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  restartPolicy: Never
+  containers:
+    - name: smoke
+      image: {{ include "kdive.image" . }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      env:
+        - name: OIDC
+          value: "http://{{ include "kdive.fullname" . }}-oidc:8080/default"
+        - name: MCP
+          value: "http://{{ include "kdive.fullname" . }}-server:8000/mcp"
+      command: ["python", "-c"]
+      args:
+        - |
+          import asyncio, json, os, sys, time, urllib.error, urllib.request
+          mcp, oidc = os.environ["MCP"], os.environ["OIDC"]
+          # (1) best-effort node-CPU preflight (this pod's node only; the readiness
+          # poll below is the authoritative x86-64-v2 signal).
+          if "sse4_2" not in open("/proc/cpuinfo").read():
+              print("WARN: node lacks sse4_2 (x86-64-v2); demo backends may crash", file=sys.stderr)
+          # (2) poll the MCP Service until it answers. ANY HTTP status means the server
+          # process is up (don't guess FastMCP's exact unauth/GET code — 401/400/406/307/405
+          # are all "up"); only connection-level errors mean "not yet". tools/list is static,
+          # so this proceeds correctly even while /readyz is still red (post-install migrate).
+          for _ in range(60):
+              try:
+                  urllib.request.urlopen(mcp, timeout=3)
+                  break
+              except urllib.error.HTTPError:
+                  break  # server responded with an HTTP status -> it is up
+              except Exception:
+                  time.sleep(2)  # connection refused / no route / timeout -> wait
+          else:
+              sys.exit("MCP never became reachable")
+          # (3) mint an aud=kdive token from the bundled issuer.
+          data = b"grant_type=client_credentials&client_id=kdive-demo&client_secret=x"
+          req = urllib.request.Request(
+              oidc + "/token", data=data,
+              headers={"Content-Type": "application/x-www-form-urlencoded"})
+          token = json.load(urllib.request.urlopen(req, timeout=10))["access_token"]
+          # (4) list tools over MCP via the session-negotiating client (handshake required).
+          from fastmcp import Client
+          from fastmcp.client.transports import StreamableHttpTransport
+          async def main():
+              transport = StreamableHttpTransport(mcp, headers={"Authorization": "Bearer " + token})
+              async with Client(transport) as client:
+                  tools = await client.list_tools()
+                  assert tools, "tools/list returned empty"
+                  print("OK: %d tools" % len(tools))
+          asyncio.run(main())
+{{- end }}
