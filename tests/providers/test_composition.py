@@ -11,8 +11,6 @@ from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind, Sensitivity
-from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane
-from kdive.images.planes.remote_libvirt import RemoteLibvirtRootfsBuildPlane
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.provider_components.artifacts import StoredArtifact
@@ -23,6 +21,7 @@ from kdive.provider_components.references import (
     LocalComponentRef,
 )
 from kdive.providers import composition
+from kdive.providers.local_libvirt.rootfs_build import LocalLibvirtRootfsBuildPlane
 from kdive.providers.ports import (
     CaptureOutput,
     CrashOutput,
@@ -36,6 +35,7 @@ from kdive.providers.remote_libvirt.lifecycle.control import RemoteLibvirtContro
 from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
 from kdive.providers.remote_libvirt.lifecycle.provisioning import RemoteLibvirtProvision
 from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
+from kdive.providers.remote_libvirt.rootfs_build import RemoteLibvirtRootfsBuildPlane
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.secret_registry import SecretRegistry
 

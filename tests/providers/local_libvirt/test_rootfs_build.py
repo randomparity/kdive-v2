@@ -18,7 +18,10 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.images.planes.base import RootfsBuildOutput, RootfsBuildSpec
-from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane, RootfsBuildTools
+from kdive.providers.local_libvirt.rootfs_build import (
+    LocalLibvirtRootfsBuildPlane,
+    RootfsBuildTools,
+)
 
 
 def _spec(**overrides: object) -> RootfsBuildSpec:

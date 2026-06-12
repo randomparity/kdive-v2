@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind
-from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane
 from kdive.provider_components.references import (
     CONFIG_COMPONENT,
     INITRD_COMPONENT,
@@ -33,6 +32,7 @@ from kdive.providers.local_libvirt.lifecycle.control import LocalLibvirtControl
 from kdive.providers.local_libvirt.lifecycle.install import LocalLibvirtInstall
 from kdive.providers.local_libvirt.lifecycle.provisioning import LocalLibvirtProvisioning
 from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
+from kdive.providers.local_libvirt.rootfs_build import LocalLibvirtRootfsBuildPlane
 from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry

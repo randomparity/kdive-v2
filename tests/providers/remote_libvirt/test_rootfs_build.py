@@ -23,7 +23,7 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.images.planes.base import RootfsBuildOutput, RootfsBuildPlane, RootfsBuildSpec
-from kdive.images.planes.remote_libvirt import (
+from kdive.providers.remote_libvirt.rootfs_build import (
     REMOTE_BASE_IMAGE_NAME,
     RemoteLibvirtRootfsBuildPlane,
     RemoteRootfsBuildTools,

@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 
 from kdive.images.planes.base import RootfsBuildSpec
-from kdive.images.planes.local_libvirt import LocalLibvirtRootfsBuildPlane
+from kdive.providers.local_libvirt.rootfs_build import LocalLibvirtRootfsBuildPlane
 
 _log = logging.getLogger(__name__)
 

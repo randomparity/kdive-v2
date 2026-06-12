@@ -31,8 +31,8 @@ import time
 
 import pytest
 
-from kdive.images.planes.remote_libvirt import REMOTE_BASE_IMAGE_NAME
 from kdive.profiles.provisioning import ProvisioningProfile
+from kdive.providers.remote_libvirt.rootfs_build import REMOTE_BASE_IMAGE_NAME
 from tests.integration.live_stack.conftest import require_issuer, require_stack
 from tests.integration.live_stack.harness import LiveStackClient, OidcIssuer
 from tests.integration.live_stack.spine import (

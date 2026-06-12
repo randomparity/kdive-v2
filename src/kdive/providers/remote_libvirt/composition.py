@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind
-from kdive.images.planes.remote_libvirt import RemoteLibvirtRootfsBuildPlane
 from kdive.provider_components.references import (
     CONFIG_COMPONENT,
     PATCH_COMPONENT,
@@ -32,6 +31,7 @@ from kdive.providers.remote_libvirt.lifecycle.control import RemoteLibvirtContro
 from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
 from kdive.providers.remote_libvirt.lifecycle.provisioning import RemoteLibvirtProvision
 from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
+from kdive.providers.remote_libvirt.rootfs_build import RemoteLibvirtRootfsBuildPlane
 from kdive.providers.remote_libvirt.transport_reset import RemoteLibvirtTransportResetter
 from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
 from kdive.providers.transport_reset import TransportResetter
