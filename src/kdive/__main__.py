@@ -33,7 +33,7 @@ from kdive.config.core_settings import (
 from kdive.db.pool import create_pool
 from kdive.domain.errors import CategorizedError
 from kdive.images.rootfs_command import add_build_rootfs_parser, run_build_rootfs
-from kdive.reconciler.console_assembly import build_console_hosting, start_console_hosting
+from kdive.reconciler.console_assembly import start_console_hosting
 from kdive.version import full_version
 
 if TYPE_CHECKING:
@@ -250,7 +250,7 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
     discovery_task = asyncio.create_task(_register_provider_resources(pool, provider_resolver))
     console_hosting = None
     try:
-        console_hosting = await build_console_hosting(secret_registry)
+        console_hosting = await provider_composition.build_reconciler_console_hosting()
         reconciler = Reconciler(
             pool,
             provider_composition.build_reconciler_reaper(),

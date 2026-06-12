@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.providers.remote_libvirt import composition as remote_composition
 from kdive.reconciler import console_assembly
 from kdive.security.secrets.secret_registry import SecretRegistry
 
@@ -35,17 +36,17 @@ def test_build_console_hosting_returns_none_when_remote_config_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _run() -> None:
-        monkeypatch.setattr(console_assembly, "database_url", lambda: "postgresql://db/kdive")
-        monkeypatch.setattr(console_assembly, "object_store_from_env", lambda: object())
+        monkeypatch.setattr(remote_composition, "database_url", lambda: "postgresql://db/kdive")
+        monkeypatch.setattr(remote_composition, "object_store_from_env", lambda: object())
 
         def _missing_config() -> object:
             raise CategorizedError(
                 "remote config missing", category=ErrorCategory.CONFIGURATION_ERROR
             )
 
-        monkeypatch.setattr(console_assembly, "remote_config_from_env", _missing_config)
+        monkeypatch.setattr(remote_composition, "remote_config_from_env", _missing_config)
 
-        hosting = await console_assembly.build_console_hosting(SecretRegistry())
+        hosting = await remote_composition.build_console_hosting(secret_registry=SecretRegistry())
         assert hosting is None
 
     asyncio.run(_run())
@@ -57,11 +58,11 @@ def test_build_console_hosting_opens_host_pool_and_returns_registry(
     async def _run() -> None:
         leader_conn = _FakeLeaderConn()
         host_pool = _FakePool()
-        monkeypatch.setattr(console_assembly, "database_url", lambda: "postgresql://db/kdive")
-        monkeypatch.setattr(console_assembly, "object_store_from_env", lambda: object())
-        monkeypatch.setattr(console_assembly, "remote_config_from_env", lambda: object())
-        monkeypatch.setattr(console_assembly, "secret_backend_from_env", lambda **_: object())
-        monkeypatch.setattr(console_assembly, "create_pool", lambda **_: host_pool)
+        monkeypatch.setattr(remote_composition, "database_url", lambda: "postgresql://db/kdive")
+        monkeypatch.setattr(remote_composition, "object_store_from_env", lambda: object())
+        monkeypatch.setattr(remote_composition, "remote_config_from_env", lambda: object())
+        monkeypatch.setattr(remote_composition, "secret_backend_from_env", lambda **_: object())
+        monkeypatch.setattr(remote_composition, "create_pool", lambda **_: host_pool)
 
         async def _connect(conninfo: str, *, autocommit: bool) -> _FakeLeaderConn:
             assert conninfo == "postgresql://db/kdive"
@@ -69,10 +70,10 @@ def test_build_console_hosting_opens_host_pool_and_returns_registry(
             return leader_conn
 
         monkeypatch.setattr(
-            console_assembly.psycopg.AsyncConnection, "connect", staticmethod(_connect)
+            remote_composition.psycopg.AsyncConnection, "connect", staticmethod(_connect)
         )
 
-        hosting = await console_assembly.build_console_hosting(SecretRegistry())
+        hosting = await remote_composition.build_console_hosting(secret_registry=SecretRegistry())
 
         assert hosting is not None
         assert hosting.registry is not None

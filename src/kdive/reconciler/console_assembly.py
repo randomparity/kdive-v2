@@ -1,34 +1,17 @@
-"""Assembly for reconciler-owned remote console hosting."""
+"""Runtime holder for reconciler-owned console hosting."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING
 
 import psycopg
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.db.locks import CONSOLE_HOSTING_LEADER, SessionAdvisoryLock
-from kdive.db.pool import create_pool, database_url
-from kdive.domain.errors import CategorizedError
-from kdive.providers.remote_libvirt.config import remote_config_from_env
-from kdive.providers.remote_libvirt.console.collector import ConsoleCollector
-from kdive.providers.remote_libvirt.console.wiring import (
-    RemoteConsolePartStore,
-    open_remote_console,
-)
 from kdive.reconciler.console_hosting import (
-    AsyncioPumpRunner,
     CollectorRegistry,
     ConsoleHostingLoop,
-    DbRunningRemoteSystems,
 )
-from kdive.security.secrets.secrets import secret_backend_from_env
-from kdive.store.objectstore import object_store_from_env
-
-if TYPE_CHECKING:
-    from kdive.security.secrets.secret_registry import SecretRegistry
 
 CONSOLE_ATTACH_TICK_SECONDS = 1.0
 
@@ -62,46 +45,6 @@ class ConsoleHosting:
         """Release the leader connection and host pool."""
         await self._leader_conn.close()
         await self._host_pool.close()
-
-
-async def build_console_hosting(secret_registry: SecretRegistry) -> ConsoleHosting | None:
-    """Build the single-leader console hosting loop, or ``None`` when unconfigured."""
-    try:
-        conninfo = database_url()
-        store = object_store_from_env()
-        remote_config = remote_config_from_env()
-        secret_backend = secret_backend_from_env(registry=secret_registry)
-    except CategorizedError:
-        return None
-
-    part_store = RemoteConsolePartStore(store, conninfo)
-    leader_conn = await psycopg.AsyncConnection.connect(conninfo, autocommit=True)
-    lock = SessionAdvisoryLock(leader_conn, CONSOLE_HOSTING_LEADER)
-    runner = AsyncioPumpRunner()
-    registry = CollectorRegistry(pump_runner=runner)
-    host_pool = create_pool(min_size=1)
-    await host_pool.open()
-
-    def factory(system_id: object) -> ConsoleCollector:
-        from uuid import UUID
-
-        if not isinstance(system_id, UUID):
-            raise TypeError("console collector factory expected a UUID system_id")
-        return ConsoleCollector(
-            system_id,
-            open_console=lambda sid: open_remote_console(remote_config, secret_backend, sid),
-            store=part_store,
-            secret_registry=secret_registry,
-        )
-
-    loop = ConsoleHostingLoop(
-        leader_lock=lock,
-        running_systems=DbRunningRemoteSystems(host_pool),
-        collector_factory=factory,
-        registry=registry,
-        pump_runner=runner,
-    )
-    return ConsoleHosting(loop, registry, leader_conn, host_pool)
 
 
 def start_console_hosting(

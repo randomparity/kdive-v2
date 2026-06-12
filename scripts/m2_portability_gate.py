@@ -70,7 +70,7 @@ ALLOWED_FILES = frozenset(
         "src/kdive/db/pool.py",
         "src/kdive/domain/lease.py",
         "src/kdive/mcp/auth.py",
-        "src/kdive/mcp/tools/catalog/artifacts_uploads.py",
+        "src/kdive/mcp/tools/catalog/artifacts/uploads.py",
         "src/kdive/mcp/tools/debug/ops.py",
         "src/kdive/security/secrets/secrets.py",
         # Operator-CLI audit attribution (#248, ADR-0089): the milestone's only non-cli core

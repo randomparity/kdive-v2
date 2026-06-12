@@ -350,6 +350,40 @@ def test_dump_volume_reaper_is_remote_when_enabled() -> None:
     assert isinstance(reaper, RemoteLibvirtDumpVolumeReaper)
 
 
+def test_console_hosting_is_none_without_remote() -> None:
+    import asyncio
+
+    comp = composition.ProviderComposition()
+
+    assert asyncio.run(comp.build_reconciler_console_hosting(enable_remote_libvirt=False)) is None
+
+
+def test_console_hosting_delegates_to_remote_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    expected_hosting = object()
+    expected_registry = SecretRegistry()
+    seen: dict[str, object] = {}
+
+    async def _build_console_hosting(*, secret_registry: SecretRegistry) -> object:
+        seen["secret_registry"] = secret_registry
+        return expected_hosting
+
+    monkeypatch.setattr(
+        composition.remote_composition, "build_console_hosting", _build_console_hosting
+    )
+
+    comp = composition.ProviderComposition(secret_registry=expected_registry)
+
+    assert (
+        asyncio.run(comp.build_reconciler_console_hosting(enable_remote_libvirt=True))
+        is expected_hosting
+    )
+    assert seen["secret_registry"] is expected_registry
+
+
 def test_reconciler_reaper_defaults_to_null_when_fault_inject_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

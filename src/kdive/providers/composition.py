@@ -8,6 +8,7 @@ runtime assembly lives next to each provider.
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -33,6 +34,9 @@ from kdive.providers.runtime import DiscoveryRegistrar, ProviderRuntime
 from kdive.providers.transport_reset import NullResetter, TransportResetter
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.resources.discovery import ensure_discovered_resource_registered
+
+if TYPE_CHECKING:
+    from kdive.reconciler.console_assembly import ConsoleHosting
 
 
 def _discovery_registrar(registration: ProviderDiscoveryRegistration) -> DiscoveryRegistrar:
@@ -179,6 +183,16 @@ class ProviderComposition:
                 secret_registry=self._secret_registry
             )
         return NullDumpVolumeReaper()
+
+    async def build_reconciler_console_hosting(
+        self, *, enable_remote_libvirt: bool | None = None
+    ) -> ConsoleHosting | None:
+        """Assemble provider-owned console hosting for the reconciler."""
+        if _remote_libvirt_enabled(enable_remote_libvirt):
+            return await remote_composition.build_console_hosting(
+                secret_registry=self._secret_registry
+            )
+        return None
 
 
 def build_provider_resolver(

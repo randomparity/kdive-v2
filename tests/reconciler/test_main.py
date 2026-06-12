@@ -131,6 +131,9 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
         def build_reconciler_dump_volume_reaper(self) -> object:
             return expected_dump_volume_reaper
 
+        async def build_reconciler_console_hosting(self) -> None:
+            return None
+
     monkeypatch.setattr(composition, "ProviderComposition", _FakeProviderComposition)
 
     constructed: dict[str, object] = {}
