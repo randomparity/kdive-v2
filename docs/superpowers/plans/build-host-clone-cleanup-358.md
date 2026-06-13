@@ -68,8 +68,13 @@ workspace cleanup that also covers a `build_workspace` failure.
 - Assert it is still called with that path when the build fails (e.g.
   `modules_install_returncode=1` and an `olddefconfig` failure inside
   `build_workspace`).
-- `over_transport` (or a directly-constructed transport builder): assert the
-  build routes cleanup through `transport.cleanup` with the workspace path.
+- Transport routing: drive a build through `over_transport` itself —
+  `base.over_transport(fake_transport, host_workspace_root=<root>, git_remote=...,
+  git_ref=..., secret_registry=...).build(run_id, profile)` — and assert the fake
+  transport recorded a `cleanup` call for `<host_workspace_root>/<run_id>`. A
+  directly-constructed transport builder does **not** exercise this: it keeps the
+  default `rmtree` seam, so only `over_transport` proves the SSH/ephemeral
+  build-host wiring (the issue's primary disk-leak case).
 - Existing staging-cleanup and happy-path tests stay green.
 
 **Rollback:** revert the file; default arg keeps prior construction call sites
@@ -91,7 +96,9 @@ cleanup.
 **TDD / acceptance:**
 - Recording-seam test: cleanup called once with `<ws_root>/<run_id>` on success.
 - Failure-path test: cleanup still called on a build failure.
-- `over_transport` test: cleanup routed through `transport.cleanup`.
+- Transport routing: drive the build through `over_transport` (not a
+  directly-constructed builder, which keeps the default `rmtree`) and assert the
+  fake transport recorded a `cleanup` call for `<host_workspace_root>/<run_id>`.
 - Existing happy-path and failure tests stay green.
 
 **Rollback:** revert the file.
