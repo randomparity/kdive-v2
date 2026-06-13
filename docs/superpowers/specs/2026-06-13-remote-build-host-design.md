@@ -113,14 +113,28 @@ provider. Selection resolves a `build_hosts` row; `kind='local'` → `LocalBuild
 (== today), `kind='ssh'` → `SshBuildTransport`. The provider runtime continues to expose a
 `builder`; selection picks the transport the builder runs on.
 
+Selection and **capacity admission happen synchronously at the `runs.build` tool boundary**,
+before the BUILD job is enqueued — so `capacity_exhausted` is a real synchronous tool error
+the caller can act on immediately, not a failed Run discovered later by polling (the build is
+an async job per ADR-0018; a failure raised inside the handler would surface only as a FAILED
+Run, and a Run is single-shot through build). The handler then runs the build against the
+already-selected, already-admitted host.
+
 ```
-runs.build (tool)  →  BUILD job  →  build_handler
+runs.build (tool)
     resolve build host (profile.build_host | default 'worker-local')
-    admit under per-host capacity (advisory lock; fail-fast)
-    builder.build(run_id, profile)  on the selected transport
-        BuildHostOrchestrator.build_workspace()   (unchanged contract)
-    finalize_build(...)   (unchanged ledger)
+    provenance/kind compatibility check (§7)  → configuration_error on mismatch
+    if kind != 'local': acquire a build-host lease (§6)  → capacity_exhausted if full
+    enqueue BUILD job (carries the resolved build_host id)
+        ── BUILD job ──→  build_handler
+            builder.build(run_id, profile)  on the selected transport
+                BuildHostOrchestrator.build_workspace()   (unchanged contract)
+            finalize_build(...)   (unchanged ledger)
+            release the build-host lease (idempotent, on success AND failure)
 ```
+
+The resolved `build_host` id is recorded on the Run (or its BUILD job payload) so the handler
+and the reconciler agree on which host the build holds a lease against.
 
 ## 5. `build_hosts` inventory
 
@@ -134,22 +148,42 @@ New table (migration 0027, additive / forward-only per ADR-0015):
 | `address` | text NULL | `user@host:port` for `ssh`; NULL for `local` |
 | `ssh_credential_ref` | text NULL | secret-by-reference (private key); never the key bytes |
 | `workspace_root` | text NOT NULL | per-run checkout scratch dir on the host |
-| `max_concurrent` | integer NOT NULL CHECK > 0 | capacity ceiling |
-| `active_builds` | integer NOT NULL DEFAULT 0 CHECK ≥ 0 | in-flight count; capacity debit |
-| `enabled` | boolean NOT NULL DEFAULT true | drain/disable without deleting |
-| `state` | text NOT NULL DEFAULT `'ready'` | CHECK in (`'ready'`, `'draining'`, `'unreachable'`); reconciler-maintained |
+| `max_concurrent` | integer NOT NULL CHECK > 0 | capacity ceiling (gated kinds only) |
+| `enabled` | boolean NOT NULL DEFAULT true | operator on/off toggle (drain) |
+| `state` | text NOT NULL DEFAULT `'ready'` | CHECK in (`'ready'`, `'unreachable'`); **reconciler-owned** health |
 | `updated_at` | timestamptz NOT NULL DEFAULT now() | `set_updated_at` trigger |
+
+In-flight builds are **not** counted with an integer column. This codebase models capacity
+by counting non-terminal rows (`services/systems/admission.py`: "System states that occupy a
+per-project quota slot"), and a bare counter cannot be credited idempotently or reclaimed by
+attribution. Instead a companion table records one row per in-flight remote build:
+
+| `build_host_leases` column | type | notes |
+|--------|------|-------|
+| `run_id` | uuid PK | one lease per Run; makes acquire/release idempotent |
+| `build_host_id` | uuid NOT NULL REFERENCES build_hosts(id) | the host this build occupies |
+| `acquired_at` | timestamptz NOT NULL DEFAULT now() | observability only (not a reclaim trigger) |
+
+**Capacity = `COUNT(*) FROM build_host_leases WHERE build_host_id = ?`**, evaluated under the
+per-host lock (§6). Acquire = `INSERT` (PK on `run_id` makes a retry a no-op); release =
+`DELETE WHERE run_id = ?` (idempotent). Reclaim is by **owning-job liveness**, not age (§8).
 
 A **seed row** preserves today's behavior:
 
 ```sql
 INSERT INTO build_hosts (id, name, kind, workspace_root, max_concurrent)
-VALUES (<fixed-uuid>, 'worker-local', 'local', <KDIVE_BUILD_WORKSPACE-or-placeholder>, 1);
+VALUES (<fixed-uuid>, 'worker-local', 'local', '/var/lib/kdive/build', <high-sentinel>);
 ```
 
-With no other host registered, every server-lane build resolves to `worker-local` →
-`LocalBuildTransport` → byte-for-byte the current behavior. `workspace_root` for the local
-seed is informational; the local transport reads `KDIVE_BUILD_WORKSPACE` as it does today.
+`kind='local'` builds are **not capacity-gated**: a worker claims one job at a time
+(`jobs/worker.py` sequential claim loop), so local build concurrency is already bounded by the
+worker fleet, and a single shared `worker-local` row cannot meaningfully model per-replica
+local capacity. Local builds therefore acquire **no lease** — preserving today's behavior
+exactly (no new throttle on concurrent local builds across worker replicas). The seed's
+`max_concurrent` is informational for the local row; `workspace_root` is informational too
+(the local transport reads `KDIVE_BUILD_WORKSPACE` as it does today). With no other host
+registered, every server-lane build resolves to `worker-local` → `LocalBuildTransport` → the
+current behavior.
 
 **Registration plane** (`mcp/tools/ops/build_hosts/`): `build_hosts.register`,
 `build_hosts.list`, `build_hosts.disable`, `build_hosts.remove`.
@@ -158,13 +192,21 @@ seed is informational; the local transport reads `KDIVE_BUILD_WORKSPACE` as it d
   (creating/removing remote-exec infrastructure). `register` validates the `ssh_credential_ref`
   shape (present, resolvable by reference) but does not persist key bytes.
 - `list` is read-only-by-policy passthrough (operator visibility).
-- `remove` refuses a host with `active_builds > 0` (returns `conflict`); `disable` is the
-  drain path that stops new admissions while in-flight builds finish.
+- `disable` is the operator drain toggle: it sets `enabled=false`, which stops new lease
+  acquisitions (selection rejects it) while existing leases finish. `enabled` is the only
+  operator-writable availability field; `state` is reconciler-owned health (`ready` ↔
+  `unreachable`) and is never written by an admin tool.
+- `remove` refuses a host that still has a `build_host_leases` row (returns `conflict`, also
+  FK-enforced via `ON DELETE RESTRICT`); drain via `disable` first, let leases drain, then
+  remove.
+- The built-in `worker-local` seed row is protected: `disable` and `remove` refuse it
+  (`conflict`), because it is the default fallback every no-name build resolves to —
+  disabling or removing it would break all default-target builds.
 
-**Selection** at build time, in the build handler:
+**Selection** at the `runs.build` tool boundary (§4.3):
 
 1. `profile.build_host` names a host → resolve it. Absent row → `not_found`. `enabled=false`
-   or `state='draining'`/`'unreachable'` → `configuration_error` (named but unusable).
+   or `state='unreachable'` → `configuration_error` (named but unusable).
 2. No name → default to `worker-local`.
 
 A `kind`/provenance compatibility check fails closed (§7): a `local` host with a git
@@ -172,21 +214,31 @@ A `kind`/provenance compatibility check fails closed (§7): a `local` host with 
 
 ## 6. Capacity (fail-fast)
 
-Capacity uses the existing advisory-lock + check-then-debit pattern (per `LockScope`, a new
-`BUILD_HOST` scope keyed by host id):
+Capacity uses the existing transaction-scoped advisory-lock + check-then-act pattern (a new
+`LockScope.BUILD_HOST` keyed by host id). `advisory_xact_lock` releases at commit, so it
+guards only the short admission transaction — it is **never** held across the build:
 
 ```
-with advisory_xact_lock(conn, LockScope.BUILD_HOST, host.id):
-    if host.active_builds >= host.max_concurrent:
-        raise CategorizedError(category=CAPACITY_EXHAUSTED, ...)   # fail fast
-    UPDATE build_hosts SET active_builds = active_builds + 1 WHERE id = host.id
-# ... run the build ...
-# credit (decrement) on completion AND on failure (finally), idempotent per run_id+step
+# At the runs.build tool boundary, for kind != 'local'. The lease INSERT and the BUILD-job
+# enqueue share ONE transaction, so there is no window where a committed lease has no job
+# (which the reconciler would otherwise see as "job gone" and reclaim, or which would orphan):
+with conn.transaction(), advisory_xact_lock(conn, LockScope.BUILD_HOST, host.id):
+    if (SELECT count(*) FROM build_host_leases WHERE build_host_id = host.id) >= max_concurrent:
+        raise CategorizedError(category=CAPACITY_EXHAUSTED, ...)   # fail fast, synchronous
+    INSERT INTO build_host_leases (run_id, build_host_id) VALUES (<run_id>, host.id)
+    # PK on run_id → a retried tool call for the same Run is a no-op, not a double-acquire
+    enqueue BUILD job (dedup_key on run_id)        # same transaction; commits atomically
+
+# In the build handler, after the build reaches a terminal outcome:
+DELETE FROM build_host_leases WHERE run_id = <run_id>   # idempotent, on success AND failure
 ```
 
-The debit/credit is keyed so a retried build job does not double-count, and the reconciler
-reclaims leaked debits from dead workers (§8). Over-capacity returns a typed
-`capacity_exhausted` failure with `suggested_next_actions` pointing the caller at a retry.
+The lease is the durable, attributed record a bare counter lacked: acquire/release are
+idempotent on `run_id`, and the reconciler reclaims a lease by checking the owning BUILD
+job's liveness — not a timer (§8), so a legitimate multi-hour build keeps its slot for the
+full `MAKE_TIMEOUT_S`. Over-capacity returns a typed `capacity_exhausted` synchronously from
+`runs.build` (before any job is enqueued), with `suggested_next_actions` pointing the caller
+at a retry.
 
 **New taxonomy value.** `ErrorCategory.CAPACITY_EXHAUSTED = "capacity_exhausted"`. The
 closest existing values are wrong: `quota_exceeded` is per-project accounting, not host
@@ -203,22 +255,41 @@ rsyncs the worker's warm `KDIVE_KERNEL_SRC`. To make the field unambiguous acros
 the server lane accepts either form:
 
 - **plain string** → warm-tree provenance (local builder; unchanged).
-- **object `{git: {remote, ref}}`** → git-clone provenance (ssh builder). The ssh checkout
-  runs `git clone <remote> <ws>` then `git -C <ws> checkout <ref>` (or fetch-by-sha).
+- **object `{git: {remote, ref}}`** → git-clone provenance (ssh builder).
 
-Fail-closed cross-checks: the **local** builder rejects a git ref; the **ssh** builder
-rejects a warm-tree string. No silent mismatch. The git remote/ref are validated for shape
-(no shell metacharacters; argv is fixed); a private remote uses a secret-ref credential
-resolved at the worker boundary like the SSH key.
+The ssh checkout must resolve an **arbitrary** ref or commit sha, so it does **not** use
+`git clone --depth 1` (which fetches only the default-branch tip, making a subsequent
+`git checkout <other-ref>` fail with "reference is not a tree"). It uses an init+fetch model:
+`git init <ws>` → `git -C <ws> fetch --depth 1 <remote> <ref>` → `git -C <ws> checkout
+FETCH_HEAD`. This resolves a branch, tag, or full sha in one shallow fetch (a server-side
+allowance most hosts grant; the spec notes the fallback to a non-shallow `fetch` if the
+remote refuses by-sha shallow fetch). This corrects ADR-0099 decision 5's "clone --depth 1"
+wording.
+
+Fail-closed cross-checks at the `runs.build` boundary (§4.3): the **local** builder rejects a
+git ref; the **ssh** builder rejects a warm-tree string. No silent mismatch. **Coupling
+note:** because the cross-check binds a profile's `kernel_source_ref` shape to a builder kind,
+a profile is authored *for* a builder kind — a warm-tree profile cannot be retargeted to an
+ssh host without rewriting `kernel_source_ref` to the git form (and vice versa). This is an
+intentional constraint, surfaced to the operator as a `configuration_error`, not an
+orthogonal axis. The git remote/ref are validated for shape (no shell metacharacters; argv is
+fixed); a private remote uses a secret-ref credential resolved at the worker boundary like the
+SSH key.
 
 ### 7.2 Config preflight unchanged
 
 The worker resolves the config fragment (catalog/local ref, ADR-0096) and ships the fragment
-bytes to the host. `merge_config.sh` + `make defconfig` + `make olddefconfig` run on the host
-via the transport. The worker reads the resulting `.config` back (transport `read_text`) and
-runs the **same** `_validate_final_config` (fragment-survival + kdump/debuginfo OR-groups +
-profile requirements). The component-root allowlist still gates `config`/`patch_ref` on the
-worker side before anything ships.
+bytes to the host. When the profile names a `patch_ref`, the worker also resolves it (against
+the component-root allowlist) and ships the **patch bytes** to the host the same way — the
+existing checkout applies the patch *inside the workspace* (`workspace.py:apply_patch` runs
+`git apply` there), so for the ssh builder both the apply and its silently-skipped guards
+(which snapshot workspace files before/after) execute remotely over the transport; the worker
+reads back the guard inputs it needs to make the same skip/no-op determination. `merge_config.sh`
++ `make defconfig` + `make olddefconfig` run on the host via the transport. The worker reads
+the resulting `.config` back (transport `read_text`) and runs the **same**
+`_validate_final_config` (fragment-survival + kdump/debuginfo OR-groups + profile
+requirements). The component-root allowlist gates `config`/`patch_ref` on the worker side
+before anything ships.
 
 ### 7.3 Secrets and redaction
 
@@ -243,29 +314,34 @@ runs under the existing 2h timeout. ADR-0099 records this with rationale.
 
 The reconciler gains build-host upkeep (drift repair, ADR-0021 family):
 
-- **Lease reclaim.** A build job whose worker died leaves `active_builds` debited with no
-  live build. The reconciler credits back debits older than a lease horizon with no live
-  job, mirroring the run-step lease reclaim. Credit is idempotent (keyed by run_id+step).
+- **Lease reclaim by owning-job liveness, never by age.** A `build_host_leases` row whose
+  owning Run/BUILD job is terminal or gone (failed, cancelled, no job row) is deleted, freeing
+  the slot. The trigger is the owning job's state — **not** elapsed time: a legitimate build
+  can run up to `MAKE_TIMEOUT_S` (2h), so an age threshold would reclaim a live build's slot
+  and over-admit the host past `max_concurrent`. The reconciler joins `build_host_leases` to
+  the BUILD job (via `run_id`) and reclaims only when that job is not live. Delete is idempotent.
 - **Health.** A periodic reachability probe (cheap `ssh true` over the transport) flips a
-  host `ready`↔`unreachable`; `unreachable` blocks new admissions (§5) but does not delete
-  the row.
+  host `state` `ready` ↔ `unreachable`; `unreachable` blocks new lease acquisition (§5) but
+  does not delete the row or existing leases.
 
 ## 9. Implementation scope (this PR)
 
 In:
 
-- Migration 0027: `build_hosts` table + `worker-local` seed.
+- Migration 0027: `build_hosts` + `build_host_leases` tables + `worker-local` seed.
 - `ErrorCategory.CAPACITY_EXHAUSTED` + exit-code mapping + taxonomy docs + closed-set test.
 - `BuildTransport` port; `LocalBuildTransport` (refactor of today's behavior, no change);
   `SshBuildTransport`.
 - Transport-backed seam realizations wired through `BuildHostOrchestrator` (contract
-  unchanged).
+  unchanged), including shipping config-fragment and patch bytes to the host.
 - `ServerBuildProfile.build_host` (optional) + structured `kernel_source_ref` (string |
   `{git}`), parse-boundary validation + fail-closed provenance cross-checks.
 - `build_hosts.*` admin plane (register/list/disable/remove) with RBAC + audit + secret-ref
   validation.
-- Build-handler selection + fail-fast capacity admission + credit-on-finally.
-- Reconciler build-host lease reclaim + reachability health.
+- `runs.build` tool-boundary selection + fail-fast lease acquisition (local skips the gate);
+  handler-side idempotent lease release on success and failure; the resolved host id recorded
+  on the Run/BUILD payload.
+- Reconciler build-host lease reclaim (job-liveness) + reachability health.
 - ADR-0099, this spec, and the implementation plan.
 
 Out (follow-up issues):
@@ -288,14 +364,23 @@ gate (unchanged gate; not widened).
   `configuration_error`; ssh+git → clone argv well-formed and shape-validated.
 - **Selection:** named-but-absent → `not_found`; named-but-disabled → `configuration_error`;
   no name → `worker-local`.
-- **Capacity:** at ceiling → `capacity_exhausted`; concurrent admissions under the advisory
-  lock never exceed `max_concurrent` (adversarial/hypothesis race test); credit returns on
-  both success and failure; retried job does not double-debit.
+- **Capacity:** at ceiling → `capacity_exhausted` synchronously from `runs.build`; concurrent
+  admissions under the advisory lock never exceed `max_concurrent` (adversarial/hypothesis
+  race test on lease-row count); lease released on both success and failure; a retried
+  tool call / build job for the same Run does not double-acquire (PK on `run_id`); a
+  `kind='local'` build acquires no lease (no throttle on concurrent local builds).
 - **Registration RBAC/audit:** non-admin → `authorization_denied`; register audits
   `(principal, ...)`; secret never persisted/leaked (no-leak guard on the row + error
-  details); `remove` with `active_builds>0` → `conflict`.
+  details); `remove` with an outstanding lease → `conflict`; `disable` sets `enabled=false`
+  and blocks new acquisition; an admin tool cannot write `state`; `disable`/`remove` of the
+  built-in `worker-local` row → `conflict` (protected default fallback).
 - **Redaction:** remote stderr containing the key/credential is redacted in error details.
-- **Reconciler:** dead-worker debit reclaimed; unreachable host blocks admission.
-- **Migration:** schema test for `build_hosts` + seed; `worker-local` present after migrate.
-- **Back-compat:** with only the seed row, a server-lane build is byte-for-byte the current
-  local path (golden assertion on `BuildOutput`).
+- **Reconciler:** a lease whose BUILD job is terminal/gone is reclaimed; a lease whose BUILD
+  job is still live is **not** reclaimed (no age-based reclaim); unreachable host blocks
+  acquisition.
+- **Migration:** schema test for `build_hosts` + `build_host_leases` + seed; `worker-local`
+  present after migrate.
+- **Back-compat:** with only the seed row, `LocalBuildTransport` issues the identical
+  subprocess argv / orchestrator call sequence as the pre-refactor path (assert the call/argv
+  sequence — not a golden `BuildOutput`, whose object-store keys are minted per run and are
+  not stable across runs).

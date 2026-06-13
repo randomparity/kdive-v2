@@ -47,20 +47,37 @@ target; target 3 is a designed-for follow-up.
    The seams gain transport-backed implementations; the config preflight stays worker-side
    (worker resolves the fragment, host builds, worker reads `.config` back and validates).
 
-2. **A DB-backed `build_hosts` inventory is the selection seam.** A `build_hosts` table
-   (`name`, `kind` ∈ {`local`,`ssh`}, `address`, `ssh_credential_ref`, `workspace_root`,
-   `max_concurrent`, `active_builds`, `enabled`, `state`) with a seeded
-   `('worker-local', kind='local')` row that preserves today's behavior when nothing else is
-   registered. The `kind` CHECK admits `'ephemeral_libvirt'` later without a second migration
-   to the column shape. `ServerBuildProfile.build_host` (optional name) selects a host;
-   absent → `worker-local`. Registration (`build_hosts.register/list/disable/remove`) is a
-   `PLATFORM_ADMIN`, audited admin plane; `list` is read-only passthrough.
+2. **A DB-backed `build_hosts` inventory is the selection seam; in-flight builds are lease
+   rows, not a counter.** A `build_hosts` table (`name`, `kind` ∈ {`local`,`ssh`}, `address`,
+   `ssh_credential_ref`, `workspace_root`, `max_concurrent`, `enabled`, `state`) with a
+   seeded `('worker-local', kind='local')` row that preserves today's behavior when nothing
+   else is registered. The `kind` CHECK admits `'ephemeral_libvirt'` later without reshaping
+   the column. In-flight capacity is tracked by a companion `build_host_leases` table (PK
+   `run_id`, `build_host_id`) — one row per in-flight remote build — because this codebase
+   models capacity by counting non-terminal rows (`services/systems/admission.py`), and a
+   bare counter cannot be released idempotently or reclaimed by attribution. `enabled` is the
+   operator drain toggle; `state` (`ready`/`unreachable`) is reconciler-owned health, never
+   admin-written. `ServerBuildProfile.build_host` (optional name) selects a host; absent →
+   `worker-local`. Registration (`build_hosts.register/list/disable/remove`) is a
+   `PLATFORM_ADMIN`, audited admin plane; `list` is read-only passthrough; `remove` refuses a
+   host with an outstanding lease (`conflict`, also FK `ON DELETE RESTRICT`), and the built-in
+   `worker-local` fallback row is protected from `disable`/`remove`. The lease `INSERT` and the
+   BUILD-job enqueue share one transaction, so no committed lease ever lacks a job.
 
-3. **Capacity is fail-fast.** A new `LockScope.BUILD_HOST` advisory lock guards an atomic
-   `active_builds < max_concurrent` check-then-debit; over-capacity returns
-   `capacity_exhausted` immediately (no queue). The debit is credited on success and on
-   failure (`finally`), keyed by `run_id`+step so a retried job does not double-count, and
-   the reconciler reclaims leaked debits from dead workers.
+3. **Capacity is fail-fast, admitted synchronously at the tool boundary, and local is not
+   gated.** Selection and lease acquisition run inside `runs.build` (synchronous), before the
+   BUILD job is enqueued, so `capacity_exhausted` is a real tool error the caller can retry —
+   not a FAILED Run discovered later by polling (a build is an async job, ADR-0018; a Run is
+   single-shot through build). A new transaction-scoped `LockScope.BUILD_HOST` advisory lock
+   guards `COUNT(build_host_leases) < max_concurrent` then `INSERT` (PK on `run_id` makes a
+   retry a no-op); the lock releases at commit and is never held across the build. The handler
+   releases the lease (`DELETE WHERE run_id`) on success and on failure, idempotently. The
+   reconciler reclaims a lease only when its owning BUILD job is terminal/gone — **by job
+   liveness, never by age** — so a build running up to `MAKE_TIMEOUT_S` keeps its slot.
+   `kind='local'` builds acquire **no lease**: a worker claims one job at a time, so local
+   concurrency is already bounded by the worker fleet and a single shared `worker-local` row
+   cannot model per-replica local capacity — gating it would newly throttle concurrent local
+   builds across replicas (a back-compat regression).
 
 4. **Add `ErrorCategory.CAPACITY_EXHAUSTED`.** Host-at-capacity is a genuine new failure
    mode with no fitting existing value (`quota_exceeded` is per-project accounting;
@@ -68,13 +85,17 @@ target; target 3 is a designed-for follow-up.
    `capacity_exhausted` with its exit-code mapping, taxonomy docs, and closed-set test in the
    same change.
 
-5. **Git-clone provenance for the SSH builder; warm-tree for local.**
+5. **Git-fetch provenance for the SSH builder; warm-tree for local.**
    `kernel_source_ref` becomes meaningful: a plain string keeps warm-tree provenance (local
-   builder, unchanged); an object `{git: {remote, ref}}` selects git-clone provenance (ssh
-   builder clones the ref into an isolated per-run workspace subdir). The cross-checks fail
-   closed — the local builder rejects a git ref and the ssh builder rejects a warm-tree
-   string — so the builder-dependent interpretation of one shared field can never silently
-   mismatch.
+   builder, unchanged); an object `{git: {remote, ref}}` selects git provenance (ssh builder
+   fetches the ref into an isolated per-run workspace subdir). To resolve an **arbitrary** ref
+   or sha the ssh checkout uses `git init` + `git fetch --depth 1 <remote> <ref>` +
+   `git checkout FETCH_HEAD` (a plain `clone --depth 1` fetches only the default-branch tip
+   and cannot check out another ref). The cross-checks fail closed — the local builder rejects
+   a git ref and the ssh builder rejects a warm-tree string — so the builder-dependent
+   interpretation of one shared field can never silently mismatch; the consequence is that a
+   profile is authored for a builder kind (a warm-tree profile cannot run on an ssh host
+   without rewriting `kernel_source_ref`).
 
 6. **Artifacts upload from the build host via presigned PUT.** The worker mints presigned
    S3 PUT URLs; the SSH host uploads the kernel bundle and vmlinux directly, so the worker
@@ -95,12 +116,14 @@ target; target 3 is a designed-for follow-up.
 
 ## Consequences
 
-- The local build path is refactored onto `LocalBuildTransport` with no behavior change; a
-  golden `BuildOutput` back-compat test pins that the seed-only deployment builds exactly as
-  before.
-- One new table + migration (0027), one new error category, one new `LockScope`, one new
-  admin plane, and reconciler additions. No change to `BuildOutput`, the `Builder` port, or
-  the `runs` ledger contract.
+- The local build path is refactored onto `LocalBuildTransport` with no behavior change,
+  including no new concurrency throttle (local acquires no lease). A back-compat test pins
+  that `LocalBuildTransport` issues the identical subprocess argv / orchestrator call sequence
+  as the pre-refactor path — not a golden `BuildOutput`, whose per-run object-store keys are
+  not stable across runs.
+- Two new tables + one migration (0027: `build_hosts` + `build_host_leases`), one new error
+  category, one new `LockScope`, one new admin plane, and reconciler additions. No change to
+  `BuildOutput`, the `Builder` port, or the `runs` ledger contract.
 - `kernel_source_ref` now carries structure (string | `{git}`); existing server profiles
   that omit it or use the warm-tree form are unaffected. The profile model, the build-tool
   input schema, and profile (de)serialization change to admit the git form.
