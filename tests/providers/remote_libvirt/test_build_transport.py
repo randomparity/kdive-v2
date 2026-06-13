@@ -40,6 +40,7 @@ from kdive.providers.remote_libvirt.build import (
     transport_make_bundle,
     transport_vmlinux_source,
 )
+from kdive.security.secrets.secret_registry import SecretRegistry
 
 _RUN = UUID("55555555-5555-5555-5555-555555555555")
 _TENANT = "remote-libvirt"
@@ -274,6 +275,27 @@ def test_transport_build_id_note_parsed_on_worker(tmp_path: Path) -> None:
     assert out.build_id == "0011223344556677"
     # parse_gnu_build_id round-trips the synthesized note.
     assert parse_gnu_build_id(_build_a_note("0011223344556677")) == "0011223344556677"
+
+
+# --- workspace cleanup routes through the transport ----------------------------------
+
+
+def test_over_transport_build_removes_clone_dir_via_transport(tmp_path: Path) -> None:
+    store, transport = _FakeStore(), _FakeTransport()
+    _seed_artifacts(transport, tmp_path)
+
+    base = _transport_builder(store, transport, tmp_path)
+    builder = base.over_transport(
+        transport,
+        host_workspace_root=str(tmp_path / "ws"),
+        git_remote="https://git.example/linux.git",
+        git_ref="v6.9",
+        secret_registry=SecretRegistry(),
+    )
+    builder.build(_RUN, _profile())
+
+    cleaned = [c.args[0] for c in transport.calls if c.method == "cleanup"]
+    assert str(tmp_path / "ws" / str(_RUN)) in cleaned  # the per-run clone dir on the host
 
 
 # --- sha256 hex -> base64 correctness ------------------------------------------------
