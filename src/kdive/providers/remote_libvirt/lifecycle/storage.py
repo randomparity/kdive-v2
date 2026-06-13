@@ -58,7 +58,15 @@ def lookup_pool(conn: StorageConn, pool_name: str) -> Pool:
 
 def ensure_overlay(pool: Pool, base_volume: str, system_id: UUID) -> PreparedOverlay:
     """Create the per-System overlay volume when absent; reuse it when present."""
-    name = overlay_volume_name(system_id)
+    return ensure_named_overlay(pool, base_volume, overlay_volume_name(system_id))
+
+
+def ensure_named_overlay(pool: Pool, base_volume: str, name: str) -> PreparedOverlay:
+    """Create the named overlay volume over ``base_volume`` when absent; reuse it when present.
+
+    The volume name is supplied by the caller so a build VM can use an overlay name disjoint
+    from the per-System scheme (ADR-0100); :func:`ensure_overlay` is the System-scheme wrapper.
+    """
     if _volume_exists(pool, name):
         return PreparedOverlay(name=name, created=False)
     try:
