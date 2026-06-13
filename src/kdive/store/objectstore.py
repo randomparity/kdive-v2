@@ -10,6 +10,7 @@ returned sensitivity).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -326,6 +327,80 @@ class ObjectStore:
             )
         except (BotoCoreError, ClientError) as err:
             raise _infrastructure_error("presign_get", key, err) from err
+
+    def create_multipart_upload(
+        self, key: str, *, sensitivity: Sensitivity, retention_class: str
+    ) -> str:
+        """Initiate a multipart upload for ``key``, setting object metadata at create time.
+
+        Metadata cannot be attached at completion, so the sensitivity/retention-class are set
+        here and ride onto the reassembled object (ADR-0104 §4). No checksum algorithm is set,
+        so the final object carries an ETag but no whole-object checksum. Returns the upload id.
+
+        Raises:
+            CategorizedError: the call fails (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
+        """
+        try:
+            resp = self._client.create_multipart_upload(
+                Bucket=self._bucket,
+                Key=key,
+                Metadata={"sensitivity": sensitivity.value, "retention-class": retention_class},
+            )
+        except (BotoCoreError, ClientError) as err:
+            raise _infrastructure_error("create_multipart_upload", key, err) from err
+        return resp["UploadId"]
+
+    def upload_part_copy(
+        self, key: str, upload_id: str, *, part_number: int, source_key: str
+    ) -> str:
+        """Copy ``source_key`` into part ``part_number`` of ``key``'s multipart upload.
+
+        A server-side copy — no bytes transit the process. Returns the part ETag.
+
+        Raises:
+            CategorizedError: the copy fails (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
+        """
+        try:
+            resp = self._client.upload_part_copy(
+                Bucket=self._bucket,
+                Key=key,
+                UploadId=upload_id,
+                PartNumber=part_number,
+                CopySource={"Bucket": self._bucket, "Key": source_key},
+            )
+        except (BotoCoreError, ClientError) as err:
+            raise _infrastructure_error("upload_part_copy", key, err) from err
+        return _normalize_etag(resp["CopyPartResult"]["ETag"])
+
+    def complete_multipart_upload(
+        self, key: str, upload_id: str, parts: Sequence[tuple[int, str]]
+    ) -> str:
+        """Complete ``key``'s multipart upload with the ordered ``(part_number, etag)`` list.
+
+        Returns the final object ETag (a multipart ``-N`` form).
+
+        Raises:
+            CategorizedError: completion fails (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
+        """
+        multipart = {"Parts": [{"PartNumber": n, "ETag": etag} for n, etag in parts]}
+        try:
+            resp = self._client.complete_multipart_upload(
+                Bucket=self._bucket, Key=key, UploadId=upload_id, MultipartUpload=multipart
+            )
+        except (BotoCoreError, ClientError) as err:
+            raise _infrastructure_error("complete_multipart_upload", key, err) from err
+        return _normalize_etag(resp["ETag"])
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        """Abort ``key``'s multipart upload (best-effort cleanup of a failed reassembly).
+
+        Raises:
+            CategorizedError: the abort fails (:attr:`ErrorCategory.INFRASTRUCTURE_FAILURE`).
+        """
+        try:
+            self._client.abort_multipart_upload(Bucket=self._bucket, Key=key, UploadId=upload_id)
+        except (BotoCoreError, ClientError) as err:
+            raise _infrastructure_error("abort_multipart_upload", key, err) from err
 
     def list_prefix(self, prefix: str) -> list[str]:
         """Return every object key under ``prefix`` (paginated), or ``[]``.

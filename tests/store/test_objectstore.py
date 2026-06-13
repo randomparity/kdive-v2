@@ -422,3 +422,64 @@ def test_presign_get_maps_client_error_to_infrastructure_failure() -> None:
     with pytest.raises(CategorizedError) as excinfo:
         store.presign_get("k", expires_in=60)
     assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+class _MpuClient:
+    """Records the multipart calls so the reassembly primitives can be asserted in isolation."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def create_multipart_upload(self, **kw: object) -> dict[str, object]:
+        self.calls.append(("create", kw))
+        return {"UploadId": "uid-1"}
+
+    def upload_part_copy(self, **kw: object) -> dict[str, object]:
+        self.calls.append(("copy", kw))
+        return {"CopyPartResult": {"ETag": f'"etag-{kw["PartNumber"]}"'}}
+
+    def complete_multipart_upload(self, **kw: object) -> dict[str, object]:
+        self.calls.append(("complete", kw))
+        return {"ETag": '"final-etag"'}
+
+    def abort_multipart_upload(self, **kw: object) -> None:
+        self.calls.append(("abort", kw))
+
+
+def test_multipart_reassembly_primitives_round_trip() -> None:
+    client = _MpuClient()
+    store = ObjectStore(client, "bucket")
+    uid = store.create_multipart_upload(
+        "local/runs/x/vmlinux", sensitivity=Sensitivity.SENSITIVE, retention_class="build"
+    )
+    assert uid == "uid-1"
+    assert client.calls[0][1]["Metadata"] == {
+        "sensitivity": "sensitive",
+        "retention-class": "build",
+    }
+    etag1 = store.upload_part_copy(
+        "local/runs/x/vmlinux", uid, part_number=1, source_key="local/runs/x/vmlinux.part0001"
+    )
+    assert etag1 == "etag-1"
+    assert client.calls[1][1]["CopySource"] == {
+        "Bucket": "bucket",
+        "Key": "local/runs/x/vmlinux.part0001",
+    }
+    final = store.complete_multipart_upload("local/runs/x/vmlinux", uid, [(1, "etag-1")])
+    assert final == "final-etag"
+    assert client.calls[2][1]["MultipartUpload"] == {"Parts": [{"PartNumber": 1, "ETag": "etag-1"}]}
+    store.abort_multipart_upload("local/runs/x/vmlinux", uid)
+    assert client.calls[3][0] == "abort"
+
+
+def test_multipart_create_maps_client_error_to_infrastructure() -> None:
+    class _Raises:
+        def create_multipart_upload(self, **_: object) -> dict[str, object]:
+            raise ClientError({"Error": {"Code": "boom"}}, "create_multipart_upload")
+
+    store = ObjectStore(_Raises(), "bucket")
+    with pytest.raises(CategorizedError) as excinfo:
+        store.create_multipart_upload(
+            "k", sensitivity=Sensitivity.SENSITIVE, retention_class="build"
+        )
+    assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
