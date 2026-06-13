@@ -39,3 +39,6 @@ kdive-live-stack-artifacts/
 
 # Local operator deploy artifacts (may embed backend credentials)
 .live-deploy/
+
+# Coverage-campaign run-local result artifacts
+/artifacts/coverage-campaign/
