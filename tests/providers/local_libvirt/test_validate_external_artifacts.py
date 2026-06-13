@@ -416,3 +416,69 @@ def test_oversized_section_size_is_build_failure() -> None:
         with pytest.raises(CategorizedError) as e:
             _validate_vmlinux_blob(blob)
         assert e.value.category is ErrorCategory.BUILD_FAILURE
+
+
+# --- Chunked artifacts (ADR-0104 §4) ----------------------------------------------------
+
+from kdive.provider_components.build_validation import verify_chunks  # noqa: E402
+from kdive.provider_components.uploads import ChunkEntry  # noqa: E402
+
+_PREFIX = "local/runs/rid/"
+
+
+def _chunked_entry() -> ManifestEntry:
+    return ManifestEntry("vmlinux", "whole", 10, chunks=(ChunkEntry("c0", 6), ChunkEntry("c1", 4)))
+
+
+def test_verify_chunks_passes_when_each_chunk_matches() -> None:
+    store = _FakeStore(
+        {},
+        {
+            f"{_PREFIX}vmlinux.part0001": HeadResult(6, "c0", "e"),
+            f"{_PREFIX}vmlinux.part0002": HeadResult(4, "c1", "e"),
+        },
+    )
+    verify_chunks(store, _PREFIX, _chunked_entry())  # does not raise
+
+
+def test_verify_chunks_missing_chunk_is_configuration_error() -> None:
+    store = _FakeStore({}, {f"{_PREFIX}vmlinux.part0001": HeadResult(6, "c0", "e")})
+    with pytest.raises(CategorizedError) as e:
+        verify_chunks(store, _PREFIX, _chunked_entry())
+    assert e.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_verify_chunks_checksum_mismatch_is_build_failure() -> None:
+    store = _FakeStore(
+        {},
+        {
+            f"{_PREFIX}vmlinux.part0001": HeadResult(6, "WRONG", "e"),
+            f"{_PREFIX}vmlinux.part0002": HeadResult(4, "c1", "e"),
+        },
+    )
+    with pytest.raises(CategorizedError) as e:
+        verify_chunks(store, _PREFIX, _chunked_entry())
+    assert e.value.category is ErrorCategory.BUILD_FAILURE
+
+
+def test_chunked_entry_skips_whole_object_checksum_on_final_object() -> None:
+    # The reassembled final object exposes a composite/None checksum; validation must accept
+    # it on size + magic alone for a chunked entry (the per-chunk checks happened earlier).
+    final = b"\x00" * 0x202 + b"HdrS"
+    entry = ManifestEntry("kernel", "whole", len(final), chunks=(ChunkEntry("c0", len(final)),))
+    store = _FakeStore({"k": final}, {"k": HeadResult(len(final), None, "e")})
+    out = validate_external_artifacts(
+        store, manifest=[entry], keys={"kernel": "k"}, declared_build_id=None
+    )
+    assert out.output.kernel_ref == "k"
+
+
+def test_chunked_entry_final_size_mismatch_is_build_failure() -> None:
+    final = b"\x00" * 0x202 + b"HdrS"
+    entry = ManifestEntry("kernel", "whole", 9999, chunks=(ChunkEntry("c0", 9999),))
+    store = _FakeStore({"k": final}, {"k": HeadResult(len(final), None, "e")})
+    with pytest.raises(CategorizedError) as e:
+        validate_external_artifacts(
+            store, manifest=[entry], keys={"kernel": "k"}, declared_build_id=None
+        )
+    assert e.value.category is ErrorCategory.BUILD_FAILURE

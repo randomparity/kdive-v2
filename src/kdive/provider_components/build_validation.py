@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Protocol
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.provider_components.artifacts import HeadResult
+from kdive.provider_components.artifacts import HeadResult, chunk_key
 from kdive.provider_components.build_results import BuildOutput, ValidatedUpload
 from kdive.provider_components.requirements import ConfigRequirements, validate_config_requirements
 from kdive.provider_components.uploads import ManifestEntry
@@ -208,6 +208,36 @@ def extract_build_id_ranged(store: ValidatorStore, key: str, *, max_size: int) -
         raise _build_failure("vmlinux ELF is structurally malformed") from exc
 
 
+def verify_chunks(store: ValidatorStore, prefix: str, entry: ManifestEntry) -> None:
+    """HEAD-verify each declared chunk's stored ``(size, sha256)`` before reassembly.
+
+    For a chunked artifact the per-chunk SHA-256 pins are the integrity anchor (ADR-0104 §4):
+    each chunk object's stored checksum and size must match the manifest before the chunks are
+    reassembled into the final object.
+
+    Raises:
+        CategorizedError: a chunk was never uploaded
+            (:attr:`ErrorCategory.CONFIGURATION_ERROR`) or disagrees with its manifest entry
+            (:attr:`ErrorCategory.BUILD_FAILURE`).
+    """
+    assert entry.chunks is not None
+    for part_number, chunk in enumerate(entry.chunks, start=1):
+        key = chunk_key(prefix, entry.name, part_number)
+        head = store.head(key)
+        if head is None:
+            raise CategorizedError(
+                f"declared chunk {part_number} of {entry.name!r} was never uploaded",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"name": entry.name, "part_number": part_number},
+            )
+        if head.size_bytes != chunk.size_bytes or head.checksum_sha256 != chunk.sha256:
+            raise _build_failure(
+                "uploaded chunk disagrees with its manifest",
+                name=entry.name,
+                part_number=part_number,
+            )
+
+
 def _validate_one_artifact(
     store: ValidatorStore, name: str, entry: ManifestEntry, key: str
 ) -> HeadResult:
@@ -218,8 +248,14 @@ def _validate_one_artifact(
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"name": name},
         )
-    if head.size_bytes != entry.size_bytes or head.checksum_sha256 != entry.sha256:
-        raise _build_failure("uploaded artifact disagrees with its manifest", name=name)
+    if entry.chunks is None:
+        if head.size_bytes != entry.size_bytes or head.checksum_sha256 != entry.sha256:
+            raise _build_failure("uploaded artifact disagrees with its manifest", name=name)
+    elif head.size_bytes != entry.size_bytes:
+        # The reassembled multipart object exposes only a composite checksum, so the
+        # whole-object SHA-256 is not comparable here; the per-chunk pins (verify_chunks)
+        # already bound every byte. Only the total size is checked on the final object.
+        raise _build_failure("reassembled artifact size disagrees with its manifest", name=name)
     _check_magic(store, name, key)
     return head
 
