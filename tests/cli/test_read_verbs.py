@@ -238,3 +238,31 @@ def test_list_verb_with_empty_items_prints_only_header(
     asyncio.run(reads.jobs_list(_args(limit=None)))
     out = capsys.readouterr().out.strip()
     assert out and len(out.splitlines()) == 1
+
+
+def _denied(object_id: str) -> dict:
+    return {
+        "object_id": object_id,
+        "status": "error",
+        "error_category": "authorization_denied",
+        "data": {},
+        "items": [],
+    }
+
+
+def test_secrets_list_denial_exits_authorization_denied(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # A server-side denial returns a failure envelope; the verb must surface exit 3, not the
+    # empty-success exit 0 that an unmapped error_category leaves (ADR-0089 exit-code table).
+    _install_session(monkeypatch, _denied("secrets"))
+    code = asyncio.run(reads.secrets_list(_args()))
+    assert code == 3
+
+
+def test_list_verb_denial_exits_authorization_denied(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _install_session(monkeypatch, _denied("resources"))
+    code = asyncio.run(reads.resources_list(_args(kind=None)))
+    assert code == 3

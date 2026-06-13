@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping
 
+from kdive.cli.errors import exit_code_for_envelope
 from kdive.cli.render import render, render_record
 from kdive.cli.transport import Session, tool_envelope
 
@@ -80,14 +81,14 @@ async def _list(name: str, args: argparse.Namespace, columns: list[str], *params
     """Run a list verb: fetch, flatten items to rows, render the column projection."""
     envelope = await _fetch(name, _payload(args, *params))
     render(_rows(envelope), columns=columns, as_json=args.json)
-    return 0
+    return exit_code_for_envelope(envelope)
 
 
 async def _record(name: str, args: argparse.Namespace, payload: Mapping[str, object]) -> int:
     """Run a single-record verb: fetch, flatten the one envelope, render the record."""
     envelope = await _fetch(name, payload)
     render_record(_flatten(envelope), as_json=args.json)
-    return 0
+    return exit_code_for_envelope(envelope)
 
 
 async def resources_list(args: argparse.Namespace) -> int:
@@ -145,7 +146,7 @@ async def secrets_list(args: argparse.Namespace) -> int:
     envelope = await _fetch("secrets.list", {})
     refs = [{"ref": str(ref)} for ref in _data_list(envelope, "secrets")]
     render(refs, columns=["ref"], as_json=args.json)
-    return 0
+    return exit_code_for_envelope(envelope)
 
 
 async def fixtures_list(args: argparse.Namespace) -> int:
@@ -157,7 +158,7 @@ async def fixtures_list(args: argparse.Namespace) -> int:
         if isinstance(row, Mapping)
     ]
     render(rows, columns=["provider", "name", "arch"], as_json=args.json)
-    return 0
+    return exit_code_for_envelope(envelope)
 
 
 async def ledger_show(args: argparse.Namespace) -> int:
