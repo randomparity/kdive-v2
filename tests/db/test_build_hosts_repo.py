@@ -11,6 +11,7 @@ import asyncio
 from uuid import uuid4
 
 import psycopg
+import pytest
 
 from kdive.db.build_hosts import (
     WORKER_LOCAL_ID,
@@ -179,5 +180,47 @@ def test_release_lease_drops_count_and_is_idempotent(migrated_url: str) -> None:
         async with await _connect(migrated_url) as conn:
             await release_lease(conn, run_a)
             assert await lease_count(conn, host.id) == 1
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Test 5: idempotency is host-scoped — a run leased on host A does not silently
+# return True when acquired against host B; it surfaces the run_id PK conflict.
+# ---------------------------------------------------------------------------
+
+
+def test_try_acquire_lease_wrong_host_raises_unique_violation(migrated_url: str) -> None:
+    """A run already leased against one host cannot silently re-acquire on another.
+
+    The host-scoped existing-lease check does not match the second host, so the
+    call falls through to the INSERT, which hits the run_id primary-key conflict.
+    """
+
+    async def _run() -> None:
+        run_id = uuid4()
+
+        async with await _connect(migrated_url) as conn:
+            host_local = await get_by_name(conn, "worker-local")
+            assert host_local is not None
+            host_ssh = await _insert_ssh_host(conn, max_concurrent=2)
+
+        # Lease run_id against the seeded local host.
+        async with await psycopg.AsyncConnection.connect(migrated_url) as conn:
+            async with conn.transaction():
+                ok = await try_acquire_lease(conn, host_local, run_id)
+            assert ok is True
+
+        # Same run_id, different host: must NOT silently return True. The
+        # host-scoped check misses, the INSERT runs, the run_id PK conflicts.
+        async with await psycopg.AsyncConnection.connect(migrated_url) as conn:
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                async with conn.transaction():
+                    await try_acquire_lease(conn, host_ssh, run_id)
+
+        # The original local lease is intact; the ssh host gained nothing.
+        async with await _connect(migrated_url) as conn:
+            assert await lease_count(conn, host_local.id) == 1
+            assert await lease_count(conn, host_ssh.id) == 0
 
     asyncio.run(_run())

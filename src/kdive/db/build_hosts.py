@@ -98,8 +98,14 @@ async def try_acquire_lease(conn: AsyncConnection, host: BuildHost, run_id: UUID
 
     The caller must be inside an open transaction so the lease INSERT and the
     lock both commit atomically with the surrounding work (e.g. a build-job
-    enqueue). Idempotent: a re-acquire for the same ``run_id`` returns ``True``
-    without inserting a second row.
+    enqueue).
+
+    Idempotency is **host-scoped**: a re-acquire for the same ``run_id`` against
+    the same ``host`` returns ``True`` without inserting a second row. A call for
+    a ``run_id`` that already holds a lease against a *different* host does not
+    match this host's existing-lease check, so it falls through to the capacity
+    check and INSERT, which raises ``psycopg.errors.UniqueViolation`` on the
+    ``run_id`` primary key — a run may hold at most one lease, on one host.
 
     Args:
         conn: An async psycopg connection with an open transaction.
@@ -107,16 +113,22 @@ async def try_acquire_lease(conn: AsyncConnection, host: BuildHost, run_id: UUID
         run_id: The run that is consuming the lease.
 
     Returns:
-        ``True`` if a lease exists (or was just created) for ``run_id``.
-        ``False`` if the host is already at full capacity and no existing
-        lease for ``run_id`` was found.
+        ``True`` if a lease exists (or was just created) for ``run_id`` on this
+        host. ``False`` if the host is already at full capacity and no existing
+        lease for ``run_id`` against this host was found.
+
+    Raises:
+        psycopg.errors.UniqueViolation: ``run_id`` already holds a lease against
+            a different host.
     """
     async with advisory_xact_lock(conn, LockScope.BUILD_HOST, host.id):
-        # Idempotent: if this run already has a lease, return True immediately.
+        # Host-scoped idempotency: a lease for this run AGAINST THIS HOST is a
+        # no-op success. A lease against a different host does not match here and
+        # falls through to the INSERT, which surfaces the run_id PK conflict.
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT 1 FROM build_host_leases WHERE run_id = %s",
-                (run_id,),
+                "SELECT 1 FROM build_host_leases WHERE run_id = %s AND build_host_id = %s",
+                (run_id, host.id),
             )
             existing = await cur.fetchone()
         if existing is not None:
@@ -138,8 +150,16 @@ async def try_acquire_lease(conn: AsyncConnection, host: BuildHost, run_id: UUID
 async def release_lease(conn: AsyncConnection, run_id: UUID) -> None:
     """Delete the lease for ``run_id`` if one exists; a no-op when already absent.
 
+    Rollback hazard: this DELETE is bound to ``conn``'s transaction. If the
+    surrounding transaction later rolls back, the DELETE rolls back with it and
+    the lease survives — the slot stays occupied until the reconciler reclaims
+    it. The build handler must therefore release on a path that commits (an
+    autocommit connection, or a dedicated transaction committed before any
+    failure path) so a build failure reliably frees the slot.
+
     Args:
-        conn: An async psycopg connection (autocommit or inside a transaction).
+        conn: An async psycopg connection. Use autocommit or a committed
+            transaction so the release durably frees the slot (see hazard above).
         run_id: The run whose lease should be dropped.
     """
     async with conn.cursor() as cur:
