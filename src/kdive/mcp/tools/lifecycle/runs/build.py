@@ -281,9 +281,10 @@ class RunBuildHandlers:
                     return _config_error(run_id, data={"reason": "no_upload_manifest"})
                 has_chunks = any(e.chunks is not None for e in manifest_row.entries)
                 keys = {e.name: f"{manifest_row.prefix}{e.name}" for e in manifest_row.entries}
-                if has_chunks:
+                store = self.object_store_factory() if has_chunks else None
+                if store is not None:
                     guard = await _reassemble_chunked_artifacts(
-                        conn, uid, run_id, manifest_row, self.object_store_factory()
+                        conn, uid, run_id, manifest_row, store
                     )
                     if guard is not None:
                         return guard
@@ -308,7 +309,7 @@ class RunBuildHandlers:
                     cmdline,
                     keys,
                     validated.heads,
-                    store=self.object_store_factory() if has_chunks else None,
+                    store=store,
                     entries=manifest_row.entries,
                     prefix=manifest_row.prefix,
                     chunked=has_chunks,
