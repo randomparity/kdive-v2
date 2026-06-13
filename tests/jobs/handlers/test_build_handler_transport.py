@@ -111,6 +111,36 @@ async def _seed_run(pool: AsyncConnectionPool, profile: dict[str, Any] | None = 
     return await seed_running_run(pool, system_id, build_profile=profile)
 
 
+@contextmanager
+def _fake_ephemeral_session(
+    base_image_volume: str, secret_registry: SecretRegistry, *, run_id: UUID
+):
+    """Sync context manager mirroring ephemeral_build_session; records enter/exit, yields a fake."""
+    _EPHEMERAL_EVENTS.append(("enter", run_id))
+    try:
+        yield _FakeTransport()
+    finally:
+        _EPHEMERAL_EVENTS.append(("exit", run_id))
+
+
+_EPHEMERAL_EVENTS: list[tuple[str, UUID]] = []
+
+
+async def _seed_ephemeral_host(pool: AsyncConnectionPool) -> BuildHost:
+    host_id = uuid4()
+    name = f"eph-{host_id}"
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO build_hosts (id, name, kind, base_image_volume, "
+            "workspace_root, max_concurrent) VALUES (%s, %s, 'ephemeral_libvirt', "
+            "'kdive-build-base.qcow2', '/build', 2)",
+            (host_id, name),
+        )
+        host = await get_by_name(conn, name)
+    assert host is not None
+    return host
+
+
 async def _seed_ssh_host(pool: AsyncConnectionPool) -> BuildHost:
     host_id = uuid4()
     name = f"ssh-{host_id}"
@@ -352,5 +382,107 @@ def test_host_row_gone_infrastructure_failure(migrated_url: str) -> None:
             assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
             assert await _run_state(pool, run_id) == "failed"
             assert await _lease_count(pool, run_id) == 0
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Test 6: ephemeral_libvirt host provisions a VM, builds, tears down, releases lease
+# ---------------------------------------------------------------------------
+
+
+def test_ephemeral_host_success_provisions_builds_and_releases_lease(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ephemeral build provisions a VM (enter), builds, tears down (exit), frees the lease."""
+    _EPHEMERAL_EVENTS.clear()
+    transport_builder = _RecordingBuilder()
+    monkeypatch.setattr(runs_handlers, "ephemeral_build_session", _fake_ephemeral_session)
+    monkeypatch.setattr(
+        runs_handlers, "build_over_transport", lambda builder, transport, **kw: transport_builder
+    )
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(pool, _GIT_PROFILE)
+            host = await _seed_ephemeral_host(pool)
+            await _acquire_lease(pool, host, run_id)
+            job = await _enqueue(pool, run_id, str(host.id))
+            async with pool.connection() as conn:
+                await runs_handlers.build_handler(
+                    conn,
+                    job,
+                    resolver=_ssh_resolver(
+                        RemoteLibvirtBuild.from_env(secret_registry=SecretRegistry())
+                    ),
+                    secret_registry=SecretRegistry(),
+                )
+            assert transport_builder.calls == [UUID(run_id)]
+            # Session entered before and exited after the build (provision → build → teardown).
+            assert [("enter", UUID(run_id)), ("exit", UUID(run_id))] == _EPHEMERAL_EVENTS
+            assert await _run_state(pool, run_id) == "succeeded"
+            assert await _lease_count(pool, run_id) == 0
+
+    asyncio.run(_run())
+
+
+def test_ephemeral_host_build_failure_tears_down_and_retains_lease(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed ephemeral build still tears the VM down (session exit) and RETAINS the lease."""
+    _EPHEMERAL_EVENTS.clear()
+    failing = _FailingBuilder()
+    monkeypatch.setattr(runs_handlers, "ephemeral_build_session", _fake_ephemeral_session)
+    monkeypatch.setattr(
+        runs_handlers, "build_over_transport", lambda builder, transport, **kw: failing
+    )
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(pool, _GIT_PROFILE)
+            host = await _seed_ephemeral_host(pool)
+            await _acquire_lease(pool, host, run_id)
+            job = await _enqueue(pool, run_id, str(host.id))
+            with pytest.raises(CategorizedError):
+                async with pool.connection() as conn:
+                    await runs_handlers.build_handler(
+                        conn,
+                        job,
+                        resolver=_ssh_resolver(
+                            RemoteLibvirtBuild.from_env(secret_registry=SecretRegistry())
+                        ),
+                        secret_registry=SecretRegistry(),
+                    )
+            # Teardown ran even though the build raised (session exit recorded).
+            assert [("enter", UUID(run_id)), ("exit", UUID(run_id))] == _EPHEMERAL_EVENTS
+            assert await _run_state(pool, run_id) == "failed"
+            assert await _lease_count(pool, run_id) == 1  # retained for the reconciler
+
+    asyncio.run(_run())
+
+
+def test_ephemeral_host_non_remote_builder_not_implemented(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ephemeral host selected for a non-remote-libvirt builder fails NOT_IMPLEMENTED."""
+    monkeypatch.setattr(runs_handlers, "ephemeral_build_session", _fake_ephemeral_session)
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(pool, _GIT_PROFILE)
+            host = await _seed_ephemeral_host(pool)
+            await _acquire_lease(pool, host, run_id)
+            job = await _enqueue(pool, run_id, str(host.id))
+            with pytest.raises(CategorizedError) as exc:
+                async with pool.connection() as conn:
+                    await runs_handlers.build_handler(
+                        conn,
+                        job,
+                        resolver=provider_resolver(builder=_RecordingBuilder()),
+                        secret_registry=SecretRegistry(),
+                    )
+            assert exc.value.category is ErrorCategory.NOT_IMPLEMENTED
+            assert await _run_state(pool, run_id) == "failed"
+            assert await _lease_count(pool, run_id) == 1
 
     asyncio.run(_run())
