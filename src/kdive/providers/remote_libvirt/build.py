@@ -59,7 +59,7 @@ from kdive.providers.build_host.artifact_publish import (
     StorePort,
     publish_artifact_source,
 )
-from kdive.providers.build_host.orchestration import BuildHostOrchestrator
+from kdive.providers.build_host.orchestration import BuildHostOrchestrator, WorkspaceCleanup
 from kdive.providers.build_host.transport import BuildTransport
 from kdive.providers.build_host.transport_seams import (
     transport_git_checkout,
@@ -111,6 +111,7 @@ class RemoteLibvirtBuild:
         catalog_fetch: CatalogConfigFetch,
         allowed_component_roots: list[Path] | None = None,
         staging_cleanup: _StagingCleanup = _local_staging_cleanup,
+        workspace_cleanup: WorkspaceCleanup | None = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._allowed_component_roots = allowed_component_roots or [
@@ -124,6 +125,7 @@ class RemoteLibvirtBuild:
             read_config=read_config,
             run_make=run_make,
             allowed_component_roots=self._allowed_component_roots,
+            cleanup=workspace_cleanup,
         )
         self._store_factory = store_factory
         self._store: StorePort | None = None
@@ -212,6 +214,7 @@ class RemoteLibvirtBuild:
             catalog_fetch=self._catalog_fetch,
             allowed_component_roots=self._allowed_component_roots,
             staging_cleanup=lambda path: transport.cleanup(str(path)),
+            workspace_cleanup=lambda ws: transport.cleanup(str(ws)),
         )
 
     def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput:
@@ -223,19 +226,23 @@ class RemoteLibvirtBuild:
                 non-zero ``make``/``olddefconfig``/``modules_install`` exit or a missing
                 build-id; ``INFRASTRUCTURE_FAILURE`` propagated from a failed artifact store.
         """
-        workspace = self._orchestrator.build_workspace(run_id, profile)
-        mod_root = self._staging_factory()
+        workspace = self._orchestrator.workspace_path(run_id)
         try:
-            if self._run_modules_install(workspace, mod_root) != 0:
-                raise _build_exec.build_failure("make modules_install exited non-zero", run_id)
-            build_id = self._read_build_id(workspace)
-            kernel_source = self._make_bundle(workspace, mod_root)
-            vmlinux_source = self._read_vmlinux_source(workspace)
-            kernel = self.publish(run_id, "kernel", kernel_source)
-            vmlinux = self.publish(run_id, "vmlinux", vmlinux_source)
+            self._orchestrator.build_workspace(run_id, profile)
+            mod_root = self._staging_factory()
+            try:
+                if self._run_modules_install(workspace, mod_root) != 0:
+                    raise _build_exec.build_failure("make modules_install exited non-zero", run_id)
+                build_id = self._read_build_id(workspace)
+                kernel_source = self._make_bundle(workspace, mod_root)
+                vmlinux_source = self._read_vmlinux_source(workspace)
+                kernel = self.publish(run_id, "kernel", kernel_source)
+                vmlinux = self.publish(run_id, "vmlinux", vmlinux_source)
+            finally:
+                self._staging_cleanup(mod_root)
+            return BuildOutput(kernel_ref=kernel.key, debuginfo_ref=vmlinux.key, build_id=build_id)
         finally:
-            self._staging_cleanup(mod_root)
-        return BuildOutput(kernel_ref=kernel.key, debuginfo_ref=vmlinux.key, build_id=build_id)
+            self._orchestrator.cleanup_workspace(workspace)
 
     def validate_config_ref(self, ref: ComponentRef) -> None:
         """Validate a build config ref's shape at run-creation (local path or catalog kind).

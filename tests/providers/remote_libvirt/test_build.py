@@ -103,6 +103,7 @@ class _Seams:
     make_calls: int = 0
     modules_install_calls: int = 0
     staging_roots: list[Path] = field(default_factory=list)
+    workspace_cleanups: list[Path] = field(default_factory=list)
     merged_fragments: list[bytes] = field(default_factory=list)
 
     def checkout(
@@ -161,6 +162,7 @@ def _builder(
         read_build_id=seams.read_build_id,
         staging_factory=lambda: _make_staging(tmp_path),
         catalog_fetch=catalog_fetch or (lambda _name: _FRAGMENT_BYTES),
+        workspace_cleanup=seams.workspace_cleanups.append,
     )
 
 
@@ -290,6 +292,38 @@ def test_build_removes_staging_dir_on_failure(tmp_path: Path) -> None:
 
     assert seams.staging_roots
     assert not seams.staging_roots[0].exists()
+
+
+# --- workspace cleanup ---------------------------------------------------------------
+
+
+def test_build_removes_per_run_workspace_on_success(tmp_path: Path) -> None:
+    store, seams = _FakeStore(), _Seams()
+
+    _builder(store, seams, tmp_path).build(_RUN, _profile())
+
+    assert seams.workspace_cleanups == [tmp_path / "ws" / str(_RUN)]
+
+
+def test_build_removes_per_run_workspace_when_make_fails(tmp_path: Path) -> None:
+    store, seams = _FakeStore(), _Seams(modules_install_returncode=1)
+
+    with pytest.raises(CategorizedError):
+        _builder(store, seams, tmp_path).build(_RUN, _profile())
+
+    assert seams.workspace_cleanups == [tmp_path / "ws" / str(_RUN)]
+
+
+def test_build_removes_per_run_workspace_when_build_workspace_fails(tmp_path: Path) -> None:
+    # olddefconfig fails inside build_workspace — the clone exists but the inner try is
+    # never entered, so only the outer workspace finally can reclaim it.
+    store, seams = _FakeStore(), _Seams(olddefconfig_returncode=2)
+
+    with pytest.raises(CategorizedError):
+        _builder(store, seams, tmp_path).build(_RUN, _profile())
+
+    assert seams.make_calls == 0
+    assert seams.workspace_cleanups == [tmp_path / "ws" / str(_RUN)]
 
 
 # --- from_env ------------------------------------------------------------------------
