@@ -39,7 +39,14 @@ M1_ADDED = {
     "quota_exceeded",
     "queue_timeout",
 }
-M0_ALL = M0_PORTED | M0_DISTRIBUTED | M1_ADDED
+# Object-lookup categories (#338, ADR-0097): a syntactically valid id that resolves to no
+# visible row is `not_found` (distinct from a malformed id, which stays `configuration_error`);
+# `conflict` is reserved for a uniqueness/state conflict and is defined-but-unemitted for now.
+LOOKUP_ADDED = {
+    "not_found",
+    "conflict",
+}
+M0_ALL = M0_PORTED | M0_DISTRIBUTED | M1_ADDED | LOOKUP_ADDED
 
 
 def test_taxonomy_is_exactly_the_m0_set() -> None:
@@ -63,6 +70,14 @@ def test_poc_only_test_failure_category_is_not_carried_into_m0() -> None:
 
 def test_authorization_denied_category_value() -> None:
     assert ErrorCategory.AUTHORIZATION_DENIED.value == "authorization_denied"
+
+
+def test_not_found_category_value() -> None:
+    assert ErrorCategory.NOT_FOUND.value == "not_found"
+
+
+def test_conflict_category_value() -> None:
+    assert ErrorCategory.CONFLICT.value == "conflict"
 
 
 def test_categorized_error_is_an_exception_carrying_its_category() -> None:
