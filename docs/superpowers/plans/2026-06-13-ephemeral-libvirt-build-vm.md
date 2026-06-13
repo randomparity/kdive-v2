@@ -129,9 +129,10 @@ ALTER TABLE build_hosts ADD CONSTRAINT build_hosts_fields_check CHECK (
   `base_image_volume: str | None` to `BuildHost` (after `ssh_credential_ref`, with docstring),
   and `base_image_volume=cast("str | None", row["base_image_volume"])` in `_row_to_host`.
 - [ ] **Step 5: Run the migration test + the existing `build_hosts` repo tests — PASS.**
-- [ ] **Step 6: Verify the full-suite enum/constraint coverage test still passes** (the
-  `test_check_constraint_covers_*` style test that pins CHECK constraints, per the #342 lesson).
-  Run: `uv run python -m pytest tests/db -q`.
+- [ ] **Step 6: Run the build_hosts migration + repo suites** (the real guardrail for this
+  CHECK widen — the `build_hosts.kind` CHECK is free-text, not an `ErrorCategory`-enum-backed
+  category, so `test_migrate.py`'s enum-coverage test does not apply here). Run:
+  `uv run python -m pytest tests/db/test_build_hosts_migration.py tests/db/test_build_hosts_repo.py -q`.
 - [ ] **Step 7: Commit** — `feat(db): admit kind='ephemeral_libvirt' in build_hosts (0029)`.
 
 ---
@@ -394,8 +395,20 @@ class GuestExecBuildTransport(ShellBuildTransport):
   scaffolding (`KDIVE_METADATA_NS`, the overlay `<disk>`, the agent `<channel>`, the network),
   drop the gdbstub `<qemu:commandline>`, and use a build-specific name/uuid
   (`build_domain_name(run_id)` = `f"kdive-build-{run_id}"`; deterministic uuid from run_id).
-  Use a distinct overlay name `build_overlay_volume_name(run_id)` = `f"kdive-build-{run_id}.qcow2"`
-  (disjoint from `overlay_volume_name(system_id)`).
+  Define the disjoint overlay helpers (distinct from the System `overlay_volume_name` scheme):
+
+```python
+def build_domain_name(run_id: UUID) -> str:
+    return f"kdive-build-{run_id}"
+
+def build_overlay_volume_name(run_id: UUID) -> str:
+    return f"kdive-build-{run_id}.qcow2"
+
+def ensure_build_overlay(pool, base_image_volume: str, run_id: UUID):
+    # mirror lifecycle.storage.ensure_overlay, but the overlay name is
+    # build_overlay_volume_name(run_id) and the backing volume is base_image_volume.
+    ...
+```
 - [ ] **Step 4: Implement `EphemeralBuildVm`** mirroring `RemoteLibvirtProvisioning`'s structure
   (config_factory, open_connection, secret_backend_factory, pki_base_dir, sleep/monotonic,
   agent timeout/poll injected). The `session` classmethod/contextmanager:
@@ -507,9 +520,12 @@ async def _run_build(conn, run, parsed, *, host, resolver, secret_registry) -> B
   - Reconciler `reap_orphan_build_vms(conn, reaper)`: a `kdive-build-<run_id>` whose BUILD job is
     terminal/gone → reaped; one whose BUILD job is queued/running → NOT reaped; returns the
     count.
-  - Ordering: in the reconciler build-host step, `reap_orphan_build_vms` runs **before**
-    `reclaim_orphan_build_host_leases` (assert call order with a spy, or assert the composed step
-    function calls them in that order).
+  - **Ordering (load-bearing):** the reconciler runs all repairs as an ordered `_RepairSpec`
+    list in `reconciler/loop.py`; `reclaimed_build_host_leases` is at line 189 and the reaper
+    specs (e.g. `reaped_dump_volumes`) run *after* it. Assert that the assembled repairs list
+    places the new `reaped_build_vms` spec **immediately before** `reclaimed_build_host_leases`
+    (find both by their string keys; assert the build-VM index < the lease-reclaim index), so a
+    freed lease slot never coexists with a live leaked VM (spec §4.6).
 - [ ] **Step 2: Run — FAIL.**
 - [ ] **Step 3: Implement the reaper port** mirroring `RemoteLibvirtDumpVolumeReaper`
   (config_factory, open_connection, secret_backend_factory, pki_base_dir; `asyncio.to_thread`
@@ -539,13 +555,29 @@ async def reap_orphan_build_vms(conn: AsyncConnection, reaper: BuildVmReaper) ->
     return reaped
 ```
 
-  Define a `BuildVmReaper` Protocol (or import the concrete) for the reconciler's injected seam,
-  consistent with how the dump-volume reaper is injected. In the composed build-host reconciler
-  step, call `reap_orphan_build_vms(conn, reaper)` **before** `reclaim_orphan_build_host_leases(conn)`.
-- [ ] **Step 5: Wire the reaper into the reconciler composition** the same way the dump-volume
-  reaper is assembled (only when remote-libvirt is configured; a deployment without it skips the
-  build-VM reap — guard like the existing remote reapers). If the reconciler iterates a list of
-  reaper seams, append this one; otherwise add an ordered call in the build-host step.
+  Define a `BuildVmReaper` Protocol (`list_build_vms()`, `delete_build_vm(name)`) in
+  `providers/reaping.py` (alongside `DumpVolumeReaper`) for the reconciler's injected seam, plus
+  a `NullBuildVmReaper` (list → `[]`, delete → no-op) for deployments without remote-libvirt.
+- [ ] **Step 5: Wire the reaper into the reconciler — concrete integration points.**
+  `reconciler/loop.py` runs one ordered `_RepairSpec` list (lines 183-208). Add a
+  `build_vm_reaper: BuildVmReaper = _NULL_BUILD_VM_REAPER` field to `ReconcileConfig` (mirroring
+  the `dump_volume_reaper` field + `_NULL_DUMP_VOLUME_REAPER` singleton). In the repairs list,
+  insert **immediately before** the `_RepairSpec("reclaimed_build_host_leases", …)` entry
+  (currently line 189):
+
+```python
+        _RepairSpec(
+            "reaped_build_vms",
+            lambda conn: build_host_repairs.reap_orphan_build_vms(conn, config.build_vm_reaper),
+        ),
+        _RepairSpec("reclaimed_build_host_leases", _reclaim_build_host_leases),  # AFTER the reap
+```
+
+  In `providers/composition.py` add `build_reconciler_build_vm_reaper()` returning a
+  `RemoteLibvirtBuildVmReaper` when `is_remote_libvirt_configured()` else `NullBuildVmReaper`
+  (mirror `build_reconciler_dump_volume_reaper`), and pass it into the `ReconcileConfig` where
+  `dump_volume_reaper` is set. Add `reaped_build_vms` to the reconcile counts struct/telemetry
+  next to `reclaimed_build_host_leases`.
 - [ ] **Step 6: Run the reaper + reconciler tests — PASS.**
 - [ ] **Step 7: `just lint && just type && uv run python -m pytest tests/reconciler tests/providers/remote_libvirt -q`.**
 - [ ] **Step 8: Commit** — `feat(reconciler): reap leaked ephemeral build VMs`.
