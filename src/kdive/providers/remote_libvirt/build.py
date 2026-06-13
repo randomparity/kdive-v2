@@ -63,6 +63,14 @@ from kdive.providers.build_host import execution as _build_exec
 from kdive.providers.build_host import workspace as _build_workspace
 from kdive.providers.build_host.orchestration import BuildHostOrchestrator
 from kdive.providers.build_host.transport import BuildTransport
+from kdive.providers.build_host.transport_seams import (
+    transport_git_checkout,
+    transport_read_build_id,
+    transport_read_config,
+    transport_run_make,
+    transport_run_modules_install,
+    transport_run_olddefconfig,
+)
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.store.objectstore import object_store_from_env
 
@@ -107,6 +115,12 @@ class _StorePort(Protocol):
 type _MakeBundle = Callable[[Path, Path], ArtifactSource]
 type _ReadVmlinuxSource = Callable[[Path], ArtifactSource]
 type _StagingFactory = Callable[[], Path]
+type _StagingCleanup = Callable[[Path], None]
+
+
+def _local_staging_cleanup(mod_root: Path) -> None:
+    """Worker-local staging cleanup: ``shutil.rmtree`` the worker-side module-staging dir."""
+    shutil.rmtree(mod_root, ignore_errors=True)
 
 
 class RemoteLibvirtBuild:
@@ -128,6 +142,7 @@ class RemoteLibvirtBuild:
         staging_factory: _StagingFactory,
         catalog_fetch: CatalogConfigFetch,
         allowed_component_roots: list[Path] | None = None,
+        staging_cleanup: _StagingCleanup = _local_staging_cleanup,
     ) -> None:
         self._workspace_root = workspace_root
         self._allowed_component_roots = allowed_component_roots or [
@@ -149,6 +164,8 @@ class RemoteLibvirtBuild:
         self._read_vmlinux_source = read_vmlinux_source
         self._read_build_id = read_build_id
         self._staging_factory = staging_factory
+        self._staging_cleanup = staging_cleanup
+        self._catalog_fetch = catalog_fetch
 
     @classmethod
     def from_env(cls, *, secret_registry: SecretRegistry) -> RemoteLibvirtBuild:
@@ -180,6 +197,55 @@ class RemoteLibvirtBuild:
             allowed_component_roots=allowed_component_roots,
         )
 
+    def over_transport(
+        self,
+        transport: BuildTransport,
+        *,
+        host_workspace_root: str,
+        git_remote: str,
+        git_ref: str,
+        secret_registry: SecretRegistry,
+    ) -> RemoteLibvirtBuild:
+        """Return a sibling builder whose build runs ON ``transport``'s host (ADR-0342).
+
+        Every build step — git checkout, ``olddefconfig``, ``.config`` read, ``make``,
+        ``modules_install``, build-id, bundle, ``vmlinux`` — runs over ``transport`` on the
+        build host, while the worker-side config/store of ``self`` (the catalog fetch, object
+        store factory, and component-root allowlist) is reused so config-fragment resolution and
+        the presigned publish stay worker-side. The module-staging tree lives under
+        ``host_workspace_root`` on the host and is reclaimed via :meth:`BuildTransport.cleanup`.
+
+        Args:
+            transport: A ready :class:`BuildTransport` (e.g. an SSH transport with a live
+                identity) that runs every build step on the build host.
+            host_workspace_root: Absolute path on the build host under which the per-run clone
+                and the module-staging tree are created.
+            git_remote: Git remote to clone on the host.
+            git_ref: Git ref (tag, branch, or commit SHA) to check out on the host.
+            secret_registry: Registry passed to the git-checkout seam for error redaction.
+
+        Returns:
+            A new :class:`RemoteLibvirtBuild` bound to ``transport``.
+        """
+        host_root = Path(host_workspace_root)
+        mod_root = host_root / "modroot"
+        return RemoteLibvirtBuild(
+            workspace_root=host_root,
+            store_factory=self._store_factory,
+            checkout=transport_git_checkout(transport, git_remote, git_ref, secret_registry),
+            run_olddefconfig=transport_run_olddefconfig(transport),
+            read_config=transport_read_config(transport),
+            run_make=transport_run_make(transport),
+            run_modules_install=transport_run_modules_install(transport),
+            make_bundle=transport_make_bundle(transport),
+            read_vmlinux_source=transport_vmlinux_source(transport),
+            read_build_id=transport_read_build_id(transport),
+            staging_factory=lambda: mod_root,
+            catalog_fetch=self._catalog_fetch,
+            allowed_component_roots=self._allowed_component_roots,
+            staging_cleanup=lambda path: transport.cleanup(str(path)),
+        )
+
     def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput:
         """Build a kernel, publish a vmlinuz+modules bundle + debuginfo; return refs + build-id.
 
@@ -200,7 +266,7 @@ class RemoteLibvirtBuild:
             kernel = self.publish(run_id, "kernel", kernel_source)
             vmlinux = self.publish(run_id, "vmlinux", vmlinux_source)
         finally:
-            shutil.rmtree(mod_root, ignore_errors=True)
+            self._staging_cleanup(mod_root)
         return BuildOutput(kernel_ref=kernel.key, debuginfo_ref=vmlinux.key, build_id=build_id)
 
     def validate_config_ref(self, ref: ComponentRef) -> None:
@@ -460,6 +526,29 @@ def _add_bundle_member(
             category=ErrorCategory.BUILD_FAILURE,
             details={"output": output},
         ) from exc
+
+
+def build_over_transport(
+    builder: RemoteLibvirtBuild,
+    transport: BuildTransport,
+    *,
+    host_workspace_root: str,
+    git_remote: str,
+    git_ref: str,
+    secret_registry: SecretRegistry,
+) -> RemoteLibvirtBuild:
+    """Module-level wrapper around :meth:`RemoteLibvirtBuild.over_transport` (a patchable seam).
+
+    The build handler calls this free function so a test can substitute a fake builder without
+    a real transport; production delegates straight to the method on ``builder``.
+    """
+    return builder.over_transport(
+        transport,
+        host_workspace_root=host_workspace_root,
+        git_remote=git_remote,
+        git_ref=git_ref,
+        secret_registry=secret_registry,
+    )
 
 
 def _real_staging_factory() -> Path:  # pragma: no cover - live_vm

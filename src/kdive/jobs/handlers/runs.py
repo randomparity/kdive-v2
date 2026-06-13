@@ -10,6 +10,8 @@ from uuid import UUID
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
+from kdive.db import build_hosts
+from kdive.db.build_hosts import BuildHost
 from kdive.db.idempotency import abandon_run_step, claim_run_step, complete_run_step
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, RUNS, SYSTEMS
@@ -20,10 +22,13 @@ from kdive.jobs.context import context_from_job as job_context_from_job
 from kdive.jobs.handlers.runs_shared import finalize_build
 from kdive.jobs.models import HandlerRegistry
 from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
-from kdive.profiles.build import BuildProfile, ServerBuildProfile
+from kdive.profiles.build import BuildProfile, GitKernelSource, ServerBuildProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.provider_components.build_results import BuildOutput
-from kdive.providers.ports import Booter, InstallRequest
+from kdive.providers.build_host.ssh_transport import SshBuildTransport
+from kdive.providers.build_host.transport import BuildTransport
+from kdive.providers.ports import Booter, Builder, InstallRequest
+from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild, build_over_transport
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.providers.runtime_paths import console_log_path, read_console_log
@@ -99,13 +104,132 @@ async def _run_runtime(
     return await resolver.runtime_for_run(conn, run_id)
 
 
+# Patchable seam: tests substitute this to avoid a real ssh transport (no live key, no network).
+ssh_build_transport_from_host = SshBuildTransport.from_host
+
+
+async def _release_build_lease(conn: AsyncConnection, run_id: UUID) -> None:
+    """Release the run's build-host lease in a dedicated committed transaction, best-effort.
+
+    The DELETE runs in its own ``conn.transaction()`` so it commits independently of any later
+    failure path: the build handler runs on a connection the worker does not wrap in an outer
+    transaction (handlers manage their own short transactions), so this commits durably and frees
+    the slot even when the build then fails. Errors are logged and swallowed — the reconciler is
+    the backstop. A worker-local run holds no lease, so this is an idempotent no-op DELETE.
+    """
+    try:
+        async with conn.transaction():
+            await build_hosts.release_lease(conn, run_id)
+    except Exception:
+        _log.warning("failed to release build-host lease for run %s", run_id, exc_info=True)
+
+
+def _git_coords(parsed: ServerBuildProfile, run_id: UUID) -> tuple[str, str]:
+    """Extract ``(git_remote, git_ref)`` from a git-provenance profile for an ssh build host."""
+    source = parsed.kernel_source_ref
+    if not isinstance(source, GitKernelSource):
+        raise CategorizedError(
+            "ssh build host requires a git kernel_source_ref",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"run_id": str(run_id)},
+        )
+    return source.git.remote, source.git.ref
+
+
+def _build_over_ssh(
+    builder: Builder,
+    transport: BuildTransport,
+    *,
+    host: BuildHost,
+    parsed: ServerBuildProfile,
+    run_id: UUID,
+    secret_registry: SecretRegistry,
+) -> Builder:
+    """Bind a transport-capable remote-libvirt builder to ``transport`` for an ssh host build.
+
+    Raises:
+        CategorizedError: ``NOT_IMPLEMENTED`` when the run's runtime builder is not the
+            remote-libvirt (transport-capable) builder — e.g. a local_libvirt run that selected
+            an ssh host (the deferred combo).
+    """
+    if not isinstance(builder, RemoteLibvirtBuild):
+        raise CategorizedError(
+            "ssh build host is only supported for the remote-libvirt provider",
+            category=ErrorCategory.NOT_IMPLEMENTED,
+            details={"run_id": str(run_id), "build_host": host.name},
+        )
+    git_remote, git_ref = _git_coords(parsed, run_id)
+    return build_over_transport(
+        builder,
+        transport,
+        host_workspace_root=host.workspace_root,
+        git_remote=git_remote,
+        git_ref=git_ref,
+        secret_registry=secret_registry,
+    )
+
+
+async def _run_build(
+    conn: AsyncConnection,
+    run: Run,
+    parsed: ServerBuildProfile,
+    *,
+    host: BuildHost,
+    resolver: ProviderResolver,
+    secret_registry: SecretRegistry,
+) -> BuildOutput:
+    """Run the build on ``host`` (local: runtime builder; ssh: transport-bound builder)."""
+    run_id = run.id
+    builder = (await _run_runtime(conn, run_id, resolver)).builder
+    if host.kind != "ssh":
+        return await asyncio.to_thread(builder.build, run_id, parsed)
+    with ssh_build_transport_from_host(host, secret_registry) as transport:
+        bound = _build_over_ssh(
+            builder,
+            transport,
+            host=host,
+            parsed=parsed,
+            run_id=run_id,
+            secret_registry=secret_registry,
+        )
+        return await asyncio.to_thread(bound.build, run_id, parsed)
+
+
+async def _resolve_build_host(
+    conn: AsyncConnection, payload: BuildPayload, run_id: UUID
+) -> BuildHost:
+    """Resolve the BUILD payload's host id (or worker-local back-compat) to a live row.
+
+    Raises:
+        CategorizedError: ``INFRASTRUCTURE_FAILURE`` when the admitted host row has vanished
+            (its lease/host disappeared between admission and build).
+    """
+    host_id = UUID(payload.build_host_id) if payload.build_host_id else build_hosts.WORKER_LOCAL_ID
+    host = await build_hosts.get_by_id(conn, host_id)
+    if host is None:
+        raise CategorizedError(
+            "selected build host is gone",
+            category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+            details={"run_id": str(run_id), "build_host_id": str(host_id)},
+        )
+    return host
+
+
 async def build_handler(
     conn: AsyncConnection,
     job: Job,
     *,
     resolver: ProviderResolver,
+    secret_registry: SecretRegistry,
 ) -> str | None:
-    """Build the Run's kernel and drive it `running -> succeeded` or failed."""
+    """Build the Run's kernel on the selected host and drive it `running -> succeeded` or failed.
+
+    The build host is read from the BUILD payload (admitted under capacity at the ``runs.build``
+    boundary): a worker-local host runs the resolved runtime builder directly; an ssh host runs a
+    transport-bound remote-libvirt builder inside the materialized-identity context manager. The
+    capacity lease is released on a committed path on both success and failure so a failure frees
+    the slot (a worker-local run holds no lease, so the release is a harmless no-op).
+    """
     payload = load_payload(job, BuildPayload)
     run_id = UUID(payload.run_id)
     run = await RUNS.get(conn, run_id)
@@ -124,20 +248,45 @@ async def build_handler(
         )
     result = await existing_build_result(conn, run_id)
     if result is None:
-        builder = (await _run_runtime(conn, run_id, resolver)).builder
-        try:
-            output: BuildOutput = await asyncio.to_thread(builder.build, run_id, parsed)
-        except CategorizedError as exc:
-            await _fail_build(conn, job, run, exc.category)
-            raise
-        result = BuildStepResult(
-            kernel_ref=output.kernel_ref,
-            debuginfo_ref=output.debuginfo_ref,
-            build_id=output.build_id,
-            cmdline=payload.cmdline,
+        result = await _build_and_record(
+            conn, job, run, parsed, payload, resolver=resolver, secret_registry=secret_registry
         )
     await finalize_build(conn, job, run, result)
+    await _release_build_lease(conn, run_id)
     return str(run_id)
+
+
+async def _build_and_record(
+    conn: AsyncConnection,
+    job: Job,
+    run: Run,
+    parsed: ServerBuildProfile,
+    payload: BuildPayload,
+    *,
+    resolver: ProviderResolver,
+    secret_registry: SecretRegistry,
+) -> BuildStepResult:
+    """Resolve the host, run the build, and shape the ledger result; release lease on failure."""
+    run_id = run.id
+    try:
+        host = await _resolve_build_host(conn, payload, run_id)
+        output = await _run_build(
+            conn, run, parsed, host=host, resolver=resolver, secret_registry=secret_registry
+        )
+    except CategorizedError as exc:
+        await _fail_build(conn, job, run, exc.category)
+        await _release_build_lease(conn, run_id)
+        # Commit the failed-state + lease-release before re-raising: the build runs on a pool
+        # connection whose context manager rolls back on exception, which would otherwise revert
+        # the FAILED transition and leave the lease occupying the slot.
+        await conn.commit()
+        raise
+    return BuildStepResult(
+        kernel_ref=output.kernel_ref,
+        debuginfo_ref=output.debuginfo_ref,
+        build_id=output.build_id,
+        cmdline=payload.cmdline,
+    )
 
 
 async def install_handler(
@@ -433,7 +582,12 @@ def register_handlers(
     secret_registry: SecretRegistry,
 ) -> None:
     """Bind the `build`/`install`/`boot` job handlers."""
-    registry.register(JobKind.BUILD, lambda conn, job: build_handler(conn, job, resolver=resolver))
+    registry.register(
+        JobKind.BUILD,
+        lambda conn, job: build_handler(
+            conn, job, resolver=resolver, secret_registry=secret_registry
+        ),
+    )
     registry.register(
         JobKind.INSTALL,
         lambda conn, job: install_handler(conn, job, resolver=resolver),

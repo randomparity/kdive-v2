@@ -15,6 +15,7 @@ with whatever work is enqueued alongside it (e.g. a ``runs.build`` job).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -52,6 +53,20 @@ class BuildHost:
     state: str
 
 
+def _row_to_host(row: dict[str, object]) -> BuildHost:
+    return BuildHost(
+        id=cast(UUID, row["id"]),
+        name=cast(str, row["name"]),
+        kind=cast(str, row["kind"]),
+        address=cast("str | None", row["address"]),
+        ssh_credential_ref=cast("str | None", row["ssh_credential_ref"]),
+        workspace_root=cast(str, row["workspace_root"]),
+        max_concurrent=cast(int, row["max_concurrent"]),
+        enabled=cast(bool, row["enabled"]),
+        state=cast(str, row["state"]),
+    )
+
+
 async def get_by_name(conn: AsyncConnection, name: str) -> BuildHost | None:
     """Return the build host with ``name``, or ``None`` if not found.
 
@@ -62,19 +77,23 @@ async def get_by_name(conn: AsyncConnection, name: str) -> BuildHost | None:
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT * FROM build_hosts WHERE name = %s", (name,))
         row = await cur.fetchone()
-    if row is None:
-        return None
-    return BuildHost(
-        id=row["id"],
-        name=row["name"],
-        kind=row["kind"],
-        address=row["address"],
-        ssh_credential_ref=row["ssh_credential_ref"],
-        workspace_root=row["workspace_root"],
-        max_concurrent=row["max_concurrent"],
-        enabled=row["enabled"],
-        state=row["state"],
-    )
+    return None if row is None else _row_to_host(row)
+
+
+async def get_by_id(conn: AsyncConnection, host_id: UUID) -> BuildHost | None:
+    """Return the build host with ``host_id``, or ``None`` if not found.
+
+    The build job payload carries the selected host's id (it was admitted under capacity at
+    the ``runs.build`` boundary), so the worker resolves the host by id rather than name.
+
+    Args:
+        conn: An async psycopg connection (autocommit or inside a transaction).
+        host_id: The build host's primary key.
+    """
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT * FROM build_hosts WHERE id = %s", (host_id,))
+        row = await cur.fetchone()
+    return None if row is None else _row_to_host(row)
 
 
 async def lease_count(conn: AsyncConnection, host_id: UUID) -> int:

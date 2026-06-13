@@ -16,6 +16,7 @@ import pytest
 from kdive.db.build_hosts import (
     WORKER_LOCAL_ID,
     BuildHost,
+    get_by_id,
     get_by_name,
     lease_count,
     release_lease,
@@ -65,6 +66,23 @@ def test_get_by_name_seeded_row_and_missing(migrated_url: str) -> None:
             assert host.ssh_credential_ref is None
 
             missing = await get_by_name(conn, "nope")
+            assert missing is None
+
+    asyncio.run(_run())
+
+
+def test_get_by_id_seeded_row_and_missing(migrated_url: str) -> None:
+    """get_by_id(WORKER_LOCAL_ID) returns the seeded BuildHost; an unknown id → None."""
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            host = await get_by_id(conn, WORKER_LOCAL_ID)
+            assert host is not None
+            assert host.id == WORKER_LOCAL_ID
+            assert host.name == "worker-local"
+            assert host.kind == "local"
+
+            missing = await get_by_id(conn, uuid4())
             assert missing is None
 
     asyncio.run(_run())

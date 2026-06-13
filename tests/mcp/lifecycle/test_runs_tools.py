@@ -1709,7 +1709,10 @@ def test_build_run_records_cmdline_in_the_build_ledger(migrated_url: str) -> Non
             async with pool.connection() as conn:
                 job = await _build_job_for(conn, run_id)
                 await runs_handlers.build_handler(
-                    conn, job, resolver=provider_resolver(builder=_FakeBuilder())
+                    conn,
+                    job,
+                    resolver=provider_resolver(builder=_FakeBuilder()),
+                    secret_registry=SecretRegistry(),
                 )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -1757,7 +1760,10 @@ def test_build_run_without_cmdline_records_none(migrated_url: str) -> None:
             async with pool.connection() as conn:
                 job = await _build_job_for(conn, run_id)
                 await runs_handlers.build_handler(
-                    conn, job, resolver=provider_resolver(builder=_FakeBuilder())
+                    conn,
+                    job,
+                    resolver=provider_resolver(builder=_FakeBuilder()),
+                    secret_registry=SecretRegistry(),
                 )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -1777,7 +1783,10 @@ def test_build_handler_drives_run_succeeded_sets_refs(migrated_url: str) -> None
             builder = _FakeBuilder()
             async with pool.connection() as conn:
                 result = await runs_handlers.build_handler(
-                    conn, job, resolver=provider_resolver(builder=builder)
+                    conn,
+                    job,
+                    resolver=provider_resolver(builder=builder),
+                    secret_registry=SecretRegistry(),
                 )
             assert result == run_id
             assert builder.calls == [UUID(run_id)]
@@ -1814,12 +1823,18 @@ def test_build_handler_replay_does_not_rebuild(migrated_url: str) -> None:
             builder = _FakeBuilder()
             async with pool.connection() as conn:
                 await runs_handlers.build_handler(
-                    conn, job, resolver=provider_resolver(builder=builder)
+                    conn,
+                    job,
+                    resolver=provider_resolver(builder=builder),
+                    secret_registry=SecretRegistry(),
                 )
             # Re-dispatch the same job: the ledger short-circuits the rebuild.
             async with pool.connection() as conn:
                 await runs_handlers.build_handler(
-                    conn, job, resolver=provider_resolver(builder=builder)
+                    conn,
+                    job,
+                    resolver=provider_resolver(builder=builder),
+                    secret_registry=SecretRegistry(),
                 )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM runs WHERE id=%s", (run_id,))
@@ -1839,7 +1854,10 @@ def test_build_handler_build_failure_sets_run_failed(migrated_url: str) -> None:
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as caught:
                     await runs_handlers.build_handler(
-                        conn, job, resolver=provider_resolver(builder=builder)
+                        conn,
+                        job,
+                        resolver=provider_resolver(builder=builder),
+                        secret_registry=SecretRegistry(),
                     )
             assert caught.value.category is ErrorCategory.BUILD_FAILURE
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -1862,7 +1880,10 @@ def test_build_handler_missing_output_records_build_failure(migrated_url: str) -
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError) as caught:
                     await runs_handlers.build_handler(
-                        conn, job, resolver=provider_resolver(builder=_MissingBuildOutputBuilder())
+                        conn,
+                        job,
+                        resolver=provider_resolver(builder=_MissingBuildOutputBuilder()),
+                        secret_registry=SecretRegistry(),
                     )
             assert caught.value.category is ErrorCategory.BUILD_FAILURE
             assert caught.value.details == {"output": "bzImage"}
@@ -1884,7 +1905,10 @@ def test_build_handler_config_failure_sets_run_failed_config_error(migrated_url:
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError):
                     await runs_handlers.build_handler(
-                        conn, job, resolver=provider_resolver(builder=builder)
+                        conn,
+                        job,
+                        resolver=provider_resolver(builder=builder),
+                        secret_registry=SecretRegistry(),
                     )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state, failure_category FROM runs WHERE id=%s", (run_id,))
@@ -1906,7 +1930,10 @@ def test_build_handler_tolerates_concurrent_cancel(migrated_url: str) -> None:
             builder = _FakeBuilder()
             async with pool.connection() as conn:
                 result = await runs_handlers.build_handler(
-                    conn, job, resolver=provider_resolver(builder=builder)
+                    conn,
+                    job,
+                    resolver=provider_resolver(builder=builder),
+                    secret_registry=SecretRegistry(),
                 )
             assert result == run_id  # does not crash
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -1929,7 +1956,10 @@ def test_build_handler_crash_window_re_dispatch_overwrites_no_orphan(migrated_ur
             async with pool.connection() as conn:
                 with pytest.raises(CategorizedError):
                     await runs_handlers.build_handler(
-                        conn, job, resolver=provider_resolver(builder=crashing)
+                        conn,
+                        job,
+                        resolver=provider_resolver(builder=crashing),
+                        secret_registry=SecretRegistry(),
                     )
             # The failure drove the Run terminal (failed); a real lease-lapse crash would not.
             # Reset to running to model a crash that left no ledger row but the Run still running.
@@ -1939,7 +1969,12 @@ def test_build_handler_crash_window_re_dispatch_overwrites_no_orphan(migrated_ur
                 )
             ok = _FakeBuilder()
             async with pool.connection() as conn:
-                await runs_handlers.build_handler(conn, job, resolver=provider_resolver(builder=ok))
+                await runs_handlers.build_handler(
+                    conn,
+                    job,
+                    resolver=provider_resolver(builder=ok),
+                    secret_registry=SecretRegistry(),
+                )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state, kernel_ref FROM runs WHERE id=%s", (run_id,))
                 row = await cur.fetchone()
