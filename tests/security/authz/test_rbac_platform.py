@@ -13,16 +13,23 @@ from kdive.mcp.auth import AuthError, RequestContext
 from kdive.security.authz.rbac import (
     AuthorizationError,
     PlatformRole,
+    Role,
+    RoleDenied,
     platform_roles_from_claims,
     require_platform_role,
+    require_role,
 )
 
 
-def _ctx(*, platform_roles: frozenset[PlatformRole] = frozenset()) -> RequestContext:
+def _ctx(
+    *,
+    projects: tuple[str, ...] = (),
+    platform_roles: frozenset[PlatformRole] = frozenset(),
+) -> RequestContext:
     return RequestContext(
         principal="alice",
         agent_session=None,
-        projects=(),
+        projects=projects,
         platform_roles=platform_roles,
     )
 
@@ -115,3 +122,55 @@ def test_require_platform_role_auditor_does_not_satisfy_admin() -> None:
 def test_require_platform_role_empty_set_denied() -> None:
     with pytest.raises(AuthorizationError):
         require_platform_role(_ctx(), PlatformRole.PLATFORM_AUDITOR)
+
+
+# --- Cross-axis boundary: a platform role conveys no project-scoped read access ---
+#
+# ADR-0043 §1/§7: the two scope axes never interact — `require_role` is "unchanged and
+# unaware of platform roles." A caller on the platform axis (e.g. `operator-cli` with
+# `platform_operator`, no project membership) is therefore denied a project-scoped read
+# (allocations/systems/runs/ledger, all gated `require_role(ctx, project, viewer)`) exactly
+# as an unauthenticated-to-that-project caller is. (Cross-project `inventory.list` is the
+# *platform_auditor* read, a separate door — not a `require_role` project read.) These tests
+# pin that boundary as a stated guarantee (issue #341): platform roles govern platform-wide
+# ops, not tenant data.
+
+
+@pytest.mark.parametrize(
+    "platform_role",
+    [PlatformRole.PLATFORM_OPERATOR, PlatformRole.PLATFORM_ADMIN, PlatformRole.PLATFORM_AUDITOR],
+)
+def test_platform_role_without_membership_denied_project_read(
+    platform_role: PlatformRole,
+) -> None:
+    # A platform-only token (no project membership) is denied a project-scoped read at the
+    # `viewer` floor. `require_role` consults only `ctx.projects`/`ctx.roles`; the held
+    # platform role — even `platform_admin` — grants no project-data access.
+    ctx = _ctx(projects=(), platform_roles=frozenset({platform_role}))
+    with pytest.raises(AuthorizationError):
+        require_role(ctx, "proj", Role.VIEWER)
+
+
+def test_platform_role_project_denial_is_non_member_site_not_role_denied() -> None:
+    # The denial is the non-member site (base AuthorizationError), not the member-over-reach
+    # site (RoleDenied): a platform-only token is not a project member, so the dispatch
+    # boundary does not audit it as a per-project rank-below denial.
+    ctx = _ctx(projects=(), platform_roles=frozenset({PlatformRole.PLATFORM_ADMIN}))
+    with pytest.raises(AuthorizationError) as excinfo:
+        require_role(ctx, "proj", Role.VIEWER)
+    assert not isinstance(excinfo.value, RoleDenied)
+
+
+def test_platform_admin_membership_on_other_project_denied_target_project_read() -> None:
+    # Even combining a platform role with membership on a *different* project does not reach
+    # across to the target project: the axes compose independently, no implicit cross-tenant
+    # read. Holds `viewer` on "other" + `platform_admin`; still denied a read on "proj".
+    ctx = RequestContext(
+        principal="alice",
+        agent_session=None,
+        projects=("other",),
+        roles={"other": Role.VIEWER},
+        platform_roles=frozenset({PlatformRole.PLATFORM_ADMIN}),
+    )
+    with pytest.raises(AuthorizationError):
+        require_role(ctx, "proj", Role.VIEWER)
