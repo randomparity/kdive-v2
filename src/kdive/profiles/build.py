@@ -62,18 +62,46 @@ class ProfileRequirementsRef(BaseModel):
     name: NonEmptyStr
 
 
+class GitSourceRef(BaseModel):
+    """Remote + ref coordinates for a git-cloned kernel source."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    remote: NonEmptyStr
+    ref: NonEmptyStr
+
+
+class GitKernelSource(BaseModel):
+    """Wraps a :class:`GitSourceRef` so the JSON key ``"git"`` discriminates git provenance.
+
+    A document ``{"git": {"remote": "...", "ref": "..."}}`` parses into this model,
+    while a bare string stays a :data:`NonEmptyStr` (warm-tree provenance).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    git: GitSourceRef
+
+
 class ServerBuildProfile(_BuildProfileBase):
     """Server-build lane: names a source tree, an optional config, and an optional patch.
 
     An omitted ``config`` resolves to the seeded ``kdump`` catalog fragment at the build boundary
     (ADR-0096); a profile that names a config overrides that default.
+
+    ``kernel_source_ref`` accepts either a bare string (warm-tree / URI provenance) or a
+    ``{"git": {"remote": ..., "ref": ...}}`` object (git-clone provenance). Use
+    :func:`is_git_source` to distinguish them without ``isinstance`` at call sites.
+
+    ``build_host`` names the SSH host to use for remote builds; ``None`` means local.
     """
 
     source: Literal["server"] = "server"
-    kernel_source_ref: NonEmptyStr
+    kernel_source_ref: NonEmptyStr | GitKernelSource
     config: ComponentRef | None = None
     profile_requirements: ProfileRequirementsRef | None = None
     patch_ref: NonEmptyStr | None = None
+    build_host: NonEmptyStr | None = None
 
 
 class ExternalBuildProfile(_BuildProfileBase):
@@ -141,3 +169,15 @@ class BuildProfile:
 def dump_build_profile(profile: ParsedBuildProfile) -> SerializedBuildProfile:
     """Serialize a parsed build profile for JSON persistence."""
     return cast(SerializedBuildProfile, profile.model_dump(mode="json"))
+
+
+def is_git_source(profile: ServerBuildProfile) -> bool:
+    """Return True when the profile selects git-clone provenance for the kernel source.
+
+    Args:
+        profile: A parsed server-build profile.
+
+    Returns:
+        True if ``kernel_source_ref`` is a :class:`GitKernelSource`; False for bare strings.
+    """
+    return isinstance(profile.kernel_source_ref, GitKernelSource)
