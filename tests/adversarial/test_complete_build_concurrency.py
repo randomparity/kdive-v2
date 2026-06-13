@@ -79,3 +79,96 @@ def test_concurrent_complete_build_yields_one_ledger_row(migrated_url: str) -> N
             )
 
     asyncio.run(_run())
+
+
+# --- Chunked lane: a loser whose chunks the winner deleted still reports success ---------
+
+import psycopg  # noqa: E402
+from psycopg.types.json import Jsonb  # noqa: E402
+
+from kdive.domain.errors import CategorizedError, ErrorCategory  # noqa: E402
+from kdive.domain.models import Sensitivity  # noqa: E402
+from kdive.provider_components.artifacts import HeadResult  # noqa: E402
+from kdive.provider_components.uploads import ChunkEntry, ManifestEntry  # noqa: E402
+from kdive.services.runs.steps import BuildStepResult  # noqa: E402
+
+_CHUNKED = ManifestEntry("kernel", "whole", 8, chunks=(ChunkEntry("c0", 5), ChunkEntry("c1", 3)))
+
+
+class _LoserStore:
+    """Reassembly fails mid-copy after a concurrent winner finalized the Run.
+
+    The first ``upload_part_copy`` simulates that race: it flips the Run to SUCCEEDED and writes
+    the build ledger row through a side connection (the winner), then raises as if the chunk
+    objects were already deleted out from under this in-flight copy.
+    """
+
+    def __init__(self, url: str, run_id: str) -> None:
+        self._url = url
+        self._run_id = run_id
+
+    def head(self, key: str) -> HeadResult | None:
+        if key.endswith(".part0001"):
+            return HeadResult(5, "c0", "e")
+        if key.endswith(".part0002"):
+            return HeadResult(3, "c1", "e")
+        return None
+
+    def get_range(self, key: str, *, start: int, length: int) -> bytes:
+        return b""
+
+    def create_multipart_upload(self, key, *, sensitivity: Sensitivity, retention_class) -> str:
+        return "uid"
+
+    def upload_part_copy(self, key, upload_id, *, part_number, source_key) -> str:
+        result = BuildStepResult(
+            kernel_ref=f"local/runs/{self._run_id}/kernel",
+            debuginfo_ref="",
+            initrd_ref=None,
+            build_id="",
+            cmdline="c",
+        )
+        with psycopg.connect(self._url, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO run_steps (run_id, step, state, result) "
+                "VALUES (%s, 'build', 'succeeded', %s) ON CONFLICT (run_id, step) DO NOTHING",
+                (self._run_id, Jsonb(result.dump())),
+            )
+            conn.execute(
+                "UPDATE runs SET state = 'succeeded' WHERE id = %s AND state = 'created'",
+                (self._run_id,),
+            )
+        raise CategorizedError("chunk gone", category=ErrorCategory.INFRASTRUCTURE_FAILURE)
+
+    def complete_multipart_upload(self, key, upload_id, parts) -> str:
+        return "final"
+
+    def abort_multipart_upload(self, key, upload_id) -> None:
+        pass
+
+    def delete(self, key: str) -> None:
+        pass
+
+
+def test_chunked_loser_returns_success_when_winner_already_finalized(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with pool(migrated_url) as conn_pool:
+            run_id = await seed_external_run_with_manifest(conn_pool, entries=[_CHUNKED])
+            store = _LoserStore(migrated_url, str(run_id))
+            handlers = RunBuildHandlers(
+                _TEST_COMPONENT_SOURCES,
+                validate_complete_build=FakeValidator(
+                    BuildOutput(f"local/runs/{run_id}/kernel", "", "")
+                ),
+                object_store_factory=lambda: store,
+            )
+            resp = await handlers.complete_build(
+                conn_pool, ctx(), str(run_id), build_id=None, cmdline="c"
+            )
+            async with conn_pool.connection() as conn:
+                run = await RUNS.get(conn, run_id)
+        # The loser maps its mid-copy failure to the winner's recorded success, not an error.
+        assert resp.status == "succeeded"
+        assert run is not None and run.state is RunState.SUCCEEDED
+
+    asyncio.run(_run())

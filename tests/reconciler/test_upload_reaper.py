@@ -1,9 +1,10 @@
-"""Tests for the reconciler upload reaper (ADR-0048 §6, issue #11).
+"""Tests for the reconciler upload reaper (ADR-0048 §6, ADR-0104 §7, issue #11).
 
-The reaper prefix-reaps uncommitted objects of pre-finalize owners (a CREATED Run or a
-DEFINED System) whose upload manifest is past its deadline, then deletes the manifest
-row. It exempts any object with a committed ``artifacts`` row, and the per-owner locked
-re-read declines a manifest whose deadline was renewed since the candidate select.
+The reaper prefix-reaps uncommitted objects of a past-deadline manifest, then deletes the
+manifest row. For ``runs`` it sweeps whether the Run is pre-finalize (a true abandon) or
+finalized with leftover chunks (ADR-0104 §7); for ``systems`` it keeps the DEFINED gate. It
+exempts any object with a committed ``artifacts`` row, and the per-owner locked re-read
+declines a manifest whose deadline was renewed since the candidate select.
 
 The ``_repair_abandoned_uploads`` tests run the repair through a real non-autocommit
 ``AsyncConnectionPool`` via ``run_repair`` (mirroring ``test_loop.py``), so the
