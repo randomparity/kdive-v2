@@ -389,6 +389,7 @@ async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry)
                 console_registry=console_hosting.registry if console_hosting else None,
                 resetter=provider_composition.build_reconciler_transport_resetter(),
                 dump_volume_reaper=provider_composition.build_reconciler_dump_volume_reaper(),
+                build_vm_reaper=provider_composition.build_reconciler_build_vm_reaper(),
                 heartbeat=heartbeat,
                 telemetry=ReconcilerTelemetry(
                     tracer=telemetry.tracer_provider.get_tracer("kdive.reconciler"),

@@ -38,33 +38,44 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         name: Annotated[
             str, Field(description="Unique human-readable identifier for the new host.")
         ],
-        address: Annotated[str, Field(description="SSH hostname or IP address of the build host.")],
-        ssh_credential_ref: Annotated[
-            str,
-            Field(
-                description=(
-                    "Credential secret reference (e.g. 'ssh://build-host-key'). "
-                    "Only the reference string is stored — secret bytes are never fetched."
-                )
-            ),
-        ],
         workspace_root: Annotated[
             str,
-            Field(description="Absolute path on the build host where builds are staged."),
+            Field(description="Absolute path where builds are staged (in-guest for ephemeral)."),
         ],
         max_concurrent: Annotated[
             int, Field(description="Maximum simultaneous build leases this host may hold (> 0).")
         ],
+        kind: Annotated[
+            str, Field(description="Build host kind: 'ssh' (default) or 'ephemeral_libvirt'.")
+        ] = "ssh",
+        address: Annotated[
+            str | None, Field(description="SSH hostname or IP address (ssh kind only).")
+        ] = None,
+        ssh_credential_ref: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Credential secret reference, e.g. 'ssh://build-host-key' (ssh kind only). "
+                    "Only the reference string is stored — secret bytes are never fetched."
+                )
+            ),
+        ] = None,
+        base_image_volume: Annotated[
+            str | None,
+            Field(description="Base build-image volume name (ephemeral_libvirt kind only)."),
+        ] = None,
     ) -> ToolResponse:
-        """Register a new SSH build host in the inventory. Requires platform_admin."""
+        """Register a new remote build host (ssh or ephemeral_libvirt). Requires platform_admin."""
         return await register_build_host(
             pool,
             current_context(),
             name=name,
-            address=address,
-            ssh_credential_ref=ssh_credential_ref,
             workspace_root=workspace_root,
             max_concurrent=max_concurrent,
+            kind=kind,
+            address=address,
+            ssh_credential_ref=ssh_credential_ref,
+            base_image_volume=base_image_volume,
         )
 
     @app.tool(name=LIST_TOOL, annotations=_docmeta.read_only(), meta={"maturity": "implemented"})

@@ -29,6 +29,7 @@ from kdive.providers.build_host.ssh_transport import SshBuildTransport
 from kdive.providers.build_host.transport import BuildTransport
 from kdive.providers.ports import Booter, Builder, InstallRequest
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild, build_over_transport
+from kdive.providers.remote_libvirt.lifecycle.build_vm import ephemeral_build_session
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
 from kdive.providers.runtime_paths import console_log_path, read_console_log
@@ -144,8 +145,28 @@ def _git_coords(parsed: ServerBuildProfile, run_id: UUID) -> tuple[str, str]:
     return source.git.remote, source.git.ref
 
 
-def _build_over_ssh(
-    builder: Builder,
+def _require_remote_builder(builder: Builder, host: BuildHost, run_id: UUID) -> RemoteLibvirtBuild:
+    """Narrow ``builder`` to the transport-capable remote-libvirt builder, or fail closed.
+
+    Both remote build-host kinds (ssh, ephemeral_libvirt) run a transport-bound build, so this
+    is checked once before any host-side work (no VM is provisioned for a known-bad combo).
+
+    Raises:
+        CategorizedError: ``NOT_IMPLEMENTED`` when the run's runtime builder is not the
+            remote-libvirt builder — e.g. a local_libvirt run that selected a remote host
+            (the deferred combo).
+    """
+    if not isinstance(builder, RemoteLibvirtBuild):
+        raise CategorizedError(
+            "a remote build host is only supported for the remote-libvirt provider",
+            category=ErrorCategory.NOT_IMPLEMENTED,
+            details={"run_id": str(run_id), "build_host": host.name},
+        )
+    return builder
+
+
+def _bind_transport(
+    builder: RemoteLibvirtBuild,
     transport: BuildTransport,
     *,
     host: BuildHost,
@@ -153,19 +174,7 @@ def _build_over_ssh(
     run_id: UUID,
     secret_registry: SecretRegistry,
 ) -> Builder:
-    """Bind a transport-capable remote-libvirt builder to ``transport`` for an ssh host build.
-
-    Raises:
-        CategorizedError: ``NOT_IMPLEMENTED`` when the run's runtime builder is not the
-            remote-libvirt (transport-capable) builder — e.g. a local_libvirt run that selected
-            an ssh host (the deferred combo).
-    """
-    if not isinstance(builder, RemoteLibvirtBuild):
-        raise CategorizedError(
-            "ssh build host is only supported for the remote-libvirt provider",
-            category=ErrorCategory.NOT_IMPLEMENTED,
-            details={"run_id": str(run_id), "build_host": host.name},
-        )
+    """Bind the remote-libvirt builder to ``transport`` with the profile's git coordinates."""
     git_remote, git_ref = _git_coords(parsed, run_id)
     return build_over_transport(
         builder,
@@ -177,6 +186,17 @@ def _build_over_ssh(
     )
 
 
+def _require_base_image(host: BuildHost, run_id: UUID) -> str:
+    """The ephemeral host's base image volume (DB CHECK guarantees it; narrow the type)."""
+    if host.base_image_volume is None:
+        raise CategorizedError(
+            "ephemeral_libvirt build host has no base_image_volume",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"run_id": str(run_id), "build_host": host.name},
+        )
+    return host.base_image_volume
+
+
 async def _run_build(
     conn: AsyncConnection,
     run: Run,
@@ -186,14 +206,27 @@ async def _run_build(
     resolver: ProviderResolver,
     secret_registry: SecretRegistry,
 ) -> BuildOutput:
-    """Run the build on ``host`` (local: runtime builder; ssh: transport-bound builder)."""
+    """Run the build on ``host``: local runs the runtime builder; ssh/ephemeral go via transport."""
     run_id = run.id
     builder = (await _run_runtime(conn, run_id, resolver)).builder
-    if host.kind != "ssh":
+    if host.kind == "local":
         return await asyncio.to_thread(builder.build, run_id, parsed)
-    with ssh_build_transport_from_host(host, secret_registry) as transport:
-        bound = _build_over_ssh(
-            builder,
+    remote_builder = _require_remote_builder(builder, host, run_id)
+    if host.kind == "ssh":
+        with ssh_build_transport_from_host(host, secret_registry) as transport:
+            bound = _bind_transport(
+                remote_builder,
+                transport,
+                host=host,
+                parsed=parsed,
+                run_id=run_id,
+                secret_registry=secret_registry,
+            )
+            return await asyncio.to_thread(bound.build, run_id, parsed)
+    base_image = _require_base_image(host, run_id)
+    with ephemeral_build_session(base_image, secret_registry, run_id=run_id) as transport:
+        bound = _bind_transport(
+            remote_builder,
             transport,
             host=host,
             parsed=parsed,

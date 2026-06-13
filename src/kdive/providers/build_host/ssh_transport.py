@@ -4,9 +4,10 @@ All remote commands are executed via the SSH CLI (``ssh -i <identity> ... <host>
 The SSH identity (private key) is materialized into a per-op 0600 temp file from the
 configured secrets root, then deleted on every exit path.
 
-``clone()`` performs a shallow checkout via ``git init`` + ``git fetch --depth 1`` +
-``git checkout FETCH_HEAD``; a non-shallow fallback is a future improvement since some
-remotes refuse shallow-by-SHA fetches.
+The shared BuildTransport surface (``run``/``read_*``/``clone``/``upload_file``/``cleanup``)
+lives on :class:`~kdive.providers.build_host.shell_transport.ShellBuildTransport`; this module
+provides only the ssh-specific ``_run_remote`` primitive, the stdin-streamed ``write_bytes``,
+and the identity lifecycle.
 """
 
 from __future__ import annotations
@@ -23,20 +24,21 @@ from pathlib import Path
 
 from kdive.db.build_hosts import BuildHost
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.provider_components.artifacts import PresignedUpload
 from kdive.providers.build_host.execution import launch_failure
+
+# Re-export the read-size cap (defined on the base) for callers/tests importing it here.
+from kdive.providers.build_host.shell_transport import (
+    _MAX_REMOTE_READ_B64_BYTES as _MAX_REMOTE_READ_B64_BYTES,
+)
+from kdive.providers.build_host.shell_transport import _UNSAFE_CHARS, ShellBuildTransport
 from kdive.providers.build_host.transport import CommandResult
 from kdive.providers.build_host.workspace import redacted_tail
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import FileRefBackend, secrets_root_from_env
 
-_log = logging.getLogger(__name__)
+__all__ = ["SshBuildTransport", "materialized_ssh_identity"]
 
-# Characters that would be mis-parsed by git or ssh as options/command boundaries.
-_UNSAFE_CHARS = frozenset(
-    "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f"
-    "\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f"
-)
+_log = logging.getLogger(__name__)
 
 _SSH_BASE_OPTIONS = [
     "-o",
@@ -47,36 +49,10 @@ _SSH_BASE_OPTIONS = [
     "ConnectTimeout=10",
 ]
 
-# read_bytes/read_text base64-capture a whole remote file into memory. These reads
-# are small (.config, the build-id note) — cap the captured (base64) output well
-# above any legitimate value so a mis-pointed path cannot exhaust worker memory.
-_MAX_REMOTE_READ_B64_BYTES = 8 * 1024 * 1024
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _validate_git_arg(value: str, field: str) -> None:
-    """Reject a git remote or ref that could be parsed as an option or inject a command.
-
-    Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` when the value starts with ``-`` or
-            contains a control character or newline.
-    """
-    if value.startswith("-"):
-        raise CategorizedError(
-            f"{field} must not start with '-' (would be parsed as a git option)",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"field": field},
-        )
-    if any(c in _UNSAFE_CHARS for c in value):
-        raise CategorizedError(
-            f"{field} contains a control character or newline",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"field": field},
-        )
 
 
 def _validate_ssh_destination(address: str) -> None:
@@ -209,12 +185,12 @@ def materialized_ssh_identity(
 # ---------------------------------------------------------------------------
 
 
-class SshBuildTransport:
-    """Implements :class:`~kdive.providers.build_host.transport.BuildTransport` over SSH.
+class SshBuildTransport(ShellBuildTransport):
+    """Implements :class:`BuildTransport` over SSH (the ssh-specific seam of the shared base).
 
     All operations shell out to the remote host via ``ssh``. The SSH identity file is
-    provided externally (use :func:`materialized_ssh_identity` + :meth:`from_host` to
-    bind the full lifecycle).
+    provided externally (use :func:`materialized_ssh_identity` + :meth:`from_host` to bind
+    the full lifecycle).
 
     Args:
         address: SSH destination in ``[user@]host`` form.
@@ -273,7 +249,7 @@ class SshBuildTransport:
             )
 
     # ------------------------------------------------------------------
-    # Internal ssh runner
+    # ShellBuildTransport primitives
     # ------------------------------------------------------------------
 
     def _ssh_argv(self, remote_cmd: str) -> list[str]:
@@ -287,8 +263,12 @@ class SshBuildTransport:
             remote_cmd,
         ]
 
-    def _run_remote(self, argv: list[str], cwd: str, timeout_s: int) -> CommandResult:
-        """Execute *argv* in *cwd* on the remote host; return a :class:`CommandResult`."""
+    def _run_remote(self, argv: list[str], *, cwd: str, timeout_s: int) -> CommandResult:
+        """Execute *argv* in *cwd* on the remote host via SSH; return a :class:`CommandResult`.
+
+        Maps :class:`subprocess.TimeoutExpired` to ``BUILD_FAILURE`` and :class:`OSError`
+        launch failures to :func:`~kdive.providers.build_host.execution.launch_failure`.
+        """
         remote_cmd = f"cd {shlex.quote(cwd)} && {shlex.join(argv)}"
         ssh_argv = self._ssh_argv(remote_cmd)
         try:
@@ -309,77 +289,13 @@ class SshBuildTransport:
             raise launch_failure("ssh", exc, category=ErrorCategory.INFRASTRUCTURE_FAILURE) from exc
         return CommandResult(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
 
-    # ------------------------------------------------------------------
-    # BuildTransport protocol
-    # ------------------------------------------------------------------
-
-    def run(self, argv: list[str], *, cwd: str, timeout_s: int) -> CommandResult:
-        """Run *argv* in *cwd* on the remote host via SSH.
-
-        Maps :class:`subprocess.TimeoutExpired` to ``BUILD_FAILURE`` and
-        :class:`OSError` launch failures to
-        :func:`~kdive.providers.build_host.execution.launch_failure`.
-        """
-        return self._run_remote(argv, cwd, timeout_s)
-
-    def read_text(self, path: str) -> str:
-        """Read *path* as UTF-8 text from the remote host.
-
-        Decodes the bytes from :meth:`read_bytes` as UTF-8 rather than relying on the ssh
-        subprocess's locale-default text decoding, satisfying the Protocol's UTF-8 contract.
-
-        Raises:
-            CategorizedError: ``CONFIGURATION_ERROR`` if the content is not valid UTF-8.
-        """
-        raw = self.read_bytes(path)
-        try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise CategorizedError(
-                f"remote file {path!r} is not valid UTF-8",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"path": path},
-            ) from exc
-
-    def read_bytes(self, path: str) -> bytes:
-        """Read *path* as raw bytes from the remote host (via ``base64 -w0``).
-
-        The captured base64 output is size-capped (``_MAX_REMOTE_READ_B64_BYTES``) so a
-        mis-pointed path cannot exhaust worker memory; these reads are small by design.
-
-        Raises:
-            CategorizedError: ``INFRASTRUCTURE_FAILURE`` if the remote read fails;
-                ``CONFIGURATION_ERROR`` if the captured output exceeds the size cap.
-        """
-        result = self._run_remote(["base64", "-w0", path], cwd="/", timeout_s=30)
-        if result.returncode != 0:
-            raise CategorizedError(
-                f"remote read_bytes failed for {path!r}",
-                category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-                details={
-                    "path": path,
-                    "stderr": redacted_tail(result.stderr, self._secret_registry),
-                },
-            )
-        encoded = result.stdout.strip()
-        if len(encoded) > _MAX_REMOTE_READ_B64_BYTES:
-            raise CategorizedError(
-                f"remote file {path!r} exceeds the maximum readable size",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"path": path, "max_b64_bytes": _MAX_REMOTE_READ_B64_BYTES},
-            )
-        return base64.b64decode(encoded)
-
     def write_bytes(self, path: str, data: bytes) -> None:
-        """Write *data* to *path* on the remote host by piping base64-encoded content.
+        """Write *data* to *path* on the remote host by piping base64-encoded content to stdin.
 
-        Encodes *data* as base64, pipes it to ``base64 -d`` on the remote, and redirects
-        output to *path*. Uses a shell heredoc-free approach: the base64 payload is
-        written to the ssh process stdin via a second ``subprocess.run`` call piping stdin
-        directly.
+        Encodes *data* as base64, pipes it to ``base64 -d`` on the remote (via the ssh
+        process stdin), and redirects output to *path*.
         """
         encoded = base64.b64encode(data).decode()
-        # Construct a remote command that decodes base64 from stdin and writes to path.
         remote_cmd = f"base64 -d > {shlex.quote(path)}"
         ssh_argv = self._ssh_argv(remote_cmd)
         try:
@@ -404,117 +320,3 @@ class SshBuildTransport:
                 category=ErrorCategory.INFRASTRUCTURE_FAILURE,
                 details={"path": path, "stderr": redacted_tail(proc.stderr, self._secret_registry)},
             )
-
-    def clone(self, remote: str, ref: str, dest: str) -> None:
-        """Clone *remote* at *ref* into *dest* using a shallow fetch.
-
-        Validates *remote* and *ref* for control characters and leading dashes before
-        issuing any subprocess call. Uses ``git init`` + ``git fetch --depth 1`` +
-        ``git checkout FETCH_HEAD`` to minimize data transferred.
-
-        Note: Shallow-by-SHA fetches may be refused by some remotes; a non-shallow
-        fallback is a future improvement.
-
-        Raises:
-            CategorizedError: ``CONFIGURATION_ERROR`` for an unsafe remote/ref, or when
-                ``git checkout FETCH_HEAD`` exits non-zero.
-        """
-        _validate_git_arg(remote, "remote")
-        _validate_git_arg(ref, "ref")
-
-        timeout_s = 10 * 60  # 10 minutes for clone operations
-
-        # Step 1: git init <dest>
-        self._run_remote(["git", "init", dest], cwd="/", timeout_s=timeout_s)
-
-        # Step 2: git -C <dest> fetch --depth 1 <remote> <ref>
-        self._run_remote(
-            ["git", "-C", dest, "fetch", "--depth", "1", remote, ref],
-            cwd="/",
-            timeout_s=timeout_s,
-        )
-
-        # Step 3: git -C <dest> checkout FETCH_HEAD
-        result = self._run_remote(
-            ["git", "-C", dest, "checkout", "FETCH_HEAD"],
-            cwd="/",
-            timeout_s=timeout_s,
-        )
-        if result.returncode != 0:
-            raise CategorizedError(
-                "git checkout FETCH_HEAD failed on remote",
-                category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"stderr": redacted_tail(result.stderr, self._secret_registry)},
-            )
-
-    def upload_file(self, path: str, presigned: PresignedUpload) -> str:
-        """Upload *path* on the remote host to *presigned* URL; return the ETag (quotes stripped).
-
-        Runs ``curl -fsS -X PUT --upload-file <path> <url>`` with each required header via
-        ``-H``, dumps the response headers to stdout (``-D -``), discards the body
-        (``-o /dev/null``), and parses the ETag from the dumped headers.
-
-        Args:
-            path: Remote filesystem path to the file to upload.
-            presigned: Presigned PUT URL and required headers.
-
-        Returns:
-            The ETag value with surrounding quotes removed.
-
-        Raises:
-            CategorizedError: ``CONFIGURATION_ERROR`` if the URL contains control characters.
-            CategorizedError: ``INFRASTRUCTURE_FAILURE`` when curl exits non-zero.
-        """
-        _validate_git_arg_url(presigned.url)
-
-        curl_argv = ["curl", "-fsS", "-X", "PUT", "--upload-file", path]
-        for key, value in presigned.required_headers.items():
-            curl_argv += ["-H", f"{key}: {value}"]
-        # -D - dumps response headers to stdout; -o /dev/null discards the body.
-        curl_argv += ["-D", "-", "-o", "/dev/null", presigned.url]
-
-        result = self._run_remote(curl_argv, cwd="/", timeout_s=5 * 60)
-        if result.returncode != 0:
-            raise CategorizedError(
-                "remote curl PUT failed",
-                category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-                details={"url": presigned.url},
-            )
-        etag = _extract_etag_from_headers(result.stdout)
-        return etag.strip('"')
-
-    def cleanup(self, path: str) -> None:
-        """Remove *path* on the remote host (``rm -rf``); best-effort, ignores failure."""
-        result = self._run_remote(["rm", "-rf", path], cwd="/", timeout_s=60)
-        if result.returncode != 0:
-            _log.warning("remote cleanup of %r failed (exit %d)", path, result.returncode)
-
-
-# ---------------------------------------------------------------------------
-# URL validation and header parsing helpers
-# ---------------------------------------------------------------------------
-
-
-def _validate_git_arg_url(url: str) -> None:
-    """Reject a URL containing control characters.
-
-    Raises:
-        CategorizedError: ``CONFIGURATION_ERROR`` for an unsafe URL.
-    """
-    if any(c in _UNSAFE_CHARS for c in url):
-        raise CategorizedError(
-            "presigned URL contains a control character",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-        )
-
-
-def _extract_etag_from_headers(header_dump: str) -> str:
-    """Parse the ETag value from a curl ``-D -`` header dump.
-
-    Returns an empty string if the ETag header is absent (caller strips quotes and
-    stores as-is; the worker HEADs the object afterward for verification).
-    """
-    for line in header_dump.splitlines():
-        if line.lower().startswith("etag:"):
-            return line.split(":", 1)[1].strip()
-    return ""

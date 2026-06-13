@@ -82,3 +82,60 @@ def test_ssh_fields_check_accepts_ssh_with_all_fields(pg_conn: psycopg.Connectio
     ).fetchone()
     assert row is not None
     assert row == ("ssh", "10.0.0.1")
+
+
+def test_ephemeral_libvirt_accepts_base_image_volume(pg_conn: psycopg.Connection) -> None:
+    """kind='ephemeral_libvirt' with base_image_volume and NULL ssh fields succeeds (0029)."""
+    migrate.apply_migrations(pg_conn)
+    pg_conn.execute(
+        """
+        INSERT INTO build_hosts
+            (name, kind, base_image_volume, workspace_root, max_concurrent)
+        VALUES ('builders', 'ephemeral_libvirt', 'kdive-build-base.qcow2', '/build', 2)
+        """
+    )
+    row = pg_conn.execute(
+        "SELECT kind, address, ssh_credential_ref, base_image_volume "
+        "FROM build_hosts WHERE name = 'builders'"
+    ).fetchone()
+    assert row is not None
+    assert row == ("ephemeral_libvirt", None, None, "kdive-build-base.qcow2")
+
+
+def test_ephemeral_libvirt_requires_base_image_volume(pg_conn: psycopg.Connection) -> None:
+    """kind='ephemeral_libvirt' without base_image_volume violates the per-kind field CHECK."""
+    migrate.apply_migrations(pg_conn)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        pg_conn.execute(
+            """
+            INSERT INTO build_hosts (name, kind, workspace_root, max_concurrent)
+            VALUES ('bad-eph', 'ephemeral_libvirt', '/build', 2)
+            """
+        )
+
+
+def test_ephemeral_libvirt_rejects_ssh_fields(pg_conn: psycopg.Connection) -> None:
+    """kind='ephemeral_libvirt' with an address set violates the per-kind field CHECK."""
+    migrate.apply_migrations(pg_conn)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        pg_conn.execute(
+            """
+            INSERT INTO build_hosts
+                (name, kind, address, base_image_volume, workspace_root, max_concurrent)
+            VALUES ('bad-eph2', 'ephemeral_libvirt', '10.0.0.9', 'base.qcow2', '/build', 2)
+            """
+        )
+
+
+def test_ssh_rejects_base_image_volume(pg_conn: psycopg.Connection) -> None:
+    """kind='ssh' with a base_image_volume set violates the per-kind field CHECK (0029)."""
+    migrate.apply_migrations(pg_conn)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        pg_conn.execute(
+            """
+            INSERT INTO build_hosts
+                (name, kind, address, ssh_credential_ref, base_image_volume,
+                 workspace_root, max_concurrent)
+            VALUES ('bad-ssh2', 'ssh', '10.0.0.1', 'cred/x', 'base.qcow2', '/build', 4)
+            """
+        )

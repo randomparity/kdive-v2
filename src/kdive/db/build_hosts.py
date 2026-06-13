@@ -33,10 +33,14 @@ class BuildHost:
     Attributes:
         id: Primary key.
         name: Unique human-readable identifier (e.g. ``worker-local``).
-        kind: Transport kind — ``'local'`` or ``'ssh'``.
-        address: SSH hostname or IP; ``None`` for local hosts.
-        ssh_credential_ref: Credential secret reference; ``None`` for local hosts.
-        workspace_root: Absolute path on the build host where builds are staged.
+        kind: Transport kind — ``'local'``, ``'ssh'``, or ``'ephemeral_libvirt'``.
+        address: SSH hostname or IP; ``None`` for local and ephemeral-libvirt hosts.
+        ssh_credential_ref: Credential secret reference; ``None`` for local and
+            ephemeral-libvirt hosts.
+        base_image_volume: Operator-staged base build-image volume name; set only for
+            ``ephemeral_libvirt`` hosts (``None`` otherwise).
+        workspace_root: Absolute path where builds are staged (the in-guest path for
+            ``ephemeral_libvirt``).
         max_concurrent: Maximum simultaneous build leases this host may hold.
         enabled: Whether the scheduler may select this host.
         state: Operational state — ``'ready'`` or ``'unreachable'``.
@@ -47,6 +51,7 @@ class BuildHost:
     kind: str
     address: str | None
     ssh_credential_ref: str | None
+    base_image_volume: str | None
     workspace_root: str
     max_concurrent: int
     enabled: bool
@@ -60,6 +65,7 @@ def _row_to_host(row: dict[str, object]) -> BuildHost:
         kind=cast(str, row["kind"]),
         address=cast("str | None", row["address"]),
         ssh_credential_ref=cast("str | None", row["ssh_credential_ref"]),
+        base_image_volume=cast("str | None", row["base_image_volume"]),
         workspace_root=cast(str, row["workspace_root"]),
         max_concurrent=cast(int, row["max_concurrent"]),
         enabled=cast(bool, row["enabled"]),

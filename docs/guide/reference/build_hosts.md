@@ -22,15 +22,17 @@ List all registered build hosts (id, name, kind, address, credential ref, state)
 
 `implemented`
 
-Register a new SSH build host in the inventory. Requires platform_admin.
+Register a new remote build host (ssh or ephemeral_libvirt). Requires platform_admin.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `address` | `string` | yes | SSH hostname or IP address of the build host. |
+| `address` | `any` | no | SSH hostname or IP address (ssh kind only). |
+| `base_image_volume` | `any` | no | Base build-image volume name (ephemeral_libvirt kind only). |
+| `kind` | `string` | no | Build host kind: 'ssh' (default) or 'ephemeral_libvirt'. |
 | `max_concurrent` | `integer` | yes | Maximum simultaneous build leases this host may hold (> 0). |
 | `name` | `string` | yes | Unique human-readable identifier for the new host. |
-| `ssh_credential_ref` | `string` | yes | Credential secret reference (e.g. 'ssh://build-host-key'). Only the reference string is stored — secret bytes are never fetched. |
-| `workspace_root` | `string` | yes | Absolute path on the build host where builds are staged. |
+| `ssh_credential_ref` | `any` | no | Credential secret reference, e.g. 'ssh://build-host-key' (ssh kind only). Only the reference string is stored — secret bytes are never fetched. |
+| `workspace_root` | `string` | yes | Absolute path where builds are staged (in-guest for ephemeral). |
 
 ## `build_hosts.remove`
 

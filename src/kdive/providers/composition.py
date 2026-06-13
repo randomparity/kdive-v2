@@ -21,8 +21,10 @@ from kdive.providers.fault_inject.faulting.engine import FaultEngine
 from kdive.providers.fault_inject.inventory import FaultInjectInventory
 from kdive.providers.local_libvirt import composition as local_composition
 from kdive.providers.reaping import (
+    BuildVmReaper,
     DumpVolumeReaper,
     InfraReaper,
+    NullBuildVmReaper,
     NullDumpVolumeReaper,
     NullReaper,
     OwnedDomain,
@@ -188,6 +190,14 @@ class ProviderComposition:
                 secret_registry=self._secret_registry
             )
         return NullDumpVolumeReaper()
+
+    def build_reconciler_build_vm_reaper(
+        self, *, enable_remote_libvirt: bool | None = None
+    ) -> BuildVmReaper:
+        """Assemble the reconciler's ephemeral build-VM reaper (ADR-0100)."""
+        if _remote_libvirt_enabled(enable_remote_libvirt):
+            return remote_composition.build_build_vm_reaper(secret_registry=self._secret_registry)
+        return NullBuildVmReaper()
 
     async def build_reconciler_console_hosting(
         self, *, enable_remote_libvirt: bool | None = None

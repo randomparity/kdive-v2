@@ -339,6 +339,83 @@ def test_register_max_concurrent_negative_config_error(migrated_url: str) -> Non
     asyncio.run(_run())
 
 
+# --- register ephemeral_libvirt ---
+
+
+def test_register_ephemeral_creates_row(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await register_build_host(
+                pool,
+                _admin_ctx(),
+                name="builders",
+                kind="ephemeral_libvirt",
+                base_image_volume="kdive-build-base.qcow2",
+                workspace_root="/build",
+                max_concurrent=2,
+            )
+            assert resp.status == "registered"
+            list_resp = await list_build_hosts(pool, _admin_ctx())
+        item = next(i for i in list_resp.items if i.data.get("name") == "builders")
+        assert item.data["kind"] == "ephemeral_libvirt"
+        assert item.data["address"] == ""
+        assert item.data["ssh_credential_ref"] == ""
+
+    asyncio.run(_run())
+
+
+def test_register_ephemeral_without_base_image_volume_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await register_build_host(
+                pool,
+                _admin_ctx(),
+                name="bad-eph",
+                kind="ephemeral_libvirt",
+                workspace_root="/build",
+                max_concurrent=2,
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert await _host_exists(migrated_url, "bad-eph") is False
+
+    asyncio.run(_run())
+
+
+def test_register_ephemeral_with_ssh_fields_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await register_build_host(
+                pool,
+                _admin_ctx(),
+                name="bad-eph2",
+                kind="ephemeral_libvirt",
+                address="10.0.0.9",
+                base_image_volume="base.qcow2",
+                workspace_root="/build",
+                max_concurrent=2,
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert await _host_exists(migrated_url, "bad-eph2") is False
+
+    asyncio.run(_run())
+
+
+def test_register_unknown_kind_config_error(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await register_build_host(
+                pool,
+                _admin_ctx(),
+                name="weird",
+                kind="cloud",
+                workspace_root="/build",
+                max_concurrent=2,
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+
+    asyncio.run(_run())
+
+
 # --- disable: protected / not_found / audit ---
 
 
