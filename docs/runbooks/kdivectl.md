@@ -97,6 +97,36 @@ kdivectl inventory show [--project <project>]
 `--json` may be given before or after the verb (`kdivectl --json resources list` or
 `kdivectl resources list --json`) for a stable, scriptable contract.
 
+### Read authorization: platform axis vs. project axis
+
+Read verbs split across the two independent authorization axes (ADR-0043 §7), and the split
+is **load-bearing**: a platform role does **not** grant project-scoped reads, and project
+membership does **not** grant cross-project reads. A `kdivectl login --platform-role …` token
+with no project grant sees no project tenant data — there is no implicit "admin sees
+everything." To read a specific project's data, be granted on that project; for the
+cross-project oversight view, use a `platform_auditor` token.
+
+| read | authorized by | denied to |
+|------|---------------|-----------|
+| `allocations list/get`, `systems list/show`, `runs show`, `jobs list/get`, `ledger show` (`accounting.usage_project`) | per-project `viewer` on the **target project** (`require_role`) | a platform-only token with no membership on that project sees no project tenant data — a by-id `get`/`show` returns a **not-found-shaped** result (tenant existence is not revealed, and **no** distinct authorization-denied code is emitted); a `list` returns only the caller's member projects (empty for a non-member), never cross-project rows (ADR-0043 §4a) |
+| cross-project `inventory show` (`inventory.list`), `accounting.report` (all-projects), `audit.query` (cross-project) | `platform_auditor` (satisfied by `platform_admin`) | a project-member token holding no platform role |
+| `secrets list`, `doctor` | `platform_operator` | any token lacking `platform_operator` |
+| `resources list/describe`, `fixtures list` | plain authenticated read (no project scope, no role floor) | unauthenticated callers only |
+
+Note `inventory show` is the **cross-project auditor** read (it maps to the `inventory.list`
+tool, gated `platform_auditor`), not a per-project read — it is the one read verb where a
+platform-axis token is *granted* and a bare project member is *denied*. Every other project-data
+read is the inverse.
+
+Two project-axis outcomes are distinct and should not be conflated. A **non-member** (including
+a platform-only token) reaching a by-id `get`/`show` gets the **not-found-shaped** result above —
+the tool resolves the object's project, finds the caller is not a member, and returns
+not-found *before* the role check, so a non-grant never surfaces a distinct authorization-denied
+code (and is **not** audited; only platform-role *overreach* within the platform tier leaves a
+denial row — ADR-0043 §4, see [Reading the audit trail](#reading-the-audit-trail-by-actor)). A
+**member** whose role ranks below the required floor is the other case: the read reaches
+`require_role`, which surfaces `authorization_denied` (**exit `3`**, per [Exit codes](#exit-codes)).
+
 ### Secret-presence and fixture reads
 
 Two reads surface catalog presence without exposing values. `secrets list` is

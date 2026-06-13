@@ -156,6 +156,43 @@ auditing it would let any authenticated token amplify writes into `platform_audi
 (The broader retrofit that audits all bare `require_role` denials in the per-project
 `audit_log` remains a separate deferred hardening.)
 
+### 4a. The boundary is symmetric: a platform role conveys **no** project-scoped read
+
+§4 above treats one direction — a *project-only* token's denial of a platform read — as the
+routine, unaudited non-grant case. The **inverse** is the load-bearing guarantee and is stated
+here explicitly so it is a decision, not an artifact of the gate code: **a token on the
+platform axis with no project membership (e.g. `operator-cli` carrying `platform_operator`, or
+even `platform_admin`) is denied a project-scoped read** — `allocations.*`, `systems.*`,
+`runs.*`, `jobs.*`, and the ledger/`accounting.usage_project` reads, all gated
+`require_role(ctx, project, viewer)`.
+
+This follows directly from §1 and §7: the two scope axes never interact, `require_role` is
+"unchanged and unaware of platform roles," and a platform principal "need not be a member of any
+project," so its `ctx.projects` is empty. The held platform role, including `platform_admin`, is
+never consulted by a project read. **No platform role grants cross-project tenant-data read.**
+Cross-project oversight has its own deliberate, read-audited doors — `accounting.report`
+(all-projects), `inventory.list`, `audit.query` (§3), each gated `platform_auditor` — and a
+platform principal who needs a *specific* project's data must be granted on that project like any
+other member.
+
+Two outcomes implement this, and they are distinct. The `require_role` **unit** raises the base
+`AuthorizationError` at its non-member site for any non-member (`security/authz/rbac.py`). The
+object-resolving read **tools**, however, *pre-empt* `require_role`: they resolve the object's
+owning project, find the caller is not a member, and return a **not-found-shaped** result before
+the role check — so a non-member (including a platform-only token) never reveals tenant existence
+and never receives a distinct authorization-denied code. (The `authorization_denied` outcome is
+reserved for the under-ranked *member* case, where the read does reach `require_role`.) The
+guarantee — no cross-project tenant data — holds identically across both paths.
+
+This rejects the common "admins can see everything" expectation **by design**: `platform_admin`
+is break-glass *mutation* authority (it satisfies `platform_auditor` per §2 so it can read what
+it mutates through the platform-tier reads), not an implicit reader of every project's
+allocations/ledger. The boundary is enforced by `tests/security/authz/test_rbac_platform.py` (the
+`require_role` unit denies a platform-only context a `viewer`-floor project read with the base
+`AuthorizationError` — the non-member site, not the audited per-project rank-below) and by a
+tool-level test that a platform-only token's by-id project read returns a not-found-shaped result,
+not an authorization denial (consistent with §4).
+
 ### 5. Defined here, deferred to the **Platform-operations milestone (M1.3)**
 
 The ADR fixes the role mapping for all of these so the seam is shaped for them, but they ship
