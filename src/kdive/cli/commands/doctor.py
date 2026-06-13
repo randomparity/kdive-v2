@@ -23,7 +23,7 @@ from collections.abc import Mapping
 
 from kdive.cli.errors import exit_code_for_category
 from kdive.cli.render import render
-from kdive.cli.transport import Session
+from kdive.cli.transport import Session, tool_envelope
 
 _TOOL = "ops.diagnostics"
 _COLUMNS = ["check", "status", "detail", "fix", "provider"]
@@ -58,7 +58,7 @@ async def _call(arguments: Mapping[str, object]) -> Mapping[str, object]:
     session = _session_factory()
     async with session.client() as client:
         result = await client.call_tool(_TOOL, dict(arguments))
-    return result.data
+    return tool_envelope(result)
 
 
 def _envelope_fields(envelope: object) -> Mapping[str, object]:

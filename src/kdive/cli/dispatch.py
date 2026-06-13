@@ -13,7 +13,7 @@ import json
 
 from kdive.cli.commands import registry as commands
 from kdive.cli.passthrough import NotReadOnlyError, assert_read_only
-from kdive.cli.transport import Session
+from kdive.cli.transport import Session, tool_envelope
 
 _NOT_READ_ONLY_EXIT = 3
 
@@ -57,7 +57,7 @@ async def _tool_call(args: argparse.Namespace) -> int:
             print(str(exc))
             return _NOT_READ_ONLY_EXIT
         result = await client.call_tool(args.name, arguments)
-    print(json.dumps(result.data, indent=2, default=str))
+    print(json.dumps(tool_envelope(result), indent=2, default=str))
     return 0
 
 
