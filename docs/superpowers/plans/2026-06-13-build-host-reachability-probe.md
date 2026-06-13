@@ -21,9 +21,12 @@
 - Tests mirror the package tree under `tests/`. DB/reconciler tests need the disposable
   Postgres fixture (`migrated_url`) and skip when Docker is absent.
 
-The tasks are ordered so each builds on the previous; tasks 1–2 are independent of each
-other and of 3–6. Do them in order in one session (sequential subagent dispatch or
-inline); do not parallelize mutating work in this single working tree.
+Dependency edges (do the tasks in strict numeric order regardless): Tasks 1 and 2 are
+independent of each other; Task 3 depends on Task 2 (`check_reachable`); Task 4 depends on
+Tasks 1 (db helpers) and 3 (port); Task 5 depends on Tasks 3 and 4; Task 6 depends on
+Task 3. Do them in numeric order in one session (sequential subagent dispatch or inline);
+do not parallelize mutating work in this single working tree, and do not start a task
+before its prerequisites above are merged into the branch.
 
 ---
 
@@ -190,6 +193,10 @@ Add a `_FakeProber` (a dict `{host_id_or_address: bool}` or a callable; record c
 - a `local` host (the seed) is not probed.
 - with two ssh hosts where the fake prober raises for the first, the second still flips and
   the repair returns 1 (one-host isolation).
+- observability: on a non-empty probe set with one host flipping (probed=2, changed=1),
+  assert via `caplog` at `INFO` that the repair logs both the probed count and the changed
+  count. Assert on the counts, not the exact message string. This guards the probed-vs-
+  flipped log (step 3) that makes "the probe ran" observable when no host flips.
 
 Drive the repair through the existing `run_repair(pool, lambda conn:
 probe_build_host_reachability(conn, fake))` helper.
