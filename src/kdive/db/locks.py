@@ -30,10 +30,11 @@ class LockScope(StrEnum):
     """The advisory-lock scopes the platform serializes on (ADR-0016, ADR-0040).
 
     Operations that hold more than one scope at once acquire them in the fixed global
-    total order ``PROJECT → RESOURCE → ALLOCATION → SYSTEM`` (and then
-    ``INVESTIGATION → RUN`` for run creation) to avoid deadlock; e.g.
-    ``allocations.request`` takes ``PROJECT`` then ``RESOURCE`` (ADR-0040 §1), and
-    ``runs.create`` takes ``SYSTEM`` then ``INVESTIGATION`` (ADR-0027).
+    total order ``PROJECT → RESOURCE → ALLOCATION → SYSTEM → INVESTIGATION → RUN →
+    BUILD_HOST`` to avoid deadlock; e.g. ``allocations.request`` takes ``PROJECT`` then
+    ``RESOURCE`` (ADR-0040 §1), ``runs.create`` takes ``SYSTEM`` then ``INVESTIGATION``
+    (ADR-0027), and ``runs.build`` acquires ``BUILD_HOST`` inside an existing ``RUN``
+    transaction — so every co-hold takes ``RUN`` before ``BUILD_HOST``.
 
     ``PROJECT`` is keyed by the ``project`` string; every other scope is keyed by an
     object :class:`~uuid.UUID`.
@@ -45,6 +46,7 @@ class LockScope(StrEnum):
     RESOURCE = "resource"
     INVESTIGATION = "investigation"
     RUN = "run"
+    BUILD_HOST = "build_host"
 
 
 def _lock_key(scope: LockScope, key: UUID | str) -> int:

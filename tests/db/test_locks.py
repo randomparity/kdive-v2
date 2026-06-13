@@ -56,6 +56,16 @@ def test_run_scope_key_is_distinct_from_other_scopes() -> None:
     assert _lock_key(LockScope.RUN, key) == run_key  # deterministic
 
 
+def test_build_host_scope_value_and_key_distinctness() -> None:
+    assert LockScope.BUILD_HOST.value == "build_host"
+    key = UUID("12345678-1234-5678-1234-567812345678")
+    bh_key = _lock_key(LockScope.BUILD_HOST, key)
+    assert bh_key != _lock_key(LockScope.RUN, key)
+    assert bh_key != _lock_key(LockScope.SYSTEM, key)
+    assert bh_key != _lock_key(LockScope.ALLOCATION, key)
+    assert _lock_key(LockScope.BUILD_HOST, key) == bh_key  # deterministic
+
+
 def test_project_scope_keyed_by_string_is_deterministic_and_distinct() -> None:
     # PROJECT is keyed by the `project` string (ADR-0040), not a UUID. Distinct
     # projects get distinct keys; the same project is deterministic; the value fits
