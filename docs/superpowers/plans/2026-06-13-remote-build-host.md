@@ -188,9 +188,9 @@ def test_build_host_scope():
     assert LockScope.BUILD_HOST.value == "build_host"
 ```
 - [ ] **Step 2: Run — expect FAIL.**
-- [ ] **Step 3: Implement** — add `BUILD_HOST = "build_host"` to `LockScope`. Note in the docstring that it is a leaf scope (never co-held with PROJECT…RUN, so no ordering entry needed).
+- [ ] **Step 3: Implement** — add `BUILD_HOST = "build_host"` to `LockScope`. **It is co-held with `RUN`:** Task 10 acquires it inside `runs.build`'s existing `advisory_xact_lock(conn, LockScope.RUN, run.id)` transaction (`mcp/tools/lifecycle/runs/build.py:_build_locked`). Extend the `LockScope` docstring's global total order to make `BUILD_HOST` the **last** scope: `PROJECT → RESOURCE → ALLOCATION → SYSTEM → INVESTIGATION → RUN → BUILD_HOST`. Every co-hold must take RUN before BUILD_HOST; nothing may take BUILD_HOST then RUN. (Do not call it a "never co-held" leaf — that is false.)
 - [ ] **Step 4: Run — expect PASS.**
-- [ ] **Step 5: Commit.** `feat(locks): add BUILD_HOST advisory-lock scope`
+- [ ] **Step 5: Commit.** `feat(locks): add BUILD_HOST scope after RUN in the lock order`
 
 ---
 
@@ -284,9 +284,13 @@ class PresignedUpload:
 class BuildTransport(Protocol):
     def run(self, argv: list[str], *, cwd: str, timeout_s: int) -> CommandResult: ...
     def read_text(self, path: str) -> str: ...
-    def read_bytes(self, path: str) -> bytes: ...
-    def write_bytes(self, path: str, data: bytes) -> None: ...   # ship fragment/patch bytes
+    def read_bytes(self, path: str) -> bytes: ...                 # small files (.config, build-id note)
+    def write_bytes(self, path: str, data: bytes) -> None: ...    # ship fragment/patch bytes
     def clone(self, remote: str, ref: str, dest: str) -> None: ...
+    def upload_file(self, path: str, presigned: PresignedUpload) -> str: ...  # host PUTs the
+        # (possibly large) artifact straight to S3 (worker never holds the bytes — ADR-0099
+        # decision 6); returns the stored object's etag/checksum. Local impl reads the file and
+        # PUTs via the worker object store; ssh impl runs `curl -T <path> <url>` on the host.
     def cleanup(self, path: str) -> None: ...
 
 class LocalBuildTransport:
@@ -302,7 +306,7 @@ class LocalBuildTransport:
 
 **Behavior-preservation guard (the back-compat test):** assert `LocalBuildTransport.run(...)` issues the identical argv/timeout/`check=False` call as the pre-refactor `run_make_target` — drive it with a fake `subprocess.run` (monkeypatch) and assert the captured argv equals `["make", "-C", cwd, ...]`. Do **not** assert a golden `BuildOutput` (keys are per-run).
 
-- [ ] **Step 1: Failing tests** — argv-capture for `run`; `clone` raises `configuration_error`; `read_text`/`read_bytes` round-trip a tmp file.
+- [ ] **Step 1: Failing tests** — argv-capture for `run`; `clone` raises `configuration_error`; `read_text`/`read_bytes`/`write_bytes` round-trip a tmp file; `upload_file` reads a tmp file and PUTs it via an injected fake object store (returns the fake etag).
 - [ ] **Step 2: Run — expect FAIL.**
 - [ ] **Step 3: Implement** `transport.py`.
 - [ ] **Step 4: Run — expect PASS.**
@@ -330,13 +334,21 @@ def clone(self, remote: str, ref: str, dest: str) -> None:
                                details={"stderr": redacted_tail(res.stderr)})
 ```
 
-The identity file is materialized by the seam (Task 7 / `from_env`), mirroring `materialized_pkipath`; argv is fixed (no shell), so remote/ref shape is validated (reject control chars / leading `-`) before use. All returned stderr passes `redacted_tail` before it enters any `CategorizedError.details`.
+Argv is fixed (no shell), so remote/ref shape is validated (reject control chars / leading `-`) before use. All returned stderr passes `redacted_tail` before it enters any `CategorizedError.details`.
 
-- [ ] **Step 1: Failing tests** — monkeypatch `subprocess.run`; assert `run` argv is the ssh wrapper with `-i identity` and `--` separator; assert `clone` issues init→fetch→checkout in order; assert a non-zero checkout raises `configuration_error` with redacted stderr; assert a remote/ref containing a shell metacharacter or leading `-` is rejected (`configuration_error`) before any subprocess call.
+**This task owns credential materialization** (spec §7.3) — do not defer it. Add a context
+manager `materialized_ssh_identity(ssh_credential_ref, secret_registry)` that: (1) resolves the
+secret-ref to key bytes at the worker boundary; (2) `secret_registry.register(...)` the bytes
+so the redactor scrubs them from all output; (3) writes a `0600` temp identity file (mirror
+`providers/remote_libvirt/transport.py:materialized_pkipath` / `_write_private`); (4) `yield`s
+the path; (5) `unlink`s it in `finally`. `SshBuildTransport.from_host(host, secret_registry)`
+enters this CM for the duration of a build and passes the path as `-i`.
+
+- [ ] **Step 1: Failing tests** — monkeypatch `subprocess.run`; assert `run` argv is the ssh wrapper with `-i identity` and `--` separator; assert `clone` issues init→fetch→checkout in order; assert a non-zero checkout raises `configuration_error` with redacted stderr; assert a remote/ref containing a shell metacharacter or leading `-` is rejected (`configuration_error`) before any subprocess call; assert `materialized_ssh_identity` writes a 0600 file, registers the bytes with the `SecretRegistry`, and `unlink`s the file on exit including when the body raises.
 - [ ] **Step 2: Run — expect FAIL.**
-- [ ] **Step 3: Implement** `ssh_transport.py`.
+- [ ] **Step 3: Implement** `ssh_transport.py` + `materialized_ssh_identity`.
 - [ ] **Step 4: Run — expect PASS.**
-- [ ] **Step 5: Commit.** `feat(build-hosts): add SshBuildTransport (git-fetch + fixed argv)`
+- [ ] **Step 5: Commit.** `feat(build-hosts): add SshBuildTransport + materialized SSH identity`
 
 ---
 
@@ -365,6 +377,42 @@ The transport-backed `Checkout` writes the config fragment and (when present) th
 - [ ] **Step 1: Failing tests** — a fake `BuildTransport` records calls; assert the orchestrator drives checkout→olddefconfig→read_config→make as the same call sequence for a fake-local and fake-ssh transport, and that `_validate_final_config` runs on the worker against the transport's read-back `.config`; assert a `patch_ref` causes the patch bytes to be written via the transport and `git apply` to run over it.
 - [ ] **Step 2–4: Run/implement/pass.**
 - [ ] **Step 5: Commit.** `feat(build-hosts): wire transport-backed orchestrator seams`
+
+---
+
+## Task 7.5: Remote artifact pipeline + presigned publish (the post-make half)
+
+**Files:**
+- Modify: `src/kdive/providers/remote_libvirt/build.py` (`RemoteLibvirtBuild.build` post-make steps `modules_install` → build-id → bundle → vmlinux → publish)
+- Modify: `src/kdive/providers/local_libvirt/build.py` (route its post-make `_put` through `transport.upload_file` too, so `local_libvirt` + ssh-host works; for `LocalBuildTransport` this is unchanged worker-PUT behavior)
+- Modify: `src/kdive/providers/build_host/execution.py` (transport-backed `run_modules_install`, build-id note extraction, bundle packaging)
+- Test: `tests/providers/remote_libvirt/test_build_transport_publish.py`, `tests/providers/local_libvirt/test_build_transport_publish.py`
+
+**Builder ⟂ build-host.** The selected build host is independent of the run's provider:
+either provider's builder may run on an ssh host. So **both** builders' publish step routes
+through `transport.upload_file` (presigned for ssh, worker-PUT for local). The modules-bundle
+packaging below is `remote_libvirt`-specific (local has no modules tree); `local_libvirt`'s
+simpler bzImage+vmlinux publish takes the same `upload_file` swap without the bundle step.
+
+**Why this task exists:** `RemoteLibvirtBuild.build` (build.py:148-159) does not stop at `make`.
+After `make` it runs, today on the worker against local workspace files: `run_modules_install`
+→ `read_build_id` (objcopy on `vmlinux`) → `_build_bundle` (tar of `boot/vmlinuz` + `lib/modules`)
+→ `read_vmlinux` → `_put` (worker object store). For an SSH host the workspace is **remote**, so
+each of these must run over the transport and the large artifacts must publish per ADR-0099
+decision 6 (host PUTs to S3; worker never holds the bytes). This task remotes that half.
+
+Concrete remoting:
+- **modules_install:** `transport.run(["make","-C",ws,f"INSTALL_MOD_PATH={mod_root}","modules_install"], ...)` into a remote `mod_root`.
+- **build-id:** run `objcopy -O binary --only-section=.notes <ws>/vmlinux <note>` over the transport, then `transport.read_bytes(<note>)` (small) back to the worker and `parse_gnu_build_id` on the worker (unchanged parser).
+- **bundle:** package on the host (files are remote) — `transport.run(["tar","-C",mod_root,...,"-czf",bundle_path, ...])` plus including `boot/vmlinuz`; keep the existing back-reference-symlink exclusion (`build`/`source`). Produces a remote `bundle_path`.
+- **publish:** for each of `bundle_path` and `<ws>/vmlinux`, the worker mints a `PresignedUpload` (object-store presign for the run-scoped key, `Sensitivity.SENSITIVE`, retention `build`), then `transport.upload_file(remote_path, presigned)`; record the returned key/etag as `kernel_ref`/`debuginfo_ref`. `BuildOutput` is unchanged.
+- For `LocalBuildTransport`, `upload_file` reads the local file and PUTs via the worker object store — i.e. today's `_put` behavior, so the local path is byte-for-byte unchanged.
+
+- [ ] **Step 1: Failing tests** — with a fake ssh transport: assert modules_install/objcopy/tar run over `transport.run` against the remote workspace; assert the build-id note is `read_bytes` back and parsed on the worker; assert `kernel_ref`/`debuginfo_ref` come from `transport.upload_file` (presigned), not a worker-side `_put`, and the worker never reads the bundle bytes. With `LocalBuildTransport`: assert the publish path still PUTs via the worker object store (unchanged local behavior).
+- [ ] **Step 2: Run — expect FAIL.**
+- [ ] **Step 3: Implement** the post-make remoting + presigned publish.
+- [ ] **Step 4: Run — expect PASS.**
+- [ ] **Step 5: Commit.** `feat(build-hosts): remote the post-make artifact pipeline + presigned publish`
 
 ---
 
@@ -408,12 +456,12 @@ Provenance helpers (used by selection in Task 10): `is_git_source(profile) -> bo
 
 Mirror an existing ops plane (read `src/kdive/mcp/tools/ops/images/registrar.py` and a mutation handler for the exact `require_role`/`audit.record`/`ToolResponse` shape). Handlers are plain async funcs taking `(pool, ctx, ...)`:
 
-- `build_hosts.register(name, kind, address?, ssh_credential_ref?, workspace_root, max_concurrent)` — `require_role(ctx, Role.PLATFORM_ADMIN)`; validate kind∈{ssh} (local is the seed only — reject registering another local? allow but address/cred must be null per CHECK); validate `ssh_credential_ref` resolves by reference (presence only — do not fetch bytes); INSERT; `audit.record(... tool="build_hosts.register" ...)`; return `ToolResponse` with the new id and `suggested_next_actions=["build_hosts.list","runs.build"]`. Duplicate name → `conflict`.
+- `build_hosts.register(name, address, ssh_credential_ref, workspace_root, max_concurrent)` — `require_role(ctx, Role.PLATFORM_ADMIN)`. **Only `kind='ssh'` is registerable**; `kind='local'` is rejected with `configuration_error` ("local builds run on the worker; the built-in `worker-local` host is the only local row"). `address` + `ssh_credential_ref` are required (the CHECK enforces it too). Validate `ssh_credential_ref` resolves by reference (presence only — do not fetch bytes); INSERT with `kind='ssh'`; `audit.record(... tool="build_hosts.register" ...)`; return `ToolResponse` with the new id and `suggested_next_actions=["build_hosts.list","runs.build"]`. Duplicate name → `conflict`.
 - `build_hosts.list()` — read-only passthrough; returns rows (no secret bytes; `ssh_credential_ref` shown as the ref string only).
 - `build_hosts.disable(name)` — PLATFORM_ADMIN; refuse `worker-local` → `conflict`; set `enabled=false`; audit.
 - `build_hosts.remove(name)` — PLATFORM_ADMIN; refuse `worker-local` → `conflict`; refuse if a `build_host_leases` row references it → `conflict` (also FK-enforced); DELETE; audit.
 
-- [ ] **Step 1: Failing tests** — non-admin → `authorization_denied`; register ssh host then `list` shows it with only the credential *ref* (no bytes); register duplicate name → `conflict`; `disable`/`remove` of `worker-local` → `conflict`; `remove` with an outstanding lease → `conflict`; audit row written with `(principal, ...)`; the persisted row and any error `details` contain no secret bytes (no-leak guard).
+- [ ] **Step 1: Failing tests** — non-admin → `authorization_denied`; `register kind='local'` → `configuration_error`; register ssh host then `list` shows it with only the credential *ref* (no bytes); register duplicate name → `conflict`; `disable`/`remove` of `worker-local` → `conflict`; `remove` with an outstanding lease → `conflict`; audit row written with `(principal, ...)`; the persisted row and any error `details` contain no secret bytes (no-leak guard).
 - [ ] **Step 2–4: Run/implement/pass** (register `_register_ops_build_hosts_tools` in `app.py` `_PLANE_REGISTRARS`).
 - [ ] **Step 5: Commit.** `feat(build-hosts): add build_hosts admin plane (register/list/disable/remove)`
 
@@ -422,17 +470,27 @@ Mirror an existing ops plane (read `src/kdive/mcp/tools/ops/images/registrar.py`
 ## Task 10: `runs.build` tool-boundary selection + lease admission
 
 **Files:**
+- Modify: `src/kdive/jobs/payloads.py` (add `build_host_id` to `BuildPayload`)
 - Modify: `src/kdive/mcp/tools/lifecycle/runs/build.py`
 - Create: `src/kdive/services/runs/build_host_selection.py`
 - Test: `tests/mcp/tools/lifecycle/test_runs_build_selection.py`
+
+**Step 0 — add the handoff field.** Extend `BuildPayload` (today: `run_id`, `cmdline`) with
+`build_host_id: str | None = None` (a UUID string; validate shape like `run_id`). This is the
+field Task 11's handler and Task 12's reconciler read; without it the handler cannot know which
+host the lease is held against. (Confirm the model with `rg -n "class BuildPayload" src/kdive/jobs/payloads.py`.)
 
 `build_host_selection.resolve_and_admit(conn, profile, run_id)`:
 1. Parse the build profile (existing). Resolve host: `get_by_name(profile.build_host or 'worker-local')`. Absent → `not_found`. `enabled=false` or `state='unreachable'` → `configuration_error`.
 2. Provenance cross-check: `host.kind=='local'` and `is_git_source(profile)` → `configuration_error`; `host.kind=='ssh'` and not git source → `configuration_error`.
 3. If `host.kind != 'local'`: `try_acquire_lease(conn, host, run_id)`; False → raise `CategorizedError(category=CAPACITY_EXHAUSTED, ...)`.
-4. Return the resolved `host.id`; the caller records it on the Run/BUILD payload and enqueues the BUILD job **in the same transaction** as the lease insert.
+4. Return the resolved `host` (id + kind). The caller puts `build_host_id=str(host.id)` into the `BuildPayload` and enqueues the BUILD job **in the same transaction** as the lease insert.
 
-The tool already runs inside a transaction that transitions the Run and enqueues; fold `resolve_and_admit` + enqueue into that one transaction so lease+enqueue commit atomically (spec §6). On `capacity_exhausted`, return a failure `ToolResponse` with `suggested_next_actions=["runs.build"]` (retry).
+The tool already runs inside `_build_locked`'s `advisory_xact_lock(LockScope.RUN, run.id)`
+transaction (`build.py:_build_locked`). Acquire `LockScope.BUILD_HOST` **after** RUN inside
+that same transaction (the order fixed in Task 3) and enqueue there, so lease+payload+enqueue
+commit atomically (spec §6). On `capacity_exhausted`, return a failure `ToolResponse` with
+`suggested_next_actions=["runs.build"]` (retry).
 
 - [ ] **Step 1: Failing tests** (drive the handler directly with an injected pool):
   - no `build_host` → resolves `worker-local`, no lease row created, BUILD job enqueued.
@@ -453,7 +511,7 @@ The tool already runs inside a transaction that transitions the Run and enqueues
 - Modify: provider builders to accept a transport (`local_libvirt/build.py`, `remote_libvirt/build.py`) or resolve it from the recorded `build_host` id.
 - Test: `tests/jobs/handlers/test_build_handler_transport.py`
 
-The handler reads the resolved `build_host` id from the Run/BUILD payload, builds the matching transport (`LocalBuildTransport` for local; `SshBuildTransport` from the host row + materialized identity for ssh), runs `builder.build` on it, and **always** releases the lease in a `finally` (`release_lease(conn, run_id)` — idempotent, runs on success and on every failure path, including the existing `_fail_build`). Local builds have no lease; `release_lease` is a harmless no-op DELETE.
+The handler reads `payload.build_host_id` (Task 10's field; falls back to `worker-local` when null, for back-compat with already-queued jobs), loads the `build_hosts` row, builds the matching transport (`LocalBuildTransport` for kind local; `SshBuildTransport.from_host(host, secret_registry)` — entering the materialized-identity CM from Task 6 — for kind ssh), runs `builder.build` on it, and **always** releases the lease in a `finally` (`release_lease(conn, run_id)` — idempotent, runs on success and on every failure path, including the existing `_fail_build`). Local builds have no lease; `release_lease` is a harmless no-op DELETE.
 
 - [ ] **Step 1: Failing tests** — a local-host run uses `LocalBuildTransport` and never touches leases; an ssh-host run builds the ssh transport from the row and, on both success and a raised `CategorizedError`, the lease row is deleted; a worker-death simulation (handler raises before release) leaves the lease for the reconciler (Task 12).
 - [ ] **Step 2–4: Run/implement/pass.**
@@ -467,7 +525,17 @@ The handler reads the resolved `build_host` id from the Run/BUILD payload, build
 - Create/Modify: `src/kdive/reconciler/build_hosts.py` (+ wire into the reconciler loop alongside `allocations.py`)
 - Test: `tests/reconciler/test_build_hosts.py`
 
-- **Reclaim:** `DELETE FROM build_host_leases l WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.<run-ref> = l.run_id AND j.kind='build' AND j.state IN (<live states>))` — i.e. delete a lease whose owning BUILD job is terminal or gone. Confirm the exact jobs schema/state column with `rg -n "class Job\b|JobState|state" src/kdive/domain/models.py src/kdive/jobs/queue.py`. **Never** reclaim by age.
+- **Reclaim:** delete a lease whose owning BUILD job is terminal or gone. The jobs table stores `run_id` **inside the JSONB payload**, not as a top-level column, so the predicate is a JSONB extract, not a column join:
+  ```sql
+  DELETE FROM build_host_leases l
+  WHERE NOT EXISTS (
+      SELECT 1 FROM jobs j
+      WHERE j.kind = 'build'
+        AND (j.payload->>'run_id')::uuid = l.run_id
+        AND j.state IN (<live states>)   -- e.g. claimable/running; NOT succeeded/failed
+  );
+  ```
+  Confirm the exact jobs table name, payload column, kind value, and live-state set with `rg -n "class Job\b|JobState|JobKind|payload|state" src/kdive/domain/models.py src/kdive/jobs/queue.py src/kdive/db/schema/*.sql`. The payload extract is unindexed; scope the scan to existing leases (the `build_host_leases` table is small), not a full jobs scan. **Never** reclaim by age.
 - **Health:** for each `kind='ssh'` host, probe `ssh ... true` via the transport (bounded timeout); set `state='unreachable'` on failure, `'ready'` on success. Do not delete leases on unreachable.
 
 - [ ] **Step 1: Failing tests** — a lease whose BUILD job is `failed`/absent is reclaimed; a lease whose BUILD job is live (running/claimable) is **kept**; a probe failure flips `state` to `unreachable` and a subsequent selection (Task 10) rejects it; a probe success flips back to `ready`.
@@ -490,7 +558,7 @@ The handler reads the resolved `build_host` id from the Run/BUILD payload, build
 
 ## Self-review (run before handoff)
 
-- **Spec coverage:** §4 seam → Tasks 5–7,11; §5 inventory → Tasks 1,4,9; §6 capacity → Tasks 1,4,10; §7 provenance/secrets → Tasks 6,8,10; §8 reconciler → Task 12; §9 scope → all; §10 testing → every task's Step 1; taxonomy → Task 2; locks → Task 3.
+- **Spec coverage:** §4 seam → Tasks 5–7,7.5,11; artifact-return path (ADR-0099 decision 6) → Tasks 5 (`upload_file`),7.5; §5 inventory → Tasks 1,4,9; §6 capacity → Tasks 1,4,10; §7 provenance/secrets → Tasks 6,8,10; §8 reconciler → Task 12; §9 scope → all; §10 testing → every task's Step 1; taxonomy → Task 2; locks (RUN→BUILD_HOST order) → Task 3.
 - **Placeholders:** none — every code step shows real code or the exact `rg` to confirm a local name before matching.
-- **Type consistency:** `BuildTransport`/`CommandResult`/`PresignedUpload` (Task 5) are reused verbatim in Tasks 6,7,11; `BuildHost`/`try_acquire_lease`/`release_lease` (Task 4) are reused in Tasks 10–12; `is_git_source`/`build_host` (Task 8) reused in Task 10.
+- **Type consistency:** `BuildTransport`/`CommandResult`/`PresignedUpload`/`upload_file` (Task 5) are reused verbatim in Tasks 6,7,7.5,11; `BuildHost`/`try_acquire_lease`/`release_lease` (Task 4) are reused in Tasks 10–12; `is_git_source`/`build_host` (Task 8) reused in Task 10; `BuildPayload.build_host_id` (Task 10 Step 0) is read in Tasks 11–12.
 - **Confirm-before-match:** several steps depend on existing names (fixtures, jobs state column, ops registrar shape, taxonomy closed-set test). Each such step names the `rg` to run first — the implementer must confirm, not assume.
