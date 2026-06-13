@@ -114,6 +114,7 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
     expected_reaper = object()
     expected_resetter = object()
     expected_dump_volume_reaper = object()
+    expected_build_host_prober = object()
     expected_registry = SecretRegistry()
 
     class _FakeProviderComposition:
@@ -135,6 +136,9 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
         def build_reconciler_build_vm_reaper(self) -> object:
             return NullBuildVmReaper()
 
+        def build_reconciler_build_host_prober(self) -> object:
+            return expected_build_host_prober
+
         async def build_reconciler_console_hosting(self) -> None:
             return None
 
@@ -147,6 +151,7 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
         config = cast(ReconcileConfig, kw["config"])
         constructed["resetter"] = config.resetter
         constructed["dump_volume_reaper"] = config.dump_volume_reaper
+        constructed["build_host_prober"] = config.build_host_prober
 
     async def _fake_run(self: object, stop: object) -> None:
         events.append("run")
@@ -165,3 +170,4 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
     assert constructed["reaper"] is expected_reaper
     assert constructed["resetter"] is expected_resetter
     assert constructed["dump_volume_reaper"] is expected_dump_volume_reaper
+    assert constructed["build_host_prober"] is expected_build_host_prober

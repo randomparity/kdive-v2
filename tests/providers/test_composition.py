@@ -358,6 +358,20 @@ def test_console_hosting_is_none_without_remote() -> None:
     assert asyncio.run(comp.build_reconciler_console_hosting(enable_remote_libvirt=False)) is None
 
 
+def test_build_host_prober_is_wired_independent_of_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The SSH build-host prober is built unconditionally — not gated on remote-libvirt."""
+    from kdive.providers.build_host.reachability import BuildHostProber, SshBuildHostProber
+    from kdive.providers.remote_libvirt import config as remote_config
+
+    # Force remote-libvirt to read as unconfigured; the prober must still be returned.
+    monkeypatch.setattr(remote_config, "is_remote_libvirt_configured", lambda: False)
+
+    comp = composition.ProviderComposition()
+    prober = comp.build_reconciler_build_host_prober()
+    assert isinstance(prober, SshBuildHostProber)
+    assert isinstance(prober, BuildHostProber)
+
+
 def test_console_hosting_delegates_to_remote_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

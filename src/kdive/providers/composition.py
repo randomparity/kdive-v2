@@ -15,6 +15,7 @@ from psycopg_pool import AsyncConnectionPool
 import kdive.config as config
 from kdive.config.core_settings import FAULT_INJECT
 from kdive.domain.models import ResourceKind
+from kdive.providers.build_host.reachability import BuildHostProber, SshBuildHostProber
 from kdive.providers.discovery_registration import ProviderDiscoveryRegistration
 from kdive.providers.fault_inject import composition as fault_inject_composition
 from kdive.providers.fault_inject.faulting.engine import FaultEngine
@@ -198,6 +199,15 @@ class ProviderComposition:
         if _remote_libvirt_enabled(enable_remote_libvirt):
             return remote_composition.build_build_vm_reaper(secret_registry=self._secret_registry)
         return NullBuildVmReaper()
+
+    def build_reconciler_build_host_prober(self) -> BuildHostProber:
+        """Assemble the reconciler's SSH build-host reachability prober (ADR-0103).
+
+        Wired unconditionally: SSH build hosts are independent of the remote-libvirt
+        provider, so the prober is not gated on ``_remote_libvirt_enabled``. When no SSH
+        hosts are registered the repair's query simply returns nothing.
+        """
+        return SshBuildHostProber(secret_registry=self._secret_registry)
 
     async def build_reconciler_console_hosting(
         self, *, enable_remote_libvirt: bool | None = None
