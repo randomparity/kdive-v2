@@ -105,12 +105,22 @@ class _FakeTransport:
         self.uploaded.append(path)
         return f'"etag-{Path(path).name}"'.strip('"')
 
-    # unused protocol members
-    def read_text(self, path: str) -> str: ...  # pragma: no cover
-    def read_bytes(self, path: str) -> bytes: ...  # pragma: no cover
-    def write_bytes(self, path: str, data: bytes) -> None: ...  # pragma: no cover
-    def clone(self, remote: str, ref: str, dest: str) -> None: ...  # pragma: no cover
-    def cleanup(self, path: str) -> None: ...  # pragma: no cover
+    # unused protocol members — real bodies (the codebase has no `...`-body concrete methods;
+    # the strict whole-tree `ty` gate is happier with real returns + pragma).
+    def read_text(self, path: str) -> str:  # pragma: no cover - unused
+        return ""
+
+    def read_bytes(self, path: str) -> bytes:  # pragma: no cover - unused
+        return b""
+
+    def write_bytes(self, path: str, data: bytes) -> None:  # pragma: no cover - unused
+        return None
+
+    def clone(self, remote: str, ref: str, dest: str) -> None:  # pragma: no cover - unused
+        return None
+
+    def cleanup(self, path: str) -> None:  # pragma: no cover - unused
+        return None
 
 
 def test_bytes_source_puts_with_tenant_owner_sensitivity() -> None:
