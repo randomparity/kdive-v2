@@ -293,7 +293,7 @@ async def reconcile_once(
         expired_private_images=counts.get("expired_private_images", 0),
         console_collectors_reaped=counts.get("console_collectors_reaped", 0),
         reaped_dump_volumes=counts.get("reaped_dump_volumes", 0),
-        reclaimed_build_host_leases=counts.get("reclaimed_build_host_leases", 0),
+        reclaimed_build_host_leases=counts["reclaimed_build_host_leases"],
     )
 
 

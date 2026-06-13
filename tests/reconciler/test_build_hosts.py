@@ -23,10 +23,6 @@ from kdive.reconciler.build_hosts import reclaim_orphan_build_host_leases
 from kdive.reconciler.loop import reconcile_once
 from tests.reconciler.conftest import connect, run_repair, seed_run, seed_system
 
-# Fixed UUID for the seeded 'worker-local' build_host row (see migration 0027).
-_LOCAL_HOST_ID = UUID("00000000-0000-0000-0000-0000000000c0")
-
-
 # ---------------------------------------------------------------------------
 # Seeding helpers
 # ---------------------------------------------------------------------------
@@ -164,6 +160,27 @@ def test_succeeded_job_lease_reclaimed(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_canceled_job_lease_reclaimed(migrated_url: str) -> None:
+    """A lease whose build job is canceled (terminal) must be reclaimed."""
+
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            host_id = await _seed_ssh_build_host(seed)
+            system_id = await seed_system(seed)
+            run_id = await seed_run(seed, system_id)
+            await _seed_build_job(seed, run_id, state="canceled")
+            await _seed_lease(seed, run_id, host_id)
+
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, reclaim_orphan_build_host_leases)
+
+        assert count == 1
+        async with await connect(migrated_url) as check:
+            assert not await _lease_exists(check, run_id)
+
+    asyncio.run(_run())
+
+
 def test_no_job_row_lease_reclaimed(migrated_url: str) -> None:
     """A lease with no matching BUILD job row at all must be reclaimed."""
 
@@ -225,7 +242,7 @@ def test_reconcile_once_reports_reclaimed_build_host_leases(migrated_url: str) -
     asyncio.run(_run())
 
 
-def test_reclaim_spec_registered_in_loop(monkeypatch: object) -> None:
+def test_reclaim_spec_registered_in_loop() -> None:
     """_reclaim_build_host_leases alias is present in the loop module's __all__."""
     assert "_reclaim_build_host_leases" in loop.__all__
     assert callable(loop._reclaim_build_host_leases)
