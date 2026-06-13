@@ -109,13 +109,19 @@ ssh_build_transport_from_host = SshBuildTransport.from_host
 
 
 async def _release_build_lease(conn: AsyncConnection, run_id: UUID) -> None:
-    """Release the run's build-host lease in a dedicated committed transaction, best-effort.
+    """Delete the run's build-host lease; durability depends on the caller committing.
 
-    The DELETE runs in its own ``conn.transaction()`` so it commits independently of any later
-    failure path: the build handler runs on a connection the worker does not wrap in an outer
-    transaction (handlers manage their own short transactions), so this commits durably and frees
-    the slot even when the build then fails. Errors are logged and swallowed — the reconciler is
-    the backstop. A worker-local run holds no lease, so this is an idempotent no-op DELETE.
+    The ``conn.transaction()`` here is NOT an independent commit: the handler's earlier bare
+    ``RUNS.get`` opened a long-lived implicit transaction on this non-autocommit pool connection,
+    so this (and every other ``conn.transaction()`` in the handler) is a SAVEPOINT nested in that
+    parent — RELEASE on exit leaves the parent open and uncommitted. The DELETE only becomes
+    durable when the caller commits the parent: the failure path does so with an explicit
+    ``await conn.commit()`` before re-raising (see ``_build_and_record``); the success path on the
+    handler's clean exit, when the pool-connection context manager commits. See the rollback
+    hazard documented on :func:`kdive.db.build_hosts.release_lease`.
+
+    Errors are logged and swallowed — the reconciler is the backstop. A worker-local run holds no
+    lease, so this is an idempotent no-op DELETE.
     """
     try:
         async with conn.transaction():
@@ -276,9 +282,11 @@ async def _build_and_record(
     except CategorizedError as exc:
         await _fail_build(conn, job, run, exc.category)
         await _release_build_lease(conn, run_id)
-        # Commit the failed-state + lease-release before re-raising: the build runs on a pool
-        # connection whose context manager rolls back on exception, which would otherwise revert
-        # the FAILED transition and leave the lease occupying the slot.
+        # LOAD-BEARING — do not remove. The handler's bare RUNS.get opened an implicit transaction
+        # on this non-autocommit pool connection, so _fail_build's FAILED transition and the lease
+        # DELETE are both SAVEPOINTs nested in that still-open parent. The pool-connection context
+        # manager rolls the parent back on the re-raise below, which would revert the FAILED state
+        # and leave the lease occupying the slot. This explicit commit makes both durable first.
         await conn.commit()
         raise
     return BuildStepResult(
