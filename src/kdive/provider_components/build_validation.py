@@ -22,10 +22,15 @@ _MAX_SECTION_BYTES = 16 * 1024 * 1024
 _MAX_EFFECTIVE_CONFIG_BYTES = 1024 * 1024
 
 
-class ValidatorStore(Protocol):
-    """Object-store operations needed by external build validation."""
+class HeadStore(Protocol):
+    """The minimal object-store surface chunk HEAD-verification needs."""
 
     def head(self, key: str) -> HeadResult | None: ...
+
+
+class ValidatorStore(HeadStore, Protocol):
+    """Object-store operations needed by external build validation."""
+
     def get_range(self, key: str, *, start: int, length: int) -> bytes: ...
 
 
@@ -208,7 +213,7 @@ def extract_build_id_ranged(store: ValidatorStore, key: str, *, max_size: int) -
         raise _build_failure("vmlinux ELF is structurally malformed") from exc
 
 
-def verify_chunks(store: ValidatorStore, prefix: str, entry: ManifestEntry) -> None:
+def verify_chunks(store: HeadStore, prefix: str, entry: ManifestEntry) -> None:
     """HEAD-verify each declared chunk's stored ``(size, sha256)`` before reassembly.
 
     For a chunked artifact the per-chunk SHA-256 pins are the integrity anchor (ADR-0104 §4):
