@@ -56,6 +56,27 @@ This waits for the three long-running backends — Postgres, MinIO, and the mock
 > wait failure. `minio-init`'s exit code still propagates, so a genuine bucket-creation
 > failure fails `just stack-up`.
 
+### Required: abort-incomplete-multipart-upload lifecycle rule
+
+Chunked external-build uploads larger than the 5 GiB single-PUT ceiling are reassembled
+server-side with a multipart upload (ADR-0104). A `kdive` process that crashes between
+`CreateMultipartUpload` and `Complete`/`Abort` leaves one in-progress multipart upload that
+`ListObjectsV2` — and therefore the reconciler's prefix reaper — cannot see. Configure the
+bucket with an `AbortIncompleteMultipartUpload` lifecycle rule so the store reclaims such an
+orphan on its own. Run once after the bucket exists (1-day expiry shown):
+
+```bash
+# MinIO
+mc ilm rule add local/kdive-artifacts --expire-delete-marker --noncurrent-expire-days 1
+mc ilm rule add local/kdive-artifacts --incomplete-multipart-days 1
+
+# Real S3 (equivalent), via a lifecycle configuration with:
+#   AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+aws s3api put-bucket-lifecycle-configuration --bucket "$KDIVE_S3_BUCKET" \
+  --lifecycle-configuration '{"Rules":[{"ID":"abort-incomplete-mpu","Status":"Enabled",
+  "Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+```
+
 ## 2. Review the host-process env
 
 The source-tree wrappers source `scripts/live-stack/env.sh`, which exports the local
