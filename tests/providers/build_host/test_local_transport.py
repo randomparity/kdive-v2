@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +11,8 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.provider_components.artifacts import PresignedUpload
 from kdive.providers.build_host.transport import CommandResult, LocalBuildTransport
+
+_RUN_TARGET = "kdive.providers.build_host.transport.subprocess.run"
 
 # ---------------------------------------------------------------------------
 # 1. run — argv and call-shape preservation
@@ -23,7 +26,7 @@ def test_run_argv_preserved() -> None:
     fake_result.stdout = "done\n"
     fake_result.stderr = ""
 
-    with patch("subprocess.run", return_value=fake_result) as mock_run:
+    with patch(_RUN_TARGET, return_value=fake_result) as mock_run:
         transport = LocalBuildTransport()
         result = transport.run(["make", "-C", "/ws", "-j4"], cwd="/ws", timeout_s=100)
 
@@ -45,12 +48,23 @@ def test_run_argv_preserved() -> None:
 
 def test_run_file_not_found_maps_to_missing_dependency() -> None:
     """run() surfaces FileNotFoundError as MISSING_DEPENDENCY CategorizedError."""
-    with patch("subprocess.run", side_effect=FileNotFoundError("no such file")):
+    with patch(_RUN_TARGET, side_effect=FileNotFoundError("no such file")):
         transport = LocalBuildTransport()
         with pytest.raises(CategorizedError) as exc_info:
             transport.run(["make", "-C", "/ws"], cwd="/ws", timeout_s=60)
 
     assert exc_info.value.category == ErrorCategory.MISSING_DEPENDENCY
+
+
+def test_run_timeout_maps_to_build_failure() -> None:
+    """run() surfaces subprocess.TimeoutExpired as a BUILD_FAILURE CategorizedError."""
+    timeout = subprocess.TimeoutExpired(cmd=["make"], timeout=60)
+    with patch(_RUN_TARGET, side_effect=timeout):
+        transport = LocalBuildTransport()
+        with pytest.raises(CategorizedError) as exc_info:
+            transport.run(["make", "-C", "/ws"], cwd="/ws", timeout_s=60)
+
+    assert exc_info.value.category == ErrorCategory.BUILD_FAILURE
 
 
 # ---------------------------------------------------------------------------
@@ -137,3 +151,26 @@ def test_upload_file_calls_http_put_and_strips_etag(tmp_path: Path) -> None:
     assert data == payload
     assert headers == {"x-amz-checksum": "sha256val"}
     assert etag == "abc123"  # quotes stripped
+
+
+# ---------------------------------------------------------------------------
+# 6. cleanup — removes a directory tree, unlinks a file, no-ops on a missing path
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_removes_directory_unlinks_file_and_noops_missing(tmp_path: Path) -> None:
+    """cleanup removes a dir tree, unlinks a file, and is a no-op for a missing path."""
+    transport = LocalBuildTransport()
+
+    workspace = tmp_path / "workspace"
+    (workspace / "nested").mkdir(parents=True)
+    (workspace / "nested" / "file.txt").write_text("x")
+    transport.cleanup(str(workspace))
+    assert not workspace.exists()
+
+    artifact = tmp_path / "bzImage"
+    artifact.write_bytes(b"\x7fELF")
+    transport.cleanup(str(artifact))
+    assert not artifact.exists()
+
+    transport.cleanup(str(tmp_path / "never-existed"))  # harmless no-op

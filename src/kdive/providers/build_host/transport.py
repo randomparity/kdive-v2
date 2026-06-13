@@ -72,6 +72,7 @@ class BuildTransport(Protocol):
 
 def _default_http_put(url: str, data: bytes, headers: dict[str, str]) -> str:
     """Perform an HTTP PUT and return the response ETag header value."""
+    # noqa: S310 - url comes from a worker-minted PresignedUpload, not user input
     req = urllib.request.Request(url, data=data, method="PUT", headers=headers)  # noqa: S310
     with urllib.request.urlopen(req) as resp:  # noqa: S310
         return resp.headers["ETag"]
@@ -122,8 +123,8 @@ class LocalBuildTransport:
         return CommandResult(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
 
     def read_text(self, path: str) -> str:
-        """Read *path* as text using :meth:`Path.read_text`."""
-        return Path(path).read_text()
+        """Read *path* as UTF-8 text."""
+        return Path(path).read_text(encoding="utf-8")
 
     def read_bytes(self, path: str) -> bytes:
         """Read *path* as bytes using :meth:`Path.read_bytes`."""
