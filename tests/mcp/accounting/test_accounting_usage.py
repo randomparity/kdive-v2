@@ -41,7 +41,7 @@ from kdive.domain.state import (
     RunState,
     SystemState,
 )
-from kdive.mcp.auth import AuthError, RequestContext
+from kdive.mcp.auth import AuthError, ProjectMembershipDenied, RequestContext
 from kdive.mcp.tools.accounting.usage import usage_investigation, usage_project
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.services.accounting import ledger as accounting
@@ -214,13 +214,16 @@ def test_usage_by_project_requires_viewer(migrated_url: str) -> None:
 
 
 def test_usage_foreign_project_refused(migrated_url: str) -> None:
+    # The handler still RAISES on a non-member named project (the envelope is produced at the
+    # dispatch boundary, not here). ProjectMembershipDenied IS an AuthError, so the handler
+    # contract is unchanged; assert the narrowed type (ADR-0098).
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             other = _ctx(projects=("elsewhere",))
             try:
                 await usage_project(pool, other, project="proj")
-                raise AssertionError("expected AuthError")
-            except AuthError:
+                raise AssertionError("expected ProjectMembershipDenied")
+            except ProjectMembershipDenied:
                 pass
 
     asyncio.run(_run())
