@@ -21,6 +21,17 @@ def config_error(object_id: str, *, data: ResponseDataInput | None = None) -> To
     return ToolResponse.failure(object_id, ErrorCategory.CONFIGURATION_ERROR, data=data or {})
 
 
+def not_found(object_id: str, *, data: ResponseDataInput | None = None) -> ToolResponse:
+    """Build a ``not_found`` failure envelope for a valid-but-absent object id (ADR-0097).
+
+    Distinct from :func:`config_error`: a malformed id is a parse failure
+    (``configuration_error``); a syntactically valid id with no visible row is ``not_found``.
+    An id in an ungranted project resolves here too, so the envelope is byte-identical to a
+    genuinely-absent one (no membership leak).
+    """
+    return ToolResponse.failure(object_id, ErrorCategory.NOT_FOUND, data=data or {})
+
+
 def stale_handle(object_id: str, *, current_status: str) -> ToolResponse:
     return ToolResponse.failure(
         object_id, ErrorCategory.STALE_HANDLE, data=current_status_data(current_status)
@@ -38,5 +49,6 @@ __all__ = [
     "config_error",
     "context_from_job",
     "job_envelope",
+    "not_found",
     "stale_handle",
 ]
