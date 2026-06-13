@@ -136,6 +136,32 @@ def test_remote_file_presigns_base64_sha256_and_uploads() -> None:
     assert stored.key == presign.key
 
 
+def test_remote_file_over_5gib_is_configuration_error_before_presign() -> None:
+    @dataclass
+    class _OversizeStat(_FakeTransport):
+        def run(self, argv: list[str], *, cwd: str, timeout_s: int) -> CommandResult:
+            if argv[0] == "stat":
+                return CommandResult(returncode=0, stdout=f"{5 * 1024**3 + 1}\n", stderr="")
+            return super().run(argv, cwd=cwd, timeout_s=timeout_s)
+
+    store, transport = _FakeStore(), _OversizeStat()
+    transport.files["/build/huge-bundle.tar.gz"] = b"\x1f\x8bbundle"
+    with pytest.raises(CategorizedError) as caught:
+        publish_artifact_source(
+            store,
+            _RUN,
+            "kernel",
+            ArtifactRemoteFile(path="/build/huge-bundle.tar.gz", transport=transport),
+            tenant="remote-libvirt",
+            sensitivity=Sensitivity.SENSITIVE,
+            retention_class="build",
+        )
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert "5 GiB" in str(caught.value)
+    assert store.presigns == []
+    assert transport.uploaded == []
+
+
 def test_remote_file_sha256sum_nonzero_is_build_failure() -> None:
     @dataclass
     class _FailHash(_FakeTransport):

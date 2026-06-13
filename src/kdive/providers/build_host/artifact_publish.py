@@ -28,6 +28,7 @@ from kdive.provider_components.artifacts import (
 from kdive.providers.build_host.transport import BuildTransport
 
 _MAX_PRESIGN_TTL_S = 3600
+_MAX_SINGLE_PUT_BYTES = 5 * 1024**3
 
 
 @dataclass(slots=True, frozen=True)
@@ -123,10 +124,23 @@ def _publish_remote_file(
 
     The sha256 and byte size are read off the build host; ``presign_put`` signs the base64
     sha256 into the URL so S3 rejects a body that does not hash to it. The worker only ever
-    handles the host-computed digest, never the file's bytes.
+    handles the host-computed digest, never the file's bytes. A file over the single-PUT
+    5 GiB S3 ceiling is rejected with a typed error before presigning, rather than failing
+    opaquely mid-upload (mirrors the host_dump capture's ``_enforce_ceiling``).
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` if the host-side size exceeds the 5 GiB
+            single-PUT ceiling; ``BUILD_FAILURE`` if the host-side hash/size cannot be read;
+            ``INFRASTRUCTURE_FAILURE`` from a failed presign or upload.
     """
     sha256_b64 = _remote_sha256_b64(transport, path)
     size_bytes = _remote_size_bytes(transport, path)
+    if size_bytes > _MAX_SINGLE_PUT_BYTES:
+        raise CategorizedError(
+            "build artifact exceeds the single-PUT 5 GiB ceiling",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"run_id": str(run_id), "name": name, "size_bytes": size_bytes},
+        )
     key = artifact_key(tenant, "runs", str(run_id), name)
     presigned = store.presign_put(
         PresignPutRequest(
