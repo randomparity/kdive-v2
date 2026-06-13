@@ -87,15 +87,21 @@ not one long-lived per-upload session awaiting client parts — and reclaimed by
 by S3 and MinIO). The chunk-key format is produced by a single shared `chunk_key` helper used
 by both `create_upload` and reassembly, so the mint and read sites cannot drift.
 
-### 5. Reaper obligation generalizes to "manifest past deadline"
+### 5. Reaper obligation generalizes to "manifest past deadline" — `runs` branch only
 
-The abandoned-upload reaper drops its owner-must-be-pre-finalize gate: any manifest with
-`deadline < now()` is swept, deleting only prefix objects with no committed `artifacts` row
-and then the manifest. This closes the one leak chunking introduces — a succeeded Run whose
-post-commit chunk cleanup failed leaves a lingering manifest, now reclaimed once the deadline
-passes. The per-object no-row predicate (the live-data guard) and the per-owner advisory lock
-are unchanged, so a true pre-finalize abandon reaps exactly as before and the committed
-reassembled object is never deleted.
+The abandoned-upload reaper drops its owner-must-be-pre-finalize gate **for the `runs`
+branch only**: any `runs` manifest with `deadline < now()` is swept, deleting only prefix
+objects with no committed `artifacts` row and then the manifest. This closes the one leak
+chunking introduces — a succeeded Run whose post-commit chunk cleanup failed leaves a
+lingering manifest, now reclaimed once the deadline passes. The `systems` branch keeps its
+`DEFINED` gate verbatim: the System/rootfs lane is not chunked here, its manifest lifecycle is
+owned by the provisioning plane, and leaving its gate intact keeps that out-of-scope path
+unregressed. The per-object no-row predicate (the live-data guard) and the per-owner advisory
+lock are unchanged, so a true pre-finalize abandon reaps exactly as before and the committed
+reassembled object is never deleted. The window guard that prevents a reaper-vs-finalize race
+(decision 4) runs after the existing idempotent-replay short-circuit and the `CREATED` guard,
+not as `complete_build`'s first action, so a replayed succeeded Run (manifest already deleted)
+is handled before the guard.
 
 ### 6. Cap raised to 50 GiB, single-PUT wall preserved
 

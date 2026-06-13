@@ -60,10 +60,12 @@ In scope (the Run/build-artifact lane only):
   deadline under the per-Run lock at entry (the reassembly-window guard, §6), orchestrates
   reassembly before validation, defers manifest deletion past chunk cleanup, and best-effort
   deletes chunk objects after commit.
-- `src/kdive/reconciler/uploads.py` — generalize the reaper so a manifest lingering past
-  its deadline is swept whether its owner is **pre-finalize** (true abandon) or
-  **finalized with incomplete chunk cleanup** (the backstop for a failed post-commit
-  delete). The per-object "no committed `artifacts` row → delete" predicate is unchanged.
+- `src/kdive/reconciler/uploads.py` — for the **`runs`** owner branch only, drop the
+  pre-finalize (`CREATED`) gate so a Run's manifest lingering past its deadline is swept
+  whether the Run is **pre-finalize** (true abandon) or **finalized with incomplete chunk
+  cleanup** (the backstop for a failed post-commit delete). The **`systems`** branch keeps
+  its `DEFINED` gate unchanged (the System/rootfs path is out of scope and untouched, §7).
+  The per-object "no committed `artifacts` row → delete" predicate is unchanged.
 - **Deployment requirement (not code):** the bucket carries an `AbortIncompleteMultipart
   Upload` lifecycle rule (a documented operator step), the backstop for an in-progress
   reassembly MPU orphaned by a server crash between `create`/`complete` — which `ListObjects
@@ -173,8 +175,15 @@ objects **under** that lock. With a fast single-PUT validation the window is mil
 with a multi-part reassembly the reaper could delete chunks mid-copy. The reassembly-window
 guard closes this:
 
-**Step A — reassembly-window guard (under the per-Run lock).** As its first action,
-`complete_build` acquires the per-Run advisory lock, re-reads the manifest, and:
+**Step A — reassembly-window guard (under the per-Run lock).** The guard is **not**
+`complete_build`'s literal first action: the existing preamble runs first and unchanged — the
+`_existing_build_result` idempotent-replay short-circuit (a re-call on an already-`SUCCEEDED`
+Run returns the recorded envelope and never reaches the guard, so the deleted-manifest replay
+case is handled before the guard), then the `_created_run_guard` (reject a non-`CREATED`
+Run). The window guard then **replaces the existing `get_manifest` step** for the chunked
+lane: under the per-Run advisory lock, `complete_build` re-reads the manifest (a missing row
+stays the existing `no_upload_manifest` `configuration_error`, since a `CREATED` Run must have
+one) and:
 
 - if `deadline < now()` the upload window has already expired — return a retryable
   `configuration_error` (`upload_window_expired`); the agent must re-`create_upload` and
@@ -188,7 +197,9 @@ guard closes this:
   and operator-tunable, not unbounded.
 
 This refreshes the deadline under a short lock rather than holding the lock open across the
-copy (which would pin a pooled connection for the whole reassembly).
+copy (which would pin a pooled connection for the whole reassembly). The single-PUT lane
+keeps its current behavior (no deadline refresh needed — its validation is the fast
+HEAD+ranged-read window).
 
 **Step B — reassemble (no lock; bounded by the refreshed window).** For each **chunked**
 artifact:
@@ -231,15 +242,19 @@ idempotent (`delete` of an absent key is a no-op), so a reaper/finalize race is 
 still **pre-finalize** (`CREATED` Run / `DEFINED` System). That gate makes a *succeeded*
 Run's leftover chunks (from a failed post-commit cleanup) unreachable — a storage leak.
 
-The reaper is generalized so the obligation is **"a manifest past its deadline"**, swept
-whether the owner is pre-finalize *or* finalized:
+The change is **scoped to the `runs` branch**, because only the Run/build-artifact lane gains
+the chunked deferred-cleanup path; the `systems` branch and the provisioning plane's manifest
+lifecycle are out of scope (§2) and left exactly as they are. For `runs`, the obligation
+becomes **"a Run manifest past its deadline"**, swept whether the Run is pre-finalize *or*
+finalized:
 
-- The candidate query drops the owner-state predicate and selects any manifest with
-  `deadline < now()`.
+- The `runs` arm of the candidate query drops its `CREATED` predicate and selects any `runs`
+  manifest with `deadline < now()`; the `systems` arm keeps its `DEFINED` gate verbatim.
 - `reap_one_owner` re-reads the manifest under the per-owner advisory lock, lists the
   prefix, and deletes only objects with **no committed `artifacts` row** (unchanged
-  predicate — the committed reassembled object and any committed rootfs are exempt), then
-  deletes the manifest.
+  predicate — the committed reassembled object is exempt), then deletes the manifest. For a
+  `systems` owner it still requires the `DEFINED` state (the `owner_pre_finalize` recheck is
+  kept for `systems`, dropped for `runs`).
 
 This is safe because the per-object no-row predicate, not the owner state, is the live-data
 guard. Serialization against an **in-flight finalize** does not come from the finalize
@@ -293,8 +308,12 @@ Unit / service (run in normal CI against MinIO + Postgres):
   `upload_part_copy` error triggers `abort_multipart_upload` and leaves the Run `CREATED`.
 - **Reaper backstop** — a succeeded Run with a lingering past-deadline manifest and leftover
   chunk objects: the reaper deletes the chunks (no row) but **not** the reassembled final
-  object (has a row), then deletes the manifest. A pre-finalize abandon still reaps exactly
-  as before (regression-guard the existing behavior).
+  object (has a row), then deletes the manifest. A pre-finalize Run abandon still reaps
+  exactly as before (regression-guard the existing behavior).
+- **System branch untouched** — a past-deadline `systems` manifest whose System has advanced
+  beyond `DEFINED` (finalized) is **not** swept (the `DEFINED` gate is retained for
+  `systems`); a `DEFINED` System past deadline still reaps as before. This pins that the
+  reaper change is scoped to `runs` and does not regress the out-of-scope provisioning path.
 - **Cleanup idempotency** — a finalize whose post-commit chunk delete fails still commits the
   Run; re-deleting an absent chunk is a no-op.
 
@@ -315,10 +334,12 @@ Unit / service (run in normal CI against MinIO + Postgres):
   HEAD-confirmed); the whole-object SHA-256 becomes advisory until a download re-derives it.
 - Four object-store multipart primitives are added; reassembly is server-side copy, so no
   artifact bytes transit the server and `complete_build` stays synchronous.
-- The reaper's sweep obligation generalizes from "pre-finalize owner" to "manifest past
-  deadline," closing the post-commit chunk-cleanup leak; the per-object no-row safety
-  predicate is unchanged. A finalize-vs-reaper race on the chunk objects is prevented by the
-  §6-step-A deadline refresh under the per-Run lock, not by holding the lock across the copy.
+- The reaper's sweep obligation generalizes — **for the `runs` branch only** — from
+  "pre-finalize Run" to "Run manifest past deadline," closing the post-commit chunk-cleanup
+  leak; the `systems` branch keeps its `DEFINED` gate, so the out-of-scope provisioning path
+  is unchanged. The per-object no-row safety predicate is unchanged. A finalize-vs-reaper race
+  on the chunk objects is prevented by the §6-step-A deadline refresh under the per-Run lock,
+  not by holding the lock across the copy.
 - The reassembly target MPU is reclaimed on a caught failure by `abort_multipart_upload`; a
   server crash mid-reassembly leaves one short-lived orphan MPU the prefix reaper cannot see,
   reclaimed by the required `AbortIncompleteMultipartUpload` bucket lifecycle rule (§2). This
