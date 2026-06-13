@@ -117,7 +117,7 @@ cross-project oversight view, use a `platform_auditor` token.
 
 | read | authorized by | denied to |
 |------|---------------|-----------|
-| `allocations list/get`, `systems list/show`, `runs show`, `jobs list/get`, `ledger show` (`accounting.usage_project`) | per-project `viewer` on the **target project** (`require_role`) | a platform-only token with no membership on that project sees no project tenant data — a by-id `get`/`show` returns a **not-found-shaped** result (tenant existence is not revealed, and **no** distinct authorization-denied code is emitted); a `list` returns only the caller's member projects (empty for a non-member), never cross-project rows (ADR-0043 §4a) |
+| `allocations list/get`, `systems list/show`, `runs show`, `jobs list/get`, `ledger show` (`accounting.usage_project`) | per-project `viewer` on the **target project** (`require_role`) | a platform-only token with no membership on that project sees no project tenant data. A by-id `get`/`show` returns a **not-found-shaped** result (exit `4`; tenant existence is not revealed, and **no** distinct authorization-denied code is emitted). A read that **names a project** the caller is not a member of (`allocations list --project …`, `ledger show` / `accounting.usage_project`, `accounting.estimate`) is denied `authorization_denied` (**exit `3`**, ADR-0098) — the named project carries no existence to leak, so the denial surfaces distinctly (ADR-0043 §4a) |
 | cross-project `inventory show` (`inventory.list`), `accounting.report` (all-projects), `audit.query` (cross-project) | `platform_auditor` (satisfied by `platform_admin`) | a project-member token holding no platform role |
 | `secrets list`, `doctor` | `platform_operator` | any token lacking `platform_operator` |
 | `resources list/describe`, `fixtures list` | plain authenticated read (no project scope, no role floor) | unauthenticated callers only |
@@ -127,14 +127,22 @@ tool, gated `platform_auditor`), not a per-project read — it is the one read v
 platform-axis token is *granted* and a bare project member is *denied*. Every other project-data
 read is the inverse.
 
-Two project-axis outcomes are distinct and should not be conflated. A **non-member** (including
-a platform-only token) reaching a by-id `get`/`show` gets the **not-found-shaped** result above —
-the tool resolves the object's project, finds the caller is not a member, and returns
-not-found *before* the role check, so a non-grant never surfaces a distinct authorization-denied
-code (and is **not** audited; only platform-role *overreach* within the platform tier leaves a
-denial row — ADR-0043 §4, see [Reading the audit trail](#reading-the-audit-trail-by-actor)). A
-**member** whose role ranks below the required floor is the other case: the read reaches
-`require_role`, which surfaces `authorization_denied` (**exit `3`**, per [Exit codes](#exit-codes)).
+Three project-axis outcomes are distinct and should not be conflated. (1) A **non-member**
+(including a platform-only token) reaching a **by-id** `get`/`show` gets the
+**not-found-shaped** result above (exit `4`) — the tool resolves the object's project, finds the
+caller is not a member, and returns not-found *before* the role check, so a non-grant never
+surfaces a distinct authorization-denied code (and is **not** audited; only platform-role
+*overreach* within the platform tier leaves a denial row — ADR-0043 §4, see
+[Reading the audit trail](#reading-the-audit-trail-by-actor)). The distinction is deliberate: a
+by-id lookup must not become a cross-tenant existence oracle, so "ungranted, exists" is
+indistinguishable from "absent". (2) A **non-member naming a project** in a named-scope read/op
+(`allocations list --project`, `accounting.usage_project`, `accounting.estimate`) is denied
+`authorization_denied` (**exit `3`**, ADR-0098) — the caller already supplied the project name, so
+there is no existence to hide, and the denial surfaces distinctly rather than collapsing to a
+generic error; like the by-id non-grant it is **not** audited (the non-member case is
+non-amplifying). (3) A **member** whose role ranks below the required floor reaches `require_role`,
+which surfaces `authorization_denied` (**exit `3`**) **and** is audited as a member-over-reach
+denial.
 
 ### Secret-presence and fixture reads
 
