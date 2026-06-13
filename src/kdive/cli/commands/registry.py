@@ -32,6 +32,11 @@ class Verb:
     ``destructive()``-annotated server tool. The gate test only holds read-only verbs to
     the read-only hint; the mutating verbs are reachable only through their curated handler,
     never the read-only passthrough.
+
+    ``required_options`` are ``--`` options the underlying tool declares as required
+    arguments (no server-side default); the CLI marks them ``required=True`` so an omission
+    fails up front with a clean usage error (exit 2) rather than an opaque server-side
+    missing-argument error. ``options`` stay optional (default ``None``).
     """
 
     group: str
@@ -40,6 +45,7 @@ class Verb:
     tool: str
     positionals: tuple[str, ...] = ()
     options: tuple[str, ...] = ()
+    required_options: tuple[str, ...] = ()
     flags: tuple[str, ...] = ()
     read_only: bool = True
 
@@ -47,14 +53,26 @@ class Verb:
 REGISTRY: tuple[Verb, ...] = (
     Verb("resources", "list", reads.resources_list, "resources.list", options=("kind",)),
     Verb("resources", "describe", reads.resources_describe, "resources.describe", ("resource_id",)),
-    Verb("allocations", "list", reads.allocations_list, "allocations.list", options=("project",)),
+    Verb(
+        "allocations",
+        "list",
+        reads.allocations_list,
+        "allocations.list",
+        required_options=("project",),
+    ),
     Verb("allocations", "get", reads.allocations_get, "allocations.get", ("allocation_id",)),
     Verb("systems", "list", reads.systems_list, "systems.list", options=("state",)),
     Verb("systems", "show", reads.systems_show, "systems.get", ("system_id",)),
     Verb("runs", "show", reads.runs_show, "runs.get", ("run_id",)),
     Verb("jobs", "list", reads.jobs_list, "jobs.list"),
     Verb("jobs", "get", reads.jobs_get, "jobs.get", ("job_id",)),
-    Verb("ledger", "show", reads.ledger_show, "accounting.usage_project", options=("project",)),
+    Verb(
+        "ledger",
+        "show",
+        reads.ledger_show,
+        "accounting.usage_project",
+        required_options=("project",),
+    ),
     Verb("inventory", "show", reads.inventory_show, "inventory.list", options=("project",)),
     Verb("secrets", "list", reads.secrets_list, "secrets.list"),
     Verb("fixtures", "list", reads.fixtures_list, "fixtures.list"),
@@ -168,6 +186,8 @@ def _verb_parser(
         parser.add_argument(positional)
     for option in verb.options:
         parser.add_argument(f"--{option.replace('_', '-')}", dest=option, default=None)
+    for option in verb.required_options:
+        parser.add_argument(f"--{option.replace('_', '-')}", dest=option, required=True)
     for flag in verb.flags:
         parser.add_argument(f"--{flag.replace('_', '-')}", dest=flag, action="store_true")
 

@@ -83,19 +83,28 @@ Curated read verbs call one read-only MCP tool and render a table (or JSON with 
 ```bash
 kdivectl resources list [--kind <kind>]
 kdivectl resources describe <resource_id>
-kdivectl allocations list [--project <project>]
+kdivectl allocations list --project <project>
 kdivectl allocations get <allocation_id>
 kdivectl systems list [--state <state>]
 kdivectl systems show <system_id>
 kdivectl runs show <run_id>
 kdivectl jobs list
 kdivectl jobs get <job_id>
-kdivectl ledger show [--project <project>]
+kdivectl ledger show --project <project>
 kdivectl inventory show [--project <project>]
 ```
 
 `--json` may be given before or after the verb (`kdivectl --json resources list` or
 `kdivectl resources list --json`) for a stable, scriptable contract.
+
+`--project` is **required** for `allocations list` and `ledger show` (no square brackets):
+each underlying tool (`allocations.list`, `accounting.usage_project`) reads exactly one
+project, so the CLI enforces the flag up front — omitting it is a usage error (exit `2`),
+not a cross-project listing. `inventory show` is the exception: its `--project` is an
+**optional** narrowing filter on a cross-project auditor read (`inventory.list`, see
+[the matrix below](#read-authorization-platform-axis-vs-project-axis)), omitted for the
+all-projects view. There is no "list across all my projects" verb today; query each project
+in turn.
 
 ### Read authorization: platform axis vs. project axis
 
@@ -134,7 +143,7 @@ platform-role gated; `fixtures list` is a plain authenticated read:
 
 ```bash
 kdivectl secrets list                       # secret *presence* (refs only), platform-gated
-kdivectl fixtures list [--project <project>] # available fixtures, project-scoped
+kdivectl fixtures list                       # available fixtures, plain authenticated read
 ```
 
 `secrets list` reports presence/refs only — it never returns secret values.
