@@ -59,7 +59,7 @@ from kdive.mcp.tools.ops import tuning as ops_tuning_tools
 from kdive.mcp.tools.ops.build_hosts import registrar as ops_build_hosts_tools
 from kdive.mcp.tools.ops.images import registrar as ops_images_tools
 from kdive.providers.composition import ProviderComposition, build_provider_resolver
-from kdive.providers.reaping import DumpVolumeReaper, InfraReaper
+from kdive.providers.reaping import BuildVmReaper, DumpVolumeReaper, InfraReaper
 from kdive.providers.resolver import ProviderResolver
 from kdive.security.secrets.secret_registry import SecretRegistry
 
@@ -72,6 +72,7 @@ class AppAssembly:
     secret_registry: SecretRegistry
     reaper: InfraReaper
     dump_volume_reaper: DumpVolumeReaper
+    build_vm_reaper: BuildVmReaper
 
 
 type PlaneRegistrar = Callable[[FastMCP, AsyncConnectionPool, AppAssembly], None]
@@ -101,6 +102,7 @@ def _register_reconcile_tools(
         upload_store=ops_reconcile_tools.resolve_upload_store(),
         image_store=ops_reconcile_tools.resolve_image_store(),
         dump_volume_reaper=assembly.dump_volume_reaper,
+        build_vm_reaper=assembly.build_vm_reaper,
     )
 
 
@@ -306,6 +308,7 @@ def build_app(
         secret_registry=composition.secret_registry,
         reaper=composition.build_reconciler_reaper(),
         dump_volume_reaper=composition.build_reconciler_dump_volume_reaper(),
+        build_vm_reaper=composition.build_reconciler_build_vm_reaper(),
     )
     for register in _PLANE_REGISTRARS:
         register(app, pool, assembly)

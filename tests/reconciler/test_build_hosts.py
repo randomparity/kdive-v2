@@ -245,4 +245,103 @@ def test_reconcile_once_reports_reclaimed_build_host_leases(migrated_url: str) -
 def test_reclaim_spec_registered_in_loop() -> None:
     """_reclaim_build_host_leases alias is present in the loop module's __all__."""
     assert "_reclaim_build_host_leases" in loop.__all__
+
+
+# ---------------------------------------------------------------------------
+# Ephemeral build-VM reaping (ADR-0100)
+# ---------------------------------------------------------------------------
+
+from datetime import timedelta  # noqa: E402
+
+from kdive.providers.reaping import BuildVm  # noqa: E402
+from kdive.reconciler.build_hosts import reap_orphan_build_vms  # noqa: E402
+
+
+class _FakeBuildVmReaper:
+    """Records delete_build_vm calls; returns a canned list_build_vms result."""
+
+    def __init__(self, vms: list[BuildVm]) -> None:
+        self._vms = vms
+        self.deleted: list[str] = []
+
+    async def list_build_vms(self) -> list[BuildVm]:
+        return list(self._vms)
+
+    async def delete_build_vm(self, domain_name: str) -> None:
+        self.deleted.append(domain_name)
+
+
+def _build_vm(run_id: UUID) -> BuildVm:
+    return BuildVm(domain_name=f"kdive-build-{run_id}", run_id=run_id)
+
+
+def test_build_vm_reaped_when_build_job_terminal(migrated_url: str) -> None:
+    """A build VM whose BUILD job is terminal (failed) is reaped."""
+
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed)
+            run_id = await seed_run(seed, system_id)
+            await _seed_build_job(seed, run_id, state="failed")
+        reaper = _FakeBuildVmReaper([_build_vm(run_id)])
+
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, lambda conn: reap_orphan_build_vms(conn, reaper))
+
+        assert count == 1
+        assert reaper.deleted == [f"kdive-build-{run_id}"]
+
+    asyncio.run(_run())
+
+
+def test_build_vm_not_reaped_when_build_job_live(migrated_url: str) -> None:
+    """A build VM whose BUILD job is still running is NOT reaped (no age-based reap)."""
+
+    async def _run() -> None:
+        async with await connect(migrated_url) as seed:
+            system_id = await seed_system(seed)
+            run_id = await seed_run(seed, system_id)
+            await _seed_build_job(seed, run_id, state="running")
+        reaper = _FakeBuildVmReaper([_build_vm(run_id)])
+
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, lambda conn: reap_orphan_build_vms(conn, reaper))
+
+        assert count == 0
+        assert reaper.deleted == []
+
+    asyncio.run(_run())
+
+
+def test_build_vm_reaped_when_no_job_row(migrated_url: str) -> None:
+    """A build VM with no matching BUILD job row at all is reaped (orphan)."""
+
+    async def _run() -> None:
+        run_id = uuid4()  # no run, no job
+        reaper = _FakeBuildVmReaper([_build_vm(run_id)])
+
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(pool, lambda conn: reap_orphan_build_vms(conn, reaper))
+
+        assert count == 1
+        assert reaper.deleted == [f"kdive-build-{run_id}"]
+
+    asyncio.run(_run())
+
+
+def test_build_vm_reap_runs_before_lease_reclaim_in_repair_plan() -> None:
+    """The reaped_build_vms repair must precede reclaimed_build_host_leases (reap before reclaim).
+
+    Freeing a lease slot before reaping the leaked VM would let a new build over-admit the host
+    past max_concurrent while the leaked VM still runs (ADR-0100 §4.6).
+    """
+    plan = loop._repair_plan(
+        reaper=NullReaper(),
+        config=loop.ReconcileConfig(),
+        image_publish_grace=timedelta(minutes=5),
+    )
+    names = [spec.name for spec in plan]
+    assert "reaped_build_vms" in names
+    assert "reclaimed_build_host_leases" in names
+    assert names.index("reaped_build_vms") < names.index("reclaimed_build_host_leases")
     assert callable(loop._reclaim_build_host_leases)

@@ -24,8 +24,9 @@ from kdive.providers.discovery_registration import (
     DiscoveryRegistrationTarget,
     ProviderDiscoveryRegistration,
 )
-from kdive.providers.reaping import DumpVolumeReaper
+from kdive.providers.reaping import BuildVmReaper, DumpVolumeReaper
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
+from kdive.providers.remote_libvirt.build_vm_reaper import RemoteLibvirtBuildVmReaper
 from kdive.providers.remote_libvirt.config import remote_config_from_env
 from kdive.providers.remote_libvirt.console.collector import ConsoleCollector
 from kdive.providers.remote_libvirt.console.wiring import (
@@ -86,6 +87,10 @@ def build_transport_resetter(*, secret_registry: SecretRegistry) -> TransportRes
 
 def build_dump_volume_reaper(*, secret_registry: SecretRegistry) -> DumpVolumeReaper:
     return RemoteLibvirtDumpVolumeReaper.from_env(secret_registry=secret_registry)
+
+
+def build_build_vm_reaper(*, secret_registry: SecretRegistry) -> BuildVmReaper:
+    return RemoteLibvirtBuildVmReaper.from_env(secret_registry=secret_registry)
 
 
 async def build_console_hosting(*, secret_registry: SecretRegistry) -> ConsoleHosting | None:

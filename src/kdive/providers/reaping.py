@@ -66,3 +66,37 @@ class NullDumpVolumeReaper:
 
     async def delete_dump_volume(self, name: str) -> None:
         return None
+
+
+class BuildVm(NamedTuple):
+    """A provider's ephemeral build VM: its domain name and the owning Run it was provisioned for.
+
+    ``run_id`` is parsed from the deterministic ``kdive-build-<run_id>`` domain name (ADR-0100); a
+    domain whose name does not encode a Run is reported with ``run_id=None`` (the reconciler never
+    reaps such a domain, since it cannot confirm the owning build is dead).
+    """
+
+    domain_name: str
+    run_id: UUID | None
+
+
+@runtime_checkable
+class BuildVmReaper(Protocol):
+    """The narrow provider port the reconciler consumes for leaked ephemeral build VMs (ADR-0100).
+
+    Lists the provider's ``kdive-build-*`` domains and deletes one (with its overlay) by name.
+    Deletion is idempotent — a domain already gone is not an error.
+    """
+
+    async def list_build_vms(self) -> list[BuildVm]: ...
+    async def delete_build_vm(self, domain_name: str) -> None: ...
+
+
+class NullBuildVmReaper:
+    """The default build-VM reaper: owns nothing, deletes nothing."""
+
+    async def list_build_vms(self) -> list[BuildVm]:
+        return []
+
+    async def delete_build_vm(self, domain_name: str) -> None:
+        return None

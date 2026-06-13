@@ -29,8 +29,10 @@ from psycopg_pool import AsyncConnectionPool
 import kdive.config as config
 from kdive.config.core_settings import IMAGE_PUBLISH_GRACE
 from kdive.providers.reaping import (
+    BuildVmReaper,
     DumpVolumeReaper,
     InfraReaper,
+    NullBuildVmReaper,
     NullDumpVolumeReaper,
 )
 from kdive.providers.transport_reset import NullResetter, TransportResetter
@@ -82,6 +84,7 @@ _reap_orphaned_dump_volumes = gc_repairs.reap_orphaned_dump_volumes
 _reap_queue_timeouts = allocation_repairs.reap_queue_timeouts
 _reap_queue_timeouts_for = allocation_repairs.reap_queue_timeouts_for
 _reclaim_build_host_leases = build_host_repairs.reclaim_orphan_build_host_leases
+_reap_orphan_build_vms = build_host_repairs.reap_orphan_build_vms
 _repair_abandoned_jobs = job_repairs.repair_abandoned_jobs
 _repair_dead_sessions = debug_session_repairs.repair_dead_sessions
 _repair_orphaned_systems = system_repairs.repair_orphaned_systems
@@ -112,6 +115,9 @@ _NULL_RESETTER: TransportResetter = NullResetter()
 # The default dump-volume reaper (ADR-0094): a module-level singleton so it can be a
 # stateless default argument without a per-call construction (ruff B008).
 _NULL_DUMP_VOLUME_REAPER: DumpVolumeReaper = NullDumpVolumeReaper()
+
+# The default build-VM reaper (ADR-0100): a module-level stateless singleton (see above).
+_NULL_BUILD_VM_REAPER: BuildVmReaper = NullBuildVmReaper()
 
 DEFAULT_INTERVAL = timedelta(seconds=30)
 DEFAULT_DEBUG_SESSION_STALE_AFTER = timedelta(minutes=2)
@@ -149,6 +155,7 @@ class ReconcileReport:
     expired_private_images: int = 0
     console_collectors_reaped: int = 0
     reaped_dump_volumes: int = 0
+    reaped_build_vms: int = 0
     reclaimed_build_host_leases: int = 0
 
 
@@ -158,6 +165,7 @@ class ReconcileConfig:
 
     resetter: TransportResetter = _NULL_RESETTER
     dump_volume_reaper: DumpVolumeReaper = _NULL_DUMP_VOLUME_REAPER
+    build_vm_reaper: BuildVmReaper = _NULL_BUILD_VM_REAPER
     upload_store: UploadStore | None = None
     image_store: ImageSweepStore | None = None
     console_registry: CollectorRegistry | None = None
@@ -186,6 +194,12 @@ def _repair_plan(
         _RepairSpec("queue_timeouts", _reap_queue_timeouts_for(config.queue_max_wait)),
         _RepairSpec("orphaned_systems", _repair_orphaned_systems),
         _RepairSpec("abandoned_jobs", _repair_abandoned_jobs),
+        # Reap leaked build VMs BEFORE reclaiming their lease, so a freed slot never coexists
+        # with a still-running leaked VM (ADR-0100 §4.6 over-admission window).
+        _RepairSpec(
+            "reaped_build_vms",
+            lambda conn: _reap_orphan_build_vms(conn, config.build_vm_reaper),
+        ),
         _RepairSpec("reclaimed_build_host_leases", _reclaim_build_host_leases),
         _RepairSpec(
             "dead_sessions",
@@ -293,6 +307,7 @@ async def reconcile_once(
         expired_private_images=counts.get("expired_private_images", 0),
         console_collectors_reaped=counts.get("console_collectors_reaped", 0),
         reaped_dump_volumes=counts.get("reaped_dump_volumes", 0),
+        reaped_build_vms=counts.get("reaped_build_vms", 0),
         reclaimed_build_host_leases=counts["reclaimed_build_host_leases"],
     )
 

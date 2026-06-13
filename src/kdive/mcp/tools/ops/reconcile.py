@@ -25,7 +25,13 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._platform_auth import actor_for, audit_platform_denial, held_platform_roles
-from kdive.providers.reaping import DumpVolumeReaper, InfraReaper, NullDumpVolumeReaper
+from kdive.providers.reaping import (
+    BuildVmReaper,
+    DumpVolumeReaper,
+    InfraReaper,
+    NullBuildVmReaper,
+    NullDumpVolumeReaper,
+)
 from kdive.reconciler.loop import ReconcileConfig, ReconcileReport, UploadStore, reconcile_once
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
@@ -35,6 +41,7 @@ from kdive.store.objectstore import ObjectStore
 
 # A module-level singleton so it can be a stateless default arg (ruff B008).
 _NULL_DUMP_VOLUME_REAPER: DumpVolumeReaper = NullDumpVolumeReaper()
+_NULL_BUILD_VM_REAPER: BuildVmReaper = NullBuildVmReaper()
 _S3_OPTIONAL_ENV_NAMES = frozenset({S3_ENDPOINT_URL.name, S3_BUCKET.name, S3_REGION.name})
 
 _RECONCILE_TOOL = "ops.reconcile_now"
@@ -51,6 +58,7 @@ async def reconcile_now(
     upload_store: UploadStore | None,
     image_store: ImageSweepStore | None = None,
     dump_volume_reaper: DumpVolumeReaper = _NULL_DUMP_VOLUME_REAPER,
+    build_vm_reaper: BuildVmReaper = _NULL_BUILD_VM_REAPER,
 ) -> ToolResponse:
     """Run one ``reconcile_once`` pass on demand; return its per-class repair summary.
 
@@ -99,6 +107,7 @@ async def reconcile_now(
                 upload_store=upload_store,
                 image_store=image_store,
                 dump_volume_reaper=dump_volume_reaper,
+                build_vm_reaper=build_vm_reaper,
             ),
         )
         async with pool.connection() as conn, conn.transaction():
@@ -186,6 +195,7 @@ def register_with_reaper(
     upload_store: UploadStore | None,
     image_store: ImageSweepStore | None = None,
     dump_volume_reaper: DumpVolumeReaper = _NULL_DUMP_VOLUME_REAPER,
+    build_vm_reaper: BuildVmReaper = _NULL_BUILD_VM_REAPER,
 ) -> None:
     """Register ``ops.reconcile_now`` with explicitly assembled repair ports."""
 
@@ -203,4 +213,5 @@ def register_with_reaper(
             upload_store=upload_store,
             image_store=image_store,
             dump_volume_reaper=dump_volume_reaper,
+            build_vm_reaper=build_vm_reaper,
         )
