@@ -14,7 +14,7 @@ from kdive.db.upload_manifest import (
     get_manifest,
     replace_manifest,
 )
-from kdive.provider_components.uploads import ManifestEntry
+from kdive.provider_components.uploads import ChunkEntry, ManifestEntry
 
 
 async def _connect(url: str) -> psycopg.AsyncConnection:
@@ -50,6 +50,31 @@ def test_round_trip(migrated_url: str) -> None:
         assert got.entries == tuple(entries)
         assert got.prefix == f"local/runs/{owner_id}/"
         assert got.deadline is not None
+
+    asyncio.run(_run_test())
+
+
+def test_round_trips_chunks(migrated_url: str) -> None:
+    """A chunked entry persists and reloads its ordered chunk list through the JSONB column."""
+
+    async def _run_test() -> None:
+        owner_id = uuid4()
+        entries = [
+            ManifestEntry(
+                "vmlinux",
+                "whole",
+                10,
+                chunks=(ChunkEntry("c0", 6), ChunkEntry("c1", 4)),
+            ),
+            ManifestEntry("kernel", "Zm9v", 3),
+        ]
+        async with await _connect(migrated_url) as conn:
+            await replace_manifest(conn, _request(owner_id, entries))
+            got = await get_manifest(conn, "runs", owner_id)
+        assert got is not None
+        by_name = {e.name: e for e in got.entries}
+        assert by_name["vmlinux"].chunks == (ChunkEntry("c0", 6), ChunkEntry("c1", 4))
+        assert by_name["kernel"].chunks is None
 
     asyncio.run(_run_test())
 

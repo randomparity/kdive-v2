@@ -12,14 +12,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import NamedTuple
+from typing import Any, NamedTuple
 from uuid import UUID
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from kdive.provider_components.uploads import ManifestEntry
+from kdive.provider_components.uploads import ChunkEntry, ManifestEntry
 
 
 class UploadManifest(NamedTuple):
@@ -41,6 +41,17 @@ class UploadManifestReplaceRequest:
     ttl: timedelta
 
 
+def _entry_payload(entry: ManifestEntry) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "name": entry.name,
+        "sha256": entry.sha256,
+        "size_bytes": entry.size_bytes,
+    }
+    if entry.chunks is not None:
+        payload["chunks"] = [{"sha256": c.sha256, "size_bytes": c.size_bytes} for c in entry.chunks]
+    return payload
+
+
 async def replace_manifest(
     conn: AsyncConnection,
     request: UploadManifestReplaceRequest,
@@ -53,9 +64,7 @@ async def replace_manifest(
         conn: An async connection (autocommit or within a transaction).
         request: Owner, prefix, entries, and upload-window TTL for the replacement.
     """
-    payload = [
-        {"name": e.name, "sha256": e.sha256, "size_bytes": e.size_bytes} for e in request.entries
-    ]
+    payload = [_entry_payload(e) for e in request.entries]
     await conn.execute(
         "INSERT INTO upload_manifests (owner_kind, owner_id, prefix, manifest, deadline) "
         "VALUES (%s, %s, %s, %s, now() + %s) "
@@ -87,10 +96,20 @@ async def get_manifest(
         row = await cur.fetchone()
     if row is None:
         return None
-    entries = tuple(
-        ManifestEntry(e["name"], e["sha256"], int(e["size_bytes"])) for e in row["manifest"]
-    )
+    entries = tuple(_entry_from_payload(e) for e in row["manifest"])
     return UploadManifest(entries=entries, prefix=row["prefix"], deadline=row["deadline"])
+
+
+def _entry_from_payload(payload: Any) -> ManifestEntry:
+    raw_chunks = payload.get("chunks")
+    chunks = (
+        tuple(ChunkEntry(c["sha256"], int(c["size_bytes"])) for c in raw_chunks)
+        if isinstance(raw_chunks, list)
+        else None
+    )
+    return ManifestEntry(
+        payload["name"], payload["sha256"], int(payload["size_bytes"]), chunks=chunks
+    )
 
 
 async def delete_manifest(conn: AsyncConnection, owner_kind: str, owner_id: UUID) -> None:
