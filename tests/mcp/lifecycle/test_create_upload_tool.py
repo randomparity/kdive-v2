@@ -598,3 +598,74 @@ def test_create_upload_rejects_empty_artifacts(migrated_url: str) -> None:
         assert store.calls == []
 
     asyncio.run(_run())
+
+
+# --- Chunked declaration validation (ADR-0104 §5) ---------------------------------------
+
+from kdive.mcp.tools.catalog.artifacts.uploads import (  # noqa: E402
+    _validate_artifact_declarations,
+)
+
+_ALLOWED = frozenset({"vmlinux", "kernel"})
+_CAP = 50 * 1024 * 1024 * 1024
+_5GIB = 5 * 1024 * 1024 * 1024
+
+
+def test_single_over_5gib_rejected_size_out_of_range() -> None:
+    out = _validate_artifact_declarations(
+        "rid", [{"name": "vmlinux", "sha256": "a", "size_bytes": _5GIB + 1}], _ALLOWED, _CAP
+    )
+    assert isinstance(out, ToolResponse)
+    assert out.data["reason"] == "size_out_of_range"
+
+
+def test_chunked_well_formed_accepted() -> None:
+    decl = {
+        "name": "vmlinux",
+        "sha256": "whole",
+        "size_bytes": _5GIB + 100,
+        "chunks": [
+            {"sha256": "c0", "size_bytes": _5GIB},
+            {"sha256": "c1", "size_bytes": 100},
+        ],
+    }
+    out = _validate_artifact_declarations("rid", [decl], _ALLOWED, _CAP)
+    assert isinstance(out, list)
+    assert out[0].chunks is not None
+    assert len(out[0].chunks) == 2
+
+
+def test_chunked_non_final_below_min_part_rejected() -> None:
+    decl = {
+        "name": "vmlinux",
+        "sha256": "w",
+        "size_bytes": 1024 + 10,
+        "chunks": [{"sha256": "c0", "size_bytes": 1024}, {"sha256": "c1", "size_bytes": 10}],
+    }
+    out = _validate_artifact_declarations("rid", [decl], _ALLOWED, _CAP)
+    assert isinstance(out, ToolResponse)
+    assert out.data["reason"] == "chunk_too_small"
+
+
+def test_chunked_sum_mismatch_rejected() -> None:
+    decl = {
+        "name": "vmlinux",
+        "sha256": "w",
+        "size_bytes": 999,
+        "chunks": [{"sha256": "c0", "size_bytes": _5GIB}, {"sha256": "c1", "size_bytes": 100}],
+    }
+    out = _validate_artifact_declarations("rid", [decl], _ALLOWED, _CAP)
+    assert isinstance(out, ToolResponse)
+    assert out.data["reason"] == "chunk_size_mismatch"
+
+
+def test_chunked_effective_config_rejected() -> None:
+    decl = {
+        "name": "effective_config",
+        "sha256": "w",
+        "size_bytes": 100,
+        "chunks": [{"sha256": "c0", "size_bytes": 100}],
+    }
+    out = _validate_artifact_declarations("rid", [decl], frozenset({"effective_config"}), _CAP)
+    assert isinstance(out, ToolResponse)
+    assert out.data["reason"] == "size_out_of_range"

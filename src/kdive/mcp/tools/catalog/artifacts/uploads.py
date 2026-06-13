@@ -6,7 +6,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import NamedTuple, Protocol
+from typing import NamedTuple, Protocol, cast
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -29,7 +29,14 @@ from kdive.profiles.build import BuildProfile, ExternalBuildProfile
 from kdive.profiles.provider_policy import rootfs_upload_window_allowed
 from kdive.profiles.provisioning import ProvisioningProfile
 from kdive.provider_components.artifacts import PresignedUpload, PresignPutRequest
-from kdive.provider_components.uploads import ManifestEntry
+from kdive.provider_components.uploads import (
+    MAX_PART_BYTES,
+    MAX_PARTS,
+    MIN_PART_BYTES,
+    SINGLE_PUT_MAX_BYTES,
+    ChunkEntry,
+    ManifestEntry,
+)
 from kdive.providers.resolver import ProviderResolver
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
@@ -101,12 +108,47 @@ def _validate_artifact_declarations(
         ):
             return _config_error(object_id, data={"reason": "bad_artifact_declaration"})
         artifact_cap = _EFFECTIVE_CONFIG_MAX_UPLOAD_BYTES if name == "effective_config" else cap
-        if size <= 0 or size > artifact_cap:
+        raw_chunks = art.get("chunks")
+        if raw_chunks is None:
+            if size <= 0 or size > min(SINGLE_PUT_MAX_BYTES, artifact_cap):
+                return _config_error(object_id, data={"reason": "size_out_of_range"})
+            entries.append(ManifestEntry(name=name, sha256=sha256, size_bytes=size))
+            continue
+        if name == "effective_config":
             return _config_error(object_id, data={"reason": "size_out_of_range"})
-        entries.append(ManifestEntry(name=name, sha256=sha256, size_bytes=size))
+        validated = _validate_chunks(object_id, raw_chunks, size, artifact_cap)
+        if isinstance(validated, ToolResponse):
+            return validated
+        entries.append(ManifestEntry(name=name, sha256=sha256, size_bytes=size, chunks=validated))
     if not entries:
         return _config_error(object_id, data={"reason": "no_artifacts_declared"})
     return entries
+
+
+def _validate_chunks(
+    object_id: str, raw_chunks: object, declared_total: int, cap: int
+) -> tuple[ChunkEntry, ...] | ToolResponse:
+    if not isinstance(raw_chunks, list) or not (1 <= len(raw_chunks) <= MAX_PARTS):
+        return _config_error(object_id, data={"reason": "too_many_chunks"})
+    chunks: list[ChunkEntry] = []
+    total = 0
+    last = len(raw_chunks) - 1
+    for i, chunk in enumerate(raw_chunks):
+        if not isinstance(chunk, Mapping):
+            return _config_error(object_id, data={"reason": "bad_artifact_declaration"})
+        chunk_map = cast("Mapping[str, object]", chunk)
+        csha, csize = chunk_map.get("sha256"), chunk_map.get("size_bytes")
+        if not isinstance(csha, str) or not isinstance(csize, int) or csize <= 0:
+            return _config_error(object_id, data={"reason": "bad_artifact_declaration"})
+        if csize > MAX_PART_BYTES:
+            return _config_error(object_id, data={"reason": "size_out_of_range"})
+        if i != last and csize < MIN_PART_BYTES:
+            return _config_error(object_id, data={"reason": "chunk_too_small"})
+        chunks.append(ChunkEntry(sha256=csha, size_bytes=csize))
+        total += csize
+    if total != declared_total or not (0 < declared_total <= cap):
+        return _config_error(object_id, data={"reason": "chunk_size_mismatch"})
+    return tuple(chunks)
 
 
 def _materialize_uploads(
