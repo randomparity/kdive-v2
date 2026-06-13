@@ -1043,18 +1043,59 @@ async def refresh_deadline(
         return cur.rowcount == 1
 ```
 
-- [ ] **Step 3b: Add imports to `build.py`**
+- [ ] **Step 3b: Add imports + the store Protocol + factory retype to `build.py`**
+
+The current `ObjectStoreFactory = Callable[[], ValidatorStore]` (build.py:61) returns a
+`ValidatorStore` exposing only `head`/`get_range`, so the reassembly + cleanup code below
+(which needs `delete` and the four multipart methods) would fail `ty`. Define one Protocol
+covering everything `complete_build` needs from the store and retype the factory to it. The
+concrete `ObjectStore` satisfies it structurally once Task 4 lands.
 
 ```python
 # src/kdive/mcp/tools/lifecycle/runs/build.py  (top-of-file imports)
+import logging
+from collections.abc import Sequence
 from datetime import timedelta
+from typing import Protocol
 
 import kdive.config as config
 from kdive.config.core_settings import UPLOAD_TTL_SECONDS
+from kdive.provider_components.artifacts import HeadResult, chunk_key
 from kdive.provider_components.reassembly import reassemble_chunked
+from kdive.provider_components.uploads import ManifestEntry
+
+_log = logging.getLogger(__name__)
+
+
+class ExternalBuildStore(Protocol):
+    """Object-store surface the external-build finalize path needs (ADR-0104).
+
+    A superset of ``ValidatorStore`` (head + get_range) plus ``delete`` and the four
+    multipart primitives, so a single factory return type covers validation, reassembly, and
+    chunk cleanup. The concrete :class:`~kdive.store.objectstore.ObjectStore` satisfies it.
+    """
+
+    def head(self, key: str) -> HeadResult | None: ...
+    def get_range(self, key: str, *, start: int, length: int) -> bytes: ...
+    def delete(self, key: str) -> None: ...
+    def create_multipart_upload(self, key: str, *, sensitivity, retention_class: str) -> str: ...
+    def upload_part_copy(self, key: str, upload_id: str, *, part_number: int, source_key: str) -> str: ...
+    def complete_multipart_upload(self, key: str, upload_id: str, parts) -> str: ...
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None: ...
 ```
 
-(`asyncio`, `advisory_xact_lock`, `LockScope`, `upload_manifest`, `_existing_build_result`, `_complete_envelope` are already imported.)
+Then retype the factory alias (build.py:61):
+
+```python
+type ObjectStoreFactory = Callable[[], ExternalBuildStore]
+```
+
+`StoredArtifact`/`HeadResult` are already imported from `provider_components.artifacts`
+(merge the `chunk_key` addition into that line). `asyncio`, `advisory_xact_lock`,
+`LockScope`, `upload_manifest`, `_existing_build_result`, `_complete_envelope`,
+`object_store_from_env` are already imported. `reassemble_chunked` accepts a
+`ReassemblyStore` (Task 9); `ExternalBuildStore` is a structural superset, so passing one is
+type-safe.
 
 - [ ] **Step 3c: Insert the guard + reassembly in `complete_build`, replacing the current `get_manifest` block**
 
@@ -1091,7 +1132,7 @@ async def _reassemble_chunked_artifacts(
     uid: UUID,
     run_id: str,
     manifest_row: upload_manifest.UploadManifest,
-    store: object,
+    store: ExternalBuildStore,
 ) -> ToolResponse | None:
     """Refresh the upload window under the per-Run lock, then reassemble each chunked artifact.
 
@@ -1183,7 +1224,7 @@ async def _finalize_external_build(
     keys: dict[str, str],
     heads: dict[str, HeadResult],
     *,
-    store: object,
+    store: ExternalBuildStore,
     entries: Sequence[ManifestEntry],
     prefix: str,
     chunked: bool,
@@ -1256,7 +1297,7 @@ async def _finalize_external_build(
 
 async def _cleanup_chunks_and_manifest(
     conn: AsyncConnection,
-    store: object,
+    store: ExternalBuildStore,
     run_id: UUID,
     entries: Sequence[ManifestEntry],
     prefix: str,
@@ -1283,7 +1324,8 @@ async def _cleanup_chunks_and_manifest(
         _log.warning("manifest cleanup failed for run %s: %s", run_id, exc)
 ```
 
-Add imports to `build.py`: `from collections.abc import Sequence` (extend the existing import), `from kdive.provider_components.artifacts import chunk_key`, `from kdive.provider_components.uploads import ManifestEntry`, and a module `_log = logging.getLogger(__name__)` plus `import logging` if absent.
+(Imports `Sequence`, `chunk_key`, `ManifestEntry`, `logging`/`_log`, and the
+`ExternalBuildStore` Protocol were all added in Task 10a Step 3b — no new imports here.)
 
 Update the call site in `complete_build` (the final `return`):
 
@@ -1456,6 +1498,6 @@ git commit -m "docs(runbook): require AbortIncompleteMultipartUpload bucket life
 
 **Spec coverage:** §2 cap → Task 5; ChunkEntry/ManifestEntry → Task 1; chunk_key → Task 2; JSONB → Task 3; store primitives → Task 4; declaration validation → Task 6; per-chunk presign → Task 7; head-verify/skip-checksum → Task 8; reassembly + abort → Task 9; window guard + idempotent re-check → Task 10a; deferred manifest delete + post-commit cleanup → Task 10b; reaper runs-only → Task 11; concurrent idempotency test → Task 12; lifecycle-rule runbook → Task 13. §9 verification bullets map to Tasks 6/8/9/10a/10b/11/12. No spec requirement is left without a task.
 
-**Type consistency:** `ManifestEntry(name, sha256, size_bytes, chunks=None)` and `ChunkEntry(sha256, size_bytes)` are used identically in Tasks 1, 3, 6, 8, 9, 10a, 10b. `chunk_key(prefix, name, part_number)` signature is identical in Tasks 2, 7, 8, 9, 10b. `reassemble_chunked(store, *, prefix, final_key, entry)` is identical in Tasks 9 and 10a. `refresh_deadline(conn, owner_kind, owner_id, ttl) -> bool` is consistent in Task 10a. The TTL in build.py is `timedelta(seconds=config.require(UPLOAD_TTL_SECONDS))` (Task 10a Step 3b), not a cross-module `_upload_ttl` import. The store-method names match Task 4's definitions everywhere.
+**Type consistency:** `ManifestEntry(name, sha256, size_bytes, chunks=None)` and `ChunkEntry(sha256, size_bytes)` are used identically in Tasks 1, 3, 6, 8, 9, 10a, 10b. `chunk_key(prefix, name, part_number)` signature is identical in Tasks 2, 7, 8, 9, 10b. `reassemble_chunked(store, *, prefix, final_key, entry)` is identical in Tasks 9 and 10a. `refresh_deadline(conn, owner_kind, owner_id, ttl) -> bool` is consistent in Task 10a. The TTL in build.py is `timedelta(seconds=config.require(UPLOAD_TTL_SECONDS))` (Task 10a Step 3b), not a cross-module `_upload_ttl` import. The store-method names match Task 4's definitions everywhere. The `ExternalBuildStore` Protocol (Task 10a Step 3b) is the single store type for `_reassemble_chunked_artifacts`, `_finalize_external_build`, and `_cleanup_chunks_and_manifest`; it is a structural superset of Task 9's `ReassemblyStore` and Task 8's `ValidatorStore`, so the concrete `ObjectStore` (after Task 4) satisfies all three and `just type` passes.
 
 **Open implementation note for the executor:** Task 10a's window-guard transaction (`_reassemble_chunked_artifacts`) and Task 10b's `_finalize_external_build` both take `LockScope.RUN`; keep them as separate short transactions (do not nest), and confirm the single-PUT lane skips the deadline refresh (no chunked entry ⇒ `_reassemble_chunked_artifacts` not called) and passes `chunked=False` so its in-transaction manifest delete and overall behavior are byte-identical to today.
