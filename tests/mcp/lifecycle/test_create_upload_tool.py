@@ -600,6 +600,49 @@ def test_create_upload_rejects_empty_artifacts(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_chunked_artifact_mints_one_url_per_chunk(migrated_url: str) -> None:
+    _5gib = 5 * 1024 * 1024 * 1024
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_created_run(pool, build_profile=_EXTERNAL_PROFILE)
+            store = _FakeStore()
+            responses = await create_run_upload(
+                pool,
+                _ctx(),
+                run_id=run_id,
+                artifacts=[
+                    {
+                        "name": "vmlinux",
+                        "sha256": "whole",
+                        "size_bytes": _5gib + 100,
+                        "chunks": [
+                            {"sha256": "c0", "size_bytes": _5gib},
+                            {"sha256": "c1", "size_bytes": 100},
+                        ],
+                    },
+                ],
+                store=store,
+            )
+            items = responses.items
+            assert [r.object_id for r in items] == [
+                f"local/runs/{run_id}/vmlinux.part0001",
+                f"local/runs/{run_id}/vmlinux.part0002",
+            ]
+            assert [i.data["artifact_name"] for i in items] == ["vmlinux", "vmlinux"]
+            assert [i.data["part_number"] for i in items] == ["1", "2"]
+            # Each part URL is pinned to its own chunk checksum.
+            assert {c[1] for c in store.calls} == {"c0", "c1"}
+            async with pool.connection() as conn:
+                manifest = await upload_manifest.get_manifest(conn, "runs", UUID(run_id))
+            assert manifest is not None
+            vmlinux = next(e for e in manifest.entries if e.name == "vmlinux")
+            assert vmlinux.chunks is not None
+            assert [c.sha256 for c in vmlinux.chunks] == ["c0", "c1"]
+
+    asyncio.run(_run())
+
+
 # --- Chunked declaration validation (ADR-0104 §5) ---------------------------------------
 
 from kdive.mcp.tools.catalog.artifacts.uploads import (  # noqa: E402

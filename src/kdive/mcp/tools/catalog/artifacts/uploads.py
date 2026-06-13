@@ -42,6 +42,7 @@ from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 from kdive.store.objectstore import (
     artifact_key,
+    chunk_key,
     object_store_from_env,
     owner_prefix,
 )
@@ -75,6 +76,7 @@ class _MaterializedUpload(NamedTuple):
     entry: ManifestEntry
     key: str
     presigned: PresignedUpload
+    part_number: int | None = None
 
 
 type ArtifactDeclaration = Mapping[str, object]
@@ -160,20 +162,46 @@ def _materialize_uploads(
 ) -> list[_MaterializedUpload]:
     uploads: list[_MaterializedUpload] = []
     expires_in = _presign_ttl_seconds()
+    prefix = owner_prefix(_TENANT, kind, str(owner_id))
     for entry in entries:
-        key = artifact_key(_TENANT, kind, str(owner_id), entry.name)
-        presigned = store.presign_put(
-            PresignPutRequest(
-                key=key,
-                sha256=entry.sha256,
-                size_bytes=entry.size_bytes,
-                sensitivity=Sensitivity.SENSITIVE,
-                retention_class=_RETENTION_CLASS,
-                expires_in=expires_in,
+        if entry.chunks is None:
+            key = artifact_key(_TENANT, kind, str(owner_id), entry.name)
+            uploads.append(
+                _materialize_one(
+                    store, key, entry.sha256, entry.size_bytes, entry, None, expires_in
+                )
             )
-        )
-        uploads.append(_MaterializedUpload(entry, key, presigned))
+            continue
+        for part_number, chunk in enumerate(entry.chunks, start=1):
+            key = chunk_key(prefix, entry.name, part_number)
+            uploads.append(
+                _materialize_one(
+                    store, key, chunk.sha256, chunk.size_bytes, entry, part_number, expires_in
+                )
+            )
     return uploads
+
+
+def _materialize_one(
+    store: _PresignStore,
+    key: str,
+    sha256: str,
+    size_bytes: int,
+    entry: ManifestEntry,
+    part_number: int | None,
+    expires_in: int,
+) -> _MaterializedUpload:
+    presigned = store.presign_put(
+        PresignPutRequest(
+            key=key,
+            sha256=sha256,
+            size_bytes=size_bytes,
+            sensitivity=Sensitivity.SENSITIVE,
+            retention_class=_RETENTION_CLASS,
+            expires_in=expires_in,
+        )
+    )
+    return _MaterializedUpload(entry, key, presigned, part_number)
 
 
 async def _run_project(conn: AsyncConnection, owner_id: UUID) -> str | None:
@@ -303,7 +331,9 @@ def _upload_response(upload: _MaterializedUpload, *, next_action: str) -> ToolRe
         refs={"upload_url": upload.presigned.url},
         data={
             "name": upload.entry.name,
+            "artifact_name": upload.entry.name,
             "expires_in": str(_presign_ttl_seconds()),
+            **({"part_number": str(upload.part_number)} if upload.part_number is not None else {}),
             **upload.presigned.required_headers,
         },
     )

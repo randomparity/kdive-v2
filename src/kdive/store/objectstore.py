@@ -27,6 +27,9 @@ from kdive.provider_components.artifacts import (
     artifact_key as artifact_key,
 )
 from kdive.provider_components.artifacts import (
+    chunk_key as chunk_key,
+)
+from kdive.provider_components.artifacts import (
     owner_prefix as owner_prefix,
 )
 
