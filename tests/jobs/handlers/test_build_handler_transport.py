@@ -33,6 +33,7 @@ from kdive.jobs import queue
 from kdive.jobs.handlers import runs as runs_handlers
 from kdive.jobs.payloads import BuildPayload
 from kdive.provider_components.build_results import BuildOutput
+from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.integration._seed import (
@@ -248,7 +249,7 @@ def test_ssh_host_success_releases_lease(
         return transport_builder
 
     monkeypatch.setattr(runs_handlers, "ssh_build_transport_from_host", _fake_from_host)
-    monkeypatch.setattr(runs_handlers, "build_over_transport", _fake_factory)
+    monkeypatch.setattr(runs_handlers, "bind_over_transport", _fake_factory)
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -275,6 +276,47 @@ def test_ssh_host_success_releases_lease(
 
 
 # ---------------------------------------------------------------------------
+# Test 2b: ssh host with a LOCAL-libvirt builder now builds (was NOT_IMPLEMENTED)
+# ---------------------------------------------------------------------------
+
+
+def test_ssh_host_local_provider_builder_succeeds_releases_lease(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A local-libvirt builder on an ssh host now builds (was NOT_IMPLEMENTED) and frees the lease.
+
+    ``LocalLibvirtBuild`` is transport-capable (it implements ``over_transport``), so the
+    capability check admits it. The bind seam is faked so no real ssh/over_transport runs.
+    """
+    transport_builder = _RecordingBuilder()
+    monkeypatch.setattr(runs_handlers, "ssh_build_transport_from_host", _fake_from_host)
+    monkeypatch.setattr(
+        runs_handlers, "bind_over_transport", lambda builder, transport, **kw: transport_builder
+    )
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(pool, _GIT_PROFILE)
+            host = await _seed_ssh_host(pool)
+            await _acquire_lease(pool, host, run_id)
+            job = await _enqueue(pool, run_id, str(host.id))
+            async with pool.connection() as conn:
+                await runs_handlers.build_handler(
+                    conn,
+                    job,
+                    resolver=_ssh_resolver(
+                        LocalLibvirtBuild.from_env(secret_registry=SecretRegistry())
+                    ),
+                    secret_registry=SecretRegistry(),
+                )
+            assert transport_builder.calls == [UUID(run_id)]
+            assert await _run_state(pool, run_id) == "succeeded"
+            assert await _lease_count(pool, run_id) == 0
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
 # Test 3: ssh host build failure marks run FAILED but RETAINS the lease
 # ---------------------------------------------------------------------------
 
@@ -291,7 +333,7 @@ def test_ssh_host_build_failure_retains_lease(
     failing = _FailingBuilder()
     monkeypatch.setattr(runs_handlers, "ssh_build_transport_from_host", _fake_from_host)
     monkeypatch.setattr(
-        runs_handlers, "build_over_transport", lambda builder, transport, **kw: failing
+        runs_handlers, "bind_over_transport", lambda builder, transport, **kw: failing
     )
 
     async def _run() -> None:
@@ -399,7 +441,7 @@ def test_ephemeral_host_success_provisions_builds_and_releases_lease(
     transport_builder = _RecordingBuilder()
     monkeypatch.setattr(runs_handlers, "ephemeral_build_session", _fake_ephemeral_session)
     monkeypatch.setattr(
-        runs_handlers, "build_over_transport", lambda builder, transport, **kw: transport_builder
+        runs_handlers, "bind_over_transport", lambda builder, transport, **kw: transport_builder
     )
 
     async def _run() -> None:
@@ -434,7 +476,7 @@ def test_ephemeral_host_build_failure_tears_down_and_retains_lease(
     failing = _FailingBuilder()
     monkeypatch.setattr(runs_handlers, "ephemeral_build_session", _fake_ephemeral_session)
     monkeypatch.setattr(
-        runs_handlers, "build_over_transport", lambda builder, transport, **kw: failing
+        runs_handlers, "bind_over_transport", lambda builder, transport, **kw: failing
     )
 
     async def _run() -> None:

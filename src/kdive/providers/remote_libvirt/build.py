@@ -29,15 +29,12 @@ handler offloads the whole call via ``asyncio.to_thread``.
 
 from __future__ import annotations
 
-import base64
 import io
 import shutil
 import tarfile
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 from uuid import UUID
 
 import kdive.config as config
@@ -45,22 +42,23 @@ from kdive.build_configs.defaults import (
     CatalogConfigFetch,
     build_config_fetch_from_env,
 )
-from kdive.config.core_settings import BUILD_WORKSPACE, KERNEL_SRC, UPLOAD_TTL_SECONDS
+from kdive.config.core_settings import BUILD_WORKSPACE, KERNEL_SRC
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import ServerBuildProfile
-from kdive.provider_components.artifacts import (
-    ArtifactWriteRequest,
-    PresignedUpload,
-    PresignPutRequest,
-    StoredArtifact,
-    artifact_key,
-)
+from kdive.provider_components.artifacts import StoredArtifact
 from kdive.provider_components.build_results import BuildOutput
 from kdive.provider_components.references import ComponentRef
 from kdive.providers.build_host import config as _build_config
 from kdive.providers.build_host import execution as _build_exec
 from kdive.providers.build_host import workspace as _build_workspace
+from kdive.providers.build_host.artifact_publish import (
+    ArtifactBytes,
+    ArtifactRemoteFile,
+    ArtifactSource,
+    StorePort,
+    publish_artifact_source,
+)
 from kdive.providers.build_host.orchestration import BuildHostOrchestrator
 from kdive.providers.build_host.transport import BuildTransport
 from kdive.providers.build_host.transport_seams import (
@@ -77,39 +75,9 @@ from kdive.store.objectstore import object_store_from_env
 _TENANT = "remote-libvirt"
 _RETENTION_CLASS = "build"
 _SENSITIVITY = Sensitivity.SENSITIVE
-_MAX_PRESIGN_TTL_S = 3600
 # The back-reference symlinks make modules_install plants in /lib/modules/<ver>/; they point
 # at absolute paths in the worker's build tree and must not enter the in-guest bundle.
 _MODULE_BACKREF_LINKS = frozenset({"build", "source"})
-
-
-@dataclass(slots=True, frozen=True)
-class ArtifactBytes:
-    """An artifact the worker holds in memory and publishes with a direct PUT."""
-
-    data: bytes
-
-
-@dataclass(slots=True, frozen=True)
-class ArtifactRemoteFile:
-    """An artifact that lives on a build host and publishes via a presigned PUT.
-
-    Attributes:
-        path: Absolute path to the file on the build host.
-        transport: The transport that can hash and upload that file.
-    """
-
-    path: str
-    transport: BuildTransport
-
-
-type ArtifactSource = ArtifactBytes | ArtifactRemoteFile
-
-
-class _StorePort(Protocol):
-    def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact: ...
-
-    def presign_put(self, request: PresignPutRequest) -> PresignedUpload: ...
 
 
 type _MakeBundle = Callable[[Path, Path], ArtifactSource]
@@ -130,7 +98,7 @@ class RemoteLibvirtBuild:
         self,
         *,
         workspace_root: Path,
-        store_factory: Callable[[], _StorePort],
+        store_factory: Callable[[], StorePort],
         checkout: _build_workspace.Checkout,
         run_olddefconfig: _build_exec.RunStep,
         read_config: _build_exec.ReadConfig,
@@ -158,7 +126,7 @@ class RemoteLibvirtBuild:
             allowed_component_roots=self._allowed_component_roots,
         )
         self._store_factory = store_factory
-        self._store: _StorePort | None = None
+        self._store: StorePort | None = None
         self._run_modules_install = run_modules_install
         self._make_bundle = make_bundle
         self._read_vmlinux_source = read_vmlinux_source
@@ -289,118 +257,20 @@ class RemoteLibvirtBuild:
             CategorizedError: ``INFRASTRUCTURE_FAILURE`` propagated from a failed store
                 operation or presigned upload.
         """
-        store = self._store_for_publish()
-        match source:
-            case ArtifactBytes(data=data):
-                return store.put_artifact(
-                    ArtifactWriteRequest(
-                        tenant=_TENANT,
-                        owner_kind="runs",
-                        owner_id=str(run_id),
-                        name=name,
-                        data=data,
-                        sensitivity=_SENSITIVITY,
-                        retention_class=_RETENTION_CLASS,
-                    )
-                )
-            case ArtifactRemoteFile(path=path, transport=transport):
-                return _publish_remote_file(store, run_id, name, path, transport)
+        return publish_artifact_source(
+            self._store_for_publish(),
+            run_id,
+            name,
+            source,
+            tenant=_TENANT,
+            sensitivity=_SENSITIVITY,
+            retention_class=_RETENTION_CLASS,
+        )
 
-    def _store_for_publish(self) -> _StorePort:
+    def _store_for_publish(self) -> StorePort:
         if self._store is None:
             self._store = self._store_factory()
         return self._store
-
-
-def _publish_remote_file(
-    store: _StorePort, run_id: UUID, name: str, path: str, transport: BuildTransport
-) -> StoredArtifact:
-    """Presign a PUT for a host-resident file and have the transport upload it.
-
-    The sha256 and byte size are read off the build host; ``presign_put`` signs the base64
-    sha256 into the URL so S3 rejects a body that does not hash to it. The worker only ever
-    handles the host-computed digest, never the file's bytes.
-    """
-    sha256_b64 = _remote_sha256_b64(transport, path)
-    size_bytes = _remote_size_bytes(transport, path)
-    key = artifact_key(_TENANT, "runs", str(run_id), name)
-    presigned = store.presign_put(
-        PresignPutRequest(
-            key=key,
-            sha256=sha256_b64,
-            size_bytes=size_bytes,
-            sensitivity=_SENSITIVITY,
-            retention_class=_RETENTION_CLASS,
-            expires_in=_presign_ttl_seconds(),
-        )
-    )
-    etag = transport.upload_file(path, presigned)
-    return StoredArtifact(key, etag, _SENSITIVITY, _RETENTION_CLASS)
-
-
-def _remote_sha256_b64(transport: BuildTransport, path: str) -> str:
-    """Hash ``path`` on the build host with ``sha256sum`` and return the base64 digest.
-
-    ``sha256sum`` prints ``"<hex>  <path>"``; the hex is parsed off the first field and
-    converted to base64 of the raw 32-byte digest — the form ``presign_put`` signs into the
-    ``x-amz-checksum-sha256`` header.
-
-    Raises:
-        CategorizedError: ``BUILD_FAILURE`` if ``sha256sum`` exits non-zero or prints output
-            that does not parse to a 32-byte hex digest.
-    """
-    result = transport.run(["sha256sum", path], cwd=str(Path(path).parent), timeout_s=300)
-    if result.returncode != 0:
-        raise CategorizedError(
-            "sha256sum of a build artifact exited non-zero",
-            category=ErrorCategory.BUILD_FAILURE,
-            details={"path": path, "stderr": result.stderr[-512:]},
-        )
-    hex_digest = result.stdout.split()[0] if result.stdout.split() else ""
-    try:
-        raw = bytes.fromhex(hex_digest)
-    except ValueError as exc:
-        raise CategorizedError(
-            "sha256sum produced an unparseable digest",
-            category=ErrorCategory.BUILD_FAILURE,
-            details={"path": path},
-        ) from exc
-    if len(raw) != 32:
-        raise CategorizedError(
-            "sha256sum produced a digest of the wrong length",
-            category=ErrorCategory.BUILD_FAILURE,
-            details={"path": path, "len": len(raw)},
-        )
-    return base64.b64encode(raw).decode("ascii")
-
-
-def _remote_size_bytes(transport: BuildTransport, path: str) -> int:
-    """Return the byte size of ``path`` on the build host via ``stat -c %s``.
-
-    Raises:
-        CategorizedError: ``BUILD_FAILURE`` if ``stat`` exits non-zero or prints a
-            non-integer size.
-    """
-    result = transport.run(["stat", "-c", "%s", path], cwd=str(Path(path).parent), timeout_s=60)
-    if result.returncode != 0:
-        raise CategorizedError(
-            "stat of a build artifact exited non-zero",
-            category=ErrorCategory.BUILD_FAILURE,
-            details={"path": path, "stderr": result.stderr[-512:]},
-        )
-    try:
-        return int(result.stdout.strip())
-    except ValueError as exc:
-        raise CategorizedError(
-            "stat produced a non-integer size",
-            category=ErrorCategory.BUILD_FAILURE,
-            details={"path": path},
-        ) from exc
-
-
-def _presign_ttl_seconds() -> int:
-    """The presigned-PUT lifetime: ``KDIVE_UPLOAD_TTL_SECONDS`` capped at the S3 max of 3600."""
-    return min(_MAX_PRESIGN_TTL_S, config.require(UPLOAD_TTL_SECONDS))
 
 
 def _local_make_bundle(workspace: Path, mod_root: Path) -> ArtifactSource:
@@ -526,29 +396,6 @@ def _add_bundle_member(
             category=ErrorCategory.BUILD_FAILURE,
             details={"output": output},
         ) from exc
-
-
-def build_over_transport(
-    builder: RemoteLibvirtBuild,
-    transport: BuildTransport,
-    *,
-    host_workspace_root: str,
-    git_remote: str,
-    git_ref: str,
-    secret_registry: SecretRegistry,
-) -> RemoteLibvirtBuild:
-    """Module-level wrapper around :meth:`RemoteLibvirtBuild.over_transport` (a patchable seam).
-
-    The build handler calls this free function so a test can substitute a fake builder without
-    a real transport; production delegates straight to the method on ``builder``.
-    """
-    return builder.over_transport(
-        transport,
-        host_workspace_root=host_workspace_root,
-        git_remote=git_remote,
-        git_ref=git_ref,
-        secret_registry=secret_registry,
-    )
 
 
 def _real_staging_factory() -> Path:  # pragma: no cover - live_vm

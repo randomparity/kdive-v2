@@ -27,8 +27,7 @@ from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArti
 from kdive.provider_components.build_results import BuildOutput
 from kdive.providers.build_host.ssh_transport import SshBuildTransport
 from kdive.providers.build_host.transport import BuildTransport
-from kdive.providers.ports import Booter, Builder, InstallRequest
-from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild, build_over_transport
+from kdive.providers.ports import Booter, Builder, InstallRequest, TransportCapableBuilder
 from kdive.providers.remote_libvirt.lifecycle.build_vm import ephemeral_build_session
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
@@ -145,28 +144,51 @@ def _git_coords(parsed: ServerBuildProfile, run_id: UUID) -> tuple[str, str]:
     return source.git.remote, source.git.ref
 
 
-def _require_remote_builder(builder: Builder, host: BuildHost, run_id: UUID) -> RemoteLibvirtBuild:
-    """Narrow ``builder`` to the transport-capable remote-libvirt builder, or fail closed.
+def _require_transport_capable(
+    builder: Builder, host: BuildHost, run_id: UUID
+) -> TransportCapableBuilder:
+    """Narrow ``builder`` to a transport-capable builder, or fail closed.
 
     Both remote build-host kinds (ssh, ephemeral_libvirt) run a transport-bound build, so this
-    is checked once before any host-side work (no VM is provisioned for a known-bad combo).
+    is checked once before any host-side work (no VM/transport is created for a known-bad combo).
+    The check is capability-based, not provider-type-based: any provider whose builder exposes
+    ``over_transport`` can build on a remote host (ADR-0101).
 
     Raises:
-        CategorizedError: ``NOT_IMPLEMENTED`` when the run's runtime builder is not the
-            remote-libvirt builder — e.g. a local_libvirt run that selected a remote host
-            (the deferred combo).
+        CategorizedError: ``NOT_IMPLEMENTED`` when the run's runtime builder cannot rebind onto a
+            transport (it does not implement ``over_transport``) — e.g. the fault-inject builder.
     """
-    if not isinstance(builder, RemoteLibvirtBuild):
+    if not isinstance(builder, TransportCapableBuilder):
         raise CategorizedError(
-            "a remote build host is only supported for the remote-libvirt provider",
+            "a remote build host requires a transport-capable builder",
             category=ErrorCategory.NOT_IMPLEMENTED,
             details={"run_id": str(run_id), "build_host": host.name},
         )
     return builder
 
 
+# Patchable seam: tests substitute this to inject a fake bound builder without a real transport.
+def bind_over_transport(
+    builder: TransportCapableBuilder,
+    transport: BuildTransport,
+    *,
+    host_workspace_root: str,
+    git_remote: str,
+    git_ref: str,
+    secret_registry: SecretRegistry,
+) -> Builder:
+    """Rebind ``builder`` onto ``transport`` with the given host workspace + git coordinates."""
+    return builder.over_transport(
+        transport,
+        host_workspace_root=host_workspace_root,
+        git_remote=git_remote,
+        git_ref=git_ref,
+        secret_registry=secret_registry,
+    )
+
+
 def _bind_transport(
-    builder: RemoteLibvirtBuild,
+    builder: TransportCapableBuilder,
     transport: BuildTransport,
     *,
     host: BuildHost,
@@ -174,9 +196,9 @@ def _bind_transport(
     run_id: UUID,
     secret_registry: SecretRegistry,
 ) -> Builder:
-    """Bind the remote-libvirt builder to ``transport`` with the profile's git coordinates."""
+    """Bind the transport-capable builder to ``transport`` with the profile's git coordinates."""
     git_remote, git_ref = _git_coords(parsed, run_id)
-    return build_over_transport(
+    return bind_over_transport(
         builder,
         transport,
         host_workspace_root=host.workspace_root,
@@ -211,11 +233,11 @@ async def _run_build(
     builder = (await _run_runtime(conn, run_id, resolver)).builder
     if host.kind == "local":
         return await asyncio.to_thread(builder.build, run_id, parsed)
-    remote_builder = _require_remote_builder(builder, host, run_id)
+    capable = _require_transport_capable(builder, host, run_id)
     if host.kind == "ssh":
         with ssh_build_transport_from_host(host, secret_registry) as transport:
             bound = _bind_transport(
-                remote_builder,
+                capable,
                 transport,
                 host=host,
                 parsed=parsed,
@@ -226,7 +248,7 @@ async def _run_build(
     base_image = _require_base_image(host, run_id)
     with ephemeral_build_session(base_image, secret_registry, run_id=run_id) as transport:
         bound = _bind_transport(
-            remote_builder,
+            capable,
             transport,
             host=host,
             parsed=parsed,
