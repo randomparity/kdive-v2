@@ -108,6 +108,7 @@ class _Seams:
     make_calls: int = 0
     checkout_calls: int = 0
     call_order: list[str] = field(default_factory=list)
+    workspace_cleanups: list[Path] = field(default_factory=list)
     merged_fragments: list[bytes] = field(default_factory=list)
 
     def checkout(
@@ -161,6 +162,7 @@ def _builder(
         read_build_id=seams.read_build_id,
         secret_registry=SecretRegistry(),
         catalog_fetch=catalog_fetch or (lambda _name: _FRAGMENT_BYTES),
+        workspace_cleanup=seams.workspace_cleanups.append,
     )
 
 
@@ -361,6 +363,7 @@ class _RemoteTransport:
     runs: list[list[str]] = field(default_factory=list)
     reads: list[str] = field(default_factory=list)
     uploaded: list[str] = field(default_factory=list)
+    cleanups: list[str] = field(default_factory=list)
 
     def run(self, argv: list[str], *, cwd: str, timeout_s: int) -> Any:
         from kdive.providers.build_host.transport import CommandResult
@@ -395,8 +398,8 @@ class _RemoteTransport:
         self.uploaded.append(path)
         return f"etag-{Path(path).name}"
 
-    def cleanup(self, path: str) -> None:  # pragma: no cover - unused
-        return None
+    def cleanup(self, path: str) -> None:
+        self.cleanups.append(path)
 
 
 @dataclass
@@ -470,6 +473,59 @@ def test_over_transport_publishes_bzimage_and_vmlinux_via_presign(tmp_path: Path
     assert transport.reads == [str(workspace / "vmlinux.note")]
     heads = [a[0] for a in transport.runs]
     assert "make" in heads and "objcopy" in heads
+
+
+def test_over_transport_build_removes_clone_dir_via_transport(tmp_path: Path) -> None:
+    store, transport = _PresignStore(), _RemoteTransport()
+    workspace = tmp_path / str(_RUN)
+    transport.files[str(workspace / "arch/x86/boot/bzImage")] = b"\x01bz"
+    transport.files[str(workspace / "vmlinux")] = b"\x7fELFvm"
+
+    base = LocalLibvirtBuild(
+        tenant=_TENANT,
+        workspace_root=tmp_path / "warm",
+        store_factory=lambda: store,
+        checkout=lambda _r, _p, _w, _f: None,
+        run_olddefconfig=lambda _w: 0,
+        read_config=lambda _w: _GOOD_CONFIG,
+        run_make=lambda _w: 0,
+        read_kernel_source=lambda _w: ArtifactBytes(b"warm-bz"),
+        read_vmlinux_source=lambda _w: ArtifactBytes(b"warm-vm"),
+        read_build_id=lambda _w: "deadbeef",
+        secret_registry=SecretRegistry(),
+        catalog_fetch=lambda _n: _FRAGMENT_BYTES,
+    )
+    bound = base.over_transport(
+        transport,
+        host_workspace_root=str(tmp_path),
+        git_remote="https://git.example/linux.git",
+        git_ref="v6.9",
+        secret_registry=SecretRegistry(),
+    )
+    bound.build(_RUN, _profile())
+
+    assert str(workspace) in transport.cleanups  # the per-run clone dir on the host
+
+
+# --- workspace cleanup (warm path) ---------------------------------------------------
+
+
+def test_build_removes_per_run_workspace_on_success(tmp_path: Path) -> None:
+    store, seams = _FakeStore(), _Seams()
+
+    _builder(store, seams, tmp_path).build(_RUN, _profile())
+
+    assert seams.workspace_cleanups == [tmp_path / str(_RUN)]
+
+
+def test_build_removes_per_run_workspace_when_make_fails(tmp_path: Path) -> None:
+    # make fails inside build_workspace — only the outer workspace finally can reclaim it.
+    store, seams = _FakeStore(), _Seams(make_returncode=2)
+
+    with pytest.raises(CategorizedError):
+        _builder(store, seams, tmp_path).build(_RUN, _profile())
+
+    assert seams.workspace_cleanups == [tmp_path / str(_RUN)]
 
 
 # --- from_env does not connect/spawn -------------------------------------------------

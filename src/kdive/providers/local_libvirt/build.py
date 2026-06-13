@@ -48,7 +48,7 @@ from kdive.providers.build_host.artifact_publish import (
     StorePort,
     publish_artifact_source,
 )
-from kdive.providers.build_host.orchestration import BuildHostOrchestrator
+from kdive.providers.build_host.orchestration import BuildHostOrchestrator, WorkspaceCleanup
 from kdive.providers.build_host.transport import BuildTransport
 from kdive.providers.build_host.transport_seams import (
     transport_git_checkout,
@@ -88,6 +88,7 @@ class LocalLibvirtBuild:
         secret_registry: SecretRegistry,
         catalog_fetch: CatalogConfigFetch,
         allowed_component_roots: list[Path] | None = None,
+        workspace_cleanup: WorkspaceCleanup | None = None,
     ) -> None:
         self._tenant = tenant
         self._workspace_root = workspace_root
@@ -102,6 +103,7 @@ class LocalLibvirtBuild:
             read_config=read_config,
             run_make=run_make,
             allowed_component_roots=self._allowed_component_roots,
+            cleanup=workspace_cleanup,
         )
         self._store_factory = store_factory
         self._store: StorePort | None = None
@@ -187,6 +189,7 @@ class LocalLibvirtBuild:
             secret_registry=secret_registry,
             catalog_fetch=self._catalog_fetch,
             allowed_component_roots=self._allowed_component_roots,
+            workspace_cleanup=lambda ws: transport.cleanup(str(ws)),
         )
 
     def build(self, run_id: UUID, profile: ServerBuildProfile) -> BuildOutput:
@@ -198,11 +201,15 @@ class LocalLibvirtBuild:
                 on a non-zero ``make`` exit or a missing build-id; ``INFRASTRUCTURE_FAILURE``
                 propagated from a failed artifact store.
         """
-        workspace = self._orchestrator.build_workspace(run_id, profile)
-        build_id = self._read_build_id(workspace)
-        kernel = self.publish(run_id, "kernel", self._read_kernel_source(workspace))
-        vmlinux = self.publish(run_id, "vmlinux", self._read_vmlinux_source(workspace))
-        return BuildOutput(kernel_ref=kernel.key, debuginfo_ref=vmlinux.key, build_id=build_id)
+        workspace = self._orchestrator.workspace_path(run_id)
+        try:
+            self._orchestrator.build_workspace(run_id, profile)
+            build_id = self._read_build_id(workspace)
+            kernel = self.publish(run_id, "kernel", self._read_kernel_source(workspace))
+            vmlinux = self.publish(run_id, "vmlinux", self._read_vmlinux_source(workspace))
+            return BuildOutput(kernel_ref=kernel.key, debuginfo_ref=vmlinux.key, build_id=build_id)
+        finally:
+            self._orchestrator.cleanup_workspace(workspace)
 
     def validate_config_ref(self, ref: ComponentRef) -> None:
         """Validate a build config ref's shape at run-creation (local path or catalog kind).
