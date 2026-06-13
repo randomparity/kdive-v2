@@ -102,6 +102,56 @@ async def get_by_id(conn: AsyncConnection, host_id: UUID) -> BuildHost | None:
     return None if row is None else _row_to_host(row)
 
 
+async def list_probeable_ssh_hosts(conn: AsyncConnection) -> list[BuildHost]:
+    """Return the SSH build hosts a reachability probe should check (ADR-0103).
+
+    The probe set is ``kind='ssh' AND enabled=true``: a ``local`` host has no address to
+    probe, and a disabled host is never selected, so probing it would spend an SSH
+    connection for no behavioral effect (it is re-probed the pass after it is re-enabled).
+
+    Args:
+        conn: An async psycopg connection (autocommit or inside a transaction).
+
+    Returns:
+        The matching :class:`BuildHost` rows, ordered by name.
+    """
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT * FROM build_hosts WHERE kind = 'ssh' AND enabled = true ORDER BY name"
+        )
+        rows = await cur.fetchall()
+    return [_row_to_host(row) for row in rows]
+
+
+async def mark_state(
+    conn: AsyncConnection, host_id: UUID, *, new_state: str, expected_state: str
+) -> int:
+    """Compare-and-swap a build host's ``state`` (ADR-0103).
+
+    Writes ``new_state`` only when the row's ``state`` still equals ``expected_state`` (the
+    value the caller observed), so a concurrent operator change is never clobbered and a
+    no-op probe (state unchanged) writes nothing. The ``set_updated_at`` trigger fires only
+    on an actual value change, so ``updated_at`` advances only on a real transition.
+
+    Args:
+        conn: An async psycopg connection. The caller wraps the call in a committed
+            transaction so the flip is durable.
+        host_id: The build host's primary key.
+        new_state: The state to write (``'ready'`` or ``'unreachable'``).
+        expected_state: The state the caller observed; the write is skipped if it no longer
+            holds.
+
+    Returns:
+        The number of rows updated: ``1`` on a successful flip, ``0`` when the observed
+        state no longer holds (or the host is gone).
+    """
+    cur = await conn.execute(
+        "UPDATE build_hosts SET state = %s WHERE id = %s AND state = %s",
+        (new_state, host_id, expected_state),
+    )
+    return cur.rowcount
+
+
 async def lease_count(conn: AsyncConnection, host_id: UUID) -> int:
     """Return how many active leases ``host_id`` currently holds.
 

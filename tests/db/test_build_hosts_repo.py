@@ -19,6 +19,8 @@ from kdive.db.build_hosts import (
     get_by_id,
     get_by_name,
     lease_count,
+    list_probeable_ssh_hosts,
+    mark_state,
     release_lease,
     try_acquire_lease,
 )
@@ -240,5 +242,80 @@ def test_try_acquire_lease_wrong_host_raises_unique_violation(migrated_url: str)
         async with await _connect(migrated_url) as conn:
             assert await lease_count(conn, host_local.id) == 1
             assert await lease_count(conn, host_ssh.id) == 0
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Test 6: list_probeable_ssh_hosts returns only enabled ssh hosts (ADR-0103)
+# ---------------------------------------------------------------------------
+
+
+async def _set_enabled(conn: psycopg.AsyncConnection, host_id: object, *, enabled: bool) -> None:
+    await conn.execute("UPDATE build_hosts SET enabled = %s WHERE id = %s", (enabled, host_id))
+
+
+def test_list_probeable_ssh_hosts_only_enabled_ssh(migrated_url: str) -> None:
+    """Only ``kind='ssh' AND enabled=true`` rows are returned; local + disabled excluded."""
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            enabled_ssh = await _insert_ssh_host(conn)
+            disabled_ssh = await _insert_ssh_host(conn)
+            await _set_enabled(conn, disabled_ssh.id, enabled=False)
+
+            probeable = await list_probeable_ssh_hosts(conn)
+
+        names = {h.name for h in probeable}
+        assert enabled_ssh.name in names
+        assert disabled_ssh.name not in names
+        # the seeded worker-local row is kind='local' and must be excluded
+        assert "worker-local" not in names
+        assert all(h.kind == "ssh" and h.enabled for h in probeable)
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Test 7: mark_state is a compare-and-swap on the observed state (ADR-0103)
+# ---------------------------------------------------------------------------
+
+
+async def _state_of(conn: psycopg.AsyncConnection, host_id: object) -> str:
+    cur = await conn.execute("SELECT state FROM build_hosts WHERE id = %s", (host_id,))
+    row = await cur.fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+def test_mark_state_cas_matching_expected_writes(migrated_url: str) -> None:
+    """A matching ``expected_state`` flips the row and returns rowcount 1."""
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            host = await _insert_ssh_host(conn)
+            assert await _state_of(conn, host.id) == "ready"
+
+            changed = await mark_state(
+                conn, host.id, new_state="unreachable", expected_state="ready"
+            )
+            assert changed == 1
+            assert await _state_of(conn, host.id) == "unreachable"
+
+    asyncio.run(_run())
+
+
+def test_mark_state_cas_mismatch_is_noop(migrated_url: str) -> None:
+    """A stale ``expected_state`` writes nothing and returns rowcount 0."""
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as conn:
+            host = await _insert_ssh_host(conn)  # state defaults to 'ready'
+
+            changed = await mark_state(
+                conn, host.id, new_state="ready", expected_state="unreachable"
+            )
+            assert changed == 0
+            assert await _state_of(conn, host.id) == "ready"
 
     asyncio.run(_run())
