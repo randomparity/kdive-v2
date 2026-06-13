@@ -15,7 +15,7 @@ import argparse
 from collections.abc import Mapping
 
 from kdive.cli.render import render, render_record
-from kdive.cli.transport import Session
+from kdive.cli.transport import Session, tool_envelope
 
 
 def _session_factory() -> Session:
@@ -28,7 +28,7 @@ async def _fetch(name: str, arguments: Mapping[str, object]) -> Mapping[str, obj
     session = _session_factory()
     async with session.client() as client:
         result = await client.call_tool(name, dict(arguments))
-    return result.data
+    return tool_envelope(result)
 
 
 async def fetch_read_envelope(name: str, arguments: Mapping[str, object]) -> Mapping[str, object]:

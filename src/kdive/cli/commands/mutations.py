@@ -25,7 +25,7 @@ from collections.abc import Mapping
 
 from kdive.cli.errors import exit_code_for_category
 from kdive.cli.render import render_record
-from kdive.cli.transport import Session
+from kdive.cli.transport import Session, tool_envelope
 
 
 class TokenExpiringError(RuntimeError):
@@ -91,7 +91,7 @@ async def _call(name: str, arguments: Mapping[str, object]) -> Mapping[str, obje
     ensure_token_valid(session.token, now=int(time.time()))
     async with session.client() as client:
         result = await client.call_tool(name, dict(arguments))
-    return result.data
+    return tool_envelope(result)
 
 
 def _flatten(envelope: object) -> dict[str, object]:
