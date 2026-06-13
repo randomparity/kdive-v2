@@ -74,6 +74,25 @@ async def replace_manifest(
     )
 
 
+async def refresh_deadline(
+    conn: AsyncConnection, owner_kind: str, owner_id: UUID, ttl: timedelta
+) -> bool:
+    """Set ``deadline = now() + ttl`` if a non-expired manifest exists; report whether it did.
+
+    Returns ``False`` when no row exists OR the current deadline is already past — the caller
+    treats the latter as an expired upload window (ADR-0104 §6 step A). Refreshing the deadline
+    under the per-Run lock the reaper also takes is what stops the reaper from reclaiming an
+    in-flight reassembly's chunk objects.
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE upload_manifests SET deadline = now() + %s "
+            "WHERE owner_kind = %s AND owner_id = %s AND deadline >= now()",
+            (ttl, owner_kind, owner_id),
+        )
+        return cur.rowcount == 1
+
+
 async def get_manifest(
     conn: AsyncConnection, owner_kind: str, owner_id: UUID
 ) -> UploadManifest | None:

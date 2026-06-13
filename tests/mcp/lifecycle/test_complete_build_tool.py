@@ -95,6 +95,12 @@ class _UploadStore:
 
 
 class _ValidationStore:
+    """A head + get_range store fake for the single-PUT validation path.
+
+    The multipart/delete members exist only so the fake satisfies ``ExternalBuildStore``; the
+    single-PUT lane never calls them, so they raise if a regression starts routing here.
+    """
+
     def __init__(self, blobs: dict[str, bytes], heads: dict[str, HeadResult]) -> None:
         self._blobs = blobs
         self._heads = heads
@@ -104,6 +110,25 @@ class _ValidationStore:
 
     def get_range(self, key: str, *, start: int, length: int) -> bytes:
         return self._blobs[key][start : start + length]
+
+    def delete(self, key: str) -> None:
+        raise AssertionError("single-PUT path must not delete")
+
+    def create_multipart_upload(
+        self, key: str, *, sensitivity: object, retention_class: str
+    ) -> str:
+        raise AssertionError("single-PUT path must not reassemble")
+
+    def upload_part_copy(
+        self, key: str, upload_id: str, *, part_number: int, source_key: str
+    ) -> str:
+        raise AssertionError("single-PUT path must not reassemble")
+
+    def complete_multipart_upload(self, key: str, upload_id: str, parts: object) -> str:
+        raise AssertionError("single-PUT path must not reassemble")
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        raise AssertionError("single-PUT path must not reassemble")
 
 
 async def _artifact_keys(pool, run_id) -> set[str]:
@@ -350,5 +375,165 @@ def test_complete_build_rejects_missing_effective_config_without_artifacts(
         assert resp.status == "error"
         assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         assert keys == set()
+
+    asyncio.run(_run())
+
+
+# --- Chunked reassembly at finalize (ADR-0104) ------------------------------------------
+
+from collections.abc import Sequence  # noqa: E402
+from datetime import timedelta  # noqa: E402
+
+from kdive.domain.models import Sensitivity  # noqa: E402
+from kdive.provider_components.uploads import ChunkEntry  # noqa: E402
+
+_CHUNKED_KERNEL = ManifestEntry(
+    "kernel", "whole", 8, chunks=(ChunkEntry("c0", 5), ChunkEntry("c1", 3))
+)
+
+
+class _ReassemblyStore:
+    """An ExternalBuildStore fake recording multipart + delete calls for one chunked kernel."""
+
+    def __init__(self, *, delete_raises: str | None = None) -> None:
+        self.events: list[tuple[Any, ...]] = []
+        self._delete_raises = delete_raises
+
+    def head(self, key: str) -> HeadResult | None:
+        if key.endswith(".part0001"):
+            return HeadResult(5, "c0", "e")
+        if key.endswith(".part0002"):
+            return HeadResult(3, "c1", "e")
+        if key.endswith("/kernel"):
+            return HeadResult(8, None, "final-etag")  # reassembled: composite/None checksum
+        return None
+
+    def get_range(self, key: str, *, start: int, length: int) -> bytes:
+        return _BZIMAGE_HEAD[start : start + length]
+
+    def create_multipart_upload(
+        self, key: str, *, sensitivity: Sensitivity, retention_class: str
+    ) -> str:
+        self.events.append(("create", key))
+        return "uid"
+
+    def upload_part_copy(
+        self, key: str, upload_id: str, *, part_number: int, source_key: str
+    ) -> str:
+        self.events.append(("copy", part_number, source_key))
+        return f"etag-{part_number}"
+
+    def complete_multipart_upload(
+        self, key: str, upload_id: str, parts: Sequence[tuple[int, str]]
+    ) -> str:
+        self.events.append(("complete", tuple(parts)))
+        return "final-etag"
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        self.events.append(("abort", key))
+
+    def delete(self, key: str) -> None:
+        if self._delete_raises is not None and key.endswith(self._delete_raises):
+            raise CategorizedError("delete boom", category=ErrorCategory.INFRASTRUCTURE_FAILURE)
+        self.events.append(("delete", key))
+
+
+def _chunked_handlers(store: _ReassemblyStore, output: BuildOutput) -> RunBuildHandlers:
+    return RunBuildHandlers(
+        _TEST_COMPONENT_SOURCES,
+        validate_complete_build=_FakeValidator(output),
+        object_store_factory=lambda: store,
+    )
+
+
+async def _manifest_present(pool, run_id) -> bool:
+    async with pool.connection() as conn:
+        return await upload_manifest.get_manifest(conn, "runs", run_id) is not None
+
+
+def test_chunked_complete_build_reassembles_and_succeeds(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_external_run_with_manifest(pool, entries=[_CHUNKED_KERNEL])
+            store = _ReassemblyStore()
+            output = BuildOutput(f"local/runs/{run_id}/kernel", "", "")
+            resp = await _chunked_handlers(store, output).complete_build(
+                pool, _ctx(), str(run_id), build_id=None, cmdline="x"
+            )
+            assert resp.status == "succeeded"
+            assert [e[0] for e in store.events[:4]] == ["create", "copy", "copy", "complete"]
+            keys = await _artifact_keys(pool, run_id)
+            async with pool.connection() as conn:
+                run = await RUNS.get(conn, run_id)
+        assert run is not None and run.state is RunState.SUCCEEDED
+        assert keys == {f"local/runs/{run_id}/kernel"}
+
+    asyncio.run(_run())
+
+
+def test_complete_build_rejects_expired_window(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_external_run(pool)
+            async with pool.connection() as conn:
+                await upload_manifest.replace_manifest(
+                    conn,
+                    upload_manifest.UploadManifestReplaceRequest(
+                        owner_kind="runs",
+                        owner_id=run_id,
+                        prefix=f"local/runs/{run_id}/",
+                        entries=[_CHUNKED_KERNEL],
+                        ttl=timedelta(seconds=-1),  # already expired
+                    ),
+                )
+            store = _ReassemblyStore()
+            resp = await _chunked_handlers(
+                store, BuildOutput(f"local/runs/{run_id}/kernel", "", "")
+            ).complete_build(pool, _ctx(), str(run_id), build_id=None, cmdline="x")
+            async with pool.connection() as conn:
+                run = await RUNS.get(conn, run_id)
+        assert resp.status == "error"
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert resp.data["reason"] == "upload_window_expired"
+        assert store.events == []  # no reassembly attempted
+        assert run is not None and run.state is RunState.CREATED
+
+    asyncio.run(_run())
+
+
+def test_chunked_finalize_deletes_chunks_and_manifest(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_external_run_with_manifest(pool, entries=[_CHUNKED_KERNEL])
+            store = _ReassemblyStore()
+            resp = await _chunked_handlers(
+                store, BuildOutput(f"local/runs/{run_id}/kernel", "", "")
+            ).complete_build(pool, _ctx(), str(run_id), build_id=None, cmdline="x")
+            assert resp.status == "succeeded"
+            deleted = {e[1] for e in store.events if e[0] == "delete"}
+            present = await _manifest_present(pool, run_id)
+        assert deleted == {
+            f"local/runs/{run_id}/kernel.part0001",
+            f"local/runs/{run_id}/kernel.part0002",
+        }
+        assert present is False
+
+    asyncio.run(_run())
+
+
+def test_chunked_finalize_chunk_delete_failure_keeps_manifest(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_external_run_with_manifest(pool, entries=[_CHUNKED_KERNEL])
+            store = _ReassemblyStore(delete_raises=".part0001")
+            resp = await _chunked_handlers(
+                store, BuildOutput(f"local/runs/{run_id}/kernel", "", "")
+            ).complete_build(pool, _ctx(), str(run_id), build_id=None, cmdline="x")
+            present = await _manifest_present(pool, run_id)
+            async with pool.connection() as conn:
+                run = await RUNS.get(conn, run_id)
+        assert resp.status == "succeeded"  # finalize never fails on a cleanup error
+        assert run is not None and run.state is RunState.SUCCEEDED
+        assert present is True  # manifest lingers so the reaper reclaims the leftover chunk
 
     asyncio.run(_run())

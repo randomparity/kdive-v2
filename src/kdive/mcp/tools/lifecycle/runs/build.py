@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import timedelta
+from typing import Protocol
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -12,7 +15,9 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+import kdive.config as config
 from kdive.build_configs.defaults import DEFAULT_CONFIG_REF
+from kdive.config.core_settings import UPLOAD_TTL_SECONDS
 from kdive.db import upload_manifest
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, RUNS
@@ -31,10 +36,11 @@ from kdive.mcp.tools.lifecycle.runs.common import (
     run_job_envelope,
 )
 from kdive.profiles.build import BuildProfile, ExternalBuildProfile, ServerBuildProfile
-from kdive.provider_components.artifacts import HeadResult, StoredArtifact
+from kdive.provider_components.artifacts import HeadResult, StoredArtifact, chunk_key
 from kdive.provider_components.build_results import BuildOutput, ValidatedUpload
-from kdive.provider_components.build_validation import ValidatorStore, validate_external_artifacts
+from kdive.provider_components.build_validation import validate_external_artifacts
 from kdive.provider_components.catalog import load_fixture_catalog
+from kdive.provider_components.reassembly import reassemble_chunked
 from kdive.provider_components.references import CONFIG_COMPONENT, ComponentRef
 from kdive.provider_components.requirements import ConfigRequirements
 from kdive.provider_components.uploads import ManifestEntry
@@ -53,12 +59,38 @@ from kdive.store.objectstore import (
     register_artifact_row,
 )
 
+_log = logging.getLogger(__name__)
+
+
+class ExternalBuildStore(Protocol):
+    """Object-store surface the external-build finalize path needs (ADR-0104).
+
+    A superset of ``ValidatorStore`` (head + get_range) plus ``delete`` and the four multipart
+    primitives, so one factory return type covers validation, reassembly, and chunk cleanup.
+    The concrete :class:`~kdive.store.objectstore.ObjectStore` satisfies it.
+    """
+
+    def head(self, key: str) -> HeadResult | None: ...
+    def get_range(self, key: str, *, start: int, length: int) -> bytes: ...
+    def delete(self, key: str) -> None: ...
+    def create_multipart_upload(
+        self, key: str, *, sensitivity: Sensitivity, retention_class: str
+    ) -> str: ...
+    def upload_part_copy(
+        self, key: str, upload_id: str, *, part_number: int, source_key: str
+    ) -> str: ...
+    def complete_multipart_upload(
+        self, key: str, upload_id: str, parts: Sequence[tuple[int, str]]
+    ) -> str: ...
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None: ...
+
+
 type ConfigValidator = Callable[[ComponentRef], None]
 type CompleteBuildValidation = Callable[
     [Sequence[ManifestEntry], Mapping[str, str], str | None, ConfigRequirements | None],
     ValidatedUpload,
 ]
-type ObjectStoreFactory = Callable[[], ValidatorStore]
+type ObjectStoreFactory = Callable[[], ExternalBuildStore]
 
 
 async def _build_locked(
@@ -247,7 +279,14 @@ class RunBuildHandlers:
                 manifest_row = await upload_manifest.get_manifest(conn, "runs", uid)
                 if manifest_row is None:
                     return _config_error(run_id, data={"reason": "no_upload_manifest"})
+                has_chunks = any(e.chunks is not None for e in manifest_row.entries)
                 keys = {e.name: f"{manifest_row.prefix}{e.name}" for e in manifest_row.entries}
+                if has_chunks:
+                    guard = await _reassemble_chunked_artifacts(
+                        conn, uid, run_id, manifest_row, self.object_store_factory()
+                    )
+                    if guard is not None:
+                        return guard
 
                 try:
                     requirements = _external_config_requirements(profile)
@@ -262,7 +301,17 @@ class RunBuildHandlers:
                     return ToolResponse.failure_from_error(run_id, exc)
 
                 return await _finalize_external_build(
-                    conn, ctx, run, validated.output, cmdline, keys, validated.heads
+                    conn,
+                    ctx,
+                    run,
+                    validated.output,
+                    cmdline,
+                    keys,
+                    validated.heads,
+                    store=self.object_store_factory() if has_chunks else None,
+                    entries=manifest_row.entries,
+                    prefix=manifest_row.prefix,
+                    chunked=has_chunks,
                 )
 
     def _validate_complete_build(
@@ -283,6 +332,45 @@ class RunBuildHandlers:
             declared_build_id=declared_build_id,
             profile_requirements=profile_requirements,
         )
+
+
+async def _reassemble_chunked_artifacts(
+    conn: AsyncConnection,
+    uid: UUID,
+    run_id: str,
+    manifest_row: upload_manifest.UploadManifest,
+    store: ExternalBuildStore,
+) -> ToolResponse | None:
+    """Refresh the upload window under the per-Run lock, then reassemble each chunked artifact.
+
+    Returns a failure (or concurrent-winner success) ``ToolResponse`` to short-circuit
+    ``complete_build``, or ``None`` to proceed to validation + finalize on the now-single final
+    keys (ADR-0104 §6).
+    """
+    ttl = timedelta(seconds=config.require(UPLOAD_TTL_SECONDS))
+    async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, uid):
+        refreshed = await upload_manifest.refresh_deadline(conn, "runs", uid, ttl)
+    if not refreshed:
+        if await upload_manifest.get_manifest(conn, "runs", uid) is None:
+            return _config_error(run_id, data={"reason": "no_upload_manifest"})
+        return _config_error(run_id, data={"reason": "upload_window_expired"})
+    prefix = manifest_row.prefix
+    try:
+        for entry in manifest_row.entries:
+            if entry.chunks is not None:
+                await asyncio.to_thread(
+                    reassemble_chunked,
+                    store,
+                    prefix=prefix,
+                    final_key=f"{prefix}{entry.name}",
+                    entry=entry,
+                )
+    except CategorizedError as exc:
+        recorded = await _existing_build_result(conn, uid)  # a concurrent finalize won?
+        if recorded is not None:
+            return _complete_envelope(uid, recorded)
+        return ToolResponse.failure_from_error(run_id, exc)
+    return None
 
 
 def _external_build_profile(run: Run) -> ExternalBuildProfile:
@@ -332,8 +420,20 @@ async def _finalize_external_build(
     cmdline: str,
     keys: dict[str, str],
     heads: dict[str, HeadResult],
+    *,
+    store: ExternalBuildStore | None,
+    entries: Sequence[ManifestEntry],
+    prefix: str,
+    chunked: bool,
 ) -> ToolResponse:
-    """Write artifact rows, ledger result, and created -> succeeded under the per-Run lock."""
+    """Write artifact rows, ledger result, and created -> succeeded under the per-Run lock.
+
+    For a single-PUT manifest the upload manifest is deleted in the finalize transaction (as
+    before) and ``store`` is unused (``None``). For a chunked manifest ``store`` is the live
+    object store and the manifest is kept until the post-commit best-effort chunk cleanup
+    finishes, so a failed cleanup leaves the manifest for the reaper to reclaim the leftover
+    chunks (ADR-0104 §6).
+    """
     result = BuildStepResult(
         kernel_ref=output.kernel_ref,
         debuginfo_ref=output.debuginfo_ref,
@@ -386,5 +486,37 @@ async def _finalize_external_build(
                 project=run.project,
             ),
         )
-        await upload_manifest.delete_manifest(conn, "runs", run.id)
+        if not chunked:
+            await upload_manifest.delete_manifest(conn, "runs", run.id)
+    if chunked and store is not None:
+        await _cleanup_chunks_and_manifest(conn, store, run.id, entries, prefix)
     return _complete_envelope(run.id, result)
+
+
+async def _cleanup_chunks_and_manifest(
+    conn: AsyncConnection,
+    store: ExternalBuildStore,
+    run_id: UUID,
+    entries: Sequence[ManifestEntry],
+    prefix: str,
+) -> None:
+    """Best-effort post-commit reclamation of the reassembled chunks, then the manifest.
+
+    A failure here never fails the already-finalized build. The manifest is deleted LAST and
+    only when every chunk delete succeeded, so a failed chunk delete leaves the manifest for the
+    reaper to reclaim the leftover chunks (ADR-0104 §5/§6).
+    """
+    for entry in entries:
+        if entry.chunks is None:
+            continue
+        for part_number in range(1, len(entry.chunks) + 1):
+            key = chunk_key(prefix, entry.name, part_number)
+            try:
+                await asyncio.to_thread(store.delete, key)
+            except CategorizedError as exc:
+                _log.warning("chunk cleanup failed for %s: %s", key, exc)
+                return
+    try:
+        await upload_manifest.delete_manifest(conn, "runs", run_id)
+    except CategorizedError as exc:
+        _log.warning("manifest cleanup failed for run %s: %s", run_id, exc)
