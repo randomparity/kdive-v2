@@ -87,22 +87,36 @@ class FakeBuildTransport:
         file_bytes: Bytes returned by read_bytes (canned target bytes before apply).
         apply_changes_file: If True, post-apply read_bytes returns different bytes
             (simulating that git apply actually changed the target). If False,
-            bytes are unchanged — triggering the silent-skip guard.
-        run_returncode: Returncode for every run() call.
+            bytes are unchanged — triggering the silent-skip guard. NOTE: the
+            before/after parity trick in read_bytes (``_read_count % 2``) assumes a
+            SINGLE-TARGET patch — with two targets the before-reads interleave with
+            the after-reads and the parity flips wrongly. The patch fixtures here are
+            single-target; multi-target coverage would need per-path state.
+        run_returncode: Default returncode for every run() call.
+        run_results: Optional queue of CommandResults consumed in order, one per run()
+            call; lets a test fail or set stderr on a SPECIFIC step (e.g. olddefconfig
+            or the git-apply skip guard) instead of every run(). Once exhausted, run()
+            falls back to ``run_returncode`` with empty stdout/stderr.
     """
 
     config_text: str = _GOOD_CONFIG
     file_bytes: bytes = b"original-content"
     apply_changes_file: bool = True
     run_returncode: int = 0
+    run_results: list[CommandResult] = field(default_factory=list)
     calls: list[_Call] = field(default_factory=list)
     _read_count: int = field(default=0, init=False)
+    _run_count: int = field(default=0, init=False)
 
     def _record(self, method: str, *args: Any, **kwargs: Any) -> None:
         self.calls.append(_Call(method=method, args=args, kwargs=kwargs))
 
     def run(self, argv: list[str], *, cwd: str, timeout_s: int) -> CommandResult:
         self._record("run", argv, cwd=cwd, timeout_s=timeout_s)
+        index = self._run_count
+        self._run_count += 1
+        if index < len(self.run_results):
+            return self.run_results[index]
         return CommandResult(returncode=self.run_returncode, stdout="", stderr="")
 
     def read_text(self, path: str) -> str:
@@ -113,7 +127,8 @@ class FakeBuildTransport:
         self._record("read_bytes", path)
         self._read_count += 1
         # First read (before apply) returns original bytes; second (after apply) returns
-        # changed bytes when apply_changes_file is True, unchanged otherwise.
+        # changed bytes when apply_changes_file is True, unchanged otherwise. This parity
+        # trick assumes a single-target patch (see class docstring).
         if self.apply_changes_file and self._read_count % 2 == 0:
             return b"patched-content"
         return self.file_bytes
@@ -183,6 +198,10 @@ def test_build_workspace_call_order(tmp_path: Path) -> None:
     # write_bytes ships the fragment (before merge_config.sh runs)
     assert "write_bytes" in methods
     fragment_idx = next(i for i, m in enumerate(methods) if m == "write_bytes")
+    # defconfig (the first run()) must precede the fragment write — a write-then-defconfig
+    # reorder would clobber the fragment, so this catches it.
+    first_run_idx = next(i for i, m in enumerate(methods) if m == "run")
+    assert first_run_idx < fragment_idx
     # merge_config.sh is a run() — find the run() after the write_bytes
     run_after_fragment = [i for i, m in enumerate(methods) if m == "run" and i > fragment_idx]
     assert run_after_fragment, "No run() after fragment write"
@@ -321,11 +340,6 @@ def test_build_workspace_dropped_fragment_symbol_raises_configuration_error(
 # ---------------------------------------------------------------------------
 
 
-def _patch_profile() -> ServerBuildProfile:
-    """A profile with a patch_ref pointing to a temp file is built per-test below."""
-    return _profile()
-
-
 def test_build_workspace_with_patch_ref_ships_bytes_and_runs_git_apply(
     tmp_path: Path,
 ) -> None:
@@ -362,6 +376,60 @@ def test_build_workspace_patch_unchanged_targets_raises_configuration_error(
 
     # apply_changes_file=False → read_bytes always returns the same bytes → unchanged
     transport = FakeBuildTransport(apply_changes_file=False)
+    orch = _orchestrator(transport, tmp_path)
+    profile = _profile({"patch_ref": str(patch_file)})
+
+    with pytest.raises(CategorizedError) as exc_info:
+        orch.build_workspace(_RUN, profile)
+
+    assert exc_info.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_build_workspace_patch_skipped_patch_stderr_raises_configuration_error(
+    tmp_path: Path,
+) -> None:
+    """Silent-skip stderr guard: git apply exits 0 but prints 'Skipped patch ...'.
+
+    The post-apply bytes are CHANGED (apply_changes_file=True), so only the stderr guard
+    — not the content backstop — can catch this. Deleting the stderr check would let this
+    build of an unpatched-where-skipped kernel through.
+    """
+    patch_file = tmp_path / "fix.patch"
+    patch_file.write_text(_GOOD_PATCH)
+
+    # run() order in the checkout: [0]=defconfig, [1]=merge_config.sh, [2]=git apply.
+    # Make git apply exit 0 while reporting a skipped file on stderr.
+    transport = FakeBuildTransport(
+        apply_changes_file=True,
+        run_results=[
+            CommandResult(returncode=0, stdout="", stderr=""),  # defconfig
+            CommandResult(returncode=0, stdout="", stderr=""),  # merge_config.sh
+            CommandResult(returncode=0, stdout="", stderr="Skipped patch 'init/main.c'.\n"),
+        ],
+    )
+    orch = _orchestrator(transport, tmp_path)
+    profile = _profile({"patch_ref": str(patch_file)})
+
+    with pytest.raises(CategorizedError) as exc_info:
+        orch.build_workspace(_RUN, profile)
+
+    assert exc_info.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_build_workspace_patch_nonzero_git_apply_raises_configuration_error(
+    tmp_path: Path,
+) -> None:
+    """git apply exiting non-zero raises CONFIGURATION_ERROR (apply-result guard)."""
+    patch_file = tmp_path / "fix.patch"
+    patch_file.write_text(_GOOD_PATCH)
+
+    transport = FakeBuildTransport(
+        run_results=[
+            CommandResult(returncode=0, stdout="", stderr=""),  # defconfig
+            CommandResult(returncode=0, stdout="", stderr=""),  # merge_config.sh
+            CommandResult(returncode=1, stdout="", stderr="error: patch failed"),  # git apply
+        ],
+    )
     orch = _orchestrator(transport, tmp_path)
     profile = _profile({"patch_ref": str(patch_file)})
 
@@ -451,12 +519,12 @@ def test_transport_read_config_reads_dot_config(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Edge: non-zero defconfig raises build_failure (not a test seam issue)
+# 5. Edge: non-zero make steps raise build_failure
 # ---------------------------------------------------------------------------
 
 
-def test_build_workspace_nonzero_olddefconfig_raises_build_failure(tmp_path: Path) -> None:
-    """A non-zero olddefconfig run() raises BUILD_FAILURE and stops the pipeline."""
+def test_build_workspace_nonzero_defconfig_raises_build_failure(tmp_path: Path) -> None:
+    """A non-zero defconfig run() (the first run() in checkout) raises BUILD_FAILURE."""
     transport = FakeBuildTransport(run_returncode=1)
     orch = _orchestrator(transport, tmp_path)
 
@@ -464,3 +532,33 @@ def test_build_workspace_nonzero_olddefconfig_raises_build_failure(tmp_path: Pat
         orch.build_workspace(_RUN, _profile())
 
     assert exc_info.value.category is ErrorCategory.BUILD_FAILURE
+    # defconfig is the first run(): it fails before any further run() (merge/olddefconfig).
+    assert len(transport.run_argvs()) == 1
+    assert "defconfig" in transport.run_argvs()[0]
+
+
+def test_build_workspace_nonzero_olddefconfig_raises_build_failure(tmp_path: Path) -> None:
+    """defconfig + merge_config succeed; only olddefconfig fails → BUILD_FAILURE.
+
+    run() order: [0]=defconfig, [1]=merge_config.sh, [2]=olddefconfig. Failing only the
+    olddefconfig step proves the orchestrator's olddefconfig gate (not the checkout's
+    defconfig) maps a non-zero exit to BUILD_FAILURE.
+    """
+    transport = FakeBuildTransport(
+        run_results=[
+            CommandResult(returncode=0, stdout="", stderr=""),  # defconfig
+            CommandResult(returncode=0, stdout="", stderr=""),  # merge_config.sh
+            CommandResult(returncode=2, stdout="", stderr=""),  # olddefconfig
+        ],
+    )
+    orch = _orchestrator(transport, tmp_path)
+
+    with pytest.raises(CategorizedError) as exc_info:
+        orch.build_workspace(_RUN, _profile())
+
+    assert exc_info.value.category is ErrorCategory.BUILD_FAILURE
+    # olddefconfig ran (3 run() calls); the .config was never read and make never ran.
+    argvs = transport.run_argvs()
+    assert any("olddefconfig" in argv for argv in argvs)
+    assert "read_text" not in transport.method_names()
+    assert not any(any(tok.startswith("-j") for tok in argv) for argv in argvs)
