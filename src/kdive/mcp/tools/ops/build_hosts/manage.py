@@ -31,8 +31,6 @@ LIST_TOOL = "build_hosts.list"
 DISABLE_TOOL = "build_hosts.disable"
 REMOVE_TOOL = "build_hosts.remove"
 
-_OBJECT_KIND = "build_host"
-_ALL_HOSTS_SCOPE = "all-build-hosts"
 _PROTECTED_NAME = "worker-local"
 
 
@@ -48,30 +46,6 @@ def _conflict(object_id: str, reason: str) -> ToolResponse:
 
 def _not_found(name: str) -> ToolResponse:
     return ToolResponse.failure(name, ErrorCategory.NOT_FOUND)
-
-
-async def _record_platform_action(
-    pool: AsyncConnectionPool,
-    ctx: RequestContext,
-    *,
-    tool: str,
-    scope: str,
-    args: dict[str, object],
-) -> None:
-    """Write a ``platform_audit_log`` row in its own committed transaction."""
-    async with pool.connection() as conn, conn.transaction():
-        await audit.record_platform(
-            conn,
-            principal=ctx.principal,
-            agent_session=ctx.agent_session,
-            event=audit.PlatformAuditEvent(
-                tool=tool,
-                scope=scope,
-                args=args,
-                platform_role=held_platform_roles(ctx),
-                actor=actor_for(ctx),
-            ),
-        )
 
 
 async def list_build_hosts(

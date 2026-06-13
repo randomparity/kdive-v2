@@ -71,11 +71,26 @@ def _non_admin_ctx() -> RequestContext:
     )
 
 
+def _auditor_ctx() -> RequestContext:
+    # platform_auditor does NOT satisfy platform_admin (the only implication is
+    # admin ⊇ auditor), so it is denied — but it IS a platform role, so the denial
+    # is audited (the over-reach accountability row).
+    return RequestContext(
+        principal="ops-auditor",
+        agent_session="sess-aud",
+        projects=(),
+        roles={},
+        platform_roles=frozenset({PlatformRole.PLATFORM_AUDITOR}),
+        client_id="kdivectl",
+    )
+
+
 async def _platform_audit_rows(url: str) -> list[tuple[object, ...]]:
     conn = await psycopg.AsyncConnection.connect(url, autocommit=True)
     async with conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT principal, platform_role, tool, scope FROM platform_audit_log ORDER BY id"
+            "SELECT principal, platform_role, tool, scope, args_digest "
+            "FROM platform_audit_log ORDER BY id"
         )
         return list(await cur.fetchall())
 
@@ -151,6 +166,42 @@ def test_non_admin_remove_denied(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_platform_auditor_overreach_denied_and_audited(migrated_url: str) -> None:
+    # A platform_auditor holds a platform role but not platform_admin: every mutating
+    # build_hosts tool denies it AND records the over-reach via audit_platform_denial.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _insert_host(pool, name="build-worker-1")
+            reg = await register_build_host(
+                pool,
+                _auditor_ctx(),
+                name="new-host",
+                address="10.0.0.9",
+                ssh_credential_ref=_CRED_REF,
+                workspace_root="/build",
+                max_concurrent=1,
+            )
+            dis = await disable_build_host(pool, _auditor_ctx(), name="build-worker-1")
+            rem = await remove_build_host(pool, _auditor_ctx(), name="build-worker-1")
+        for resp in (reg, dis, rem):
+            assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
+        rows = await _platform_audit_rows(migrated_url)
+        tools = sorted(str(r[2]) for r in rows)
+        assert tools == [
+            "build_hosts.disable",
+            "build_hosts.register",
+            "build_hosts.remove",
+        ]
+        for principal, platform_role, _tool, scope, _digest in rows:
+            assert principal == "ops-auditor"
+            assert platform_role == "platform_auditor"
+            assert str(scope).startswith("denied:")
+        # the denied register must not have created a row
+        assert await _host_exists(migrated_url, "new-host") is False
+
+    asyncio.run(_run())
+
+
 # --- register happy path + no-leak ---
 
 
@@ -204,13 +255,19 @@ def test_register_audit_row_written_no_secret_bytes(migrated_url: str) -> None:
             )
         rows = await _platform_audit_rows(migrated_url)
         assert len(rows) == 1
-        principal, platform_role, tool, scope = rows[0]
+        principal, platform_role, tool, scope, digest = rows[0]
         assert principal == "ops-admin"
         assert platform_role == "platform_admin"
         assert tool == "build_hosts.register"
-        # args are digested (never plaintext), scope carries host id
+        # scope carries the host id
         assert "build_host:" in str(scope)
-        # secret bytes must not appear in any DB row
+        # args are digested at the DB column level: a 64-char lowercase hex SHA-256,
+        # never the plaintext args (which carry the credential ref).
+        assert isinstance(digest, str)
+        assert len(digest) == 64
+        assert all(c in "0123456789abcdef" for c in digest)
+        assert _CRED_REF not in digest
+        # secret bytes must not appear in any DB row (digest, scope, or otherwise)
         for row in rows:
             assert _SECRET_VALUE not in str(row)
 

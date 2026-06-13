@@ -25,7 +25,6 @@ from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_
 _log = logging.getLogger(__name__)
 
 REGISTER_TOOL = "build_hosts.register"
-_OBJECT_KIND = "build_host"
 
 
 def _denied(object_id: str) -> ToolResponse:
