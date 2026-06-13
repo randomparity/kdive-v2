@@ -6,7 +6,7 @@ import pytest
 
 import kdive.config as config
 from kdive.cli import transport
-from kdive.cli.errors import exit_code_for_category
+from kdive.cli.errors import exit_code_for_category, exit_code_for_envelope
 from kdive.config.cli_settings import SERVER_URL, TOKEN
 
 
@@ -32,6 +32,16 @@ def test_unknown_category_maps_to_generic_1() -> None:
 
 def test_empty_category_maps_to_generic_1() -> None:
     assert exit_code_for_category("") == 1
+
+
+def test_not_found_envelope_maps_to_code_4() -> None:
+    # End-to-end: a server not_found failure envelope becomes the reserved exit code 4, making
+    # "that id doesn't exist" observable distinctly from "you typed garbage" (exit 2).
+    assert exit_code_for_envelope({"error_category": "not_found"}) == 4
+
+
+def test_success_envelope_maps_to_code_0() -> None:
+    assert exit_code_for_envelope({"status": "ok"}) == 0
 
 
 def test_session_from_env_uses_explicit_token(monkeypatch: pytest.MonkeyPatch) -> None:

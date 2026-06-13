@@ -302,3 +302,20 @@ def test_malformed_resource_id_is_config_error(migrated_url: str) -> None:
         assert resp.suggested_next_actions == ["inventory.list"]
 
     asyncio.run(_run())
+
+
+def test_absent_resource_id_filter_is_empty_not_not_found(migrated_url: str) -> None:
+    # inventory.list is a filtered audit list, not a by-id lookup: a syntactically valid but
+    # absent resource_id matches no rows and is a successful empty read, never a not_found
+    # failure (ADR-0097). Guards against accidentally lifting an empty filter to not_found.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _seed_two_projects(pool)
+            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_AUDITOR}))
+            resp = await inventory_tools.list_inventory(pool, ctx, resource_id=str(uuid4()))
+        assert resp.status == "ok"
+        assert resp.error_category is None
+        assert _systems(resp) == []
+        assert _allocations(resp) == []
+
+    asyncio.run(_run())
