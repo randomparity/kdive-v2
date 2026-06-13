@@ -55,6 +55,26 @@ def owner_prefix(tenant: str, kind: str, object_id: str) -> str:
     return "/".join(parts) + "/"
 
 
+def chunk_key(prefix: str, name: str, part_number: int) -> str:
+    """The object key for chunk ``part_number`` of a chunked artifact.
+
+    Returns ``<prefix><name>.partNNNN`` where ``prefix`` is an :func:`owner_prefix` result
+    (trailing ``/``) and ``part_number`` is 1-based and zero-padded to four digits. This is
+    the single source of the chunk-key format used by both ``create_upload`` (mint) and
+    reassembly (read) so the two sites cannot drift (ADR-0104 §1).
+
+    Raises:
+        CategorizedError: ``part_number`` is not positive
+            (:attr:`~kdive.domain.errors.ErrorCategory.CONFIGURATION_ERROR`).
+    """
+    if part_number < 1:
+        raise CategorizedError(
+            f"chunk part_number must be >= 1, got {part_number}",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+        )
+    return f"{prefix}{name}.part{part_number:04d}"
+
+
 class StoredArtifact(NamedTuple):
     """A put result: the row's ``key``/``etag`` plus the class written to the object."""
 
