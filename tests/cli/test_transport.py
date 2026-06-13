@@ -26,6 +26,10 @@ def test_conflict_maps_to_code_5() -> None:
     assert exit_code_for_category("conflict") == 5
 
 
+def test_capacity_exhausted_maps_to_code_6() -> None:
+    assert exit_code_for_category("capacity_exhausted") == 6
+
+
 def test_unknown_category_maps_to_generic_1() -> None:
     assert exit_code_for_category("something_else") == 1
 

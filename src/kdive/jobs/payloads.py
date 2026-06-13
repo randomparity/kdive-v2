@@ -59,6 +59,7 @@ class RunPayload(_PayloadBase):
 
 class BuildPayload(RunPayload):
     cmdline: str | None = None
+    build_host_id: str | None = None
 
     @field_validator("cmdline")
     @classmethod
@@ -69,6 +70,14 @@ class BuildPayload(RunPayload):
         if not stripped:
             raise ValueError("cmdline must not be blank")
         return stripped
+
+    @field_validator("build_host_id")
+    @classmethod
+    def _valid_build_host_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        UUID(value)
+        return value
 
 
 class PowerPayload(SystemPayload):

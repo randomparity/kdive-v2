@@ -56,6 +56,7 @@ from kdive.mcp.tools.ops import reconcile as ops_reconcile_tools
 from kdive.mcp.tools.ops import resources as ops_resources_tools
 from kdive.mcp.tools.ops import secrets as ops_secrets_tools
 from kdive.mcp.tools.ops import tuning as ops_tuning_tools
+from kdive.mcp.tools.ops.build_hosts import registrar as ops_build_hosts_tools
 from kdive.mcp.tools.ops.images import registrar as ops_images_tools
 from kdive.providers.composition import ProviderComposition, build_provider_resolver
 from kdive.providers.reaping import DumpVolumeReaper, InfraReaper
@@ -148,6 +149,12 @@ def _register_diagnostics_tools(
     ops_diagnostics_tools.register(app, pool, default_service_factory)
 
 
+def _register_ops_build_hosts_tools(
+    app: FastMCP, pool: AsyncConnectionPool, _assembly: AppAssembly
+) -> None:
+    ops_build_hosts_tools.register(app, pool)
+
+
 def _register_ops_images_tools(
     app: FastMCP, pool: AsyncConnectionPool, _assembly: AppAssembly
 ) -> None:
@@ -214,6 +221,7 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _pool_only_plane_registrar(inventory_tools.register),
     _pool_only_plane_registrar(fixtures.register),
     _pool_only_plane_registrar(catalog_images.register),
+    _register_ops_build_hosts_tools,
     _register_ops_images_tools,
     _register_ops_secrets_tools,
 )

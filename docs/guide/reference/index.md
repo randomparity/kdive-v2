@@ -22,6 +22,10 @@
 | [`artifacts.list`](artifacts.md#artifactslist) | `partial` |
 | [`artifacts.search_text`](artifacts.md#artifactssearch_text) | `partial` |
 | [`audit.query`](audit.md#auditquery) | `implemented` |
+| [`build_hosts.disable`](build_hosts.md#build_hostsdisable) | `implemented` |
+| [`build_hosts.list`](build_hosts.md#build_hostslist) | `implemented` |
+| [`build_hosts.register`](build_hosts.md#build_hostsregister) | `implemented` |
+| [`build_hosts.remove`](build_hosts.md#build_hostsremove) | `implemented` |
 | [`buildconfig.get`](buildconfig.md#buildconfigget) | `implemented` |
 | [`control.force_crash`](control.md#controlforce_crash) | `partial` |
 | [`control.power`](control.md#controlpower) | `partial` |

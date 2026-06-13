@@ -30,7 +30,7 @@ from kdive.mcp.tools.lifecycle.runs.common import (
     RUN_BUILD_TERMINAL,
     run_job_envelope,
 )
-from kdive.profiles.build import BuildProfile, ExternalBuildProfile
+from kdive.profiles.build import BuildProfile, ExternalBuildProfile, ServerBuildProfile
 from kdive.provider_components.artifacts import HeadResult, StoredArtifact
 from kdive.provider_components.build_results import BuildOutput, ValidatedUpload
 from kdive.provider_components.build_validation import ValidatorStore, validate_external_artifacts
@@ -45,6 +45,7 @@ from kdive.provider_components.validation import (
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
+from kdive.services.runs.build_host_selection import resolve_and_admit
 from kdive.services.runs.steps import BuildStepResult, platform_owned_cmdline_token
 from kdive.services.runs.steps import existing_build_result as _existing_build_result
 from kdive.store.objectstore import (
@@ -61,43 +62,83 @@ type ObjectStoreFactory = Callable[[], ValidatorStore]
 
 
 async def _build_locked(
-    conn: AsyncConnection, ctx: RequestContext, run: Run, cmdline: str | None
+    conn: AsyncConnection,
+    ctx: RequestContext,
+    run: Run,
+    cmdline: str | None,
+    parsed_profile: ServerBuildProfile,
 ) -> ToolResponse:
-    """Admit the build under the per-Run lock: flip `created -> running`, then enqueue."""
-    async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run.id):
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute("SELECT state FROM runs WHERE id = %s FOR UPDATE", (run.id,))
-            row = await cur.fetchone()
-        if row is None:
-            return _config_error(str(run.id))
-        state = RunState(row["state"])
-        if state in RUN_BUILD_TERMINAL:
-            return _config_error(str(run.id), data={"current_status": state.value})
-        if state is RunState.CREATED:
-            await conn.execute(
-                "UPDATE runs SET state = %s WHERE id = %s AND state = %s",
-                (RunState.RUNNING.value, run.id, RunState.CREATED.value),
-            )
-            await audit.record(
-                conn,
-                ctx,
-                audit.AuditEvent(
-                    tool="runs.build",
-                    object_kind="runs",
-                    object_id=run.id,
-                    transition="created->running",
-                    args={"run_id": str(run.id)},
-                    project=run.project,
-                ),
-            )
-        job = await _enqueue_build(conn, ctx, run, cmdline)
+    """Admit the build under the per-Run lock: select host, flip `created -> running`, enqueue.
+
+    Host selection and capacity admission run FIRST inside the transaction so that a
+    capacity failure raises before any state mutation; the transaction rolls back on any
+    exception, leaving no lease, no job, and no state change.
+
+    Args:
+        conn: An async psycopg connection (no active transaction yet).
+        ctx: The request authorization context.
+        run: The Run being admitted for build.
+        cmdline: Optional caller-supplied extra kernel cmdline tokens.
+        parsed_profile: The pre-validated server-build profile (avoids re-parsing).
+
+    Returns:
+        A :class:`~kdive.mcp.responses.ToolResponse` — queued on success, or a failure
+        envelope when the Run is in a terminal state or host admission fails.
+    """
+    try:
+        async with conn.transaction(), advisory_xact_lock(conn, LockScope.RUN, run.id):
+            host = await resolve_and_admit(conn, parsed_profile, run.id)
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT state FROM runs WHERE id = %s FOR UPDATE", (run.id,))
+                row = await cur.fetchone()
+            if row is None:
+                raise CategorizedError(str(run.id), category=ErrorCategory.CONFIGURATION_ERROR)
+            state = RunState(row["state"])
+            if state in RUN_BUILD_TERMINAL:
+                raise CategorizedError(
+                    str(run.id),
+                    category=ErrorCategory.CONFIGURATION_ERROR,
+                    details={"current_status": state.value},
+                )
+            if state is RunState.CREATED:
+                await conn.execute(
+                    "UPDATE runs SET state = %s WHERE id = %s AND state = %s",
+                    (RunState.RUNNING.value, run.id, RunState.CREATED.value),
+                )
+                await audit.record(
+                    conn,
+                    ctx,
+                    audit.AuditEvent(
+                        tool="runs.build",
+                        object_kind="runs",
+                        object_id=run.id,
+                        transition="created->running",
+                        args={"run_id": str(run.id)},
+                        project=run.project,
+                    ),
+                )
+            job = await _enqueue_build(conn, ctx, run, cmdline, host_id=str(host.id))
+    except CategorizedError as exc:
+        next_actions = ["runs.build"] if exc.category is ErrorCategory.CAPACITY_EXHAUSTED else None
+        return ToolResponse.failure_from_error(
+            str(run.id), exc, suggested_next_actions=next_actions
+        )
     return run_job_envelope(job, run.id)
 
 
 async def _enqueue_build(
-    conn: AsyncConnection, ctx: RequestContext, run: Run, cmdline: str | None
+    conn: AsyncConnection,
+    ctx: RequestContext,
+    run: Run,
+    cmdline: str | None,
+    *,
+    host_id: str,
 ) -> Job:
-    payload = BuildPayload(run_id=str(run.id), cmdline=cmdline if cmdline else None)
+    payload = BuildPayload(
+        run_id=str(run.id),
+        cmdline=cmdline if cmdline else None,
+        build_host_id=host_id,
+    )
     return await queue.enqueue(
         conn,
         JobKind.BUILD,
@@ -143,7 +184,7 @@ class RunBuildHandlers:
                     parsed = BuildProfile.parse(run.build_profile)
                 except CategorizedError as exc:
                     return ToolResponse.failure_from_error(run_id, exc)
-                if parsed.source != "server":
+                if not isinstance(parsed, ServerBuildProfile):
                     return _config_error(
                         run_id, data={"reason": "external_source_uses_complete_build"}
                     )
@@ -164,7 +205,7 @@ class RunBuildHandlers:
                         self.config_validator(config_ref)
                     except CategorizedError as exc:
                         return ToolResponse.failure_from_error(run_id, exc)
-                return await _build_locked(conn, ctx, run, cmdline)
+                return await _build_locked(conn, ctx, run, cmdline, parsed)
 
     async def complete_build(
         self,

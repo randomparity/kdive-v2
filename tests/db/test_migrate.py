@@ -39,6 +39,8 @@ OBJECT_TABLES = {
     "jobs",
     "artifacts",
     "audit_log",
+    "build_hosts",
+    "build_host_leases",
 }
 
 # Tables migration 0002 adds (M1 accounting/admission data layer).
@@ -114,6 +116,8 @@ def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
         "0024",
         "0025",
         "0026",
+        "0027",
+        "0028",
     ]
     assert second == []
 
@@ -544,6 +548,8 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
         "0024",
         "0025",
         "0026",
+        "0027",
+        "0028",
     ]
 
 

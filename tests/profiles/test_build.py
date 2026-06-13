@@ -9,7 +9,13 @@ import pytest
 from pydantic import ValidationError
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.profiles.build import BuildProfile, ServerBuildProfile
+from kdive.profiles.build import (
+    BuildProfile,
+    GitKernelSource,
+    ServerBuildProfile,
+    dump_build_profile,
+    is_git_source,
+)
 from kdive.provider_components.references import LocalComponentRef
 
 _VALID: dict[str, Any] = {
@@ -37,6 +43,7 @@ def test_valid_profile_parses() -> None:
     assert isinstance(profile, ServerBuildProfile)
 
     assert profile.schema_version == 1
+    assert isinstance(profile.kernel_source_ref, str)
     assert profile.kernel_source_ref.startswith("git+https://")
     assert isinstance(profile.config, LocalComponentRef)
     assert profile.config.kind == "local"
@@ -159,3 +166,100 @@ def test_direct_construction_bypasses_configuration_error_mapping() -> None:
     # the raw ValidationError without the CONFIGURATION_ERROR mapping.
     with pytest.raises(ValidationError):
         ServerBuildProfile.model_validate({"schema_version": 1})
+
+
+# ---------------------------------------------------------------------------
+# Task 8: build_host + structured kernel_source_ref
+# ---------------------------------------------------------------------------
+
+
+def test_string_kernel_source_ref_is_not_git_source() -> None:
+    profile = BuildProfile.parse(_valid())
+    assert isinstance(profile, ServerBuildProfile)
+    assert is_git_source(profile) is False
+
+
+def test_git_kernel_source_ref_parses_and_is_detected() -> None:
+    data = _valid()
+    data["kernel_source_ref"] = {"git": {"remote": "https://x/y.git", "ref": "v6.1"}}
+    profile = BuildProfile.parse(data)
+    assert isinstance(profile, ServerBuildProfile)
+    assert is_git_source(profile) is True
+    assert isinstance(profile.kernel_source_ref, GitKernelSource)
+    assert profile.kernel_source_ref.git.remote == "https://x/y.git"
+    assert profile.kernel_source_ref.git.ref == "v6.1"
+
+
+def test_git_source_missing_ref_raises_configuration_error() -> None:
+    data = _valid()
+    data["kernel_source_ref"] = {"git": {"remote": "https://x/y.git"}}
+    with pytest.raises(CategorizedError) as caught:
+        BuildProfile.parse(data)
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    # Redaction guarantee: submitted values must not appear in details.
+    assert "https://x/y.git" not in str(caught.value.details)
+
+
+def test_git_source_extra_field_raises_configuration_error() -> None:
+    data = _valid()
+    data["kernel_source_ref"] = {"git": {"remote": "r", "ref": "v1"}, "extra": 1}
+    _expect_configuration_error(data)
+
+
+def test_git_inner_extra_field_raises_configuration_error() -> None:
+    data = _valid()
+    data["kernel_source_ref"] = {"git": {"remote": "r", "ref": "v1", "bonus": "x"}}
+    _expect_configuration_error(data)
+
+
+def test_build_host_parses() -> None:
+    data = _valid()
+    data["build_host"] = "fast-builder"
+    profile = BuildProfile.parse(data)
+    assert isinstance(profile, ServerBuildProfile)
+    assert profile.build_host == "fast-builder"
+
+
+def test_build_host_empty_raises_configuration_error() -> None:
+    data = _valid()
+    data["build_host"] = ""
+    _expect_configuration_error(data)
+
+
+def test_build_host_defaults_to_none() -> None:
+    profile = BuildProfile.parse(_valid())
+    assert isinstance(profile, ServerBuildProfile)
+    assert profile.build_host is None
+
+
+def test_dump_build_profile_round_trips_string_source_ref() -> None:
+    profile = BuildProfile.parse(_valid())
+    assert isinstance(profile, ServerBuildProfile)
+    dumped = dump_build_profile(profile)
+    reparsed = BuildProfile.parse(dumped)
+    assert isinstance(reparsed, ServerBuildProfile)
+    assert reparsed.kernel_source_ref == profile.kernel_source_ref
+
+
+def test_dump_build_profile_round_trips_git_source_ref() -> None:
+    data = _valid()
+    data["kernel_source_ref"] = {"git": {"remote": "https://x/y.git", "ref": "v6.1"}}
+    profile = BuildProfile.parse(data)
+    assert isinstance(profile, ServerBuildProfile)
+    dumped = dump_build_profile(profile)
+    reparsed = BuildProfile.parse(dumped)
+    assert isinstance(reparsed, ServerBuildProfile)
+    assert isinstance(reparsed.kernel_source_ref, GitKernelSource)
+    assert reparsed.kernel_source_ref.git.remote == "https://x/y.git"
+    assert reparsed.kernel_source_ref.git.ref == "v6.1"
+
+
+def test_existing_server_profile_without_build_host_back_compat() -> None:
+    # Profiles written before build_host was introduced must still parse.
+    data = {
+        "schema_version": 1,
+        "kernel_source_ref": "git+https://git.kernel.org/pub/scm/linux.git#v6.9",
+    }
+    profile = BuildProfile.parse(data)
+    assert isinstance(profile, ServerBuildProfile)
+    assert profile.build_host is None

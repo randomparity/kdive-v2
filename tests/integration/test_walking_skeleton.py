@@ -214,12 +214,18 @@ def test_completed_step_replay_does_not_re_execute(migrated_url: str) -> None:
             builder = _RecordingBuilder()
             async with pool.connection() as conn:
                 await runs_handlers.build_handler(
-                    conn, job, resolver=provider_resolver(builder=builder)
+                    conn,
+                    job,
+                    resolver=provider_resolver(builder=builder),
+                    secret_registry=SecretRegistry(),
                 )
             # Replay the same job: the (run_id, "build") ledger short-circuits the rebuild.
             async with pool.connection() as conn:
                 await runs_handlers.build_handler(
-                    conn, job, resolver=provider_resolver(builder=builder)
+                    conn,
+                    job,
+                    resolver=provider_resolver(builder=builder),
+                    secret_registry=SecretRegistry(),
                 )
             async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT state FROM runs WHERE id = %s", (run_id,))

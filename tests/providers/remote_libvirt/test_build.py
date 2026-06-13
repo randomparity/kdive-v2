@@ -23,7 +23,12 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
-from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
+from kdive.provider_components.artifacts import (
+    ArtifactWriteRequest,
+    PresignedUpload,
+    PresignPutRequest,
+    StoredArtifact,
+)
 from kdive.provider_components.references import (
     ArtifactComponentRef,
     CatalogComponentRef,
@@ -78,6 +83,11 @@ class _FakeStore:
             key, "etag-" + request.name, request.sensitivity, request.retention_class
         )
 
+    def presign_put(self, request: PresignPutRequest) -> PresignedUpload:
+        # The default (worker-local) path publishes from bytes via put_artifact and never
+        # presigns; this stub exists only to satisfy the _StorePort protocol.
+        raise AssertionError("the default bytes path must not presign")
+
 
 @dataclass
 class _Seams:
@@ -120,12 +130,12 @@ class _Seams:
         self.call_order.append("modules_install")
         return self.modules_install_returncode
 
-    def build_bundle(self, workspace: Path, mod_root: Path) -> bytes:
+    def make_bundle(self, workspace: Path, mod_root: Path) -> build_module.ArtifactSource:
         self.call_order.append("bundle")
-        return self.bundle_bytes
+        return build_module.ArtifactBytes(self.bundle_bytes)
 
-    def read_vmlinux(self, workspace: Path) -> bytes:
-        return b"vmlinux-bytes"
+    def read_vmlinux_source(self, workspace: Path) -> build_module.ArtifactSource:
+        return build_module.ArtifactBytes(b"vmlinux-bytes")
 
     def read_build_id(self, workspace: Path) -> str:
         return self.build_id_hex
@@ -146,8 +156,8 @@ def _builder(
         read_config=seams.read_config,
         run_make=seams.run_make,
         run_modules_install=seams.run_modules_install,
-        build_bundle=seams.build_bundle,
-        read_vmlinux=seams.read_vmlinux,
+        make_bundle=seams.make_bundle,
+        read_vmlinux_source=seams.read_vmlinux_source,
         read_build_id=seams.read_build_id,
         staging_factory=lambda: _make_staging(tmp_path),
         catalog_fetch=catalog_fetch or (lambda _name: _FRAGMENT_BYTES),
@@ -312,8 +322,8 @@ def test_validate_config_ref_rejects_file_outside_roots(tmp_path: Path) -> None:
         read_config=lambda _w: _GOOD_CONFIG,
         run_make=lambda _w: 0,
         run_modules_install=lambda _w, _m: 0,
-        build_bundle=lambda _w, _m: b"b",
-        read_vmlinux=lambda _w: b"v",
+        make_bundle=lambda _w, _m: build_module.ArtifactBytes(b"b"),
+        read_vmlinux_source=lambda _w: build_module.ArtifactBytes(b"v"),
         read_build_id=lambda _w: "deadbeef",
         staging_factory=lambda: _make_staging(tmp_path),
         catalog_fetch=lambda _name: _FRAGMENT_BYTES,
@@ -543,8 +553,8 @@ def test_live_vm_real_make_bundle_has_modules() -> None:  # pragma: no cover - l
             read_config=build_host_execution.real_read_config,
             run_make=build_host_execution.real_run_make,
             run_modules_install=build_host_execution.real_run_modules_install,
-            build_bundle=build_module._real_build_bundle,
-            read_vmlinux=build_host_execution.real_read_vmlinux,
+            make_bundle=build_module._local_make_bundle,
+            read_vmlinux_source=build_module._local_vmlinux_source,
             read_build_id=build_host_execution.real_read_build_id,
             staging_factory=lambda: Path(tempfile.mkdtemp(prefix="kdive-mod-")),
             catalog_fetch=build_module.build_config_fetch_from_env(),

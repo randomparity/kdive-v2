@@ -35,6 +35,7 @@ from kdive.providers.reaping import (
 )
 from kdive.providers.transport_reset import NullResetter, TransportResetter
 from kdive.reconciler import allocations as allocation_repairs
+from kdive.reconciler import build_hosts as build_host_repairs
 from kdive.reconciler import debug_sessions as debug_session_repairs
 from kdive.reconciler import gc as gc_repairs
 from kdive.reconciler import jobs as job_repairs
@@ -80,6 +81,7 @@ _reap_console_collectors = gc_repairs.reap_console_collectors
 _reap_orphaned_dump_volumes = gc_repairs.reap_orphaned_dump_volumes
 _reap_queue_timeouts = allocation_repairs.reap_queue_timeouts
 _reap_queue_timeouts_for = allocation_repairs.reap_queue_timeouts_for
+_reclaim_build_host_leases = build_host_repairs.reclaim_orphan_build_host_leases
 _repair_abandoned_jobs = job_repairs.repair_abandoned_jobs
 _repair_dead_sessions = debug_session_repairs.repair_dead_sessions
 _repair_orphaned_systems = system_repairs.repair_orphaned_systems
@@ -95,6 +97,7 @@ __all__ = [
     "_reap_console_collectors",
     "_reap_orphaned_dump_volumes",
     "_reap_queue_timeouts",
+    "_reclaim_build_host_leases",
     "_repair_abandoned_jobs",
     "_repair_dead_sessions",
     "_repair_orphaned_systems",
@@ -146,6 +149,7 @@ class ReconcileReport:
     expired_private_images: int = 0
     console_collectors_reaped: int = 0
     reaped_dump_volumes: int = 0
+    reclaimed_build_host_leases: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +186,7 @@ def _repair_plan(
         _RepairSpec("queue_timeouts", _reap_queue_timeouts_for(config.queue_max_wait)),
         _RepairSpec("orphaned_systems", _repair_orphaned_systems),
         _RepairSpec("abandoned_jobs", _repair_abandoned_jobs),
+        _RepairSpec("reclaimed_build_host_leases", _reclaim_build_host_leases),
         _RepairSpec(
             "dead_sessions",
             lambda conn: _repair_dead_sessions(
@@ -288,6 +293,7 @@ async def reconcile_once(
         expired_private_images=counts.get("expired_private_images", 0),
         console_collectors_reaped=counts.get("console_collectors_reaped", 0),
         reaped_dump_volumes=counts.get("reaped_dump_volumes", 0),
+        reclaimed_build_host_leases=counts["reclaimed_build_host_leases"],
     )
 
 
