@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from kdive.security.authz.errors import AuthError
+from kdive.security.authz.errors import AuthError, ProjectMembershipDenied
 from kdive.security.authz.rbac import (
     PlatformRole,
     Role,
@@ -61,7 +61,13 @@ def context_from_claims(claims: Mapping[str, object]) -> RequestContext:
 
 
 def require_project(ctx: RequestContext, project: str) -> str:
-    """Validate that ``project`` is granted to ``ctx``; return it, or raise."""
+    """Validate that ``project`` is granted to ``ctx``; return it, or raise.
+
+    Raises:
+        ProjectMembershipDenied: ``project`` is not in ``ctx.projects``. The dispatch
+            boundary catches this subclass and envelopes it as ``authorization_denied``
+            (exit 3, ADR-0098); it stays an ``AuthError`` so existing catches still apply.
+    """
     if project not in ctx.projects:
-        raise AuthError(f"project {project!r} is not granted to {ctx.principal!r}")
+        raise ProjectMembershipDenied(f"project {project!r} is not granted to {ctx.principal!r}")
     return project

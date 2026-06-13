@@ -18,10 +18,11 @@ from kdive.config.core_settings import OIDC_AUDIENCE, OIDC_ISSUER, OIDC_JWKS_URI
 from kdive.config.registry import Setting
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.security.authz.context import RequestContext, context_from_claims, require_project
-from kdive.security.authz.errors import AuthError
+from kdive.security.authz.errors import AuthError, ProjectMembershipDenied
 
 __all__ = [
     "AuthError",
+    "ProjectMembershipDenied",
     "RequestContext",
     "build_verifier",
     "context_from_claims",
