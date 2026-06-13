@@ -4,8 +4,9 @@ All remote commands are executed via the SSH CLI (``ssh -i <identity> ... <host>
 The SSH identity (private key) is materialized into a per-op 0600 temp file from the
 configured secrets root, then deleted on every exit path.
 
-Shallow git clone (``--depth 1``) is used for ``clone()``; a non-shallow fallback is a
-future improvement since some remotes refuse shallow-by-SHA fetches.
+``clone()`` performs a shallow checkout via ``git init`` + ``git fetch --depth 1`` +
+``git checkout FETCH_HEAD``; a non-shallow fallback is a future improvement since some
+remotes refuse shallow-by-SHA fetches.
 """
 
 from __future__ import annotations
@@ -46,6 +47,11 @@ _SSH_BASE_OPTIONS = [
     "ConnectTimeout=10",
 ]
 
+# read_bytes/read_text base64-capture a whole remote file into memory. These reads
+# are small (.config, the build-id note) — cap the captured (base64) output well
+# above any legitimate value so a mis-pointed path cannot exhaust worker memory.
+_MAX_REMOTE_READ_B64_BYTES = 8 * 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -70,6 +76,31 @@ def _validate_git_arg(value: str, field: str) -> None:
             f"{field} contains a control character or newline",
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"field": field},
+        )
+
+
+def _validate_ssh_destination(address: str) -> None:
+    """Reject an ssh destination that ssh would parse as an option or that injects a command.
+
+    An address beginning with ``-`` (e.g. ``-oProxyCommand=...``) is interpreted by ssh as
+    an option rather than a host, which is arbitrary command execution; control characters or
+    newlines could split the argv. Validated at construction so every code path is covered.
+
+    Raises:
+        CategorizedError: ``CONFIGURATION_ERROR`` when the address starts with ``-`` or
+            contains a control character or newline.
+    """
+    if address.startswith("-"):
+        raise CategorizedError(
+            "ssh address must not start with '-' (would be parsed as an ssh option)",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"field": "address"},
+        )
+    if any(c in _UNSAFE_CHARS for c in address):
+        raise CategorizedError(
+            "ssh address contains a control character or newline",
+            category=ErrorCategory.CONFIGURATION_ERROR,
+            details={"field": "address"},
         )
 
 
@@ -198,6 +229,7 @@ class SshBuildTransport:
         identity_path: Path,
         secret_registry: SecretRegistry,
     ) -> None:
+        _validate_ssh_destination(address)
         self._address = address
         self._identity_path = identity_path
         self._secret_registry = secret_registry
@@ -291,21 +323,34 @@ class SshBuildTransport:
         return self._run_remote(argv, cwd, timeout_s)
 
     def read_text(self, path: str) -> str:
-        """Read *path* as UTF-8 text from the remote host (via ``cat``)."""
-        result = self._run_remote(["cat", path], cwd="/", timeout_s=30)
-        if result.returncode != 0:
+        """Read *path* as UTF-8 text from the remote host.
+
+        Decodes the bytes from :meth:`read_bytes` as UTF-8 rather than relying on the ssh
+        subprocess's locale-default text decoding, satisfying the Protocol's UTF-8 contract.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` if the content is not valid UTF-8.
+        """
+        raw = self.read_bytes(path)
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
             raise CategorizedError(
-                f"remote read_text failed for {path!r}",
-                category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-                details={
-                    "path": path,
-                    "stderr": redacted_tail(result.stderr, self._secret_registry),
-                },
-            )
-        return result.stdout
+                f"remote file {path!r} is not valid UTF-8",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"path": path},
+            ) from exc
 
     def read_bytes(self, path: str) -> bytes:
-        """Read *path* as raw bytes from the remote host (via ``base64 -w0``)."""
+        """Read *path* as raw bytes from the remote host (via ``base64 -w0``).
+
+        The captured base64 output is size-capped (``_MAX_REMOTE_READ_B64_BYTES``) so a
+        mis-pointed path cannot exhaust worker memory; these reads are small by design.
+
+        Raises:
+            CategorizedError: ``INFRASTRUCTURE_FAILURE`` if the remote read fails;
+                ``CONFIGURATION_ERROR`` if the captured output exceeds the size cap.
+        """
         result = self._run_remote(["base64", "-w0", path], cwd="/", timeout_s=30)
         if result.returncode != 0:
             raise CategorizedError(
@@ -316,7 +361,14 @@ class SshBuildTransport:
                     "stderr": redacted_tail(result.stderr, self._secret_registry),
                 },
             )
-        return base64.b64decode(result.stdout.strip())
+        encoded = result.stdout.strip()
+        if len(encoded) > _MAX_REMOTE_READ_B64_BYTES:
+            raise CategorizedError(
+                f"remote file {path!r} exceeds the maximum readable size",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"path": path, "max_b64_bytes": _MAX_REMOTE_READ_B64_BYTES},
+            )
+        return base64.b64decode(encoded)
 
     def write_bytes(self, path: str, data: bytes) -> None:
         """Write *data* to *path* on the remote host by piping base64-encoded content.
@@ -399,10 +451,8 @@ class SshBuildTransport:
         """Upload *path* on the remote host to *presigned* URL; return the ETag (quotes stripped).
 
         Runs ``curl -fsS -X PUT --upload-file <path> <url>`` with each required header via
-        ``-H``. Captures the ETag from curl's stdout using ``-w '%{header_json}'`` is
-        avoided for portability; instead curl is invoked with ``-D -`` (dump headers to
-        stdout) and the ETag is extracted from the response headers. For simplicity the
-        response body is sent to ``/dev/null`` and the ETag header is parsed from the dump.
+        ``-H``, dumps the response headers to stdout (``-D -``), discards the body
+        (``-o /dev/null``), and parses the ETag from the dumped headers.
 
         Args:
             path: Remote filesystem path to the file to upload.

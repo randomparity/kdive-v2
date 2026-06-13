@@ -6,6 +6,7 @@ module-level target so argv capture is deterministic.
 
 from __future__ import annotations
 
+import base64
 import shlex
 import subprocess
 from pathlib import Path
@@ -16,7 +17,11 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.provider_components.artifacts import PresignedUpload
-from kdive.providers.build_host.ssh_transport import SshBuildTransport, materialized_ssh_identity
+from kdive.providers.build_host.ssh_transport import (
+    _MAX_REMOTE_READ_B64_BYTES,
+    SshBuildTransport,
+    materialized_ssh_identity,
+)
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 _RUN_TARGET = "kdive.providers.build_host.ssh_transport.subprocess.run"
@@ -31,6 +36,20 @@ def _completed(returncode: int = 0, stdout: str = "", stderr: str = "") -> Magic
     proc.stdout = stdout
     proc.stderr = stderr
     return proc
+
+
+def _transport() -> SshBuildTransport:
+    return SshBuildTransport(
+        address=_FAKE_ADDRESS,
+        identity_path=_FAKE_IDENTITY,
+        secret_registry=SecretRegistry(),
+    )
+
+
+def _remote_cmd(c: Any) -> str:
+    """The remote command string is the last element of the captured ssh argv."""
+    ssh_argv: list[str] = c.args[0]
+    return ssh_argv[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +233,121 @@ def test_upload_file_runs_host_side_curl_put_and_returns_etag() -> None:
     assert "--upload-file" in remote_cmd
     # Etag returned with quotes stripped (MD5 of empty string — not a real secret).
     assert etag == "d41d8cd98f00b204e9800998ecf8427e"  # pragma: allowlist secret
+
+
+# ---------------------------------------------------------------------------
+# 4b. address validation — leading dash rejected at construction, no subprocess
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "-oProxyCommand=touch /tmp/pwned",  # noqa: S108 — test payload, not a real path
+        "-bad-host",
+        "host\nwith-newline",
+        "host\x00null",
+    ],
+)
+def test_construction_rejects_unsafe_address_before_subprocess(address: str) -> None:
+    """SshBuildTransport raises CONFIGURATION_ERROR for an unsafe address; no subprocess runs."""
+    with patch(_RUN_TARGET) as mock_run, pytest.raises(CategorizedError) as exc_info:
+        SshBuildTransport(
+            address=address,
+            identity_path=_FAKE_IDENTITY,
+            secret_registry=SecretRegistry(),
+        )
+
+    mock_run.assert_not_called()
+    assert exc_info.value.category == ErrorCategory.CONFIGURATION_ERROR
+
+
+# ---------------------------------------------------------------------------
+# 4c. read_text / read_bytes / write_bytes — argv shape + base64 round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_read_bytes_argv_shape_and_round_trip() -> None:
+    """read_bytes runs base64 -w0 on the remote path and decodes the captured output."""
+    payload = b"\x00\x01\x02\xff binary \x7f"
+    encoded = base64.b64encode(payload).decode()
+
+    with patch(_RUN_TARGET, return_value=_completed(stdout=encoded)) as mock_run:
+        result = _transport().read_bytes("/build/out.bin")
+
+    assert result == payload
+    remote_cmd = _remote_cmd(mock_run.call_args)
+    assert "base64" in remote_cmd
+    assert "-w0" in remote_cmd
+    assert "/build/out.bin" in remote_cmd
+
+
+def test_read_text_decodes_utf8_round_trip() -> None:
+    """read_text decodes the remote bytes as UTF-8 regardless of subprocess locale."""
+    # Non-ASCII content: a kernel config comment with a multibyte char.
+    text = "# café — ☕ CONFIG_CRASH_DUMP=y\n"
+    encoded = base64.b64encode(text.encode("utf-8")).decode()
+
+    with patch(_RUN_TARGET, return_value=_completed(stdout=encoded)) as mock_run:
+        result = _transport().read_text("/build/.config")
+
+    assert result == text
+    # read_text goes through the base64 read_bytes path (not bare cat).
+    remote_cmd = _remote_cmd(mock_run.call_args)
+    assert "base64" in remote_cmd
+
+
+def test_read_text_invalid_utf8_raises_configuration_error() -> None:
+    """read_text raises CONFIGURATION_ERROR when the remote content is not valid UTF-8."""
+    # 0x80 is a continuation byte with no lead byte — invalid UTF-8.
+    encoded = base64.b64encode(b"\x80\x81\x82").decode()
+
+    with (
+        patch(_RUN_TARGET, return_value=_completed(stdout=encoded)),
+        pytest.raises(CategorizedError) as exc_info,
+    ):
+        _transport().read_text("/build/.config")
+
+    assert exc_info.value.category == ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_read_bytes_oversize_raises_configuration_error() -> None:
+    """read_bytes raises CONFIGURATION_ERROR when the captured base64 exceeds the cap."""
+    oversize = "A" * (_MAX_REMOTE_READ_B64_BYTES + 4)
+
+    with (
+        patch(_RUN_TARGET, return_value=_completed(stdout=oversize)),
+        pytest.raises(CategorizedError) as exc_info,
+    ):
+        _transport().read_bytes("/build/huge.bin")
+
+    assert exc_info.value.category == ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_write_bytes_argv_shape_and_pipes_base64_stdin() -> None:
+    """write_bytes pipes base64-encoded data to a remote base64 -d redirect."""
+    data = b"\x00config-bytes\xff"
+    encoded = base64.b64encode(data).decode()
+
+    with patch(_RUN_TARGET, return_value=_completed(returncode=0)) as mock_run:
+        _transport().write_bytes("/build/dest.bin", data)
+
+    remote_cmd = _remote_cmd(mock_run.call_args)
+    assert "base64 -d" in remote_cmd
+    assert "/build/dest.bin" in remote_cmd
+    # The base64 payload is fed via stdin, not embedded in the argv.
+    assert mock_run.call_args.kwargs["input"] == encoded
+
+
+def test_read_bytes_non_zero_raises_infrastructure_failure() -> None:
+    """read_bytes raises INFRASTRUCTURE_FAILURE when the remote read exits non-zero."""
+    with (
+        patch(_RUN_TARGET, return_value=_completed(returncode=1, stderr="No such file")),
+        pytest.raises(CategorizedError) as exc_info,
+    ):
+        _transport().read_bytes("/build/missing")
+
+    assert exc_info.value.category == ErrorCategory.INFRASTRUCTURE_FAILURE
 
 
 # ---------------------------------------------------------------------------
