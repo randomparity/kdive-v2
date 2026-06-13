@@ -1626,6 +1626,64 @@ def test_build_host_ssh_free_slot_lease_and_job_committed_atomically(migrated_ur
     asyncio.run(_run())
 
 
+async def _insert_ephemeral_host(
+    pool: AsyncConnectionPool,
+    *,
+    name: str = "builders",
+    max_concurrent: int = 2,
+    enabled: bool = True,
+    state: str = "ready",
+) -> UUID:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "INSERT INTO build_hosts "
+            "  (name, kind, base_image_volume, workspace_root, max_concurrent, enabled, state) "
+            "VALUES (%s, 'ephemeral_libvirt', 'kdive-build-base.qcow2', '/build', %s, %s, %s)"
+            " RETURNING id",
+            (name, max_concurrent, enabled, state),
+        )
+        row = await cur.fetchone()
+    assert row is not None
+    return row[0]
+
+
+def test_build_host_ephemeral_provenance_mismatch_warm_tree_is_config_error(
+    migrated_url: str,
+) -> None:
+    # An ephemeral_libvirt host + warm-tree (string) kernel_source_ref → configuration_error.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _insert_ephemeral_host(pool, name="builders-a")
+            profile = {**copy.deepcopy(_VALID_BUILD), "build_host": "builders-a"}
+            run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
+            resp = await _build(pool, _ctx(), run_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs WHERE kind='build'", ())
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert njobs == 0
+
+    asyncio.run(_run())
+
+
+def test_build_host_ephemeral_free_slot_lease_and_job_committed(migrated_url: str) -> None:
+    # An ephemeral_libvirt host with a free slot: git profile → lease row AND build job, both
+    # committed atomically; the BUILD payload carries the resolved host id.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            host_id = await _insert_ephemeral_host(pool, name="builders-free", max_concurrent=3)
+            profile = {**copy.deepcopy(_GIT_BUILD), "build_host": "builders-free"}
+            run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
+            resp = await _build(pool, _ctx(), run_id)
+            nleases = await _lease_count(pool, host_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs WHERE kind='build'", ())
+            payload = await _job_payload(pool, run_id)
+        assert resp.status == "queued"
+        assert nleases == 1
+        assert njobs == 1
+        assert payload["build_host_id"] == str(host_id)
+
+    asyncio.run(_run())
+
+
 # --- build_handler (the worker) ------------------------------------------------------
 
 from kdive.jobs import queue  # noqa: E402

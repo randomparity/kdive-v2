@@ -75,9 +75,9 @@ async def resolve_and_admit(
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"build_host": name, "host_kind": host.kind},
         )
-    if host.kind == "ssh" and not git:
+    if host.kind != "local" and not git:
         raise CategorizedError(
-            "an ssh build host requires a git kernel_source_ref",
+            "a remote build host requires a git kernel_source_ref",
             category=ErrorCategory.CONFIGURATION_ERROR,
             details={"build_host": name, "host_kind": host.kind},
         )
