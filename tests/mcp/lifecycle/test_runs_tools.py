@@ -1426,6 +1426,206 @@ def test_build_concurrent_flips_once(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+# --- runs.build: build-host selection + capacity admission (#342) --------------------
+
+from kdive.db.build_hosts import WORKER_LOCAL_ID  # noqa: E402
+
+# A git kernel_source_ref in the {"git": {...}} discriminated form (ssh-host provenance).
+_GIT_BUILD: dict[str, Any] = {
+    "schema_version": 1,
+    "kernel_source_ref": {
+        "git": {
+            "remote": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
+            "ref": "v6.12",
+        }
+    },
+    "config": {"kind": "local", "path": "/configs/kdump.config"},
+}
+
+
+# An ssh host seeded with max_concurrent=2 for capacity tests.
+async def _insert_ssh_host(
+    pool: AsyncConnectionPool,
+    *,
+    name: str = "build-ssh-1",
+    max_concurrent: int = 2,
+    enabled: bool = True,
+    state: str = "ready",
+) -> UUID:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "INSERT INTO build_hosts "
+            "  (name, kind, address, ssh_credential_ref, workspace_root,"
+            "   max_concurrent, enabled, state) "
+            "VALUES (%s, 'ssh', '10.0.0.5', 'ssh://cred/key', '/build', %s, %s, %s)"
+            " RETURNING id",
+            (name, max_concurrent, enabled, state),
+        )
+        row = await cur.fetchone()
+    assert row is not None
+    return row[0]
+
+
+async def _lease_count(pool: AsyncConnectionPool, host_id: UUID) -> int:
+    return await _count(
+        pool,
+        "SELECT count(*) AS n FROM build_host_leases WHERE build_host_id = %s",
+        (str(host_id),),
+    )
+
+
+async def _job_payload(pool: AsyncConnectionPool, run_id: str) -> dict[str, Any]:
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT payload FROM jobs WHERE kind = 'build' AND dedup_key = %s",
+            (f"{run_id}:build",),
+        )
+        row = await cur.fetchone()
+    assert row is not None, f"no build job found for run {run_id}"
+    return row["payload"]  # type: ignore[return-value]
+
+
+def test_build_host_local_no_lease_enqueues_with_worker_local_id(migrated_url: str) -> None:
+    # A warm-tree profile with no build_host in the profile resolves to worker-local.
+    # Local hosts acquire no lease; the payload must carry WORKER_LOCAL_ID.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(
+                pool, state=RunState.CREATED, build_profile=copy.deepcopy(_VALID_BUILD)
+            )
+            resp = await _build(pool, _ctx(), run_id)
+            assert resp.status == "queued"
+            nleases = await _lease_count(pool, WORKER_LOCAL_ID)
+            payload = await _job_payload(pool, run_id)
+            state_row = await _count(
+                pool, "SELECT count(*) AS n FROM runs WHERE id=%s AND state='running'", (run_id,)
+            )
+        assert nleases == 0  # local host — no lease row
+        assert payload["build_host_id"] == str(WORKER_LOCAL_ID)
+        assert state_row == 1
+
+    asyncio.run(_run())
+
+
+def test_build_host_absent_name_is_not_found_no_job_no_state_change(migrated_url: str) -> None:
+    # A profile naming a host that does not exist → not_found; no job, no state flip.
+    async def _run() -> None:
+        profile = {**copy.deepcopy(_VALID_BUILD), "build_host": "no-such-host"}
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
+            resp = await _build(pool, _ctx(), run_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs WHERE kind='build'", ())
+            ncreated = await _count(
+                pool, "SELECT count(*) AS n FROM runs WHERE id=%s AND state='created'", (run_id,)
+            )
+        assert resp.status == "error" and resp.error_category == "not_found"
+        assert njobs == 0
+        assert ncreated == 1
+
+    asyncio.run(_run())
+
+
+def test_build_host_disabled_is_config_error_no_job(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _insert_ssh_host(pool, name="disabled-host", enabled=False)
+            profile = {**copy.deepcopy(_GIT_BUILD), "build_host": "disabled-host"}
+            run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
+            resp = await _build(pool, _ctx(), run_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs WHERE kind='build'", ())
+            ncreated = await _count(
+                pool, "SELECT count(*) AS n FROM runs WHERE id=%s AND state='created'", (run_id,)
+            )
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert njobs == 0
+        assert ncreated == 1
+
+    asyncio.run(_run())
+
+
+def test_build_host_provenance_mismatch_ssh_with_warm_tree_is_config_error(
+    migrated_url: str,
+) -> None:
+    # An ssh host + warm-tree (string) kernel_source_ref → configuration_error.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _insert_ssh_host(pool, name="ssh-host-a")
+            profile = {**copy.deepcopy(_VALID_BUILD), "build_host": "ssh-host-a"}
+            run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
+            resp = await _build(pool, _ctx(), run_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs WHERE kind='build'", ())
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert njobs == 0
+
+    asyncio.run(_run())
+
+
+def test_build_host_provenance_mismatch_local_with_git_ref_is_config_error(
+    migrated_url: str,
+) -> None:
+    # worker-local (local kind) + git kernel_source_ref → configuration_error.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            profile = copy.deepcopy(_GIT_BUILD)  # no build_host → resolves worker-local
+            run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
+            resp = await _build(pool, _ctx(), run_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs WHERE kind='build'", ())
+        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert njobs == 0
+
+    asyncio.run(_run())
+
+
+def test_build_host_capacity_exhausted_no_lease_no_job_atomic_rollback(migrated_url: str) -> None:
+    # Pre-fill all max_concurrent slots on the ssh host; a new run must get capacity_exhausted
+    # with no new lease row, no job, and the run state still 'created' (atomic rollback).
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            host_id = await _insert_ssh_host(pool, name="full-host", max_concurrent=2)
+            # Pre-insert leases for two OTHER runs to saturate capacity.
+            for _ in range(2):
+                other_run_id = uuid4()
+                async with pool.connection() as conn:
+                    await conn.execute(
+                        "INSERT INTO build_host_leases (run_id, build_host_id) VALUES (%s, %s)",
+                        (other_run_id, host_id),
+                    )
+            profile = {**copy.deepcopy(_GIT_BUILD), "build_host": "full-host"}
+            run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
+            resp = await _build(pool, _ctx(), run_id)
+            nleases = await _lease_count(pool, host_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs WHERE kind='build'", ())
+            ncreated = await _count(
+                pool, "SELECT count(*) AS n FROM runs WHERE id=%s AND state='created'", (run_id,)
+            )
+        assert resp.status == "error" and resp.error_category == "capacity_exhausted"
+        assert "runs.build" in resp.suggested_next_actions
+        assert nleases == 2  # the pre-existing leases; no new one added
+        assert njobs == 0
+        assert ncreated == 1  # state not flipped (atomic rollback)
+
+    asyncio.run(_run())
+
+
+def test_build_host_ssh_free_slot_lease_and_job_committed_atomically(migrated_url: str) -> None:
+    # An ssh host with a free slot: lease row AND build job must both be present after commit.
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            host_id = await _insert_ssh_host(pool, name="ssh-free", max_concurrent=3)
+            profile = {**copy.deepcopy(_GIT_BUILD), "build_host": "ssh-free"}
+            run_id = await _seed_run(pool, state=RunState.CREATED, build_profile=profile)
+            resp = await _build(pool, _ctx(), run_id)
+            nleases = await _lease_count(pool, host_id)
+            njobs = await _count(pool, "SELECT count(*) AS n FROM jobs WHERE kind='build'", ())
+            payload = await _job_payload(pool, run_id)
+        assert resp.status == "queued"
+        assert nleases == 1  # one lease for this run
+        assert njobs == 1
+        assert payload["build_host_id"] == str(host_id)
+
+    asyncio.run(_run())
+
+
 # --- build_handler (the worker) ------------------------------------------------------
 
 from kdive.jobs import queue  # noqa: E402
