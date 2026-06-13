@@ -289,6 +289,50 @@ class SshBuildTransport(ShellBuildTransport):
             raise launch_failure("ssh", exc, category=ErrorCategory.INFRASTRUCTURE_FAILURE) from exc
         return CommandResult(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
 
+    def check_reachable(self, *, timeout_s: int) -> bool:
+        """Return whether a bare ``ssh <host> true`` succeeds (reachability probe, ADR-0103).
+
+        Runs ``true`` directly via :meth:`_ssh_argv` (reusing ``-i identity``,
+        ``BatchMode=yes``, ``StrictHostKeyChecking=accept-new``, ``ConnectTimeout=10``) with
+        **no** ``cd <workspace>`` prefix — a reachability check tests the SSH hop only, not
+        workspace existence. Every non-success outcome returns ``False`` rather than raising:
+        a non-zero exit (the redacted stderr tail is logged at ``warning`` so a changed host
+        key under ``accept-new`` is diagnosable), a timeout, or an ssh launch failure.
+
+        Args:
+            timeout_s: The subprocess timeout; set larger than ssh's own ``ConnectTimeout``
+                so ssh's connect timeout is the binding signal and this is only a backstop.
+
+        Returns:
+            ``True`` iff ``ssh <host> true`` exited ``0``; ``False`` otherwise.
+        """
+        ssh_argv = self._ssh_argv("true")
+        try:
+            proc = subprocess.run(
+                ssh_argv,
+                timeout=timeout_s,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.TimeoutExpired:
+            _log.warning(
+                "ssh reachability probe to %s timed out after %ss", self._address, timeout_s
+            )
+            return False
+        except OSError:
+            _log.warning("ssh reachability probe to %s could not launch ssh", self._address)
+            return False
+        if proc.returncode != 0:
+            _log.warning(
+                "ssh reachability probe to %s failed (rc=%d): %s",
+                self._address,
+                proc.returncode,
+                redacted_tail(proc.stderr, self._secret_registry),
+            )
+            return False
+        return True
+
     def write_bytes(self, path: str, data: bytes) -> None:
         """Write *data* to *path* on the remote host by piping base64-encoded content to stdin.
 

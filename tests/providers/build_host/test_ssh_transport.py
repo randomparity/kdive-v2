@@ -408,3 +408,61 @@ def test_materialized_ssh_identity_unlinks_on_body_exception(tmp_path: Path) -> 
 
     assert written_path is not None
     assert not written_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# 6. check_reachable — bare `ssh … true` reachability probe (ADR-0103)
+# ---------------------------------------------------------------------------
+
+
+def test_check_reachable_runs_bare_true_no_cd() -> None:
+    """check_reachable runs `ssh … true` with no workspace `cd`; returncode 0 → True."""
+    with patch(_RUN_TARGET, return_value=_completed(returncode=0)) as mock_run:
+        ok = _transport().check_reachable(timeout_s=15)
+
+    assert ok is True
+    remote_cmd = _remote_cmd(mock_run.call_args)
+    assert remote_cmd == "true"
+    assert "cd " not in remote_cmd
+    assert "&&" not in remote_cmd
+    assert mock_run.call_args.kwargs["timeout"] == 15
+
+
+def test_check_reachable_non_zero_returns_false_and_logs_redacted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A non-zero exit → False; the stderr tail is logged at warning, redacted of secrets."""
+    secret = "super-secret-host-key-material"  # pragma: allowlist secret
+    registry = SecretRegistry()
+    registry.register(secret, scope=None)
+    transport = SshBuildTransport(
+        address=_FAKE_ADDRESS, identity_path=_FAKE_IDENTITY, secret_registry=registry
+    )
+    stderr = f"Permission denied; key was {secret}"
+
+    with (
+        patch(_RUN_TARGET, return_value=_completed(returncode=255, stderr=stderr)),
+        caplog.at_level("WARNING"),
+    ):
+        ok = transport.check_reachable(timeout_s=15)
+
+    assert ok is False
+    assert caplog.records, "a failed probe must log at warning"
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert secret not in logged
+
+
+def test_check_reachable_timeout_returns_false() -> None:
+    """A subprocess timeout → False (not raised)."""
+    with patch(_RUN_TARGET, side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=15)):
+        ok = _transport().check_reachable(timeout_s=15)
+
+    assert ok is False
+
+
+def test_check_reachable_launch_oserror_returns_false() -> None:
+    """An ssh launch failure (OSError) → False (not raised)."""
+    with patch(_RUN_TARGET, side_effect=OSError("ssh: command not found")):
+        ok = _transport().check_reachable(timeout_s=15)
+
+    assert ok is False
