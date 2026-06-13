@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -27,6 +29,15 @@ REQUIRED_KERNEL_CONFIG: tuple[tuple[str, ...], ...] = (
     ("CONFIG_DEBUG_INFO_DWARF4", "CONFIG_DEBUG_INFO_DWARF5", "CONFIG_DEBUG_INFO_BTF"),
 )
 
+# Removes the per-run workspace after a terminal build. The worker-local default rmtrees the
+# rsync destination; over_transport injects a transport-routed removal of the host-side clone.
+type WorkspaceCleanup = Callable[[Path], None]
+
+
+def _default_workspace_cleanup(workspace: Path) -> None:
+    """Best-effort removal of a worker-side per-run workspace; never raises on a missing tree."""
+    shutil.rmtree(workspace, ignore_errors=True)
+
 
 @dataclass(slots=True)
 class BuildHostOrchestrator:
@@ -39,6 +50,7 @@ class BuildHostOrchestrator:
     read_config: ReadConfig
     run_make: RunStep
     allowed_component_roots: list[Path]
+    cleanup: WorkspaceCleanup
 
     @classmethod
     def create(
@@ -51,8 +63,9 @@ class BuildHostOrchestrator:
         read_config: ReadConfig,
         run_make: RunStep,
         allowed_component_roots: list[Path] | None = None,
+        cleanup: WorkspaceCleanup | None = None,
     ) -> BuildHostOrchestrator:
-        """Build an orchestrator with the default component-root allowlist."""
+        """Build an orchestrator with the default component-root allowlist and cleanup seam."""
         return cls(
             workspace_root=workspace_root,
             catalog_fetch=catalog_fetch,
@@ -61,11 +74,20 @@ class BuildHostOrchestrator:
             read_config=read_config,
             run_make=run_make,
             allowed_component_roots=allowed_component_roots or [Path(DEFAULT_BUILD_COMPONENT_ROOT)],
+            cleanup=cleanup or _default_workspace_cleanup,
         )
+
+    def workspace_path(self, run_id: UUID) -> Path:
+        """The per-run workspace path ``<workspace_root>/<run_id>`` (created by the build)."""
+        return self.workspace_root / str(run_id)
+
+    def cleanup_workspace(self, workspace: Path) -> None:
+        """Remove a per-run workspace via the injected best-effort cleanup seam."""
+        self.cleanup(workspace)
 
     def build_workspace(self, run_id: UUID, profile: ServerBuildProfile) -> Path:
         """Resolve config, checkout, preflight, run ``make``, and return the workspace path."""
-        workspace = self.workspace_root / str(run_id)
+        workspace = self.workspace_path(run_id)
         config_ref = profile.config or DEFAULT_CONFIG_REF
         fragment_bytes = resolve_config_bytes(
             config_ref,
