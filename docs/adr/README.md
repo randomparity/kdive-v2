@@ -123,3 +123,4 @@ and keep prose plain and factual (no "critical", "robust", "comprehensive").
 | [0094](0094-remote-host-dump-via-coredump-volume.md) | Remote host_dump via `virDomainCoreDumpWithFormat` (ELF) + presigned-PUT stream download (M2.5) | Proposed |
 | [0095](0095-reconciler-remote-console-collector.md) | Reconciler-supervised remote console collector (M2.5) | Proposed |
 | [0096](0096-kdump-config-fragment-build-input.md) | Kdump kernel-config fragment as a seeded build-config catalog input — merge onto `make defconfig`, catalog ref with implicit default, inline agent download | Proposed |
+| [0097](0097-not-found-conflict-error-categories.md) | `not_found` / `conflict` error categories — absent-but-valid object ids return `not_found` (exit 4) while parse failures stay `configuration_error`; ungranted-row stays identical to absent (no-leak); `conflict` defined-but-unemitted (closes #338) | Proposed |
