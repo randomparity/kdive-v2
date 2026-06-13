@@ -11,6 +11,7 @@ import base64
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -31,6 +32,16 @@ from kdive.providers.build_host.artifact_publish import (
 from kdive.providers.build_host.transport import CommandResult
 
 _RUN = UUID("33333333-3333-3333-3333-333333333333")
+
+
+@dataclass(frozen=True)
+class _SizedStub:
+    """A bytes-stand-in reporting an over-ceiling ``len`` without allocating that memory."""
+
+    size: int
+
+    def __len__(self) -> int:
+        return self.size
 
 
 @dataclass
@@ -109,6 +120,24 @@ def test_bytes_source_puts_with_tenant_owner_sensitivity() -> None:
     assert req.sensitivity is Sensitivity.SENSITIVE
     assert req.retention_class == "build"
     assert stored.key == f"local/runs/{_RUN}/kernel"
+
+
+def test_bytes_source_over_5gib_is_configuration_error_before_put() -> None:
+    store = _FakeStore()
+    oversize = cast("bytes", _SizedStub(5 * 1024**3 + 1))
+    with pytest.raises(CategorizedError) as caught:
+        publish_artifact_source(
+            store,
+            _RUN,
+            "kernel",
+            ArtifactBytes(oversize),
+            tenant="local",
+            sensitivity=Sensitivity.SENSITIVE,
+            retention_class="build",
+        )
+    assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert "5 GiB" in str(caught.value)
+    assert store.puts == []
 
 
 def test_remote_file_presigns_base64_sha256_and_uploads() -> None:

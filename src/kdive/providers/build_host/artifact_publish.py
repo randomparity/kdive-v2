@@ -79,12 +79,20 @@ def publish_artifact_source(
     computed on the build host, so the worker never reads the file's bytes.
 
     Raises:
-        CategorizedError: ``INFRASTRUCTURE_FAILURE`` propagated from a failed store operation or
+        CategorizedError: ``CONFIGURATION_ERROR`` if an artifact's size exceeds the 5 GiB
+            single-PUT ceiling (checked against ``len(data)`` for bytes, host-side ``stat`` for a
+            remote file); ``INFRASTRUCTURE_FAILURE`` propagated from a failed store operation or
             presigned upload; ``BUILD_FAILURE`` if the host-side hash/size of a remote file
             cannot be read.
     """
     match source:
         case ArtifactBytes(data=data):
+            if len(data) > _MAX_SINGLE_PUT_BYTES:
+                raise CategorizedError(
+                    "build artifact exceeds the single-PUT 5 GiB ceiling",
+                    category=ErrorCategory.CONFIGURATION_ERROR,
+                    details={"run_id": str(run_id), "name": name, "size_bytes": len(data)},
+                )
             return store.put_artifact(
                 ArtifactWriteRequest(
                     tenant=tenant,
