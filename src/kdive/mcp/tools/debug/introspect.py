@@ -51,11 +51,12 @@ async def introspect_from_vmcore(
 ) -> ToolResponse:
     """Run offline drgn introspection over the Run's captured core; return the redacted report.
 
-    Requires the viewer role. A Run with a null `debuginfo_ref`, no recorded `build` step, or a
-    System with no captured core is a `configuration_error`; a provenance mismatch or a drgn
-    open/decode fault surfaces as the port's typed `CategorizedError` category, never a 500.
-    Off a prepared live host, the provider seam reports ``missing_dependency`` instead of
-    importing drgn.
+    Requires the viewer role. A malformed `run_id` is a `configuration_error`; a Run that is
+    absent, in an ungranted project (no-leak), or missing its target artifact (null
+    `debuginfo_ref`, no recorded `build` step, or no captured core) is `not_found` (ADR-0097). A
+    provenance mismatch or a drgn open/decode fault surfaces as the port's typed
+    `CategorizedError` category, never a 500. Off a prepared live host, the provider seam reports
+    ``missing_dependency`` instead of importing drgn.
     """
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:

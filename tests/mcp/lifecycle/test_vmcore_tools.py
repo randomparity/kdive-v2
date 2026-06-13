@@ -483,7 +483,10 @@ def test_postmortem_crash_requires_viewer_role(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_postmortem_crash_unbuilt_run_is_config_error(migrated_url: str) -> None:
+def test_postmortem_crash_unbuilt_run_is_not_found(migrated_url: str) -> None:
+    # postmortem_crash shares resolve_run_vmcore_target with introspect.from_vmcore: a run with
+    # no target artifact (null debuginfo / no build / no core) is not_found (ADR-0097). A
+    # malformed command batch still stays configuration_error (a separate guard in the tool).
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
@@ -491,7 +494,7 @@ def test_postmortem_crash_unbuilt_run_is_config_error(migrated_url: str) -> None
             resp = await _vmcore_handlers().postmortem_crash(
                 pool, _ctx(), run_id=run_id, commands=["log"]
             )
-        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.status == "error" and resp.error_category == "not_found"
 
     asyncio.run(_run())
 
@@ -524,18 +527,18 @@ def test_postmortem_triage_runs_and_relabels_actions(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
-def test_postmortem_triage_propagates_failure(migrated_url: str) -> None:
+def test_postmortem_triage_propagates_not_found(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
             run_id = await seed_run_on_system(pool, sys_id, debuginfo_ref=None, build_id=None)
             resp = await _vmcore_handlers().postmortem_triage(pool, _ctx(), run_id=run_id)
-        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.status == "error" and resp.error_category == "not_found"
 
     asyncio.run(_run())
 
 
-def test_postmortem_crash_no_core_is_config_error(migrated_url: str) -> None:
+def test_postmortem_crash_no_core_is_not_found(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
@@ -545,7 +548,7 @@ def test_postmortem_crash_no_core_is_config_error(migrated_url: str) -> None:
             resp = await _vmcore_handlers().postmortem_crash(
                 pool, _ctx(), run_id=run_id, commands=["log"]
             )
-        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.status == "error" and resp.error_category == "not_found"
 
     asyncio.run(_run())
 

@@ -151,7 +151,8 @@ def test_from_vmcore_passes_through_port_redacted_report(migrated_url: str) -> N
     asyncio.run(_run())
 
 
-def test_from_vmcore_unbuilt_run_is_config_error(migrated_url: str) -> None:
+def test_from_vmcore_unbuilt_run_is_not_found(migrated_url: str) -> None:
+    # A run with a null debuginfo_ref has no introspectable target: not_found (ADR-0097).
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
@@ -159,12 +160,12 @@ def test_from_vmcore_unbuilt_run_is_config_error(migrated_url: str) -> None:
             resp = await introspect_tools.introspect_from_vmcore(
                 pool, _ctx(), run_id=run_id, introspector=_FakeIntrospector()
             )
-        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.status == "error" and resp.error_category == "not_found"
 
     asyncio.run(_run())
 
 
-def test_from_vmcore_no_build_step_is_config_error(migrated_url: str) -> None:
+def test_from_vmcore_no_build_step_is_not_found(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
@@ -175,12 +176,12 @@ def test_from_vmcore_no_build_step_is_config_error(migrated_url: str) -> None:
             resp = await introspect_tools.introspect_from_vmcore(
                 pool, _ctx(), run_id=run_id, introspector=_FakeIntrospector()
             )
-        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.status == "error" and resp.error_category == "not_found"
 
     asyncio.run(_run())
 
 
-def test_from_vmcore_no_captured_core_is_config_error(migrated_url: str) -> None:
+def test_from_vmcore_no_captured_core_is_not_found(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             sys_id = await seed_crashed_system(pool)
@@ -190,7 +191,7 @@ def test_from_vmcore_no_captured_core_is_config_error(migrated_url: str) -> None
             resp = await introspect_tools.introspect_from_vmcore(
                 pool, _ctx(), run_id=run_id, introspector=_FakeIntrospector()
             )
-        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.status == "error" and resp.error_category == "not_found"
 
     asyncio.run(_run())
 
@@ -206,14 +207,15 @@ def test_from_vmcore_malformed_run_id_is_config_error(migrated_url: str) -> None
     asyncio.run(_run())
 
 
-def test_from_vmcore_cross_project_is_config_error(migrated_url: str) -> None:
+def test_from_vmcore_cross_project_is_not_found(migrated_url: str) -> None:
+    # No-leak: a run in an ungranted project is indistinguishable from absent (not_found).
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _built_run_with_core(pool)
             resp = await introspect_tools.introspect_from_vmcore(
                 pool, _ctx(projects=("other",)), run_id=run_id, introspector=_FakeIntrospector()
             )
-        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.status == "error" and resp.error_category == "not_found"
 
     asyncio.run(_run())
 

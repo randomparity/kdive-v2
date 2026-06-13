@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 import pytest
 from psycopg_pool import AsyncConnectionPool
@@ -83,7 +84,9 @@ def test_resolve_run_vmcore_target_rejects_bad_run_id(migrated_url: str) -> None
     asyncio.run(_run())
 
 
-def test_resolve_run_vmcore_target_requires_recorded_build_id(migrated_url: str) -> None:
+def test_resolve_run_vmcore_target_missing_build_id_is_not_found(migrated_url: str) -> None:
+    # A run with no recorded build step has no introspectable target artifact: not_found, not a
+    # malformed-input configuration_error (ADR-0097). The malformed-run-id case stays config.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             system_id = await seed_crashed_system(pool)
@@ -98,7 +101,18 @@ def test_resolve_run_vmcore_target_requires_recorded_build_id(migrated_url: str)
                 with pytest.raises(CategorizedError) as exc:
                     await resolve_run_vmcore_target(conn, _ctx(), run_id)
 
-        assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
+        assert exc.value.category is ErrorCategory.NOT_FOUND
+
+    asyncio.run(_run())
+
+
+def test_resolve_run_vmcore_target_absent_run_is_not_found(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool, pool.connection() as conn:
+            with pytest.raises(CategorizedError) as exc:
+                await resolve_run_vmcore_target(conn, _ctx(), str(uuid4()))
+
+        assert exc.value.category is ErrorCategory.NOT_FOUND
 
     asyncio.run(_run())
 
