@@ -235,6 +235,9 @@ def test_get_allocation_requires_viewer_role(migrated_url: str) -> None:
 
 
 def test_get_other_project_allocation_is_not_found(migrated_url: str) -> None:
+    # No-leak (ADR-0097): an ungranted by-id lookup is not_found, NEVER authorization_denied —
+    # the membership-envelope change (ADR-0098) flips require_project for NAMED-scope tools but
+    # the by-id getters never call require_project, so this path is structurally untouched.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             await _register(pool, cap=2)
@@ -243,6 +246,7 @@ def test_get_other_project_allocation_is_not_found(migrated_url: str) -> None:
             resp = await alloc_tools.get_allocation(pool, other, req.object_id)
         assert resp.status == "error"
         assert resp.error_category == "not_found"
+        assert resp.error_category != "authorization_denied"
 
     asyncio.run(_run())
 
