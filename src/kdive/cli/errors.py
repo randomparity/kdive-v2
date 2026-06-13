@@ -13,6 +13,7 @@ _CODES = {
     "authorization_denied": 3,
     "not_found": 4,
     "conflict": 5,
+    "capacity_exhausted": 6,
 }
 
 

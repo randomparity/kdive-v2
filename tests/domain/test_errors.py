@@ -46,7 +46,12 @@ LOOKUP_ADDED = {
     "not_found",
     "conflict",
 }
-M0_ALL = M0_PORTED | M0_DISTRIBUTED | M1_ADDED | LOOKUP_ADDED
+# Build-host scheduling categories (#342): a build-host-at-capacity denial distinct from
+# `quota_exceeded` (per-project concurrency cap) and `allocation_denied` (over-budget).
+BUILD_HOST_ADDED = {
+    "capacity_exhausted",
+}
+M0_ALL = M0_PORTED | M0_DISTRIBUTED | M1_ADDED | LOOKUP_ADDED | BUILD_HOST_ADDED
 
 
 def test_taxonomy_is_exactly_the_m0_set() -> None:
@@ -78,6 +83,10 @@ def test_not_found_category_value() -> None:
 
 def test_conflict_category_value() -> None:
     assert ErrorCategory.CONFLICT.value == "conflict"
+
+
+def test_capacity_exhausted_category_value() -> None:
+    assert ErrorCategory.CAPACITY_EXHAUSTED.value == "capacity_exhausted"
 
 
 def test_categorized_error_is_an_exception_carrying_its_category() -> None:

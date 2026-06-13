@@ -49,6 +49,9 @@ class ErrorCategory(StrEnum):
     TRANSPORT_FAILURE = "transport_failure"
     CONTROL_FAILURE = "control_failure"
     AUTHORIZATION_DENIED = "authorization_denied"
+    # Build-host scheduling (#342): all registered hosts are at capacity; distinct from
+    # `quota_exceeded` (per-project concurrency cap) and `allocation_denied` (over-budget).
+    CAPACITY_EXHAUSTED = "capacity_exhausted"
 
 
 class CategorizedError(Exception):
