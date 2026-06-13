@@ -245,14 +245,19 @@ def test_ssh_host_success_releases_lease(
 
 
 # ---------------------------------------------------------------------------
-# Test 3: ssh host build failure releases the lease (committed) + run FAILED
+# Test 3: ssh host build failure marks run FAILED but RETAINS the lease
 # ---------------------------------------------------------------------------
 
 
-def test_ssh_host_build_failure_releases_lease(
+def test_ssh_host_build_failure_retains_lease(
     migrated_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failed ssh build fails the run AND releases the lease so the slot frees."""
+    """A failed ssh build marks the run FAILED but RETAINS the lease (retries must not over-admit).
+
+    The build job retries up to ``max_attempts``; releasing the slot between attempts would let
+    another build grab it while attempts 2-3 still run on the host. The lease is held until the
+    job is terminal, when the reconciler reclaims it.
+    """
     failing = _FailingBuilder()
     monkeypatch.setattr(runs_handlers, "ssh_build_transport_from_host", _fake_from_host)
     monkeypatch.setattr(
@@ -277,7 +282,7 @@ def test_ssh_host_build_failure_releases_lease(
                     )
             assert failing.calls == [UUID(run_id)]
             assert await _run_state(pool, run_id) == "failed"
-            assert await _lease_count(pool, run_id) == 0
+            assert await _lease_count(pool, run_id) == 1  # retained for the reconciler
 
     asyncio.run(_run())
 
@@ -290,7 +295,12 @@ def test_ssh_host_build_failure_releases_lease(
 def test_ssh_host_non_remote_builder_not_implemented(
     migrated_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An ssh host selected for a non-remote-libvirt builder fails NOT_IMPLEMENTED + frees lease."""
+    """An ssh host selected for a non-remote-libvirt builder fails NOT_IMPLEMENTED; lease retained.
+
+    All handler failures are treated the same — the lease is never released on the failure path.
+    This pre-build failure will recur on every retry (a non-remote builder can't use ssh), so the
+    run fails all attempts and the reconciler reclaims the lease once the job is dead-lettered.
+    """
     monkeypatch.setattr(runs_handlers, "ssh_build_transport_from_host", _fake_from_host)
 
     async def _run() -> None:
@@ -309,18 +319,22 @@ def test_ssh_host_non_remote_builder_not_implemented(
                     )
             assert exc.value.category is ErrorCategory.NOT_IMPLEMENTED
             assert await _run_state(pool, run_id) == "failed"
-            assert await _lease_count(pool, run_id) == 0
+            assert await _lease_count(pool, run_id) == 1  # retained for the reconciler
 
     asyncio.run(_run())
 
 
 # ---------------------------------------------------------------------------
-# Test 5: host row gone -> INFRASTRUCTURE_FAILURE, lease released best-effort
+# Test 5: host row gone -> INFRASTRUCTURE_FAILURE, run FAILED
 # ---------------------------------------------------------------------------
 
 
 def test_host_row_gone_infrastructure_failure(migrated_url: str) -> None:
-    """A build_host_id pointing at no row fails INFRASTRUCTURE_FAILURE and releases any lease."""
+    """A build_host_id pointing at no row fails INFRASTRUCTURE_FAILURE and marks the run FAILED.
+
+    The vanished host has no lease (it was the host row itself that disappeared), so there is
+    nothing to retain or reclaim here; the run is driven FAILED durably.
+    """
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -336,6 +350,7 @@ def test_host_row_gone_infrastructure_failure(migrated_url: str) -> None:
                         secret_registry=SecretRegistry(),
                     )
             assert exc.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+            assert await _run_state(pool, run_id) == "failed"
             assert await _lease_count(pool, run_id) == 0
 
     asyncio.run(_run())

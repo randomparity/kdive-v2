@@ -109,16 +109,18 @@ ssh_build_transport_from_host = SshBuildTransport.from_host
 
 
 async def _release_build_lease(conn: AsyncConnection, run_id: UUID) -> None:
-    """Delete the run's build-host lease; durability depends on the caller committing.
+    """Delete the run's build-host lease; called only on the SUCCESS path.
+
+    The lease is released only when the build succeeds. On failure it is deliberately retained so
+    a retry (BUILD jobs retry up to ``max_attempts``) cannot over-admit the host; the reconciler
+    reclaims it when the job is terminal (see ``_build_and_record``).
 
     The ``conn.transaction()`` here is NOT an independent commit: the handler's earlier bare
     ``RUNS.get`` opened a long-lived implicit transaction on this non-autocommit pool connection,
     so this (and every other ``conn.transaction()`` in the handler) is a SAVEPOINT nested in that
-    parent — RELEASE on exit leaves the parent open and uncommitted. The DELETE only becomes
-    durable when the caller commits the parent: the failure path does so with an explicit
-    ``await conn.commit()`` before re-raising (see ``_build_and_record``); the success path on the
-    handler's clean exit, when the pool-connection context manager commits. See the rollback
-    hazard documented on :func:`kdive.db.build_hosts.release_lease`.
+    parent — RELEASE on exit leaves the parent open and uncommitted. The DELETE becomes durable on
+    the handler's clean exit, when the pool-connection context manager commits the parent. See the
+    rollback hazard documented on :func:`kdive.db.build_hosts.release_lease`.
 
     Errors are logged and swallowed — the reconciler is the backstop. A worker-local run holds no
     lease, so this is an idempotent no-op DELETE.
@@ -272,7 +274,16 @@ async def _build_and_record(
     resolver: ProviderResolver,
     secret_registry: SecretRegistry,
 ) -> BuildStepResult:
-    """Resolve the host, run the build, and shape the ledger result; release lease on failure."""
+    """Resolve the host, run the build, and shape the ledger result; mark FAILED on error.
+
+    The build-host lease is **not** released on the failure path. BUILD jobs retry
+    (``max_attempts=3``; ``queue.fail`` requeues non-terminally), and the handler rebuilds on
+    every attempt while ``existing_build_result`` is ``None``. Releasing the slot here would free
+    it between attempts, letting another build grab it while attempts 2-3 still run on the host —
+    ``max_concurrent`` over-admission. Instead the lease is held until the job is terminal: the
+    reconciler's :func:`reclaim_orphan_build_host_leases` reclaims it (keyed on job liveness) once
+    the job is dead-lettered after the last attempt. Only the success path releases the lease.
+    """
     run_id = run.id
     try:
         host = await _resolve_build_host(conn, payload, run_id)
@@ -281,12 +292,11 @@ async def _build_and_record(
         )
     except CategorizedError as exc:
         await _fail_build(conn, job, run, exc.category)
-        await _release_build_lease(conn, run_id)
         # LOAD-BEARING — do not remove. The handler's bare RUNS.get opened an implicit transaction
-        # on this non-autocommit pool connection, so _fail_build's FAILED transition and the lease
-        # DELETE are both SAVEPOINTs nested in that still-open parent. The pool-connection context
-        # manager rolls the parent back on the re-raise below, which would revert the FAILED state
-        # and leave the lease occupying the slot. This explicit commit makes both durable first.
+        # on this non-autocommit pool connection, so _fail_build's FAILED transition is a SAVEPOINT
+        # nested in that still-open parent; the pool-connection context manager would roll the
+        # parent back on the re-raise below, reverting the FAILED state. This commit makes the
+        # FAILED transition durable. (The lease is intentionally NOT released here — see above.)
         await conn.commit()
         raise
     return BuildStepResult(
