@@ -25,6 +25,7 @@ from kdive.provider_components.references import (
 from kdive.providers.build_host import config as build_host_config
 from kdive.providers.build_host import execution as build_host_execution
 from kdive.providers.build_host import workspace as build_host_workspace
+from kdive.providers.build_host.artifact_publish import ArtifactBytes, ArtifactSource
 from kdive.providers.local_libvirt import build as build_module
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -91,6 +92,9 @@ class _FakeStore:
             key, "etag-" + request.name, request.sensitivity, request.retention_class
         )
 
+    def presign_put(self, request: Any) -> Any:  # pragma: no cover - warm path never presigns
+        raise AssertionError("warm-path build must not presign")
+
 
 @dataclass
 class _Seams:
@@ -127,11 +131,11 @@ class _Seams:
         self.call_order.append("make")
         return self.make_returncode
 
-    def read_kernel_image(self, workspace: Path) -> bytes:
-        return b"bzImage-bytes"
+    def read_kernel_source(self, workspace: Path) -> ArtifactSource:
+        return ArtifactBytes(b"bzImage-bytes")
 
-    def read_vmlinux(self, workspace: Path) -> bytes:
-        return b"vmlinux-bytes"
+    def read_vmlinux_source(self, workspace: Path) -> ArtifactSource:
+        return ArtifactBytes(b"vmlinux-bytes")
 
     def read_build_id(self, workspace: Path) -> str:
         return self.build_id.hex()
@@ -152,8 +156,8 @@ def _builder(
         run_olddefconfig=seams.run_olddefconfig,
         read_config=seams.read_config,
         run_make=seams.run_make,
-        read_kernel_image=seams.read_kernel_image,
-        read_vmlinux=seams.read_vmlinux,
+        read_kernel_source=seams.read_kernel_source,
+        read_vmlinux_source=seams.read_vmlinux_source,
         read_build_id=seams.read_build_id,
         secret_registry=SecretRegistry(),
         catalog_fetch=catalog_fetch or (lambda _name: _FRAGMENT_BYTES),
@@ -321,8 +325,10 @@ def test_build_missing_bzimage_after_make_is_build_failure(tmp_path: Path) -> No
         run_olddefconfig=seams.run_olddefconfig,
         read_config=seams.read_config,
         run_make=seams.run_make,
-        read_kernel_image=build_host_execution.real_read_kernel_image,
-        read_vmlinux=seams.read_vmlinux,
+        read_kernel_source=lambda ws: ArtifactBytes(
+            build_host_execution.real_read_kernel_image(ws)
+        ),
+        read_vmlinux_source=seams.read_vmlinux_source,
         read_build_id=seams.read_build_id,
         secret_registry=SecretRegistry(),
         catalog_fetch=lambda _name: _FRAGMENT_BYTES,
@@ -342,6 +348,128 @@ def test_build_store_failure_propagates_infrastructure(tmp_path: Path) -> None:
     with pytest.raises(CategorizedError) as caught:
         _builder(store, seams, tmp_path).build(_RUN, _profile())
     assert caught.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
+
+
+# --- over_transport: build on a remote host, publish via presigned PUT ---------------
+
+
+@dataclass
+class _RemoteTransport:
+    """Records run/read/upload; serves sha256sum/stat and an objcopy note from ``files``."""
+
+    files: dict[str, bytes] = field(default_factory=dict)
+    runs: list[list[str]] = field(default_factory=list)
+    reads: list[str] = field(default_factory=list)
+    uploaded: list[str] = field(default_factory=list)
+
+    def run(self, argv: list[str], *, cwd: str, timeout_s: int) -> Any:
+        from kdive.providers.build_host.transport import CommandResult
+
+        self.runs.append(argv)
+        if argv[0] == "sha256sum":
+            import hashlib
+
+            digest = hashlib.sha256(self.files[argv[1]]).hexdigest()
+            return CommandResult(returncode=0, stdout=f"{digest}  {argv[1]}\n", stderr="")
+        if argv[0] == "stat":
+            return CommandResult(returncode=0, stdout=f"{len(self.files[argv[-1]])}\n", stderr="")
+        if argv[0] == "objcopy":
+            self.files[argv[-1]] = _gnu_build_id_note(b"\x01\x02\x03\x04")
+            return CommandResult(returncode=0, stdout="", stderr="")
+        return CommandResult(returncode=0, stdout="", stderr="")
+
+    def read_text(self, path: str) -> str:
+        return _GOOD_CONFIG
+
+    def read_bytes(self, path: str) -> bytes:
+        self.reads.append(path)
+        return self.files[path]
+
+    def write_bytes(self, path: str, data: bytes) -> None:
+        self.files[path] = data
+
+    def clone(self, remote: str, ref: str, dest: str) -> None:
+        return None
+
+    def upload_file(self, path: str, presigned: Any) -> str:
+        self.uploaded.append(path)
+        return f"etag-{Path(path).name}"
+
+    def cleanup(self, path: str) -> None:  # pragma: no cover - unused
+        return None
+
+
+@dataclass
+class _PresignStore:
+    """Records presign_put/put_artifact; presign echoes the request key."""
+
+    presigns: list[Any] = field(default_factory=list)
+    puts: list[Any] = field(default_factory=list)
+
+    def put_artifact(self, request: ArtifactWriteRequest) -> StoredArtifact:
+        self.puts.append(request)
+        return StoredArtifact(request.key(), "etag", request.sensitivity, request.retention_class)
+
+    def presign_put(self, request: Any) -> Any:
+        from kdive.provider_components.artifacts import PresignedUpload
+
+        self.presigns.append(request)
+        return PresignedUpload(url=f"https://s3/{request.key}", required_headers={})
+
+
+def test_over_transport_publishes_bzimage_and_vmlinux_via_presign(tmp_path: Path) -> None:
+    # A transport-bound local build publishes the bare bzImage + vmlinux via presigned PUT
+    # (no modules bundle), and the worker never reads the artifact bytes — only the objcopy note.
+    store, transport = _PresignStore(), _RemoteTransport()
+    workspace = tmp_path / str(_RUN)
+    transport.files[str(workspace / "arch/x86/boot/bzImage")] = b"\x01bz"
+    transport.files[str(workspace / "vmlinux")] = b"\x7fELFvm"
+
+    base = LocalLibvirtBuild(
+        tenant=_TENANT,
+        workspace_root=tmp_path / "warm",
+        store_factory=lambda: store,
+        checkout=lambda _r, _p, _w, _f: None,
+        run_olddefconfig=lambda _w: 0,
+        read_config=lambda _w: _GOOD_CONFIG,
+        run_make=lambda _w: 0,
+        read_kernel_source=lambda _w: ArtifactBytes(b"warm-bz"),
+        read_vmlinux_source=lambda _w: ArtifactBytes(b"warm-vm"),
+        read_build_id=lambda _w: "deadbeef",
+        secret_registry=SecretRegistry(),
+        catalog_fetch=lambda _n: _FRAGMENT_BYTES,
+    )
+    bound = base.over_transport(
+        transport,
+        host_workspace_root=str(tmp_path),
+        git_remote="https://git.example/linux.git",
+        git_ref="v6.9",
+        secret_registry=SecretRegistry(),
+    )
+    profile = BuildProfile.parse(
+        {
+            "schema_version": 1,
+            "kernel_source_ref": {
+                "git": {"remote": "https://git.example/linux.git", "ref": "v6.9"}
+            },
+            "config": {"kind": "catalog", "provider": "system", "name": "kdump"},
+        }
+    )
+    assert isinstance(profile, ServerBuildProfile)
+    out = bound.build(_RUN, profile)
+
+    assert out.kernel_ref == f"{_TENANT}/runs/{_RUN}/kernel"
+    assert out.debuginfo_ref == f"{_TENANT}/runs/{_RUN}/vmlinux"
+    assert store.puts == []  # the transport path never PUTs from worker memory
+    assert {p.key for p in store.presigns} == {out.kernel_ref, out.debuginfo_ref}
+    assert set(transport.uploaded) == {
+        str(workspace / "arch/x86/boot/bzImage"),
+        str(workspace / "vmlinux"),
+    }
+    # The worker only reads the small objcopy note back, never the artifact bytes.
+    assert transport.reads == [str(workspace / "vmlinux.note")]
+    heads = [a[0] for a in transport.runs]
+    assert "make" in heads and "objcopy" in heads
 
 
 # --- from_env does not connect/spawn -------------------------------------------------
@@ -398,8 +526,8 @@ def test_validate_config_ref_rejects_local_file_outside_allowed_roots(tmp_path: 
         run_olddefconfig=lambda _workspace: 0,
         read_config=lambda _workspace: _GOOD_CONFIG,
         run_make=lambda _workspace: 0,
-        read_kernel_image=lambda _workspace: b"kernel",
-        read_vmlinux=lambda _workspace: b"vmlinux",
+        read_kernel_source=lambda _workspace: ArtifactBytes(b"kernel"),
+        read_vmlinux_source=lambda _workspace: ArtifactBytes(b"vmlinux"),
         read_build_id=lambda _workspace: "deadbeef",
         secret_registry=SecretRegistry(),
         catalog_fetch=lambda _name: _FRAGMENT_BYTES,
@@ -562,8 +690,12 @@ def test_live_vm_real_make_build_id_matches_readelf() -> None:  # pragma: no cov
             run_olddefconfig=build_host_execution.real_run_olddefconfig,
             read_config=build_host_execution.real_read_config,
             run_make=build_host_execution.real_run_make,
-            read_kernel_image=build_host_execution.real_read_kernel_image,
-            read_vmlinux=build_host_execution.real_read_vmlinux,
+            read_kernel_source=lambda ws: ArtifactBytes(
+                build_host_execution.real_read_kernel_image(ws)
+            ),
+            read_vmlinux_source=lambda ws: ArtifactBytes(
+                build_host_execution.real_read_vmlinux(ws)
+            ),
             read_build_id=build_host_execution.real_read_build_id,
             secret_registry=SecretRegistry(),
             catalog_fetch=build_module.build_config_fetch_from_env(),
