@@ -17,11 +17,14 @@ from uuid import UUID
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.build import ServerBuildProfile
-from kdive.provider_components.build_validation import patch_target_paths
+from kdive.provider_components.build_validation import parse_gnu_build_id, patch_target_paths
 from kdive.providers.build_host.config import resolve_local_ref
 from kdive.providers.build_host.execution import (
     MAKE_TIMEOUT_S,
+    OBJCOPY_TIMEOUT_S,
+    ReadBuildId,
     ReadConfig,
+    RunModulesInstall,
     RunStep,
     build_failure,
 )
@@ -94,6 +97,66 @@ def transport_read_config(t: BuildTransport) -> ReadConfig:
 
     def _read(ws: Path) -> str:
         return t.read_text(str(ws / ".config"))
+
+    return _read
+
+
+# ---------------------------------------------------------------------------
+# Post-make step factories
+# ---------------------------------------------------------------------------
+
+
+def transport_run_modules_install(t: BuildTransport) -> RunModulesInstall:
+    """Return a ``RunModulesInstall`` running ``make modules_install`` over the transport.
+
+    Mirrors ``real_run_modules_install``'s argv exactly — ``make -C <ws>
+    INSTALL_MOD_PATH=<mod_root> modules_install`` — staging the module tree at *mod_root* on
+    the transport's host.
+
+    Args:
+        t: The build transport to dispatch ``make modules_install`` through.
+
+    Returns:
+        A callable ``(workspace: Path, mod_root: Path) -> int`` matching ``RunModulesInstall``.
+    """
+
+    def _step(ws: Path, mod_root: Path) -> int:
+        argv = ["make", "-C", str(ws), f"INSTALL_MOD_PATH={mod_root}", "modules_install"]
+        return t.run(argv, cwd=str(ws), timeout_s=MAKE_TIMEOUT_S).returncode
+
+    return _step
+
+
+def transport_read_build_id(t: BuildTransport) -> ReadBuildId:
+    """Return a ``ReadBuildId`` extracting ``vmlinux``'s GNU build-id over the transport.
+
+    Mirrors ``real_read_build_id``: ``objcopy`` writes the ``.notes`` section to a sibling
+    file on the host, the (small) note blob is read back to the worker via ``read_bytes``, and
+    :func:`parse_gnu_build_id` parses it on the worker. Only the note — never ``vmlinux`` —
+    crosses the transport.
+
+    Args:
+        t: The build transport to run ``objcopy`` and read the note through.
+
+    Returns:
+        A callable ``(workspace: Path) -> str`` matching the ``ReadBuildId`` type alias.
+
+    Raises:
+        CategorizedError: ``BUILD_FAILURE`` if ``objcopy`` exits non-zero or the note carries
+            no GNU build-id (from :func:`parse_gnu_build_id`).
+    """
+
+    def _read(ws: Path) -> str:
+        note_path = str(ws / "vmlinux.note")
+        argv = ["objcopy", "-O", "binary", "--only-section=.notes", str(ws / "vmlinux"), note_path]
+        result = t.run(argv, cwd=str(ws), timeout_s=OBJCOPY_TIMEOUT_S)
+        if result.returncode != 0:
+            raise CategorizedError(
+                "objcopy failed to extract vmlinux notes",
+                category=ErrorCategory.BUILD_FAILURE,
+                details={"stderr": result.stderr[-512:]},
+            )
+        return parse_gnu_build_id(t.read_bytes(note_path))
 
     return _read
 
