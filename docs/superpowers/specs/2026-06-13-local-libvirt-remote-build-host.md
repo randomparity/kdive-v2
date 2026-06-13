@@ -89,6 +89,15 @@ Add `over_transport(transport, *, host_workspace_root, git_remote, git_ref, secr
 - reuse `self`'s worker-side config (catalog fetch, component-root allowlist, store factory,
   tenant); workspace root = `Path(host_workspace_root)`.
 
+**Host-side cleanup.** Like `RemoteLibvirtBuild.over_transport` — which registers cleanup only
+for its `modroot` staging tree and never removes the per-run workspace clone at
+`host_root/<run_id>` — the local transport build does **not** clean the per-run clone on the
+build host, and (having no `modules_install`) has no staging tree to clean at all. This matches
+remote's existing behavior; per-run host-workspace reclamation is a pre-existing shared gap in
+the ssh/ephemeral build-host design (ADR-0099), out of scope for #356 and left to the operator
+or a future shared follow-up. The change here introduces no new cleanup obligation it fails to
+meet — it inherits remote's contract exactly.
+
 ### 3. Capability-based handler dispatch
 
 In `providers/ports/build.py`, add beside `Builder`:
@@ -150,6 +159,13 @@ Handler (`tests/jobs/handlers/test_build_handler_transport.py` — update + add)
   directly. Mitigated: it is an internal provider-assembly contract; updated in the same change.
 - **The neutral extraction touches `remote_libvirt/build.py`.** Mitigated: re-export the moved
   names; the remote transport tests pin behavior-preservation.
-- **Capability dispatch also enables `local` on `ephemeral_libvirt`.** Intended and tested; the
-  ephemeral guest-exec transport is generic and the produced direct-kernel artifacts upload the
-  same way. Recorded in ADR-0101 as the deliberate provider-neutral choice.
+- **Capability dispatch also admits `local` on `ephemeral_libvirt`.** This is the deliberate
+  provider-neutral consequence (recorded in ADR-0101): the handler no longer returns
+  `NOT_IMPLEMENTED` for that pairing. It is **not** an end-to-end guarantee. The ephemeral
+  lifecycle (`ephemeral_build_session`, ADR-0100) provisions the throwaway build VM on the
+  single `KDIVE_REMOTE_LIBVIRT_*`-configured host, so the combination requires **both**
+  remote-libvirt (for the build VM) and local-libvirt (for the System) configured; a local-only
+  deployment hits `CONFIGURATION_ERROR` at provision time exactly as the remote provider does.
+  Only the **dispatch wiring** is unit-tested (with a fake ephemeral session); the real
+  provision→build→teardown path stays under the existing `live_vm` gate. The tests here prove the
+  seam admits the builder, not that the end-to-end pairing functions.
