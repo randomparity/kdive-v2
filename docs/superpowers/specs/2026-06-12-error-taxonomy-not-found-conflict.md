@@ -147,6 +147,13 @@ become `not_found`. No code change beyond keeping the existing import.
      (prerequisite-missing branch) → rename `..._missing_build_id_is_not_found`.
   4-7. `test_introspect_tools.py` `from_vmcore` `unbuilt_run` / `no_build_step` /
      `no_captured_core` / `cross_project`.
+  8-10. `test_vmcore_tools.py` `postmortem_crash`/`postmortem_triage` for unbuilt-run /
+     no-core — the `vmcore.*` postmortem tools share `resolve_run_vmcore_target`, so the flip
+     propagates there too (caught by the full-suite checkpoint; the original "exactly seven"
+     count was low). `postmortem_crash_provenance_mismatch` stays `configuration_error` (raised
+     by the provider, not the resolver).
+  Plus `test_migrate.py` gains migration `0026` in its version lists and now passes the
+  SQL↔enum constraint coverage test because 0026 widens both CHECK constraints.
 
   All malformed-id tests stay `configuration_error` (the must-not-move pins:
   `test_renew_malformed_id_is_config_error`, `test_resolve_run_vmcore_target_rejects_bad_run_id`,

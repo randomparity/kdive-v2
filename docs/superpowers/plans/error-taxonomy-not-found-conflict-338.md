@@ -166,7 +166,13 @@ required-checks-green AND `mergeStateStatus == CLEAN` AND `mergeable == MERGEABL
 - `lifecycle/allocations.py`: the `_not_found` import and the three changed post-fetch branches
   in `get_allocation` / `release_allocation` / `renew_allocation`.
 - `mcp/tools/_vmcore_targets.py`: the new `_target_not_found` helper + the changed raises in
-  `resolve_run_vmcore_target`.
+  `resolve_run_vmcore_target` (propagates to both `introspect.from_vmcore` and
+  `vmcore.postmortem_*`, which share the resolver).
+- `mcp/tools/debug/introspect.py`: docstring-only change to `introspect_from_vmcore` (names the
+  `not_found` category); `introspect.run` / `resolve_live_drgn_session` unchanged (descope).
+- `db/schema/0026_not_found_conflict_categories.sql`: new forward-only migration widening the
+  `runs.failure_category` / `jobs.error_category` CHECK constraints. **#339 must not reuse the
+  0026 number** — if it adds another enum value it takes 0027+.
 - `inventory.py`: **no change** (still imports `ErrorCategory`; #339 will edit it independently).
 
 ## Full flip-set of tests (for the #339 rebase and the no-surprise-reds guarantee)
@@ -182,6 +188,17 @@ required-checks-green AND `mergeStateStatus == CLEAN` AND `mergeable == MERGEABL
    `test_from_vmcore_unbuilt_run_is_config_error`, `test_from_vmcore_no_build_step_is_config_error`,
    `test_from_vmcore_no_captured_core_is_config_error`, `test_from_vmcore_cross_project_is_config_error`
    → each rename `..._is_not_found`.
+8-10. `tests/mcp/lifecycle/test_vmcore_tools.py` (the `vmcore.postmortem_crash` /
+   `postmortem_triage` tools share `resolve_run_vmcore_target`, so they propagate the same flip —
+   discovered by the full-suite checkpoint, not in the original plan):
+   `test_postmortem_crash_unbuilt_run_is_config_error` → `..._is_not_found`,
+   `test_postmortem_triage_propagates_failure` → `test_postmortem_triage_propagates_not_found`,
+   `test_postmortem_crash_no_core_is_config_error` → `..._is_not_found`. The
+   `test_postmortem_crash_provenance_mismatch_is_config_error` test stays `configuration_error`
+   (the *provider* raises that, not the resolver), as does a malformed-command-batch postmortem.
+11-12. `tests/db/test_migrate.py` — the migration-version list (two hardcoded lists) gains
+   `0026`, and `test_check_constraint_covers_every_enum_value` now passes because migration 0026
+   widens the `runs.failure_category` / `jobs.error_category` CHECK constraints.
 
 **New tests added:** get-absent, get-ungranted-matches-absent (no-leak), get-malformed-pin,
 release-absent, release-ungranted, renew already covered by flip, resolver absent-run,
