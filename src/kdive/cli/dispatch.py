@@ -10,20 +10,38 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+
+from fastmcp.exceptions import ToolError
 
 from kdive.cli.commands import registry as commands
 from kdive.cli.passthrough import NotReadOnlyError, assert_read_only
 from kdive.cli.transport import Session, tool_envelope
 
 _NOT_READ_ONLY_EXIT = 3
+_TOOL_ERROR_EXIT = 1
 
 
 async def run(args: argparse.Namespace) -> int:
     """Dispatch a parsed ``kdivectl`` invocation to its handler.
 
+    A tool that signals failure by *raising* ``ToolError`` (rather than returning a failure
+    envelope) — e.g. a project-not-granted call to ``allocations.list`` — is surfaced as a
+    one-line stderr message and a generic nonzero exit, never an uncaught traceback. Failures
+    returned as a ``ToolResponse`` envelope keep their mapped exit code (:mod:`kdive.cli.errors`).
+
     Returns:
         The process exit code (0 on success; see :mod:`kdive.cli.errors` for failures).
     """
+    try:
+        return await _dispatch(args)
+    except ToolError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _TOOL_ERROR_EXIT
+
+
+async def _dispatch(args: argparse.Namespace) -> int:
+    """Route a parsed invocation to its handler (errors propagate to :func:`run`)."""
     if args.command == "tool" and args.tool_command == "call":
         return await _tool_call(args)
     if args.command == "login":
