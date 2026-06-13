@@ -64,14 +64,28 @@ reads, unaffected by the composite checksum).
 `upload_manifests.manifest` column is JSONB, so the chunk list is persisted in place with no
 DDL migration; the `artifacts` row stays write-once and unchanged.
 
-### 4. Reassembly is synchronous and abort-safe
+### 4. Reassembly is synchronous, window-guarded, and abort-safe
 
-`complete_build` HEAD-verifies all chunks, then `Create`/`UploadPartCopy×N`/`Complete`s the
-final object; any failure in that sequence triggers `AbortMultipartUpload` and returns a
-typed error with the Run left `CREATED`, so the reaper backstops the chunks and any
-half-written final object. Object metadata (sensitivity, retention-class) is set at
-`CreateMultipartUpload` (it cannot be set at completion) so the reassembled object's later
-install fetch reads the same sensitivity a single upload would.
+`complete_build` reassembles outside the per-Run advisory lock (the lock is held only for the
+short DB transactions, as today — holding it across a multi-part server-side copy would pin a
+pooled connection). To stop the reaper from deleting chunk objects mid-copy once their
+deadline passes, `complete_build` first, **under the per-Run lock**, rejects an already-expired
+upload (`upload_window_expired`, retryable) or refreshes `deadline = now() + UPLOAD_TTL`. The
+reaper re-reads `deadline < now()` under the same lock, so an in-window finalize gets a full,
+configurable `UPLOAD_TTL` to reassemble. It then HEAD-verifies all chunks and
+`Create`/`UploadPartCopy×N`/`Complete`s the final object; any **caught** failure triggers
+`AbortMultipartUpload` and returns a typed error with the Run left `CREATED`, so the reaper
+backstops the chunks and any half-written final object. Object metadata (sensitivity,
+retention-class) is set at `CreateMultipartUpload` (it cannot be set at completion) so the
+reassembled object's later install fetch reads the same sensitivity a single upload would.
+
+A server crash between `CreateMultipartUpload` and `Complete`/`Abort` leaves one in-progress
+reassembly MPU that `ListObjectsV2` (and thus the prefix reaper) cannot see. This residual is
+**narrowed** versus native MPU — one short-lived MPU per finalize during a server-side copy,
+not one long-lived per-upload session awaiting client parts — and reclaimed by a required
+`AbortIncompleteMultipartUpload` bucket lifecycle rule (a documented operator step, supported
+by S3 and MinIO). The chunk-key format is produced by a single shared `chunk_key` helper used
+by both `create_upload` and reassembly, so the mint and read sites cannot drift.
 
 ### 5. Reaper obligation generalizes to "manifest past deadline"
 
@@ -103,9 +117,14 @@ the declared size. `effective_config` keeps its 1 MiB cap and may not be chunked
   a download re-derives it — a deliberate, bounded trust point alongside ADR-0048's
   `build_id`.
 - The reaper's sweep obligation widens from "pre-finalize owner" to "manifest past deadline,"
-  closing the post-commit chunk-cleanup leak with no change to the no-row safety predicate.
+  closing the post-commit chunk-cleanup leak with no change to the no-row safety predicate;
+  the finalize-vs-reaper race on chunk objects is prevented by the decision-4 deadline refresh
+  under the per-Run lock.
+- A server crash mid-reassembly can orphan one short-lived MPU the prefix reaper cannot see;
+  it is reclaimed by a required `AbortIncompleteMultipartUpload` bucket lifecycle rule, a
+  documented deployment step.
 - A chunked artifact briefly occupies ~2× storage between reassembly and chunk cleanup,
-  bounded by the upload TTL / reaper deadline.
+  bounded by the refreshed upload TTL / reaper deadline (a concrete, configurable window).
 - CI (MinIO, higher single-PUT limit) cannot reproduce the real-S3 single-PUT rejection that
   motivates the feature; that one end-to-end assertion is operator-run, mirroring ADR-0048
   §7's checksum-enforcement verification item.
@@ -113,13 +132,17 @@ the declared size. `effective_config` keeps its 1 MiB cap and may not be chunked
 ## Considered & rejected
 
 - **Native S3 multipart upload as the transport.** Parts stream into the final object with
-  no reassembly copy and no transient 2× storage. Rejected: it reopens the abandoned-upload
-  storage leak in a worse form — an in-progress MPU is invisible to `ListObjectsV2`, forcing
-  a new `ListMultipartUploads`/`AbortMultipartUpload` reaper path; it needs persisted
-  `upload_id` session state and a new agent round-trip (`complete_upload`) to report part
-  ETags; and it diverges from the single-PUT path already verified against MinIO. The
-  transient-copy cost it saves does not outweigh reintroducing the leak hazard ADR-0048 §6
-  worked to close.
+  no reassembly copy and no transient 2× storage. Rejected: it makes the MPU-invisibility
+  leak the **primary** reclamation problem rather than a narrow residual. A native-MPU
+  session is long-lived — open for the whole client upload, one per upload, holding
+  potentially many large parts — and invisible to `ListObjectsV2`, so it would force a
+  `ListMultipartUploads`/`AbortMultipartUpload` reaper path as a first-class mechanism, plus
+  persisted `upload_id` session state and a new agent round-trip (`complete_upload`) to report
+  part ETags, and it diverges from the single-PUT path already verified against MinIO. The
+  reassembly approach also opens an in-progress MPU (decision 4), but a short-lived one, one
+  per finalize, mopped up by a standard lifecycle rule — a residual, not the design's
+  backbone. The transient-copy cost reassembly pays does not outweigh keeping the leak a
+  narrow, lifecycle-backstopped residual instead of a mechanism the reaper must own.
 - **Server-side whole-object re-hash at finalize.** Download the reassembled object and
   recompute its SHA-256 to keep a whole-object integrity check. Rejected: it violates
   ADR-0048's no-download finalize contract and re-pulls up to 50 GiB through the server; the

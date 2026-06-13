@@ -38,6 +38,11 @@ In scope (the Run/build-artifact lane only):
   to 50 GiB (the per-artifact declared-size cap; still config-overridable).
 - `src/kdive/provider_components/uploads.py` — `ManifestEntry` gains an optional ordered
   `chunks: tuple[ChunkEntry, ...] | None`; a `ChunkEntry` is `(sha256, size_bytes)`.
+- `src/kdive/provider_components/artifacts.py` — one shared `chunk_key(prefix, name,
+  part_number) -> str` helper (alongside `artifact_key`), the **single** source of the
+  `<name>.partNNNN` format, used by both `create_upload` (mint) and the reassembly step
+  (read). Both sites must format byte-identical keys; a lone helper makes drift impossible
+  (§3).
 - `src/kdive/db/upload_manifest.py` — serialize/deserialize the optional `chunks` list in
   the existing **JSONB** `manifest` column. **No DDL migration** — the column is schemaless.
 - `src/kdive/mcp/tools/catalog/artifacts/uploads.py` — accept a chunked artifact
@@ -51,13 +56,18 @@ In scope (the Run/build-artifact lane only):
   final key, then run the existing magic + ranged `build_id` validation on the final object;
   skip the whole-object checksum comparison (the final multipart object exposes only a
   composite checksum — see §4).
-- `src/kdive/mcp/tools/lifecycle/runs/build.py` — `complete_build` orchestrates reassembly
-  before validation, defers manifest deletion past chunk cleanup, and best-effort deletes
-  chunk objects after commit.
+- `src/kdive/mcp/tools/lifecycle/runs/build.py` — `complete_build` refreshes the manifest
+  deadline under the per-Run lock at entry (the reassembly-window guard, §6), orchestrates
+  reassembly before validation, defers manifest deletion past chunk cleanup, and best-effort
+  deletes chunk objects after commit.
 - `src/kdive/reconciler/uploads.py` — generalize the reaper so a manifest lingering past
   its deadline is swept whether its owner is **pre-finalize** (true abandon) or
   **finalized with incomplete chunk cleanup** (the backstop for a failed post-commit
   delete). The per-object "no committed `artifacts` row → delete" predicate is unchanged.
+- **Deployment requirement (not code):** the bucket carries an `AbortIncompleteMultipart
+  Upload` lifecycle rule (a documented operator step), the backstop for an in-progress
+  reassembly MPU orphaned by a server crash between `create`/`complete` — which `ListObjects
+  V2` (and therefore the prefix reaper) cannot see (§6).
 
 Out of scope (stated so reviews do not assume otherwise):
 
@@ -93,10 +103,13 @@ per artifact for a single one), each carrying the chunk's presigned `upload_url`
 can match URL → chunk. The agent PUTs each chunk to its URL, then calls
 `runs.complete_build` exactly as today (no new tool, no ETag round-trip).
 
-Chunk object keys are `{tenant}/runs/<run_id>/<name>.partNNNN` (1-based, zero-padded). The
-reassembled object lands at the existing `{tenant}/runs/<run_id>/<name>`, so install / debug
-read an unchanged key. The `.partNNNN` suffix cannot collide with another allowlisted
-artifact name.
+Chunk object keys are produced **only** by the shared `chunk_key(prefix, name, part_number)`
+helper (§2) — `{tenant}/runs/<run_id>/<name>.partNNNN`, 1-based, zero-padded to four digits.
+Both `create_upload` (which mints the presigned PUTs) and the reassembly step (which reads
+the chunks back) call that one helper, so the two sites cannot drift on padding width or
+base. The reassembled object lands at the existing `{tenant}/runs/<run_id>/<name>`, so
+install / debug read an unchanged key. The `.partNNNN` suffix cannot collide with another
+allowlisted artifact name.
 
 ## 4. Integrity model: per-chunk pins, advisory whole-object hash
 
@@ -151,29 +164,66 @@ Any violation returns `configuration_error` with a specific `reason`
 
 ## 6. Reassembly at finalize
 
-For each **chunked** artifact, inside `complete_build` (still synchronous, ADR-0048 §3),
-before the finalize DB transaction:
+`complete_build` is still synchronous (ADR-0048 §3). Reassembly is a server-side copy, but
+it is **not** instantaneous — a 50 GiB / 10-part `UploadPartCopy` chain takes real wall-clock
+time. That widens a race the single-PUT path keeps negligible: `complete_build` runs its
+validation (HEAD + ranged reads) **outside** the per-Run advisory lock today (only the
+finalize DB transaction takes it), and the reaper (§7) deletes a past-deadline owner's chunk
+objects **under** that lock. With a fast single-PUT validation the window is milliseconds;
+with a multi-part reassembly the reaper could delete chunks mid-copy. The reassembly-window
+guard closes this:
 
-1. HEAD + verify every chunk object against the manifest (§4 step 2).
+**Step A — reassembly-window guard (under the per-Run lock).** As its first action,
+`complete_build` acquires the per-Run advisory lock, re-reads the manifest, and:
+
+- if `deadline < now()` the upload window has already expired — return a retryable
+  `configuration_error` (`upload_window_expired`); the agent must re-`create_upload` and
+  re-upload. This is consistent with the reaper, which is entitled to reclaim a past-deadline
+  upload.
+- otherwise refresh `deadline = now() + UPLOAD_TTL` (a single `UPDATE`), commit, release the
+  lock. The reaper re-reads `deadline < now()` under the **same** per-Run lock
+  (`reap_one_owner`), so after this refresh it cannot select the owner until a full
+  `UPLOAD_TTL` elapses. Reassembly therefore has a full, configurable `UPLOAD_TTL` window;
+  the only failure is a reassembly that exceeds an entire `UPLOAD_TTL`, which is measurable
+  and operator-tunable, not unbounded.
+
+This refreshes the deadline under a short lock rather than holding the lock open across the
+copy (which would pin a pooled connection for the whole reassembly).
+
+**Step B — reassemble (no lock; bounded by the refreshed window).** For each **chunked**
+artifact:
+
+1. HEAD + verify every chunk object against the manifest (§4 step 2), reading chunk keys via
+   the shared `chunk_key` helper (§3).
 2. `create_multipart_upload(final_key, sensitivity=SENSITIVE, retention_class="build")` →
    `upload_id`.
 3. For each chunk in order, `upload_part_copy(final_key, upload_id, part_number=i+1,
-   source_key=chunk_key)` → part ETag (a server-side copy; no bytes transit the server).
+   source_key=chunk_key(...))` → part ETag (a server-side copy; no bytes transit the server).
 4. `complete_multipart_upload(final_key, upload_id, parts)`.
-5. On **any** failure in 2–4, `abort_multipart_upload(final_key, upload_id)` and return the
-   typed error; the Run stays `CREATED`, so the abandoned-upload reaper backstops the chunk
-   objects (and any half-written final object) under the prefix.
+5. On **any** caught failure in 2–4, `abort_multipart_upload(final_key, upload_id)` and
+   return the typed error; the Run stays `CREATED`, so the abandoned-upload reaper backstops
+   the chunk objects (and any half-written final object) under the prefix.
 
-Then the existing validation runs on the now-single final keys (magic + ranged `build_id`;
-chunked entries skip the whole-object checksum), and the existing finalize DB transaction
-writes the `artifacts` row for the final object, flips `created → succeeded`, and records the
-step ledger.
+**Step C — validate + finalize.** The existing validation runs on the now-single final keys
+(magic + ranged `build_id`; chunked entries skip the whole-object checksum), and the existing
+finalize DB transaction (per-Run lock) writes the `artifacts` row for the final object, flips
+`created → succeeded`, and records the step ledger.
+
+**Orphaned reassembly MPU (residual, not closed by the prefix reaper).** Step 5 aborts on a
+*caught* exception, but a server crash between `create_multipart_upload` (step 2) and
+`complete`/`abort` leaves an **in-progress** multipart upload on the final key. `ListObjects
+V2` — and therefore the prefix reaper (§7) — cannot see an in-progress MPU, so the reaper
+cannot reclaim it. This is the same MPU-invisibility ADR-0104 cites against native MPU; here
+it is **narrowed**, not eliminated: reassembly opens at most one MPU per finalize, for the
+short duration of a server-side copy, not one long-lived session per upload awaiting client
+parts. The backstop is the deployment-level `AbortIncompleteMultipartUpload` bucket lifecycle
+rule (§2) that S3 and MinIO both support; the runbook records it as a required operator step.
 
 **Chunk cleanup (the leak boundary).** After the finalize commit, `complete_build`
 best-effort deletes each chunk object, then best-effort deletes the manifest. If cleanup
 fully succeeds the manifest is gone (as today). If a delete fails, the manifest **lingers**;
-the reaper (§7) reclaims the leftover chunks once the deadline passes. Cleanup is idempotent
-(`delete` of an absent key is a no-op), so a reaper/finalize race is harmless.
+the reaper (§7) reclaims the leftover chunks once the (refreshed) deadline passes. Cleanup is
+idempotent (`delete` of an absent key is a no-op), so a reaper/finalize race is harmless.
 
 ## 7. Reaper generalization
 
@@ -192,10 +242,14 @@ whether the owner is pre-finalize *or* finalized:
   deletes the manifest.
 
 This is safe because the per-object no-row predicate, not the owner state, is the live-data
-guard, and the per-owner lock + `deadline < now()` still serialize against an in-flight
-finalize before the deadline. The change is additive: a true abandon (pre-finalize owner)
-sweeps exactly as before; the new case is a finalized owner whose only uncommitted prefix
-objects are dead chunks.
+guard. Serialization against an **in-flight finalize** does not come from the finalize
+holding the lock across reassembly (it does not — reassembly runs unlocked, §6 step B);
+it comes from §6 step A: `complete_build` refreshes the manifest `deadline` under the same
+per-Run lock the reaper takes, and the reaper re-reads `deadline < now()` under that lock in
+`reap_one_owner`. So once a finalize has begun within the window, the reaper cannot select
+its owner for a full `UPLOAD_TTL`. The change is additive: a true abandon (pre-finalize
+owner) sweeps exactly as before; the new case is a finalized owner whose only uncommitted
+prefix objects are dead chunks.
 
 ## 8. Object-store primitives
 
@@ -224,6 +278,12 @@ Unit / service (run in normal CI against MinIO + Postgres):
   >cap rejected; non-final chunk <5 MiB rejected `chunk_too_small`; `sum(chunks) != size`
   rejected `chunk_size_mismatch`; chunked `effective_config` rejected; well-formed chunked
   accepted with N part URLs minted at `.partNNNN`.
+- **`chunk_key` helper** — unit-tested directly: a fixed `(prefix, name, part_number)`
+  produces the exact zero-padded `<name>.partNNNN` string, so `create_upload` and reassembly
+  cannot drift (the finding-3 guard).
+- **Reassembly-window guard** — `complete_build` on a manifest already past its deadline
+  rejects with `upload_window_expired` and does not reassemble; a within-window finalize
+  refreshes the deadline before reassembly (asserted via the persisted `deadline`).
 - **Manifest round-trip** — a chunked entry persists and reloads its ordered `chunks` list
   through the JSONB column.
 - **Reassembly happy path** — a fake store records `create/upload_part_copy/complete` calls;
@@ -257,8 +317,15 @@ Unit / service (run in normal CI against MinIO + Postgres):
   artifact bytes transit the server and `complete_build` stays synchronous.
 - The reaper's sweep obligation generalizes from "pre-finalize owner" to "manifest past
   deadline," closing the post-commit chunk-cleanup leak; the per-object no-row safety
-  predicate is unchanged.
+  predicate is unchanged. A finalize-vs-reaper race on the chunk objects is prevented by the
+  §6-step-A deadline refresh under the per-Run lock, not by holding the lock across the copy.
+- The reassembly target MPU is reclaimed on a caught failure by `abort_multipart_upload`; a
+  server crash mid-reassembly leaves one short-lived orphan MPU the prefix reaper cannot see,
+  reclaimed by the required `AbortIncompleteMultipartUpload` bucket lifecycle rule (§2). This
+  narrows, but does not fully eliminate, the MPU-invisibility ADR-0104 cites against native
+  MPU.
 - A transient ~2× storage exists for a chunked artifact between reassembly and chunk cleanup,
-  bounded by the upload TTL / reaper deadline.
+  bounded by the refreshed upload TTL / reaper deadline (a concrete, configurable window, not
+  open-ended).
 - CI (MinIO) cannot reproduce the real-S3 single-PUT rejection that motivates the feature;
   that one assertion is operator-run, mirroring ADR-0048 §7.
