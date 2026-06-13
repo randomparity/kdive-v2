@@ -54,8 +54,38 @@ def test_every_registry_verb_parses_through_the_built_parser() -> None:
     parser = build_parser()
     for verb in REGISTRY:
         argv = [verb.group, verb.sub, *(f"{p}-val" for p in verb.positionals)]
+        for option in verb.required_options:
+            argv += [f"--{option.replace('_', '-')}", f"{option}-val"]
         args = parser.parse_args(argv)
         assert args.command == verb.group and args.subcommand == verb.sub
+
+
+@pytest.mark.parametrize(("group", "sub"), [("allocations", "list"), ("ledger", "show")])
+def test_project_required_verb_rejects_a_missing_project(group: str, sub: str) -> None:
+    # The underlying tool's ``project`` is a required argument, so the CLI enforces it up
+    # front (clean argparse usage error / exit 2) instead of a server-side missing-arg error.
+    with pytest.raises(SystemExit) as excinfo:
+        build_parser().parse_args([group, sub])
+    assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize(("group", "sub"), [("allocations", "list"), ("ledger", "show")])
+def test_project_required_verb_accepts_an_explicit_project(group: str, sub: str) -> None:
+    args = build_parser().parse_args([group, sub, "--project", "proj-a"])
+    assert args.project == "proj-a"
+
+
+def test_inventory_project_filter_stays_optional() -> None:
+    # ``inventory.list`` is a cross-project auditor read; ``--project`` is a narrowing
+    # filter, not a requirement.
+    args = build_parser().parse_args(["inventory", "show"])
+    assert args.project is None
+
+
+def test_fixtures_list_has_no_project_flag() -> None:
+    # ``fixtures.list`` takes no project argument; the flag must not exist.
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["fixtures", "list", "--project", "proj-a"])
 
 
 def test_dispatch_routes_curated_verb_to_run_verb(monkeypatch: pytest.MonkeyPatch) -> None:

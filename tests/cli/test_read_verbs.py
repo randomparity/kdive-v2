@@ -225,7 +225,7 @@ def test_handler_calls_the_tool_the_registry_declares(verb, monkeypatch, capsys)
     client = _FakeClient(_collection([]))
     monkeypatch.setattr(reads, "_session_factory", lambda: _FakeSession(client))
     args = argparse.Namespace(json=False)
-    for name in (*verb.positionals, *verb.options):
+    for name in (*verb.positionals, *verb.options, *verb.required_options):
         setattr(args, name, f"{name}-val")
     asyncio.run(verb.handler(args))
     assert client.calls and client.calls[0][0] == verb.tool
