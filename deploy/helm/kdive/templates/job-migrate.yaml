@@ -53,6 +53,16 @@ spec:
           image: {{ include "kdive.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["migrate"]
+          env:
+            {{- include "kdive.systemsEnv" . | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: {{ include "kdive.fullname" . }}-config
+          {{- if .Values.systems.configMapName }}
+          volumeMounts:
+            {{- include "kdive.systemsVolumeMount" . | nindent 12 }}
+          {{- end }}
+      {{- if .Values.systems.configMapName }}
+      volumes:
+        {{- include "kdive.systemsVolume" . | nindent 8 }}
+      {{- end }}

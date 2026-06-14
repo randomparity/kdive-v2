@@ -32,6 +32,7 @@ spec:
               value: "0.0.0.0"
             {{- include "kdive.auxEnv" 9464 | nindent 12 }}
             {{- include "kdive.secretsEnv" . | nindent 12 }}
+            {{- include "kdive.systemsEnv" . | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: {{ include "kdive.fullname" . }}-config
@@ -39,11 +40,13 @@ spec:
             - containerPort: 8000
             - containerPort: 9464
           {{- include "kdive.auxProbes" 9464 | nindent 10 }}
-          {{- if .Values.secrets.secretName }}
+          {{- if or .Values.secrets.secretName .Values.systems.configMapName }}
           volumeMounts:
             {{- include "kdive.secretsVolumeMount" . | nindent 12 }}
+            {{- include "kdive.systemsVolumeMount" . | nindent 12 }}
           {{- end }}
-      {{- if .Values.secrets.secretName }}
+      {{- if or .Values.secrets.secretName .Values.systems.configMapName }}
       volumes:
         {{- include "kdive.secretsVolume" . | nindent 8 }}
+        {{- include "kdive.systemsVolume" . | nindent 8 }}
       {{- end }}

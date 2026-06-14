@@ -270,6 +270,49 @@ def test_secrets_set_projects_readonly_on_each_component(proc: str) -> None:
     assert deploy["spec"]["template"]["spec"]["securityContext"]["fsGroup"] == 10001
 
 
+def test_systems_inventory_unset_mounts_nothing() -> None:
+    for proc, deploy in _deployments_with().items():
+        container = _container(deploy)
+        env_names = {e["name"] for e in container["env"]}
+        assert "KDIVE_SYSTEMS_TOML" not in env_names, proc
+        mounts = {m["name"] for m in container.get("volumeMounts", [])}
+        assert "kdive-systems" not in mounts, proc
+        volumes = {v["name"] for v in deploy["spec"]["template"]["spec"].get("volumes", [])}
+        assert "kdive-systems" not in volumes, proc
+
+
+def test_systems_inventory_configmap_mounts_on_components_and_migrate() -> None:
+    res = _template("config.KDIVE_DATABASE_URL=postgresql://x/y", "systems.configMapName=inv")
+    assert res.returncode == 0, res.stderr
+    docs = [doc for doc in yaml.safe_load_all(res.stdout) if isinstance(doc, dict)]
+
+    deployments = {
+        doc["metadata"]["name"].removeprefix("kdive-kdive-"): doc
+        for doc in docs
+        if doc.get("kind") == "Deployment" and doc["metadata"]["name"].startswith("kdive-kdive-")
+    }
+    for proc in ("server", "worker", "reconciler"):
+        deploy = deployments[proc]
+        container = _container(deploy)
+        env = {e["name"]: e.get("value") for e in container["env"]}
+        assert env["KDIVE_SYSTEMS_TOML"] == "/etc/kdive/systems/systems.toml"
+        mount = next(m for m in container["volumeMounts"] if m["name"] == "kdive-systems")
+        assert mount["mountPath"] == "/etc/kdive/systems"
+        assert mount["readOnly"] is True
+        volume = next(
+            v for v in deploy["spec"]["template"]["spec"]["volumes"] if v["name"] == "kdive-systems"
+        )
+        assert volume["configMap"]["name"] == "inv"
+        assert volume["configMap"]["items"] == [{"key": "systems.toml", "path": "systems.toml"}]
+
+    migrate = next(doc for doc in docs if doc.get("kind") == "Job")
+    container = migrate["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    assert env["KDIVE_SYSTEMS_TOML"] == "/etc/kdive/systems/systems.toml"
+    assert any(m["name"] == "kdive-systems" for m in container["volumeMounts"])
+    assert any(v["name"] == "kdive-systems" for v in migrate["spec"]["template"]["spec"]["volumes"])
+
+
 def test_bundled_renders_demo_backends() -> None:
     res = _template("bundledBackends=true", "demoAcknowledged=true")
     assert res.returncode == 0, res.stderr

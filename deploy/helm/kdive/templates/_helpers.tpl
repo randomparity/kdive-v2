@@ -121,6 +121,32 @@ that does not opt in is unchanged. Call with the root context: `include "kdive.s
 {{- end -}}
 {{- end -}}
 
+{{- define "kdive.systemsEnv" -}}
+{{- if .Values.systems.configMapName -}}
+- name: KDIVE_SYSTEMS_TOML
+  value: {{ printf "%s/%s" .Values.systems.mountPath .Values.systems.fileName | quote }}
+{{- end -}}
+{{- end -}}
+
+{{- define "kdive.systemsVolumeMount" -}}
+{{- if .Values.systems.configMapName -}}
+- name: kdive-systems
+  mountPath: {{ .Values.systems.mountPath | quote }}
+  readOnly: true
+{{- end -}}
+{{- end -}}
+
+{{- define "kdive.systemsVolume" -}}
+{{- if .Values.systems.configMapName -}}
+- name: kdive-systems
+  configMap:
+    name: {{ .Values.systems.configMapName | quote }}
+    items:
+      - key: {{ .Values.systems.fileName | quote }}
+        path: {{ .Values.systems.fileName | quote }}
+{{- end -}}
+{{- end -}}
+
 {{- define "kdive.scrapeAnnotations" -}}
 prometheus.io/scrape: "true"
 prometheus.io/path: /metrics

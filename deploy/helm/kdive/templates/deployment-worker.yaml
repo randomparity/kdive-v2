@@ -30,6 +30,7 @@ spec:
           env:
             {{- include "kdive.auxEnv" 9465 | nindent 12 }}
             {{- include "kdive.secretsEnv" . | nindent 12 }}
+            {{- include "kdive.systemsEnv" . | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: {{ include "kdive.fullname" . }}-config
@@ -42,6 +43,7 @@ spec:
             - name: install
               mountPath: /var/lib/kdive/install
             {{- include "kdive.secretsVolumeMount" . | nindent 12 }}
+            {{- include "kdive.systemsVolumeMount" . | nindent 12 }}
       volumes:
         - name: build
           persistentVolumeClaim:
@@ -50,3 +52,4 @@ spec:
           persistentVolumeClaim:
             claimName: {{ include "kdive.fullname" . }}-install
         {{- include "kdive.secretsVolume" . | nindent 8 }}
+        {{- include "kdive.systemsVolume" . | nindent 8 }}

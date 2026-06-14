@@ -20,11 +20,20 @@ config:
   KDIVE_S3_BUCKET: kdive-artifacts
   KDIVE_S3_REGION: us-east-1
 
+# Optional declarative inventory (systems.toml, ADR-0112). Create a ConfigMap with a
+# `systems.toml` key and set configMapName to mount it on migrate/server/worker/reconciler.
+# Remote-libvirt connection identity (uri, TLS refs, gdb address/range, base_image) lives in
+# this file; config.* only carries remaining process env such as storage pool/network/machine.
+systems:
+  configMapName: ""
+  mountPath: /etc/kdive/systems
+  fileName: systems.toml
+
 # Project a pre-existing Kubernetes Secret as files under mountPath on the components that
 # resolve secret references by file (server, worker, reconciler — the worker/reconciler open
 # the remote-libvirt qemu+tls transport; the server resolves debug-session secrets). Leave
 # secretName empty to mount nothing. Each Secret key becomes a file; reference it with a
-# root-relative ref, e.g. KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF=clientcert.pem. When secretName
+# root-relative ref, e.g. clientcert.pem in systems.toml. When secretName
 # is set the chart mounts the Secret read-only and sets KDIVE_SECRETS_ROOT to mountPath so the
 # refs resolve under it (the config.* ConfigMap is for non-secret values only — ADR-0088 §3).
 secrets:
