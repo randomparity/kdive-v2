@@ -7,6 +7,8 @@ exactly as the db tests do; the pure tests (key validation, etag normalization,
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from pathlib import Path
 from uuid import uuid4
 
@@ -93,23 +95,8 @@ def test_put_artifact_maps_transport_error_to_infrastructure_failure() -> None:
     assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
 
-def _stream_request(
-    tenant: str, owner_kind: str, owner_id: str, name: str, path: Path
-) -> ArtifactStreamRequest:
-    import base64
-    import hashlib
-
-    sha256_b64 = base64.b64encode(hashlib.sha256(path.read_bytes()).digest()).decode("ascii")
-    return ArtifactStreamRequest(
-        tenant=tenant,
-        owner_kind=owner_kind,
-        owner_id=owner_id,
-        name=name,
-        path=path,
-        sha256_b64=sha256_b64,
-        sensitivity=Sensitivity.SENSITIVE,
-        retention_class="vmcore",
-    )
+def _sha256_b64(path: Path) -> str:
+    return base64.b64encode(hashlib.sha256(path.read_bytes()).digest()).decode("ascii")
 
 
 def test_put_stream_rejects_invalid_key_component(tmp_path: Path) -> None:
@@ -117,7 +104,18 @@ def test_put_stream_rejects_invalid_key_component(tmp_path: Path) -> None:
     spool.write_bytes(b"x")
     store = ObjectStore(object(), "bucket")  # client never touched: validation precedes it
     with pytest.raises(CategorizedError) as excinfo:
-        store.put_stream(_stream_request("t", "with/slash", "oid", "core", spool))
+        store.put_stream(
+            ArtifactStreamRequest(
+                tenant="t",
+                owner_kind="with/slash",
+                owner_id="oid",
+                name="core",
+                path=spool,
+                sha256_b64=_sha256_b64(spool),
+                sensitivity=Sensitivity.SENSITIVE,
+                retention_class="vmcore",
+            )
+        )
     assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
@@ -126,7 +124,18 @@ def test_put_stream_maps_transport_error_to_infrastructure_failure(tmp_path: Pat
     spool.write_bytes(b"payload")
     store = ObjectStore(_UnreachableClient(), "bucket")
     with pytest.raises(CategorizedError) as excinfo:
-        store.put_stream(_stream_request("t", "vmcore", "oid", "core", spool))
+        store.put_stream(
+            ArtifactStreamRequest(
+                tenant="t",
+                owner_kind="vmcore",
+                owner_id="oid",
+                name="core",
+                path=spool,
+                sha256_b64=_sha256_b64(spool),
+                sensitivity=Sensitivity.SENSITIVE,
+                retention_class="vmcore",
+            )
+        )
     assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
 
@@ -287,7 +296,16 @@ def test_put_stream_round_trip_streams_from_disk(
     spool = tmp_path / "core.kdump"
     spool.write_bytes(b"spooled-core-bytes")
     stored = minio_store.put_stream(
-        _stream_request(key_ns, "systems", "sys-1", "vmcore-host_dump", spool)
+        ArtifactStreamRequest(
+            tenant=key_ns,
+            owner_kind="systems",
+            owner_id="sys-1",
+            name="vmcore-host_dump",
+            path=spool,
+            sha256_b64=_sha256_b64(spool),
+            sensitivity=Sensitivity.SENSITIVE,
+            retention_class="vmcore",
+        )
     )
 
     assert '"' not in stored.etag
