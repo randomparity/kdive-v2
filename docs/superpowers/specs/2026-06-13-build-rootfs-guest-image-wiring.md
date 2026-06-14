@@ -74,11 +74,31 @@ eval "$(python -m kdive build-rootfs ...)"   # KDIVE_GUEST_IMAGE now exported
 
 This mirrors the existing convention that one-shot operator commands (`migrate`,
 `seed-demo`, `--version`) print their result to stdout; the structured logger already
-targets stderr (`src/kdive/log.py`), so no logging change is needed.
+targets stderr, so no logging change is needed.
+
+**Eval-safety invariant.** `eval "$(python -m kdive build-rootfs ...)"` is safe only
+if the wiring line is the *only* thing on stdout — i.e. every log record the command
+emits goes to stderr. This holds for the whole command, not just the build summary:
+the stdlib handler is `_KdiveHandler(sys.stderr)` (`src/kdive/log.py`), and the
+ADR-0090 "stdout floor" installed by `bootstrap_stdout_floor` delegates to that same
+stderr configurator (the name is historical; the stream is stderr). So the always-on
+`main()` startup line (`"starting kdive ..."`) and the build summary both land on
+stderr, leaving stdout to the single `export` line. The unit test pins this by
+asserting stdout *equals* the one line exactly (any stray stdout write fails it).
 
 The printed path is the resolved absolute `--dest` (`Path(args.dest).resolve()` — the
-same file the image was moved to), so the line is correct regardless of the caller's
-cwd.
+same file the image was moved to). The reworded `_log.info` summary logs that same
+resolved path, so the path the operator sees on stderr and the one in the `export`
+line are identical. The line is correct regardless of the caller's cwd.
+
+### Failure mode
+
+On a build failure the plane/command raises a `CategorizedError`, which propagates out
+of `run_build_rootfs` to `main()` and exits non-zero **before** any `export` line is
+printed — nothing is written to stdout. So `eval "$(python -m kdive build-rootfs ...)"`
+of a failed build exports nothing (it does not leave `KDIVE_GUEST_IMAGE` pointing at a
+half-written or stale image), and the non-zero exit is observable to the operator and
+to scripts.
 
 ### Live-spine skip message
 
@@ -111,21 +131,24 @@ step as the copy-by-hand fallback (which is exactly what the command now prints)
 | `tests/integration/conftest.py` | reword the `live_vm_preflight` skip message. |
 | `tests/integration/test_live_stack.py` | reword the `_spine_preflight` skip message (identical string). |
 | `docs/runbooks/image-lifecycle.md` | add the `eval` one-liner; keep the manual export as fallback. |
-| `tests/mcp/core/test_main.py` | extend `run_build_rootfs` test to assert stdout is exactly the eval-safe export line and to cover a path needing shell quoting. |
+| `tests/mcp/core/test_main.py` | extend the `run_build_rootfs` tests: stdout equals exactly the eval-safe export line (resolved path); a space-bearing `--dest` round-trips through `shlex.split`; a `build()` that raises writes nothing to stdout. |
 
 ## Testing
 
 Unit (non-gated), driving `run_build_rootfs` with the resolver/plane faked at the
 existing seam (`monkeypatch` of `build_provider_resolver`) and capturing stdout:
 
-- **Happy path:** stdout is exactly `export KDIVE_GUEST_IMAGE=<dest>\n` and nothing
-  else; the moved file exists at `--dest`.
+- **Happy path:** stdout is exactly `export KDIVE_GUEST_IMAGE=<resolved dest>\n` and
+  nothing else; the moved file exists at `--dest`. The exact-equality assertion is the
+  falsifiable signal — it subsumes "digest/summary absent from stdout" (any stray
+  stdout write, including a regressed digest print, fails the equality), so no separate
+  weaker substring check is needed.
 - **Shell-quoting edge:** a `--dest` containing a space yields a single
-  `shlex.quote`-escaped token (round-trips through `shlex.split` to the original
-  absolute path) — so `eval` would export the correct value.
-- **stdout/stderr split:** the digest/path summary is **not** on stdout (it stays a
-  log record), so an `eval "$(...)"` capture is clean. (Asserted by capturing stdout
-  and checking the digest string is absent from it.)
+  `shlex.quote`-escaped token; `shlex.split` of the printed line's value round-trips to
+  the resolved absolute path — so `eval` would export the correct single value.
+- **Failure path:** when the faked plane's `build()` raises a `CategorizedError`,
+  `run_build_rootfs` propagates it and writes **nothing** to stdout (asserted: captured
+  stdout is empty), so an `eval` capture of a failed build exports nothing.
 - The existing tests (subcommand parsing, repeated `--package`, move-not-copy) stay
   green unchanged.
 
