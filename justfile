@@ -236,6 +236,10 @@ config-docs-check:
 config-guard:
     uv run python scripts/config_env_guard.py
 
+# Coverage guard: every KDIVE_* token is documented (registry or external_env.py). Stdlib-only.
+env-docs-check:
+    uv run python scripts/check_env_documented.py
+
 # Assert the Helm chart's appVersion tracks the pyproject version (spec A3). A drift
 # would let a cut release point the chart's default image tag at a tag that was never
 # published. Run in CI and `just ci`.
@@ -252,4 +256,4 @@ chart-version-check:
     echo "appVersion == pyproject == $pyproject"
 
 # Run the full gate that PR CI runs, reproducible locally.
-ci: lint type lock-check lint-shell lint-workflows check-mermaid docs-links docs-paths docs-check config-docs-check config-guard chart-version-check test
+ci: lint type lock-check lint-shell lint-workflows check-mermaid docs-links docs-paths docs-check config-docs-check config-guard env-docs-check chart-version-check test

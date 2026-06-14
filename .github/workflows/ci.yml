@@ -110,6 +110,12 @@ jobs:
         # because CI invokes recipes individually, so the ci recipe alone would not gate.
         run: just config-guard
 
+      - name: Env documentation guard
+        # Every KDIVE_* token in the tree must be documented (a registry Setting or an
+        # external_env.py entry). Listed here because CI invokes recipes individually, so
+        # adding it only to `just ci` would not gate PRs.
+        run: just env-docs-check
+
       - name: Chart appVersion guard
         # Chart.yaml appVersion must equal the pyproject version (spec A3) so a cut
         # release publishes an image at exactly the chart's default tag. Listed here

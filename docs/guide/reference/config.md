@@ -154,3 +154,47 @@
 |----------|-----------|---------|----------|-------|
 | `KDIVE_MAX_UPLOAD_BYTES` | server | `53687091200` | no | Maximum accepted per-artifact upload size in bytes. A single-PUT artifact still binds at the 5 GiB S3 single-PUT ceiling; this cap governs a chunked artifact's total (ADR-0104). |
 | `KDIVE_UPLOAD_TTL_SECONDS` | server | `86400` | no | Presigned upload-URL TTL in seconds. |
+
+# Test, tooling, and guest-helper variables
+
+Non-registry `KDIVE_*` variables read outside the process config registry — by the gated test suites, the operator setup/live-stack shell scripts, and the in-guest capture/install helpers. Catalogued in `src/kdive/config/external_env.py`.
+
+## Test (gated suites)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KDIVE_ARTIFACT_DIR` | — | Directory the live_stack spine writes run artifacts to (default: an out-of-tree temp dir). |
+| `KDIVE_GUEST_IMAGE` | — | Path to the operator-built local-libvirt guest rootfs qcow2 the live_stack spine boots; unset → the live_stack suite skips. |
+| `KDIVE_IMAGE` | — | Container image ref under test for the image smoke test; unset → the smoke test skips. |
+| `KDIVE_LIVE_SSH_TARGET` | — | SSH target gating the criterion-5 live_stack tier; unset → the live_stack suite skips. |
+| `KDIVE_LIVE_VM_SYSTEM_ID` | — | System id of a pre-provisioned live VM for the gated local-libvirt install test. |
+| `KDIVE_OIDC_CLIENT_ID` | `kdive-test` | OIDC client id the live_stack harness presents to the mock issuer. |
+| `KDIVE_REMOTE_BASE_IMAGE_VOLUME` | — | Name of the prebuilt remote-libvirt base-image storage volume for the remote live_stack test; unset → that test skips. |
+| `KDIVE_REQUIRE_DOCKER` | `0` | Set to 1 to fail (not skip) the disposable-Postgres/MinIO fixtures when Docker is absent. |
+| `KDIVE_SEAM_DOMAIN` | — | libvirt domain name for the in-target guest-agent seam live test. |
+| `KDIVE_SEAM_URI` | — | libvirt connection URI for the in-target guest-agent seam live test. |
+| `KDIVE_STACK_BASE_URL` | — | Base URL of a running kdive server for the live_stack HTTP tier; unset → that tier skips. |
+| `KDIVE_TEST_BUILD_CONFIG` | — | Path or file:// URL to a kernel .config (kdump + debuginfo) for the live_vm real-make build-id test; unset → that test skips. |
+
+## Operator scripts
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KDIVE_GUEST_HELPERS_DIR` | `deploy/remote-libvirt-guest-helpers` | Guest-helper source directory `check-remote-libvirt.sh` inspects. |
+| `KDIVE_KERNEL_REF` | `v6.9` | Kernel ref (tag/branch/sha) `fetch-kernel-tree.sh` checks out. |
+| `KDIVE_KERNEL_REPO` | `https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git` | Kernel git remote `fetch-kernel-tree.sh` clones. |
+| `KDIVE_KVM_NODE` | `/dev/kvm` | KVM device node `check-local-libvirt.sh` probes for hardware virtualization. |
+| `KDIVE_LIVE_SSH_PORT` | `22` | SSH port `check-ssh-reachable.sh` probes. |
+| `KDIVE_OS_RELEASE` | `/etc/os-release` | os-release file `check-setup-deps.sh` reads to detect the host distro. |
+| `KDIVE_REMOTE_PKI_DIR` | `/etc/pki/libvirt` | TLS PKI directory `check-remote-libvirt.sh` validates. |
+| `KDIVE_REMOTE_SSH_PORT` | `22` | SSH port `check-remote-libvirt.sh` connects on. |
+| `KDIVE_STACK_LOG_DIR` | `<repo>/.live-stack-logs` | Log directory the live-stack `start.sh` script writes process logs to. |
+| `KDIVE_STACK_PID_FILE` | `<repo>/.live-stack.pid` | PID file the live-stack `start.sh`/`stop.sh` scripts manage. |
+
+## In-guest helpers
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KDIVE_DMESG_CAP_BYTES` | `1048576` | Byte cap on the inline dmesg `kdive-capture-vmcore` emits (default 1 MiB). |
+| `KDIVE_TITLE` | `kdive` | grub menu title the `kdive-install-kernel` helper assigns the kdive boot slot. |
+| `KDIVE_VMCORE_PATH` | `/var/crash/*/vmcore` | Override the vmcore path `kdive-capture-vmcore` reads (default: the kdump-utils path). |
