@@ -170,7 +170,7 @@ remote base image with the `RemoteLibvirtRootfsBuildPlane` recipe; the volume na
 ```bash
 virt-builder fedora-43 --format qcow2 --size 10G \
   --output /var/lib/libvirt/images/fedora-kdive-remote-base-43.qcow2 \
-  --install qemu-guest-agent,drgn,kexec-tools,makedumpfile,kdump-utils \
+  --install qemu-guest-agent,drgn,kexec-tools,makedumpfile,kdump-utils,curl,openssl,python3 \
   --run-command "systemctl enable qemu-guest-agent.service" \
   --run-command "systemctl enable kdump.service"
 sudo virsh pool-refresh default
@@ -179,7 +179,36 @@ sha256sum /var/lib/libvirt/images/fedora-kdive-remote-base-43.qcow2   # the imag
 ```
 
 The matching `vmlinux`/debuginfo and a crashkernel-capable kernel remain the operator's content
-contract (recorded in the plane's provenance); add them per your kdump needs.
+contract (recorded in the plane's provenance); add them per your kdump needs. Add
+`kernel-debuginfo` to the `--install` set if you intend to drive **live drgn** (`kdive-drgn`
+needs the running kernel's DWARF to attach).
+
+### 5a. Install the in-guest helpers (REQUIRED — install/capture/debug fail without them)
+
+The Install, Retrieve, and live-drgn planes drive three operator-provided helpers over the
+guest agent: `/usr/local/sbin/kdive-{install-kernel,capture-vmcore,drgn}` (ADR-0082/0084/0085).
+kdive ships **reference implementations** under `deploy/remote-libvirt-guest-helpers/`; copy them
+into the base image. **For each helper you must `chown root:root` + `restorecon`, not just
+`chmod`** — `--copy-in` preserves the workstation uid/gid and a generic SELinux type, so on an
+SELinux-enforcing guest `guest-exec` later fails with a misleading `No such file or directory`
+(ENOENT, not EACCES). See
+[`docs/solutions/2026-06-13-virt-customize-copyin-selinux-guest-exec-enoent.md`](../solutions/2026-06-13-virt-customize-copyin-selinux-guest-exec-enoent.md).
+
+```bash
+HELPERS="kdive-install-kernel kdive-capture-vmcore kdive-drgn"
+args=()
+for h in $HELPERS; do
+  args+=(--copy-in "deploy/remote-libvirt-guest-helpers/$h:/usr/local/sbin/"
+    --run-command "chown root:root /usr/local/sbin/$h"
+    --run-command "chmod 0755 /usr/local/sbin/$h"
+    --run-command "restorecon -v /usr/local/sbin/$h")
+done
+virt-customize -a /var/lib/libvirt/images/fedora-kdive-remote-base-43.qcow2 "${args[@]}"
+```
+
+The canonical install recipe, the exact argv/JSON contract each helper satisfies, and the
+package prerequisites live in
+[`deploy/remote-libvirt-guest-helpers/README.md`](../../deploy/remote-libvirt-guest-helpers/README.md).
 
 ## 6. gdbstub-port ACL
 
