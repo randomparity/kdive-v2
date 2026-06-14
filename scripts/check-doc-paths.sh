@@ -6,6 +6,10 @@
 #   - docs/design/** — design specs narrate path moves (e.g. specs/ -> design/), so their
 #     docs/... mentions are intentional and must not be policed here;
 #   - docs/archive/** — frozen history references paths as they were when written;
+#   - CHANGELOG.md — git-cliff-generated; it reproduces commit subjects verbatim, which
+#     may contain "docs"-slash tokens that are recipe names, not paths (a commit titled
+#     "Add just docs-check" rendered the recipe with a slash). Generated history, not an
+#     authored operational doc.
 #   - .claude/**, .agents/**, .codex/** — vendored agent-tooling config, not project docs;
 #     their example strings (e.g. docs/<overlay>.md) are illustrative, not real references.
 # The docs/ token is anchored on a left word boundary so substrings like mkdocs/ or
@@ -20,13 +24,14 @@ cd "${ROOT}"
 
 mapfile -t files < <(
   { git ls-files 'justfile' 'scripts/*' '*.yml' '*.yaml' '*.md' 2>/dev/null || true; } |
-    grep -vE '^docs/(design|archive)/|^\.(claude|agents|codex)/'
+    grep -vE '^docs/(design|archive)/|^CHANGELOG\.md$|^\.(claude|agents|codex)/'
 )
 if ((${#files[@]} == 0)); then
   mapfile -t files < <(
     find . -type f \( -name justfile -o -path './scripts/*' -o -name '*.yml' \
       -o -name '*.yaml' -o -name '*.md' \) \
       -not -path './docs/design/*' -not -path './docs/archive/*' \
+      -not -path './CHANGELOG.md' \
       -not -path './.claude/*' -not -path './.agents/*' -not -path './.codex/*' \
       -printf '%P\n'
   )

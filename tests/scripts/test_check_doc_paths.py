@@ -73,6 +73,15 @@ def test_substring_docs_not_matched(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_changelog_not_scanned(tmp_path: Path) -> None:
+    # CHANGELOG.md is git-cliff-generated and reproduces commit subjects verbatim, which
+    # may contain docs/-prefixed recipe-name tokens (e.g. "docs/docs-check") that are not
+    # filesystem paths. The generated changelog must not be policed for path existence.
+    (tmp_path / "CHANGELOG.md").write_text("- Add just docs/docs-check and gate ci\n")
+    result = _run(tmp_path)
+    assert result.returncode == 0, result.stderr
+
+
 def test_vendored_tool_dirs_not_scanned(tmp_path: Path) -> None:
     # Vendored agent-tooling config (.claude/, .agents/, .codex/) is not project docs;
     # its illustrative docs/... example strings must not be policed.
