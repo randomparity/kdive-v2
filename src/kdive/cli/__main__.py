@@ -19,15 +19,36 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
 
-    tool = sub.add_parser("tool", help="generic MCP passthrough (read-only)")
+    tool = sub.add_parser("tool", help="generic MCP passthrough (read-only by default)")
     tool_sub = tool.add_subparsers(dest="tool_command", required=True)
-    call = tool_sub.add_parser("call", help="call a read-only tool by name")
+    call = tool_sub.add_parser(
+        "call",
+        help="call a tool by name (read-only by default; opt in for mutating/destructive)",
+    )
     call.add_argument("name")
     call.add_argument(
         "--json",
         dest="payload",
         default="{}",
         help="JSON object of tool arguments",
+    )
+    call.add_argument(
+        "--allow-mutating",
+        dest="allow_mutating",
+        action="store_true",
+        help="permit a mutating (non-destructive) tool",
+    )
+    call.add_argument(
+        "--allow-destructive",
+        dest="allow_destructive",
+        action="store_true",
+        help="permit a destructive tool (implies --allow-mutating; needs confirmation or --yes)",
+    )
+    call.add_argument(
+        "--yes",
+        dest="yes",
+        action="store_true",
+        help="skip the destructive-call confirmation prompt (for non-interactive use)",
     )
 
     from kdive.cli.commands.registry import add_subparsers
