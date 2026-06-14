@@ -27,6 +27,7 @@ from kdive.config.core_settings import RESOURCE_LEASE_TTL_SECONDS
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import ManagedBy, ResourceKind, ResourceStatus
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
+from kdive.inventory.reconcile import resource_identity_lock
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._platform_auth import actor_for, audit_platform_denial, held_platform_roles
 from kdive.mcp.tools.ops.resources._common import (
@@ -263,7 +264,13 @@ async def _insert_with_preflight(
     lease = _lease_deadline()
     caps = {CONCURRENT_ALLOCATION_CAP_KEY: cap}
     try:
-        async with pool.connection() as conn, conn.transaction():
+        # Serialize with the inventory reconcile on the (kind, name) identity so a concurrent
+        # reconcile adopt/prune of this name and this register cannot interleave (ADR-0112).
+        async with (
+            pool.connection() as conn,
+            conn.transaction(),
+            resource_identity_lock(conn, kind, name),
+        ):
             failure = await _db_preflight(conn, kind=kind, name=name, base_image=base_image)
             if failure is not None:
                 return failure

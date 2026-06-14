@@ -50,6 +50,7 @@ from kdive.inventory.reconcile import (
     ReconcileRecord,
     inventory_pass_lock,
     prune_or_cordon_resource,
+    resource_identity_lock,
 )
 
 _log = logging.getLogger(__name__)
@@ -102,27 +103,29 @@ async def _create_config_resources(
                 MEMORY_MB_KEY: inst.memory_mb,
                 CONCURRENT_ALLOCATION_CAP_KEY: inst.concurrent_allocation_cap,
             }
-            await _upsert_config_resource(
-                cur,
-                diff,
-                kind=ResourceKind.FAULT_INJECT,
-                name=inst.name,
-                host_uri=_FAULT_INJECT_HOST_URI,
-                cost_class=inst.cost_class,
-                caps=caps,
-                adopt_by_host=False,
-            )
+            async with resource_identity_lock(conn, ResourceKind.FAULT_INJECT, inst.name):
+                await _upsert_config_resource(
+                    cur,
+                    diff,
+                    kind=ResourceKind.FAULT_INJECT,
+                    name=inst.name,
+                    host_uri=_FAULT_INJECT_HOST_URI,
+                    cost_class=inst.cost_class,
+                    caps=caps,
+                    adopt_by_host=False,
+                )
         for inst in doc.remote_libvirt:
-            await _upsert_config_resource(
-                cur,
-                diff,
-                kind=ResourceKind.REMOTE_LIBVIRT,
-                name=inst.name,
-                host_uri=inst.uri,
-                cost_class=inst.cost_class,
-                caps={CONCURRENT_ALLOCATION_CAP_KEY: inst.concurrent_allocation_cap},
-                adopt_by_host=True,
-            )
+            async with resource_identity_lock(conn, ResourceKind.REMOTE_LIBVIRT, inst.name):
+                await _upsert_config_resource(
+                    cur,
+                    diff,
+                    kind=ResourceKind.REMOTE_LIBVIRT,
+                    name=inst.name,
+                    host_uri=inst.uri,
+                    cost_class=inst.cost_class,
+                    caps={CONCURRENT_ALLOCATION_CAP_KEY: inst.concurrent_allocation_cap},
+                    adopt_by_host=True,
+                )
 
 
 async def _upsert_config_resource(
@@ -160,17 +163,25 @@ async def _upsert_config_resource(
         diff.created.append(_record(kind, name))
         return
     merged = {**_caps(row), **caps}
+    # Adopting a runtime row: a config identity owns this (kind, name), so the row becomes
+    # config-managed, sheds its runtime lease, and takes the config-declared affinity. The
+    # model declares no per-instance scope, so config affinity is global — clearing
+    # owner_project / affinity_allowlist widens a previously project-scoped runtime resource.
     changed = (
         row["name"] != name
         or row["host_uri"] != host_uri
         or row["cost_class"] != cost_class
         or str(row["managed_by"]) != _CONFIG
+        or row["lease_expires_at"] is not None
+        or row["owner_project"] is not None
+        or list(row["affinity_allowlist"]) != []
         or _caps(row) != merged
     )
     if changed:
         await cur.execute(
             "UPDATE resources SET name = %s, host_uri = %s, cost_class = %s, capabilities = %s, "
-            "managed_by = %s WHERE id = %s",
+            "managed_by = %s, lease_expires_at = NULL, owner_project = NULL, "
+            "affinity_allowlist = '{}' WHERE id = %s",
             (name, host_uri, cost_class, Jsonb(merged), _CONFIG, row["id"]),
         )
         diff.updated.append(_record(kind, name))
@@ -180,17 +191,20 @@ async def _find_existing(
     cur: Any, *, kind: ResourceKind, name: str, host_uri: str, adopt_by_host: bool
 ) -> dict[str, Any] | None:
     """Resolve the existing row to upsert: by (kind, name) first, then host-adopt for remote."""
+    columns = (
+        "id, name, host_uri, cost_class, capabilities, managed_by, "
+        "lease_expires_at, owner_project, affinity_allowlist"
+    )
     await cur.execute(
-        "SELECT id, name, host_uri, cost_class, capabilities, managed_by FROM resources "
-        "WHERE kind = %s AND name = %s FOR UPDATE",
+        f"SELECT {columns} FROM resources WHERE kind = %s AND name = %s FOR UPDATE",
         (kind.value, name),
     )
     row = await cur.fetchone()
     if row is not None or not adopt_by_host:
         return row
     await cur.execute(
-        "SELECT id, name, host_uri, cost_class, capabilities, managed_by FROM resources "
-        "WHERE kind = %s AND host_uri = %s AND name IS NULL FOR UPDATE",
+        f"SELECT {columns} FROM resources WHERE kind = %s AND host_uri = %s AND name IS NULL "
+        "FOR UPDATE",
         (kind.value, host_uri),
     )
     return await cur.fetchone()
@@ -269,7 +283,8 @@ async def _prune_departed(conn: AsyncConnection, doc: InventoryDoc, diff: Reconc
         if identity in declared:
             continue
         name = str(row["name"])
-        outcome = await prune_or_cordon_resource(conn, _row_id(row), name)
+        kind = ResourceKind(str(row["kind"]))
+        outcome = await prune_or_cordon_resource(conn, _row_id(row), name, kind=kind)
         record = ReconcileRecord(name=name, entry=f"resource[{identity[0]}/{name}]")
         if outcome.cordoned:
             diff.cordoned.append(record)

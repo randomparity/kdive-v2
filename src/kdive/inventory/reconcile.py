@@ -25,8 +25,13 @@ from uuid import UUID
 from psycopg import AsyncConnection, AsyncCursor
 from psycopg.rows import dict_row
 
-from kdive.db.locks import INVENTORY_RECONCILE, session_advisory_lock
-from kdive.domain.models import ManagedBy
+from kdive.db.locks import (
+    INVENTORY_RECONCILE,
+    LockScope,
+    advisory_xact_lock,
+    session_advisory_lock,
+)
+from kdive.domain.models import ManagedBy, ResourceKind
 from kdive.services.allocation.pcie_claim import NON_TERMINAL_STATES_VALUES
 from kdive.services.images.retention import image_referenced_by_live_system
 
@@ -36,10 +41,38 @@ __all__ = [
     "ReconcileRecord",
     "PruneOutcome",
     "inventory_pass_lock",
+    "resource_identity_lock",
+    "resource_identity_lock_key",
     "prune_or_cordon_image",
     "prune_or_cordon_resource",
     "prune_or_cordon_build_host",
 ]
+
+
+def resource_identity_lock_key(kind: ResourceKind, name: str) -> str:
+    """The advisory-lock key serializing all mutation of one ``(kind, name)`` resource identity.
+
+    Both the inventory reconcile (adopt/prune) and the imperative ``resources.register`` take a
+    :attr:`~kdive.db.locks.LockScope.RESOURCE` lock on this key, so a reconcile pass and a
+    concurrent ``register`` of the same name never interleave — prune cannot delete a row a
+    register is creating, and adopt cannot race a register flipping ownership (ADR-0112).
+    """
+    return f"{kind.value}:{name}"
+
+
+@asynccontextmanager
+async def resource_identity_lock(
+    conn: AsyncConnection, kind: ResourceKind, name: str
+) -> AsyncIterator[None]:
+    """Hold the transaction-scoped per-identity lock for ``(kind, name)`` over the block.
+
+    Wraps :func:`~kdive.db.locks.advisory_xact_lock` with the shared
+    :func:`resource_identity_lock_key`, so the inventory reconcile and ``resources.register``
+    serialize on the same key. Must run inside an open transaction (the xact lock releases on
+    commit/rollback); a whole reconcile pass already holds it under one transaction per phase.
+    """
+    async with advisory_xact_lock(conn, LockScope.RESOURCE, resource_identity_lock_key(kind, name)):
+        yield
 
 
 @dataclass(frozen=True)
@@ -126,7 +159,9 @@ async def prune_or_cordon_image(conn: AsyncConnection, row_id: UUID, name: str) 
     return PruneOutcome(pruned=True, cordoned=False)
 
 
-async def prune_or_cordon_resource(conn: AsyncConnection, row_id: UUID, name: str) -> PruneOutcome:
+async def prune_or_cordon_resource(
+    conn: AsyncConnection, row_id: UUID, name: str, *, kind: ResourceKind
+) -> PruneOutcome:
     """Apply the non-destructive prune contract to one config resource row (ADR-0112).
 
     Mirrors :func:`prune_or_cordon_image`: a config resource that left the file is **deleted**
@@ -135,15 +170,24 @@ async def prune_or_cordon_resource(conn: AsyncConnection, row_id: UUID, name: st
     never evict a running System (eviction stays the explicit ``resources.drain`` op). Runs in
     its own transaction so the liveness re-check and the delete/cordon are atomic per row.
 
+    The transaction first takes the per-identity :func:`resource_identity_lock` so a prune and a
+    concurrent ``resources.register`` of the same ``(kind, name)`` serialize — prune cannot
+    delete a row a register is re-creating, and vice versa (ADR-0112).
+
     Args:
         conn: The reconcile pass connection (a fresh transaction is opened here).
         row_id: The config resource row's id.
-        name: The resource name (for the returned record).
+        name: The resource name (for the returned record and the identity lock).
+        kind: The resource kind (for the identity lock).
 
     Returns:
         A :class:`PruneOutcome` recording whether the row was pruned or cordoned.
     """
-    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+    async with (
+        conn.transaction(),
+        resource_identity_lock(conn, kind, name),
+        conn.cursor(row_factory=dict_row) as cur,
+    ):
         await cur.execute(
             "SELECT id FROM resources WHERE id = %s AND managed_by = %s FOR UPDATE",
             (row_id, ManagedBy.CONFIG.value),

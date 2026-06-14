@@ -1702,6 +1702,161 @@ def test_loop_inventory_pass_reconciles_a_build_host(
     asyncio.run(_run())
 
 
+# --- Phase 4 Task 4.4: adopt-on-collision (runtime row -> config) --------------------
+#
+# A config identity (name) matching a managed_by='runtime' row is ADOPTED: managed_by flips
+# to 'config', the runtime lease (lease_expires_at) is cleared (config rows carry no lease),
+# and the config-declared affinity is taken — the model declares no per-instance scope, so a
+# config row is always global (owner_project NULL, empty allowlist), widening a previously
+# project-scoped runtime resource. Registration and reconcile serialize on the (kind, name)
+# identity (a RESOURCE advisory lock keyed by name) so prune cannot race a re-register.
+
+
+async def _insert_runtime_fault_inject(
+    conn: psycopg.AsyncConnection,
+    *,
+    name: str,
+    owner_project: str | None,
+    affinity_allowlist: list[str] | None = None,
+    vcpus: int = 8,
+    memory_mb: int = 16384,
+) -> UUID:
+    """Insert a leased, project-scoped runtime fault-inject row (the resources.register shape)."""
+    from datetime import UTC, datetime, timedelta
+
+    rid = uuid4()
+    lease = datetime.now(UTC) + timedelta(hours=1)
+    await conn.execute(
+        "INSERT INTO resources (id, kind, name, capabilities, pool, cost_class, status, "
+        " host_uri, managed_by, owner_project, affinity_allowlist, lease_expires_at) "
+        "VALUES (%s, 'fault-inject', %s, %s, 'default', 'local', 'available', "
+        " 'fault-inject://local', 'runtime', %s, %s, %s)",
+        (
+            rid,
+            name,
+            Jsonb({"vcpus": vcpus, "memory_mb": memory_mb, "concurrent_allocation_cap": 1}),
+            owner_project,
+            affinity_allowlist or [],
+            lease,
+        ),
+    )
+    return rid
+
+
+def test_adopt_runtime_row_clears_lease_and_widens_to_global(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # Invariant 6: a config identity matching a project-scoped, leased runtime row ADOPTS it —
+    # managed_by flips to config, the lease is cleared, and (no per-instance scope in the file)
+    # affinity widens to global (owner_project NULL, empty allowlist).
+    async def _run() -> None:
+        async with await _connect(migrated_url) as seed:
+            rid = await _insert_runtime_fault_inject(
+                seed, name="fi-adopt", owner_project="proj-a", affinity_allowlist=["proj-b"]
+            )
+        doc = load_inventory(_write_toml(tmp_path, _fault_inject_toml(name="fi-adopt")))
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            diff = await reconcile_resources(conn, doc)
+        async with await _connect(migrated_url) as check, check.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT * FROM resources WHERE id = %s", (rid,))
+            row = await cur.fetchone()
+        assert row is not None  # adopted in place — same row, no duplicate
+        assert row["managed_by"] == "config"  # flipped from runtime
+        assert row["lease_expires_at"] is None  # lease cleared (config rows carry no lease)
+        assert row["owner_project"] is None  # widened to global
+        assert list(row["affinity_allowlist"]) == []  # config affinity (default global)
+        assert "fi-adopt" in {u.name for u in diff.updated}
+
+    asyncio.run(_run())
+
+
+def test_adopt_does_not_create_duplicate_row(migrated_url: str, tmp_path: Path) -> None:
+    # Adoption updates the existing runtime row in place — exactly one (kind, name) row remains,
+    # never a second config row colliding on the partial-unique index.
+    async def _run() -> None:
+        async with await _connect(migrated_url) as seed:
+            await _insert_runtime_fault_inject(seed, name="fi-dup", owner_project="proj-a")
+        doc = load_inventory(_write_toml(tmp_path, _fault_inject_toml(name="fi-dup")))
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            await reconcile_resources(conn, doc)
+        async with await _connect(migrated_url) as check, check.cursor() as cur:
+            await cur.execute(
+                "SELECT count(*) FROM resources WHERE kind = 'fault-inject' AND name = 'fi-dup'"
+            )
+            row = await cur.fetchone()
+        assert row is not None
+        assert int(row[0]) == 1  # adopted in place, not duplicated
+
+    asyncio.run(_run())
+
+
+def test_adopted_row_is_not_pruned_when_still_in_config(migrated_url: str, tmp_path: Path) -> None:
+    # A re-run over the same config (the adopted row is now managed_by='config') is a clean
+    # no-op: the adopted row stays, never re-flagged as a phantom change.
+    async def _run() -> None:
+        async with await _connect(migrated_url) as seed:
+            await _insert_runtime_fault_inject(seed, name="fi-steady", owner_project="proj-a")
+        doc = load_inventory(_write_toml(tmp_path, _fault_inject_toml(name="fi-steady")))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            async with pool.connection() as conn:
+                await reconcile_resources(conn, doc)  # adopt
+            async with pool.connection() as conn:
+                diff2 = await reconcile_resources(conn, doc)  # steady-state re-run
+        assert not diff2.created and not diff2.updated and not diff2.pruned
+        async with await _connect(migrated_url) as check:
+            row = await _resource_by_name(check, "fi-steady")
+        assert row["managed_by"] == "config"
+
+    asyncio.run(_run())
+
+
+def test_reconcile_serializes_with_register_on_the_resource_name(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # Registration + reconcile serialize on the (kind, name) identity: while a holder holds the
+    # RESOURCE advisory lock keyed by the resource name, a concurrent reconcile of that name
+    # BLOCKS (cannot race the adopt/prune), then proceeds once the holder releases.
+    from kdive.db.locks import LockScope, advisory_xact_lock
+    from kdive.domain.models import ResourceKind
+    from tests.db_waits import wait_until_any_backend_waiting
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as seed:
+            await _insert_runtime_fault_inject(seed, name="fi-race", owner_project="proj-a")
+        doc = load_inventory(_write_toml(tmp_path, _fault_inject_toml(name="fi-race")))
+        lock_key = f"{ResourceKind.FAULT_INJECT.value}:fi-race"
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=2, max_size=4) as pool,
+            pool.connection() as holder,
+        ):
+            async with (
+                holder.transaction(),
+                advisory_xact_lock(holder, LockScope.RESOURCE, lock_key),
+            ):
+                task = asyncio.create_task(_reconcile_on(pool, doc))
+                await wait_until_any_backend_waiting(holder, locktype="advisory")
+                assert not task.done(), "reconcile did not block on the held resource-name lock"
+            diff = await task
+        assert "fi-race" in {u.name for u in diff.updated}  # adopted once the lock released
+        async with await _connect(migrated_url) as check:
+            row = await _resource_by_name(check, "fi-race")
+        assert row["managed_by"] == "config"
+        assert row["lease_expires_at"] is None
+
+    asyncio.run(_run())
+
+
+async def _reconcile_on(pool: AsyncConnectionPool, doc: Any) -> ReconcileDiff:
+    async with pool.connection() as conn:
+        return await reconcile_resources(conn, doc)
+
+
 def test_build_host_readopt_clears_disabled_cordon(migrated_url: str, tmp_path: Path) -> None:
     # Re-declaring a cordoned (enabled=false) config host in the file re-enables it: the cordon
     # is a prune artifact, so an explicit re-declaration must clear it (idempotent recovery).
