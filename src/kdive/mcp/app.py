@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.jwt import JWTVerifier
+from fastmcp.tools import Tool
 from opentelemetry import metrics, trace
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
@@ -285,6 +287,40 @@ _HANDLER_REGISTRARS: tuple[HandlerRegistrar, ...] = (
 )
 
 
+# A flat, non-recursive output schema advertised for every tool (ADR-0113). Every tool returns
+# the self-referential `ToolResponse` (`items: list[ToolResponse]` + recursive `JsonValue` data),
+# so FastMCP would auto-derive a recursive `$ref` schema that the FastMCP 3.4.0 client cannot
+# build a validator for — it logs a per-call parse error and nulls `CallToolResult.data`.
+# Advertising a flat object removes the recursion while keeping the `structured_content` wire
+# payload unchanged (no `x-fastmcp-wrap-result` key). Typed `dict[str, Any]` to match FastMCP's
+# `Tool.output_schema` and because a JSON schema nests non-str values.
+ENVELOPE_OUTPUT_SCHEMA: dict[str, Any] = {"type": "object"}
+
+
+def _advertise_flat_output_schema(app: FastMCP) -> int:
+    """Override every registered tool's advertised `outputSchema` with the flat envelope schema.
+
+    Mutates the *live* registered `Tool` instances (the `Tool`-typed values in the local
+    provider's component store); `app.list_tools()` returns copies whose mutation would not change
+    what the server advertises. Raises if no tools are found: `build_app` always registers a
+    non-empty surface, so a zero count means the FastMCP registry accessor changed under us and
+    the app must not silently fall back to advertising the recursive schema (ADR-0113).
+
+    Returns the number of tools swept.
+    """
+    swept = 0
+    for component in app.local_provider._components.values():
+        if isinstance(component, Tool):
+            component.output_schema = dict(ENVELOPE_OUTPUT_SCHEMA)
+            swept += 1
+    if swept == 0:
+        raise RuntimeError(
+            "no tools found to advertise a flat outputSchema for; the FastMCP registry accessor "
+            "(app.local_provider._components) may have changed (ADR-0113)"
+        )
+    return swept
+
+
 def build_app(
     pool: AsyncConnectionPool,
     *,
@@ -322,6 +358,7 @@ def build_app(
     )
     for register in _PLANE_REGISTRARS:
         register(app, pool, assembly)
+    _advertise_flat_output_schema(app)
     return app
 
 
