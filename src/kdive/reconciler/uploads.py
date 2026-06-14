@@ -4,20 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 from uuid import UUID
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
+from kdive.db import upload_manifest
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.domain.state import RunState, SystemState
 
 _log = logging.getLogger(__name__)
 
-_UPLOAD_RUN_OWNER_KIND = "runs"
-_UPLOAD_SYSTEM_OWNER_KIND = "systems"
-_UPLOAD_PRE_FINALIZE_VALUES = {
+_UPLOAD_RUN_OWNER_KIND = upload_manifest.RUN_UPLOAD_OWNER
+_UPLOAD_SYSTEM_OWNER_KIND = upload_manifest.SYSTEM_UPLOAD_OWNER
+_UPLOAD_PRE_FINALIZE_VALUES: dict[upload_manifest.UploadOwnerKind, str] = {
     _UPLOAD_RUN_OWNER_KIND: RunState.CREATED.value,
     _UPLOAD_SYSTEM_OWNER_KIND: SystemState.DEFINED.value,
 }
@@ -55,14 +56,19 @@ async def repair_abandoned_uploads(conn: AsyncConnection, store: UploadStore) ->
         candidates = await cur.fetchall()
     reaped = 0
     for cand in candidates:
-        scope = LockScope.RUN if cand["owner_kind"] == _UPLOAD_RUN_OWNER_KIND else LockScope.SYSTEM
-        if await reap_one_owner(conn, store, cand["owner_kind"], cand["owner_id"], scope):
+        owner_kind = cast(upload_manifest.UploadOwnerKind, cand["owner_kind"])
+        scope = LockScope.RUN if owner_kind == _UPLOAD_RUN_OWNER_KIND else LockScope.SYSTEM
+        if await reap_one_owner(conn, store, owner_kind, cand["owner_id"], scope):
             reaped += 1
     return reaped
 
 
 async def reap_one_owner(
-    conn: AsyncConnection, store: UploadStore, owner_kind: str, owner_id: UUID, scope: LockScope
+    conn: AsyncConnection,
+    store: UploadStore,
+    owner_kind: upload_manifest.UploadOwnerKind,
+    owner_id: UUID,
+    scope: LockScope,
 ) -> bool:
     """Re-validate under the per-owner lock, then prefix-reap and delete the manifest."""
     async with conn.transaction(), advisory_xact_lock(conn, scope, owner_id):
@@ -94,7 +100,9 @@ async def reap_one_owner(
     return True
 
 
-async def owner_pre_finalize(conn: AsyncConnection, owner_kind: str, owner_id: UUID) -> bool:
+async def owner_pre_finalize(
+    conn: AsyncConnection, owner_kind: upload_manifest.UploadOwnerKind, owner_id: UUID
+) -> bool:
     """Report whether the owner is still in its pre-finalize state."""
     if owner_kind == _UPLOAD_RUN_OWNER_KIND:
         table = _UPLOAD_RUN_OWNER_KIND

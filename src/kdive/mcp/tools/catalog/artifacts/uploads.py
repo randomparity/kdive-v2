@@ -87,7 +87,7 @@ type ArtifactDeclaration = Mapping[str, object]
 
 @dataclass(frozen=True)
 class _UploadOwnerSpec:
-    owner_kind: str
+    owner_kind: upload_manifest.UploadOwnerKind
     lock_scope: LockScope
     allowed_names: frozenset[str]
     next_action: str
@@ -158,7 +158,7 @@ def _validate_chunks(
 def _materialize_uploads(
     entries: list[ManifestEntry],
     *,
-    kind: str,
+    kind: upload_manifest.UploadOwnerKind,
     owner_id: UUID,
     store: _PresignStore,
 ) -> list[_MaterializedUpload]:
@@ -242,7 +242,7 @@ async def _system_accepts_upload(
 
 
 _RUN_UPLOAD = _UploadOwnerSpec(
-    owner_kind="runs",
+    owner_kind=upload_manifest.RUN_UPLOAD_OWNER,
     lock_scope=LockScope.RUN,
     allowed_names=_BUILD_ARTIFACT_NAMES,
     next_action="runs.complete_build",
@@ -250,7 +250,7 @@ _RUN_UPLOAD = _UploadOwnerSpec(
     accepts_upload=_run_accepts_upload,
 )
 _SYSTEM_UPLOAD = _UploadOwnerSpec(
-    owner_kind="systems",
+    owner_kind=upload_manifest.SYSTEM_UPLOAD_OWNER,
     lock_scope=LockScope.SYSTEM,
     allowed_names=frozenset({_ROOTFS_NAME}),
     next_action="systems.provision_defined",
@@ -347,7 +347,7 @@ def _upload_response(upload: _MaterializedUpload, *, next_action: str) -> ToolRe
 
 
 def _upload_tool_name(spec: _UploadOwnerSpec) -> str:
-    if spec.owner_kind == "runs":
+    if spec.owner_kind == upload_manifest.RUN_UPLOAD_OWNER:
         return _CREATE_RUN_UPLOAD_TOOL
     return _CREATE_SYSTEM_UPLOAD_TOOL
 

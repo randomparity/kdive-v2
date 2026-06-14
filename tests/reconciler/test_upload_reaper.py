@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from typing import cast
 from uuid import UUID
 
 import psycopg
@@ -78,7 +79,7 @@ def _reap(store: _FakeStore):
 
 def _manifest_request(
     *,
-    owner_kind: str,
+    owner_kind: upload_manifest.UploadOwnerKind,
     owner_id: UUID,
     prefix: str,
     entries: list[ManifestEntry],
@@ -307,7 +308,9 @@ def test_owner_pre_finalize_rejects_unknown_owner_kind_before_sql(migrated_url: 
         async with await connect(migrated_url) as conn:
             system_id = await seed_system(conn)
             try:
-                await _owner_pre_finalize(conn, "allocations", system_id)
+                await _owner_pre_finalize(
+                    conn, cast(upload_manifest.UploadOwnerKind, "allocations"), system_id
+                )
             except ValueError as exc:
                 assert str(exc) == "unsupported upload owner kind: allocations"
             else:
