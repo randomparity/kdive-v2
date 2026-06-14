@@ -19,7 +19,7 @@
 | What | Where (verified) |
 |---|---|
 | Migration dir + next number | `src/kdive/db/schema/NNNN_*.sql`; latest `0029_*`, **next = `0030`** |
-| `resources` DDL (`host_uri`, kind CHECK) | `src/kdive/db/schema/0001_init.sql:13` (kind CHECK widened by 0018/0020) |
+| `resources` DDL (`host_uri`, kind CHECK) | `src/kdive/db/schema/0001_init.sql:13` (kind CHECK widened by 0018/0020). **PK column is `id`** (the spec/plan call it `resource_id` conceptually — the actual column is `id`); `image_catalog` and `systems` PKs are also `id`. |
 | `image_catalog` DDL + the CHECK to relax | `src/kdive/db/schema/0023_image_catalog.sql:33` — `image_object_present CHECK ((state='defined') = (object_key IS NULL))` |
 | Reconciler repair-spec registry | `src/kdive/reconciler/loop.py` — `_RepairSpec` (l.138), `_build_repairs` (l.199) |
 | On-demand MCP reconcile (mirror) | `src/kdive/mcp/tools/ops/reconcile.py` (`ops.reconcile_now`, gated `platform_operator`) |
@@ -118,14 +118,26 @@ ALTER TABLE resources ADD COLUMN lease_expires_at timestamptz;
 
 -- Backfill ownership for pre-existing rows (load-bearing, see plan §backfill):
 UPDATE resources SET managed_by = 'discovery';        -- discovered hosts: never pruned on first reconcile
-UPDATE image_catalog SET managed_by = 'config';       -- seeded baseline is config-equivalent: reconcile owns it
+-- ONLY the public baseline catalog is config-equivalent. Project-private uploaded images
+-- (visibility='private', owner IS NOT NULL — M2.4 #282-289) are RUNTIME-owned and must stay
+-- managed_by='runtime' (the column default), else the first reconcile prunes user uploads.
+UPDATE image_catalog SET managed_by = 'config' WHERE visibility = 'public' AND owner IS NULL;
 -- affinity already defaults global (owner_project NULL); no allocation regresses.
+
+-- system -> image reference (prune-guard prerequisite; folded in here, see Task 1.5 note).
+-- Confirmed: no such reference exists in the schema today. Nullable; the live provision path
+-- populates it so reconcile can resolve an image's dependent systems for the cordon guard.
+-- ON DELETE SET NULL is load-bearing: the image prune deletes an IDLE image (no live deps),
+-- but a TERMINAL System (done, not "live" per ADR-0109) may still carry image_id. NO ACTION
+-- would make that terminal reference abort the prune with an FK violation; SET NULL lets the
+-- idle delete proceed while the cordon guard still protects LIVE (non-terminal) dependents.
+ALTER TABLE systems ADD COLUMN image_id uuid REFERENCES image_catalog (id) ON DELETE SET NULL;
 ```
 
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `uv run pytest tests/integration/test_migrate.py -v`
-Expected: PASS. Also run `uv run pytest tests/integration/test_migrate.py -v` twice in one session if the harness applies twice (idempotency) — additive DDL is forward-only.
+Expected: PASS. Idempotency here comes from the **migration harness's applied-migration tracking** (it never re-applies `0030`), **not** from the SQL — raw `ADD COLUMN`/`DROP CONSTRAINT` are *not* re-runnable and would error "already exists" on a second raw apply. Do not hand-apply the file twice; rely on the harness.
 
 - [ ] **Step 5: Commit**
 
@@ -404,8 +416,15 @@ def test_malformed_toml_raises_inventory_error(tmp_path):
 
 
 def test_missing_file_raises_inventory_error(tmp_path):
+    # Explicitly-requested path that is absent IS an error (operator named a file that isn't there).
     with pytest.raises(InventoryError):
         load_inventory(tmp_path / "absent.toml")
+
+
+def test_load_optional_returns_none_for_absent_default(tmp_path):
+    # The DEFAULT-path case: an absent file means "nothing declared", not an error
+    # (systems.toml is gitignored; CI / fresh deploys legitimately have no file yet).
+    assert load_inventory_optional(tmp_path / "absent.toml") is None
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -447,6 +466,18 @@ def load_inventory(path: Path) -> InventoryDoc:
         return InventoryDoc.parse(data)
     except ValidationError as exc:
         raise InventoryError(str(path), "schema", str(exc)) from exc
+
+
+def load_inventory_optional(path: Path) -> InventoryDoc | None:
+    """Like load_inventory, but a MISSING file returns None (nothing declared).
+
+    Use this on the **default** path: systems.toml is gitignored, so an absent default is
+    the normal pre-config state, not an operator error. A present-but-malformed file still
+    raises InventoryError (a real failure the loop must surface).
+    """
+    if not path.exists():
+        return None
+    return load_inventory(path)
 ```
 
 Add `InventoryDoc.parse` classmethod in `model.py`:
@@ -586,7 +617,7 @@ async def test_reconcile_is_idempotent(pg_conn, write_toml):
     assert not diff2.created and not diff2.updated and not diff2.pruned
 ```
 
-(Provide the `_one`/`_exists`/`_insert_*`/`_attach_dependent_system` helpers in the test module — direct SQL against `pg_conn`. The dependent-system link uses whatever `system → image` reference Task 1.5 establishes; if that reference does not yet exist, this test degrades to "refuse prune of any `registered` image" per the spec's safe-degradation clause — assert on that weaker guard and leave a `# TODO(phase-1.5): tighten once system→image ref lands` only if 1.5 is sequenced after this; otherwise sequence 1.5 first.)
+(Provide the `_one`/`_exists`/`_insert_*`/`_attach_dependent_system` helpers in the test module — direct SQL against `pg_conn`. The dependent-system link uses the `systems.image_id` reference **added in the Task 1.1 migration** (it exists before this task runs — the issue decomposition orders #388 migration before #390 engine), so this test asserts the **tight** guard directly: a registered image with a dependent `systems.image_id` row is cordoned, an idle one is pruned. There is no degraded fallback — both `test_prune_removes_only_config_rows_absent_from_config` (which prunes an *idle* registered staged row) and `test_prune_of_in_use_image_cordons_not_deletes` (which cordons a *dependent* one) require the `systems.image_id` reference to distinguish idle from in-use; that is why it lives in the migration, not a later task.)
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -597,11 +628,15 @@ Expected: FAIL — `reconcile_images` missing.
 
 `reconcile.py` provides: `ManagedBy` enum; `ReconcileDiff` dataclass (`created`, `updated`, `pruned`, `cordoned`, `warned` lists of small records); a `per_identity_lock(conn, key)` helper using `advisory_xact_lock` (reuse `kdive.store...advisory_xact_lock`); and a `_prune_or_cordon(conn, row, is_live)` helper encoding the non-destructive contract.
 
+**Serialize whole-inventory passes (load-bearing):** three triggers run this engine (CLI, loop pass, `ops.reconcile_systems`), and `image_catalog`/inventory rows have **no** pre-existing per-object advisory lock (unlike Project/Allocation/System, which the existing `reconcile_once` serializes on). Two concurrent passes both "load existing → compute prune set → insert/delete" and race: concurrent inserts hit the `(provider,name,arch)` unique constraint → one transaction aborts (a spurious pass failure); prune+recreate can flap. So each pass **takes a single inventory-scoped `advisory_xact_lock`** (a new `LockScope.INVENTORY`, one lock per pass) before reading, so CLI/loop/MCP passes serialize. Add a concurrent-pass test (two reconciles in flight → no unique-violation abort; second is a clean no-op).
+
 `reconcile_images.py`:
 - Load existing `image_catalog` rows.
-- For each config `ImageEntry`: upsert keyed by `(provider, name, arch)`, writing only config-owned fields (`provider/name/arch/format/root_device/visibility/capabilities/managed_by='config'`), **never** `object_key`/`digest`/`state` when the existing row is already `registered` from a build (invariant 1).
+- **The upsert must be change-detecting** (load-bearing for the idempotency invariant): compare the existing row's config-owned fields to the desired values and only write — and only append to `diff.updated` — when something actually differs. An unconditional `UPDATE … SET …` marks every row `updated` on every pass, fails `test_reconcile_is_idempotent`, and turns a steady state into perpetual phantom drift in the loop's reporting. The same "don't re-emit each pass" rule applies to **every derived warning** (`build`-base-not-registered, `s3`-missing-digest, `s3`-missing-object): warn-state is computed from the row's current state for the operator, not appended as a per-pass change — else a steady `defined` image spams the log every pass and any "warned = drift" check flaps.
+- **Scope the identity match to config-eligible rows (load-bearing — `(provider,name,arch)` is NOT uniquely constrained):** `image_catalog` uniqueness is visibility/state-scoped (`0023` partial indexes `WHERE state='registered' AND visibility=…`), so a config public image and a project-private upload can share `(provider,name,arch)`. When loading "existing rows" to upsert/prune, **match only `managed_by='config'` rows** (equivalently `visibility='public' AND owner IS NULL`) — never resolve a `runtime`/private row as the upsert or prune target. Otherwise reconcile could overlay config onto, or prune, a user's private image. Test: a private upload sharing `(provider,name,arch)` with a config image is untouched.
+- For each config `ImageEntry`: upsert keyed by `(provider, name, arch)` **among config rows**, writing only config-owned fields (`provider/name/arch/format/root_device/visibility/capabilities/managed_by='config'`), **never** `object_key`/`digest`/`state` when the existing row is already `registered` from a build (invariant 1).
   - `staged` → set `volume`, `state='registered'` (no S3).
-  - `s3` → HEAD the object (existence). If digest supplied (config) → `state='registered'`, set `object_key`+`digest`; else leave `state='defined'` + append a `warned` entry (invariant 8). Missing object → stay `defined` + warn (degrade cleanly).
+  - `s3` → HEAD the object (existence). If digest supplied (config) → `state='registered'`, set `object_key`+`digest`; else leave `state='defined'` + append a `warned` entry (invariant 8). **Degrade on both "object absent" (404) AND "object store unconfigured/unreachable"** (a HEAD against an unwired store throws a client/connection error, not a clean 404 — matching the spec's `_seed_build_configs_step` no-S3 tolerance): catch both → row stays `defined` + warn, the pass still succeeds; it realizes on a later reconcile once S3 is up. Only a *configured-and-reachable-but-erroring* store is a hard failure. Test: no object store configured → row stays `defined`, pass succeeds (does not abort).
   - `build` → ensure a `defined` row exists; never downgrade a realized row (invariant 1). If the row's `base_image` is referenced but not yet `registered`, append a `warned`/degraded marker.
 - Prune: for each existing `managed_by='config'` row whose `(provider,name,arch)` is absent from config, call `_prune_or_cordon` — delete if idle, cordon + `diff.cordoned` if it has dependent systems (live per ADR-0109 non-terminal predicate). Never delete S3 bytes inline (GC owns that). Runtime/discovery rows: skip (invariant 2/3).
 - All image work in **one transaction** (all-or-nothing per entity type).
@@ -618,22 +653,27 @@ git add src/kdive/inventory/reconcile.py src/kdive/inventory/reconcile_images.py
 git commit -m "feat(inventory): reconcile engine core + reconcile_images merge contract"
 ```
 
-### Task 1.5: Establish the `system → image` reference (prune-guard prerequisite)
+### Task 1.5: Populate `systems.image_id` in the live provision path
+
+The `systems.image_id` **column** already exists (added in the Task 1.1 migration — confirmed: no
+such reference existed in the schema before). This task makes the live provision path **write** it,
+so the Task 1.4 prune guard can resolve an image's dependent systems for real (not just in tests
+that insert it directly).
 
 **Files:**
-- Modify: whichever table records a System's image (verify: `rg -n "image" src/kdive/db/schema/0001_init.sql` and the systems/allocations DDL). If a FK/reference already exists, this task is a no-op confirmation + a test; if absent, add the column in the **Task 1.1 migration** (fold it in — do not add a second migration) and a backfill.
-- Test: `tests/integration/test_reconcile_inventory.py::test_prune_of_in_use_image_cordons_not_deletes` (already written in 1.4).
+- Modify: the System-creation path (provision/install) so a newly provisioned System records the
+  `image_catalog.id` it booted from into `systems.image_id`. Find it: `rg -ln "INSERT INTO systems" src/kdive`.
+- Test: extend `tests/integration/test_reconcile_inventory.py` — a System created through the live
+  path (not a raw insert) populates `image_id`, and the cordon guard resolves it.
 
-- [ ] **Step 1:** Determine whether a System row already references its source image. Run `rg -n "image_id|image_name|rootfs|source_image" src/kdive/db/schema/*.sql`.
-- [ ] **Step 2:** If absent, add `systems.image_id uuid REFERENCES image_catalog(...)` (nullable) to `0030_systems_inventory.sql` and have the live path populate it. If present, wire the prune-guard query to it.
-- [ ] **Step 3:** Run the cordon test (1.4) and confirm it asserts the **tight** guard (dependent-system resolved), not the degraded fallback.
+- [ ] **Step 1:** Locate the `INSERT INTO systems` site(s) and the image identity available there (the resolved `image_catalog` row for the boot image).
+- [ ] **Step 2:** Thread the image's `id` into the insert (nullable — a System with no resolvable image, e.g. a legacy row, leaves it NULL and the guard treats it as not-a-dependent).
+- [ ] **Step 3:** Run the cordon + prune tests (1.4) against a live-path-created System and confirm the tight guard fires.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add -A && git commit -m "feat(inventory): resolve system->image reference for non-destructive image prune"
+git add -A && git commit -m "feat(inventory): populate systems.image_id so image prune resolves dependents"
 ```
-
-(If the reference genuinely already exists, fold this into Task 1.4 and skip the separate commit.)
 
 ### Task 1.6: `kdive reconcile-systems` CLI + loop spec `reconcile_inventory`
 
@@ -653,12 +693,21 @@ async def test_loop_inventory_pass_is_fault_isolated(pg_conn, monkeypatch, tmp_p
     report = await reconcile_once(pg_conn, _config_with_inventory_spec())
     assert "reconcile_inventory" in report.failures        # this pass failed
     assert report.counts["reaped_active_allocations"] >= 0 # siblings still ran
+
+
+async def test_loop_inventory_pass_skips_quietly_when_default_file_absent(pg_conn, monkeypatch, tmp_path):
+    # systems.toml is gitignored; an absent DEFAULT file is the normal pre-config state and
+    # must NOT mark the pass failed every loop iteration.
+    monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(tmp_path / "does-not-exist.toml"))
+    report = await reconcile_once(pg_conn, _config_with_inventory_spec())
+    assert "reconcile_inventory" not in report.failures     # absent default != failure
 ```
 
-- [ ] **Step 2: Run to verify it fails.** `uv run pytest tests/integration/test_reconcile_inventory.py -k fault_isolated -v` → FAIL.
+- [ ] **Step 2: Run to verify it fails.** `uv run pytest tests/integration/test_reconcile_inventory.py -k "fault_isolated or absent" -v` → FAIL.
 
 - [ ] **Step 3: Implement.**
-  - `_reconcile_inventory_pass(conn)`: read `KDIVE_SYSTEMS_TOML` (default `./systems.toml`), `load_inventory`, `reconcile_images` (Phase 1). Catch `InventoryError`, log + re-raise so the existing `_build_repairs` try/except records it as a failed-this-pass spec (sibling repairs already keep running — that's the existing loop contract at `loop.py:350-356`). Content-hash gate (skip if file unchanged since last pass).
+  - `_reconcile_inventory_pass(conn)`: read `KDIVE_SYSTEMS_TOML` (default `./systems.toml`); use `load_inventory_optional` — an **absent default file returns None → the pass is a quiet no-op** (nothing declared; do not record a failure). A **present-but-malformed** file raises `InventoryError`; catch + log + re-raise so the existing `_build_repairs` try/except records it as a failed-this-pass spec (sibling repairs keep running — the existing loop contract at `loop.py:350-356`).
+  - **Drift repair vs the content-hash gate (load-bearing):** this pass is billed as the ADR-0021 *drift*-repair spec, so it must repair DB drift even when the **file is unchanged** (a config-owned row manually deleted/corrupted). A content-hash gate that skips the whole pass when the file is unchanged would silently negate that. Resolution: the hash gate may skip only the **parse/validate** step (cache the last-good `InventoryDoc` keyed by file hash); the **reconcile-against-DB** step then runs every pass against the cached doc. With change-detecting upserts (Task 1.4) a no-drift pass is already cheap (reads + diff, no writes), so a steady state costs a few selects, not a skip. Do **not** gate the reconcile step on file-hash.
   - Add the spec to `_build_repairs`. **Do not** let an inventory failure raise out of `reconcile_once`.
   - CLI: `kdive reconcile-systems [--path P]` → run `reconcile_images` once against the pool, print the `ReconcileDiff`, exit non-zero on `InventoryError`.
 
@@ -734,9 +783,13 @@ Outcome: `allocations.request(kind=fault-inject)` works; cost/capacity declared 
 
 ### Task 2.1: `reconcile_resources` config-overlay
 - **Files:** create `src/kdive/inventory/reconcile_resources.py`; tests in `tests/integration/test_reconcile_inventory.py`.
-- **Contract:** `managed_by` governs existence (`config` for declared `fault_inject`/`remote_libvirt` instances; `discovery` for host-probed `local-libvirt`); a **config overlay** applies declared attributes (`cost_class`, caps, `vcpus`/`memory_mb`) onto the resource's `capabilities` jsonb keyed by instance `name`, regardless of who created the row.
+- **Contract:** `managed_by` governs existence (`config` for declared `fault_inject`/`remote_libvirt` instances; `discovery` for host-probed `local-libvirt`); a **config overlay** applies declared attributes keyed by instance `name`, regardless of who created the row.
+- **The overlay is split across a column and jsonb (load-bearing — `cost_class` is NOT jsonb):** `cost_class` → the top-level **`resources.cost_class` column** (`0001_init.sql`, NOT NULL, read by cost-coefficient resolution); `vcpus`/`memory_mb`/`concurrent_allocation_cap` → the **`capabilities` jsonb** (confirmed: `CONCURRENT_ALLOCATION_CAP_KEY` is a jsonb key). Writing `cost_class` into jsonb leaves the NOT NULL column unset (insert fails) or stale (pricing reads the column). The #385 test must assert sizing/cap land in jsonb **and** `cost_class` in the column.
+- **Required columns on a config-created row:** `reconcile_resources` *creates* rows for `fault_inject`/`remote_libvirt` (only `local-libvirt` is discovery-created), so it must supply the NOT NULL `resources` columns that `systems.toml` doesn't carry: set `status = 'available'` and `pool = 'default'` on create (no per-instance `pool` field in the v2 schema — YAGNI; add one only when a multi-pool need is real). A discovery-created row keeps the values discovery already supplies.
 - **Identity:** key by `(kind, name)` (the migration's unique index); `resource_id` UUID stays the PK/FK target.
 - **Discovery bind:** a discovered row binds to its config instance by `host_uri` and inherits that instance's `name`; a discovered host with no config instance gets a deterministic `name` derived from `host_uri`.
+- **One creator per kind (load-bearing — avoids Phase-2 double-create):** existence is owned by exactly one layer per kind. `local-libvirt`: **discovery creates**, config overlays the same row. `remote_libvirt`/`fault_inject`: **`reconcile_resources` is the sole creator** (managed_by='config'); the provider discovery for those kinds becomes **bind-only / non-creating** in Phase 2 (contributes hardware facts to the config row by `host_uri`, never inserts). Otherwise, in the Phase-2→3 window the legacy env-based remote discovery (`remote_libvirt/discovery.py`, not removed until Phase 3) and the config reconcile both create a row for the same host → a duplicate, or a `(kind,name)` partial-unique-index violation when the discovered row inherits the config name. Test: config + legacy discovery for one remote host → exactly one row.
+- **New-row default (load-bearing):** the migration backfills *existing* `resources` to `managed_by='discovery'`, but the column **default is `'runtime'`**, so a host discovered **after** the migration would insert at the wrong layer. Resolve this explicitly: the discovery/registrar insert path must write `managed_by='discovery'` on insert (or reconcile owns all resource creation and discovery never inserts directly — pick one and state it in the discovery code). Do **not** rely on the column default for discovered rows. Add a test: a freshly discovered host (post-migration insert) lands `managed_by='discovery'`, not `'runtime'`.
 - **Test (invariant 4, the #385 regression):** after reconcile, the fault-inject resource's `capabilities` carries `vcpus`/`memory_mb` from config, and `allocations.request(kind=fault-inject)` is **admitted**, not `configuration_error`.
 - **Test (invariants 1–3, 5):** the image invariants, re-asserted for resources — no overwrite of discovery-owned PCIe/real-vcpu fields; prune only `config` rows; cordon-not-delete a resource with live allocations.
 
@@ -768,6 +821,11 @@ Outcome: multiple instances per provider; the last hardcoded host config gone.
 - **Extend the guard test** (`tests/guards/test_no_inventory_in_code.py`): assert no `KDIVE_REMOTE_LIBVIRT_*` singleton env reads remain in `src/kdive/providers/remote_libvirt/`.
 - **Note:** several remote lifecycle modules (`install.py`, `provisioning.py`, `build_vm.py`) read `KDIVE_REMOTE_LIBVIRT_*` "per op" (ADR-0076). Each must be rewired to take the instance's config from the resolved resource row — this is the largest mechanical change in Phase 3; budget it as its own sub-issue.
 
+### Task 3.4: Update the coverage-campaign consumer to schema v2
+- **Files:** `scripts/coverage_campaign/systems.py` — today it reads the pre-v2 `systems.toml`. Now that the file is `schema_version = 2` (Phase 1) and `d1.env.template` is removed (Task 3.3), the campaign `render-env`/`setup-commands` consumer must parse v2 — ideally by **reusing `kdive.inventory.loader.load_inventory`** rather than a second parser, so the file has exactly one schema.
+- **Test:** the campaign `render-env`/`setup-commands` subcommands round-trip a v2 `systems.toml`.
+- **If deferred:** if updating the campaign tooling is out of scope for this milestone, say so explicitly here and note the campaign reader is temporarily broken until a follow-up — do not leave it silently broken by the v2 cutover.
+
 **Phase-3 done check:** multiple instances per provider expressible + allocatable; guard test rejects `KDIVE_REMOTE_LIBVIRT_*`; `just test` green.
 
 ---
@@ -779,15 +837,18 @@ Outcome: an agent can add/remove a system live, scoped to its project, with leak
 ### Task 4.1: `resources.register` / `deregister` / `renew` tools
 - **Files:** create `src/kdive/mcp/tools/ops/resources/{register.py,deregister.py,renew.py}`, mirroring `src/kdive/mcp/tools/ops/build_hosts/register.py`.
 - **Auth:** all `platform_admin`, mutating (adding shared capacity). `deregister` of a resource with **live allocations** is **destructive-tier** (platform_admin + typed confirmation / `--force`), like `ops.force_teardown`.
-- **register:** same fields as a `[[remote_libvirt]]`/`[[local_libvirt]]`/`[[fault_inject]]` block; **preflight** (reachability probe, secret refs resolve, `base_image` is `registered`); write a `managed_by='runtime'` row; default `owner_project` to the **registering project**. Reject a `name` that already exists as a `config` row.
+- **register:** same fields as a `[[remote_libvirt]]`/`[[local_libvirt]]`/`[[fault_inject]]` block; **preflight is per-kind** — `remote_libvirt`: reachability probe + cert/secret refs resolve + `base_image` is `registered`; `local_libvirt`: host reachability + (no base_image); `fault_inject`: secret ref resolves only (synthetic — no reachability, no base_image). Do not fail a fault-inject register on a missing `base_image`. Then write a `managed_by='runtime'` row; default `owner_project` to the **registering project**. Reject a `name` that already exists as a `config` row.
 - **deregister:** operate **only** on `runtime` rows; reject a `config`-owned instance (config is removed by editing the file).
 - **renew:** keyed to `resource_id` (not the registering session — survives agent handoff); extends `lease_expires_at`.
+- **Lease TTL:** `register` sets `lease_expires_at = now() + TTL` and `renew` extends it; the TTL has a named default in the `KDIVE_*` registry (e.g. `KDIVE_RESOURCE_LEASE_TTL`, mirroring the project-private image `expires_at` TTL the spec cites), not a magic constant. Name it in the config registry so the reap timing (the leak-resistance guarantee) is explicit and tunable.
 - **Test:** register→allocate→renew→deregister round-trip; config-row deregister rejected; live-allocation deregister requires `--force`.
 
-### Task 4.2: Per-project affinity + admission check
-- **Files:** `src/kdive/services/allocation/admission.py` — add an affinity check in `admit()`/`_admit_under_project_lock` (l.160/296): a project may place only on a **global** resource (`owner_project IS NULL`) or one it owns / is on the `affinity_allowlist` of.
-- **Default-global no-op:** every pre-existing discovered resource and config-declared instance has `owner_project NULL` (Phase-1 backfill), so the check is a strict no-op for current behavior — **no allocation that works today regresses.**
-- **Test:** a scoped runtime resource rejects a foreign project; a global resource admits any project; an allowlisted project is admitted; the regression test that all current (global) allocations still pass.
+### Task 4.2: Per-project affinity — selection filter + admission backstop
+- **Files:** `src/kdive/services/allocation/placement.py` (**selection**) **and** `src/kdive/services/allocation/admission.py` (`admit()`/`_admit_under_project_lock`, l.160/296, backstop).
+- **Affinity predicate:** a project may place only on a **global** resource (`owner_project IS NULL`) or one it owns / is on the `affinity_allowlist` of.
+- **Enforce at BOTH layers (load-bearing):** the **selection** path (`placement.py`) resolves a concrete resource for an "any-available by `kind`" request *before* `admit()` runs. If affinity is checked only at admission, an any-available request can select a **scoped** instance and then be hard-denied — instead of falling through to a global instance the project may legally use. So the affinity predicate must **filter the any-available candidate set** in `placement.py` (exclude disallowed resources from selection), with the `admit()` check as the backstop for explicit `resource_id` requests.
+- **Default-global no-op:** every pre-existing discovered resource and config-declared instance has `owner_project NULL` (Phase-1 backfill), so both checks are a strict no-op for current behavior — **no allocation that works today regresses.**
+- **Test:** a scoped runtime resource rejects a foreign project (explicit `resource_id` → denied at admit); an **any-available** request that would otherwise pick a scoped instance **skips it and lands on a global one** (selection filter); a global resource admits any project; an allowlisted project is admitted; the regression test that all current (global) allocations still pass.
 
 ### Task 4.3: Lease + reachability reaping (reconciler reap spec)
 - **Files:** new reconciler `_RepairSpec("reap_runtime_resources", ...)` in `loop.py`; reuse the #359 reachability probe.
