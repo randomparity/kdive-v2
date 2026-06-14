@@ -31,11 +31,33 @@ Guardrails (run before each commit): `just lint`, `just type`, `just test`. Fina
 - Modify: `src/kdive/images/rootfs_command.py` (`run_build_rootfs`, currently ends at the `_log.info(...)` line)
 - Test: `tests/mcp/core/test_main.py`
 
-The existing test `test_run_build_rootfs_moves_plane_output_to_dest` already fakes `build_provider_resolver` with a `_FakePlane`/`_FakeResolver` and calls `run_build_rootfs`. Reuse that exact fake shape. The fakes return `RootfsBuildOutput(qcow2_path=produced, digest="sha256:abc", provenance={})`.
+The existing test `test_run_build_rootfs_moves_plane_output_to_dest` already fakes `build_provider_resolver` with an inline `_FakePlane`/`_FakeResolver` and calls `run_build_rootfs`. Tasks 1-2 add three more tests that need the same plumbing, so first extract a module-level helper to avoid copying the 11-field `ProviderRuntime` construction four times.
 
-- [ ] **Step 1: Write the failing stdout-exactness test**
+- [ ] **Step 1a: Extract a shared resolver-faking helper**
 
-Add to `tests/mcp/core/test_main.py`. Reuse the `_FakePlane`/`_FakeResolver` pattern from the existing move test (copy the two fake classes into a module-level helper if not already shared, or inline them as the existing test does). Add `import shlex` at the top of the test module.
+Add to `tests/mcp/core/test_main.py` (after the imports; add `import shlex` to the top imports). The helper builds a fake resolver whose `resolve(...)` returns a `ProviderRuntime` with only `rootfs_build_plane` set, for any object that exposes `build(spec)`:
+
+```python
+def _resolver_with_plane(plane: object) -> object:
+    """A fake resolver whose resolve() returns a ProviderRuntime carrying only `plane`."""
+
+    class _FakeResolver:
+        def resolve(self, kind: ResourceKind) -> ProviderRuntime:
+            assert kind is ResourceKind.LOCAL_LIBVIRT
+            unused = cast(Any, object())
+            return ProviderRuntime(
+                profile_policy=unused, provisioner=unused, builder=unused, installer=unused,
+                booter=unused, connector=unused, controller=unused, retriever=unused,
+                crash_postmortem=unused, vmcore_introspector=unused, live_introspector=unused,
+                rootfs_build_plane=cast(Any, plane),
+            )
+
+    return _FakeResolver()
+```
+
+Optionally refactor the existing `test_run_build_rootfs_moves_plane_output_to_dest` to use this helper too (its inline `_FakeResolver` is the same shape) — keep its `_FakePlane` local since it asserts move-not-copy semantics. This is a pure refactor; the test must still pass unchanged in behavior.
+
+- [ ] **Step 1b: Write the failing stdout-exactness test**
 
 ```python
 def test_run_build_rootfs_prints_eval_safe_export_line(
@@ -51,19 +73,9 @@ def test_run_build_rootfs_prints_eval_safe_export_line(
             del spec
             return RootfsBuildOutput(qcow2_path=produced, digest="sha256:abc", provenance={})
 
-    class _FakeResolver:
-        def resolve(self, kind: ResourceKind) -> ProviderRuntime:
-            assert kind is ResourceKind.LOCAL_LIBVIRT
-            unused = cast(Any, object())
-            return ProviderRuntime(
-                profile_policy=unused, provisioner=unused, builder=unused, installer=unused,
-                booter=unused, connector=unused, controller=unused, retriever=unused,
-                crash_postmortem=unused, vmcore_introspector=unused, live_introspector=unused,
-                rootfs_build_plane=_FakePlane(),
-            )
-
     monkeypatch.setattr(
-        "kdive.images.rootfs_command.build_provider_resolver", lambda: _FakeResolver()
+        "kdive.images.rootfs_command.build_provider_resolver",
+        lambda: _resolver_with_plane(_FakePlane()),
     )
     dest = tmp_path / "rootfs" / "out.qcow2"
     args = build_parser().parse_args(["build-rootfs", "--dest", str(dest)])
@@ -140,19 +152,9 @@ def test_run_build_rootfs_export_line_round_trips_a_path_with_spaces(
             del spec
             return RootfsBuildOutput(qcow2_path=produced, digest="sha256:abc", provenance={})
 
-    class _FakeResolver:
-        def resolve(self, kind: ResourceKind) -> ProviderRuntime:
-            del kind
-            unused = cast(Any, object())
-            return ProviderRuntime(
-                profile_policy=unused, provisioner=unused, builder=unused, installer=unused,
-                booter=unused, connector=unused, controller=unused, retriever=unused,
-                crash_postmortem=unused, vmcore_introspector=unused, live_introspector=unused,
-                rootfs_build_plane=_FakePlane(),
-            )
-
     monkeypatch.setattr(
-        "kdive.images.rootfs_command.build_provider_resolver", lambda: _FakeResolver()
+        "kdive.images.rootfs_command.build_provider_resolver",
+        lambda: _resolver_with_plane(_FakePlane()),
     )
     dest = tmp_path / "with space" / "out.qcow2"
     args = build_parser().parse_args(["build-rootfs", "--dest", str(dest)])
@@ -178,19 +180,9 @@ def test_run_build_rootfs_writes_nothing_to_stdout_on_build_failure(
             del spec
             raise CategorizedError("build blew up", category=ErrorCategory.PROVISIONING_FAILURE)
 
-    class _FakeResolver:
-        def resolve(self, kind: ResourceKind) -> ProviderRuntime:
-            del kind
-            unused = cast(Any, object())
-            return ProviderRuntime(
-                profile_policy=unused, provisioner=unused, builder=unused, installer=unused,
-                booter=unused, connector=unused, controller=unused, retriever=unused,
-                crash_postmortem=unused, vmcore_introspector=unused, live_introspector=unused,
-                rootfs_build_plane=_FailingPlane(),
-            )
-
     monkeypatch.setattr(
-        "kdive.images.rootfs_command.build_provider_resolver", lambda: _FakeResolver()
+        "kdive.images.rootfs_command.build_provider_resolver",
+        lambda: _resolver_with_plane(_FailingPlane()),
     )
     dest = tmp_path / "rootfs" / "out.qcow2"
     args = build_parser().parse_args(["build-rootfs", "--dest", str(dest)])
@@ -254,10 +246,17 @@ In `tests/integration/test_live_stack.py`, replace the skip call inside `_spine_
         )
 ```
 
-- [ ] **Step 3: Verify the live tests still collect and skip cleanly**
+- [ ] **Step 3: Verify the reworded tests still collect (no syntax/quote break)**
 
-Run: `uv run pytest tests/integration/test_live_stack.py -q`
-Expected: tests SKIP (no `KDIVE_GUEST_IMAGE`/stack) with the new reason text — not error, not pass. (The point is collection still works and the gate still skips.)
+The `live_stack`/`live_vm` markers are deselected by the normal gate (`just test` runs `-m "not live_vm and not live_stack"`), and `_spine_preflight`'s `pytest.skip` lives inside the test body — so running the file directly without Docker may error at fixture setup, not skip. Verify the message edits did not break Python by collecting only:
+
+Run: `uv run pytest tests/integration/test_live_stack.py tests/integration/conftest.py --collect-only -q`
+Expected: collection succeeds (the reworded f-strings parse; tests are listed). Do **not** assert SKIP here — that requires the live env.
+
+Then confirm the normal gate still deselects them cleanly:
+
+Run: `uv run pytest -m "not live_vm and not live_stack" tests/integration -q`
+Expected: the `live_stack`-marked tests are deselected; remaining non-gated integration tests pass or skip on absent Docker.
 
 - [ ] **Step 4: Guardrails + commit**
 
@@ -308,10 +307,12 @@ If you did not use the `eval` form above, set it by hand — this is exactly the
 `build-rootfs` prints on stdout:
 ```
 
-- [ ] **Step 3: Verify the runbook renders / mermaid check passes**
+- [ ] **Step 3: Verify the fenced code blocks balance**
 
-Run: `just check-mermaid`
-Expected: PASS (no mermaid blocks changed; this confirms the doc gate is happy).
+This is a prose+bash-fence edit; no gate validates it (`check-mermaid` only inspects mermaid blocks, which are unchanged). Eyeball that every opening ```` ``` ```` you added has a matching close and the `eval` block is valid bash. Optionally confirm fence parity:
+
+Run: `awk '/^```/{n++} END{exit n%2}' docs/runbooks/image-lifecycle.md && echo "fences balanced"`
+Expected: prints `fences balanced` (even number of fence markers).
 
 - [ ] **Step 4: Commit**
 
