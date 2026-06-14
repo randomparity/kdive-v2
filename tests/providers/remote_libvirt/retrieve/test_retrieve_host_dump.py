@@ -30,7 +30,7 @@ from kdive.provider_components.artifacts import (
     StoredArtifact,
 )
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
-from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
+from kdive.providers.remote_libvirt.retrieve.facade import RemoteLibvirtRetrieve
 from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
     DMESG_UNAVAILABLE,
     HostDumpCapturer,

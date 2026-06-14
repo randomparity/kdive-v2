@@ -42,7 +42,7 @@ from kdive.providers.remote_libvirt.lifecycle.control import RemoteLibvirtContro
 from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
 from kdive.providers.remote_libvirt.lifecycle.provisioning import RemoteLibvirtProvisioning
 from kdive.providers.remote_libvirt.profile_policy import RemoteLibvirtProfilePolicy
-from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
+from kdive.providers.remote_libvirt.retrieve.facade import RemoteLibvirtRetrieve
 from kdive.providers.remote_libvirt.rootfs_build import RemoteLibvirtRootfsBuildPlane
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.secret_registry import SecretRegistry
