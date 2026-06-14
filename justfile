@@ -19,6 +19,10 @@ check-deps:
 check-local-libvirt:
     ./scripts/check-local-libvirt.sh
 
+# Preflight: can the remote-libvirt provider reach a target host? (report-only)
+check-remote-libvirt host user="root" uri="":
+    ./scripts/check-remote-libvirt.sh {{host}} {{user}} {{uri}}
+
 # Create the venv and install pinned dependencies from the lockfile.
 sync:
     uv sync --locked
