@@ -17,7 +17,11 @@ from kdive.config.registry import Setting
 from kdive.domain.discovery import ResourceRecord
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
-from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
+from kdive.domain.resource_capabilities import (
+    CONCURRENT_ALLOCATION_CAP_KEY,
+    MEMORY_MB_KEY,
+    VCPUS_KEY,
+)
 from kdive.domain.state import ResourceStatus
 from kdive.providers.fault_inject.capabilities import (
     FAULT_RATE_KEY,
@@ -31,6 +35,17 @@ from kdive.providers.fault_inject.settings import (
     FAULT_INJECT_SEED,
     FAULT_INJECT_URI,
 )
+
+# Synthetic billable ceilings advertised by the fault-inject resource. There is no real
+# host, so these only need to clear the largest seeded shape (``max``: 8 vcpus / 16384 MB,
+# migration 0013) with headroom — admission prices the *requested* size, not the cap, so a
+# generous ceiling never inflates cost. Without them a kind-targeted ``allocations.request``
+# is denied ``configuration_error`` before reaching the lifecycle (#385). Note: registration is
+# insert-if-absent (``ensure_discovered_resource_registered``), so a resource row registered
+# before these caps existed only converges on a fresh registration (e.g. a fresh-DB stack
+# bring-up); a reused DB must drop the stale fault-inject row to pick the caps up.
+_SYNTHETIC_VCPUS = 64
+_SYNTHETIC_MEMORY_MB = 262144
 
 
 def _int_setting(setting: Setting[str]) -> int:
@@ -90,6 +105,8 @@ class FaultInjectDiscovery:
         capabilities: dict[str, Any] = {
             "arch": "synthetic",
             "transports": ["gdbstub"],
+            VCPUS_KEY: _SYNTHETIC_VCPUS,
+            MEMORY_MB_KEY: _SYNTHETIC_MEMORY_MB,
             CONCURRENT_ALLOCATION_CAP_KEY: self.concurrent_allocation_cap,
             SEED_KEY: self.seed,
             FAULT_RATE_KEY: dict(self.fault_rate),
