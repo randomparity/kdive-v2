@@ -20,7 +20,7 @@ from pydantic import Field
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools.ops.build_hosts.manage import (
+from kdive.mcp.tools.ops.build_hosts.lifecycle import (
     DISABLE_TOOL,
     LIST_TOOL,
     REMOVE_TOOL,

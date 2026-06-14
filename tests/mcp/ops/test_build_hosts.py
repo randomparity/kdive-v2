@@ -26,7 +26,7 @@ import psycopg
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.errors import ErrorCategory
-from kdive.mcp.tools.ops.build_hosts.manage import (
+from kdive.mcp.tools.ops.build_hosts.lifecycle import (
     disable_build_host,
     list_build_hosts,
     remove_build_host,
