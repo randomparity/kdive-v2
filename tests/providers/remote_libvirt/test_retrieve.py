@@ -168,6 +168,22 @@ def test_capture_two_phase_happy_path(tmp_path: Path) -> None:
     assert any(a[1] == "upload" for a in agent.argvs)
 
 
+def test_capture_loopback_endpoint_fails_before_touching_the_guest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A loopback object-store endpoint the remote guest cannot reach must fail fast as a
+    # configuration_error, before any inspect/upload guest-agent round-trip (ADR-0105, #375).
+    monkeypatch.setenv("KDIVE_S3_ENDPOINT_URL", "http://localhost:9000")
+    agent = FakeAgentExec(inspect=_inspect_json())
+    store = FakeStore(head=HeadResult(size_bytes=4096, checksum_sha256=_SHA, etag="etag-raw"))
+    with pytest.raises(CategorizedError) as excinfo:
+        _retrieve(agent, store, tmp_path).capture(_SID, CaptureMethod.KDUMP)
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert excinfo.value.details["env_var"] == "KDIVE_S3_ENDPOINT_URL"
+    assert agent.argvs == []  # never reached the guest
+    assert store.presigned == []  # never minted the PUT
+
+
 def test_capture_waits_out_a_rebooting_agent(tmp_path: Path) -> None:
     agent = FakeAgentExec(inspect=_inspect_json(), unreachable_before=2)
     store = FakeStore(head=HeadResult(size_bytes=4096, checksum_sha256=_SHA, etag="etag-raw"))

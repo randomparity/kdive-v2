@@ -16,6 +16,7 @@ from kdive.domain.models import Sensitivity
 from kdive.provider_components.artifacts import PresignPutRequest, StoredArtifact, artifact_key
 from kdive.providers.ports import CaptureOutput
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig
+from kdive.providers.remote_libvirt.endpoint_preflight import validate_guest_routable_endpoint
 from kdive.providers.remote_libvirt.guest.agent import (
     AgentCommand,
     AgentExecResult,
@@ -87,7 +88,16 @@ class KdumpCapturer:
         self._monotonic = monotonic
 
     def capture(self, system_id: UUID) -> CaptureOutput:
+        """Inspect the guest's kdump core and upload it via a presigned PUT.
+
+        Raises:
+            CategorizedError: ``CONFIGURATION_ERROR`` when ``KDIVE_S3_ENDPOINT_URL`` is a
+                loopback/localhost address the remote guest cannot upload to (preflight,
+                ADR-0110), before any guest round-trip; plus the inspect/upload failures the
+                seams raise.
+        """
         config = self._config_factory()
+        validate_guest_routable_endpoint()
         method = CaptureMethod.KDUMP
         raw_key = artifact_key(TENANT, OWNER_KIND, str(system_id), f"vmcore-{method.value}")
         with connection(

@@ -211,6 +211,32 @@ def test_install_registers_and_redacts_the_capability_url() -> None:
     assert _URL not in registry.snapshot()  # released after persist
 
 
+def test_install_loopback_endpoint_fails_before_touching_the_guest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A loopback object-store endpoint the remote guest cannot reach must fail fast as a
+    # configuration_error, before the presigned GET is minted or the guest agent is run
+    # (ADR-0105, #375).
+    monkeypatch.setenv("KDIVE_S3_ENDPOINT_URL", "http://localhost:9000")
+    agent = _ScriptedAgent(lambda _argv: AgentExecResult(0, b"ok", b""))
+    store = _FakeStore()
+    inst = RemoteLibvirtInstall(
+        secret_registry=SecretRegistry(),
+        config_factory=_config,
+        open_connection=lambda _uri: _FakeConn(),
+        store_factory=lambda: store,
+        agent_command=agent,
+        secret_backend_factory=_backend,
+        sleep=lambda _s: None,
+    )
+    with pytest.raises(CategorizedError) as excinfo:
+        inst.install(_request(CaptureMethod.HOST_DUMP, "console=ttyS0"))
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert excinfo.value.details["env_var"] == "KDIVE_S3_ENDPOINT_URL"
+    assert agent.argvs == []  # never reached the guest
+    assert store.presigned == []  # never minted the GET
+
+
 def test_install_nonzero_helper_exit_is_install_failure() -> None:
     def handler(argv: list[str]) -> AgentExecResult:
         return AgentExecResult(3, b"", b"curl: (22) 404")

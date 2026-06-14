@@ -30,6 +30,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.providers.ports import InstallRequest
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.endpoint_preflight import validate_guest_routable_endpoint
 from kdive.providers.remote_libvirt.guest.agent import (
     AgentCommand,
     GuestAgentExec,
@@ -144,13 +145,16 @@ class RemoteLibvirtInstall:
         Does not reboot — ``boot`` owns the power transition.
 
         Raises:
-            CategorizedError: ``INSTALL_FAILURE`` for a non-zero helper exit (incl. an in-guest
-                curl 403/404 from a vanished object — the worker only mints the URL, it never
-                fetches), ``TRANSPORT_FAILURE`` for an unreachable guest agent,
-                ``INFRASTRUCTURE_FAILURE`` from the object store or a malformed agent reply,
-                ``CONFIGURATION_ERROR`` for missing operator config, propagated from the seams.
+            CategorizedError: ``CONFIGURATION_ERROR`` when ``KDIVE_S3_ENDPOINT_URL`` is a
+                loopback/localhost address the remote guest cannot reach (preflight, ADR-0110),
+                ``INSTALL_FAILURE`` for a non-zero helper exit (incl. an in-guest curl 403/404
+                from a vanished object — the worker only mints the URL, it never fetches),
+                ``TRANSPORT_FAILURE`` for an unreachable guest agent, ``INFRASTRUCTURE_FAILURE``
+                from the object store or a malformed agent reply, ``CONFIGURATION_ERROR`` for
+                missing operator config, propagated from the seams.
         """
         config = self._config_factory()
+        validate_guest_routable_endpoint()
         url = self._store_factory().presign_get(request.kernel_ref, expires_in=self._get_expiry_s)
         argv = [
             _HELPER,
