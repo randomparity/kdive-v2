@@ -681,6 +681,21 @@ def test_extend_rejects_public_image_after_breakglass_audit(migrated_url: str) -
     asyncio.run(_run())
 
 
+def test_extend_rejects_missing_image_after_breakglass_audit(migrated_url: str) -> None:
+    image_id = UUID(int=1)
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await ops_images.extend(
+                pool, _admin_ctx(), image_id=str(image_id), seconds=3600, reason="keep"
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        audit = await _platform_audit_rows(migrated_url)
+        assert audit == [("ops-admin", "platform_admin", "images.extend", f"image:{image_id}")]
+
+    asyncio.run(_run())
+
+
 def test_extend_clamps_to_lifetime_ceiling(
     migrated_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -720,5 +735,9 @@ def test_extend_operator_denied_and_audited(migrated_url: str) -> None:
                 pool, _operator_ctx(), image_id=str(image_id), seconds=3600, reason="x"
             )
         assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
+        audit = await _platform_audit_rows(migrated_url)
+        assert audit == [
+            ("ops-operator", "platform_operator", "images.extend", f"denied:{image_id}")
+        ]
 
     asyncio.run(_run())
