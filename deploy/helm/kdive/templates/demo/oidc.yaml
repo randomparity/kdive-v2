@@ -24,7 +24,7 @@ spec:
               value: "8080"
             # Mint the demo claim set on every token from the `default` issuer. The claims
             # come from .Values.demo.oidc.claims (default: a full RBAC grant on project
-            # `demo`, so a stock demo deploy is RBAC-testable — ADR-0105). `sub` and `aud`
+            # `demo`, so a stock demo deploy is RBAC-testable — ADR-0108). `sub` and `aud`
             # are template invariants layered over any override: `aud` stays ["kdive"]
             # (config KDIVE_OIDC_AUDIENCE) so an override can never break audience
             # verification and lock the demo out; `sub` defaults to kdive-demo. A blanked

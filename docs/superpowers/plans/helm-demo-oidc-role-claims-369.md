@@ -1,7 +1,7 @@
 # Plan — Helm demo OIDC role claims (#369)
 
 - **Spec:** [`../specs/2026-06-13-helm-demo-oidc-role-claims.md`](../specs/2026-06-13-helm-demo-oidc-role-claims.md)
-- **ADR:** [ADR-0105](../../adr/0105-helm-demo-oidc-role-claims.md)
+- **ADR:** [ADR-0108](../../adr/0108-helm-demo-oidc-role-claims.md)
 - **Branch:** `feat/helm-demo-oidc-roles-369` (already checked out)
 - **Worktree:** `/home/dave/src/kdive-worktrees/helm-demo-oidc-roles-369` — run every
   command from here.
