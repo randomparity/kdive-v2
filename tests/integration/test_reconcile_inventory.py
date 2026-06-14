@@ -1241,3 +1241,390 @@ def test_discovery_insert_path_writes_managed_by_discovery(migrated_url: str) ->
         assert row["managed_by"] == "discovery"  # NOT 'runtime' (the column default)
 
     asyncio.run(_run())
+
+
+# --- Phase 3 Task 3.1: array-of-tables multi-instance --------------------------------
+
+
+def _two_fault_inject_toml() -> str:
+    # Two [[fault_inject]] instances sharing the synthetic host_uri (fault-inject://local),
+    # distinguished only by their (kind, name) identity — the Phase-3 multi-instance goal.
+    return (
+        "schema_version = 2\n"
+        "[[fault_inject]]\n"
+        'name = "fi-a"\n'
+        'cost_class = "local"\n'
+        "vcpus = 4\n"
+        "memory_mb = 4096\n"
+        "[[fault_inject]]\n"
+        'name = "fi-b"\n'
+        'cost_class = "local"\n'
+        "vcpus = 8\n"
+        "memory_mb = 8192\n"
+    )
+
+
+def test_two_fault_inject_instances_reconcile_to_two_distinct_rows(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # Task 3.1: N rows per kind. Two [[fault_inject]] sharing host_uri='fault-inject://local'
+    # coexist via the (kind, name) unique index — two distinct rows, one per name.
+    async def _run() -> None:
+        doc = load_inventory(_write_toml(tmp_path, _two_fault_inject_toml()))
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            diff = await reconcile_resources(conn, doc)
+        async with await _connect(migrated_url) as check:
+            assert (
+                await _resource_count(check, kind="fault-inject", host_uri="fault-inject://local")
+                == 2
+            )
+            row_a = await _resource_by_name(check, "fi-a")
+            row_b = await _resource_by_name(check, "fi-b")
+        assert row_a["id"] != row_b["id"]  # two distinct resource rows
+        assert _row_caps(row_a)["vcpus"] == 4
+        assert _row_caps(row_b)["vcpus"] == 8
+        assert {"fi-a", "fi-b"} <= {c.name for c in diff.created}
+
+    asyncio.run(_run())
+
+
+def test_two_fault_inject_instances_are_each_independently_allocatable(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # Task 3.1: both instances are independently allocatable. Targeting each by resource_id
+    # admits an allocation on it — no allocation-API change, selection by resource_id.
+    from kdive.domain.models import ResourceKind
+    from kdive.security.authz.context import RequestContext
+    from kdive.services.allocation.request import AdmissionRequestSpec, request_admission
+
+    async def _run() -> None:
+        doc = load_inventory(_write_toml(tmp_path, _two_fault_inject_toml()))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            async with pool.connection() as conn:
+                await reconcile_resources(conn, doc)
+            async with await _connect(migrated_url) as seed:
+                await seed.execute(
+                    "INSERT INTO budgets (project, limit_kcu, spent_kcu) "
+                    "VALUES ('proj', 1000000, 0)"
+                )
+                await seed.execute(
+                    "INSERT INTO quotas (project, max_concurrent_allocations, "
+                    " max_concurrent_systems) VALUES ('proj', 100, 100)"
+                )
+                row_a = await _resource_by_name(seed, "fi-a")
+                row_b = await _resource_by_name(seed, "fi-b")
+            ids = [row_a["id"], row_b["id"]]
+            assert all(isinstance(i, UUID) for i in ids)
+            results = []
+            for resource_id in ids:
+                async with pool.connection() as conn:
+                    results.append(
+                        await request_admission(
+                            conn,
+                            RequestContext(
+                                principal="alice", agent_session="s", projects=("proj",)
+                            ),
+                            project="proj",
+                            spec=AdmissionRequestSpec(
+                                resource_id=cast(UUID, resource_id),
+                                kind=ResourceKind.FAULT_INJECT,
+                                shape="small",
+                                vcpus=None,
+                                memory_gb=None,
+                                disk_gb=None,
+                                window=None,
+                                pcie_devices=(),
+                                on_capacity="deny",
+                            ),
+                        )
+                    )
+        for resource_id, result in zip(ids, results, strict=True):
+            assert result.error is None, f"{resource_id}: unexpected error {result.error}"
+            assert result.allocation is not None, f"{resource_id}: not admitted: {result.denial}"
+        # The two allocations landed on the two distinct resources.
+        landed = {str(r.allocation.resource_id) for r in results if r.allocation is not None}
+        assert landed == {str(ids[0]), str(ids[1])}
+
+    asyncio.run(_run())
+
+
+# --- Phase 3 Task 3.2: reconcile_build_hosts -----------------------------------------
+
+
+def _build_host_toml(
+    *,
+    name: str = "bh-1",
+    kind: str = "local",
+    workspace_root: str = "/var/lib/kdive/build",
+    max_concurrent: int = 2,
+    base_image_volume: str | None = None,
+) -> str:
+    lines = [
+        "schema_version = 2",
+        "[[build_host]]",
+        f'name = "{name}"',
+        f'kind = "{kind}"',
+        f'workspace_root = "{workspace_root}"',
+        f"max_concurrent = {max_concurrent}",
+    ]
+    if base_image_volume is not None:
+        lines.append(f'base_image_volume = "{base_image_volume}"')
+    return "\n".join(lines) + "\n"
+
+
+async def _build_host_by_name(conn: psycopg.AsyncConnection, name: str) -> dict[str, object]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT * FROM build_hosts WHERE name = %s", (name,))
+        row = await cur.fetchone()
+    assert row is not None, f"no build_hosts row named {name!r}"
+    return row
+
+
+async def _build_host_count(conn: psycopg.AsyncConnection, name: str) -> int:
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT count(*) FROM build_hosts WHERE name = %s", (name,))
+        row = await cur.fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_build_host_reconciles_to_a_row(migrated_url: str, tmp_path: Path) -> None:
+    # Task 3.2: a [[build_host]] reconciles into a build_hosts row carrying its config fields
+    # and managed_by='config'.
+    from kdive.inventory.reconcile_build_hosts import reconcile_build_hosts
+
+    async def _run() -> None:
+        doc = load_inventory(
+            _write_toml(
+                tmp_path,
+                _build_host_toml(name="bh-local", kind="local", max_concurrent=3),
+            )
+        )
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            diff = await reconcile_build_hosts(conn, doc)
+        async with await _connect(migrated_url) as check:
+            row = await _build_host_by_name(check, "bh-local")
+        assert row["managed_by"] == "config"
+        assert row["kind"] == "local"
+        assert row["workspace_root"] == "/var/lib/kdive/build"
+        assert row["max_concurrent"] == 3
+        assert row["enabled"] is True
+        assert "bh-local" in {c.name for c in diff.created}
+
+    asyncio.run(_run())
+
+
+def test_build_host_ssh_kind_warns_and_skips(migrated_url: str, tmp_path: Path) -> None:
+    # The v2 [[build_host]] model carries no address/ssh_credential_ref, so a config-declared
+    # 'ssh' host cannot satisfy the build_hosts_fields_check (ssh requires both). Rather than
+    # abort the pass on a CHECK violation, reconcile WARNS and skips it (ssh hosts are
+    # registered imperatively via build_hosts.register, which carries those fields).
+    from kdive.inventory.reconcile_build_hosts import reconcile_build_hosts
+
+    async def _run() -> None:
+        doc = load_inventory(_write_toml(tmp_path, _build_host_toml(name="bh-ssh", kind="ssh")))
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            diff = await reconcile_build_hosts(conn, doc)  # must not raise a CheckViolation
+        async with await _connect(migrated_url) as check:
+            assert await _build_host_count(check, "bh-ssh") == 0  # not created
+        assert any("bh-ssh" in w.name for w in diff.warned)
+        assert "bh-ssh" not in {c.name for c in diff.created}
+
+    asyncio.run(_run())
+
+
+def test_build_host_ephemeral_carries_base_image_volume(migrated_url: str, tmp_path: Path) -> None:
+    # Task 3.2: an ephemeral_libvirt build host carries base_image_volume (the field CHECK in
+    # 0029 requires it for that kind, and forbids address/ssh_credential_ref).
+    from kdive.inventory.reconcile_build_hosts import reconcile_build_hosts
+
+    async def _run() -> None:
+        doc = load_inventory(
+            _write_toml(
+                tmp_path,
+                _build_host_toml(
+                    name="bh-eph",
+                    kind="ephemeral_libvirt",
+                    base_image_volume="kdive-base.qcow2",
+                ),
+            )
+        )
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            await reconcile_build_hosts(conn, doc)
+        async with await _connect(migrated_url) as check:
+            row = await _build_host_by_name(check, "bh-eph")
+        assert row["kind"] == "ephemeral_libvirt"
+        assert row["base_image_volume"] == "kdive-base.qcow2"
+        assert row["address"] is None
+        assert row["ssh_credential_ref"] is None
+
+    asyncio.run(_run())
+
+
+def test_build_host_adopts_existing_runtime_row_not_duplicated(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # Task 3.2 adopt-on-collision: the seeded 'worker-local' row from 0027 is managed_by=
+    # 'runtime'; declaring it in config ADOPTS it (flip to 'config'), never a second row.
+    from kdive.inventory.reconcile_build_hosts import reconcile_build_hosts
+
+    async def _run() -> None:
+        doc = load_inventory(
+            _write_toml(
+                tmp_path,
+                _build_host_toml(
+                    name="worker-local",
+                    kind="local",
+                    workspace_root="/var/lib/kdive/build",
+                    max_concurrent=1000,
+                ),
+            )
+        )
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            diff = await reconcile_build_hosts(conn, doc)
+        async with await _connect(migrated_url) as check:
+            assert await _build_host_count(check, "worker-local") == 1  # adopted, not duplicated
+            row = await _build_host_by_name(check, "worker-local")
+        assert row["managed_by"] == "config"  # flipped from runtime
+        assert "worker-local" in {u.name for u in diff.updated}
+
+    asyncio.run(_run())
+
+
+def test_build_host_prune_of_busy_host_cordons_not_deletes(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # Task 3.2 DB-guarded prune: build_host_leases FKs build_hosts(id) ON DELETE RESTRICT, so a
+    # host with an in-flight lease cannot be deleted — prune must CORDON (enabled=false), never
+    # attempt a DELETE that would abort the whole pass.
+    from kdive.inventory.reconcile_build_hosts import reconcile_build_hosts
+
+    async def _run() -> None:
+        # First reconcile a config ssh host, then attach an in-flight lease, then reconcile an
+        # empty doc so the host leaves config.
+        present = load_inventory(_write_toml(tmp_path, _build_host_toml(name="bh-busy")))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            async with pool.connection() as conn:
+                await reconcile_build_hosts(conn, present)
+            async with await _connect(migrated_url) as seed:
+                busy = await _build_host_by_name(seed, "bh-busy")
+                busy_id = busy["id"]
+                assert isinstance(busy_id, UUID)
+                await seed.execute(
+                    "INSERT INTO build_host_leases (run_id, build_host_id) VALUES (%s, %s)",
+                    (uuid4(), busy_id),
+                )
+            empty = load_inventory(_write_toml(tmp_path, "schema_version = 2\n"))
+            async with pool.connection() as conn:
+                diff = await reconcile_build_hosts(conn, empty)  # must not raise on RESTRICT
+        async with await _connect(migrated_url) as check:
+            row = await _build_host_by_name(check, "bh-busy")  # still present
+        assert row["enabled"] is False  # cordoned
+        assert "bh-busy" in {c.name for c in diff.cordoned}
+        assert "bh-busy" not in {p.name for p in diff.pruned}
+
+    asyncio.run(_run())
+
+
+def test_build_host_prune_of_idle_config_host_deletes(migrated_url: str, tmp_path: Path) -> None:
+    # An idle config build host that leaves the file is pruned (row deleted); a runtime host is
+    # untouched (prune is config-only).
+    from kdive.inventory.reconcile_build_hosts import reconcile_build_hosts
+
+    async def _run() -> None:
+        present = load_inventory(_write_toml(tmp_path, _build_host_toml(name="bh-idle")))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            async with pool.connection() as conn:
+                await reconcile_build_hosts(conn, present)
+            empty = load_inventory(_write_toml(tmp_path, "schema_version = 2\n"))
+            async with pool.connection() as conn:
+                diff = await reconcile_build_hosts(conn, empty)
+        async with await _connect(migrated_url) as check:
+            assert await _build_host_count(check, "bh-idle") == 0  # idle config row pruned
+            assert await _build_host_count(check, "worker-local") == 1  # seeded runtime untouched
+        assert "bh-idle" in {p.name for p in diff.pruned}
+
+    asyncio.run(_run())
+
+
+def test_build_host_reconcile_is_idempotent(migrated_url: str, tmp_path: Path) -> None:
+    # A second pass over an unchanged doc is a clean no-op (change-detecting upserts).
+    from kdive.inventory.reconcile_build_hosts import reconcile_build_hosts
+
+    async def _run() -> None:
+        doc = load_inventory(_write_toml(tmp_path, _build_host_toml(name="bh-idem")))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            async with pool.connection() as conn:
+                await reconcile_build_hosts(conn, doc)
+            async with pool.connection() as conn:
+                diff2 = await reconcile_build_hosts(conn, doc)
+        assert not diff2.created and not diff2.updated and not diff2.pruned
+        assert not diff2.cordoned
+
+    asyncio.run(_run())
+
+
+def test_loop_inventory_pass_reconciles_a_build_host(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The loop's reconcile_inventory pass also reconciles [[build_host]] into build_hosts (wired
+    # after the resource pass). A present, valid file lands the config build-host row.
+    async def _run() -> None:
+        path = _write_toml(
+            tmp_path,
+            "schema_version = 2\n"
+            "[[build_host]]\n"
+            'name = "loop-bh"\n'
+            'kind = "local"\n'
+            'workspace_root = "/var/lib/kdive/build"\n'
+            "max_concurrent = 2\n",
+        )
+        monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(path))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            report = await reconcile_once(pool, NullReaper(), config=_config_with_inventory_spec())
+        assert "reconcile_inventory" not in report.failures
+        async with await _connect(migrated_url) as check:
+            row = await _build_host_by_name(check, "loop-bh")
+        assert row["managed_by"] == "config"
+        assert row["max_concurrent"] == 2
+
+    asyncio.run(_run())
+
+
+def test_build_host_readopt_clears_disabled_cordon(migrated_url: str, tmp_path: Path) -> None:
+    # Re-declaring a cordoned (enabled=false) config host in the file re-enables it: the cordon
+    # is a prune artifact, so an explicit re-declaration must clear it (idempotent recovery).
+    from kdive.inventory.reconcile_build_hosts import reconcile_build_hosts
+
+    async def _run() -> None:
+        present = load_inventory(_write_toml(tmp_path, _build_host_toml(name="bh-revive")))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            async with pool.connection() as conn:
+                await reconcile_build_hosts(conn, present)
+            async with await _connect(migrated_url) as seed:
+                await seed.execute(
+                    "UPDATE build_hosts SET enabled = false WHERE name = 'bh-revive'"
+                )
+            async with pool.connection() as conn:
+                diff = await reconcile_build_hosts(conn, present)
+        async with await _connect(migrated_url) as check:
+            row = await _build_host_by_name(check, "bh-revive")
+        assert row["enabled"] is True  # re-enabled by the re-declaration
+        assert "bh-revive" in {u.name for u in diff.updated}
+
+    asyncio.run(_run())

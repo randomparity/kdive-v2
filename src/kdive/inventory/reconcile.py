@@ -38,6 +38,7 @@ __all__ = [
     "inventory_pass_lock",
     "prune_or_cordon_image",
     "prune_or_cordon_resource",
+    "prune_or_cordon_build_host",
 ]
 
 
@@ -163,5 +164,51 @@ async def _resource_has_live_allocation(cur: AsyncCursor[dict[str, Any]], row_id
     await cur.execute(
         "SELECT 1 FROM allocations WHERE resource_id = %s AND state = ANY(%s) LIMIT 1",
         (row_id, list(NON_TERMINAL_STATES_VALUES)),
+    )
+    return await cur.fetchone() is not None
+
+
+async def prune_or_cordon_build_host(
+    conn: AsyncConnection, row_id: UUID, name: str
+) -> PruneOutcome:
+    """Apply the non-destructive prune contract to one config build-host row (ADR-0112).
+
+    Mirrors :func:`prune_or_cordon_resource`, but the build-host "live" predicate is an
+    in-flight ``build_host_leases`` row and the cordon mechanism is ``enabled = false`` (the
+    build_hosts table has no ``cordoned`` column — a disabled host is skipped by both the
+    build-host scheduler and the reachability probe). The DB itself guards prune:
+    ``build_host_leases`` FKs ``build_hosts(id) ON DELETE RESTRICT``, so a blind ``DELETE`` of
+    a busy host would abort the whole pass. This helper checks the lease **first** (under
+    ``FOR UPDATE``) and cordons a busy host instead of ever attempting the aborting delete.
+
+    Args:
+        conn: The reconcile pass connection (a fresh transaction is opened here).
+        row_id: The config build-host row's id.
+        name: The build-host name (for the returned record).
+
+    Returns:
+        A :class:`PruneOutcome` recording whether the row was pruned or cordoned.
+    """
+    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT id FROM build_hosts WHERE id = %s AND managed_by = %s FOR UPDATE",
+            (row_id, ManagedBy.CONFIG.value),
+        )
+        if await cur.fetchone() is None:
+            return PruneOutcome(pruned=False, cordoned=False)
+        if await _build_host_has_live_lease(cur, row_id):
+            await cur.execute(
+                "UPDATE build_hosts SET enabled = false WHERE id = %s AND enabled", (row_id,)
+            )
+            return PruneOutcome(pruned=False, cordoned=True)
+        await cur.execute("DELETE FROM build_hosts WHERE id = %s", (row_id,))
+    return PruneOutcome(pruned=True, cordoned=False)
+
+
+async def _build_host_has_live_lease(cur: AsyncCursor[dict[str, Any]], row_id: UUID) -> bool:
+    """True when the build host holds an in-flight capacity lease (the refuse-if-live guard)."""
+    await cur.execute(
+        "SELECT 1 FROM build_host_leases WHERE build_host_id = %s LIMIT 1",
+        (row_id,),
     )
     return await cur.fetchone() is not None
