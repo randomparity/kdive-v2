@@ -1,4 +1,4 @@
-# ADR 0105 — Reap leaked `active` allocations
+# ADR 0108 — Reap leaked `active` allocations
 
 - **Status:** Proposed
 - **Date:** 2026-06-13
