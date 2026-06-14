@@ -37,12 +37,6 @@ from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
     read_core_build_id_from_file,
     read_core_dmesg_from_file,
 )
-from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
-    file_sha256_b64 as _file_sha256_b64,
-)
-from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
-    pool_type_and_target as _pool_type_and_target,
-)
 from kdive.providers.remote_libvirt.retrieve.kdump_capture import (
     DEFAULT_PUT_EXPIRY_S,
     DEFAULT_READINESS_POLL_S,
@@ -186,8 +180,6 @@ class RemoteLibvirtRetrieve:
 
 __all__ = [
     "RemoteLibvirtRetrieve",
-    "_file_sha256_b64",
-    "_pool_type_and_target",
     "host_dump_volume_name",
     "read_core_build_id_from_file",
     "read_core_dmesg_from_file",
