@@ -203,7 +203,7 @@ def _handle_reconcile_systems(
     args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
 ) -> None:
     del secret_registry, telemetry
-    from kdive.cli.reconcile_systems import reconcile_systems
+    from kdive.inventory.reconcile_cli import reconcile_systems
     from kdive.store.objectstore import object_store_from_env
 
     store = _optional_reconciler_object_store(object_store_from_env)
