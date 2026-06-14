@@ -24,6 +24,7 @@ node_modules/
 # Build artifacts
 /dist/
 build/
+!tests/providers/remote_libvirt/build/
 *.egg-info/
 
 # Live-stack report artifacts (default is out-of-tree; this guards a repo-local override)
