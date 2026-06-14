@@ -56,6 +56,10 @@ from kdive.reconciler.provider_reaping import repair_leaked_domains as _repair_l
 from kdive.reconciler.provider_reaping import (
     repair_leaked_probe_guests as _repair_leaked_probe_guests,
 )
+from kdive.reconciler.runtime_resources import ResourceProbe
+from kdive.reconciler.runtime_resources import (
+    reap_expired_runtime_resources as _reap_expired_runtime_resources,
+)
 from kdive.reconciler.uploads import (
     UploadStore,
 )
@@ -102,6 +106,7 @@ __all__ = [
     "_gc_idempotency_keys",
     "_probe_build_host_reachability",
     "_promote_pending",
+    "_reap_expired_runtime_resources",
     "_reap_orphaned_active_allocations",
     "_reap_console_collectors",
     "_reap_orphaned_dump_volumes",
@@ -171,6 +176,7 @@ class ReconcileReport:
     reaped_build_vms: int = 0
     reclaimed_build_host_leases: int = 0
     build_host_states_changed: int = 0
+    reaped_runtime_resources: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +187,7 @@ class ReconcileConfig:
     dump_volume_reaper: DumpVolumeReaper = _NULL_DUMP_VOLUME_REAPER
     build_vm_reaper: BuildVmReaper = _NULL_BUILD_VM_REAPER
     build_host_prober: BuildHostProber | None = None
+    resource_probe: ResourceProbe | None = None
     upload_store: UploadStore | None = None
     image_store: ImageSweepStore | None = None
     console_registry: CollectorRegistry | None = None
@@ -212,6 +219,13 @@ def _repair_plan(
         _RepairSpec("queue_timeouts", _reap_queue_timeouts_for(config.queue_max_wait)),
         _RepairSpec("orphaned_systems", _repair_orphaned_systems),
         _RepairSpec("abandoned_jobs", _repair_abandoned_jobs),
+        # Reap (or cordon, if still live) runtime resources whose lease lapsed — the leak
+        # backstop for an agent that registered capacity then vanished (ADR-0112). Cordon-only
+        # / refuse-if-live: a live allocation is never auto-drained.
+        _RepairSpec(
+            "reaped_runtime_resources",
+            lambda conn: _reap_expired_runtime_resources(conn, config.resource_probe),
+        ),
         # Reap leaked build VMs BEFORE reclaiming their lease, so a freed slot never coexists
         # with a still-running leaked VM (ADR-0100 §4.6 over-admission window).
         _RepairSpec(
@@ -338,6 +352,7 @@ async def reconcile_once(
         reaped_build_vms=counts.get("reaped_build_vms", 0),
         reclaimed_build_host_leases=counts["reclaimed_build_host_leases"],
         build_host_states_changed=counts.get("build_host_states_changed", 0),
+        reaped_runtime_resources=counts["reaped_runtime_resources"],
     )
 
 
