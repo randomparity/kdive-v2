@@ -42,21 +42,35 @@ async def _pool(url: str) -> AsyncIterator[AsyncConnectionPool]:
         await pool.close()
 
 
-def _ctx(
-    *,
-    platform_roles: frozenset[PlatformRole] = frozenset(),
-    roles: dict[str, Role] | None = None,
-    projects: tuple[str, ...] = (),
-    client_id: str | None = None,
-) -> RequestContext:
-    return RequestContext(
-        principal="op-1",
-        agent_session="sess-1",
-        projects=projects,
-        roles=roles or {},
-        platform_roles=platform_roles,
-        client_id=client_id,
-    )
+_PROJECT_ADMIN = RequestContext(
+    principal="op-1",
+    agent_session="sess-1",
+    projects=("proj-a",),
+    roles={"proj-a": Role.ADMIN},
+    platform_roles=frozenset(),
+)
+_PLATFORM_ADMIN = RequestContext(
+    principal="op-1",
+    agent_session="sess-1",
+    projects=(),
+    roles={},
+    platform_roles=frozenset({PlatformRole.PLATFORM_ADMIN}),
+)
+_OPERATOR = RequestContext(
+    principal="op-1",
+    agent_session="sess-1",
+    projects=(),
+    roles={},
+    platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}),
+)
+_OPERATOR_CLI = RequestContext(
+    principal="op-1",
+    agent_session="sess-1",
+    projects=(),
+    roles={},
+    platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}),
+    client_id=_CLI_CLIENT_ID,
+)
 
 
 class _FakeCheck(Check):
@@ -112,8 +126,7 @@ _HEALTHY = [
 def test_project_only_token_denied_unaudited(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(roles={"proj-a": Role.ADMIN}, projects=("proj-a",))
-            resp = await diagnostics.run_diagnostics(pool, _factory(_HEALTHY), ctx)
+            resp = await diagnostics.run_diagnostics(pool, _factory(_HEALTHY), _PROJECT_ADMIN)
         assert resp.status == "error"
         assert resp.error_category == "authorization_denied"
         assert resp.suggested_next_actions == ["ops.diagnostics"]
@@ -125,8 +138,7 @@ def test_project_only_token_denied_unaudited(migrated_url: str) -> None:
 def test_admin_alone_denied_but_audited(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_ADMIN}))
-            resp = await diagnostics.run_diagnostics(pool, _factory(_HEALTHY), ctx)
+            resp = await diagnostics.run_diagnostics(pool, _factory(_HEALTHY), _PLATFORM_ADMIN)
         assert resp.status == "error"
         assert resp.error_category == "authorization_denied"
         rows = await _platform_audit_rows(migrated_url)
@@ -139,11 +151,7 @@ def test_admin_alone_denied_but_audited(migrated_url: str) -> None:
 def test_operator_served_and_audited_under_operator_cli(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(
-                platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}),
-                client_id=_CLI_CLIENT_ID,
-            )
-            resp = await diagnostics.run_diagnostics(pool, _factory(_HEALTHY), ctx)
+            resp = await diagnostics.run_diagnostics(pool, _factory(_HEALTHY), _OPERATOR_CLI)
         assert resp.status == "ok"
         assert resp.error_category is None
         rows = await _platform_audit_rows(migrated_url)
@@ -161,8 +169,7 @@ def test_operator_served_and_audited_under_operator_cli(migrated_url: str) -> No
 def test_read_only_run_records_only_the_run_audit(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}))
-            await diagnostics.run_diagnostics(pool, _factory(_HEALTHY), ctx)
+            await diagnostics.run_diagnostics(pool, _factory(_HEALTHY), _OPERATOR)
         rows = await _platform_audit_rows(migrated_url)
         tools = [r[2] for r in rows]
         # The default (no --with-egress) run audits once, under the read-only run tool only.
@@ -174,8 +181,7 @@ def test_read_only_run_records_only_the_run_audit(migrated_url: str) -> None:
 def test_with_egress_records_a_distinct_provisioning_audit(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}))
-            await diagnostics.run_diagnostics(pool, _factory(_HEALTHY), ctx, with_egress=True)
+            await diagnostics.run_diagnostics(pool, _factory(_HEALTHY), _OPERATOR, with_egress=True)
         rows = await _platform_audit_rows(migrated_url)
         tools = sorted(r[2] for r in rows)
         # The mutating opt-in is audited distinctly from the read-only run (ADR-0091 §4).
@@ -195,8 +201,7 @@ def test_with_egress_threads_the_opt_in_into_the_factory(migrated_url: str) -> N
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}))
-            await diagnostics.run_diagnostics(pool, _factory_recording, ctx, with_egress=True)
+            await diagnostics.run_diagnostics(pool, _factory_recording, _OPERATOR, with_egress=True)
         assert seen == [True]
 
     asyncio.run(_run())
@@ -218,8 +223,7 @@ def test_verdict_carries_each_check_status_detail_fix_provider(migrated_url: str
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}))
-            resp = await diagnostics.run_diagnostics(pool, _factory(results), ctx)
+            resp = await diagnostics.run_diagnostics(pool, _factory(results), _OPERATOR)
         assert resp.status == "ok"
         item = resp.items[0]
         assert item.data["check"] == "gdbstub_acl"
@@ -243,8 +247,7 @@ def test_down_dependency_is_error_not_failure(migrated_url: str) -> None:
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}))
-            resp = await diagnostics.run_diagnostics(pool, _factory(results), ctx)
+            resp = await diagnostics.run_diagnostics(pool, _factory(results), _OPERATOR)
         assert resp.status == "ok"
         item = resp.items[0]
         assert item.data["status"] == "error"
@@ -269,8 +272,7 @@ def test_secret_ref_aggregate_carries_no_per_tenant_ref(migrated_url: str) -> No
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}))
-            resp = await diagnostics.run_diagnostics(pool, _factory(results), ctx)
+            resp = await diagnostics.run_diagnostics(pool, _factory(results), _OPERATOR)
         item = resp.items[0]
         assert "project/" not in data_str(item, "detail")
         assert item.data["status"] == "fail"
@@ -284,8 +286,7 @@ def test_factory_build_failure_is_error_verdict_and_audited(migrated_url: str) -
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}))
-            resp = await diagnostics.run_diagnostics(pool, _failing_factory, ctx)
+            resp = await diagnostics.run_diagnostics(pool, _failing_factory, _OPERATOR)
         # A build/config fault is a distinct error verdict, not an unhandled crash or a fail.
         assert resp.status == "ok"
         item = resp.items[0]
