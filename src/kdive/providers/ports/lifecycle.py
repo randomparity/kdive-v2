@@ -19,6 +19,12 @@ from kdive.providers.ports.handles import SystemHandle, TransportHandle
 TransportHandleKind = Literal["gdbstub", "ssh", "drgn-live"]
 _TRANSPORT_KINDS: frozenset[TransportHandleKind] = frozenset(("gdbstub", "ssh", "drgn-live"))
 
+# Agent-facing debug-session transport values accepted by ``debug.start_session`` and provider
+# connectors. Keep this separate from ``TransportHandleKind``: local drgn-live is realized as an
+# ``ssh://`` handle, while remote drgn-live is an unschemed domain handle.
+DebugTransportKind = Literal["gdbstub", "drgn-live"]
+DEBUG_TRANSPORT_KINDS: frozenset[DebugTransportKind] = frozenset(("gdbstub", "drgn-live"))
+
 
 class TransportHandleData(NamedTuple):
     """A decoded transport handle: the transport kind and its loopback endpoint."""
@@ -134,7 +140,7 @@ class Booter(Protocol):
 class Connector(Protocol):
     """Connect port for opening and closing debug transports."""
 
-    def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle:
+    def open_transport(self, system: SystemHandle, kind: DebugTransportKind) -> TransportHandle:
         """Open a debug transport and return an opaque handle.
 
         Raises:

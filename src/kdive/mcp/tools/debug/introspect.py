@@ -32,14 +32,14 @@ from kdive.mcp.tools._common import config_error as _config_error
 from kdive.mcp.tools._runtime_resolution import with_runtime_for_run
 from kdive.mcp.tools._vmcore_targets import resolve_run_vmcore_target
 from kdive.mcp.tools.debug.session_context import resolve_debug_session_context
-from kdive.providers.ports import LiveIntrospector, VmcoreIntrospector
+from kdive.providers.ports import DebugTransportKind, LiveIntrospector, VmcoreIntrospector
 from kdive.providers.resolver import ProviderResolver
 from kdive.security.authz.context import RequestContext
 
 # The fixed live-helper set (ADR-0033 §2 / ADR-0039 §3): the same three in-tree helpers as the
 # offline path. There is no caller-supplied drgn script — an unknown helper is rejected.
 _LIVE_HELPERS = frozenset({"tasks", "modules", "sysinfo"})
-_DRGN_LIVE = "drgn-live"
+_DRGN_LIVE: DebugTransportKind = "drgn-live"
 
 
 async def introspect_from_vmcore(

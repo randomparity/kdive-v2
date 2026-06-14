@@ -22,7 +22,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Any, LiteralString
+from typing import Annotated, Any, LiteralString, cast
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
@@ -49,7 +49,13 @@ from kdive.mcp.tools.debug.ops import (
 )
 from kdive.mcp.tools.debug.session_context import resolve_debug_session_context
 from kdive.profiles.provisioning import ProvisioningProfile
-from kdive.providers.ports import Connector, SystemHandle, TransportHandle
+from kdive.providers.ports import (
+    DEBUG_TRANSPORT_KINDS,
+    Connector,
+    DebugTransportKind,
+    SystemHandle,
+    TransportHandle,
+)
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProfilePolicy
 from kdive.security import audit
@@ -61,7 +67,6 @@ from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_en
 
 _GDBSTUB = "gdbstub"
 _DRGN_LIVE = "drgn-live"
-_TRANSPORTS = frozenset({_GDBSTUB, _DRGN_LIVE})
 _log = logging.getLogger(__name__)
 # An attach failure maps these provider categories onto the response envelope. A
 # MISSING_DEPENDENCY (no live_vm host / unresolvable endpoint) surfaces as an attach failure:
@@ -83,7 +88,7 @@ class _AttachRequest:
     run: Run
     system: System
     session_id: UUID
-    transport: str
+    transport: DebugTransportKind
     connector: Connector
 
 
@@ -163,14 +168,16 @@ async def _succeeded_boot_result(conn: AsyncConnection, run_id: UUID) -> dict[st
     return result if isinstance(result, dict) else {}
 
 
-async def _system_occupied(conn: AsyncConnection, system_id: UUID, transport: str) -> bool:
+async def _system_occupied(
+    conn: AsyncConnection, system_id: UUID, transport: DebugTransportKind
+) -> bool:
     async with conn.cursor() as cur:
         await cur.execute(_OCCUPIED_SQL, (system_id, transport))
         return await cur.fetchone() is not None
 
 
 async def _open_transport(
-    connector: Connector, system: System, transport: str
+    connector: Connector, system: System, transport: DebugTransportKind
 ) -> TransportHandle | ToolResponse:
     """Open the transport outside any lock; map a provider failure to an envelope."""
     handle_name = system.domain_name or str(system.id)
@@ -257,13 +264,16 @@ class DebugSessionHandlers:
         uid = _as_uuid(run_id)
         if uid is None:
             return _config_error(run_id)
-        if transport not in _TRANSPORTS:
+        if transport not in DEBUG_TRANSPORT_KINDS:
             return _config_error(run_id)
+        transport_kind = cast(DebugTransportKind, transport)
         session_id = uuid4()
         secret_scope = _secret_scope(session_id)
         with bind_context(principal=ctx.principal):
             async with pool.connection() as conn:
-                request = await self._prepare_attach_request(conn, ctx, uid, transport, session_id)
+                request = await self._prepare_attach_request(
+                    conn, ctx, uid, transport_kind, session_id
+                )
             if isinstance(request, ToolResponse):
                 return request
             opened = await _open_transport(request.connector, request.system, request.transport)
@@ -289,7 +299,7 @@ class DebugSessionHandlers:
         conn: AsyncConnection,
         ctx: RequestContext,
         run_id: UUID,
-        transport: str,
+        transport: DebugTransportKind,
         session_id: UUID,
     ) -> _AttachRequest | ToolResponse:
         run = await RUNS.get(conn, run_id)
@@ -314,7 +324,9 @@ class DebugSessionHandlers:
             connector=resources.connector,
         )
 
-    def _credential_backend(self, session_id: UUID, transport: str) -> SecretBackend | None:
+    def _credential_backend(
+        self, session_id: UUID, transport: DebugTransportKind
+    ) -> SecretBackend | None:
         if transport != _DRGN_LIVE or self._secret_backend_factory is None:
             return None
         return self._secret_backend_factory(session_id)
@@ -361,7 +373,7 @@ class DebugSessionHandlers:
 
 def _resolve_credential(
     system: System,
-    transport: str,
+    transport: DebugTransportKind,
     profile_policy: ProfilePolicy,
     secret_backend: SecretBackend | None,
 ) -> None | ToolResponse:
@@ -403,7 +415,7 @@ def _resolve_credential(
 
 
 async def _attach_preconditions(
-    conn: AsyncConnection, run: Run, transport: str
+    conn: AsyncConnection, run: Run, transport: DebugTransportKind
 ) -> System | ToolResponse:
     """Lockless pre-checks: Run booted, System present + `ready`, endpoint free.
 
@@ -435,7 +447,7 @@ async def _insert_session_locked(
     system: System,
     handle: TransportHandle,
     connector: Connector,
-    transport: str,
+    transport: DebugTransportKind,
     session_id: UUID,
 ) -> ToolResponse:
     """Re-check conflict + ready under the per-System lock, then insert + drive `-> live`.

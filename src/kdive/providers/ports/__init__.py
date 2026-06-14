@@ -22,9 +22,11 @@ from kdive.providers.ports.debug import (
 )
 from kdive.providers.ports.handles import OwnedInfra, SystemHandle, TransportHandle
 from kdive.providers.ports.lifecycle import (
+    DEBUG_TRANSPORT_KINDS,
     Booter,
     Connector,
     Controller,
+    DebugTransportKind,
     Installer,
     InstallRequest,
     Provisioner,
@@ -54,6 +56,8 @@ __all__ = [
     "CrashOutput",
     "CrashPostmortem",
     "CrashResult",
+    "DEBUG_TRANSPORT_KINDS",
+    "DebugTransportKind",
     "GdbBreakpointRef",
     "GdbController",
     "GdbFrame",
