@@ -5,6 +5,1219 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Add ResourceKind.REMOTE_LIBVIRT enum value
+- Add presign_get object-store primitive
+- Add remote-libvirt config and qemu+tls transport
+- Add remote-libvirt discovery over qemu+tls
+- Add remote-libvirt fail-fast stub planes
+- Register remote-libvirt runtime + migration 0020 CHECK widen
+- Add M2 portability gate script
+- Add remote-libvirt provisioning profile section (ADR-0080)
+- Add storage-pool + gdbstub operator config (ADR-0080)
+- Remote domain/volume XML rendering + gdb port allocation
+- RemoteLibvirtProvision define/start over TLS (ADR-0080)
+- Wire RemoteLibvirtProvision into the remote runtime
+- Add constrained qemu-guest-agent in-target exec primitive
+- Add in-target artifact channel with bearer-URL redaction
+- Add remote-libvirt Build plane (worker make + modules bundle)
+- Wire RemoteLibvirtBuild into the remote runtime composition
+- Add RemoteLibvirtInstall.install in-guest pull+install (ADR-0082)
+- Add RemoteLibvirtInstall.boot boot-id readiness (ADR-0082)
+- Wire RemoteLibvirtInstall into the remote runtime; drop install stub
+- Log the swallowed reboot-command error in remote boot()
+- Add provider-neutral host-reachability policy (ADR-0083)
+- Add RemoteLibvirtConnect gdbstub direct-TCP transport (ADR-0083)
+- Add remote gdb-MI attach seam with ACL-remote policy (ADR-0083)
+- Add RemoteVmcoreIntrospect worker-side postmortem (ADR-0083)
+- Add RemoteLiveIntrospect in-guest drgn via guest-agent (ADR-0083)
+- Wire remote connect/debug/introspect ports; drop stubs (ADR-0083)
+- Pin ACL-remote host policy on the remote debug_engine (ADR-0083)
+- Add RemoteLibvirtControl power/force_crash over TLS (#206)
+- Add RemoteLibvirtRetrieve two-phase vmcore capture (#206)
+- Wire remote control/retrieve; advertise kdump capture (#206)
+- Emit the milestone-end M2 portability report (#207)
+- Add drgn_live_requires_credential profile predicate (#215)
+- Accept the drgn-live handle scheme on decode (#215)
+- Local connector accepts the drgn-live kind (#215)
+- Remote connector drgn-live branch + bare-domain close (#215)
+- Fault-inject connector accepts the drgn-live kind (#215)
+- Route drgn-live start_session off the ssh assumption (#215)
+- Gate introspect.run on the drgn-live transport (#215)
+- Add TransportResetter reconciler port + NullResetter default (#216)
+- Reset the dead-worker gdbstub transport in the reconciler (#216)
+- Add RemoteLibvirtTransportResetter (gdbstub re-arm) (#216)
+- Wire the transport resetter through composition + main (#216)
+- Setting descriptor + snapshot-resolving Registry
+- Public API, core settings, manifest, test reset seam
+- Generated config reference + CI drift check
+- Structural KDIVE_* drift guard (ast, not yet gating)
+- Provider SETTINGS co-location + manifest aggregation
+- Fail-fast startup validation in entrypoints
+- Multi-stage worker-toolchain image, non-root, KDIVE_* only
+- Gated smoke test + PR build-only CI job
+- App-tier services + migrate one-shot over backends
+- App-tier chart, migrate Job, demo-gated bundled backends
+- Wire bundled backends and document the secret boundary
+- Tagged GHCR publish with cosign signing + SBOM
+- Kdivectl core — transport, read-only passthrough, no-bypass guard
+- Record caller actor (operator-cli/agent/unknown) via client_id
+- Read-only operator verbs + render + registry-driven dispatch
+- Kdivectl login — mock-OIDC flow, platform-role axis, 0600 cache
+- Break-glass mutating verbs with fail-closed token-exp preflight
+- Secrets.list (platform-gated presence) + fixtures.list catalog read
+- Add kdivectl secrets list and fixtures list verbs
+- OTel signal foundation facade (ADR-0090)
+- Wire the bootstrap-ordering invariant into entrypoints
+- Three-state Check framework + read-only checks
+- Default service factory over required secret refs
+- Operator-gated aggregating diagnostics MCP tool
+- Register ops.diagnostics and regenerate tool reference
+- Request telemetry, aux health listener, backend probe (#266)
+- Add kdivectl doctor verb
+- Ephemeral-probe-guest egress check + reaper sweep
+- Opt-in --with-egress flag + distinct provisioning audit
+- Worker/reconciler telemetry + aux health listener (#267)
+- Wire aux readiness probes for all three processes
+- Wire liveness/readiness/scrape to aux endpoints
+- Add image_catalog table, model, repo, resolver
+- Seed defined rootfs, wire object fetch, cut materialize over
+- Seed baseline rootfs on migrate
+- Add RootfsBuildPlane port and local-libvirt plane
+- Add `python -m kdive build-rootfs` operator entry
+- Row-first publish/register two-write service
+- Guest-contract validator naming the missing element
+- IMAGE_BUILD job kind, handler, and guest-contract validator
+- Add remote-libvirt rootfs build plane
+- Add IMAGE_PRIVATE_* upload quota and TTL settings
+- Register project-private uploads under per-project quota
+- Bound upload buffer with a pre-download size check
+- Add reconciler image-catalog drift sweeps
+- Add kdivectl images verbs + RBAC/break-glass surface
+- Advertise remote gdbstub as a capture method
+- Add session advisory lock + console collector
+- Host remote console collectors under a single leader
+- Advertise CONSOLE capture method (#303)
+- Realize host_dump capture + orphan-volume reap
+- Record remote 4/4 capture coverage in m2-report
+- Project a Secret as file-ref credentials on the pods
+- Make the server MCP Service type configurable
+- Seed a kdump config-fragment catalog
+- Merge a kdump fragment onto defconfig in both providers
+- Buildconfig.get serves the kdump fragment inline
+- Derive demo DB/S3/OIDC URLs from in-chart services; ClusterIP gate
+- Compute demo OIDC issuer/JWKS into the config ConfigMap
+- First-party demo Postgres/MinIO/mock-OIDC + NetworkPolicy
+- Values-demo.yaml (pins :edge) and demo NOTES guidance
+- Add not_found and conflict error categories
+- Add not_found tool-response helper
+- Admit not_found/conflict in failure-category CHECK constraints
+- Raise ProjectMembershipDenied from require_project
+- Add build_hosts + build_host_leases schema (0027)
+- Add capacity_exhausted category + exit code 6
+- Add BUILD_HOST scope after RUN in the lock order
+- Add repository with lease acquire/release/count
+- Add BuildTransport port + LocalBuildTransport
+- Add SshBuildTransport + materialized SSH identity
+- Wire transport-backed orchestrator seams
+- Remote the post-make artifact pipeline + presigned publish
+- Add build_host + structured kernel_source_ref to profile
+- Add build_hosts admin plane (register/list/disable/remove)
+- Select build host + admit capacity at runs.build boundary
+- Build over selected transport + release build-host lease
+- Reclaim orphaned build-host leases by job liveness
+- Admit capacity_exhausted in runs/jobs category CHECKs (0028)
+- Admit kind='ephemeral_libvirt' in build_hosts (0029)
+- Register ephemeral_libvirt build hosts
+- Require a git source for any non-local build host
+- Add GuestExecBuildTransport over the guest-agent exec channel
+- Ephemeral build-VM provision/teardown lifecycle
+- Build over an ephemeral libvirt VM
+- Reap leaked ephemeral build VMs
+- Neutral artifact-publish helper in build_host
+- Transport-capable LocalLibvirtBuild.over_transport
+- Capability-based BUILD-handler transport dispatch (#356)
+- Orchestrator owns per-run workspace cleanup seam
+- RemoteLibvirtBuild reclaims the per-run workspace
+- LocalLibvirtBuild reclaims the per-run workspace
+- Add build-host probe-set query and state CAS helper
+- Add SshBuildTransport.check_reachable probe
+- Add BuildHostProber port + SshBuildHostProber
+- Probe SSH build-host reachability and flip state
+- Wire build-host probe into the reconcile pass
+- Wire SSH build-host prober in composition + entrypoint
+- Add ChunkEntry + ManifestEntry.chunks + part-size constants
+- Add shared chunk_key helper for partNNNN keys
+- Persist optional chunk list in JSONB (no migration)
+- Add multipart create/copy/complete/abort primitives
+- Raise KDIVE_MAX_UPLOAD_BYTES default to 50 GiB
+- Validate chunked artifact declarations
+- Mint one presigned PUT per chunk at partNNNN keys
+- Per-chunk head-verify, skip whole-object checksum for chunked
+- Server-side chunk reassembly with abort-on-failure
+- Reassemble chunked uploads with window guard + cleanup
+- Sweep finalized Run leaked chunks; keep System DEFINED gate
+- Census generator over the live tool surface
+- Cell-result record and grid renderer
+- Reference kdive-install-kernel + F7/F8 findings
+- Reference kdive-capture-vmcore + kdive-drgn
+- Print eval-safe KDIVE_GUEST_IMAGE export line
+- Tiered tool-call opt-in for mutating/destructive tools (#368)
+- Make demo OIDC claim set a value with a full-RBAC default
+- Preflight guest-routable S3 endpoint
+- Reap leaked active allocations (ADR-0105, #371)
+- Reap name-orphaned libvirt domains via naming convention
+- Surface name-orphans and add InfraReaper adapter
+- Wire libvirt-backed reaper into build_reconciler_reaper
+- Author systems-inventory schema migration (ADR-0112)
+- Typed systems.toml v2 model + discriminated source union
+- Systems.toml loader with InventoryError boundary
+- Enforce per-project resource affinity
+- Session-scoped advisory lock + INVENTORY scope (ADR-0112)
+- Extend live-image reference guard to remote base images
+- Reconcile engine core + reconcile_images merge contract
+- Kdive reconcile-systems CLI + reconcile_inventory loop pass
+- Remove in-code image defs; load images from systems.toml
+- Reconcile_resources config overlay; fix #385 fault-inject
+- Multi-instance + reconcile_build_hosts (M2.6 #394)
+- Add KDIVE_RESOURCE_LEASE_TTL_SECONDS
+- Add register/deregister/renew runtime tools
+- Reap lapsed-lease runtime resources
+- Adopt runtime resource on config-name collision
+- Add platform_admin ops.reconcile_systems trigger
+- Add docs-links markdown link checker
+- Add docs-paths path-existence checker
+- Add local-libvirt host preflight script
+- Add remote-libvirt host preflight script
+- Add systemd units (system + user) for the three processes
+
+### Changed
+
+- Make remote_connection generic over the connection slice
+- Move RSP codec to providers/debug_common (ADR-0083)
+- Move drgn report helpers to providers/debug_common (ADR-0083)
+- Move gdb-MI engine to providers/debug_common with host policy (ADR-0083)
+- Extract worker-side crash postmortem to debug_common (#206)
+- Scope dead-session reads in a txn that closes before reset I/O (#216)
+- Share snapshot_file_bytes, anchor skip match to line start
+- Migrate all KDIVE_* reads to the registry; activate guard
+- Remove stack supervisor and install-compose/print-local-env
+- Resolve actor_for CLI client id from cli_settings
+- Drop dead metric-exporter fallback method
+- Skip queue-depth count when telemetry is disabled
+- Migrate live-stack consumers off the bash rootfs builders
+- Drop dead audit helpers; pin args_digest in no-leak test
+- Tidy build-host lease reclaim per review
+- Extract ShellBuildTransport base from ssh transport
+- Construct the chunked object store once
+- Drop dead constant + fail fast on open-txn connection
+- Move reconcile-systems out of kdive.cli boundary
+- Run register network preflight before the txn
+- Resolve connection from systems.toml instance
+- Consume the v2 systems.toml inventory
+- Re-tier docs by audience and archive working history
+
+### Documentation
+
+- Add implementation plan for M2 remote-libvirt foundation
+- Harden plan per adversarial review pass 1
+- Harden plan per adversarial review pass 2
+- Harden plan per adversarial review pass 3
+- Add ADR-0080 remote provisioning design (#201)
+- Harden ADR-0080 per adversarial review pass 1
+- Harden ADR-0080 per adversarial review pass 2
+- Harden ADR-0080 per adversarial review pass 3
+- Add #201 remote provisioning implementation plan
+- Harden #201 plan per adversarial review pass 1
+- Document transport_failure on the Provisioner contract
+- ADR-0081 remote build publishes vmlinuz+modules bundle
+- Specify gzip bundle + size/memory consequence in ADR-0081
+- Add implementation plan for remote build (#203)
+- Strip modules_install symlinks + add live_vm build test to plan
+- Add ADR-0082 for remote in-guest install + boot-id readiness
+- Harden ADR-0082 install/boot ordering and verification
+- Correct ADR-0082 error mapping for vanished kernel_ref
+- Add remote-install (#204) implementation plan
+- Fix plan type contracts and add positive wiring test
+- Reuse conftest RecordingBackend in the install test plan
+- Add ADR-0083 remote connect/debug plane + spec issue-6 update
+- Tighten ADR-0083 after adversarial review
+- Add implementation plan for remote connect/debug (#205)
+- Rework plan Task 8 to test the real guest-agent allowlist
+- Add ADR-0084 remote control + two-phase vmcore retrieve (#206)
+- Harden ADR-0084 after adversarial review (#206)
+- Add implementation plan for remote control + retrieve (#206)
+- Harden remote control/retrieve plan after review (#206)
+- Spec the remote live-stack e2e + portability report (#207)
+- Harden #207 spec (remote capture budget, introspect routing, evidence)
+- Fix grammar in #207 spec preflight list
+- Plan the remote live-stack e2e + portability report (#207)
+- Pin remote capture to kdump + require gdb_addr in preflight (#207)
+- Add the remote live-stack operator runbook (#207)
+- ADR-0085 + spec for the drgn-live transport generalization (#215)
+- Separate drgn-live transport token from handle scheme (#215)
+- Implementation plan for the drgn-live transport (#215)
+- Tighten drgn-live plan verification + execution mode (#215)
+- Regenerate tool reference for the drgn-live transport (#215)
+- ADR-0086 + spec for the dead-worker gdbstub reconciler reset (#216)
+- Harden ADR-0086/spec — live-holder guard, topology scope, honest re-arm (#216)
+- Implementation plan for the dead-worker gdbstub reset (#216)
+- Fix plan test idiom (asyncio.run), de-placeholder, ty ignore (#216)
+- Add M2.x productionization & operability band to the roadmap
+- Add M2.5 remote-libvirt capture-method parity
+- Spec + ADRs for deployment & packaging
+- Harden config-registry ADR from adversarial review
+- Harden deployment-packaging ADR from adversarial review
+- Harden design spec from adversarial review
+- Milestone implementation plan
+- Harden plan from adversarial review
+- Correct compose-test gating note to the compose plugin
+- Inspect SBOM/provenance via buildx imagetools
+- Admin CLI (kdivectl) design + ADR-0089
+- Harden kdivectl ADR via adversarial review
+- Reconcile admin CLI spec with hardened ADR-0089
+- Implementation plan for kdivectl admin CLI
+- Harden implementation plan via adversarial review
+- Drop stale #252-pending caveat; correct gating
+- Observability & doctor design + ADR-0090/0091
+- Harden via adversarial-review cycle (4 rounds)
+- Harden via adversarial-review cycle (4 rounds)
+- Reconcile with hardened ADRs via adversarial-review cycle (4 rounds)
+- Milestone plan — 8 sequenced issue briefs for /work-issue
+- Regenerate KDIVE_* reference with KDIVE_OTEL_* keys
+- Regenerate reference for KDIVE_HEALTH_BIND_ADDR
+- Add doctor exit-criterion / band-gate operator runbook
+- Design spec + ADRs for image & rootfs lifecycle
+- Harden image-lifecycle ADR/spec per adversarial review
+- Harden private-image-uploads ADR/spec per adversarial review
+- Harden image-lifecycle design spec per adversarial review
+- Milestone implementation plan for image & rootfs lifecycle
+- Harden image-lifecycle implementation plan per adversarial review
+- Reconcile spec with the plan's three feasibility deltas
+- Regenerate the tool reference for the images.* tools
+- Design remote capture-method parity + ADR-0094/0095
+- Milestone implementation plan (4-issue orchestration + collision/merge order)
+- Host_dump operates on a CRASHED System, not a live/running guest
+- Runbook four-method walkthrough + #198 disposition
+- Add the Kubernetes / Helm deployment runbook
+- Spec + ADR-0096 for kdump config-fragment build input
+- Implementation plan for kdump config-fragment provisioning
+- Four-method live-run runbook for the from-source System
+- Correct tool/CLI commands in four-method live-run runbook
+- Design for easier install
+- Address adversarial review (iteration 1)
+- Address adversarial review (iteration 2)
+- Address adversarial review (iteration 3)
+- Address adversarial review (iteration 4)
+- Address adversarial review (iteration 5)
+- Implementation plans for easier-install PR1 (image) and PR2 (demo)
+- Squash adversarial review changes for easier-install plans
+- Avoid detect-secrets false positive in demo DSN helper
+- Published image, one-time public toggle, and :edge from-checkout install
+- In-chart demo backends (amend ADR-0088 decision 7)
+- First-party demo path; drop subchart-distribution section
+- Remote-libvirt host setup and registration
+- Security_driver=none prereq and host_dump-vs-build capture note
+- State platform-vs-project read boundary as a guarantee
+- Make allocations/ledger --project required, fix fixtures flag
+- Add ADR-0097 + spec/plan for not_found/conflict categories
+- Record vmcore-postmortem flip and 0026 migration in flip-set
+- Add ADR-0098 membership-denial envelope + spec + plan
+- Distinguish named-scope exit-3 denial from by-id not-found
+- Add ADR-0099 remote build-host targets + design spec
+- Harden ADR-0099 capacity model after spec review
+- Add remote build-host SSH-target implementation plan
+- Close artifact-pipeline, lock-order, handoff gaps after review
+- Clarify build-lease release durability depends on explicit commit
+- Regenerate tool reference for build_hosts plane
+- Add ADR-0100 + spec for ephemeral-libvirt build VM (#355)
+- Harden ADR-0100/spec after adversarial review (#355)
+- Add implementation plan for ephemeral-libvirt build VM (#355)
+- Harden plan after adversarial review (#355)
+- Operator steps for the ephemeral build-VM host (#355)
+- ADR-0101 local-libvirt builds on a remote build host (#356)
+- Clarify host cleanup parity and local-on-ephemeral scope
+- Implementation plan for local-libvirt remote build host (#356)
+- Use real fake-transport bodies to satisfy strict ty gate
+- Record per-run build workspace cleanup decision (ADR-0102)
+- Implementation plan for per-run workspace cleanup (#358)
+- Require over_transport test for transport-routed cleanup
+- Reachability probe for SSH build hosts (ADR-0103)
+- Harden reachability-probe spec from challenge review
+- Name reconciler probe count by transition semantics
+- Implementation plan for SSH build-host reachability probe
+- Correct task dependency edges + add observability-log test
+- Spec + ADR-0104 for chunked external uploads (#112)
+- Harden chunked-upload spec/ADR per challenge review
+- Scope reaper change to runs, fix window-guard ordering
+- Restore concurrent-finalize idempotency for chunked lane
+- Implementation plan for chunked external uploads (#112)
+- Split plan Task 10 into 10a/10b with concrete finalize code
+- Add ExternalBuildStore Protocol so plan code passes ty
+- Require AbortIncompleteMultipartUpload bucket lifecycle rule
+- MCP tool coverage campaign design (review-incorporated)
+- MCP tool coverage campaign implementation plan
+- Per-provider configuration requirements for test/evaluation
+- Coverage campaign in-progress findings (F1-F6)
+- Remote build plane PASS; F6 resolved by seed; F7 staged-image gap
+- Arc 6/7 no-boot breadth (~30 tools PASS, RBAC denials enforced)
+- Repeatable MCP coverage campaign rerun + committed driver
+- Virt-customize --copy-in SELinux/ownership causes guest-exec ENOENT
+- Actionable error for unseeded kdump build-config
+- Implementation plan for #373 actionable seed error
+- Document the three helpers + base-image install
+- Build-rootfs emits KDIVE_GUEST_IMAGE wiring (#370)
+- Harden build-rootfs wiring spec eval-safety + failure path
+- Build-rootfs KDIVE_GUEST_IMAGE wiring implementation plan
+- DRY resolver helper, fix live-test + runbook verification steps
+- Add eval one-liner for KDIVE_GUEST_IMAGE wiring
+- Point ADR ref at 0106 after collision renumber
+- ADR-0105 + spec for tool-call mutating opt-in (#368)
+- Address spec review - envelope exit code, mutating preflight (#368)
+- Implementation plan for tool-call mutating opt-in (#368)
+- Address plan review - session seam + reuse note (#368)
+- Correct passthrough-reachability comments for opt-in (#368)
+- Renumber tool-call opt-in ADR 0105 -> 0107 (#368)
+- Demo OIDC role claims as a Helm value (#369)
+- Demo OIDC role-claims implementation plan (#369)
+- Note demo OIDC token now carries the demo RBAC grant
+- Point demo OIDC plan/template refs at renumbered ADR-0108
+- KDIVE_S3_ENDPOINT_URL must be guest-routable
+- Reap leaked active allocations (ADR-0105, #371)
+- Reap leaked active allocations (#371)
+- Renumber reap-leaked-active-allocation ADR-0105 -> 0108
+- Index ADR-0108 reap-leaked-active-allocation
+- Renumber reap-leaked-active-allocation 0108 -> 0109
+- Orphaned-domain name-fallback reaping design (#372)
+- Renumber orphaned-domain reaping ADR 0105 -> 0111
+- Add ADR-0111 row to the README index
+- Add 2026-06-14 MCP coverage-campaign rerun report
+- Base image needs tar + unconfined guest agent for install
+- Systems inventory config consolidation (ADR-0112)
+- Add runtime inventory mutation model to ADR-0112
+- Systems config consolidation implementation plan (ADR-0112)
+- Link M2.6 epic #387 + sub-issues #388-399 into the decomposition
+- Correct image prune to row-delete-only (reconcile to ADR-0112)
+- Note migrate reconcile prunes undeclared config rows
+- Spec + ADR-0113 for flat tool outputSchema (#404)
+- Harden #404 spec/ADR after spec review
+- Implementation plan for flat tool outputSchema (#404)
+- Harden #404 plan after plan review
+- Add production-release-readiness design spec and ADR-0114
+- Harden ADR-0114 and spec per adversarial challenge
+- Correct docs-paths guard scope and stale ref count (2nd challenge)
+- Align ADR-0114 prose with the two-guard decision (3rd challenge)
+- Fix Phase-0 index ordering and preflight scope (4th challenge)
+- Correct phase dependency graph and add acceptance signal (5th challenge)
+- Add implementation plan; exempt design/archive from docs-paths
+- Give docs-links the archive/design exemption; fix runbook depth shift (6th challenge)
+- Stop generated scripts from embedding non-current docs/ paths (7th challenge)
+- Sync plan Task 1.1 probes with the builtin implementation
+- Sync plan Task 1.2 PKI check with the SC2015-clean implementation
+- Add operator install and deployment guides
+- Add public-OSS governance and GitHub templates
+- Add agent onboarding guide and MCP config examples
+- Add doc indexes and rewrite README as a front door
+
+### Fixed
+
+- Harden TLS URI validation, gate merge blind spot, typed IO errors
+- Percent-decode URI parameter names before fail-closed checks
+- Remote runtime no-op rootfs validator + typed enumeration fault
+- Bound guest-agent call timeout and detect signal-killed commands
+- Map bundle-packaging OSError to BUILD_FAILURE
+- Give the remote domain a virtio NIC
+- Wire real drgn seams into vmcore introspection
+- Isolate per-runtime discovery registration failures
+- Default the guest machine to i440fx, make it configurable
+- Fail when git apply silently skips a patch
+- Detect git-apply skip via stderr and skip quoted paths
+- Exclude config.md from the tool-reference docs-check diff
+- Make the app-tier dependency graph self-contained
+- Gate read verbs on registry-declared tool + accept --json post-verb
+- Harden token-cache write against symlink and wide parent dir
+- Route login issuer config through kdive.config (ADR-0087)
+- Collapse non-string scope keys to a stable presence label
+- Redact span events, not just span attributes
+- Overall deadline + guard service-build failures
+- Probe store lazily; await aux tasks on shutdown
+- Beat the probe heartbeat for its whole run; typed in-flight
+- Tick liveness off a background task; gauge for queue depth
+- Exit healthcheck cleanly on a not-ready 503
+- Make baseline seed insert collision-safe
+- Validate rootfs digest format before forming a cache path
+- Validate the rootfs image name against workspace escape
+- Silence SC1091 on apply-migrations env source
+- Owner-scope publish identity + verify source digest
+- Reject traversal-bearing identity components on upload
+- Evaluate the reference guard under the prune row lock
+- Reference-guard the operator delete; gate upload before store
+- Reject an upload quarantine_key in the published prefix
+- Guard pump/finalize/close races and offload reap finalize
+- Resolve the resume part index lazily off the event loop
+- Make the hosting tick durable against transient errors
+- Bind host_dump core checksum + bound the spool
+- Make external-path config a pre-install hook
+- Proceed with host_dump when libvirt omits <dump> caps
+- Add <vmcoreinfo> device to the provision domain XML
+- Bind remote spine disk_gb to one constant so it can't drift
+- Dump host_dump cores as ELF, enable guest ACPI
+- Make host_dump dmesg extraction best-effort
+- Read vmcore.list items from its ToolResponse, not as a list
+- Resolve secret refs relative to the root, not the CWD
+- Type merge_config.sh launch/timeout faults in both providers
+- Tolerate unconfigured object store in migrate seed
+- Wait-for-db targets the in-chart demo Postgres service
+- Consume structured_content, not fastmcp .data
+- Read verbs surface a denial as a nonzero exit
+- Report a raised ToolError cleanly, not as a traceback
+- Return not_found for absent/ungranted ids
+- Return not_found for absent vmcore-run targets
+- Envelope membership denials as authorization_denied at boundary
+- Host-scope lease idempotency check
+- Pin UTF-8 read_text + cover cleanup/timeout paths
+- UTF-8 read_text, address validation, read size cap
+- Retain build-host lease on failure so retries don't over-admit
+- Enforce 5 GiB single-PUT ceiling on remote build publish
+- Enforce 5 GiB single-PUT ceiling on ArtifactBytes publish
+- Point unseeded-catalog error at the seed command
+- Degrade blanked demo OIDC claims to the safe floor
+- Advertise vcpus/memory_mb caps in discovery
+- Surface redacted in-guest transcript in install_failure
+- Preserve precise entry/field on semantic parse failures
+- Wrap an unreadable systems.toml as InventoryError in the loop
+- Key remote resource upsert by (kind,name), write host_uri
+- Make runtime-resource cordon change-detecting
+- Degrade opt-in gate on malformed systems.toml
+- Advertise flat tool outputSchema to stop recursive-schema client error (#404)
+- Anchor docs/ match and exempt vendored tool dirs
+
+### Build
+
+- Pin OpenTelemetry SDK + OTLP/gRPC exporter deps
+- Allowlist ops.diagnostics in the M2 portability gate
+- Allowlist mcp/middleware.py for ADR-0090 telemetry
+- Drop Bitnami subcharts, bump chart version to 0.2.0
+- Replace dead subchart overrides with demo image pins
+
+### Harden
+
+- Guard catches aliased os imports
+- Install drgn with --no-deps to keep the locked venv hermetic
+
+### Review
+
+- Harden remote host_dump design across 4 adversarial rounds
+- Harden console-collector design across 5 adversarial rounds
+- Reconcile the design spec with the hardened ADRs across 4 adversarial rounds
+- Harden the milestone plan across 5 adversarial rounds
+- Harden config-provisioning ADR + spec (challenge round 1)
+- Harden config-provisioning spec (challenge rounds 1-2)
+- Harden kdump config-provisioning plan (challenge rounds 1-3)
+- Harden via adversarial review cycle
+- Harden via adversarial review cycle
+- Harden systems-config plan via adversarial review cycle
+- Second adversarial review cycle — prune/GC correctness hardening
+
+## [pre-M2] - 2026-06-09
+
+### Added
+
+- Add stack-up and test-live-stack recipes
+- Add report rollup domain query
+- Add accounting.report tool, two scope forms
+- Add _docmeta annotation helper + reviewed destructive set
+- Backfill runs.* tool metadata
+- Backfill core/spine tool metadata (implemented)
+- Backfill provider/live-gated tool metadata (partial)
+- Add tool-reference generator + committed reference
+- Add ObjectStore.head for ingestion validation
+- Add get_range, presign_put, and public key helpers
+- Add list_prefix and delete for the upload reaper
+- Make BuildProfile source-discriminated (server/external)
+- Add owner-scoped upload-manifest storage + migration
+- Add create_upload presign + manifest tool
+- Add external-artifact validation with ranged build-id check
+- Add complete_build ingestion finalize + external-source gate
+- Prefix-reap abandoned external uploads
+- Port the prebuilt rootfs catalog from v1
+- Resolve rootfs source kinds; commit uploaded rootfs row
+- Allow defined -> torn_down so a DEFINED System is terminable
+- Reject upload-kind rootfs at the reprovision boundary
+- Add systems.define producing a DEFINED System
+- Admit a DEFINED System on provision; optional profile
+- Admit a System upload only for an upload-kind DEFINED System
+- Add CaptureMethod vocabulary + local-libvirt supported-set
+- Add libvirt debug flags; make crashkernel optional
+- Add capture method arg + supported-set validation
+- Render an always-on serial console with a log tee
+- Register the console log as a redacted artifact on window close
+- Gate the kdump preflight on method=kdump
+- Resolve capture method from the System profile
+- Method-conditional crashkernel gate; thread method/initrd_ref
+- Port the kdive-managed SSH keypair helper
+- Port the bootable rootfs builder, replacing the stub
+- Resolve local config/patch refs for the checkout seam
+- Stage the profile .config into the per-Run workspace
+- Apply the profile patch_ref with git apply (categorized)
+- Rsync the warm kernel tree into the per-Run workspace
+- Compose the real warm-tree checkout seam (closes the stub)
+- Get_artifact reads unconditionally when etag is None
+- Implement the kernel/initrd fetch seam (G2, closes #126)
+- Add the console readiness classifier + fixtures (#127)
+- Wire the readiness probe + kdump initrd gate (#127)
+- Resolve the boot cmdline from the build ledger, not build_profile (#128)
+- Runs.build cmdline param recorded in the build ledger (#128)
+- Register the local-libvirt host on startup (first-run bootstrap)
+- Boot each System from a per-System rootfs overlay
+- Compose the boot cmdline from a platform-required base + appended debug args
+- Reject a Run cmdline that overrides platform-owned boot args
+- Persist job failure context
+- Add expected boot failure run metadata
+- Expose expected boot failure on runs
+- Add bounded artifact text search
+- Add redacted artifact text search
+- Record expected boot crash outcomes
+- Add provider component reference models
+- Validate provider-local component paths
+- Validate provider profile requirements
+- Add provider-scoped fixture catalog
+- Advertise provider component source support
+- Materialize local-libvirt rootfs component refs
+- Validate build configs against profile requirements
+- Store provider component links with visibility
+- Cordon column, set_status/cordon/uncordon, schedulable placement
+- Honor queue_paused in the worker claim loop
+- Add queue control + cross-project jobs_list tools
+- Add ops.reconcile_now on-demand reconcile tool
+- Add runtime tuning tools set_cost_class_coeff/set_host_capacity
+- Add break-glass force_teardown/force_release (#140)
+- Audit member-over-reach denials at the dispatch boundary
+- Add audit.query + inventory.list auditor reads
+- Add resources.drain (passive / force_release) (#143)
+- Add reusable PCIe match-spec matcher (#158)
+- Discover host PCIe descriptors into capabilities (#158)
+- Add system_shapes catalog, model, and resolver (#157)
+- Add allocations.pcie_claim column + model field (#162)
+- Add PCIe admission resolve/claim helpers (#162)
+- Claim PCIe devices in-lock at admission (#162)
+- Wire pcie_devices selector into allocations.request (#162)
+- Add upsert/list_all/delete to the system_shapes repository (#160)
+- Add shapes.list/set/delete catalog tools (#160)
+- Persist sizing-snapshot identity on allocations and systems (#161)
+- Resolve shape XOR custom in the allocation selector (#161)
+- Flow resolved size into provisioning; record System shape (#161)
+- Add systems.list catalog view (#159)
+- Add pending-queue admission for capacity-denied requests (#164)
+- Add resources.availability fleet view (#163)
+- Add system-reuse snapshot-≥ match helper (#166)
+- Enforce reuse preconditions + optional match in runs.create (#166)
+- Add queue_timeout ErrorCategory (#165)
+- Let record_system attribute an original agent_session (#165)
+- Add reconciler work-conserving promotion sweep + queue_timeout reaper (#165)
+- Add fault-inject resource kind
+- Add per-kind ProviderResolver registry
+- Build a ProviderResolver and route MCP+discovery through it
+- Resolve worker handler provider per System/Run kind
+- Add fault-inject happy-path mock provider package
+- Register fault-inject runtime and widen resources CHECK
+- Add seeded decision-keyed fault engine
+- Declare per-op cancel/compensation policy
+- Add forced secret-resolution console loop
+- Add inventory orphan flag for cancel residue
+- Faulting wrapper threads engine into ports
+- Wire optional engine into runtime composition
+- Add quarantined sensitivity + migration 0019
+- Fault-inject store-raw-quarantine then heal loop
+- Add fault-inject provisioning profile section
+
+### Changed
+
+- Extract upload validation, harden create_upload review
+- Offload upload-reaper S3 calls; harden tests
+- Extract ready-finalize helper; assert absent-upload no-teardown
+- Split static rootfs check from upload-lane guard
+- Encode capture method in the raw object key
+- Extract _verdict_to_result for host-free coverage (#127)
+- Parallelize the kernel make with -j across host cores
+- Tighten job and provider boundaries
+- Centralize provider composition
+- Extract job context helpers
+- Split mcp worker handlers
+- Dispatch providers through runtime registry
+- Clarify upload presign materialization
+- Split provisioning create lane
+- Centralize mcp tool boundary helpers
+- Introduce worker plane package
+- Type job authorizing tuples
+- Remove stale provider aliases
+- Remove control plane facade
+- Canonicalize worker handlers
+- Trim docmeta helper docstrings
+- Split artifact upload tools
+- Narrow audit writer APIs
+- Remove worker plane facade
+- Define provider ports centrally
+- Move worker handlers into planes
+- Extract shared run execution helpers
+- Name provider run operations explicitly
+- Type job payload enums
+- Split accounting read handlers
+- Structure allocation request payloads
+- Centralize provisioning profile queries
+- Move request context out of MCP auth
+- Return typed provider runtime ports
+- Narrow provider composition surface
+- Route discovery bootstrap through runtime
+- Share raw vmcore artifact lookup
+- Move job attribution out of MCP
+- Keep discovery resource enums typed
+- Remove unused runtime capability registry
+- Remove unused profiles facade exports
+- Trim version helper docstrings
+- Group artifact write inputs
+- Move provider helpers behind neutral seams
+- Flatten gdb frame parsing helper
+- Group MCP tools by family
+- Type gdb engine results
+- Share gdb attachment port shape
+- Remove run console path wrappers
+- Split defined system provisioning
+- Share profile version guard
+- Split accounting tool surfaces
+- Split run tool lanes
+- Split system tool lanes
+- Centralize run cmdline policy
+- Use shared gdb controller port
+- Share MCP selector payloads
+- Move persistence services out of domain
+- Move power action to domain model
+- Unify system create admission lanes
+- Group lifecycle tool families
+- Expose provider runtime ports
+- Isolate resource discovery persistence
+- Share allocation idempotency helpers
+- Type artifact upload owners
+- Clarify debug helper names
+- Drop unreachable error arm; clarify lock test name
+- Audit the caller's held platform roles, not the gate literal
+- Remove admin bootstrap echo docstrings
+- Shape provider component registration requests
+- Audit platform role denials consistently
+- Honor gdb response timeout contract
+- Expose breakglass registration explicitly
+- Move discovery records to domain
+- Use server-only FastMCP runtime extra
+- Share redacted artifact authorization
+- Remove phantom workflow tools from design
+- Split systems creation flows
+- Require provider runtime injection
+- Type profile JSON boundaries
+- Make audit query scope explicit
+- Split accounting usage tools
+- Split artifact workflows
+- Centralize platform audit vocabulary
+- Share platform denial auditing
+- Require worker runtime injection
+- Share cross-project read helpers
+- Remove audit and queue security smells
+- Remove provider registry prototype
+- Flatten boot outcome handling
+- Type build step results
+- Keep job state filters typed
+- Preserve provider visibility type
+- Remove unused ops facade export
+- Bind handler injection seams
+- Clarify component upload identity
+- Move lifecycle registrars
+- Share component sha validation
+- Map role denials at dispatch
+- Scope debug session secrets
+- Reap superseded reprovision domains
+- Factor gdb mi payload helpers
+- Split provision defined workflow
+- Release locks around provider calls
+- Clarify gdb mi command execution
+- Remove fixed concurrency sleeps
+- Type artifact upload declarations
+- Type investigation external refs
+- Remove lifecycle package facades
+- Split audit query request shapes
+- Bind debug session handler seams
+- Register accounting modules directly
+- Remove accounting package exports
+- Simplify system provision locking
+- Align provider seam docs
+- Cap jobs wait sleep
+- Offload sync provider calls
+- Move profile document aliases
+- Cover partial mcp tools
+- Use required job authorizing fields
+- Unify collection tool envelopes
+- Inline worker registrar adapters
+- Refresh milestone plan paths
+- Separate provision lock results
+- Bind vmcore handler seams
+- Use request models for filters
+- Update introspection adr path
+- Share vmcore target resolution
+- Use systems admin handler seam
+- Remove stale provider aliases
+- Trim redundant docstrings
+- Align breakpoint location contract
+- Split provision lifecycle steps
+- Preserve debug attach error responses
+- Refresh README milestone links
+- Update provider registry docs
+- Refresh gdbmi redaction snapshots
+- Offload debug transport calls
+- Clarify idempotency gc count
+- Remove empty ops facade
+- Privatize artifact item listing
+- Document register config errors
+- Separate lifecycle helper modules
+- Preserve denial envelopes on audit failure
+- Preserve provision failure category
+- Note current ADR tool paths
+- Honor fixture catalog env path
+- Organize security package
+- Inline handler seam forwarders
+- Split provider port contracts
+- Bind reprovision handler seams
+- Validate gdb continue timeout
+- Align provision error contract
+- Break authz error cycle
+- Preserve run step failures
+- Refresh control port docs
+- Extract libvirt provision transaction
+- Type reconciler state literals
+- Trim local libvirt facades
+- Narrow complete build validator
+- Return breakglass denial envelopes
+- Document postmortem store errors
+- Document retrieve capture errors
+- Make artifacts registrar pure
+- Remove unwired drgn extra
+- Split debug attach flow
+- Simplify libvirt provision cleanup
+- Centralize reconciler state policy
+- Preserve reprovision provider errors
+- Update m1 provider seam docs
+- Cover shared helper contracts
+- Cover catalog and ops helpers
+- Make lifecycle registrars private
+- Centralize rootfs materialization
+- Log heartbeat failures with traceback
+- Refresh m1.1 accounting plan
+- Expose collection response items
+- Organize local libvirt provider planes
+- Loosen upload declaration input type
+- Align debug register return shape
+- Share systems create admission
+- Split gdbmi provider helpers
+- Log worker dispatch tracebacks
+- Reject malformed stored profiles
+- Refresh m0 provider plan
+- Wake reconciler promptly on stop
+- Type component source capabilities
+- Cover vmcore target resolution
+- Return report rows as items
+- Cover provider port contracts
+- Simplify system create dispatch
+- Split provider runtime contract
+- Log catalog degradation context
+- Refresh provider runtime docs
+- Return structured tool data
+- Tighten subprocess boundaries
+- Remove duplicate system job wrappers
+- Clarify rootfs materialization context
+- Move shared tool mechanics to services
+- Isolate provisioning file operations
+- Move provider handles into ports
+- Own secret registry at runtime
+- Make worker sleep stop-aware
+- Clarify resource capability helper
+- Cover FastMCP tool wrappers
+- Type provider component kinds
+- Type destructive operation kinds
+- Remove install boot passthrough
+- Clarify debug continue contract
+- Decouple allocation release responses
+- Split console artifact capture
+- Type job enqueue payloads
+- Update tool reference docs
+- Extract breakglass_release_allocation
+- Extract _apply_cordon update helper
+- Derive force_release tally from item statuses
+- Promote OCCUPYING predicate to a shared name
+- Snapshot-consistent availability read, batch PCIe claims
+- Harden reuse-match assertion inputs (#166)
+- Validate all pcie specs up front in reuse match (#166)
+- Extract shared capacity_gate from admission (#165)
+- Single-source the per-op secret scope
+- Extract read_secret_file for an unregistered read
+- Simplify complete build validation seam
+- Group run creation inputs
+- Share systems validation helpers
+- Resolve MCP provider runtime per target
+- Move resource host ops out of catalog
+- Split system view handlers from provisioning
+- Split lifecycle tool registrars
+- Organize fault-inject provider modules
+- Organize services by subsystem
+- Require typed job authorizing
+- Expose shared systems validation helpers
+- Share MCP run runtime resolution
+- Share mcp runtime resolution
+- Move shape sizing resolution to services
+- Group shape set parameters
+- Extract allocation admission preparation
+- Remove stale provision cache state
+- Move sizing helpers into domain
+- Inline external build validation
+- Group run reuse requirements
+- Group systems list filters
+- Rename worker handler package
+- Clarify debug connector source
+- Type queued allocation kind
+- Group provisioning file seams
+- Share lifecycle libvirt defaults
+- Clarify install staging writes
+- Clarify complete build state guard
+- Move provider reaper contract
+- Own provider composition state
+- Isolate runtime response mapping
+- Centralize component source kinds
+- Require injected reconcile reaper
+- Unify app provider composition
+- Split reconciler repair modules
+- Type common response data details
+- Group quota update request fields
+- Mark debug ops registrar internal
+- Move component kinds to neutral package
+- Derive reconciler repairs from plan
+- Centralize provisioning state admission
+- Bind debug runtime cache by resource kind
+- Remove unused rootfs catalog package
+- Derive component vocabularies from literals
+- Group install port inputs
+- Type MCP request handler payloads
+- Move manifest entries to components
+- Separate introspection resolvers
+- Type local resource pool
+- Type artifact search matches
+- Call runtime helpers directly
+- Group presign put inputs
+- Move artifact values to components
+- Simplify provision admission routing
+- Remove standalone provider reaper builder
+- Reuse resolved live introspection session
+- Expose runtime handler callback type
+- Group upload manifest replacement inputs
+- Centralize artifact key construction
+- Move component validation out of providers
+- Import artifact types from components
+- Share system failure recording
+- Share allocation placement resolution
+- Normalize debug session provider dependencies
+- Remove unused runtime resolution helpers
+- Align fault inject provider profiles
+- Move system admission to service
+- Rename provider components package
+- Decouple systems admission from mcp
+- Share memory unit conversion
+- Clarify debug attach system variable
+- Share component visibility type
+
+### Documentation
+
+- M1.x milestone specs — platform-RBAC + live-stack E2E + roadmap (#93)
+- Stack orchestration env contract + clean-skip mechanism
+- Harden clean-skip (exit-5 ambiguity, --wait, output signal)
+- Stack orchestration implementation plan
+- Lint recipe bash explicitly; record --wait assumption
+- Add live-stack operator runbook
+- Point AGENTS.md at the live-stack runbook and recipes
+- Plan accounting.report rollup + response shape
+- Pin audit-set count, join type, txn semantics
+- ADR-0044 + spec for MCP wire harness + OIDC token issuance
+- Settle the claim-shape gate empirically + three-tier harness
+- Correct the fastmcp 3.4.0 envelope-parsing contract
+- Plan the harness + record the in-memory no-auth constraint
+- Align envelope contract with structured_content implementation
+- Spine-driver spec + ADR-0045 (capability grant, phase naming)
+- Address challenge — RBAC mechanisms, drain outcomes, threading
+- Reconciler-driven teardown + audit principal split
+- Implementation plan for the spine driver
+- Fix plan — teardown transition suffix, trim RBAC negative
+- Spec + ADR for spine report phase (#101)
+- Address challenge — seed, window, out-of-tree artifact (#101)
+- Window from DB clock; seed limit-only upsert (#101)
+- Implementation plan for the report phase (#101)
+- Drop unused UTC import from plan (#101)
+- Add agent-facing tool guide design (spec + ADR-0047)
+- Add implementation plan for the agent-facing tool guide
+- Fix guard-test IndentationError in plan (textwrap.dedent)
+- Add hand-authored concept layer
+- Reconcile spec badge list with what the generator emits
+- Design external-build artifact ingestion (ADR-0048)
+- Harden external-build ingestion design from adversarial review
+- Harden external-build ingestion spec from adversarial review
+- Add external-build ingestion implementation plan
+- Harden ingestion plan from adversarial review (cycle 1)
+- Harden ingestion plan from adversarial review (cycle 2)
+- Harden ingestion plan from adversarial review (cycle 3)
+- Harden ingestion plan from adversarial review (cycle 4)
+- Harden ingestion plan from adversarial review (cycle 5)
+- Regenerate tool reference for create_upload + complete_build
+- Mark the System rootfs-upload lane as forward-plumbing
+- Flag complete_build's cmdline as recorded-but-not-yet-applied
+- Spec systems.define + amend ADR-0025/0048 for the DEFINED producer
+- Harden spec — add defined->torn_down + kind-aware create_upload
+- Add the #111 implementation plan (TDD, 11 tasks)
+- Harden plan — concrete reaper-test seeding, snippet anchors
+- Retire #111 forward-plumbing comments for the live upload lane
+- Add crash-capture tiers design spec + ADR-0049
+- Harden crash-capture ADR-0049 + sync spec after adversarial review
+- Harden crash-capture spec after adversarial review
+- Crash-capture tiers — Phase 0 + groundwork + Tier 0
+- Harden crash-capture Tier-0 plan after adversarial review
+- Add 10 test cases
+- Regenerate vmcore tool reference for the method arg
+- Scope the console-refresh idempotency comment honestly
+- Spec + ADR-0050 for method-aware capture storage
+- Harden ADR-0050/spec after adversarial review
+- Note producer-side fakes must emit method-suffixed keys
+- Implementation plan for method-aware capture storage
+- Fix plan executability gaps from adversarial review
+- ADR-0051 method-conditional crashkernel gate (#116)
+- Pin the local-libvirt profile alias in ADR-0051
+- Implementation plan for #116 tool-layer slice
+- Fix plan executability gaps from adversarial review
+- Spec + ADR-0052 for the bootable rootfs builder port
+- Harden spec from adversarial review pass 1
+- Harden spec from adversarial review pass 2
+- Implementation plan for the rootfs builder port
+- Fix plan ordering bug from adversarial review pass 1
+- Correct the builder description; add image-labeling note
+- Spec + ADR-0053 for the warm-tree checkout seam (#125)
+- Harden the checkout-seam spec/ADR after challenge pass
+- Decouple the checkout wiring test from git (challenge pass 2)
+- Implementation plan for the warm-tree checkout seam (#125)
+- Fix the checkout-seam plan after challenge pass (plan review 1)
+- ADR-0054 unconditional object-store read for the fetch seam
+- Pin install-fetch stale_handle affordance + regression guard
+- Spec + ADR-0055 for the readiness/kdump seam (#127)
+- Harden readiness/kdump spec from adversarial review
+- Pin console-log truncate precondition + XML guard
+- Match the readiness marker as a whole line
+- Implementation plan for the readiness/kdump seam (#127)
+- Fix plan-review executability defects (#127)
+- Spec + ADR-0056 for cmdline wiring and the dcache A/B driver (#128)
+- Tighten the G5 spec after adversarial review pass 1 (#128)
+- Close spec review pass 2 — cmdline binding, log, test-plan accuracy (#128)
+- Add driver teardown + cleanup path after review pass 3 (#128)
+- Implementation plan for the dcache cmdline wiring + A/B driver (#128)
+- Fix plan review pass 1 — count-scoping, job fetch, console-only test (#128)
+- Fix plan review pass 2 — correct test helper names (#128)
+- Dcache dhash_entries A/B runbook — staging, one command, cleanup (#128)
+- Correct the stale complete_build cmdline comment (#128)
+- M1.3 platform-operations spec + ADR-0062
+- Backfill index entries for ADR-0059..0061
+- Harden M1.3 design after adversarial review
+- Remediate ADR-0062 after iteration-1 adversarial review
+- Update app provider runtime contract
+- Clarify MCP tool ownership
+- Clarify viewer role for MCP reads
+- Clarify active provider runtime seam
+- Clarify provider runtime status
+- Define provider port failures
+- Align connect seam with provider runtime
+- Remove trivial echo docstrings
+- Clarify provider runtime seam
+- Remove stale runbook
+- Design expected boot failure evidence
+- Design provider component fixtures
+- Plan live MCP demo stack
+- Regenerate tool reference for ops tuning tools
+- Plan break-glass force_teardown/force_release (#140)
+- Fold plan-review findings into break-glass plan (#140)
+- Align m0 provider seam with runtime
+- Align top-level MCP tool surface
+- Plan resources.drain implementation (#143)
+- Address plan review (skipped testability, live set, cordon commit) (#143)
+- Tighten failed-path data shape and empty-host coverage (#143)
+- Note non-hierarchical RBAC guard for drain modes (#143)
+- Add M1.4 system-catalog/scheduling spec + ADRs 0067-0070
+- Harden ADR-0067 after adversarial review
+- Harden ADR-0068 after adversarial review
+- Harden ADR-0069 after adversarial review
+- Harden ADR-0070 after adversarial review
+- Reconcile M1.4 spec with hardened ADRs 0067-0070
+- Add M1.4 sequencing & shared-seams note (no separate plan)
+- Plan PCIe descriptor inventory + match-spec matcher (#158)
+- Add implementation plan for system_shapes (#157)
+- Plan PCIe pcie_devices claim (#162)
+- Add implementation plan for shapes tools (#160)
+- Plan shape selector + provisioning sizing unification (#161)
+- Plan systems.list catalog view (#159)
+- Plan pending-queue admission (#164)
+- Plan resources.availability fleet view (#163)
+- Plan system reuse in runs.create (#166)
+- Plan reconciler promotion sweep + queue_timeout (#165)
+- Add M1.5 fault-injection provider spec + ADRs 0071-0073
+- Plan per-kind ProviderRuntime registry (#180)
+- Resequence #180 plan for green-at-every-commit
+- Resolve install/boot ports after the claim guard in #180 plan
+- Remove orphaned ProviderRuntime import in #180 plan Task 3
+- Seeded decision-keyed fault engine plan
+- Pin byte encoding, seed threading, golden guard
+- Accept and pin the secret-redaction seam
+- Add the secret-redaction implementation plan for #183
+- Prove registry exact-value masking, not the regex
+- Plan admission-control concurrency-race tests (#185)
+- Cancel/compensation semantics test plan (#186)
+- Ground cancel states in reconciler-visible inventory (#186)
+- Assert CancelOutcome so best-effort proves a cancel (#186)
+- ADR-0074 engine→port wiring seam for issue 184
+- Correct ADR-0074 fail-vs-latency repair paths
+- Decouple orphaned-System case from fail draw
+- Cover all five drift triggers in ADR-0074
+- Plan for issue 184 + sync sleep seam in ADR-0074
+- Tighten plan lease-causation + sync seam
+- Spec + ADR-0075 for object-store quarantine
+- Make the quarantined artifacts row load-bearing
+- Implementation plan
+- Give the quarantined get-exclusion test a positive control
+- Align retrieve capture error contract
+- Update provider status references
+- Trim trivial internal docstrings
+- Update provider current status
+- Update provisioning provider status
+- Fix component upload error contract
+- Remove plan history from module contracts
+- Clarify component upload finalization
+- Clarify drgn live host prerequisite
+- Update M1 package layout paths
+- Remove issue history from production docstrings
+- Update PCIe union contract
+- Remove milestone history from production docs
+- Document gdb controller failures
+- Remove production issue history
+- Correct postmortem authorization contract
+- Refresh README runtime guidance
+- Clean up install helper comments
+- Refresh tool reference
+- Add M2 remote-libvirt spec + ADRs 0076-0079
+- Harden M2 spec + ADRs 0076-0079 per adversarial review
+
+### Fixed
+
+- Harden report window + all-projects universe
+- Pin mock-oauth2-server to an existing tag (3.0.3)
+- Run one-shot minio-init outside the stack-up --wait set
+- Harden external-artifact validation against malformed ELF input
+- Map malformed stored profile in complete_build to config_error
+- Bound the external-vmlinux ELF validator's ranged reads
+- Lower the upload cap to the 5 GiB single-PUT ceiling
+- Reject rootfs kind:upload at the tool boundary until #111
+- Cap the external-vmlinux section-header-table read
+- Refuse to admit a DEFINED System on a non-active allocation
+- Skip registering an empty/failed console artifact
+- Refresh the console row etag on a System re-boot
+- Reject a second capture method per System (first wins)
+- Categorize local staging-IO faults as infrastructure_failure
+- Declare the qcow2 disk driver so the guest mounts root
+- Extract the vmlinux build-id from the merged .notes section
+- Create the rootfs overlay only when absent (idempotent retry)
+- Register the local host only when absent, not every restart
+- Emit a deterministic domain uuid so a retry redefines in place
+- Bound provider subprocess execution
+- Enforce viewer role on protected reads
+- Contain resource list validation errors
+- Defer libvirt namespace registration
+- Preserve existing overlays on provision failure
+- Validate run build profiles on create
+- Enforce viewer role for vmcore introspection
+- Declare mcp runtime dependency
+- Type live build file read failures
+- Honor live introspection helper selector
+- Categorize live build launch failures
+- Describe capped debug continue wait
+- Reject nonfinite job wait timeouts
+- Parse debug ssh provisioning profile
+- Gate destructive power actions
+- Categorize provisioning overlay faults
+- Reject short gdb memory reads
+- Validate reconciler job payloads
+- Gate system teardown
+- Reject incomplete register reads
+- Commit queue_paused flip and its audit row atomically
+- Hold the System lock across force_teardown read and enqueue
+- Make auditor-read audit atomic; flag truncation
+- Propagate RoleDenied from audit.query project form
+- Resolve PCIe multiset via exact bipartite matching (#158)
+- Normalize and bound the shapes.set name
+- Normalize the shapes.delete name for set/delete symmetry
+- Keep promotion lock order PROJECT->RESOURCE->ALLOCATION (#165)
+- Keep the fault draw strictly below 1.0
+- Type FaultInjectReaper as the reconciler InfraReaper port
+- Reject malformed project claims
+- Validate local transport close handles
+- Log malformed PCIe node-device XML
+- Log malformed PCIe promotion specs
+- Validate provider component row literals
+- Reject malformed role claim project keys
+- Preserve categorized error details in MCP responses
+- Resolve ssh credentials by provider profile
+- Reject trailing rsp frame bytes
+- Validate upload owner dispatch
+- Resolve debug engines per provider session
+- Bound managed ssh keygen runtime
+- Report existing provision system states
+- Type allocation resource kind selector
+- Preserve allocation error details
+- Surface domstate probe errors
+- Compose reconciler reaper
+- Require explicit secret registries
+- Preserve MCP error details
+- Wire provider redaction registries
+- Preserve debug error details
+- Enqueue PCIe capacity denials
+- Categorize invalid job payloads
+- Include synthetic port upper bound
+- Preserve allocation PCIe error details
+- Reject queued allocations missing sizing
+- Validate crash commands at provider boundary
+- Preserve console read failures
+- Hide unauthorized job lookups
+- Use sensitivity enum in artifact queries
+
+### Security
+
+- Add platform RBAC seam and platform_audit_log
+- Add RoleDenied and the guard-exempt record_denial writer
+
+### Build
+
+- Add just docs/docs-check and gate ci on reference drift
+- Pin uv build backend
+
+### Harden
+
+- Terminate rsync/git-apply options with --; guard kernel_src
+
+### Review
+
+- Harden M1.5 spec + ADRs 0071-0073 per adversarial challenge
+
+### Style
+
+- Ruff-format test_docmeta assert
+
 ## [0.2.0] - 2026-06-05
 
 ### Added
@@ -305,6 +1518,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add psycopg-pool and testcontainers; pin .sql to LF
 
+[unreleased]: https://github.com/randomparity/kdive/compare/pre-M2..HEAD
+[pre-M2]: https://github.com/randomparity/kdive/compare/v0.2.0..pre-M2
 [0.2.0]: https://github.com/randomparity/kdive/compare/v0.1.0..v0.2.0
 [0.1.0]: https://github.com/randomparity/kdive/tree/v0.1.0
 

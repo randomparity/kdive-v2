@@ -41,8 +41,10 @@ scorecard.png
 # (the demo-only bundledBackends path); Chart.lock pins the exact versions/digests.
 /deploy/helm/kdive/charts/
 
-# Local operator deploy artifacts (may embed backend credentials)
-.live-deploy/
+# Local live-run scratch (logs, pids, scratch build/components dirs).
+# Covers .live-deploy/ (may embed backend credentials), .live-stack-logs/, .live-stack.pid, etc.
+.live-*/
+.live-*.pid
 
 # Live-test systems descriptor — real per-environment facts (host FQDNs/IPs + secret refs).
 # Root-level, gitignored; scaffold from the committed ./systems.toml.example.
