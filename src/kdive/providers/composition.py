@@ -43,6 +43,10 @@ if TYPE_CHECKING:
 
 def _discovery_registrar(registration: ProviderDiscoveryRegistration) -> DiscoveryRegistrar:
     async def register(pool: AsyncConnectionPool) -> None:
+        # A config-owned kind (creates=False) is bind-only: reconcile_resources is the sole
+        # creator, so discovery must not insert a competing row (ADR-0112 #393).
+        if not registration.creates:
+            return
         # Known remote limitation: ensure_discovered_resource_registered calls
         # discovery.list_resources() synchronously inside its async transaction, and
         # remote TLS connect has no pre-connect timeout. Async offload is deferred.
@@ -86,10 +90,6 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
 
 async def ensure_local_host_registered(pool: AsyncConnectionPool) -> None:
     await _discovery_registrar(local_composition.discovery_registration())(pool)
-
-
-async def ensure_fault_inject_resource_registered(pool: AsyncConnectionPool) -> None:
-    await _discovery_registrar(fault_inject_composition.discovery_registration())(pool)
 
 
 def _fault_inject_enabled(enable_fault_inject: bool | None) -> bool:
@@ -248,7 +248,6 @@ __all__ = [
     "build_local_runtime",
     "build_provider_resolver",
     "build_remote_runtime",
-    "ensure_fault_inject_resource_registered",
     "ensure_local_host_registered",
     "ProviderComposition",
 ]

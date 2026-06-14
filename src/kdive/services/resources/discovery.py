@@ -15,7 +15,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.domain.discovery import DiscoverySource, ResourceRecord
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.domain.models import Resource, ResourceKind
+from kdive.domain.models import ManagedBy, Resource, ResourceKind
 
 
 async def register_discovered_resource(
@@ -115,6 +115,10 @@ def _resource_from_record(record: ResourceRecord, *, pool: str, cost_class: str)
         cost_class=cost_class,
         status=record["status"],
         host_uri=record["resource_id"],
+        # A host discovered AFTER migration 0030 must insert at 'discovery', not the column
+        # default 'runtime' (ADR-0112 invariant 5) — the migration only backfilled rows that
+        # existed at migrate time, so the insert path owns the ownership label going forward.
+        managed_by=ManagedBy.DISCOVERY,
     )
 
 
@@ -129,8 +133,9 @@ def _resource_key(kind: ResourceKind | Resource, resource_id: str | None = None)
 async def _insert_resource(cur: AsyncCursor[dict[str, Any]], resource: Resource) -> None:
     await cur.execute(
         """
-        INSERT INTO resources (id, kind, capabilities, pool, cost_class, status, host_uri)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO resources
+            (id, kind, capabilities, pool, cost_class, status, host_uri, managed_by)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
         """,
         (
@@ -141,5 +146,6 @@ async def _insert_resource(cur: AsyncCursor[dict[str, Any]], resource: Resource)
             resource.cost_class,
             resource.status.value,
             resource.host_uri,
+            resource.managed_by.value,
         ),
     )

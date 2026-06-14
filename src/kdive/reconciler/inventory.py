@@ -1,8 +1,10 @@
 """The reconciler's inventory pass: reconcile ``systems.toml`` into the catalog (ADR-0112).
 
-This is the loop trigger of the M2.6 inventory engine (#391). Each pass reads the path in
+This is the loop trigger of the M2.6 inventory engine (#391/#393). Each pass reads the path in
 ``KDIVE_SYSTEMS_TOML`` (default ``./systems.toml``) and reconciles it into ``image_catalog``
-via :func:`kdive.inventory.reconcile_images.reconcile_images`.
+via :func:`kdive.inventory.reconcile_images.reconcile_images` and into ``resources`` via
+:func:`kdive.inventory.reconcile_resources.reconcile_resources` (the fault-inject/remote
+config overlay that supplies the sizing #385 lacked).
 
 Two load-bearing invariants (plan Task 1.6):
 
@@ -36,9 +38,16 @@ import kdive.config as config
 from kdive.config.core_settings import SYSTEMS_TOML
 from kdive.inventory import InventoryError, load_inventory_optional
 from kdive.inventory.model import InventoryDoc
+from kdive.inventory.reconcile import ReconcileDiff
 from kdive.inventory.reconcile_images import ImageHeadStore, reconcile_images
+from kdive.inventory.reconcile_resources import reconcile_resources
 
 _log = logging.getLogger(__name__)
+
+
+def _changes(diff: ReconcileDiff) -> int:
+    """Count the rows a reconcile pass created/updated/pruned/cordoned (steady state = 0)."""
+    return len(diff.created) + len(diff.updated) + len(diff.pruned) + len(diff.cordoned)
 
 
 def _systems_toml_path() -> Path:
@@ -93,8 +102,9 @@ class InventoryReconcilePass:
         doc = self._load(path)
         if doc is None:
             return 0
-        diff = await reconcile_images(conn, doc, store)
-        return len(diff.created) + len(diff.updated) + len(diff.pruned) + len(diff.cordoned)
+        images = await reconcile_images(conn, doc, store)
+        resources = await reconcile_resources(conn, doc)
+        return _changes(images) + _changes(resources)
 
     def _load(self, path: Path) -> InventoryDoc | None:
         """Return the parsed doc (from cache when the file is unchanged), or ``None`` if absent.
