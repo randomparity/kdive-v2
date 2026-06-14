@@ -134,6 +134,10 @@ check-mermaid:
 docs-links:
     ./scripts/check-doc-links.sh
 
+# Fail when a concrete docs/<path> reference in code/recipes/markdown is missing.
+docs-paths:
+    ./scripts/check-doc-paths.sh
+
 # M2 portability gate: cumulative core-touch measurement vs the pre-M2 tag (ADR-0076).
 # Stdlib-only (plain python3, no uv sync); needs the pre-M2 tag fetched.
 m2-gate:
