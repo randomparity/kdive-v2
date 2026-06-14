@@ -572,6 +572,27 @@ def test_relaxed_check_rejects_both_or_neither(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_reconcile_rejects_connection_with_open_transaction(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # The pass toggles autocommit + holds a session lock across transactions, so it must own a
+    # transaction-free connection; calling it inside an open transaction fails fast with a
+    # clear error rather than psycopg's opaque ProgrammingError.
+    async def _run() -> None:
+        doc = load_inventory(_write_toml(tmp_path, "schema_version = 2\n"))
+        store = _FakeImageStore()
+        conn = await psycopg.AsyncConnection.connect(migrated_url, autocommit=False)
+        try:
+            async with conn.transaction():
+                await conn.execute("SELECT 1")  # force an open transaction
+                with pytest.raises(RuntimeError, match="no open transaction"):
+                    await reconcile_images(conn, doc, store)
+        finally:
+            await conn.close()
+
+    asyncio.run(_run())
+
+
 def test_reconcile_is_idempotent(migrated_url: str, tmp_path: Path) -> None:
     async def _run() -> None:
         body = (
