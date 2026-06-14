@@ -1,0 +1,109 @@
+#!/bin/bash
+# kdive-install-kernel — operator-provided in-guest helper (ADR-0082 §1 contract).
+#
+# Reference implementation for a Fedora (BLS + grubby + grub2-reboot) remote-libvirt base image.
+# The remote-libvirt Install/Boot plane allowlists EXACTLY this program at
+# /usr/local/sbin/kdive-install-kernel and invokes it with fixed argv (never a shell string).
+#
+# Subcommands:
+#   install --url <presigned-get> --cmdline <cmdline> --method <method>
+#       curl the ADR-0081 gzip bundle (boot/vmlinuz + lib/modules/<ver>), install it, and
+#       add-or-replace ONE deterministic grub slot (title "kdive") with <cmdline> verbatim.
+#       Does NOT change the boot selection. method=kdump also enables the kdump service.
+#       Idempotent: re-running converges to the same /boot + grub state.
+#   boot-id
+#       print /proc/sys/kernel/random/boot_id (the kernel-minted per-boot UUID).
+#   boot
+#       select the "kdive" slot for the NEXT boot only (grub one-shot) AND trigger a detached
+#       reboot into it, atomically.
+set -euo pipefail
+
+KDIVE_TITLE="kdive"
+
+die() {
+  echo "kdive-install-kernel: $*" >&2
+  exit 1
+}
+
+# Remove every existing grub entry titled "kdive" so install replaces a single slot.
+remove_kdive_slot() {
+  # grubby indexes BLS entries; iterate titles and remove matching kernels by path.
+  local idx kernel
+  while read -r idx; do
+    [ -n "$idx" ] || continue
+    kernel="$(grubby --info="$idx" 2>/dev/null | sed -n 's/^kernel="\?\([^"]*\)"\?/\1/p')"
+    [ -n "$kernel" ] && grubby --remove-kernel="$kernel" >/dev/null 2>&1 || true
+  done < <(grubby --info=ALL 2>/dev/null | awk -F\" -v t="$KDIVE_TITLE" '/^title=/{ if ($2==t) print NR }' | sed 's/[^0-9]//g')
+}
+
+do_install() {
+  local url="" cmdline="" method=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+    --url)
+      url="$2"
+      shift 2
+      ;;
+    --cmdline)
+      cmdline="$2"
+      shift 2
+      ;;
+    --method)
+      method="$2"
+      shift 2
+      ;;
+    *) die "unknown install arg: $1" ;;
+    esac
+  done
+  [ -n "$url" ] || die "install requires --url"
+  [ -n "$cmdline" ] || die "install requires --cmdline"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  curl -fsSL --retry 3 "$url" -o "$tmp/bundle.tar.gz" || die "bundle download failed"
+  tar xzf "$tmp/bundle.tar.gz" -C "$tmp" || die "bundle extract failed"
+  [ -f "$tmp/boot/vmlinuz" ] || die "bundle missing boot/vmlinuz"
+  [ -d "$tmp/lib/modules" ] || die "bundle missing lib/modules"
+
+  local ver
+  ver="$(find "$tmp/lib/modules" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | head -n1)"
+  [ -n "$ver" ] || die "no kernel version in lib/modules"
+
+  install -m 0644 "$tmp/boot/vmlinuz" "/boot/vmlinuz-$ver"
+  rm -rf "/lib/modules/$ver"
+  cp -a "$tmp/lib/modules/$ver" "/lib/modules/$ver"
+  depmod "$ver"
+  dracut --force "/boot/initramfs-$ver.img" "$ver" || die "dracut failed for $ver"
+
+  remove_kdive_slot
+  grubby --add-kernel="/boot/vmlinuz-$ver" \
+    --initrd="/boot/initramfs-$ver.img" \
+    --title="$KDIVE_TITLE" \
+    --args="$cmdline" \
+    --copy-default || die "grubby add-kernel failed"
+
+  if [ "$method" = "kdump" ]; then
+    systemctl enable kdump.service >/dev/null 2>&1 || true
+  fi
+  echo "installed kernel $ver into the kdive slot"
+}
+
+do_boot() {
+  # Find the kdive entry's grub id/index and set it as the one-shot next-boot target.
+  grub2-reboot "$KDIVE_TITLE" || die "grub2-reboot could not select the kdive slot"
+  # Detached reboot: return before the guest-agent is torn down (ADR-0082 §1/§3).
+  systemd-run --on-active=2 systemctl reboot >/dev/null 2>&1 ||
+    (setsid bash -c 'sleep 2; systemctl reboot' >/dev/null 2>&1 </dev/null &)
+  echo "kdive slot selected for next boot; reboot scheduled"
+}
+
+cmd="${1:-}"
+shift || true
+case "$cmd" in
+install) do_install "$@" ;;
+boot-id) cat /proc/sys/kernel/random/boot_id ;;
+boot) do_boot ;;
+*) die "unknown subcommand: ${cmd:-<none>} (expected install|boot-id|boot)" ;;
+esac
