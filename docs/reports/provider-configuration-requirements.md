@@ -140,11 +140,23 @@ iptables -A INPUT -s <worker-subnet> -p tcp --dport 47000:47099 -j ACCEPT
 ```
 Symptom of a missed ACL: the TLS connect **times out** (silent DROP) rather than refusing.
 
-**Bidirectional reachability for capture:** two-phase vmcore capture has the *guest* upload to a
-presigned URL, so the guest must also reach the object-store endpoint the control plane hands
-out. If the control plane is in Kubernetes with an in-cluster MinIO, that endpoint must be
-reachable from the remote guest, or core-capture (KDUMP/HOST_DUMP) is blocked even though
-provisioning works.
+**Bidirectional reachability for install + capture — `KDIVE_S3_ENDPOINT_URL` must be
+guest-routable.** Remote **install** (the in-guest helper `curl`s the kernel bundle from a
+presigned GET) and two-phase kdump **capture** (the guest uploads the vmcore to a presigned PUT)
+both mint the URL against `KDIVE_S3_ENDPOINT_URL` and have the *guest* do the transfer. So that
+endpoint must be a **control-plane address routable from the remote guest network — not
+`localhost`/loopback**. The dev default `http://localhost:9000` is the *guest's* own loopback,
+where no object store runs. If the control plane is in Kubernetes with an in-cluster MinIO, that
+endpoint must be reachable from the remote guest, or remote install/boot and core-capture
+(KDUMP) are blocked even though TLS provisioning works.
+
+The worker **preflights** this (ADR-0110): a remote install/kdump-capture against a
+`localhost`/loopback `KDIVE_S3_ENDPOINT_URL` fails fast with a `configuration_error` whose
+`details.next_action` names `KDIVE_S3_ENDPOINT_URL`, before any in-guest round-trip — instead of
+an opaque in-guest curl failure. The preflight catches only the statically-detectable loopback
+case; a routable-looking endpoint the guest still cannot reach (a missed guest→store ACL) surfaces
+as the in-guest transfer failure. host-dump capture streams from the *worker*, not the guest, so it
+is unaffected. (Originally MCP-campaign finding F8, #375.)
 
 ## 4. Kubernetes control plane (deploy/helm/kdive)
 
