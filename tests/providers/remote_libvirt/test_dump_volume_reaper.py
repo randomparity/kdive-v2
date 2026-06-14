@@ -14,7 +14,7 @@ from kdive.providers.remote_libvirt.dump_volume_reaper import (
     system_id_from_dump_volume_name,
     volume_mtime_epoch_s,
 )
-from kdive.providers.remote_libvirt.retrieve import host_dump_volume_name
+from kdive.providers.remote_libvirt.retrieve.host_dump_capture import host_dump_volume_name
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 _SID = UUID("00000000-0000-0000-0000-0000000000cc")

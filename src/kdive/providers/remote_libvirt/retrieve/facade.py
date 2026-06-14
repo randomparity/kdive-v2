@@ -33,7 +33,6 @@ from kdive.providers.remote_libvirt.retrieve.common import (
 from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
     HostDumpCapturer,
     HostDumpOptions,
-    host_dump_volume_name,
     read_core_build_id_from_file,
     read_core_dmesg_from_file,
 )
@@ -180,7 +179,4 @@ class RemoteLibvirtRetrieve:
 
 __all__ = [
     "RemoteLibvirtRetrieve",
-    "host_dump_volume_name",
-    "read_core_build_id_from_file",
-    "read_core_dmesg_from_file",
 ]
