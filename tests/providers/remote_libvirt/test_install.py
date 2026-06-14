@@ -248,6 +248,39 @@ def test_install_nonzero_helper_exit_is_install_failure() -> None:
     assert excinfo.value.category is ErrorCategory.INSTALL_FAILURE
 
 
+def test_install_failure_surfaces_the_redacted_transcript() -> None:
+    # Regression for #386: the in-guest failure reason must be diagnosable from the worker log,
+    # so install_failure carries the in-guest transcript — but the *redacted* one. Guest stderr
+    # echoes the presigned capability URL (a curl progress line), which must never reach the
+    # error details (CategorizedError.details must be secret-free).
+    def handler(argv: list[str]) -> AgentExecResult:
+        return AgentExecResult(1, b"removing old kdive slot", f"dracut failed; GET {_URL}".encode())
+
+    with pytest.raises(CategorizedError) as excinfo:
+        _install(handler, _FakeStore(), SecretRegistry()).install(
+            _request(CaptureMethod.HOST_DUMP, "console=ttyS0")
+        )
+    details = excinfo.value.details
+    transcript = str(details["transcript"])
+    assert details["exit_status"] == 1
+    assert "dracut failed" in transcript  # the diagnostic reason survives
+    assert "removing old kdive slot" in transcript  # stdout is included too
+    assert _URL not in transcript  # the capability URL is masked
+    assert REDACTION in transcript
+
+
+def test_install_failure_bounds_the_transcript_tail() -> None:
+    # The transcript tail is bounded so a runaway helper log cannot bloat the job error.
+    def handler(argv: list[str]) -> AgentExecResult:
+        return AgentExecResult(1, b"", b"E" * 10_000)
+
+    with pytest.raises(CategorizedError) as excinfo:
+        _install(handler, _FakeStore(), SecretRegistry()).install(
+            _request(CaptureMethod.HOST_DUMP, "console=ttyS0")
+        )
+    assert len(str(excinfo.value.details["transcript"])) <= 2048
+
+
 def test_install_unreachable_agent_is_transport_failure() -> None:
     def handler(argv: list[str]) -> AgentExecResult:
         raise libvirt_error(libvirt.VIR_ERR_AGENT_UNRESPONSIVE)
