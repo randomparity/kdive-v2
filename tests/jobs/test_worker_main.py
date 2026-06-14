@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from kdive.jobs.worker import WorkerConfig
-from kdive.observability import Telemetry
+from kdive.observability.facade import Telemetry
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 

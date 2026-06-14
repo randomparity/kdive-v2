@@ -10,7 +10,7 @@ import pytest
 import kdive.config as config
 from kdive.__main__ import build_parser
 from kdive.domain.errors import CategorizedError, ErrorCategory
-from kdive.observability import Telemetry
+from kdive.observability.facade import Telemetry
 from kdive.providers.reaping import NullBuildVmReaper
 from kdive.reconciler.loop import ReconcileConfig
 from kdive.security.secrets.secret_registry import SecretRegistry

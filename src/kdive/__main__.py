@@ -40,7 +40,7 @@ from kdive.version import full_version
 if TYPE_CHECKING:
     from kdive.health.heartbeat import Heartbeat
     from kdive.health.probe import HealthProbe
-    from kdive.observability import Telemetry
+    from kdive.observability.facade import Telemetry
     from kdive.providers.resolver import ProviderResolver
     from kdive.security.secrets.secret_registry import SecretRegistry
     from kdive.store.objectstore import ObjectStore
@@ -512,7 +512,7 @@ async def _register_provider_resources(
 def main(argv: list[str] | None = None) -> None:
     """Parse arguments, configure logging, and dispatch to the chosen subcommand."""
     args = build_parser().parse_args(argv)
-    from kdive.observability import bootstrap_stdout_floor, init_telemetry
+    from kdive.observability.facade import bootstrap_stdout_floor, init_telemetry
     from kdive.security.secrets.secret_registry import SecretRegistry
 
     # Snapshot the environment before any setting is read, including the logging

@@ -17,8 +17,7 @@ import pytest
 
 import kdive.config as config
 from kdive.log import _KdiveHandler
-from kdive.observability import bootstrap_stdout_floor, init_telemetry
-from kdive.observability.facade import LoggingHandler
+from kdive.observability.facade import LoggingHandler, bootstrap_stdout_floor, init_telemetry
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 
