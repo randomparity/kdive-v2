@@ -104,6 +104,9 @@ volume = "fedora-kdive-remote-base-43.qcow2"
 # (Phase 2, #393): reconcile_resources is its sole creator and the vcpus/memory_mb below are
 # the billable sizing the row advertises to admission — without them allocations.request(
 # kind=fault-inject) is denied configuration_error (#385). Uncomment to make it allocatable.
+# Array-of-tables = multiple instances (Phase 3, #394): declare as many [[fault_inject]] blocks
+# as you need; they share the synthetic host_uri (fault-inject://local) and coexist via the
+# (kind, name) identity, each an independently allocatable resource.
 # [[fault_inject]]
 # name = "synthetic-1"
 # cost_class = "local"
@@ -111,14 +114,27 @@ volume = "fedora-kdive-remote-base-43.qcow2"
 # vcpus = 8
 # memory_mb = 8192
 # seed = 1337
+# [[fault_inject]]
+# name = "synthetic-2"
+# cost_class = "local"
+# concurrent_allocation_cap = 1
+# vcpus = 16
+# memory_mb = 16384
+# seed = 7331
 
 # ---------------------------------------------------------------------------------------------
-# BUILD HOSTS — reconciled into build_hosts (Phase 3; shown here for reference).
+# BUILD HOSTS — reconciled into build_hosts (Phase 3, #394).
 # ---------------------------------------------------------------------------------------------
+#
+# Only `local` and `ephemeral_libvirt` hosts are config-expressible: the v2 [[build_host]] model
+# carries no address/ssh_credential_ref, so an `ssh` host is registered imperatively via
+# `build_hosts.register` (which carries those fields) and is warned-and-skipped if declared here.
+# An `ephemeral_libvirt` host requires `base_image_volume`; a `local` host must omit it.
+# Declaring the seeded `worker-local` row here ADOPTS it (flips managed_by runtime -> config).
 
 # [[build_host]]
 # name = "ub24-big-ephemeral"
-# kind = "ephemeral-libvirt"
+# kind = "ephemeral_libvirt"
 # base_image_volume = "fedora-kdive-remote-base-43.qcow2"
 # workspace_root = "/var/lib/kdive/build"
 # max_concurrent = 2

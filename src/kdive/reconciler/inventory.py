@@ -2,9 +2,10 @@
 
 This is the loop trigger of the M2.6 inventory engine (#391/#393). Each pass reads the path in
 ``KDIVE_SYSTEMS_TOML`` (default ``./systems.toml``) and reconciles it into ``image_catalog``
-via :func:`kdive.inventory.reconcile_images.reconcile_images` and into ``resources`` via
+via :func:`kdive.inventory.reconcile_images.reconcile_images`, into ``resources`` via
 :func:`kdive.inventory.reconcile_resources.reconcile_resources` (the fault-inject/remote
-config overlay that supplies the sizing #385 lacked).
+config overlay that supplies the sizing #385 lacked), and into ``build_hosts`` via
+:func:`kdive.inventory.reconcile_build_hosts.reconcile_build_hosts`.
 
 Two load-bearing invariants (plan Task 1.6):
 
@@ -39,6 +40,7 @@ from kdive.config.core_settings import SYSTEMS_TOML
 from kdive.inventory import InventoryError, load_inventory_optional
 from kdive.inventory.model import InventoryDoc
 from kdive.inventory.reconcile import ReconcileDiff
+from kdive.inventory.reconcile_build_hosts import reconcile_build_hosts
 from kdive.inventory.reconcile_images import ImageHeadStore, reconcile_images
 from kdive.inventory.reconcile_resources import reconcile_resources
 
@@ -104,7 +106,8 @@ class InventoryReconcilePass:
             return 0
         images = await reconcile_images(conn, doc, store)
         resources = await reconcile_resources(conn, doc)
-        return _changes(images) + _changes(resources)
+        build_hosts = await reconcile_build_hosts(conn, doc)
+        return _changes(images) + _changes(resources) + _changes(build_hosts)
 
     def _load(self, path: Path) -> InventoryDoc | None:
         """Return the parsed doc (from cache when the file is unchanged), or ``None`` if absent.
