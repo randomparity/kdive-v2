@@ -98,6 +98,14 @@ def _reconcile_inventory_images(database_url: str) -> int:
     Runs as the deploy ``migrate → reconcile`` step so a fresh install lists the declared
     baseline before any image is built. Idempotent (change-detecting upserts).
 
+    **Behavior change from the former seed (deploy note):** the old seed was additive-only
+    (``ON CONFLICT DO NOTHING``); reconcile **prunes** any ``managed_by='config'`` row whose
+    identity is absent from ``systems.toml``. On the first upgrade to this code, declare every
+    baseline image you want kept in ``systems.toml`` before running ``migrate``, or its config
+    row is pruned. Prune is row-delete-only and cordons (never deletes) an in-use image, and the
+    S3 object is reclaimed by the existing leaked-image GC (ADR-0112) — so no image bytes or
+    running systems are irreversibly destroyed by a deploy.
+
     The path is ``KDIVE_SYSTEMS_TOML`` (default ``./systems.toml``). An **absent** file is the
     normal pre-config state (the file is gitignored) and is a quiet no-op — feeding an empty
     document to ``reconcile_images`` would prune every config row, so the load uses
