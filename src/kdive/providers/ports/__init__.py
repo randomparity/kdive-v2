@@ -4,7 +4,8 @@ Concrete providers satisfy these contracts structurally. Provider implementation
 import these types, but MCP and worker code should not import provider-specific contracts.
 
 This package-level facade is the stable import surface for callers; implementation ownership is
-split by provider plane in sibling modules.
+split by provider plane in sibling modules. Keep the re-exports together so MCP tools, worker
+handlers, and providers share one typed port import contract.
 """
 
 from __future__ import annotations
