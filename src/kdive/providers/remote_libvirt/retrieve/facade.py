@@ -74,31 +74,6 @@ def _build_kdump_capturer(
     )
 
 
-def _build_host_dump_capturer(
-    *,
-    secret_registry: SecretRegistry,
-    config_factory: Callable[[], RemoteLibvirtConfig],
-    open_connection: OpenRetrieveConnection,
-    store_factory: Callable[[], StorePort],
-    secret_backend_factory: Callable[[], SecretBackend],
-    pki_base_dir: Path | None,
-) -> HostDumpCapturer:
-    return HostDumpCapturer(
-        secret_registry=secret_registry,
-        config_factory=config_factory,
-        open_connection=open_connection,
-        store_factory=store_factory,
-        secret_backend_factory=secret_backend_factory,
-        pki_base_dir=pki_base_dir,
-        options=HostDumpOptions(
-            core_build_id_from_file=read_core_build_id_from_file,
-            core_dmesg_from_file=read_core_dmesg_from_file,
-            dump_format=libvirt.VIR_DOMAIN_CORE_DUMP_FORMAT_RAW,
-            max_core_bytes=MAX_CORE_BYTES,
-        ),
-    )
-
-
 class RemoteLibvirtRetrieve:
     """The realized remote `Retriever` + `CrashPostmortem` facade (ADR-0084)."""
 
@@ -128,13 +103,19 @@ class RemoteLibvirtRetrieve:
             secret_backend_factory=secret_backend_factory,
             pki_base_dir=pki_base_dir,
         )
-        self._host_dump = host_dump_capturer or _build_host_dump_capturer(
+        self._host_dump = host_dump_capturer or HostDumpCapturer(
             secret_registry=secret_registry,
             config_factory=config_factory,
             open_connection=open_connection,
             store_factory=store_factory,
             secret_backend_factory=secret_backend_factory,
             pki_base_dir=pki_base_dir,
+            options=HostDumpOptions(
+                core_build_id_from_file=read_core_build_id_from_file,
+                core_dmesg_from_file=read_core_dmesg_from_file,
+                dump_format=libvirt.VIR_DOMAIN_CORE_DUMP_FORMAT_RAW,
+                max_core_bytes=MAX_CORE_BYTES,
+            ),
         )
         self._postmortem = CrashPostmortemAdapter(
             secret_registry=secret_registry,
