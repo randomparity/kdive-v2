@@ -170,9 +170,10 @@ remote base image with the `RemoteLibvirtRootfsBuildPlane` recipe; the volume na
 ```bash
 virt-builder fedora-43 --format qcow2 --size 10G \
   --output /var/lib/libvirt/images/fedora-kdive-remote-base-43.qcow2 \
-  --install qemu-guest-agent,drgn,kexec-tools,makedumpfile,kdump-utils,curl,openssl,python3 \
+  --install qemu-guest-agent,drgn,kexec-tools,makedumpfile,kdump-utils,curl,tar,openssl,python3 \
   --run-command "systemctl enable qemu-guest-agent.service" \
-  --run-command "systemctl enable kdump.service"
+  --run-command "systemctl enable kdump.service" \
+  --run-command "sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config"
 sudo virsh pool-refresh default
 sudo virsh vol-list default
 sha256sum /var/lib/libvirt/images/fedora-kdive-remote-base-43.qcow2   # the image identity
@@ -182,6 +183,19 @@ The matching `vmlinux`/debuginfo and a crashkernel-capable kernel remain the ope
 contract (recorded in the plane's provenance); add them per your kdump needs. Add
 `kernel-debuginfo` to the `--install` set if you intend to drive **live drgn** (`kdive-drgn`
 needs the running kernel's DWARF to attach).
+
+**SELinux must not confine the guest agent.** The Install/Retrieve/drgn helpers run **privileged
+system mutations via `guest-exec`** (the install helper writes `/boot` + `/lib/modules` and runs
+`depmod`/`dracut`/`grubby`). Fedora's targeted policy confines the agent to `virt_qemu_ga_t`,
+which **cannot even read `/lib/modules`** — so an enforcing base image fails `runs.install` at the
+helper's privileged `/boot` + `/lib/modules` mutation steps right after the bundle is extracted
+(surfaced as a non-zero in-guest exit, now visible via the `install_failure` transcript, #386).
+The `SELINUX=permissive` line above is the simplest fix for a test base image and is the form
+verified end-to-end. To keep the rest of the guest enforcing you can instead try making **only**
+the agent domain permissive (needs `policycoreutils-python-utils`):
+`--run-command "semanage permissive -a virt_qemu_ga_t"` — but verify it on your image first: the
+helper's `dracut`/`grubby`/`depmod` children may transition to other SELinux domains that a
+per-domain permissive does not cover.
 
 ### 5a. Install the in-guest helpers (REQUIRED — install/capture/debug fail without them)
 

@@ -66,6 +66,15 @@ SELinux-enforcing guest `guest-exec` then fails with a misleading `No such file 
 (ENOENT, not EACCES) until you chown + relabel. `chmod` alone does not fix it. See
 `docs/solutions/2026-06-13-virt-customize-copyin-selinux-guest-exec-enoent.md`.
 
+**Beyond the file label, the agent *domain* must not be confined.** The install helper does
+privileged system mutations through `guest-exec` (writes `/boot` + `/lib/modules`, runs
+`depmod`/`dracut`/`grubby`). Fedora confines the agent to `virt_qemu_ga_t`, which **cannot even
+read `/lib/modules`** — so an *enforcing* base image fails `runs.install` at the helper's
+privileged `/boot` + `/lib/modules` mutation steps right after the bundle extracts. Make the base
+image `SELINUX=permissive` (test image — the form verified end-to-end); a per-domain
+`semanage permissive -a virt_qemu_ga_t` keeps the rest enforcing but must be verified to cover the
+helper's `dracut`/`grubby` children. See the host-setup runbook §5.
+
 ```bash
 HELPERS="kdive-install-kernel kdive-capture-vmcore kdive-drgn"
 args=(--copy-in deploy/remote-libvirt-guest-helpers/kdive-install-kernel:/usr/local/sbin/
@@ -79,8 +88,10 @@ done
 virt-customize -a fedora-kdive-remote-base-43.qcow2 "${args[@]}"
 ```
 
-Base-image package prerequisites (all standard on a non-minimal Fedora — verify on a minimal
-image):
+Base-image package prerequisites — **verify these are present; a virt-builder Fedora image does
+NOT carry `tar` by default**, and the install helper's `tar xzf` of the ADR-0081 bundle is the
+first step to fail without it (the coverage campaign hit exactly this — the failure surfaces as
+`bundle extract failed` once #386's transcript is in the `install_failure` details):
 
 - `kdive-install-kernel`: `curl`, `tar`, `depmod`, `dracut`, `grubby`, `grub2-reboot`.
 - `kdive-capture-vmcore`: `curl`, `openssl`, `python3` (the build-id note reader), and a
@@ -89,8 +100,8 @@ image):
   attach to the live kernel).
 
 These map onto the host-setup runbook §5 `virt-builder --install` set
-(`qemu-guest-agent,drgn,kexec-tools,makedumpfile,kdump-utils`); add `kernel-debuginfo` if you
-intend to drive live drgn.
+(`qemu-guest-agent,drgn,kexec-tools,makedumpfile,kdump-utils,curl,tar,openssl,python3`); add
+`kernel-debuginfo` if you intend to drive live drgn.
 
 ## Object-store reachability (F8)
 
