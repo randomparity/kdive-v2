@@ -19,6 +19,12 @@ from kdive.store.objectstore import object_store_from_env
 # but the ref model requires it; ``system`` matches the seed tenant.
 DEFAULT_CONFIG_REF = CatalogComponentRef(kind="catalog", provider="system", name="kdump")
 
+# The operator command that seeds the build-config catalog (the kdump fragment). It is the
+# remediation the missing-entry error points at (ADR-0105): ``migrate`` runs the idempotent,
+# S3-tolerant seed step (``_seed_build_configs_step``). Kept as one constant so the affordance
+# the error surfaces cannot drift from the command an operator actually runs.
+SEED_REMEDIATION_COMMAND = "python -m kdive migrate"
+
 # A synchronous catalog fetch the build path injects: name -> verified fragment bytes. It must
 # be synchronous because ``build()`` runs off the event loop via ``asyncio.to_thread``.
 type CatalogConfigFetch = Callable[[str], bytes]
@@ -40,9 +46,10 @@ def build_config_fetch_from_env() -> CatalogConfigFetch:
             entry = get_build_config_sync(conn, name)
         if entry is None:
             raise CategorizedError(
-                "unknown build-config catalog entry",
+                f"unknown build-config catalog entry {name!r}; "
+                f"run `{SEED_REMEDIATION_COMMAND}` to seed it",
                 category=ErrorCategory.CONFIGURATION_ERROR,
-                details={"name": name},
+                details={"name": name, "remediation": SEED_REMEDIATION_COMMAND},
             )
         fetched = object_store_from_env().get_artifact(entry.object_key, None)
         data = fetched.data
@@ -52,4 +59,9 @@ def build_config_fetch_from_env() -> CatalogConfigFetch:
     return _fetch
 
 
-__all__ = ["CatalogConfigFetch", "DEFAULT_CONFIG_REF", "build_config_fetch_from_env"]
+__all__ = [
+    "DEFAULT_CONFIG_REF",
+    "SEED_REMEDIATION_COMMAND",
+    "CatalogConfigFetch",
+    "build_config_fetch_from_env",
+]

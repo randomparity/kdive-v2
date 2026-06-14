@@ -145,6 +145,16 @@ def _patch_fetch_env(
     monkeypatch.setattr(build_defaults, "object_store_from_env", lambda: store)
 
 
+def test_build_config_seed_remediation_command_is_the_migrate_command() -> None:
+    """Pin the affordance to the literal operator command (ADR-0105).
+
+    The error's remediation must name the one command an operator actually runs; a
+    rename of the seed command without updating this constant is a CI failure here, so
+    the affordance can never drift into pointing at a command that does not exist.
+    """
+    assert build_defaults.SEED_REMEDIATION_COMMAND == "python -m kdive migrate"
+
+
 def test_build_config_fetch_unknown_name_is_configuration_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -156,6 +166,12 @@ def test_build_config_fetch_unknown_name_is_configuration_error(
 
     assert caught.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert conn.closed  # the connection is released even on the not-found branch
+    # The error carries an actionable affordance (ADR-0105): the missing name plus a
+    # literal seed command in `details["remediation"]` (the worker copies details into
+    # the job response's `failure_detail_*` fields), and the message names the command.
+    assert caught.value.details["name"] == "nope"
+    assert caught.value.details["remediation"] == build_defaults.SEED_REMEDIATION_COMMAND
+    assert build_defaults.SEED_REMEDIATION_COMMAND in str(caught.value)
 
 
 def test_build_config_fetch_returns_verified_bytes_and_closes_conn(
