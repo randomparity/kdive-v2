@@ -130,6 +130,10 @@ lint-workflows:
 check-mermaid:
     git ls-files -z '*.md' | xargs -0 -r node .github/scripts/mermaid-check/mermaid-check.mjs
 
+# Resolve relative markdown links in tracked *.md against the filesystem.
+docs-links:
+    ./scripts/check-doc-links.sh
+
 # M2 portability gate: cumulative core-touch measurement vs the pre-M2 tag (ADR-0076).
 # Stdlib-only (plain python3, no uv sync); needs the pre-M2 tag fetched.
 m2-gate:
