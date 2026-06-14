@@ -1,8 +1,8 @@
 """Shared helpers for the runtime resource-mutation tools (M2.6 #396, ADR-0112).
 
-``resources.register`` / ``deregister`` / ``renew`` are the imperative agent-native path for
-runtime inventory mutation: they own ``managed_by='runtime'`` rows only, disjoint from the
-declarative ``config`` rows the inventory reconciler owns. All three are ``platform_admin``.
+``resources.register_*`` / ``deregister`` / ``renew`` are the imperative agent-native path
+for runtime inventory mutation: they own ``managed_by='runtime'`` rows only, disjoint from
+the declarative ``config`` rows the inventory reconciler owns. All are ``platform_admin``.
 
 The reachability preflight is expressed through a small injectable :class:`ResourceProbe`
 port (mirroring :class:`kdive.providers.build_host.reachability.BuildHostProber`) so the tool
@@ -28,7 +28,9 @@ from kdive.security.secrets.secrets import read_secret_file
 
 _log = logging.getLogger(__name__)
 
-REGISTER_TOOL = "resources.register"
+REGISTER_REMOTE_LIBVIRT_TOOL = "resources.register_remote_libvirt"
+REGISTER_LOCAL_LIBVIRT_TOOL = "resources.register_local_libvirt"
+REGISTER_FAULT_INJECT_TOOL = "resources.register_fault_inject"
 DEREGISTER_TOOL = "resources.deregister"
 RENEW_TOOL = "resources.renew"
 
@@ -126,7 +128,9 @@ def _host_port(host_uri: str) -> tuple[str, int] | None:
 
 __all__ = [
     "DEREGISTER_TOOL",
-    "REGISTER_TOOL",
+    "REGISTER_FAULT_INJECT_TOOL",
+    "REGISTER_LOCAL_LIBVIRT_TOOL",
+    "REGISTER_REMOTE_LIBVIRT_TOOL",
     "RENEW_TOOL",
     "ResourceProbe",
     "TcpResourceProbe",

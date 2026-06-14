@@ -77,7 +77,9 @@
 | [`resources.describe`](resources.md#resourcesdescribe) | `implemented` |
 | [`resources.drain`](resources.md#resourcesdrain) | `implemented` |
 | [`resources.list`](resources.md#resourceslist) | `implemented` |
-| [`resources.register`](resources.md#resourcesregister) | `implemented` |
+| [`resources.register_fault_inject`](resources.md#resourcesregister_fault_inject) | `implemented` |
+| [`resources.register_local_libvirt`](resources.md#resourcesregister_local_libvirt) | `implemented` |
+| [`resources.register_remote_libvirt`](resources.md#resourcesregister_remote_libvirt) | `implemented` |
 | [`resources.renew`](resources.md#resourcesrenew) | `implemented` |
 | [`resources.set_status`](resources.md#resourcesset_status) | `implemented` |
 | [`resources.uncordon`](resources.md#resourcesuncordon) | `implemented` |

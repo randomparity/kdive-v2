@@ -1721,7 +1721,7 @@ async def _insert_runtime_fault_inject(
     vcpus: int = 8,
     memory_mb: int = 16384,
 ) -> UUID:
-    """Insert a leased, project-scoped runtime fault-inject row (the resources.register shape)."""
+    """Insert a leased, project-scoped runtime fault-inject row."""
     from datetime import UTC, datetime, timedelta
 
     rid = uuid4()

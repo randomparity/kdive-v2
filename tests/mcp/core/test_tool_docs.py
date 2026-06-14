@@ -103,7 +103,9 @@ _BEHAVIOR_TESTS_BY_TOOL = {
     "resources.describe": ("tests/mcp/catalog/test_resources_tools.py",),
     "resources.drain": ("tests/mcp/catalog/test_resources_tools.py",),
     "resources.list": ("tests/mcp/catalog/test_resources_tools.py",),
-    "resources.register": ("tests/mcp/ops/test_resources_mutation.py",),
+    "resources.register_fault_inject": ("tests/mcp/ops/test_resources_mutation.py",),
+    "resources.register_local_libvirt": ("tests/mcp/ops/test_resources_mutation.py",),
+    "resources.register_remote_libvirt": ("tests/mcp/ops/test_resources_mutation.py",),
     "resources.renew": ("tests/mcp/ops/test_resources_mutation.py",),
     "resources.set_status": ("tests/mcp/catalog/test_resources_tools.py",),
     "resources.uncordon": ("tests/mcp/catalog/test_resources_tools.py",),
@@ -282,6 +284,28 @@ def test_build_host_register_tools_are_variant_specific() -> None:
         "name",
         "workspace_root",
     }
+
+
+def test_resource_register_tools_are_variant_specific() -> None:
+    tools = {t.name: t for t in TOOLS}
+
+    assert "resources.register" not in tools
+
+    common = {
+        "concurrent_allocation_cap",
+        "cost_class",
+        "name",
+        "owner_project",
+        "secret_refs",
+    }
+    remote_params = set(tools["resources.register_remote_libvirt"].parameters["properties"])
+    assert remote_params == common | {"base_image", "host_uri"}
+
+    local_params = set(tools["resources.register_local_libvirt"].parameters["properties"])
+    assert local_params == common | {"host_uri"}
+
+    fault_params = set(tools["resources.register_fault_inject"].parameters["properties"])
+    assert fault_params == common
 
 
 def test_every_tool_has_a_valid_maturity() -> None:

@@ -1,4 +1,4 @@
-"""``resources.register`` — register a runtime provider resource (M2.6 #396, ADR-0112).
+"""``resources.register_*`` — register runtime provider resources (M2.6 #396, ADR-0112).
 
 Imperative agent-native capacity registration. Writes a ``managed_by='runtime'`` row keyed by
 ``(kind, name)`` so it never collides with a declarative ``config`` row (those are removed by
@@ -31,7 +31,9 @@ from kdive.inventory.reconcile import resource_identity_lock
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._platform_auth import actor_for, audit_platform_denial, held_platform_roles
 from kdive.mcp.tools.ops.resources._common import (
-    REGISTER_TOOL,
+    REGISTER_FAULT_INJECT_TOOL,
+    REGISTER_LOCAL_LIBVIRT_TOOL,
+    REGISTER_REMOTE_LIBVIRT_TOOL,
     ResourceProbe,
     TcpResourceProbe,
     config_error,
@@ -155,10 +157,11 @@ async def _reject_config_name(conn: AsyncConnection, kind: ResourceKind, name: s
         return (await cur.fetchone()) is not None
 
 
-async def register_resource(
+async def _register_resource(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
+    tool: str,
     block: str,
     name: str,
     cost_class: str,
@@ -196,9 +199,9 @@ async def register_resource(
         require_platform_role(ctx, PlatformRole.PLATFORM_ADMIN)
     except AuthorizationError:
         await audit_platform_denial(
-            pool, ctx, tool=REGISTER_TOOL, scope=f"denied:{name}", args={"name": name}
+            pool, ctx, tool=tool, scope=f"denied:{name}", args={"name": name}
         )
-        return denied(name, REGISTER_TOOL)
+        return denied(name, tool)
 
     kind = resolve_block_kind(block)
     if kind is None:
@@ -244,6 +247,7 @@ async def register_resource(
         cap=concurrent_allocation_cap,
         secret_refs=secret_refs,
         owner_project=resolved_owner,
+        tool=tool,
     )
 
 
@@ -259,6 +263,7 @@ async def _insert_with_preflight(
     cap: int,
     secret_refs: tuple[str, ...],
     owner_project: str | None,
+    tool: str,
 ) -> ToolResponse:
     """Run the DB preflight + the guarded INSERT in one transaction; map conflicts to envelopes."""
     lease = _lease_deadline()
@@ -296,6 +301,7 @@ async def _insert_with_preflight(
                 secret_refs=secret_refs,
                 owner_project=owner_project,
                 resource_id=resource_id,
+                tool=tool,
             )
     except psycopg.errors.UniqueViolation:
         return ToolResponse.failure(
@@ -369,6 +375,7 @@ async def _audit_register(
     secret_refs: tuple[str, ...],
     owner_project: str | None,
     resource_id: UUID,
+    tool: str,
 ) -> None:
     """Write the register audit row (secret references only — never secret bytes)."""
     await audit.record_platform(
@@ -376,7 +383,7 @@ async def _audit_register(
         principal=ctx.principal,
         agent_session=ctx.agent_session,
         event=audit.PlatformAuditEvent(
-            tool=REGISTER_TOOL,
+            tool=tool,
             scope=f"resource:{resource_id}",
             args={
                 "name": name,
@@ -394,4 +401,98 @@ async def _audit_register(
     )
 
 
-__all__ = ["register_resource"]
+async def register_remote_libvirt_resource(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    name: str,
+    cost_class: str,
+    host_uri: str,
+    base_image: str,
+    concurrent_allocation_cap: int = 1,
+    secret_refs: tuple[str, ...] = (),
+    owner_project: str | None = None,
+    probe: ResourceProbe | None = None,
+    secrets_root: Path | None = None,
+) -> ToolResponse:
+    """Register a runtime remote-libvirt resource. Requires ``platform_admin``."""
+    return await _register_resource(
+        pool,
+        ctx,
+        tool=REGISTER_REMOTE_LIBVIRT_TOOL,
+        block="remote_libvirt",
+        name=name,
+        cost_class=cost_class,
+        host_uri=host_uri,
+        base_image=base_image,
+        concurrent_allocation_cap=concurrent_allocation_cap,
+        secret_refs=secret_refs,
+        owner_project=owner_project,
+        probe=probe,
+        secrets_root=secrets_root,
+    )
+
+
+async def register_local_libvirt_resource(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    name: str,
+    cost_class: str,
+    host_uri: str,
+    concurrent_allocation_cap: int = 1,
+    secret_refs: tuple[str, ...] = (),
+    owner_project: str | None = None,
+    probe: ResourceProbe | None = None,
+    secrets_root: Path | None = None,
+) -> ToolResponse:
+    """Register a runtime local-libvirt resource. Requires ``platform_admin``."""
+    return await _register_resource(
+        pool,
+        ctx,
+        tool=REGISTER_LOCAL_LIBVIRT_TOOL,
+        block="local_libvirt",
+        name=name,
+        cost_class=cost_class,
+        host_uri=host_uri,
+        concurrent_allocation_cap=concurrent_allocation_cap,
+        secret_refs=secret_refs,
+        owner_project=owner_project,
+        probe=probe,
+        secrets_root=secrets_root,
+    )
+
+
+async def register_fault_inject_resource(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    name: str,
+    cost_class: str,
+    concurrent_allocation_cap: int = 1,
+    secret_refs: tuple[str, ...] = (),
+    owner_project: str | None = None,
+    probe: ResourceProbe | None = None,
+    secrets_root: Path | None = None,
+) -> ToolResponse:
+    """Register a runtime fault-inject resource. Requires ``platform_admin``."""
+    return await _register_resource(
+        pool,
+        ctx,
+        tool=REGISTER_FAULT_INJECT_TOOL,
+        block="fault_inject",
+        name=name,
+        cost_class=cost_class,
+        concurrent_allocation_cap=concurrent_allocation_cap,
+        secret_refs=secret_refs,
+        owner_project=owner_project,
+        probe=probe,
+        secrets_root=secrets_root,
+    )
+
+
+__all__ = [
+    "register_fault_inject_resource",
+    "register_local_libvirt_resource",
+    "register_remote_libvirt_resource",
+]

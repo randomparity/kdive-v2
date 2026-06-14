@@ -80,7 +80,7 @@
 
 | Variable | Processes | Default | Required | Value |
 |----------|-----------|---------|----------|-------|
-| `KDIVE_RESOURCE_LEASE_TTL_SECONDS` | server | `86400` | no | Lease window in seconds for a runtime-registered resource (resources.register). register sets lease_expires_at = now() + this window and resources.renew extends it by the same window; the reconciler reaps a runtime resource once its lease expires (ADR-0112). Tunes the leak-resistance horizon for imperatively-registered capacity. |
+| `KDIVE_RESOURCE_LEASE_TTL_SECONDS` | server | `86400` | no | Lease window in seconds for a runtime-registered resource (resources.register_*). register_* sets lease_expires_at = now() + this window and resources.renew extends it by the same window; the reconciler reaps a runtime resource once its lease expires (ADR-0112). Tunes the leak-resistance horizon for imperatively-registered capacity. |
 | `KDIVE_SYSTEMS_TOML` | reconciler, worker | `./systems.toml` | no | Path to the declarative systems inventory file reconciled into the catalog (ADR-0112). The reconciler's inventory pass reads it each loop; the worker resolves the per-op remote-libvirt connection config from it (ADR-0112 §connection). An absent default file is the normal pre-config state (systems.toml is gitignored) and is a quiet no-op, while a present-but-malformed file fails that pass without aborting siblings. |
 
 ## lease

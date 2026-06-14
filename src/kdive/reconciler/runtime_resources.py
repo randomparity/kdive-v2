@@ -1,6 +1,6 @@
 """Lease + reachability reaping for runtime-registered resources (M2.6 #398, ADR-0112).
 
-Imperative agent tools (``resources.register``/``renew``) write ``managed_by='runtime'``
+Imperative agent tools (``resources.register_*``/``renew``) write ``managed_by='runtime'``
 resource rows carrying a ``lease_expires_at`` the agent must renew. This reaper is the
 leak backstop: a runtime resource whose lease has lapsed (the agent vanished without
 deregistering) is removed so a disappeared agent never leaves permanent shared capacity.
@@ -42,7 +42,7 @@ _log = logging.getLogger(__name__)
 class ResourceProbe(Protocol):
     """Report whether a resource host is reachable (the reachability-confirmation port).
 
-    Structurally identical to ``resources.register``'s probe port so the same
+    Structurally identical to ``resources.register_*``'s probe port so the same
     ``TcpResourceProbe`` satisfies both without the reconciler importing the mcp layer (a
     lower layer must not depend on a higher one). The reaper uses it only to log whether a
     lapsed-lease host is also unreachable; reaping never depends on the probe.
