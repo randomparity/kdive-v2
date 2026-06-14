@@ -87,6 +87,18 @@ def test_configured_detection_tracks_instance(
     assert is_remote_libvirt_configured()
 
 
+def test_gate_degrades_on_malformed_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The opt-in gate runs at app startup and must not crash the server on a bad operator edit:
+    # a malformed systems.toml reads as "not configured" (the op-time resolver still fails closed).
+    path = tmp_path / "systems.toml"
+    path.write_text("schema_version = 2\n[[remote_libvirt]\n")  # malformed table header
+    monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(path))
+    config.load()
+    assert is_remote_libvirt_configured() is False
+
+
 def test_no_instance_is_configuration_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

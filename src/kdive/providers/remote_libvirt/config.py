@@ -100,10 +100,17 @@ def _load_remote_instances() -> list[RemoteLibvirtInstance]:
 def is_remote_libvirt_configured() -> bool:
     """True when ``systems.toml`` declares at least one ``[[remote_libvirt]]`` instance.
 
-    This is the composition opt-in gate. A missing inventory file means "nothing declared"
-    (not configured); a present-but-malformed file is reported as a configuration error.
+    This is the composition opt-in gate, invoked at app/CLI startup. It **degrades** rather than
+    raises: a missing inventory file means "nothing declared" (not configured), and a
+    present-but-malformed file is treated as not-configured here too — so a bad operator edit to
+    the shared ``systems.toml`` cannot crash the whole MCP server or the unrelated providers
+    (ADR-0112's fault-isolation contract). The precise parse error still surfaces fail-closed at
+    op time via :func:`remote_config_from_inventory`.
     """
-    return bool(_load_remote_instances())
+    try:
+        return bool(_load_remote_instances())
+    except CategorizedError:
+        return False
 
 
 def _resolve_instance() -> RemoteLibvirtInstance:
