@@ -15,6 +15,10 @@ setup: check-deps sync install-hooks
 check-deps:
     ./scripts/check-setup-deps.sh
 
+# Preflight: can this host run the local-libvirt provider? (report-only)
+check-local-libvirt:
+    ./scripts/check-local-libvirt.sh
+
 # Create the venv and install pinned dependencies from the lockfile.
 sync:
     uv sync --locked
