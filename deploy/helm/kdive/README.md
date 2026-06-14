@@ -46,6 +46,17 @@ helm test kdive    # mints a token, asserts tools/list returns tools
 image the demo cannot pull. The demo migrate Job runs `post-install` behind a DB-readiness
 init container.
 
+Every token the bundled issuer mints carries the claim set in `demo.oidc.claims`,
+defaulting to `admin` on project `demo` plus all three platform roles (`platform_admin`,
+`platform_operator`, `platform_auditor`) — a full RBAC grant, so a stock demo deploy can
+exercise the whole authz surface. `aud` is pinned to `["kdive"]` by the chart and cannot
+be overridden. To test a denial, narrow the grant, e.g.
+`--set demo.oidc.claims.roles.demo=viewer` or drop `platform_roles`. The grant only
+authorizes operations on a project with a budget/quota row; the demo seeds project `demo`
+via `kdive seed-demo`, so if you change the project name, seed it
+(`kdive seed-demo --project <name>`). This is demo-only — the issuer mints a valid token
+for any caller and must never front a real RBAC boundary.
+
 ## Health probes & scrape (ADR-0090 §5)
 
 Every Deployment wires `livenessProbe` → `/livez` and `readinessProbe` → `/readyz` on

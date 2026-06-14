@@ -19,7 +19,10 @@ Reach MCP (keep it cluster-internal — the demo issuer mints valid kdive tokens
 any caller; never expose it via NodePort/LoadBalancer/Ingress):
   kubectl port-forward svc/{{ include "kdive.fullname" . }}-server 8000:8000
 
-Mint a demo token for your own client (expires per the issuer's tokenExpiry):
+Mint a demo token for your own client (expires per the issuer's tokenExpiry). The token
+carries the demo RBAC grant in demo.oidc.claims (default: admin on project `demo` + all
+three platform roles), so it can drive the whole authz surface; narrow it with
+`--set demo.oidc.claims...` to test a denial:
   TOKEN=$(kubectl run mint --rm -i --restart=Never --image=curlimages/curl -q -- \
     -s -d 'grant_type=client_credentials&client_id=kdive-demo&client_secret=x' \
     http://{{ include "kdive.fullname" . }}-oidc:8080/default/token | sed -e 's/.*"access_token":"//' -e 's/".*//')
