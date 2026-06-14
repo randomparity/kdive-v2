@@ -34,11 +34,12 @@ from kdive.providers.remote_libvirt.config import is_remote_libvirt_configured
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import DiscoveryRegistrar, ProviderRuntime
 from kdive.providers.transport_reset import NullResetter, TransportResetter
+from kdive.reconciler.console_hosting import DbRunningRemoteSystems
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.resources.discovery import ensure_discovered_resource_registered
 
 if TYPE_CHECKING:
-    from kdive.reconciler.console_assembly import ConsoleHosting
+    from kdive.providers.console_hosting import ConsoleHosting
 
 
 def _discovery_registrar(registration: ProviderDiscoveryRegistration) -> DiscoveryRegistrar:
@@ -225,7 +226,8 @@ class ProviderComposition:
         """Assemble provider-owned console hosting for the reconciler."""
         if _remote_libvirt_enabled(enable_remote_libvirt):
             return await remote_composition.build_console_hosting(
-                secret_registry=self._secret_registry
+                secret_registry=self._secret_registry,
+                running_systems_factory=DbRunningRemoteSystems,
             )
         return None
 

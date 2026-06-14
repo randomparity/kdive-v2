@@ -34,7 +34,7 @@ from kdive.config.core_settings import (
 from kdive.db.pool import create_pool
 from kdive.domain.errors import CategorizedError
 from kdive.images.rootfs_command import add_build_rootfs_parser, run_build_rootfs
-from kdive.reconciler.console_assembly import start_console_hosting
+from kdive.providers.console_hosting import start_console_hosting
 from kdive.version import full_version
 
 if TYPE_CHECKING:

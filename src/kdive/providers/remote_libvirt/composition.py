@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from uuid import UUID
 
 import psycopg
+from psycopg_pool import AsyncConnectionPool
 
 from kdive.db.locks import CONSOLE_HOSTING_LEADER, SessionAdvisoryLock
 from kdive.db.pool import create_pool, database_url
@@ -18,6 +20,13 @@ from kdive.provider_components.references import (
     ComponentSourceKind,
 )
 from kdive.provider_components.validation import ComponentSourceCapabilities
+from kdive.providers.console_hosting import (
+    AsyncioPumpRunner,
+    CollectorRegistry,
+    ConsoleHosting,
+    ConsoleHostingLoop,
+    RunningSystems,
+)
 from kdive.providers.debug_common.gdbmi import GdbMiEngine
 from kdive.providers.debug_common.hostpolicy import allow_acl_remote
 from kdive.providers.discovery_registration import (
@@ -50,13 +59,6 @@ from kdive.providers.remote_libvirt.rootfs_build import RemoteLibvirtRootfsBuild
 from kdive.providers.remote_libvirt.transport_reset import RemoteLibvirtTransportResetter
 from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
 from kdive.providers.transport_reset import TransportResetter
-from kdive.reconciler.console_assembly import ConsoleHosting
-from kdive.reconciler.console_hosting import (
-    AsyncioPumpRunner,
-    CollectorRegistry,
-    ConsoleHostingLoop,
-    DbRunningRemoteSystems,
-)
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import secret_backend_from_env
@@ -65,6 +67,7 @@ from kdive.store.objectstore import object_store_from_env
 _POOL = "remote-libvirt"
 # Reuses seeded `local`; a remote seed row would be DDL beyond migration 0020.
 _COST_CLASS = "local"
+RunningSystemsFactory = Callable[[AsyncConnectionPool], RunningSystems]
 
 
 def _component_sources() -> ComponentSourceCapabilities:
@@ -93,7 +96,11 @@ def build_build_vm_reaper(*, secret_registry: SecretRegistry) -> BuildVmReaper:
     return RemoteLibvirtBuildVmReaper.from_env(secret_registry=secret_registry)
 
 
-async def build_console_hosting(*, secret_registry: SecretRegistry) -> ConsoleHosting | None:
+async def build_console_hosting(
+    *,
+    secret_registry: SecretRegistry,
+    running_systems_factory: RunningSystemsFactory,
+) -> ConsoleHosting | None:
     """Build the single-leader remote console hosting loop, or ``None`` when unconfigured."""
     try:
         conninfo = database_url()
@@ -123,7 +130,7 @@ async def build_console_hosting(*, secret_registry: SecretRegistry) -> ConsoleHo
 
     loop = ConsoleHostingLoop(
         leader_lock=lock,
-        running_systems=DbRunningRemoteSystems(host_pool),
+        running_systems=running_systems_factory(host_pool),
         collector_factory=factory,
         registry=registry,
         pump_runner=runner,

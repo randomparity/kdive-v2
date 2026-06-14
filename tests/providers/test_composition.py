@@ -461,8 +461,11 @@ def test_console_hosting_delegates_to_remote_when_enabled(
     expected_registry = SecretRegistry()
     seen: dict[str, object] = {}
 
-    async def _build_console_hosting(*, secret_registry: SecretRegistry) -> object:
+    async def _build_console_hosting(
+        *, secret_registry: SecretRegistry, running_systems_factory: object
+    ) -> object:
         seen["secret_registry"] = secret_registry
+        seen["running_systems_factory"] = running_systems_factory
         return expected_hosting
 
     monkeypatch.setattr(
@@ -476,6 +479,7 @@ def test_console_hosting_delegates_to_remote_when_enabled(
         is expected_hosting
     )
     assert seen["secret_registry"] is expected_registry
+    assert seen["running_systems_factory"] is composition.DbRunningRemoteSystems
 
 
 def test_fault_inject_opt_in_reads_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:

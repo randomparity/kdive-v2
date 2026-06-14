@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
-from kdive.reconciler.console_hosting import (
+from kdive.providers.console_hosting import (
     CollectorRegistry,
     ConsoleHostingLoop,
 )

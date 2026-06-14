@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import UUID
 
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.providers import console_hosting
 from kdive.providers.remote_libvirt import composition as remote_composition
-from kdive.reconciler import console_assembly
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 
@@ -32,6 +33,11 @@ class _FakePool:
         self.closed = True
 
 
+class _FakeRunningSystems:
+    async def list_running(self) -> set[UUID]:
+        return set()
+
+
 def test_build_console_hosting_returns_none_when_remote_config_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -46,7 +52,10 @@ def test_build_console_hosting_returns_none_when_remote_config_missing(
 
         monkeypatch.setattr(remote_composition, "remote_config_from_inventory", _missing_config)
 
-        hosting = await remote_composition.build_console_hosting(secret_registry=SecretRegistry())
+        hosting = await remote_composition.build_console_hosting(
+            secret_registry=SecretRegistry(),
+            running_systems_factory=lambda _pool: _FakeRunningSystems(),
+        )
         assert hosting is None
 
     asyncio.run(_run())
@@ -73,7 +82,10 @@ def test_build_console_hosting_opens_host_pool_and_returns_registry(
             remote_composition.psycopg.AsyncConnection, "connect", staticmethod(_connect)
         )
 
-        hosting = await remote_composition.build_console_hosting(secret_registry=SecretRegistry())
+        hosting = await remote_composition.build_console_hosting(
+            secret_registry=SecretRegistry(),
+            running_systems_factory=lambda _pool: _FakeRunningSystems(),
+        )
 
         assert hosting is not None
         assert hosting.registry is not None
@@ -83,14 +95,14 @@ def test_build_console_hosting_opens_host_pool_and_returns_registry(
 
 
 def test_start_console_hosting_none_returns_none() -> None:
-    assert console_assembly.start_console_hosting(None, asyncio.Event()) is None
+    assert console_hosting.start_console_hosting(None, asyncio.Event()) is None
 
 
 def test_console_hosting_close_closes_leader_and_host_pool() -> None:
     async def _run() -> None:
         leader_conn = _FakeLeaderConn()
         host_pool = _FakePool()
-        hosting = console_assembly.ConsoleHosting(
+        hosting = console_hosting.ConsoleHosting(
             loop=object(),  # ty: ignore[invalid-argument-type]
             registry=object(),  # ty: ignore[invalid-argument-type]
             leader_conn=leader_conn,  # ty: ignore[invalid-argument-type]
