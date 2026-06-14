@@ -325,6 +325,21 @@ SYSTEMS_TOML = Setting(
     suggest="a path to a systems.toml, e.g. ./systems.toml or /etc/kdive/systems.toml",
 )
 
+RESOURCE_LEASE_TTL_SECONDS = Setting(
+    name="KDIVE_RESOURCE_LEASE_TTL_SECONDS",
+    parse=_int,
+    default=str(24 * 3600),
+    group="inventory",
+    processes=_SERVER,
+    help=(
+        "Lease window in seconds for a runtime-registered resource (resources.register). "
+        "register sets lease_expires_at = now() + this window and resources.renew extends it "
+        "by the same window; the reconciler reaps a runtime resource once its lease expires "
+        "(ADR-0112). Tunes the leak-resistance horizon for imperatively-registered capacity."
+    ),
+    suggest="an integer number of seconds, e.g. 86400 (24 hours)",
+)
+
 FAULT_INJECT = Setting(
     name="KDIVE_FAULT_INJECT",
     parse=_str,
@@ -412,6 +427,7 @@ SETTINGS = [
     IMAGE_PRIVATE_MAX_COUNT,
     IMAGE_PRIVATE_MAX_BYTES,
     SYSTEMS_TOML,
+    RESOURCE_LEASE_TTL_SECONDS,
     FAULT_INJECT,
     OTEL_ENABLED,
     OTEL_EXPORTER_OTLP_ENDPOINT,
