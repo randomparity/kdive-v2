@@ -32,6 +32,23 @@ Runbook for the host-process / compose bring-up: `docs/runbooks/live-stack.md`.
 `resources.list` until the **reconciler** (not the server) has seen its config and registered
 the resource. After enabling or reconfiguring a provider, restart the reconciler.
 
+**Seed the build-config catalog (any provider that builds a kernel).** Applying schema
+migrations alone does **not** populate the `build_config_catalog`. The default build profile
+resolves the `kdump` catalog fragment, so a kernel build (`runs.build`) fails with
+`configuration_error: unknown build-config catalog entry` until the seed step runs. The deploy
+path (`kdive seed-demo` / the chart's migrate→seed) seeds it; a bare
+`scripts/live-stack/apply-migrations.sh` does not. Run the seed (it is idempotent, sha256-gated,
+and needs `KDIVE_S3_*` configured) before building.
+
+**Build host prerequisites (kernel builds).** `rsync` must be installed (the warm kernel tree
+is mirrored into the workspace with `rsync -a --delete`). `KDIVE_KERNEL_SRC` must be an
+**absolute** path to an existing kernel tree. `KDIVE_BUILD_WORKSPACE` must be a writable
+directory. Gotcha: `scripts/live-stack/env.sh` derives these paths from bash's
+`${BASH_SOURCE[0]}` — **source it under bash, not zsh**, or the repo root resolves empty and the
+paths collapse to `//.live-build`, failing with `build workspace mkdir failed` (Permission
+denied at filesystem root). Set `KDIVE_BUILD_WORKSPACE` / `KDIVE_BUILD_COMPONENT_ROOTS`
+explicitly to absolute paths when driving from a non-bash shell.
+
 ## 1. local-libvirt (default provider)
 
 The default, always-registered provider. No opt-in env — if libvirt is present it is offered.

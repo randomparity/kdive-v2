@@ -35,9 +35,11 @@ layout, the demo-OIDC role-claim gap).
 - **Identity / RBAC plumbing**: all six roles authenticate on D1 *and* D2.
 - **Platform ops**: `ops.reconcile_now` (clean accounting envelope), `ops.force_release`
   (break-glass; correctly released leaked allocations — used 3×).
-- **Remote lifecycle (partial)**: `allocations.request` and `systems.provision` on
-  remote-libvirt both PASS — a disk-image domain provisions on ub24-big. The arc then fails at
-  `runs.build` (finding F6).
+- **Remote lifecycle (Arc 2 — through build)**: on remote-libvirt, `allocations.request`,
+  `systems.provision` (disk-image domain on ub24-big), `runs.create`, **`runs.build` (a real
+  kernel compile, ~134s on the warm tree)**, and `runs.complete_build` all **PASS**. The arc
+  then fails at `runs.install` (finding F7). So the build plane is proven end-to-end on
+  remote-libvirt; the boot/debug/capture plane is blocked downstream by F7.
 
 ## Findings (to file as issues)
 
@@ -48,7 +50,8 @@ layout, the demo-OIDC role-claim gap).
 | F3 | GAP (fixture) | **local-libvirt lifecycle is blocked**: `KDIVE_GUEST_IMAGE` is unset and the guest rootfs is built by `python -m kdive build-rootfs`, historically a stub. Reads/structure work; build→boot→debug→crash→capture cannot run locally. |
 | F4 | BUG / reaper | A **leaked `active` allocation is never reaped**. A failed/interrupted lifecycle run leaves an `active` allocation; `ops.reconcile_now` does not collect it (`expired_allocations:0` — it is active, not expired), so it permanently holds the remote `cap=1` slot and blocks **all** future remote allocations. Only `ops.force_release` recovers it. Observed 3× this session. |
 | F5 | GAP / reaper | An **orphaned remote domain is invisible to the reaper**. A libvirt domain with no DB record on any control plane (orphaned beyond the System lifecycle) is not collected by the `leaked_domains` reaper (`ops.reconcile_now` reported `leaked_domains:0` with a live orphan present). No MCP tool reaps it; it had to be removed out-of-band (`virsh undefine`). |
-| F6 | BUG / config | **Remote `runs.build` fails on an unknown build-config catalog entry.** The standard kdump-enabled remote profile references build-config `{kind: catalog, provider: system, name: "kdump"}`, which the default catalog (`build_configs/defaults.py`) rejects as `unknown build-config catalog entry` (`configuration_error`). A stock kdump remote build cannot complete without provisioning that fragment. |
+| F6 | setup + UX | **Remote `runs.build` fails on an unknown build-config catalog entry** until the catalog is seeded. The standard kdump profile resolves build-config `{kind: catalog, provider: system, name: "kdump"}`; bare migrations don't seed it (only `seed-demo` / the deploy seed step does), so the build fails with `unknown build-config catalog entry`. Resolved by running the seed. UX gap: the error doesn't tell the operator to seed. |
+| F7 | BUG / staging | **Remote `runs.install` fails: the staged base image is missing its required in-guest helper.** `runs.build` succeeds, but install runs the allowlisted helper `/usr/local/sbin/kdive-install-kernel` — which ADR-0082 §1 says "the base image carries" — via guest-agent exec, and it fails `No such file or directory`. The staged `fedora-kdive-remote-base-43.qcow2` on ub24-big does not contain the helper, so boot/debug/capture are all blocked downstream. Re-staging the base image with the helper is required. |
 
 F4 and F5 together mean a single failed remote run wedges the provider until an operator
 manually breaks glass and reaps the host — directly the §5.1 partial-failure / two-control-plane
@@ -56,9 +59,11 @@ hazards the spec predicted, now reproduced.
 
 ## Not yet executed
 
-Full lifecycle on remote-libvirt past `runs.build` (blocked on F6), the debug / capture / control
-arcs, the RBAC denial cross-cut, fault-inject error paths, and the targeted D2 cells. The
-coverage grid (per `scripts/coverage_campaign/`) is assembled once those arcs run.
+The boot/debug/capture/control plane on remote-libvirt is **blocked downstream by F7** (no
+booted kernel without install). Remaining: the RBAC denial cross-cut, fault-inject error paths,
+platform-ops mutations, and the targeted D2 cells — none of which need a booted System — plus
+the boot→capture plane once F7's base image is re-staged (or F3's local guest image is built).
+The coverage grid (per `scripts/coverage_campaign/`) is assembled once those arcs run.
 
 ## Cleanup tracked for campaign end
 
