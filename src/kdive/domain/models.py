@@ -118,6 +118,20 @@ class ImageState(StrEnum):
     REGISTERED = "registered"
 
 
+class ManagedBy(StrEnum):
+    """Row-ownership partition for reconciled inventory tables (ADR-0112).
+
+    ``CONFIG`` rows are owned by declarative ``systems.toml`` bring-up; ``DISCOVERY`` rows are
+    owned by provider discovery; ``RUNTIME`` rows are owned by imperative agent tools. The
+    partition keeps declarative reconcile and imperative registration from pruning or
+    overwriting each other's rows.
+    """
+
+    CONFIG = "config"
+    DISCOVERY = "discovery"
+    RUNTIME = "runtime"
+
+
 class PowerAction(StrEnum):
     """Power operations accepted by the durable control-plane job contract."""
 
@@ -188,7 +202,15 @@ class ExternalRef(_DomainBase):
 
 
 class Resource(DomainModel):
-    """A registered provider resource host."""
+    """A registered provider resource host.
+
+    ``managed_by`` partitions ownership between declarative bring-up (``config``), discovery
+    (``discovery``), and imperative agent tools (``runtime``) so the inventory reconciler and
+    runtime registration own disjoint row-sets (ADR-0112). ``name`` is a mutable stable
+    identity (unique per ``kind`` when present; the ``id`` UUID stays the PK). ``owner_project``
+    (``None`` = global) with ``affinity_allowlist`` scopes a resource to specific projects, and
+    ``lease_expires_at`` backs leak-reaping of runtime-registered resources.
+    """
 
     kind: ResourceKind
     capabilities: dict[str, Any] = Field(default_factory=dict)
@@ -197,6 +219,11 @@ class Resource(DomainModel):
     status: ResourceStatus
     host_uri: str
     cordoned: bool = False
+    managed_by: ManagedBy = ManagedBy.RUNTIME
+    name: str | None = None
+    owner_project: str | None = None
+    affinity_allowlist: list[str] = Field(default_factory=list)
+    lease_expires_at: datetime | None = None
 
 
 class Allocation(DomainModel, _Attribution):
@@ -361,6 +388,8 @@ class ImageCatalogEntry(DomainModel):
     expires_at: datetime | None = None
     state: ImageState = ImageState.DEFINED
     pending_since: datetime
+    managed_by: ManagedBy = ManagedBy.RUNTIME
+    volume: str | None = None
 
 
 class CostClassCoefficient(_DomainBase):

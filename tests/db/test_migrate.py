@@ -26,6 +26,9 @@ CHECK_ENUMS = [
     ("jobs_error_category_check", errors.ErrorCategory),
     ("image_visibility_check", models.ImageVisibility),
     ("image_state_check", models.ImageState),
+    ("image_catalog_managed_by_check", models.ManagedBy),
+    ("resources_managed_by_check", models.ManagedBy),
+    ("build_hosts_managed_by_check", models.ManagedBy),
 ]
 
 OBJECT_TABLES = {
@@ -119,6 +122,7 @@ def test_rerun_is_a_noop(pg_conn: psycopg.Connection) -> None:
         "0027",
         "0028",
         "0029",
+        "0030",
     ]
     assert second == []
 
@@ -552,6 +556,7 @@ def test_advisory_lock_serializes_migrators(pg_conn: psycopg.Connection, postgre
         "0027",
         "0028",
         "0029",
+        "0030",
     ]
 
 
@@ -784,3 +789,233 @@ def test_migration_0016_adds_requested_backlog_index(pg_conn: psycopg.Connection
     definition = row[0]
     assert "created_at" in definition
     assert "requested" in definition  # partial index over the backlog only
+
+
+# Migration 0030 authors all schema the systems.toml inventory design needs (ADR-0112):
+# the managed_by ownership column on image_catalog/resources/build_hosts, image_catalog.volume
+# with a relaxed image_object_present CHECK, resources stable-name + affinity + lease columns,
+# and the load-bearing managed_by backfill.
+
+_MANAGED_BY_TABLES = ("image_catalog", "resources", "build_hosts")
+
+
+def _insert_public_image(
+    conn: psycopg.Connection,
+    *,
+    name: str,
+    state: str,
+    object_key: str | None,
+    volume: str | None,
+) -> None:
+    """Insert a public image_catalog row (owner NULL) bypassing the engine, for CHECK tests."""
+    conn.execute(
+        "INSERT INTO image_catalog (provider, name, arch, format, root_device, "
+        "visibility, state, object_key, volume) "
+        "VALUES ('local-libvirt', %s, 'x86_64', 'qcow2', '/dev/vda', 'public', %s, %s, %s)",
+        (name, state, object_key, volume),
+    )
+
+
+def test_migration_0030_adds_managed_by_to_every_reconciled_table(
+    pg_conn: psycopg.Connection,
+) -> None:
+    migrate.apply_migrations(pg_conn)
+    for table in _MANAGED_BY_TABLES:
+        cols = _columns(pg_conn, table)
+        assert cols.get("managed_by") == "text", table
+        assert _nullable(pg_conn, table).get("managed_by") == "NO", table
+
+
+def test_migration_0030_managed_by_check_rejects_unknown_value(
+    pg_conn: psycopg.Connection,
+) -> None:
+    migrate.apply_migrations(pg_conn)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        pg_conn.execute(
+            "INSERT INTO resources (kind, pool, cost_class, status, host_uri, managed_by) "
+            "VALUES ('local-libvirt', 'p', 'c', 'available', 'qemu:///system', 'bogus')"
+        )
+
+
+def test_migration_0030_adds_image_volume_column(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    assert _columns(pg_conn, "image_catalog").get("volume") == "text"
+    assert _nullable(pg_conn, "image_catalog").get("volume") == "YES"
+
+
+def test_migration_0030_relaxed_check_admits_volume_backed_registered_row(
+    pg_conn: psycopg.Connection,
+) -> None:
+    # A staged image: registered with a provider volume and no S3 object_key.
+    migrate.apply_migrations(pg_conn)
+    _insert_public_image(
+        pg_conn, name="staged", state="registered", object_key=None, volume="base.qcow2"
+    )
+    _insert_public_image(
+        pg_conn, name="s3-img", state="registered", object_key="rootfs/i.qcow2", volume=None
+    )
+    row = pg_conn.execute(
+        "SELECT volume, object_key FROM image_catalog WHERE name = 'staged'"
+    ).fetchone()
+    assert row == ("base.qcow2", None)
+
+
+def test_migration_0030_relaxed_check_rejects_both_object_key_and_volume(
+    pg_conn: psycopg.Connection,
+) -> None:
+    migrate.apply_migrations(pg_conn)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _insert_public_image(pg_conn, name="both", state="registered", object_key="k", volume="v")
+
+
+def test_migration_0030_relaxed_check_rejects_neither_object_key_nor_volume(
+    pg_conn: psycopg.Connection,
+) -> None:
+    migrate.apply_migrations(pg_conn)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _insert_public_image(
+            pg_conn, name="neither", state="registered", object_key=None, volume=None
+        )
+
+
+def test_migration_0030_relaxed_check_rejects_defined_row_with_object_or_volume(
+    pg_conn: psycopg.Connection,
+) -> None:
+    migrate.apply_migrations(pg_conn)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _insert_public_image(pg_conn, name="def-key", state="defined", object_key="k", volume=None)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _insert_public_image(pg_conn, name="def-vol", state="defined", object_key=None, volume="v")
+
+
+def test_migration_0030_defined_row_with_neither_is_admitted(
+    pg_conn: psycopg.Connection,
+) -> None:
+    migrate.apply_migrations(pg_conn)
+    _insert_public_image(pg_conn, name="seed", state="defined", object_key=None, volume=None)
+    row = pg_conn.execute("SELECT state FROM image_catalog WHERE name = 'seed'").fetchone()
+    assert row is not None and row[0] == "defined"
+
+
+def test_migration_0030_adds_resource_inventory_columns(pg_conn: psycopg.Connection) -> None:
+    migrate.apply_migrations(pg_conn)
+    cols = _columns(pg_conn, "resources")
+    assert cols.get("name") == "text"
+    assert cols.get("owner_project") == "text"
+    assert cols.get("affinity_allowlist") == "ARRAY"
+    assert cols.get("lease_expires_at") == "timestamp with time zone"
+    nullable = _nullable(pg_conn, "resources")
+    assert nullable.get("name") == "YES"
+    assert nullable.get("owner_project") == "YES"
+    assert nullable.get("lease_expires_at") == "YES"
+    # affinity_allowlist is NOT NULL defaulting to '{}' so the affinity check reads empty.
+    assert nullable.get("affinity_allowlist") == "NO"
+    row = pg_conn.execute(
+        "INSERT INTO resources (kind, pool, cost_class, status, host_uri) "
+        "VALUES ('local-libvirt', 'p', 'c', 'available', 'qemu:///system') "
+        "RETURNING affinity_allowlist"
+    ).fetchone()
+    assert row is not None and row[0] == []
+
+
+def test_migration_0030_resource_name_unique_per_kind_when_present(
+    pg_conn: psycopg.Connection,
+) -> None:
+    migrate.apply_migrations(pg_conn)
+    pg_conn.execute(
+        "INSERT INTO resources (kind, name, pool, cost_class, status, host_uri) "
+        "VALUES ('local-libvirt', 'h1', 'p', 'c', 'available', 'qemu:///system')"
+    )
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        pg_conn.execute(
+            "INSERT INTO resources (kind, name, pool, cost_class, status, host_uri) "
+            "VALUES ('local-libvirt', 'h1', 'p', 'c', 'available', 'qemu:///s2')"
+        )
+
+
+def test_migration_0030_resource_name_index_is_partial_on_not_null(
+    pg_conn: psycopg.Connection,
+) -> None:
+    # The unique index is partial (WHERE name IS NOT NULL): many NULL-name discovered rows
+    # coexist without colliding; only declared names are uniqueness-constrained.
+    migrate.apply_migrations(pg_conn)
+    for _ in range(2):
+        pg_conn.execute(
+            "INSERT INTO resources (kind, pool, cost_class, status, host_uri) "
+            "VALUES ('local-libvirt', 'p', 'c', 'available', 'qemu:///system')"
+        )
+    count = pg_conn.execute("SELECT count(*) FROM resources WHERE name IS NULL").fetchone()
+    assert count is not None and count[0] == 2
+
+
+def test_migration_0030_backfills_pre_existing_rows(pg_conn: psycopg.Connection) -> None:
+    # Rows present BEFORE 0030 runs must be partitioned by the backfill UPDATEs, not left at the
+    # 'runtime' column default: a pre-existing resource -> 'discovery' (first reconcile never
+    # prunes a discovered host not yet in systems.toml); a seeded public image -> 'config'; a
+    # project-private upload stays 'runtime' (else the first reconcile prunes user uploads).
+    # Staging through 0029 first, then inserting, then applying 0030 exercises the real upgrade.
+    _apply_through(pg_conn, "0029")
+    pg_conn.execute(
+        "INSERT INTO resources (kind, pool, cost_class, status, host_uri) "
+        "VALUES ('local-libvirt', 'p', 'c', 'available', 'qemu:///system')"
+    )
+    pg_conn.execute(
+        "INSERT INTO image_catalog (provider, name, arch, format, root_device, "
+        "visibility, state, object_key) VALUES ('local-libvirt', 'pub', 'x86_64', "
+        "'qcow2', '/dev/vda', 'public', 'registered', 'rootfs/pub.qcow2')"
+    )
+    pg_conn.execute(
+        "INSERT INTO image_catalog (provider, name, arch, format, root_device, "
+        "visibility, state, object_key, owner, expires_at) VALUES ('local-libvirt', "
+        "'priv', 'x86_64', 'qcow2', '/dev/vda', 'private', 'registered', "
+        "'rootfs/priv.qcow2', 'projX', now())"
+    )
+    migrate.apply_migrations(pg_conn)  # applies only the pending 0030
+    res = pg_conn.execute(
+        "SELECT managed_by FROM resources WHERE host_uri = 'qemu:///system'"
+    ).fetchone()
+    assert res is not None and res[0] == "discovery"
+    pub = pg_conn.execute("SELECT managed_by FROM image_catalog WHERE name = 'pub'").fetchone()
+    assert pub is not None and pub[0] == "config"
+    priv = pg_conn.execute("SELECT managed_by FROM image_catalog WHERE name = 'priv'").fetchone()
+    assert priv is not None and priv[0] == "runtime"
+
+
+def test_migration_0030_does_not_backfill_build_hosts(pg_conn: psycopg.Connection) -> None:
+    # build_hosts is intentionally NOT backfilled — it keeps the 'runtime' default because build
+    # hosts are imperatively registered, so the first reconcile never prunes them. The seeded
+    # worker-local row (from 0027) must read 'runtime', not 'config'/'discovery'.
+    _apply_through(pg_conn, "0029")
+    migrate.apply_migrations(pg_conn)
+    row = pg_conn.execute(
+        "SELECT managed_by FROM build_hosts WHERE name = 'worker-local'"
+    ).fetchone()
+    assert row is not None and row[0] == "runtime"
+
+
+def _apply_through(conn: psycopg.Connection, last_version: str) -> None:
+    """Apply migrations up to and including last_version, recording each as the runner would.
+
+    Exercises a real staged upgrade: a later ``apply_migrations`` then applies only the
+    versions after ``last_version`` (so the backfill UPDATEs in 0030 run against rows that
+    pre-date it, not against an empty table).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version    text PRIMARY KEY,
+            filename   text NOT NULL,
+            checksum   text NOT NULL,
+            applied_at timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    for m in migrate.discover_migrations():
+        if m.version > last_version:
+            break
+        conn.execute(m.sql.encode())
+        conn.execute(
+            "INSERT INTO schema_migrations (version, filename, checksum) "
+            "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (m.version, m.filename, m.checksum),
+        )
