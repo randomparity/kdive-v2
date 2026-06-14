@@ -109,7 +109,7 @@ async def reclaim_under_lock(
     """Release an `active` allocation on a caller-held connection, taking PROJECT -> ALLOCATION.
 
     The connection-based sibling of :func:`release_with_backstops` for callers (the reconciler's
-    orphaned-active reaper, ADR-0108) that already hold a pooled connection and a system audit
+    orphaned-active reaper, ADR-0109) that already hold a pooled connection and a system audit
     writer and must not nest a second pool acquisition. It runs the identical release body —
     ``active -> releasing -> released`` with the ``active_ended_at`` stamp and the single
     ``reconciled`` credit — under the same advisory locks, so the reaper, a project release, and

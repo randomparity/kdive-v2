@@ -198,7 +198,7 @@ def _repair_plan(
 ) -> tuple[_RepairSpec, ...]:
     repairs = [
         _RepairSpec("expired_allocations", _sweep_expired_allocations),
-        # Release leaked `active` allocations whose System is terminal/absent (ADR-0108) BEFORE
+        # Release leaked `active` allocations whose System is terminal/absent (ADR-0109) BEFORE
         # the promotion sweep, so a host-cap slot this reaper frees is filled in the same pass.
         _RepairSpec("reaped_active_allocations", _reap_orphaned_active_allocations),
         _RepairSpec("promoted_allocations", _promote_pending),

@@ -1,4 +1,4 @@
-"""The reconciler orphaned-`active` allocation reaper (ADR-0108, #371).
+"""The reconciler orphaned-`active` allocation reaper (ADR-0109, #371).
 
 A failed/interrupted lifecycle run leaves an allocation `active` while its single System has
 reached a terminal state (`torn_down`/`failed`) — the teardown job never releases the
