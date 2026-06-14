@@ -62,22 +62,6 @@ def _registration(
     )
 
 
-def _local_request(
-    path: Path,
-    sha256: str,
-    allowed_roots: list[Path],
-    *,
-    visibility: Visibility = "project",
-    project: str | None = "proj-a",
-) -> LinkLocalComponentRequest:
-    return LinkLocalComponentRequest(
-        registration=_registration(visibility=visibility, project=project),
-        path=str(path),
-        sha256=sha256,
-        allowed_roots=allowed_roots,
-    )
-
-
 def _upload_request(
     *,
     tenant: str = "proj-a",
@@ -137,7 +121,12 @@ def test_project_component_visible_only_to_same_project(migrated_url: str, tmp_p
             await pool.open()
             component_id = await link_local_component(
                 pool,
-                _local_request(path, sha256, [tmp_path]),
+                LinkLocalComponentRequest(
+                    registration=_registration(),
+                    path=str(path),
+                    sha256=sha256,
+                    allowed_roots=[tmp_path],
+                ),
             )
 
             same_project = await list_visible_components(
@@ -162,7 +151,12 @@ def test_get_visible_component_respects_project_visibility(
             await pool.open()
             component_id = await link_local_component(
                 pool,
-                _local_request(path, sha256, [tmp_path]),
+                LinkLocalComponentRequest(
+                    registration=_registration(),
+                    path=str(path),
+                    sha256=sha256,
+                    allowed_roots=[tmp_path],
+                ),
             )
 
             denied = await get_visible_component(pool, component_id, project="proj-b")
@@ -184,7 +178,12 @@ def test_host_policy_component_hidden_from_project_lookup(
             await pool.open()
             component_id = await link_local_component(
                 pool,
-                _local_request(path, sha256, [tmp_path], visibility="host-policy"),
+                LinkLocalComponentRequest(
+                    registration=_registration(visibility="host-policy"),
+                    path=str(path),
+                    sha256=sha256,
+                    allowed_roots=[tmp_path],
+                ),
             )
 
             listed = await list_visible_components(
@@ -212,7 +211,12 @@ def test_link_local_component_rejects_path_outside_allowed_roots(
             try:
                 await link_local_component(
                     pool,
-                    _local_request(outside, sha256, [root]),
+                    LinkLocalComponentRequest(
+                        registration=_registration(),
+                        path=str(outside),
+                        sha256=sha256,
+                        allowed_roots=[root],
+                    ),
                 )
             except CategorizedError as exc:
                 assert exc.category is ErrorCategory.CONFIGURATION_ERROR
@@ -238,7 +242,12 @@ def test_link_local_component_rejects_bad_sha_without_poisoning_listing(
             try:
                 await link_local_component(
                     pool,
-                    _local_request(path, "not-a-sha", [tmp_path]),
+                    LinkLocalComponentRequest(
+                        registration=_registration(),
+                        path=str(path),
+                        sha256="not-a-sha",
+                        allowed_roots=[tmp_path],
+                    ),
                 )
             except CategorizedError as exc:
                 assert exc.category is ErrorCategory.CONFIGURATION_ERROR
