@@ -30,27 +30,6 @@ from kdive.store.objectstore import (
 )
 
 
-def _write_request(
-    tenant: str,
-    owner_kind: str,
-    owner_id: str,
-    name: str,
-    *,
-    data: bytes = b"x",
-    sensitivity: Sensitivity = Sensitivity.REDACTED,
-    retention_class: str = "vmcore",
-) -> ArtifactWriteRequest:
-    return ArtifactWriteRequest(
-        tenant=tenant,
-        owner_kind=owner_kind,
-        owner_id=owner_id,
-        name=name,
-        data=data,
-        sensitivity=sensitivity,
-        retention_class=retention_class,
-    )
-
-
 def test_normalize_etag_strips_surrounding_quotes() -> None:
     assert _normalize_etag('"abc123"') == "abc123"
     assert _normalize_etag("abc123") == "abc123"
@@ -71,7 +50,15 @@ def test_put_artifact_rejects_invalid_key_component(
     store = ObjectStore(object(), "bucket")  # client never touched: validation precedes it
     with pytest.raises(CategorizedError) as excinfo:
         store.put_artifact(
-            _write_request(tenant, kind, object_id, name),
+            ArtifactWriteRequest(
+                tenant=tenant,
+                owner_kind=kind,
+                owner_id=object_id,
+                name=name,
+                data=b"x",
+                sensitivity=Sensitivity.REDACTED,
+                retention_class="vmcore",
+            ),
         )
     assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
 
@@ -90,7 +77,15 @@ def test_put_artifact_maps_transport_error_to_infrastructure_failure() -> None:
     store = ObjectStore(_UnreachableClient(), "bucket")
     with pytest.raises(CategorizedError) as excinfo:
         store.put_artifact(
-            _write_request("t", "vmcore", "oid", "core"),
+            ArtifactWriteRequest(
+                tenant="t",
+                owner_kind="vmcore",
+                owner_id="oid",
+                name="core",
+                data=b"x",
+                sensitivity=Sensitivity.REDACTED,
+                retention_class="vmcore",
+            ),
         )
     assert excinfo.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
 
@@ -282,7 +277,15 @@ def test_object_store_from_env_defaults_region(monkeypatch: pytest.MonkeyPatch) 
 
 def test_put_get_round_trip(minio_store: ObjectStore, key_ns: str) -> None:
     stored = minio_store.put_artifact(
-        _write_request(key_ns, "vmcore", "sys-1", "core.bin", data=b"payload-bytes"),
+        ArtifactWriteRequest(
+            tenant=key_ns,
+            owner_kind="vmcore",
+            owner_id="sys-1",
+            name="core.bin",
+            data=b"payload-bytes",
+            sensitivity=Sensitivity.REDACTED,
+            retention_class="vmcore",
+        ),
     )
 
     assert '"' not in stored.etag  # stored etag is the bare value
@@ -318,11 +321,11 @@ def test_get_artifact_unconditional_reads_without_etag(
     minio_store: ObjectStore, key_ns: str
 ) -> None:
     stored = minio_store.put_artifact(
-        _write_request(
-            key_ns,
-            "runs",
-            "run-1",
-            "kernel",
+        ArtifactWriteRequest(
+            tenant=key_ns,
+            owner_kind="runs",
+            owner_id="run-1",
+            name="kernel",
             data=b"bzimage-bytes",
             sensitivity=Sensitivity.SENSITIVE,
             retention_class="build",
@@ -344,18 +347,26 @@ def test_get_artifact_unconditional_missing_key_raises_stale_handle(
 
 def test_put_uses_the_key_scheme(minio_store: ObjectStore, key_ns: str) -> None:
     stored = minio_store.put_artifact(
-        _write_request(key_ns, "vmcore", "oid", "core"),
+        ArtifactWriteRequest(
+            tenant=key_ns,
+            owner_kind="vmcore",
+            owner_id="oid",
+            name="core",
+            data=b"x",
+            sensitivity=Sensitivity.REDACTED,
+            retention_class="vmcore",
+        ),
     )
     assert stored.key == f"{key_ns}/vmcore/oid/core"
 
 
 def test_sensitivity_persisted_as_object_metadata(minio_store: ObjectStore, key_ns: str) -> None:
     stored = minio_store.put_artifact(
-        _write_request(
-            key_ns,
-            "transcript",
-            "sys-1",
-            "gdb.log",
+        ArtifactWriteRequest(
+            tenant=key_ns,
+            owner_kind="transcript",
+            owner_id="sys-1",
+            name="gdb.log",
             data=b"raw-transcript",
             sensitivity=Sensitivity.SENSITIVE,
             retention_class="transcript",
@@ -373,7 +384,15 @@ def test_sensitivity_persisted_as_object_metadata(minio_store: ObjectStore, key_
 
 def test_get_with_stale_etag_raises_stale_handle(minio_store: ObjectStore, key_ns: str) -> None:
     stored = minio_store.put_artifact(
-        _write_request(key_ns, "vmcore", "sys-1", "core.bin", data=b"payload"),
+        ArtifactWriteRequest(
+            tenant=key_ns,
+            owner_kind="vmcore",
+            owner_id="sys-1",
+            name="core.bin",
+            data=b"payload",
+            sensitivity=Sensitivity.REDACTED,
+            retention_class="vmcore",
+        ),
     )
 
     with pytest.raises(CategorizedError) as excinfo:
