@@ -93,6 +93,7 @@ _BEHAVIOR_TESTS_BY_TOOL = {
     "ops.queue_pause": ("tests/mcp/ops/test_queue_tools.py",),
     "ops.queue_resume": ("tests/mcp/ops/test_queue_tools.py",),
     "ops.reconcile_now": ("tests/mcp/ops/test_reconcile_now.py",),
+    "ops.reconcile_systems": ("tests/mcp/ops/test_reconcile_systems.py",),
     "ops.set_cost_class_coeff": ("tests/mcp/ops/test_ops_tuning.py",),
     "ops.set_host_capacity": ("tests/mcp/ops/test_ops_tuning.py",),
     "resources.availability": ("tests/mcp/catalog/test_availability_tools.py",),

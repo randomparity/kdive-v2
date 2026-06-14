@@ -70,6 +70,12 @@ Resume the worker's claim loop. Requires platform operator.
 
 Run one reconcile pass on demand; return the repair summary. Platform operator.
 
+## `ops.reconcile_systems`
+
+`implemented` · `destructive`
+
+Reconcile systems.toml into the catalog (can prune). Platform admin.
+
 ## `ops.set_cost_class_coeff`
 
 `implemented`

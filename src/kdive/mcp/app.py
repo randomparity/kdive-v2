@@ -53,6 +53,7 @@ from kdive.mcp.tools.ops import diagnostics as ops_diagnostics_tools
 from kdive.mcp.tools.ops import inventory as inventory_tools
 from kdive.mcp.tools.ops import queue as ops_queue_tools
 from kdive.mcp.tools.ops import reconcile as ops_reconcile_tools
+from kdive.mcp.tools.ops import reconcile_systems as ops_reconcile_systems_tools
 from kdive.mcp.tools.ops import resources as ops_resources_tools
 from kdive.mcp.tools.ops import secrets as ops_secrets_tools
 from kdive.mcp.tools.ops import tuning as ops_tuning_tools
@@ -103,6 +104,14 @@ def _register_reconcile_tools(
         image_store=ops_reconcile_tools.resolve_image_store(),
         dump_volume_reaper=assembly.dump_volume_reaper,
         build_vm_reaper=assembly.build_vm_reaper,
+    )
+
+
+def _register_reconcile_systems_tools(
+    app: FastMCP, pool: AsyncConnectionPool, _assembly: AppAssembly
+) -> None:
+    ops_reconcile_systems_tools.register(
+        app, pool, image_store=ops_reconcile_tools.resolve_image_store()
     )
 
 
@@ -204,6 +213,7 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _pool_only_plane_registrar(register_accounting_reports),
     _pool_only_plane_registrar(register_accounting_admin),
     _register_reconcile_tools,
+    _register_reconcile_systems_tools,
     _pool_only_plane_registrar(ops_resources_tools.register),
     _pool_only_plane_registrar(allocations.register),
     _pool_only_plane_registrar(ops_breakglass_tools.register),
