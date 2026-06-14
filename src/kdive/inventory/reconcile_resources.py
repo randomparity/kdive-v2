@@ -86,12 +86,14 @@ async def reconcile_resources(conn: AsyncConnection, doc: InventoryDoc) -> Recon
 async def _create_config_resources(
     conn: AsyncConnection, doc: InventoryDoc, diff: ReconcileDiff
 ) -> None:
-    """Upsert the config-owned kinds: fault-inject (no host) and remote-libvirt (bind by host).
+    """Upsert the config-owned kinds: fault-inject (no host) and remote-libvirt.
 
-    fault-inject has no host, so it is keyed purely by ``(kind, name)``. remote-libvirt binds
-    by ``host_uri`` first so a row the legacy env-based discovery already created for the same
-    host is **adopted** (flipped to ``managed_by='config'``) rather than duplicated — the
-    one-creator-per-kind invariant in the Phase-2→3 window.
+    Both are keyed by their true identity ``(kind, name)`` — the migration's partial-unique
+    index. A row whose ``name`` already matches is updated in place (so a changed ``host_uri``
+    propagates without a duplicate insert). Only when no name match exists does remote-libvirt
+    fall back to **adopting** a discovery row for the same ``host_uri`` whose ``name`` is still
+    NULL (the legacy env-based discovery created it), so config and discovery never produce two
+    rows for one host.
     """
     async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         for inst in doc.fault_inject:
@@ -108,7 +110,7 @@ async def _create_config_resources(
                 host_uri=_FAULT_INJECT_HOST_URI,
                 cost_class=inst.cost_class,
                 caps=caps,
-                bind_by_host=False,
+                adopt_by_host=False,
             )
         for inst in doc.remote_libvirt:
             await _upsert_config_resource(
@@ -119,7 +121,7 @@ async def _create_config_resources(
                 host_uri=inst.uri,
                 cost_class=inst.cost_class,
                 caps={CONCURRENT_ALLOCATION_CAP_KEY: inst.concurrent_allocation_cap},
-                bind_by_host=True,
+                adopt_by_host=True,
             )
 
 
@@ -132,31 +134,22 @@ async def _upsert_config_resource(
     host_uri: str,
     cost_class: str,
     caps: dict[str, Any],
-    bind_by_host: bool,
+    adopt_by_host: bool,
 ) -> None:
-    """Create or change-detectingly update one config-owned resource row.
+    """Create or change-detectingly update one config-owned resource row keyed by (kind, name).
 
-    ``bind_by_host`` selects the existing-row lookup: ``True`` binds by ``(kind, host_uri)`` so
-    a legacy-discovery row for the same host is adopted (one row per host, no duplicate);
-    ``False`` keys purely by ``(kind, name)`` (fault-inject — no host to bind). On create
-    supplies the NOT NULL columns ``systems.toml`` lacks (``status='available'``,
-    ``pool='default'``). The overlay **merges** ``caps`` into the existing capabilities jsonb so
-    a discovery-contributed hardware fact is never clobbered. ``cost_class`` lands in the
-    COLUMN, never jsonb. Adoption flips ``managed_by`` to ``config`` and sets the ``name``.
+    The lookup is always by the true identity ``(kind, name)`` so a row never collides with
+    itself on a ``host_uri`` change (the change is written through). ``adopt_by_host`` additionally
+    lets remote-libvirt adopt a legacy-discovery row (same ``host_uri``, ``name IS NULL``) when no
+    name match exists, instead of inserting a duplicate. On create supplies the NOT NULL columns
+    ``systems.toml`` lacks (``status='available'``, ``pool='default'``). The overlay **merges**
+    ``caps`` into the existing capabilities jsonb so a discovery-contributed hardware fact is never
+    clobbered. ``cost_class`` lands in the COLUMN, never jsonb. Adoption/update flips ``managed_by``
+    to ``config`` and writes the ``name`` + ``host_uri``.
     """
-    if bind_by_host:
-        await cur.execute(
-            "SELECT id, name, cost_class, capabilities, managed_by FROM resources "
-            "WHERE kind = %s AND host_uri = %s FOR UPDATE",
-            (kind.value, host_uri),
-        )
-    else:
-        await cur.execute(
-            "SELECT id, name, cost_class, capabilities, managed_by FROM resources "
-            "WHERE kind = %s AND name = %s FOR UPDATE",
-            (kind.value, name),
-        )
-    row = await cur.fetchone()
+    row = await _find_existing(
+        cur, kind=kind, name=name, host_uri=host_uri, adopt_by_host=adopt_by_host
+    )
     if row is None:
         await cur.execute(
             "INSERT INTO resources (kind, name, capabilities, pool, cost_class, status, "
@@ -169,17 +162,38 @@ async def _upsert_config_resource(
     merged = {**_caps(row), **caps}
     changed = (
         row["name"] != name
+        or row["host_uri"] != host_uri
         or row["cost_class"] != cost_class
         or str(row["managed_by"]) != _CONFIG
         or _caps(row) != merged
     )
     if changed:
         await cur.execute(
-            "UPDATE resources SET name = %s, cost_class = %s, capabilities = %s, "
+            "UPDATE resources SET name = %s, host_uri = %s, cost_class = %s, capabilities = %s, "
             "managed_by = %s WHERE id = %s",
-            (name, cost_class, Jsonb(merged), _CONFIG, row["id"]),
+            (name, host_uri, cost_class, Jsonb(merged), _CONFIG, row["id"]),
         )
         diff.updated.append(_record(kind, name))
+
+
+async def _find_existing(
+    cur: Any, *, kind: ResourceKind, name: str, host_uri: str, adopt_by_host: bool
+) -> dict[str, Any] | None:
+    """Resolve the existing row to upsert: by (kind, name) first, then host-adopt for remote."""
+    await cur.execute(
+        "SELECT id, name, host_uri, cost_class, capabilities, managed_by FROM resources "
+        "WHERE kind = %s AND name = %s FOR UPDATE",
+        (kind.value, name),
+    )
+    row = await cur.fetchone()
+    if row is not None or not adopt_by_host:
+        return row
+    await cur.execute(
+        "SELECT id, name, host_uri, cost_class, capabilities, managed_by FROM resources "
+        "WHERE kind = %s AND host_uri = %s AND name IS NULL FOR UPDATE",
+        (kind.value, host_uri),
+    )
+    return await cur.fetchone()
 
 
 async def _overlay_local_libvirt(

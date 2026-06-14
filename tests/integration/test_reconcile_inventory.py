@@ -1024,6 +1024,62 @@ def test_remote_libvirt_is_sole_creator_no_duplicate_with_legacy_discovery(
     asyncio.run(_run())
 
 
+def test_remote_libvirt_adopts_legacy_discovery_row(migrated_url: str, tmp_path: Path) -> None:
+    # A row the legacy env-based discovery already inserted (name NULL) for the same host_uri is
+    # ADOPTED (flipped to config + named), not duplicated — the Phase-2→3 one-creator invariant.
+    async def _run() -> None:
+        uri = "qemu+tls://h1/system"
+        async with await _connect(migrated_url) as seed:
+            await seed.execute(
+                "INSERT INTO resources (id, kind, capabilities, pool, cost_class, status, "
+                " host_uri, managed_by) "
+                "VALUES (%s, 'remote-libvirt', %s, 'remote', 'remote', 'available', %s, "
+                " 'discovery')",
+                (uuid4(), Jsonb({"vcpus": 32, "memory_mb": 131072}), uri),
+            )
+        doc = load_inventory(_write_toml(tmp_path, _remote_libvirt_toml(name="r1")))
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            await reconcile_resources(conn, doc)
+        async with await _connect(migrated_url) as check:
+            assert await _resource_count(check, kind="remote-libvirt", host_uri=uri) == 1
+            row = await _resource_by_name(check, "r1")
+            assert row["managed_by"] == "config"  # adopted
+            caps = _row_caps(row)
+            assert caps["vcpus"] == 32  # discovery-contributed hardware fact preserved
+            assert caps["memory_mb"] == 131072
+
+    asyncio.run(_run())
+
+
+def test_remote_libvirt_uri_change_updates_in_place_no_duplicate(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # Regression: changing a declared remote host's uri (same name) must UPDATE the row in
+    # place, not INSERT a second row that collides on the (kind, name) partial-unique index.
+    async def _run() -> None:
+        first = load_inventory(_write_toml(tmp_path, _remote_libvirt_toml(name="r1")))
+        moved_body = _remote_libvirt_toml(name="r1").replace(
+            "qemu+tls://h1/system", "qemu+tls://h2/system"
+        )
+        moved = load_inventory(_write_toml(tmp_path, moved_body))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            async with pool.connection() as conn:
+                await reconcile_resources(conn, first)
+            async with pool.connection() as conn:
+                await reconcile_resources(conn, moved)  # must not raise a unique violation
+        old_uri, new_uri = "qemu+tls://h1/system", "qemu+tls://h2/system"
+        async with await _connect(migrated_url) as check:
+            row = await _resource_by_name(check, "r1")
+            assert row["host_uri"] == new_uri  # uri change propagated
+            assert await _resource_count(check, kind="remote-libvirt", host_uri=old_uri) == 0
+            assert await _resource_count(check, kind="remote-libvirt", host_uri=new_uri) == 1
+
+    asyncio.run(_run())
+
+
 def test_local_libvirt_overlay_preserves_discovery_owned_hardware(
     migrated_url: str, tmp_path: Path
 ) -> None:
