@@ -602,9 +602,13 @@ note_fail() {
 
 _has_kvm() { [[ -r "${KVM_NODE}" && -w "${KVM_NODE}" ]]; }
 _cmd() { command -v "$1" >/dev/null 2>&1; }
-_in_libvirt_group() { id -nG 2>/dev/null | tr ' ' '\n' | grep -qx libvirt; }
+_in_libvirt_group() { [[ " $(id -nG 2>/dev/null) " == *" libvirt "* ]]; }
 _virsh_connects() { virsh -c qemu:///system list >/dev/null 2>&1; }
-_default_net_active() { virsh -c qemu:///system net-info default 2>/dev/null | grep -qi 'Active: *yes'; }
+_default_net_active() {
+  local out
+  out="$(virsh -c qemu:///system net-info default 2>/dev/null || true)"
+  [[ "$out" == *"Active:"*[Yy]es* ]]
+}
 
 _has_kvm || note_fail "${KVM_NODE} not readable/writable (KVM unavailable)" \
   "enable virtualization in BIOS and load kvm modules; ensure your user can access ${KVM_NODE}"
