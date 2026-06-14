@@ -1,4 +1,4 @@
-"""Tiered, fail-closed gate for ``kdivectl tool call`` (ADR-0105, relaxes ADR-0089 decision 2a).
+"""Tiered, fail-closed gate for ``kdivectl tool call`` (ADR-0107, relaxes ADR-0089 decision 2a).
 
 ``classify_tool`` derives a :class:`ToolTier` from a tool's MCP ``ToolAnnotations`` (the same
 ``readOnlyHint`` / ``destructiveHint`` the server registers, ADR-0047). ``assert_tool_allowed``

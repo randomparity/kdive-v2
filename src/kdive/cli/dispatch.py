@@ -1,4 +1,4 @@
-"""Async dispatch for ``kdivectl`` subcommands (ADR-0089, ADR-0105).
+"""Async dispatch for ``kdivectl`` subcommands (ADR-0089, ADR-0107).
 
 The generic ``tool call`` passthrough lives here. It lists the server's tools, classifies the
 requested one into a mutation tier, admits it only when the caller opted in to that tier
@@ -122,7 +122,7 @@ def _prompt_line(name: str) -> str:
 
 
 async def _tool_call(args: argparse.Namespace) -> int:
-    """Run the tiered passthrough for ``tool call`` (ADR-0105)."""
+    """Run the tiered passthrough for ``tool call`` (ADR-0107)."""
     arguments = _parse_payload(args.payload)
     max_tier = _max_tier(args)
     session = _session_factory()

@@ -2,7 +2,7 @@
 
 - **Date:** 2026-06-13
 - **Issue:** [#368](https://github.com/randomparity/kdive/issues/368) (coverage campaign F1)
-- **ADR:** [ADR-0105](../../adr/0105-cli-mutating-tool-call-opt-in.md)
+- **ADR:** [ADR-0107](../../adr/0107-cli-mutating-tool-call-opt-in.md)
 - **Status:** Draft
 
 ## Problem
@@ -17,7 +17,7 @@ drive most of the platform.
 The CLI is a pure MCP client; the server-side destructive-op gate (capability + RBAC + profile
 opt-in, deny by default) is the authorization boundary and applies to every call. The read-only gate
 is a client-side UX guard, not a security control. This change relaxes that guard from "refuse all
-mutation" to "refuse mutation unless the caller explicitly opts in," per ADR-0105.
+mutation" to "refuse mutation unless the caller explicitly opts in," per ADR-0107.
 
 ## Goals
 
