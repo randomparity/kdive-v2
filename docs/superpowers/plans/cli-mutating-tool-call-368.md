@@ -108,10 +108,22 @@ flag and the tool. `rg "assert_read_only|NotReadOnlyError" src tests` returns no
 
 **Files:** `src/kdive/cli/dispatch.py`, `tests/cli/test_tool_call.py`.
 
+**Session seam:** `_tool_call` currently calls `Session.from_env()` directly — there is **no**
+`_session_factory` indirection (unlike `mutations.py`). Add a module-level
+`_session_factory() -> Session` to `dispatch.py` returning `Session.from_env()`, and have
+`_tool_call` call it. Tests monkeypatch **`dispatch._session_factory`** (and
+`dispatch.ensure_token_valid` where the preflight must be forced/bypassed) — not
+`mutations._session_factory`, a different module's seam. The single session opened in step 1 is
+**reused** for both the preflight (`session.token`) and the `client.call_tool`; do not re-create it.
+`Session.from_env`'s existing no-token/no-URL `SystemExit` (transport.py) is unchanged and still
+fires before any tier logic, for read tools too — pre-existing, out of scope.
+
 **Steps (TDD):**
 
-1. Failing tests (drive `_tool_call` with a fake session/client, monkeypatching the module seams —
-   mirror `tests/cli/test_mutation_verbs.py`'s fake pattern). Build an `args` namespace with
+1. Failing tests (drive `_tool_call` with a fake session/client, monkeypatching
+   `dispatch._session_factory` to return a fake session whose `client()` yields a recording client —
+   the fake shape mirrors `tests/cli/test_mutation_verbs.py`'s `_FakeSession`/`_FakeClient`, but the
+   patched seam is `dispatch._session_factory`). Build an `args` namespace with
    `name`, `payload`, `allow_mutating`, `allow_destructive`, `yes`:
    - Mutating tool, no tier flag → exit 3, `client.call_tool` not called.
    - Mutating tool, `allow_mutating=True` → `client.call_tool` called once; no confirmation
@@ -130,6 +142,8 @@ flag and the tool. `rg "assert_read_only|NotReadOnlyError" src tests` returns no
    - Read-only tool, no flags → dispatched, exit 0 (unchanged default).
 2. Confirm failure.
 3. Implement `_tool_call`:
+   - Add `_session_factory()` returning `Session.from_env()`; open `session = _session_factory()`
+     once and reuse it.
    - Resolve `max_tier` from `args.allow_destructive` / `args.allow_mutating`.
    - List tools; `assert_tool_allowed(args.name, tools.get(args.name), max_tier=max_tier)` inside a
      try; on `ToolNotAllowedError` print + return `_TIER_NOT_ALLOWED_EXIT` (rename
@@ -174,6 +188,17 @@ flag and the tool. `rg "assert_read_only|NotReadOnlyError" src tests` returns no
    annotation guard is untouched).
 
 **Acceptance:** `just ci` green; no stale symbol references; annotation-guard tests pass.
+
+## Review dispositions (plan adversarial review, 2026-06-13)
+
+- **MEDIUM — Task 4 pointed at a `_session_factory` seam that `dispatch._tool_call` lacks:**
+  `accepted-fixed`. Task 4 now adds a `dispatch._session_factory()` seam (mirroring
+  `mutations._session_factory`), names it as the monkeypatch target, and lists it in the
+  implement step.
+- **LOW — single-session reuse and the no-token `SystemExit` path were unstated:**
+  `accepted-fixed`. The Session-seam note records that the one session is reused for both the
+  preflight and the call, and that `Session.from_env`'s existing no-token/no-URL `SystemExit` is
+  unchanged (read tools included).
 
 ## Rollback / cleanup
 
