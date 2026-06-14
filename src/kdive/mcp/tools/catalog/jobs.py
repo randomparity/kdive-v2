@@ -36,7 +36,7 @@ from kdive.mcp.responses import JsonValue, ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.security.authz.context import RequestContext
-from kdive.security.authz.rbac import AuthorizationError, Role, require_role
+from kdive.security.authz.rbac import AuthorizationError, Role, RoleDenied, require_role
 
 _log = logging.getLogger(__name__)
 
@@ -93,6 +93,8 @@ def _require_job_role(
 ) -> ToolResponse | None:
     try:
         require_role(ctx, _project(job), role)
+    except RoleDenied:
+        raise
     except AuthorizationError:
         return _error(object_id, ErrorCategory.AUTHORIZATION_DENIED)
     return None
