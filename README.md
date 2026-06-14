@@ -2,9 +2,9 @@ Kernel Debug, Inspect, Validate, Explore (KDIVE)
 ================================================
 
 An MCP platform for Linux kernel build-boot-debug workflows. See
-[`docs/specs/top-level-design.md`](docs/specs/top-level-design.md) for the
+[`docs/design/top-level-design.md`](docs/design/top-level-design.md) for the
 architecture and the milestone plans:
-[`M0`](docs/plans/m0-implementation.md) and [`M1`](docs/plans/m1-implementation.md).
+[`M0`](docs/archive/plans/m0-implementation.md) and [`M1`](docs/archive/plans/m1-implementation.md).
 
 Requirements
 ------------
@@ -65,7 +65,7 @@ Test environments
   by `just test`. They drive the real MCP HTTP transport against host `server`, `worker`,
   and `reconciler` processes plus the compose backends. Use `just stack-up` to start
   Postgres, MinIO, and the mock OIDC issuer, then follow
-  [`docs/runbooks/live-stack.md`](docs/runbooks/live-stack.md) for VM fixtures and host
+  [`docs/operating/runbooks/live-stack.md`](docs/operating/runbooks/live-stack.md) for VM fixtures and host
   process startup.
 - **`live_vm` tests** are marked with the `live_vm` pytest marker and are **skipped by
   default**. They require:
@@ -103,5 +103,5 @@ just test-live-stack
 Releasing
 ---------
 
-See [`docs/RELEASING.md`](docs/RELEASING.md) for the versioning policy
+See [`docs/development/releasing.md`](docs/development/releasing.md) for the versioning policy
 ([ADR-0041](docs/adr/0041-versioning-release-process.md)) and the release process.

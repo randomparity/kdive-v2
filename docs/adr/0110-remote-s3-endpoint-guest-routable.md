@@ -10,7 +10,7 @@
   [ADR-0078](0078-object-store-in-target-install-seam.md) (the registered-URL artifact
   channel), and [ADR-0087](0087-config-registry.md) (the single `KDIVE_*` registry source —
   the preflight reads the endpoint through it, never a raw env read).
-- **Spec:** [`../superpowers/specs/2026-06-13-remote-s3-endpoint-guest-routable.md`](../superpowers/specs/2026-06-13-remote-s3-endpoint-guest-routable.md)
+- **Spec:** [`../superpowers/specs/2026-06-13-remote-s3-endpoint-guest-routable.md`](../archive/superpowers/specs/2026-06-13-remote-s3-endpoint-guest-routable.md)
 - **Issue:** [#375](https://github.com/randomparity/kdive/issues/375)
 
 ## Context

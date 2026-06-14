@@ -18,7 +18,7 @@
   [ADR-0036](0036-reservation-lease-semantics.md)/[ADR-0040](0040-admission-lifecycle-concurrency.md)
   accounting), plus the server transport ([ADR-0002](0002-multi-user-mcp-http.md)/[ADR-0010](0010-fastmcp-framework-auth.md))
   and OIDC/RBAC ([ADR-0006](0006-oidc-rbac-attribution.md)/[ADR-0020](0020-rbac-audit-gate-implementation.md)/[ADR-0037](0037-rbac-hardening-role-separation.md)).
-- **Spec:** [`../superpowers/specs/2026-06-04-live-stack-e2e-design.md`](../superpowers/specs/2026-06-04-live-stack-e2e-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-04-live-stack-e2e-design.md`](../archive/superpowers/specs/2026-06-04-live-stack-e2e-design.md)
   (the umbrella spec this ADR anchors; the epic's sub-issues are cut from it)
 
 ## Context

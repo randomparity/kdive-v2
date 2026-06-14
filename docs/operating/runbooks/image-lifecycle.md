@@ -5,11 +5,11 @@ project-private uploads, the half-published-state reconciliation the platform ru
 and the one capability CI cannot prove — a local-libvirt rootfs built through the in-process
 Python build plane on a real host.
 
-See [ADR-0092](../adr/0092-image-rootfs-lifecycle.md) (the `image_catalog` table, row-first
+See [ADR-0092](../../adr/0092-image-rootfs-lifecycle.md) (the `image_catalog` table, row-first
 publish, the `RootfsBuildPlane` port) and
-[ADR-0093](../adr/0093-private-image-uploads.md) (project-private uploads, quota, reference-guard,
+[ADR-0093](../../adr/0093-private-image-uploads.md) (project-private uploads, quota, reference-guard,
 extend-fence). The design spec is
-`docs/superpowers/specs/2026-06-10-m24-image-rootfs-lifecycle-design.md`; its "Exit criteria"
+`docs/archive/superpowers/specs/2026-06-10-m24-image-rootfs-lifecycle-design.md`; its "Exit criteria"
 section is the source of truth this runbook tracks.
 
 ## What CI already proves (and what it cannot)

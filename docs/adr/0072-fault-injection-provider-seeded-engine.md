@@ -8,9 +8,9 @@
   (the typed ports it satisfies), [ADR-0021](0021-reconciler-loop-drift-repair.md) (the
   reconciler passes this provider exists to trigger),
   [ADR-0036](0036-reservation-lease-semantics.md) (the lease window a slow provision races),
-  the PoC error taxonomy carried in [`../specs/top-level-design.md`](../specs/top-level-design.md)
+  the PoC error taxonomy carried in [`../specs/top-level-design.md`](../design/top-level-design.md)
   §Error taxonomy (the `ErrorCategory` values faults map to).
-- **Spec:** [`../specs/m1.5-fault-injection-provider.md`](../specs/m1.5-fault-injection-provider.md)
+- **Spec:** [`../specs/m1.5-fault-injection-provider.md`](../design/m1.5-fault-injection-provider.md)
 
 ## Context
 

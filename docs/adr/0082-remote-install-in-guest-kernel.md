@@ -14,7 +14,7 @@
   [ADR-0061](0061-boot-cmdline-composition.md) (the method-conditional crashkernel cmdline
   this writes into the guest grub), [ADR-0030](0030-install-boot-plane.md) (the
   Installer/Booter port pair this provider realizes for a remote target).
-- **Spec:** [`../specs/m2-remote-libvirt.md`](../specs/m2-remote-libvirt.md) §Decomposition issue 5.
+- **Spec:** [`../specs/m2-remote-libvirt.md`](../design/m2-remote-libvirt.md) §Decomposition issue 5.
 
 ## Context
 

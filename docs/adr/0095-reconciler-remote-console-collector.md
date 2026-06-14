@@ -9,7 +9,7 @@
   [ADR-0086](0086-dead-worker-gdbstub-reconciler-reset.md) (the reconciler→provider port
   pattern this follows for a second long-lived remote concern),
   [ADR-0049](0049-crash-capture-tiers.md) (the `CaptureMethod` vocabulary, unchanged).
-- **Spec:** [`../superpowers/specs/2026-06-11-m25-remote-capture-parity-design.md`](../superpowers/specs/2026-06-11-m25-remote-capture-parity-design.md) §3.
+- **Spec:** [`../superpowers/specs/2026-06-11-m25-remote-capture-parity-design.md`](../archive/superpowers/specs/2026-06-11-m25-remote-capture-parity-design.md) §3.
 
 ## Context
 

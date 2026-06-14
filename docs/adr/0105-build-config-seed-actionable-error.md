@@ -12,7 +12,7 @@ through `build_config_fetch_from_env()._fetch`: it looks the name up in
 catalog row raises `CategorizedError(CONFIGURATION_ERROR, details={"name": name})`
 with the bare message `unknown build-config catalog entry`.
 
-The MCP tool-coverage campaign (`docs/reports/mcp-coverage-campaign-2026-06-13.md`,
+The MCP tool-coverage campaign (`docs/archive/reports/mcp-coverage-campaign-2026-06-13.md`,
 finding F6 / #373) hit this on a remote-libvirt run: the build failed with that
 message and the operator had no signal that the fix is to run the seed. The error
 is correctly categorized but not *actionable* — it names neither the seed command

@@ -12,7 +12,7 @@
   portability gate this change deliberately extends), [ADR-0032](0032-connect-plane-gdbstub-debugsession.md)
   (the DebugSession lifecycle), [ADR-0078](0078-object-store-in-target-install-seam.md) (the
   guest-agent seam drgn-live rides).
-- **Spec:** [`../superpowers/specs/2026-06-09-drgn-live-transport-design.md`](../superpowers/specs/2026-06-09-drgn-live-transport-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-09-drgn-live-transport-design.md`](../archive/superpowers/specs/2026-06-09-drgn-live-transport-design.md)
 - **Issue:** #215
 
 ## Context

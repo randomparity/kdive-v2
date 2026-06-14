@@ -72,7 +72,7 @@ rejected. To exercise an authenticated call against the compose server, mint the
 
 The token flow itself (authorize → code → exchange) is the same one the live-stack harness
 uses — see [`tests/integration/live_stack/harness.py`](../../tests/integration/live_stack/harness.py)
-and the [live-stack runbook](../../docs/runbooks/live-stack.md), which runs the server *on
+and the [live-stack runbook](../../docs/operating/runbooks/live-stack.md), which runs the server *on
 the host* (where `iss=http://localhost:8090/default` matches host-minted tokens).
 
 ## Teardown

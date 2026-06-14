@@ -15,11 +15,11 @@
   [ADR-0009](0009-capability-provider-dispatch.md) (the `ConnectPlane` capability
   placeholder this plane realizes).
 - **Refines:** the M0 Connect/Debug wording in
-  [`../specs/m0-walking-skeleton.md`](../specs/m0-walking-skeleton.md) (the
+  [`../specs/m0-walking-skeleton.md`](../design/m0-walking-skeleton.md) (the
   `debug.start_session(run_id, "gdbstub")` / `debug.end_session(session_id)` surface, the
   single-attach `transport_conflict` rule, and the DebugSession `attach → live → detached`
   lifecycle).
-- **Spec:** [`../superpowers/specs/2026-06-04-connect-plane-gdbstub-design.md`](../superpowers/specs/2026-06-04-connect-plane-gdbstub-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-04-connect-plane-gdbstub-design.md`](../archive/superpowers/specs/2026-06-04-connect-plane-gdbstub-design.md)
 
 ## Context
 

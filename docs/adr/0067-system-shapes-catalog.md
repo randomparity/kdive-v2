@@ -8,7 +8,7 @@
   [ADR-0024](0024-provisioning-profile-model-shape.md) (the provisioning profile whose
   sizing a shape now feeds), [ADR-0062](0062-platform-operations.md) (the
   `platform_operator` runtime-knob tool pattern `shapes.set` mirrors).
-- **Spec:** [`../specs/m1.4-system-catalog-scheduling.md`](../specs/m1.4-system-catalog-scheduling.md)
+- **Spec:** [`../specs/m1.4-system-catalog-scheduling.md`](../design/m1.4-system-catalog-scheduling.md)
 
 ## Context
 

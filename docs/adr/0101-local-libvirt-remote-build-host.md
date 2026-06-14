@@ -13,7 +13,7 @@
   [ADR-0076](0076-remote-libvirt-provider-package.md) (the rule that `remote_libvirt` and
   `local_libvirt` share no provider-internal layer — honored by extracting the shared
   artifact-publish helper into the neutral `build_host` layer, not by coupling the providers).
-- **Spec:** [`../superpowers/specs/2026-06-13-local-libvirt-remote-build-host.md`](../superpowers/specs/2026-06-13-local-libvirt-remote-build-host.md)
+- **Spec:** [`../superpowers/specs/2026-06-13-local-libvirt-remote-build-host.md`](../archive/superpowers/specs/2026-06-13-local-libvirt-remote-build-host.md)
 - **Issue:** [#356](https://github.com/randomparity/kdive/issues/356)
 - **Milestone:** remote build-host targets
 

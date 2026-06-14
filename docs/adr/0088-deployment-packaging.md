@@ -10,7 +10,7 @@
   (the registry-validated `KDIVE_*` config the container takes as its only input),
   [ADR-0015](0015-sql-migration-runner.md) (the forward-only, locked, idempotent migration
   runner the migrate one-shot invokes).
-- **Spec:** [`../superpowers/specs/2026-06-10-m21-deployment-packaging-design.md`](../superpowers/specs/2026-06-10-m21-deployment-packaging-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-10-m21-deployment-packaging-design.md`](../archive/superpowers/specs/2026-06-10-m21-deployment-packaging-design.md)
 - **Milestone:** #13 (M2.1)
 
 ## Context

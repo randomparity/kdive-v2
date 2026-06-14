@@ -11,7 +11,7 @@
   (the `storage_pool` this dumps into and the overlay-volume idiom this reuses),
   [ADR-0031](0031-retrieve-plane-vmcore-postmortem.md) (the Retriever/CrashPostmortem ports this
   extends), [ADR-0049](0049-crash-capture-tiers.md) (the `CaptureMethod` vocabulary, unchanged).
-- **Spec:** [`../superpowers/specs/2026-06-11-m25-remote-capture-parity-design.md`](../superpowers/specs/2026-06-11-m25-remote-capture-parity-design.md) §1.
+- **Spec:** [`../superpowers/specs/2026-06-11-m25-remote-capture-parity-design.md`](../archive/superpowers/specs/2026-06-11-m25-remote-capture-parity-design.md) §1.
 
 ## Context
 

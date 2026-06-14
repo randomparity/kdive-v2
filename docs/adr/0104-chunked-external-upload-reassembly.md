@@ -7,7 +7,7 @@
   `complete_build`, the prefix reaper, the agent-declared `build_id` trust point),
   [ADR-0017](0017-object-store-client-interface.md) /
   [ADR-0013](0013-object-store-layout-retention.md) (the object store and key layout).
-- **Spec:** [`../superpowers/specs/2026-06-13-chunked-external-upload-design.md`](../superpowers/specs/2026-06-13-chunked-external-upload-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-13-chunked-external-upload-design.md`](../archive/superpowers/specs/2026-06-13-chunked-external-upload-design.md)
 - **Issue:** [#112](https://github.com/randomparity/kdive/issues/112).
 
 ## Context

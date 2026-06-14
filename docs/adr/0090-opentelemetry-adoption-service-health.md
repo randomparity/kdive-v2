@@ -10,7 +10,7 @@
 - **Builds on:** [ADR-0087](0087-config-registry.md) (the `KDIVE_*` registry the
   `KDIVE_OTEL_*` keys extend), [ADR-0088](0088-deployment-packaging.md) (the M2.1 image /
   compose / Helm reference whose probes target the new health endpoints).
-- **Spec:** [`../superpowers/specs/2026-06-10-m23-observability-doctor-design.md`](../superpowers/specs/2026-06-10-m23-observability-doctor-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-10-m23-observability-doctor-design.md`](../archive/superpowers/specs/2026-06-10-m23-observability-doctor-design.md)
 - **Milestone:** M2.3
 
 ## Context

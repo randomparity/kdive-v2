@@ -7,7 +7,7 @@
   `root=/dev/vda`, no-initramfs boot the rootfs layout must satisfy),
   [ADR-0048](0048-external-build-artifact-ingestion.md) (the discriminated rootfs source —
   `path`/`upload`/`url`/`catalog` — the produced image is referenced through).
-- **Spec:** [`../superpowers/specs/2026-06-06-rootfs-builder-port-design.md`](../superpowers/specs/2026-06-06-rootfs-builder-port-design.md).
+- **Spec:** [`../superpowers/specs/2026-06-06-rootfs-builder-port-design.md`](../archive/superpowers/specs/2026-06-06-rootfs-builder-port-design.md).
 - **Closes:** [#124](https://github.com/randomparity/kdive/issues/124) (gap G3 of
   [#123](https://github.com/randomparity/kdive/issues/123)).
 

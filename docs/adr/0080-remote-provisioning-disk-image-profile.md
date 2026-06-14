@@ -9,11 +9,11 @@
   provisioning op rides), [ADR-0078](0078-object-store-in-target-install-seam.md) (direct-kernel
   boot retired for remote; the guest-agent seam the provisioned domain must carry),
   [ADR-0079](0079-remote-live-debug-transport.md) (the per-System gdbstub port this plane
-  allocates + records), [ADR-0025](0025-provisioning-plane.md) (the Provisioner port contract
+  allocates + records), [ADR-0025](0025-provisioning-plane-libvirt.md) (the Provisioner port contract
   and define/start transactionality), [ADR-0060](0060-per-system-rootfs-overlay.md) (the
-  per-System overlay invariant this realizes remotely), [ADR-0024](0024-provisioning-profile-schema.md)
+  per-System overlay invariant this realizes remotely), [ADR-0024](0024-provisioning-profile-model-shape.md)
   (the provider-section profile schema this extends).
-- **Spec:** [`../specs/m2-remote-libvirt.md`](../specs/m2-remote-libvirt.md) §Decomposition issue 2
+- **Spec:** [`../specs/m2-remote-libvirt.md`](../design/m2-remote-libvirt.md) §Decomposition issue 2
 
 ## Context
 

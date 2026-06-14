@@ -7,7 +7,7 @@
   extends), [ADR-0031](0031-retrieve-plane-vmcore-postmortem.md) (the `Retriever.capture` port,
   the System-scoped raw `vmcore` object, and the `_existing_raw_key` idempotency guard +
   `postmortem.*` resolution this makes method-aware).
-- **Spec:** [`../superpowers/specs/2026-06-06-vmcore-method-aware-storage-design.md`](../superpowers/specs/2026-06-06-vmcore-method-aware-storage-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-06-vmcore-method-aware-storage-design.md`](../archive/superpowers/specs/2026-06-06-vmcore-method-aware-storage-design.md)
 - **Closes:** [#118](https://github.com/randomparity/kdive/issues/118).
 
 ## Context

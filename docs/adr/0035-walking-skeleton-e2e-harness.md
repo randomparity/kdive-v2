@@ -24,7 +24,7 @@
   [ADR-0027](0027-safety-modules-secret-backend-impl.md) (the `Redactor`),
   [ADR-0015](0015-sql-migration-runner.md) (the disposable-Postgres fixtures the
   non-gated tests reuse).
-- **Spec:** [`../specs/m0-walking-skeleton.md`](../specs/m0-walking-skeleton.md) §"Exit criteria"
+- **Spec:** [`../specs/m0-walking-skeleton.md`](../design/m0-walking-skeleton.md) §"Exit criteria"
 
 ## Context
 

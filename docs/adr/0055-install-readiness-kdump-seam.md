@@ -11,7 +11,7 @@
   console marker).
 - **Precedent:** [ADR-0054](0054-object-store-unconditional-read.md) (the G2 fetch seam's
   unit-tested pure core under a thin `live_vm` wrapper — the shape this reuses).
-- **Spec:** [`../superpowers/specs/2026-06-06-install-readiness-kdump-seam-design.md`](../superpowers/specs/2026-06-06-install-readiness-kdump-seam-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-06-install-readiness-kdump-seam-design.md`](../archive/superpowers/specs/2026-06-06-install-readiness-kdump-seam-design.md)
 
 ## Context
 

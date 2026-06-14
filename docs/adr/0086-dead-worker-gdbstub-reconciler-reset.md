@@ -13,7 +13,7 @@
   (the gdbstub Connect plane + DebugSession lifecycle), [ADR-0063](0063-typed-provider-runtime.md)
   (the typed-port provider seam the new port follows), [ADR-0077](0077-qemu-tls-control-transport.md)
   (the `qemu+tls` connection lifecycle the reset reuses).
-- **Spec:** [`../superpowers/specs/2026-06-09-dead-worker-gdbstub-reset-design.md`](../superpowers/specs/2026-06-09-dead-worker-gdbstub-reset-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-09-dead-worker-gdbstub-reset-design.md`](../archive/superpowers/specs/2026-06-09-dead-worker-gdbstub-reset-design.md)
 - **Issue:** #216
 
 ## Context

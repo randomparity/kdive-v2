@@ -379,7 +379,7 @@ def main() -> int:
             print(f"  VIOLATION    {count:>6}  {path}")
         print(
             "\nRefactor the provider logic out of core (the M2 co-equal goal, "
-            "docs/specs/m2-remote-libvirt.md), or - for a deliberate provider-agnostic "
+            "docs/design/m2-remote-libvirt.md), or - for a deliberate provider-agnostic "
             "core change - extend ALLOWED_FILES in this script in the same PR."
         )
         return 1

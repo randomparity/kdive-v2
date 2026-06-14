@@ -12,7 +12,7 @@
   for remote), [ADR-0051](0051-install-method-conditional-crashkernel.md) /
   [ADR-0061](0061-boot-cmdline-composition.md) (the in-guest install/cmdline composition the
   bundle feeds).
-- **Spec:** [`../specs/m2-remote-libvirt.md`](../specs/m2-remote-libvirt.md) §Decomposition issue 4.
+- **Spec:** [`../specs/m2-remote-libvirt.md`](../design/m2-remote-libvirt.md) §Decomposition issue 4.
 
 ## Context
 

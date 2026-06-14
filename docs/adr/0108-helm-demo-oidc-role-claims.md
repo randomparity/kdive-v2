@@ -7,7 +7,7 @@
   [ADR-0006](0006-oidc-rbac-attribution.md) / [ADR-0020](0020-rbac-audit-gate-implementation.md) /
   [ADR-0043](0043-platform-scoped-rbac-tier.md) (the claim-driven RBAC contract this
   emits tokens for).
-- **Spec:** [`../superpowers/specs/2026-06-13-helm-demo-oidc-role-claims.md`](../superpowers/specs/2026-06-13-helm-demo-oidc-role-claims.md)
+- **Spec:** [`../superpowers/specs/2026-06-13-helm-demo-oidc-role-claims.md`](../archive/superpowers/specs/2026-06-13-helm-demo-oidc-role-claims.md)
 - **Issue:** [#369](https://github.com/randomparity/kdive/issues/369).
 
 ## Context

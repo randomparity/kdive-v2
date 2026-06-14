@@ -11,7 +11,7 @@
   [ADR-0016](0016-repository-layer-locks-idempotency.md) (advisory locks),
   [ADR-0004](0004-first-slice-local-libvirt.md) (local-libvirt slice)
 - **Refines:** the M0 admission and Allocation-lifecycle wording in
-  [`../specs/m0-walking-skeleton.md`](../specs/m0-walking-skeleton.md)
+  [`../specs/m0-walking-skeleton.md`](../design/m0-walking-skeleton.md)
 
 ## Context
 

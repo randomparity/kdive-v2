@@ -8,7 +8,7 @@
   matcher the filters reuse), [ADR-0023](0023-discovery-allocation-admission.md) (the
   per-host capacity counters availability reports), [ADR-0026](0026-investigation-run-lifecycle.md)
   (the Run/System lifecycle the reuse path joins).
-- **Spec:** [`../specs/m1.4-system-catalog-scheduling.md`](../specs/m1.4-system-catalog-scheduling.md)
+- **Spec:** [`../specs/m1.4-system-catalog-scheduling.md`](../design/m1.4-system-catalog-scheduling.md)
 
 ## Context
 

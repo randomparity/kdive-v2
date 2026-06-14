@@ -68,7 +68,7 @@ stack-up:
     @echo "Start the app tier with: docker compose up -d migrate server worker reconciler"
     @echo "(or, for a source checkout of the local-libvirt host path: just stack-start)"
     @echo "MCP URL: http://127.0.0.1:8000/mcp"
-    @echo "Full runbook: docs/runbooks/live-stack.md"
+    @echo "Full runbook: docs/operating/runbooks/live-stack.md"
 
 stack-start:
     ./scripts/live-stack/start.sh
@@ -145,7 +145,7 @@ m2-gate:
 
 # Regenerate the committed milestone-end M2 portability report (ADR-0076).
 m2-report:
-    python3 scripts/m2_portability_gate.py --report > docs/reports/m2-portability.md
+    python3 scripts/m2_portability_gate.py --report > docs/archive/reports/m2-portability.md
 
 # Audit runtime dependencies for known vulnerabilities.
 audit:
@@ -188,7 +188,7 @@ release VERSION:
     git tag -a "v{{VERSION}}" -m "Release v{{VERSION}}"
     git push origin "v{{VERSION}}"
     echo "Pushed tag v{{VERSION}}. NEXT: open a 'chore(release): begin <next>-dev' PR"
-    echo "(just set-version <next>; just changelog) — see docs/RELEASING.md."
+    echo "(just set-version <next>; just changelog) — see docs/development/releasing.md."
 
 # Regenerate the agent-facing tool reference from the live registry (mutating).
 docs:

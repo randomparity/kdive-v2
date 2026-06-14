@@ -6,11 +6,11 @@
 - **Builds on (does not supersede):** [ADR-0092](0092-image-rootfs-lifecycle.md)
   (the `RootfsBuildPlane` port and the `LocalLibvirtRootfsBuildPlane` that
   `build-rootfs` already drives — the plane, the command, and the
-  `docs/runbooks/image-lifecycle.md` flow all exist and produce a real qcow2;
+  `docs/operating/runbooks/image-lifecycle.md` flow all exist and produce a real qcow2;
   this ADR does **not** change the build itself) and
   [ADR-0014](0014-structured-logging.md) (the structured logger writes to
   **stderr**, which is what makes a clean stdout wiring line possible).
-- **Spec:** [`../superpowers/specs/2026-06-13-build-rootfs-guest-image-wiring.md`](../superpowers/specs/2026-06-13-build-rootfs-guest-image-wiring.md)
+- **Spec:** [`../superpowers/specs/2026-06-13-build-rootfs-guest-image-wiring.md`](../archive/superpowers/specs/2026-06-13-build-rootfs-guest-image-wiring.md)
 - **Issue:** [#370](https://github.com/randomparity/kdive/issues/370)
 
 ## Context
@@ -22,14 +22,14 @@ environment variable, which must point at a readable qcow2 file
 `python -m kdive build-rootfs`, which drives `LocalLibvirtRootfsBuildPlane` and
 moves the built qcow2 to `--dest`.
 
-The MCP tool-coverage campaign (`docs/reports/mcp-coverage-campaign-2026-06-13.md`,
+The MCP tool-coverage campaign (`docs/archive/reports/mcp-coverage-campaign-2026-06-13.md`,
 finding **F3**) classified the local lifecycle as **"GAP (fixture)"**: not a broken
 plane, but a workflow seam. Two facts compose into the block:
 
 1. `run_build_rootfs` records its result only via `_log.info(...)` — which goes to
    **stderr** at `LOG_LEVEL` (ADR-0014). It emits **nothing on stdout** and **no
    machine-readable handle** an operator can wire into `KDIVE_GUEST_IMAGE`. The
-   operator must read `docs/runbooks/image-lifecycle.md` to learn both the env-var
+   operator must read `docs/operating/runbooks/image-lifecycle.md` to learn both the env-var
    name and the `--dest` path, then hand-retype the `export` line. The command
    knows the exact path it just wrote and does not surface it.
 2. The `live_vm_preflight` skip message says only
@@ -69,7 +69,7 @@ must point at the qcow2 that `build-rootfs` produces, pointing at the runbook fl
 ```
 KDIVE_GUEST_IMAGE unset or points at a missing file; build the local-libvirt rootfs
 with `python -m kdive build-rootfs` and set KDIVE_GUEST_IMAGE to its --dest path
-(see docs/runbooks/image-lifecycle.md).
+(see docs/operating/runbooks/image-lifecycle.md).
 ```
 
 No new CLI flag is added: the stdout wiring line is always emitted (there is no
@@ -88,12 +88,12 @@ mode where an operator does *not* want it), and the stderr summary already honor
   (`migrate`, `seed-demo`, `--version`) print their result to stdout.
 - The summary's destination/digest stays on stderr, so capturing stdout for `eval`
   never swallows the digest the operator records as the image identity.
-- The runbook (`docs/runbooks/image-lifecycle.md`) gains the `eval` one-liner; the
+- The runbook (`docs/operating/runbooks/image-lifecycle.md`) gains the `eval` one-liner; the
   manual `export KDIVE_GUEST_IMAGE=...` step it documents is retained as the
   copy-by-hand fallback (it is what the command now prints).
 - No build behavior, plane, schema, provenance, or gate changes. The libguestfs/KVM
   real-build path stays exercised only on the operator-run live stack
-  (`docs/runbooks/image-lifecycle.md`), never in CI; this change is unit-testable by
+  (`docs/operating/runbooks/image-lifecycle.md`), never in CI; this change is unit-testable by
   driving `run_build_rootfs` with the resolver/plane faked at the existing seam and
   capturing stdout.
 

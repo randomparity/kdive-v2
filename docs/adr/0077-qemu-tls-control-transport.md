@@ -10,7 +10,7 @@
   / [ADR-0075](0075-objectstore-quarantine-pre-registration-writes.md) (the
   register-before-emit / release-after-persist redaction contract this is the first real
   provider to exercise).
-- **Spec:** [`../specs/m2-remote-libvirt.md`](../specs/m2-remote-libvirt.md)
+- **Spec:** [`../specs/m2-remote-libvirt.md`](../design/m2-remote-libvirt.md)
 
 ## Context
 

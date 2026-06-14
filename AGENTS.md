@@ -11,9 +11,9 @@ operator-configured opt-in provider; cloud, bare-metal, and PowerVM remain futur
 It is a greenfield rewrite of a single-user stdio PoC into a multi-user HTTP service.
 Python 3.13, managed with `uv`.
 
-Read `docs/specs/top-level-design.md` first — it is the authoritative architecture. The
-current milestone plans are `docs/plans/m0-implementation.md` and
-`docs/plans/m1-implementation.md`.
+Read `docs/design/top-level-design.md` first — it is the authoritative architecture. The
+current milestone plans are `docs/archive/plans/m0-implementation.md` and
+`docs/archive/plans/m1-implementation.md`.
 
 ## Commands
 
@@ -134,8 +134,8 @@ transport.
   numbers never reused). Don't change an accepted decision in place — write a new ADR that
   supersedes it. Most source modules cite the ADR(s) they implement in their docstring;
   follow the citation when changing behavior. Spec → plan → implementation cycles live
-  under `docs/specs/`, `docs/plans/`, and `docs/superpowers/`.
-- **Releasing** — see [`docs/RELEASING.md`](docs/RELEASING.md) and
+  under `docs/design/`, `docs/archive/plans/`, and `docs/archive/superpowers/`.
+- **Releasing** — see [`docs/development/releasing.md`](docs/development/releasing.md) and
   [ADR-0041](docs/adr/0041-versioning-release-process.md) (SemVer, milestone→minor,
   tag-driven release).
 - **Doc-style guard** (enforced in CI / `check-mermaid` is mermaid-only, but the prose
@@ -148,7 +148,7 @@ transport.
   disposable Postgres + MinIO + mock OIDC.
 - **`live_stack` tests** drive the spine over the real MCP HTTP transport against a running
   host `server`/`worker`/`reconciler` + the compose backends; operator bring-up is in
-  [`docs/runbooks/live-stack.md`](docs/runbooks/live-stack.md) (ADR-0042). `just
+  [`docs/operating/runbooks/live-stack.md`](docs/operating/runbooks/live-stack.md) (ADR-0042). `just
   test-live-stack` skips cleanly when the stack/fixtures (or the marked suite) are absent.
 - Tests mirror the package tree under `tests/`; `tests/adversarial/` holds concurrency /
   property-based (hypothesis) race tests, `tests/integration/` holds the end-to-end

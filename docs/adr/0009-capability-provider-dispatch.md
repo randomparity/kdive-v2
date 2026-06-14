@@ -3,7 +3,7 @@
 - **Status:** Superseded for runtime assembly by
   [ADR-0063](0063-typed-provider-runtime.md)
 - **Date:** 2026-06-03
-- **Implements core decision:** #9 in [`../specs/top-level-design.md`](../specs/top-level-design.md)
+- **Implements core decision:** #9 in [`../specs/top-level-design.md`](../design/top-level-design.md)
 
 ## Context
 

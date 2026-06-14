@@ -10,7 +10,7 @@
   (the presigned-PUT ingest + validation the private-upload path reuses), and
   [ADR-0021](0021-reconciler-loop-drift-repair.md) (the periodic drift-repair loop the new sweeps
   extend).
-- **Spec:** [`../superpowers/specs/2026-06-10-m24-image-rootfs-lifecycle-design.md`](../superpowers/specs/2026-06-10-m24-image-rootfs-lifecycle-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-10-m24-image-rootfs-lifecycle-design.md`](../archive/superpowers/specs/2026-06-10-m24-image-rootfs-lifecycle-design.md)
 - **Milestone:** M2.4
 
 ## Context

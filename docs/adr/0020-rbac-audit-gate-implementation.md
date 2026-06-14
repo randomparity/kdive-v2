@@ -11,13 +11,13 @@
 roles (`viewer`/`operator`/`admin`) asserted by the IdP, and a destructive op gated
 by three independent, all-required checks (allocation capability scope, `admin`
 role, explicit profile/flag opt-in). It leaves the *implementation shapes* open, and
-[the MCP-skeleton design](../superpowers/specs/2026-06-03-mcp-skeleton-auth-jobs-design.md)
+[the MCP-skeleton design](../archive/superpowers/specs/2026-06-03-mcp-skeleton-auth-jobs-design.md)
 explicitly defers them to issue #11: the role claim's name/shape, where roles live
 on the request context, how `record()` participates in a transition's transaction,
 and the interface of `assert_destructive_allowed`. This ADR pins those shapes so the
 plane-tool issues (#13+) that *call* the primitives compile against a stable surface.
 It governs `src/kdive/security/{rbac,audit,gate}.py` for issue #11; see
-[the m0 spec](../specs/m0-walking-skeleton.md) "Auth, RBAC & attribution" and
+[the m0 spec](../design/m0-walking-skeleton.md) "Auth, RBAC & attribution" and
 "Cross-cutting in M0 → Audit".
 
 ## Decision

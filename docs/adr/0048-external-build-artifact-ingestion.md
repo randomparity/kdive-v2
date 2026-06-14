@@ -8,7 +8,7 @@
   ledger), [ADR-0016](0016-repository-layer-locks-idempotency.md) (the per-Run advisory
   lock and step ledger), [ADR-0017](0017-object-store-client-interface.md) /
   [ADR-0013](0013-object-store-layout-retention.md) (the artifact store).
-- **Spec:** [`../superpowers/specs/2026-06-05-external-build-artifact-ingestion-design.md`](../superpowers/specs/2026-06-05-external-build-artifact-ingestion-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-05-external-build-artifact-ingestion-design.md`](../archive/superpowers/specs/2026-06-05-external-build-artifact-ingestion-design.md)
 
 ## Context
 

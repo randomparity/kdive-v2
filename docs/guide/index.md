@@ -49,4 +49,4 @@ given tool.
 | [Errors](errors.md) | The `ErrorCategory` taxonomy and how to recover |
 | [Tool reference](reference/index.md) | Generated per-namespace parameter reference |
 
-For the full design rationale see [`docs/specs/top-level-design.md`](../specs/top-level-design.md).
+For the full design rationale see [`docs/design/top-level-design.md`](../design/top-level-design.md).

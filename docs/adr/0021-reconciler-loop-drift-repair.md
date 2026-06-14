@@ -9,7 +9,7 @@
 
 ## Context
 
-The [m0 spec](../specs/m0-walking-skeleton.md) "Reconciler (M0 subset)" requires a
+The [m0 spec](../design/m0-walking-skeleton.md) "Reconciler (M0 subset)" requires a
 periodic core loop that repairs four drift cases between Postgres and libvirt:
 orphaned System, abandoned (zombie) job, dead DebugSession, and leaked libvirt
 domain — plus the lease-expiry policy (an abandoned run-scoped job fails its owning

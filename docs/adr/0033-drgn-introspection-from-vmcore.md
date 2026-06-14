@@ -13,9 +13,9 @@
   response envelope), [ADR-0001](0001-greenfield-rewrite.md) (the `ErrorCategory` taxonomy,
   including `debug_attach_failure`).
 - **Refines:** the M0 Debug wording in
-  [`../specs/m0-walking-skeleton.md`](../specs/m0-walking-skeleton.md) (the
+  [`../specs/m0-walking-skeleton.md`](../design/m0-walking-skeleton.md) (the
   `introspect.from_vmcore` offline-introspection surface).
-- **Spec:** [`../superpowers/specs/2026-06-04-drgn-introspection-from-vmcore-design.md`](../superpowers/specs/2026-06-04-drgn-introspection-from-vmcore-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-04-drgn-introspection-from-vmcore-design.md`](../archive/superpowers/specs/2026-06-04-drgn-introspection-from-vmcore-design.md)
 
 > **Implementation note (2026-06-08):** The MCP tool package was later split into
 > `catalog`, `lifecycle`, `debug`, `accounting`, and `ops` subpackages. The implemented

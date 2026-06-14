@@ -8,7 +8,7 @@
   read-only-by-policy passthrough — to a *tiered* opt-in, keeping read-only the default),
   [ADR-0020](0020-rbac-audit-gate-implementation.md) / [ADR-0006](0006-oidc-rbac-attribution.md)
   (the server-side RBAC, audit, and destructive-op gate that remain the real boundary),
-  [ADR-0047](0047-tool-annotations.md) (the `read_only` / `mutating` / `destructive`
+  [ADR-0047](0047-agent-facing-tool-guide-generation.md) (the `read_only` / `mutating` / `destructive`
   `ToolAnnotations` the gate classifies on).
 - **Issue:** [#368](https://github.com/randomparity/kdive/issues/368) (MCP coverage campaign
   finding F1).
@@ -21,7 +21,7 @@ exactly `True`, and refuses everything mutating, unannotated, or unknown (exit 3
 change was routed through a curated break-glass verb; there was deliberately no generic escape
 hatch.
 
-The MCP tool coverage campaign (`docs/reports/mcp-coverage-campaign-2026-06-13.md`, finding F1)
+The MCP tool coverage campaign (`docs/archive/reports/mcp-coverage-campaign-2026-06-13.md`, finding F1)
 showed the cost of that choice: of 91 registered tools, only a handful of curated verbs and the
 `images` verbs can mutate from the shipped CLI. An agent or operator restricted to `kdivectl`
 **cannot reach the bulk of the mutating/destructive tool surface at all** — not to administer,

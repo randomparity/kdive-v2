@@ -2,13 +2,13 @@
 
 - **Status:** Proposed
 - **Date:** 2026-06-04
-- **Realized by:** [`../superpowers/specs/2026-06-04-versioning-release-process-design.md`](../superpowers/specs/2026-06-04-versioning-release-process-design.md)
+- **Realized by:** [`../superpowers/specs/2026-06-04-versioning-release-process-design.md`](../archive/superpowers/specs/2026-06-04-versioning-release-process-design.md)
   (the implementation surface — `version.py`, `cliff.toml`, the justfile recipes,
   `release.yml`, `RELEASING.md` — this ADR's decisions drive)
 - **Context:** the `v0.1.0` annotated tag (M0 complete) already sketched the
   milestone→minor mapping; this ADR formalizes it before M1's `v0.2.0`.
 - **Relates to:** [ADR-0001](0001-greenfield-rewrite.md) (Python project this versions),
-  the Milestone roadmap in [`../specs/top-level-design.md`](../specs/top-level-design.md)
+  the Milestone roadmap in [`../specs/top-level-design.md`](../design/top-level-design.md)
 
 ## Context
 
@@ -18,7 +18,7 @@ we need to cut `v0.2.0`, and the user wants version info to carry a commit SHA a
 non-release marker. Without a decision record the choices (what a version protects, when
 the minor moves, how the in-tree version relates to the tag, how a build reports its SHA)
 get re-argued every review pass; this ADR pins them so they converge. The operational
-runbook lives in `docs/RELEASING.md`; this ADR owns the *decisions*, not the steps.
+runbook lives in `docs/development/releasing.md`; this ADR owns the *decisions*, not the steps.
 
 ## Decision
 

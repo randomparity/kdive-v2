@@ -7,7 +7,7 @@
   via conditional GET; both miss and mismatch are `stale_handle`) and
   [ADR-0030 §5](0030-install-boot-plane.md) (the injected `fetch_kernel`/`fetch_initrd`
   seam the install plane stages with).
-- **Spec:** [`../superpowers/specs/2026-06-04-install-boot-plane-design.md`](../superpowers/specs/2026-06-04-install-boot-plane-design.md) §5.2.
+- **Spec:** [`../superpowers/specs/2026-06-04-install-boot-plane-design.md`](../archive/superpowers/specs/2026-06-04-install-boot-plane-design.md) §5.2.
 
 ## Context
 

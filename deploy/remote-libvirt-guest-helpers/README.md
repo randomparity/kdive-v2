@@ -6,7 +6,7 @@ shell string). kdive deliberately does **not** ship these in the running image �
 boundary the operator owns. This directory holds **reference implementations** so a from-repo
 operator can produce a working base image with all required helpers (the MCP coverage campaign
 found the staged images and the repo both lacked them — see
-`docs/reports/mcp-coverage-campaign-2026-06-13.md` F7).
+`docs/archive/reports/mcp-coverage-campaign-2026-06-13.md` F7).
 
 | helper | in-guest path | plane | ADR |
 |---|---|---|---|
@@ -64,7 +64,7 @@ Copy the **whole directory** in, then for **each** helper set root ownership, mo
 label — `--copy-in` preserves the source file's uid/gid and a generic SELinux type, so on an
 SELinux-enforcing guest `guest-exec` then fails with a misleading `No such file or directory`
 (ENOENT, not EACCES) until you chown + relabel. `chmod` alone does not fix it. See
-`docs/solutions/2026-06-13-virt-customize-copyin-selinux-guest-exec-enoent.md`.
+`docs/archive/solutions/2026-06-13-virt-customize-copyin-selinux-guest-exec-enoent.md`.
 
 **Beyond the file label, the agent *domain* must not be confined.** The install helper does
 privileged system mutations through `guest-exec` (writes `/boot` + `/lib/modules`, runs

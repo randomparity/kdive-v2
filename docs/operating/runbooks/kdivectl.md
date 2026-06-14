@@ -6,8 +6,8 @@ server transport and no direct database or object-store access from the operator
 host holds only the bearer token). Curated verbs render read tools as tables/JSON; a
 fail-closed read-only `tool call` passthrough reaches the rest of the surface; the mutating
 verbs route through the M1.3 break-glass tools. See
-[ADR-0089](../adr/0089-operator-cli-mcp-client.md) and the
-[M2.2 plan](../superpowers/plans/2026-06-10-m22-admin-cli.md).
+[ADR-0089](../../adr/0089-operator-cli-mcp-client.md) and the
+[M2.2 plan](../../archive/superpowers/plans/2026-06-10-m22-admin-cli.md).
 
 Every call `kdivectl` makes is attributed: the server records the OIDC `client_id` and
 resolves an `actor`. When you authenticate under the dedicated `kdivectl` OIDC client, your

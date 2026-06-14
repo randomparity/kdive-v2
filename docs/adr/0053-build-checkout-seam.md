@@ -8,7 +8,7 @@
   `build_failure` split — §3 — this seam slots into),
   [ADR-0048](0048-external-build-artifact-ingestion.md) (the external-build lane that owns
   remote/object-store artifact resolution, which this lane deliberately does not).
-- **Spec:** [`../superpowers/specs/2026-06-06-build-checkout-seam-design.md`](../superpowers/specs/2026-06-06-build-checkout-seam-design.md).
+- **Spec:** [`../superpowers/specs/2026-06-06-build-checkout-seam-design.md`](../archive/superpowers/specs/2026-06-06-build-checkout-seam-design.md).
 - **Closes:** [#125](https://github.com/randomparity/kdive/issues/125) (gap G1 of
   [#123](https://github.com/randomparity/kdive/issues/123)).
 

@@ -9,7 +9,7 @@
   and quarantine the upload reuses), [ADR-0021](0021-reconciler-loop-drift-repair.md) (the
   drift-repair loop the prune sweep extends), and [ADR-0006](0006-oidc-rbac-attribution.md)
   (the project an upload is owned by and the `(principal, operator-cli)` audit attribution).
-- **Spec:** [`../superpowers/specs/2026-06-10-m24-image-rootfs-lifecycle-design.md`](../superpowers/specs/2026-06-10-m24-image-rootfs-lifecycle-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-10-m24-image-rootfs-lifecycle-design.md`](../archive/superpowers/specs/2026-06-10-m24-image-rootfs-lifecycle-design.md)
 - **Milestone:** M2.4
 
 ## Context

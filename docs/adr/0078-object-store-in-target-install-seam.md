@@ -11,7 +11,7 @@
   retrieve plane this reroutes), [ADR-0051](0051-install-method-conditional-crashkernel.md) /
   [ADR-0061](0061-boot-cmdline-composition.md) (the crashkernel/cmdline composition the
   in-guest install reuses).
-- **Spec:** [`../specs/m2-remote-libvirt.md`](../specs/m2-remote-libvirt.md)
+- **Spec:** [`../specs/m2-remote-libvirt.md`](../design/m2-remote-libvirt.md)
 
 ## Context
 

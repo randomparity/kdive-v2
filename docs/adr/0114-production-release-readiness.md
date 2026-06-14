@@ -28,7 +28,7 @@ Several concerns are coupled to code, not just prose:
 - The two doc generators hardcode `docs/guide/reference/` (`gen_tool_reference.py` `_REF_DIR`,
   `gen_config_reference.py` `_OUT`), and `just docs-check` / `config-docs-check` are PR gates
   that `diff` against that exact path. Moving it breaks those gates.
-- `AGENTS.md`, `README.md`, and `scripts/m2_portability_gate.py` hardcode `docs/specs/` paths.
+- `AGENTS.md`, `README.md`, and `scripts/m2_portability_gate.py` hardcode `docs/<specs>/` paths.
 - Nothing in CI checks intra-doc links, so any reorganization rots cross-references with no
   signal.
 
@@ -37,7 +37,7 @@ Several concerns are coupled to code, not just prose:
 ### 1. Audience-tiered documentation tree
 
 Re-tier `docs/` by reader, archive historical working artifacts, and add top-level entry
-points. Rename `docs/specs/` → `docs/design/` (the canonical design tier). Preserve
+points. Rename `docs/<specs>/` → `docs/design/` (the canonical design tier). Preserve
 `docs/adr/` and `docs/guide/reference/` names: `adr/` is cross-referenced by ~100 sibling
 ADRs, and `guide/reference/` is hardcoded in the doc generators and the `docs-check` CI
 gate. Target tree:
@@ -66,7 +66,7 @@ relocated directory as a checklist item, not just the rename. The complete map:
 | `runbooks/` → `operating/runbooks/` | — | `AGENTS.md:151`, `README.md:68` (`live-stack.md`) |
 | `RELEASING.md` → `development/releasing.md` | — | `AGENTS.md:138`, `README.md:106`; **the file's own relative `../adr/…` links gain a directory level** |
 | `plans/` → `archive/plans/` | `AGENTS.md:15-16,137` (bare code-span paths) | `README.md:7` (`m0/m1-implementation.md`) |
-| `reports/` → `archive/reports/` | **`justfile:140` `m2-report` writes `docs/reports/m2-portability.md`** — retarget the recipe or the archive is silently re-created outside the tier | — |
+| `reports/` → `archive/reports/` | **`justfile:140` `m2-report` writes `docs/<reports>/m2-portability.md`** — retarget the recipe or the archive is silently re-created outside the tier | — |
 | `superpowers/`, `test-cases/`, `solutions/`, `admin/` → new homes | — | intra-`docs/` links only |
 
 Markdown-link refs are caught by the link-checker (decision 2); the non-markdown and
@@ -93,7 +93,7 @@ two surfaces:
    references paths as they were when written) — without this exemption the guard fails on
    its own design specs and the entire archive. It catches the **greppable** non-markdown rot
    vectors — `m2-report`'s output path (`justfile:140`), `m2_portability_gate.py`'s
-   `docs/specs/…` string, and `AGENTS.md` code spans — which a markdown link-checker cannot see.
+   `docs/<specs>/` string, and `AGENTS.md` code spans — which a markdown link-checker cannot see.
 
 The generators' own path constants are **not** greppable and are deliberately out of
 `docs-paths` scope: `gen_tool_reference.py` `_REF_DIR` and `gen_config_reference.py` `_OUT`

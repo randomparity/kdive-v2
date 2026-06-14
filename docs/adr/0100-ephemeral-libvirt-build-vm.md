@@ -14,7 +14,7 @@
   pipeline the transport-bound build reuses unchanged), and
   [ADR-0091](0091-doctor-diagnostics-model.md) (the ephemeral-probe-guest reaper-by-marker
   pattern the build-VM reaper mirrors).
-- **Spec:** [`../superpowers/specs/2026-06-13-ephemeral-libvirt-build-vm.md`](../superpowers/specs/2026-06-13-ephemeral-libvirt-build-vm.md)
+- **Spec:** [`../superpowers/specs/2026-06-13-ephemeral-libvirt-build-vm.md`](../archive/superpowers/specs/2026-06-13-ephemeral-libvirt-build-vm.md)
 - **Issue:** [#355](https://github.com/randomparity/kdive/issues/355)
 - **Milestone:** remote build-host targets
 

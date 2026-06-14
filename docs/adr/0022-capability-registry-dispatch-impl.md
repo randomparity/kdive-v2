@@ -13,7 +13,7 @@
 to providers by matching a requested `(plane, operation, resource_kind)` against
 advertised capabilities — never by provider name — and *that* a multi-match is
 resolved deterministically by "an explicit pin → health → `cost_class` → a stable
-tiebreak". The [m0 spec](../specs/m0-walking-skeleton.md) "Plane interfaces" sketches
+tiebreak". The [m0 spec](../design/m0-walking-skeleton.md) "Plane interfaces" sketches
 `OpContract`, `Capability`, and the eight provider-plane `Protocol`s as `TypedDict`
 / `Protocol` *illustrations*. Issue #13 owns the concrete seam:
 `src/kdive/providers/capability.py`, `src/kdive/providers/interfaces.py`, and

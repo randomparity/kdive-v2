@@ -10,9 +10,9 @@
   [ADR-0020](0020-rbac-audit-gate-implementation.md) (the `require_role`/audit gate and the
   three-check destructive gate), [ADR-0021](0021-reconciler-loop-drift-repair.md) (the
   reconciler), and [ADR-0008](0008-async-worker-tier-job-queue.md) (the worker/queue tier).
-- **Spec:** [`../specs/m1.3-platform-operations.md`](../specs/m1.3-platform-operations.md) ·
+- **Spec:** [`../specs/m1.3-platform-operations.md`](../design/m1.3-platform-operations.md) ·
   **Detailed design:**
-  [`../superpowers/specs/2026-06-06-platform-operations-design.md`](../superpowers/specs/2026-06-06-platform-operations-design.md)
+  [`../superpowers/specs/2026-06-06-platform-operations-design.md`](../archive/superpowers/specs/2026-06-06-platform-operations-design.md)
 
 ## Context
 

@@ -9,7 +9,7 @@
   [ADR-0009](0009-capability-provider-dispatch.md) /
   [ADR-0022](0022-capability-registry-dispatch-impl.md) (the `resource_kind` seam)
 - **Refines:** [ADR-0011](0011-provisioning-profile-schema.md) and the M0 provisioning
-  wording in [`../specs/m0-walking-skeleton.md`](../specs/m0-walking-skeleton.md)
+  wording in [`../specs/m0-walking-skeleton.md`](../design/m0-walking-skeleton.md)
 
 ## Context
 

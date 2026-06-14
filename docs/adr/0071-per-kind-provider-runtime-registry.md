@@ -12,7 +12,7 @@
   first write a new ADR that defines how `ProviderRuntime`, handler registration, and job
   routing select a provider" — answered here with **static-kind selection**, not capability
   dispatch.
-- **Spec:** [`../specs/m1.5-fault-injection-provider.md`](../specs/m1.5-fault-injection-provider.md)
+- **Spec:** [`../specs/m1.5-fault-injection-provider.md`](../design/m1.5-fault-injection-provider.md)
 
 ## Context
 

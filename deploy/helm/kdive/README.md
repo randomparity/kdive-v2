@@ -6,7 +6,7 @@ ADR-0088 (deployment & packaging).
 
 This README is the value/flag reference. For an end-to-end bring-up — building and
 pushing the image, standing up backends, reaching the MCP endpoint, and verifying —
-follow [`docs/runbooks/kubernetes-deploy.md`](../../../docs/runbooks/kubernetes-deploy.md).
+follow [`docs/operating/runbooks/kubernetes-deploy.md`](../../../docs/operating/runbooks/kubernetes-deploy.md).
 
 ## Install (external backends, production)
 

@@ -12,7 +12,7 @@
   (the gdb-MI tier), [ADR-0033](0033-drgn-introspection-from-vmcore.md) (vmcore drgn),
   [ADR-0039](0039-ssh-transport-live-introspection.md) (the local SSH live-drgn path the remote
   guest-agent path replaces).
-- **Spec:** [`../specs/m2-remote-libvirt.md`](../specs/m2-remote-libvirt.md) §Decomposition issue 6
+- **Spec:** [`../specs/m2-remote-libvirt.md`](../design/m2-remote-libvirt.md) §Decomposition issue 6
 - **Issue:** #205
 
 ## Context

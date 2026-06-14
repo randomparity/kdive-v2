@@ -8,7 +8,7 @@
   [ADR-0023](0023-discovery-allocation-admission.md) (the discovery registration that
   populates host capabilities), [ADR-0067](0067-system-shapes-catalog.md) (a shape may name
   a `pcie_match`).
-- **Spec:** [`../specs/m1.4-system-catalog-scheduling.md`](../specs/m1.4-system-catalog-scheduling.md)
+- **Spec:** [`../specs/m1.4-system-catalog-scheduling.md`](../design/m1.4-system-catalog-scheduling.md)
 
 ## Context
 

@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-06-03
 - **Deciders:** KDIVE architecture
-- **Implements core decision:** #1 in [`../specs/top-level-design.md`](../specs/top-level-design.md)
+- **Implements core decision:** #1 in [`../specs/top-level-design.md`](../design/top-level-design.md)
 
 ## Context
 

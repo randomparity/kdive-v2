@@ -9,7 +9,7 @@
   exec/presigned-URL seam (#202) the egress probe execs through, and
   [ADR-0006](0006-oidc-rbac-attribution.md) (the `(principal, operator-cli)` audit attribution
   every diagnostics call records under).
-- **Spec:** [`../superpowers/specs/2026-06-10-m23-observability-doctor-design.md`](../superpowers/specs/2026-06-10-m23-observability-doctor-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-10-m23-observability-doctor-design.md`](../archive/superpowers/specs/2026-06-10-m23-observability-doctor-design.md)
 - **Milestone:** M2.3
 
 ## Context

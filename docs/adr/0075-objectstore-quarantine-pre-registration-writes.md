@@ -9,7 +9,7 @@
   [ADR-0012](0012-secret-backend.md) (the register-before-return `SecretBackend` and the per-op
   scope), [ADR-0013](0013-object-store-layout-retention.md) /
   [ADR-0017](0017-object-store-client-interface.md) (sensitivity carried as object metadata).
-- **Spec:** [`../superpowers/specs/2026-06-08-objectstore-quarantine-design.md`](../superpowers/specs/2026-06-08-objectstore-quarantine-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-08-objectstore-quarantine-design.md`](../archive/superpowers/specs/2026-06-08-objectstore-quarantine-design.md)
 - **Issue:** #190.
 
 ## Context

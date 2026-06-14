@@ -3,8 +3,8 @@
 Operator guide for standing up the M1.2 live stack and running the `live_stack` suite.
 The suite drives the full kdive spine over the real MCP HTTP transport against a running
 `server`/`worker`/`reconciler` and the containerized backing services. See
-[ADR-0042](../adr/0042-live-stack-e2e-mcp-http.md) for the decision and
-[`docs/plans/m1.2-implementation.md`](../plans/m1.2-implementation.md) for the epic.
+[ADR-0042](../../adr/0042-live-stack-e2e-mcp-http.md) for the decision and
+[`docs/archive/plans/m1.2-implementation.md`](../../archive/plans/m1.2-implementation.md) for the epic.
 
 The `server`, `worker`, and `reconciler` run **on the host** (not in containers) against
 the `docker-compose.yml` backends, so qemu disk-image and kernel-tree paths resolve where
@@ -22,8 +22,8 @@ kdump catalog default, the kernel-build-config provisioning milestone's acceptan
 The `just` recipes below are source-tree conveniences. Installed-package deployments use
 `python -m kdive migrate` and `python -m kdive seed-demo`, then run the app tier from the
 compose reference (`docker compose up -d migrate server worker reconciler`); see
-[`docs/admin/local-stack.md`](../admin/local-stack.md) and
-[`deploy/compose/README.md`](../../deploy/compose/README.md). For a **Kubernetes / Helm**
+[`docs/operating/local-stack.md`](../local-stack.md) and
+[`deploy/compose/README.md`](../../../deploy/compose/README.md). For a **Kubernetes / Helm**
 deployment (the production-shaped path), see
 [`kubernetes-deploy.md`](kubernetes-deploy.md).
 
@@ -39,7 +39,7 @@ deployment (the production-shaped path), see
   locally built one, verify its signature first. The release workflow cosign-signs each
   released digest keyless/OIDC and attaches an SBOM (ADR-0088 decision 8); the consumer
   `cosign verify` check is in
-  [`deploy/compose/README.md`](../../deploy/compose/README.md#image-provenance--verify-before-you-run-a-published-image).
+  [`deploy/compose/README.md`](../../../deploy/compose/README.md#image-provenance--verify-before-you-run-a-published-image).
 
 ## 1. Bring up the backends
 
@@ -81,7 +81,7 @@ aws s3api put-bucket-lifecycle-configuration --bucket "$KDIVE_S3_BUCKET" \
 
 The source-tree wrappers source `scripts/live-stack/env.sh`, which exports the local
 defaults before starting KDIVE. The full set of `KDIVE_*` variables is in
-[the config reference](../guide/reference/config.md); the live-run subset is below.
+[the config reference](../../guide/reference/config.md); the live-run subset is below.
 
 **The most error-prone step:** the object store reads S3 **credentials from boto3's
 default chain** (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`), **not** from `KDIVE_S3_*`.
@@ -163,7 +163,7 @@ just stack-stop
 ```
 
 Installed package — migrate and seed on the host, then run the app tier from the compose
-reference ([`deploy/compose/README.md`](../../deploy/compose/README.md)):
+reference ([`deploy/compose/README.md`](../../../deploy/compose/README.md)):
 
 ```bash
 python -m kdive migrate

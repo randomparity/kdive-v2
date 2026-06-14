@@ -12,7 +12,7 @@
   (the precedent for adding a taxonomy value for a genuine new failure mode), and
   [ADR-0077](0077-qemu-tls-control-transport.md) (the secret-by-reference + materialized
   credential-file pattern reused for the SSH identity).
-- **Spec:** [`../superpowers/specs/2026-06-13-remote-build-host-design.md`](../superpowers/specs/2026-06-13-remote-build-host-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-13-remote-build-host-design.md`](../archive/superpowers/specs/2026-06-13-remote-build-host-design.md)
 - **Issue:** [#342](https://github.com/randomparity/kdive/issues/342)
 - **Milestone:** remote build-host targets
 

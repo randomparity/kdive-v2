@@ -10,7 +10,7 @@
 - **Supersedes:** The `config_ref` and remote-reference decisions in
   [ADR-0053](0053-build-checkout-seam.md). ADR-0053 still describes the current
   implemented checkout seam until this ADR's follow-on implementation replaces it.
-- **Spec:** [`../superpowers/specs/2026-06-07-local-libvirt-fixture-design.md`](../superpowers/specs/2026-06-07-local-libvirt-fixture-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-07-local-libvirt-fixture-design.md`](../archive/superpowers/specs/2026-06-07-local-libvirt-fixture-design.md)
 
 ## Context
 

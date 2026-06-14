@@ -8,7 +8,7 @@
   build configs), [ADR-0081](0081-remote-build-kernel-bundle.md) (the remote worker `make` build whose
   config-staging step this rewrites), and [ADR-0065](0065-provider-component-references.md) (the
   component-reference kinds whose `local` config ref this replaces with a `catalog` ref).
-- **Spec:** [`../superpowers/specs/2026-06-11-kdump-config-provisioning-design.md`](../superpowers/specs/2026-06-11-kdump-config-provisioning-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-11-kdump-config-provisioning-design.md`](../archive/superpowers/specs/2026-06-11-kdump-config-provisioning-design.md)
 - **Milestone:** kernel-build-config provisioning
 
 ## Context

@@ -8,7 +8,7 @@
   (the typed ports the wiring perturbs), [ADR-0021](0021-reconciler-loop-drift-repair.md)
   (the reconciler passes the wired faults drive), [ADR-0036](0036-reservation-lease-semantics.md)
   (the lease window a latency-perturbed op races).
-- **Spec:** [`../specs/m1.5-fault-injection-provider.md`](../specs/m1.5-fault-injection-provider.md)
+- **Spec:** [`../specs/m1.5-fault-injection-provider.md`](../design/m1.5-fault-injection-provider.md)
   §Validation surface (issue 5).
 
 ## Context

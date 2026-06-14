@@ -9,7 +9,7 @@
   (the `phase`/`SpinePhaseError` naming contract this phase reuses).
 - **Depends on:** the merged `accounting.report` tool (#97, M1.1 P2) and the merged spine
   driver (#100, sub-issue D). This ADR adds the **`report` phase** appended to that spine.
-- **Spec:** [`../superpowers/specs/2026-06-05-accounting-assertions-report-artifact-design.md`](../superpowers/specs/2026-06-05-accounting-assertions-report-artifact-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-05-accounting-assertions-report-artifact-design.md`](../archive/superpowers/specs/2026-06-05-accounting-assertions-report-artifact-design.md)
 
 ## Context
 

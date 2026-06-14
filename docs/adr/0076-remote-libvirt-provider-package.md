@@ -8,7 +8,7 @@
   [ADR-0063](0063-typed-provider-runtime.md) (the typed port seam the package satisfies),
   [ADR-0004](0004-first-slice-local-libvirt.md) (the local-libvirt first slice this provider
   supersedes for production use).
-- **Spec:** [`../specs/m2-remote-libvirt.md`](../specs/m2-remote-libvirt.md)
+- **Spec:** [`../specs/m2-remote-libvirt.md`](../design/m2-remote-libvirt.md)
 
 ## Context
 

@@ -11,7 +11,7 @@
   M1.3 break-glass path), [ADR-0087](0087-config-registry.md) (the
   `KDIVE_*` registry the CLI resolves the server URL and token settings from),
   [ADR-0088](0088-deployment-packaging.md) (the image the `kdivectl` entry point ships in).
-- **Spec:** [`../superpowers/specs/2026-06-10-m22-admin-cli-design.md`](../superpowers/specs/2026-06-10-m22-admin-cli-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-10-m22-admin-cli-design.md`](../archive/superpowers/specs/2026-06-10-m22-admin-cli-design.md)
 - **Milestone:** M2.2
 
 ## Context

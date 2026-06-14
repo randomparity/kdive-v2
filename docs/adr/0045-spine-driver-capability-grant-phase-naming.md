@@ -6,7 +6,7 @@
 - **Refines:** [ADR-0042](0042-live-stack-e2e-mcp-http.md) §4 (phase-structured spine) and
   the three-check destructive gate ([ADR-0028](0028-control-plane-power-force-crash.md),
   [ADR-0020](0020-rbac-audit-gate-implementation.md)).
-- **Spec:** [`../superpowers/specs/2026-06-04-spine-driver-design.md`](../superpowers/specs/2026-06-04-spine-driver-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-04-spine-driver-design.md`](../archive/superpowers/specs/2026-06-04-spine-driver-design.md)
   (sub-issue D / [#100](https://github.com/randomparity/kdive/issues/100)).
 
 ## Context

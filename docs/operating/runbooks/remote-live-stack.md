@@ -5,12 +5,12 @@ libvirt/QEMU host the server/worker tier does not share a filesystem with. It mi
 [local live-stack runbook](live-stack.md) and runs the same `live_stack` suite
 (`tests/integration/test_remote_live_stack.py`), but adds what a remote host needs over the
 local one: worker→host TLS, the gdbstub-port ACL, and object-store reachability for the
-two-phase vmcore upload. See [ADR-0042](../adr/0042-live-stack-e2e-mcp-http.md) (the operator-run
-e2e shape), [ADR-0076](../adr/0076-remote-libvirt-provider-package.md) (the provider package +
-portability gate), [ADR-0079](../adr/0079-remote-live-debug-transport.md) (the gdbstub ACL +
-in-guest debug), and [ADR-0084](../adr/0084-remote-control-two-phase-vmcore-retrieve.md) (the
+two-phase vmcore upload. See [ADR-0042](../../adr/0042-live-stack-e2e-mcp-http.md) (the operator-run
+e2e shape), [ADR-0076](../../adr/0076-remote-libvirt-provider-package.md) (the provider package +
+portability gate), [ADR-0079](../../adr/0079-remote-live-debug-transport.md) (the gdbstub ACL +
+in-guest debug), and [ADR-0084](../../adr/0084-remote-control-two-phase-vmcore-retrieve.md) (the
 two-phase KDUMP capture). The design is in
-[the spec](../superpowers/specs/2026-06-09-remote-live-stack-e2e-207.md).
+[the spec](../../archive/superpowers/specs/2026-06-09-remote-live-stack-e2e-207.md).
 
 This is **operator-run, not CI**: the suite is `live_stack`-marked and CI deselects it. The
 preflight skips cleanly — naming the missing variable — unless every prerequisite below is
@@ -140,22 +140,22 @@ Two operational notes:
 
 At the M2.5 exit the remote provider advertises **all four** capture methods —
 `{console, host_dump, gdbstub, kdump}` — so a `just m2-report` records remote at **4/4** (see
-`docs/reports/m2-portability.md`, *Capture-method coverage*). The capstone exercise
+`docs/archive/reports/m2-portability.md`, *Capture-method coverage*). The capstone exercise
 (`test_remote_four_method_capture_over_the_wire`) proves all four against the live remote spine.
 It runs under the same `live_stack` gate as the spine above: configure the prerequisites in steps
 1–4, then `just test-live-stack` collects it.
 
 The exercise drives **two** Systems because `host_dump` and `kdump` are both *vmcore* methods that
-need a `crashed` System, and `ensure_method_match` (#118/[ADR-0050](../adr/0050-vmcore-method-aware-storage.md))
+need a `crashed` System, and `ensure_method_match` (#118/[ADR-0050](../../adr/0050-vmcore-method-aware-storage.md))
 makes the **first captured method win per System** — a second vmcore method on the same System is
 rejected with `configuration_error`. So they cannot share a System:
 
 | method | System | what it proves |
 |--------|--------|----------------|
-| `host_dump` | **A** — provisioned to `ready`, then crashed | host-side `virDomainCoreDumpWithFormat` → storage-pool volume → stream-download ([ADR-0094](../adr/0094-remote-host-dump-via-coredump-volume.md)); **no** in-guest kdump kernel needed |
-| `gdbstub` | **B** — booted | direct-TCP gdb-MI attach to a running System ([ADR-0083](../adr/0083-remote-connect-debug-plane.md)) |
-| `kdump` | **B** — booted, then crashed | the two-phase in-guest capture kernel → presigned-PUT upload ([ADR-0084](../adr/0084-remote-control-two-phase-vmcore-retrieve.md)) |
-| `console` | **B** — boot→crash lifetime | the reconciler-hosted `virDomainOpenConsole` collector ([ADR-0095](../adr/0095-reconciler-remote-console-collector.md)); the single artifact assembles on teardown-finalize, so it is asserted **after** System B is `torn_down` |
+| `host_dump` | **A** — provisioned to `ready`, then crashed | host-side `virDomainCoreDumpWithFormat` → storage-pool volume → stream-download ([ADR-0094](../../adr/0094-remote-host-dump-via-coredump-volume.md)); **no** in-guest kdump kernel needed |
+| `gdbstub` | **B** — booted | direct-TCP gdb-MI attach to a running System ([ADR-0083](../../adr/0083-remote-connect-debug-plane.md)) |
+| `kdump` | **B** — booted, then crashed | the two-phase in-guest capture kernel → presigned-PUT upload ([ADR-0084](../../adr/0084-remote-control-two-phase-vmcore-retrieve.md)) |
+| `console` | **B** — boot→crash lifetime | the reconciler-hosted `virDomainOpenConsole` collector ([ADR-0095](../../adr/0095-reconciler-remote-console-collector.md)); the single artifact assembles on teardown-finalize, so it is asserted **after** System B is `torn_down` |
 
 Operator notes:
 
@@ -196,5 +196,5 @@ In-guest drgn-**live** MCP routing is a deferred follow-up (#215). The remote sp
 phase uses the **worker-side** vmcore postmortem (`introspect.from_vmcore`), which fetches the
 core from the object store and runs the report on the worker — no live in-guest reachability
 needed. The portability gate (`just m2-gate`) and its committed report
-(`docs/reports/m2-portability.md`) confirm the remote provider added no provider-specific logic
+(`docs/archive/reports/m2-portability.md`) confirm the remote provider added no provider-specific logic
 to core or `mcp/tools/*` beyond the ADR-0076 allowlist.

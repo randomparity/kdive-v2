@@ -6,7 +6,7 @@
   references, not raw logs), [ADR-0030](0030-install-boot-plane.md) (the `runs.boot`
   worker step), [ADR-0049](0049-crash-capture-tiers.md) (console artifact capture),
   [ADR-0055](0055-install-readiness-kdump-seam.md) (console readiness/crash classifier).
-- **Spec:** [`../superpowers/specs/2026-06-07-expected-boot-failures-artifact-search-design.md`](../superpowers/specs/2026-06-07-expected-boot-failures-artifact-search-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-07-expected-boot-failures-artifact-search-design.md`](../archive/superpowers/specs/2026-06-07-expected-boot-failures-artifact-search-design.md)
 
 ## Context
 

@@ -7,11 +7,11 @@
   (the `build_hosts` inventory, the `state` column with its `ready`/`unreachable`
   CHECK, the selection seam that already fails closed on `state='unreachable'`, and the
   `SshBuildTransport` + materialized-identity credential pattern this probe reuses),
-  [ADR-0086](0086-dead-worker-gdbstub-reset.md) (the reconciler→provider port pattern —
+  [ADR-0086](0086-dead-worker-gdbstub-reconciler-reset.md) (the reconciler→provider port pattern —
   a narrow protocol the reconciler calls without importing a provider), and
   [ADR-0095](0095-reconciler-remote-console-collector.md) (the optional `| None`
   reconciler port wired only when its provider support is present).
-- **Spec:** [`../superpowers/specs/2026-06-13-build-host-reachability-probe.md`](../superpowers/specs/2026-06-13-build-host-reachability-probe.md)
+- **Spec:** [`../superpowers/specs/2026-06-13-build-host-reachability-probe.md`](../archive/superpowers/specs/2026-06-13-build-host-reachability-probe.md)
 - **Issue:** [#359](https://github.com/randomparity/kdive/issues/359)
 
 ## Context

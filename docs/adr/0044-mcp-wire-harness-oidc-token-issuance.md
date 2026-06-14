@@ -11,7 +11,7 @@
   (`roles` claim + `roles_from_claims`), [ADR-0010](0010-fastmcp-framework-auth.md)
   (`JWTVerifier`), and the claim shapes named by [ADR-0043](0043-platform-scoped-rbac-tier.md)
   (the `platform_roles` array claim).
-- **Spec:** [`../superpowers/specs/2026-06-04-mcp-wire-harness-oidc-design.md`](../superpowers/specs/2026-06-04-mcp-wire-harness-oidc-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-04-mcp-wire-harness-oidc-design.md`](../archive/superpowers/specs/2026-06-04-mcp-wire-harness-oidc-design.md)
 
 ## Context
 

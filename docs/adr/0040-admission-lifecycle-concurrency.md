@@ -11,7 +11,7 @@
   [ADR-0007](0007-metering-budgets-admission.md) §5 (budget/quota gate) and
   [ADR-0036](0036-reservation-lease-semantics.md) §4 (the `→expired` sweep)
 - **Refines:** the "Admission control", "Reservation / lease", and "Reconciler" sections
-  of [`../specs/m1-allocation-accounting.md`](../specs/m1-allocation-accounting.md)
+  of [`../specs/m1-allocation-accounting.md`](../design/m1-allocation-accounting.md)
 
 ## Context
 

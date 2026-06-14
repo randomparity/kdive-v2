@@ -8,7 +8,7 @@
   [ADR-0093](0093-private-image-uploads.md) (the DB `image_catalog` — this ADR revises the
   catalog *source*: YAML-seed → config-reconcile), and the reconciler drift-repair loop
   ([ADR-0021](0021-reconciler-loop-drift-repair.md)).
-- **Spec:** [`../superpowers/specs/2026-06-14-systems-config-consolidation-design.md`](../superpowers/specs/2026-06-14-systems-config-consolidation-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-14-systems-config-consolidation-design.md`](../archive/superpowers/specs/2026-06-14-systems-config-consolidation-design.md)
 - **Issue:** [#385](https://github.com/randomparity/kdive/issues/385) (fault-inject capacity is
   hardcoded/incomplete — fixed by Phase 2's config-declared capacity).
 

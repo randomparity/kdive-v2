@@ -11,7 +11,7 @@
   (the gdb-MI tier), [ADR-0033](0033-drgn-introspection-from-vmcore.md) (vmcore drgn),
   [ADR-0039](0039-ssh-transport-live-introspection.md) (the live drgn introspection this routes
   through the guest agent instead of SSH).
-- **Spec:** [`../specs/m2-remote-libvirt.md`](../specs/m2-remote-libvirt.md)
+- **Spec:** [`../specs/m2-remote-libvirt.md`](../design/m2-remote-libvirt.md)
 
 ## Context
 

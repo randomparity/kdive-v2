@@ -1,6 +1,6 @@
 # Releasing
 
-This project follows [ADR-0041](adr/0041-versioning-release-process.md): SemVer in the
+This project follows [ADR-0041](../adr/0041-versioning-release-process.md): SemVer in the
 `0.y.z` phase, milestone→minor, with the **in-tree version always pointing at the next
 unreleased version** so a `-dev` build is never ambiguous across a release boundary.
 
@@ -30,7 +30,7 @@ Never hand-edit the version: editing `pyproject.toml` alone desyncs `uv.lock` an
 4. Open the post-release "begin `<next>`-dev" bump PR (above) and **merge it before any
    other PR to `main`**. Until it lands, `main` still reads the just-released version, so a
    commit merged ahead of it would report `X.Y.Z-dev` meaning "after" the release —
-   reopening the ambiguity the scheme exists to prevent ([ADR-0041](adr/0041-versioning-release-process.md)
+   reopening the ambiguity the scheme exists to prevent ([ADR-0041](../adr/0041-versioning-release-process.md)
    decision 3). Treat `main` as frozen for normal merges until the bump is in.
 
 ## Container image publishing
@@ -56,7 +56,7 @@ git-cliff categorizes from the commit message, so two cases need an explicit mar
 are mis- or under-reported:
 
 - **Breaking changes** (a renamed/removed MCP tool, a changed `ToolResponse` shape, a
-  non-back-compatible migration — the contract in [ADR-0041](adr/0041-versioning-release-process.md)
+  non-back-compatible migration — the contract in [ADR-0041](../adr/0041-versioning-release-process.md)
   decision 1) **must** carry a `!` (`feat!: …`) or a `BREAKING CHANGE:` footer. Without it
   the change lands only in its normal group and the `⚠ Breaking Changes` heading misses it —
   and a breaking change forces a **minor** bump, so this is load-bearing.

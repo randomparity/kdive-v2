@@ -12,7 +12,7 @@
   [ADR-0021](0021-reconciler-loop-drift-repair.md) (the reconciler loop the sweep joins),
   [ADR-0062](0062-platform-operations.md) (the `cordoned` schedulability flag placement
   honors).
-- **Spec:** [`../specs/m1.4-system-catalog-scheduling.md`](../specs/m1.4-system-catalog-scheduling.md)
+- **Spec:** [`../specs/m1.4-system-catalog-scheduling.md`](../design/m1.4-system-catalog-scheduling.md)
 
 ## Context
 

@@ -8,7 +8,7 @@
   existing `SecretRegistry`), [ADR-0014](0014-structured-logging.md) (logging is configured
   first at process start, ahead of full registry validation — see the bootstrap-ordering
   note in decision 4).
-- **Spec:** [`../superpowers/specs/2026-06-10-m21-deployment-packaging-design.md`](../superpowers/specs/2026-06-10-m21-deployment-packaging-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-10-m21-deployment-packaging-design.md`](../archive/superpowers/specs/2026-06-10-m21-deployment-packaging-design.md)
 - **Milestone:** #13 (M2.1)
 
 ## Context

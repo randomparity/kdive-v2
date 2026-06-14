@@ -1,10 +1,10 @@
 # MCP Tool Coverage Campaign — Rerun Runbook
 
 Repeatable procedure to re-run the MCP tool coverage campaign
-(`docs/reports/mcp-coverage-campaign-2026-06-13.md`). Drives every reachable MCP tool over the
+(`docs/archive/reports/mcp-coverage-campaign-2026-06-13.md`). Drives every reachable MCP tool over the
 live transport across local-libvirt, remote-libvirt, and fault-inject, records per-cell
 verdicts, and renders the coverage grid. Companion setup reference:
-`docs/reports/provider-configuration-requirements.md`.
+`docs/archive/reports/provider-configuration-requirements.md`.
 
 Committed tooling used here:
 - `systems.toml.example` — root-level scaffold for the **systems descriptor** (see below).
@@ -26,8 +26,8 @@ fetched TLS certs, guest helpers).
 - Workstation: KVM/libvirt, Docker, `uv`, `gh` authed, this repo.
 - Remote host (e.g. ub24-big): libvirt+qemu+`qemu+tls` listener on 16514, a staged base image
   **carrying the in-guest helpers** (`deploy/remote-libvirt-guest-helpers/`), and a gdbstub
-  port range. See `docs/runbooks/remote-libvirt-host-setup.md`.
-- k8s cluster (D2): kdive deployed via the chart. See `docs/runbooks/kubernetes-deploy.md`.
+  port range. See `docs/operating/runbooks/remote-libvirt-host-setup.md`.
+- k8s cluster (D2): kdive deployed via the chart. See `docs/operating/runbooks/kubernetes-deploy.md`.
 
 ## Phase 0 — bring-up
 

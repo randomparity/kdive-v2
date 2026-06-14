@@ -11,7 +11,7 @@
   follows), [ADR-0025](0025-provisioning-plane-libvirt.md) (System lifecycle this binds to),
   [ADR-0003](0003-six-durable-objects.md) (the object model and the binding invariant)
 - **Refines:** the M0 Investigation/Run wording in
-  [`../specs/m0-walking-skeleton.md`](../specs/m0-walking-skeleton.md) ("Domain objects
+  [`../specs/m0-walking-skeleton.md`](../design/m0-walking-skeleton.md) ("Domain objects
   in M0 → Investigation/Run", "MCP tool surface → Investigate/Run", "Failure & retry")
 
 ## Context

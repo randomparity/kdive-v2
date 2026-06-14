@@ -9,8 +9,8 @@
   [ADR-0072](0072-fault-injection-provider-seeded-engine.md) (the mock provider that does the
   resolving), [ADR-0071](0071-per-kind-provider-runtime-registry.md) (the registry that
   selects it), the cross-cutting redaction contract in
-  [`../specs/top-level-design.md`](../specs/top-level-design.md) §Cross-cutting concerns.
-- **Spec:** [`../specs/m1.5-fault-injection-provider.md`](../specs/m1.5-fault-injection-provider.md)
+  [`../specs/top-level-design.md`](../design/top-level-design.md) §Cross-cutting concerns.
+- **Spec:** [`../specs/m1.5-fault-injection-provider.md`](../design/m1.5-fault-injection-provider.md)
 
 ## Context
 

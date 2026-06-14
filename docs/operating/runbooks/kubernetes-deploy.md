@@ -1,7 +1,7 @@
 # Runbook: Kubernetes / Helm deployment
 
 Operator guide for deploying the kdive control plane — `server`, `worker`, `reconciler`, plus a
-migrate one-shot — on Kubernetes with the [Helm chart](../../deploy/helm/kdive/README.md)
+migrate one-shot — on Kubernetes with the [Helm chart](../../../deploy/helm/kdive/README.md)
 (ADR-0088). This is the **production-shaped** path; the
 [live-stack runbook](live-stack.md) covers the source-tree (`just`) and `docker compose`
 deployments. For driving the spine against a remote `qemu+tls://` libvirt host once the stack is
@@ -23,7 +23,7 @@ and the generic-cluster equivalent is given alongside.
   (MinIO/AWS S3), and an OIDC issuer. For a throwaway demo instead, the first-party bundled-backend
   path (`-f deploy/helm/kdive/values-demo.yaml`, verified with `helm test`) stands up in-chart
   Postgres/MinIO/mock-OIDC on `emptyDir` — see the
-  [chart README](../../deploy/helm/kdive/README.md#bundled-backends-demo-only). It is `emptyDir`-only
+  [chart README](../../../deploy/helm/kdive/README.md#bundled-backends-demo-only). It is `emptyDir`-only
   and **not** for anything you want to keep.
 - A `StorageClass` for the worker's build/install PVCs (microk8s: `microk8s enable
   hostpath-storage`).
@@ -53,7 +53,7 @@ docker push localhost:32000/kdive:$SHA           # in-cluster ref: localhost:320
 
 Point the chart at the image with `--set image.repository=<registry>/kdive --set image.tag=$SHA`
 (below). If you instead consume a **published, signed** release image, `cosign verify` it first —
-see the [compose README](../../deploy/compose/README.md#image-provenance--verify-before-you-run-a-published-image).
+see the [compose README](../../../deploy/compose/README.md#image-provenance--verify-before-you-run-a-published-image).
 
 ## 2. Stand up the external backends
 

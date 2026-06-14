@@ -8,7 +8,7 @@
   [ADR-0044](0044-mcp-wire-harness-oidc-token-issuance.md) (the live-stack client's
   `structured_content` parsing contract — also unchanged).
 - **Issue:** [#404](https://github.com/randomparity/kdive/issues/404).
-- **Spec:** [`../superpowers/specs/2026-06-14-flat-tool-output-schema.md`](../superpowers/specs/2026-06-14-flat-tool-output-schema.md).
+- **Spec:** [`../superpowers/specs/2026-06-14-flat-tool-output-schema.md`](../archive/superpowers/specs/2026-06-14-flat-tool-output-schema.md).
 
 ## Context
 

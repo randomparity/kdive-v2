@@ -6,8 +6,8 @@ M2 contract faults and records that `doctor` names the **exact fix** for each. T
 band-gate (M3-entry) evidence: `doctor` is built in this same band, so it cannot be its own
 sole oracle — a human-run record on real infrastructure closes that loop.
 
-See [ADR-0091](../adr/0091-doctor-diagnostics-model.md) (diagnostics model, exit codes) and
-[ADR-0090](../adr/0090-opentelemetry-adoption-service-health.md) (health endpoints). The
+See [ADR-0091](../../adr/0091-doctor-diagnostics-model.md) (diagnostics model, exit codes) and
+[ADR-0090](../../adr/0090-opentelemetry-adoption-service-health.md) (health endpoints). The
 CI-tier proof of the same four faults (seeded through the real checks with fakes) lives in
 `tests/integration/test_doctor_exit_criterion.py` and runs in normal CI; this runbook is the
 **live** complement that exercises the one hop CI cannot — a real guest's egress to

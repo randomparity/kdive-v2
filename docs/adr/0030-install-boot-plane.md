@@ -16,11 +16,11 @@
   [ADR-0017](0017-object-store-client-interface.md) (the artifact store the staged
   kernel is fetched from).
 - **Refines:** the M0 Install/Boot wording in
-  [`../specs/m0-walking-skeleton.md`](../specs/m0-walking-skeleton.md) ("Local-libvirt
+  [`../specs/m0-walking-skeleton.md`](../design/m0-walking-skeleton.md) ("Local-libvirt
   provider → Install", the "kdump prerequisite", "run-readiness preflight → Run
   lifecycle") and the issue-19 scope in
-  [`../plans/m0-implementation.md`](../plans/m0-implementation.md).
-- **Spec:** [`../superpowers/specs/2026-06-04-install-boot-plane-design.md`](../superpowers/specs/2026-06-04-install-boot-plane-design.md)
+  [`../plans/m0-implementation.md`](../archive/plans/m0-implementation.md).
+- **Spec:** [`../superpowers/specs/2026-06-04-install-boot-plane-design.md`](../archive/superpowers/specs/2026-06-04-install-boot-plane-design.md)
 
 ## Context
 

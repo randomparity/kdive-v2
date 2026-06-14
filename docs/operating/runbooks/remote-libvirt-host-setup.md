@@ -206,7 +206,7 @@ into the base image. **For each helper you must `chown root:root` + `restorecon`
 `chmod`** — `--copy-in` preserves the workstation uid/gid and a generic SELinux type, so on an
 SELinux-enforcing guest `guest-exec` later fails with a misleading `No such file or directory`
 (ENOENT, not EACCES). See
-[`docs/solutions/2026-06-13-virt-customize-copyin-selinux-guest-exec-enoent.md`](../solutions/2026-06-13-virt-customize-copyin-selinux-guest-exec-enoent.md).
+[`docs/archive/solutions/2026-06-13-virt-customize-copyin-selinux-guest-exec-enoent.md`](../../archive/solutions/2026-06-13-virt-customize-copyin-selinux-guest-exec-enoent.md).
 
 ```bash
 HELPERS="kdive-install-kernel kdive-capture-vmcore kdive-drgn"
@@ -222,7 +222,7 @@ virt-customize -a /var/lib/libvirt/images/fedora-kdive-remote-base-43.qcow2 "${a
 
 The canonical install recipe, the exact argv/JSON contract each helper satisfies, and the
 package prerequisites live in
-[`deploy/remote-libvirt-guest-helpers/README.md`](../../deploy/remote-libvirt-guest-helpers/README.md).
+[`deploy/remote-libvirt-guest-helpers/README.md`](../../../deploy/remote-libvirt-guest-helpers/README.md).
 
 ## 6. gdbstub-port ACL
 

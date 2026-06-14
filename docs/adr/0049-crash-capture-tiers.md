@@ -11,7 +11,7 @@
   provider-namespaced profile this adds a `debug` block to).
 - **Precedent:** [ADR-0039](0039-ssh-transport-live-introspection.md) (kind/method as a
   runtime argument behind one capability, provider-validated).
-- **Spec:** [`../superpowers/specs/2026-06-05-crash-capture-tiers-design.md`](../superpowers/specs/2026-06-05-crash-capture-tiers-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-05-crash-capture-tiers-design.md`](../archive/superpowers/specs/2026-06-05-crash-capture-tiers-design.md)
 
 ## Context
 

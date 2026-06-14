@@ -8,7 +8,7 @@
   (the `runs.install` admission gate and `<cmdline>` rendering this makes method-conditional),
   [ADR-0024](0024-provisioning-profile-model-shape.md) (the provider-namespaced profile this
   resolves the method from).
-- **Spec:** [`../superpowers/specs/2026-06-05-crash-capture-tiers-design.md`](../superpowers/specs/2026-06-05-crash-capture-tiers-design.md) §8.
+- **Spec:** [`../superpowers/specs/2026-06-05-crash-capture-tiers-design.md`](../archive/superpowers/specs/2026-06-05-crash-capture-tiers-design.md) §8.
 - **Closes:** [#116](https://github.com/randomparity/kdive/issues/116).
 
 ## Context

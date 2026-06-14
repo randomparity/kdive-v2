@@ -9,7 +9,7 @@
   [ADR-0020](0020-rbac-audit-gate-implementation.md) (RBAC reads gate on project membership;
   an ungranted row is rendered as absent), [ADR-0089](0089-operator-cli-mcp-client.md) (the
   CLI exit-code contract that already reserves `4 = not_found` and `5 = conflict`).
-- **Spec:** [`../superpowers/specs/2026-06-12-error-taxonomy-not-found-conflict.md`](../superpowers/specs/2026-06-12-error-taxonomy-not-found-conflict.md)
+- **Spec:** [`../superpowers/specs/2026-06-12-error-taxonomy-not-found-conflict.md`](../archive/superpowers/specs/2026-06-12-error-taxonomy-not-found-conflict.md)
 - **Issue:** #338 (finding S1)
 
 ## Context

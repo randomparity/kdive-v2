@@ -11,8 +11,8 @@
   per-Allocation lock and single-reconciliation guarantee for the `→expired` sweep;
   renew idempotency)
 - **Refines:** the Allocation lifecycle in
-  [`../specs/top-level-design.md`](../specs/top-level-design.md) and
-  [`../specs/m1-allocation-accounting.md`](../specs/m1-allocation-accounting.md)
+  [`../specs/top-level-design.md`](../design/top-level-design.md) and
+  [`../specs/m1-allocation-accounting.md`](../design/m1-allocation-accounting.md)
 
 ## Context
 

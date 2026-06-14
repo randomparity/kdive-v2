@@ -7,7 +7,7 @@
   reserve-at-grant / reconcile-at-release ledger the reclaim reuses), [ADR-0069](0069-reservation-pending-queue-scheduler.md)
   (the `OCCUPYING` host-cap predicate a leaked `active` allocation wedges, and the promotion
   sweep that fills the freed slot).
-- **Spec:** [`../superpowers/specs/2026-06-13-reap-leaked-active-allocation-design.md`](../superpowers/specs/2026-06-13-reap-leaked-active-allocation-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-13-reap-leaked-active-allocation-design.md`](../archive/superpowers/specs/2026-06-13-reap-leaked-active-allocation-design.md)
 - **Issue:** [#371](https://github.com/randomparity/kdive/issues/371).
 
 ## Context

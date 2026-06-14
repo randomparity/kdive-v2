@@ -11,7 +11,7 @@
 - **Unblocks:** ADR-0042 §6 and the live-stack epic's `accounting.report` sub-issue, which
   recorded an incoherent "admin, cross-project" scope; that report's scope becomes
   `platform_auditor` here.
-- **Spec:** [`../superpowers/specs/2026-06-04-platform-rbac-tier-design.md`](../superpowers/specs/2026-06-04-platform-rbac-tier-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-04-platform-rbac-tier-design.md`](../archive/superpowers/specs/2026-06-04-platform-rbac-tier-design.md)
 
 ## Context
 
@@ -197,7 +197,7 @@ not an authorization denial (consistent with §4).
 
 The ADR fixes the role mapping for all of these so the seam is shaped for them, but they ship
 in a later milestone — **M1.3, "Platform operations"** in the founding roadmap
-([`../specs/top-level-design.md`](../specs/top-level-design.md), the M1.x local-libvirt
+([`../specs/top-level-design.md`](../design/top-level-design.md), the M1.x local-libvirt
 feature-deepening band):
 
 - **`platform_operator` infra tools** — `resources.set_status`/cordon, `resources.drain`,

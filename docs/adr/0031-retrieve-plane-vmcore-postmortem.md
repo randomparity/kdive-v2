@@ -18,10 +18,10 @@
   on), [ADR-0026](0026-investigation-run-lifecycle.md) (the Run that carries
   `debuginfo_ref`), [ADR-0019](0019-tool-response-envelope.md) (the response envelope).
 - **Refines:** the M0 Retrieve wording in
-  [`../specs/m0-walking-skeleton.md`](../specs/m0-walking-skeleton.md) (the
+  [`../specs/m0-walking-skeleton.md`](../design/m0-walking-skeleton.md) (the
   `vmcore.list(system_id)` / `vmcore.fetch(system_id)` surface and the
   `sensitive`/`redacted` artifact rule).
-- **Spec:** [`../superpowers/specs/2026-06-04-retrieve-plane-design.md`](../superpowers/specs/2026-06-04-retrieve-plane-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-04-retrieve-plane-design.md`](../archive/superpowers/specs/2026-06-04-retrieve-plane-design.md)
 
 ## Context
 

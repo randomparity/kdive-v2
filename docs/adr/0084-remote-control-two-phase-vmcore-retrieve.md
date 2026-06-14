@@ -16,7 +16,7 @@
   the worker-side `crash` postmortem this reroutes), [ADR-0033](0033-drgn-introspection-from-vmcore.md) /
   [ADR-0083](0083-remote-connect-debug-plane.md) (the `providers/debug_common/` provider-neutral
   worker-side layer this extends with the shared crash postmortem).
-- **Spec:** [`../specs/m2-remote-libvirt.md`](../specs/m2-remote-libvirt.md) §Decomposition issue 7.
+- **Spec:** [`../specs/m2-remote-libvirt.md`](../design/m2-remote-libvirt.md) §Decomposition issue 7.
 
 ## Context
 

@@ -12,7 +12,7 @@
   precedent), [ADR-0019](0019-tool-response-envelope.md) (response envelope),
   [ADR-0020](0020-rbac-audit-gate-implementation.md) (RBAC/audit/gate)
 - **Refines:** the M0 provisioning wording in
-  [`../specs/m0-walking-skeleton.md`](../specs/m0-walking-skeleton.md) ("systems.provision",
+  [`../specs/m0-walking-skeleton.md`](../design/m0-walking-skeleton.md) ("systems.provision",
   the provisioning sequence diagram, "Domain objects in M0 → System")
 
 ## Context

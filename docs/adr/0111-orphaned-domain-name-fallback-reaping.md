@@ -2,13 +2,13 @@
 
 - **Status:** Proposed
 - **Date:** 2026-06-13
-- **Depends on:** [ADR-0021](0021-reconciler-drift-repair.md) (the reconciler drift-repair
+- **Depends on:** [ADR-0021](0021-reconciler-loop-drift-repair.md) (the reconciler drift-repair
   loop and its leaked-domain sweep), the provider `InfraReaper` /`OwnedDomain` port
   (`kdive.providers.reaping`), and the deterministic System domain name
   `kdive-<system_id>` (`kdive.providers.runtime_paths.domain_name_for`). Mirrors the
   name-derived-owner pattern already used by the ephemeral build-VM reaper
   ([ADR-0100](0100-ephemeral-libvirt-build-vm.md), `run_id_from_build_vm_name`).
-- **Spec:** [`../superpowers/specs/2026-06-13-orphaned-domain-reaping-design.md`](../superpowers/specs/2026-06-13-orphaned-domain-reaping-design.md)
+- **Spec:** [`../superpowers/specs/2026-06-13-orphaned-domain-reaping-design.md`](../archive/superpowers/specs/2026-06-13-orphaned-domain-reaping-design.md)
 - **Issue:** [#372](https://github.com/randomparity/kdive/issues/372).
 
 ## Context
@@ -19,7 +19,7 @@ each domain's **kdive metadata element** (`parse_metadata_system_id`): a provide
 `list_owned` returns only domains carrying a parseable `<kdive:system>` tag, and the sweep
 skips any domain it sees with `system_id is None`.
 
-The MCP coverage campaign (`docs/reports/mcp-coverage-campaign-2026-06-13.md`, finding F5)
+The MCP coverage campaign (`docs/archive/reports/mcp-coverage-campaign-2026-06-13.md`, finding F5)
 hit a live domain that matched kdive's naming convention (`kdive-<uuid>`) but had **no DB
 record on this control plane and no usable metadata tag**. Such a domain is invisible to
 the sweep: `ops.reconcile_now` reported `leaked_domains: 0` with the orphan still running,

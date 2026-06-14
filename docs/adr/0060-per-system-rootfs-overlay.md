@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** 2026-06-06
-- **Depends on:** [ADR-0025](0025-provisioning-plane.md) (the provisioning plane this extends),
+- **Depends on:** [ADR-0025](0025-provisioning-plane-libvirt.md) (the provisioning plane this extends),
   [ADR-0030](0030-install-boot-plane.md) (the direct-kernel `root=/dev/vda` boot the overlay
   serves).
 

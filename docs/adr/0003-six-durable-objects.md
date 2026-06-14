@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** 2026-06-03
-- **Implements core decision:** #3 in [`../specs/top-level-design.md`](../specs/top-level-design.md)
+- **Implements core decision:** #3 in [`../specs/top-level-design.md`](../design/top-level-design.md)
 
 ## Context
 
