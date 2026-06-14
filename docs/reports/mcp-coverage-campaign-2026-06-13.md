@@ -41,7 +41,10 @@ layout, the demo-OIDC role-claim gap).
   then fails at `runs.install` (finding F7). So the build plane is proven end-to-end on
   remote-libvirt; the boot/debug/capture plane is blocked downstream by F7.
 
-## Findings (to file as issues)
+## Findings (filed as GitHub issues)
+
+Filed: F1 #368 · F2 #369 · F3 #370 · F4 #371 · F5 #372 · F6 #373 · F7 #374 · F8 #375.
+Rerun instructions: [`docs/runbooks/mcp-coverage-campaign-rerun.md`](../runbooks/mcp-coverage-campaign-rerun.md).
 
 | # | Category | Finding |
 |---|---|---|
