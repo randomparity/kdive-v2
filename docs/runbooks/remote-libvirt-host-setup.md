@@ -254,10 +254,22 @@ The full config surface is `KDIVE_REMOTE_LIBVIRT_{URI,CLIENT_CERT_REF,CLIENT_KEY
 STORAGE_POOL,NETWORK,MACHINE,GDB_ADDR,GDB_PORT_MIN,GDB_PORT_MAX,ALLOCATION_CAP}`. Leave `MACHINE`
 at its `pc` (i440fx) default unless your host topology powers q35 pcie-root-ports correctly.
 
-**Object-store reachability for the guest.** The two-phase kdump capture has the **guest** PUT the
-vmcore to a presigned `KDIVE_S3_ENDPOINT_URL`. If the object store is a cluster-internal service
-(e.g. a ClusterIP MinIO), the guest cannot reach it — expose it on a node-reachable address and
-set `KDIVE_S3_ENDPOINT_URL` to that, so pods and the guest resolve the same endpoint.
+**Object-store reachability for the guest — `KDIVE_S3_ENDPOINT_URL` must be guest-routable.**
+Both the remote **install** (the in-guest helper `curl`s the kernel bundle from a presigned GET)
+and the two-phase **kdump capture** (the guest PUTs the vmcore to a presigned URL) mint the URL
+against `KDIVE_S3_ENDPOINT_URL` and have the **guest** do the transfer. The presigned URL embeds
+that endpoint host, so it must be a **control-plane address routable from the remote guest
+network** — **not** `localhost`/loopback. The dev default `http://localhost:9000` is the *guest's*
+own loopback, where no object store runs; the in-guest transfer then fails opaquely. If the object
+store is a cluster-internal service (e.g. a ClusterIP MinIO), the guest cannot reach it — expose it
+on a node-reachable address and set `KDIVE_S3_ENDPOINT_URL` to that, so pods and the guest resolve
+the same endpoint.
+
+The worker now **preflights** this (ADR-0110): a remote `install`/kdump `capture` against a
+`localhost`/loopback `KDIVE_S3_ENDPOINT_URL` fails fast with a `configuration_error` naming the env
+var, before any in-guest round-trip — instead of an opaque downstream curl failure. A
+routable-looking endpoint the guest still cannot reach (a missed guest→store ACL) is *not* caught
+by the preflight and surfaces as the in-guest transfer failure.
 
 ## 8. Validate
 
