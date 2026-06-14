@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import psycopg
@@ -40,6 +41,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.inventory.loader import load_inventory
 from kdive.inventory.reconcile import ReconcileDiff
 from kdive.inventory.reconcile_images import reconcile_images
+from kdive.inventory.reconcile_resources import reconcile_resources
 from kdive.provider_components.artifacts import ObjectListing
 from kdive.providers.reaping import NullReaper
 from kdive.reconciler.inventory import InventoryReconcilePass
@@ -814,5 +816,372 @@ def test_inventory_pass_repairs_drift_on_unchanged_file(
             assert repaired == 1  # the deleted config row is re-created (drift repaired)
             async with await _connect(migrated_url) as check:
                 assert await _exists(check, "drift-base")
+
+    asyncio.run(_run())
+
+
+# --- resources: config overlay + #385 (Phase 2, plan Tasks 2.1-2.3) ------------------
+#
+# These exercise reconcile_resources against a disposable migrated Postgres. The contract:
+# managed_by governs existence (config for fault_inject/remote_libvirt, discovery for
+# host-probed local-libvirt); a config overlay writes cost_class to the COLUMN and
+# vcpus/memory_mb/cap to the capabilities JSONB; prune is cordon-not-delete for a live row.
+
+
+def _fault_inject_toml(
+    *,
+    name: str = "fi-1",
+    cost_class: str = "local",
+    vcpus: int = 8,
+    memory_mb: int = 16384,
+    cap: int = 1,
+) -> str:
+    return (
+        "schema_version = 2\n"
+        "[[fault_inject]]\n"
+        f'name = "{name}"\n'
+        f'cost_class = "{cost_class}"\n'
+        f"vcpus = {vcpus}\n"
+        f"memory_mb = {memory_mb}\n"
+        f"concurrent_allocation_cap = {cap}\n"
+    )
+
+
+def _remote_libvirt_toml(*, name: str, base_image: str = "base") -> str:
+    return (
+        "schema_version = 2\n"
+        "[[image]]\n"
+        'provider = "remote-libvirt"\n'
+        f'name = "{base_image}"\n'
+        'arch = "x86_64"\n'
+        'format = "qcow2"\n'
+        'root_device = "/dev/vda"\n'
+        'visibility = "public"\n'
+        "[image.source]\n"
+        'kind = "staged"\n'
+        f'volume = "{base_image}.qcow2"\n'
+        "[[remote_libvirt]]\n"
+        f'name = "{name}"\n'
+        'uri = "qemu+tls://h1/system"\n'
+        'gdb_addr = "10.0.0.1"\n'
+        'gdbstub_range = "47000:47099"\n'
+        'client_cert_ref = "c.pem"\n'
+        'client_key_ref = "k.pem"\n'  # pragma: allowlist secret - filename ref
+        'ca_cert_ref = "ca.pem"\n'  # pragma: allowlist secret - filename ref
+        f'base_image = "{base_image}"\n'
+        'cost_class = "remote"\n'
+        "concurrent_allocation_cap = 1\n"
+    )
+
+
+async def _resource_by_name(conn: psycopg.AsyncConnection, name: str) -> dict[str, object]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT * FROM resources WHERE name = %s", (name,))
+        row = await cur.fetchone()
+    assert row is not None, f"no resources row named {name!r}"
+    return row
+
+
+def _row_caps(row: dict[str, object]) -> dict[str, Any]:
+    """Narrow the jsonb ``capabilities`` column to a string-keyed dict for assertions."""
+    caps = row["capabilities"]
+    assert isinstance(caps, dict)
+    return cast("dict[str, Any]", caps)
+
+
+async def _resource_count(conn: psycopg.AsyncConnection, *, kind: str, host_uri: str) -> int:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT count(*) FROM resources WHERE kind = %s AND host_uri = %s",
+            (kind, host_uri),
+        )
+        row = await cur.fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+async def _insert_discovered_local(
+    conn: psycopg.AsyncConnection,
+    *,
+    host_uri: str = "qemu:///system",
+    vcpus: int = 16,
+    memory_mb: int = 65536,
+) -> UUID:
+    """Insert a discovery-owned local-libvirt row (the discovery/registrar insert path)."""
+    rid = uuid4()
+    await conn.execute(
+        "INSERT INTO resources (id, kind, capabilities, pool, cost_class, status, host_uri, "
+        " managed_by) "
+        "VALUES (%s, 'local-libvirt', %s, 'local-libvirt', 'local', 'available', %s, 'discovery')",
+        (rid, Jsonb({"vcpus": vcpus, "memory_mb": memory_mb, "pcie": ["0000:00:1f.0"]}), host_uri),
+    )
+    return rid
+
+
+async def _seed_live_allocation_on(conn: psycopg.AsyncConnection, resource_id: UUID) -> None:
+    """Attach a non-terminal (active) allocation so the resource counts as live."""
+    await conn.execute(
+        "INSERT INTO allocations (id, principal, project, resource_id, state) "
+        "VALUES (%s, 'alice', 'proj', %s, 'active')",
+        (uuid4(), resource_id),
+    )
+
+
+def test_fault_inject_overlay_lands_caps_in_jsonb_and_cost_class_in_column(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # Invariant 1 (load-bearing): cost_class -> the COLUMN; vcpus/memory_mb/cap -> the JSONB.
+    async def _run() -> None:
+        doc = load_inventory(
+            _write_toml(tmp_path, _fault_inject_toml(vcpus=8, memory_mb=16384, cap=3))
+        )
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            diff = await reconcile_resources(conn, doc)
+        async with await _connect(migrated_url) as check:
+            row = await _resource_by_name(check, "fi-1")
+        assert row["managed_by"] == "config"
+        assert row["cost_class"] == "local"  # the COLUMN, not jsonb
+        assert row["status"] == "available"
+        assert row["pool"] == "default"
+        caps = _row_caps(row)
+        assert caps["vcpus"] == 8
+        assert caps["memory_mb"] == 16384
+        assert caps["concurrent_allocation_cap"] == 3
+        assert "cost_class" not in caps  # never written into jsonb
+        assert "fi-1" in {c.name for c in diff.created}
+
+    asyncio.run(_run())
+
+
+def test_fault_inject_resource_is_admitted_not_configuration_error(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # #385 regression headline: after reconcile, allocations.request(kind=fault-inject) is
+    # ADMITTED, not configuration_error (the vcpus=None denial the issue reports).
+    from kdive.domain.models import ResourceKind
+    from kdive.security.authz.context import RequestContext
+    from kdive.services.allocation.request import AdmissionRequestSpec, request_admission
+
+    async def _run() -> None:
+        doc = load_inventory(_write_toml(tmp_path, _fault_inject_toml(vcpus=8, memory_mb=16384)))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            async with pool.connection() as conn:
+                await reconcile_resources(conn, doc)
+            async with await _connect(migrated_url) as seed:
+                await seed.execute(
+                    "INSERT INTO budgets (project, limit_kcu, spent_kcu) "
+                    "VALUES ('proj', 1000000, 0)"
+                )
+                await seed.execute(
+                    "INSERT INTO quotas (project, max_concurrent_allocations, "
+                    " max_concurrent_systems) VALUES ('proj', 100, 100)"
+                )
+            async with pool.connection() as conn:
+                result = await request_admission(
+                    conn,
+                    RequestContext(principal="alice", agent_session="s", projects=("proj",)),
+                    project="proj",
+                    spec=AdmissionRequestSpec(
+                        resource_id=None,
+                        kind=ResourceKind.FAULT_INJECT,
+                        shape="small",
+                        vcpus=None,
+                        memory_gb=None,
+                        disk_gb=None,
+                        window=None,
+                        pcie_devices=(),
+                        on_capacity="deny",
+                    ),
+                )
+        assert result.error is None, f"unexpected error: {result.error}"
+        assert result.category is None, f"unexpected denial category: {result.category}"
+        assert result.allocation is not None, f"not admitted: {result.denial}"
+
+    asyncio.run(_run())
+
+
+def test_remote_libvirt_is_sole_creator_no_duplicate_with_legacy_discovery(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # One-creator-per-kind (invariant 4): config + a legacy-discovery insert for one remote
+    # host must converge to EXACTLY ONE row, never a duplicate / (kind,name) unique violation.
+    async def _run() -> None:
+        doc = load_inventory(_write_toml(tmp_path, _remote_libvirt_toml(name="r1")))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            async with pool.connection() as conn:
+                await reconcile_resources(conn, doc)
+            # Legacy env-based discovery would bind-only (non-creating) in Phase 2; simulate a
+            # second reconcile pass to prove idempotency does not create a second row.
+            async with pool.connection() as conn:
+                await reconcile_resources(conn, doc)
+        uri = "qemu+tls://h1/system"
+        async with await _connect(migrated_url) as check:
+            assert await _resource_count(check, kind="remote-libvirt", host_uri=uri) == 1
+
+    asyncio.run(_run())
+
+
+def test_local_libvirt_overlay_preserves_discovery_owned_hardware(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # Task 2.3 + invariant (no-overwrite): a discovered local-libvirt row receives the cost/cap
+    # overlay and inherits the config name WITHOUT its discovery-owned vcpus/memory/PCIe changing.
+    async def _run() -> None:
+        async with await _connect(migrated_url) as seed:
+            await _insert_discovered_local(
+                seed, host_uri="qemu:///system", vcpus=16, memory_mb=65536
+            )
+        body = (
+            "schema_version = 2\n"
+            "[[local_libvirt]]\n"
+            'name = "lab-host"\n'
+            'host_uri = "qemu:///system"\n'
+            'cost_class = "local"\n'
+            "concurrent_allocation_cap = 4\n"
+        )
+        doc = load_inventory(_write_toml(tmp_path, body))
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            await reconcile_resources(conn, doc)
+        async with await _connect(migrated_url) as check:
+            row = await _resource_by_name(check, "lab-host")
+        assert row["managed_by"] == "discovery"  # existence stays discovery-owned
+        assert row["name"] == "lab-host"  # inherited from config
+        assert row["cost_class"] == "local"
+        caps = _row_caps(row)
+        assert caps["vcpus"] == 16  # discovery-owned, NOT overwritten
+        assert caps["memory_mb"] == 65536  # discovery-owned, NOT overwritten
+        assert caps["pcie"] == ["0000:00:1f.0"]  # discovery-owned, NOT overwritten
+        assert caps["concurrent_allocation_cap"] == 4  # overlaid from config
+
+    asyncio.run(_run())
+
+
+def test_discovered_local_with_no_config_gets_deterministic_name(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # A discovered host with no config instance gets a deterministic name from host_uri and is
+    # NOT pruned (it is discovery-owned, not config-owned).
+    async def _run() -> None:
+        async with await _connect(migrated_url) as seed:
+            rid = await _insert_discovered_local(seed, host_uri="qemu:///system")
+        doc = load_inventory(_write_toml(tmp_path, "schema_version = 2\n"))
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            await reconcile_resources(conn, doc)
+        async with await _connect(migrated_url) as check, check.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT * FROM resources WHERE id = %s", (rid,))
+            row = await cur.fetchone()
+        assert row is not None  # discovery-owned row never pruned
+        assert row["managed_by"] == "discovery"
+        assert row["name"] is not None and row["name"] != ""  # deterministic name assigned
+
+    asyncio.run(_run())
+
+
+def test_prune_removes_only_config_resources(migrated_url: str, tmp_path: Path) -> None:
+    # Invariant 2/3 for resources: prune touches only managed_by='config' rows; a discovery
+    # row and a runtime row sharing the field-space are untouched.
+    async def _run() -> None:
+        # First create a config fault-inject row, plus a discovery local row.
+        doc = load_inventory(_write_toml(tmp_path, _fault_inject_toml(name="fi-keep")))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            async with await _connect(migrated_url) as seed:
+                disc = await _insert_discovered_local(seed)
+            async with pool.connection() as conn:
+                await reconcile_resources(conn, doc)
+            # Now reconcile an EMPTY doc: the config fault-inject row must be pruned, the
+            # discovery row untouched.
+            empty = load_inventory(_write_toml(tmp_path, "schema_version = 2\n"))
+            async with pool.connection() as conn:
+                diff = await reconcile_resources(conn, empty)
+        async with await _connect(migrated_url) as check:
+            assert (
+                await _resource_count(check, kind="fault-inject", host_uri="fault-inject://local")
+                == 0
+            )
+            async with check.cursor() as cur:
+                await cur.execute("SELECT 1 FROM resources WHERE id = %s", (disc,))
+                assert await cur.fetchone() is not None  # discovery row survives
+        assert "fi-keep" in {p.name for p in diff.pruned}
+
+    asyncio.run(_run())
+
+
+def test_prune_of_live_config_resource_cordons_not_deletes(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # Invariant 5 for resources: a config resource with a live (non-terminal) allocation is
+    # CORDONED, not deleted, when it leaves config.
+    async def _run() -> None:
+        doc = load_inventory(_write_toml(tmp_path, _fault_inject_toml(name="fi-busy")))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            async with pool.connection() as conn:
+                await reconcile_resources(conn, doc)
+            async with await _connect(migrated_url) as seed:
+                busy = await _resource_by_name(seed, "fi-busy")
+                busy_id = busy["id"]
+                assert isinstance(busy_id, UUID)
+                await _seed_live_allocation_on(seed, busy_id)
+            empty = load_inventory(_write_toml(tmp_path, "schema_version = 2\n"))
+            async with pool.connection() as conn:
+                diff = await reconcile_resources(conn, empty)
+        async with await _connect(migrated_url) as check:
+            row = await _resource_by_name(check, "fi-busy")  # still present
+        assert row["cordoned"] is True
+        assert "fi-busy" in {c.name for c in diff.cordoned}
+        assert "fi-busy" not in {p.name for p in diff.pruned}
+
+    asyncio.run(_run())
+
+
+def test_reconcile_resources_is_idempotent(migrated_url: str, tmp_path: Path) -> None:
+    # A second pass over an unchanged doc is a clean no-op (change-detecting upserts).
+    async def _run() -> None:
+        doc = load_inventory(_write_toml(tmp_path, _fault_inject_toml()))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool:
+            async with pool.connection() as conn:
+                await reconcile_resources(conn, doc)
+            async with pool.connection() as conn:
+                diff2 = await reconcile_resources(conn, doc)
+        assert not diff2.created and not diff2.updated and not diff2.pruned
+
+    asyncio.run(_run())
+
+
+def test_discovery_insert_path_writes_managed_by_discovery(migrated_url: str) -> None:
+    # Invariant 5 (load-bearing): a host discovered AFTER the migration must insert at
+    # 'discovery', not the column default 'runtime'. Exercises the real registrar insert path.
+    from kdive.domain.discovery import ResourceRecord
+    from kdive.domain.models import ResourceKind
+    from kdive.domain.state import ResourceStatus
+    from kdive.services.resources.discovery import register_discovered_resource
+
+    async def _run() -> None:
+        record = ResourceRecord(
+            resource_id="qemu:///system",
+            kind=ResourceKind.LOCAL_LIBVIRT,
+            capabilities={"vcpus": 8, "memory_mb": 8192},
+            status=ResourceStatus.AVAILABLE,
+        )
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            await register_discovered_resource(
+                conn, record, pool="local-libvirt", cost_class="local"
+            )
+        async with await _connect(migrated_url) as check, check.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT managed_by FROM resources WHERE host_uri = 'qemu:///system'")
+            row = await cur.fetchone()
+        assert row is not None
+        assert row["managed_by"] == "discovery"  # NOT 'runtime' (the column default)
 
     asyncio.run(_run())
