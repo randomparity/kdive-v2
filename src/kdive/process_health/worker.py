@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from kdive.health import HealthProbe
+from kdive.health.probe import HealthProbe
 from kdive.health.worker_checks import build_worker_checks
 
 

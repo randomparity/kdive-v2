@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
-from kdive.health import HealthProbe
+from kdive.health.probe import HealthProbe
 from kdive.health.server_checks import build_server_checks
 
 

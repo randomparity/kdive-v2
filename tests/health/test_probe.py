@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
-from kdive.health import BackendCheck, HealthProbe
+from kdive.health.probe import BackendCheck, HealthProbe
 
 
 def _ok_check(name: str, calls: list[str]) -> BackendCheck:

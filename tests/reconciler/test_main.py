@@ -100,7 +100,7 @@ def test_run_reconciler_builds_and_runs(monkeypatch: pytest.MonkeyPatch) -> None
     async def _no_serve(*a: object, **k: object) -> None:
         return None
 
-    monkeypatch.setattr("kdive.health.serve_aux", _no_serve)
+    monkeypatch.setattr("kdive.health.aux_listener.serve_aux", _no_serve)
     monkeypatch.setattr(
         "kdive.process_health.server.build_postgres_ping", lambda pool: lambda: None
     )

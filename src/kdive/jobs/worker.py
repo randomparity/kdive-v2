@@ -33,7 +33,7 @@ from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 if TYPE_CHECKING:
-    from kdive.health import Heartbeat
+    from kdive.health.heartbeat import Heartbeat
 
 _log = logging.getLogger(__name__)
 _CONTEXT_VALUE_MAX = 1000

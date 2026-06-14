@@ -53,7 +53,7 @@ def test_run_worker_wires_heartbeat_readiness_and_telemetry(
     async def _no_serve(*a: object, **k: object) -> None:
         return None
 
-    monkeypatch.setattr("kdive.health.serve_aux", _no_serve)
+    monkeypatch.setattr("kdive.health.aux_listener.serve_aux", _no_serve)
 
     constructed: dict[str, object] = {}
 

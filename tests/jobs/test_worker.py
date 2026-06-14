@@ -18,7 +18,7 @@ from kdive.db.repositories import JOBS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
-from kdive.health import Heartbeat
+from kdive.health.heartbeat import Heartbeat
 from kdive.jobs import queue
 from kdive.jobs import worker as worker_module
 from kdive.jobs.models import HandlerRegistry
@@ -660,7 +660,7 @@ def test_background_ticker_keeps_livez_live_across_a_long_blocking_job(
     """
 
     async def _run() -> None:
-        from kdive.health import Heartbeat
+        from kdive.health.heartbeat import Heartbeat
 
         # Real monotonic clock; a tiny stale bound and a sub-stale tick cadence.
         hb = Heartbeat(stale_after=0.05)

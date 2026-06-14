@@ -74,7 +74,7 @@ from kdive.services.images.retention import (
 )
 
 if TYPE_CHECKING:
-    from kdive.health import Heartbeat
+    from kdive.health.heartbeat import Heartbeat
 
 _log = logging.getLogger(__name__)
 
