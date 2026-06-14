@@ -135,6 +135,24 @@ def test_list_owned_returns_only_tagged_domains() -> None:
     ]
 
 
+def test_list_owned_surfaces_convention_named_untagged_orphan() -> None:
+    # #372: a kdive-<uuid> domain whose metadata tag is gone (VIR_ERR_NO_DOMAIN_METADATA) is
+    # still ours by naming convention; surface it with an empty system_id so the reconciler
+    # falls back to the name. A non-convention untagged domain is still skipped.
+    conn = FakeLibvirtConn(
+        domains=[
+            FakeDomain("kdive-22222222-2222-2222-2222-222222222222", system_id=None),
+            FakeDomain("kdive-3", system_id="33333333-3333-3333-3333-333333333333"),
+            FakeDomain("other-vm", system_id=None),  # non-convention untagged → skipped
+        ]
+    )
+    owned = _discovery(conn).list_owned()
+    assert owned == [
+        {"system_id": "", "domain_name": "kdive-22222222-2222-2222-2222-222222222222"},
+        {"system_id": "33333333-3333-3333-3333-333333333333", "domain_name": "kdive-3"},
+    ]
+
+
 def test_list_owned_reraises_non_metadata_libvirt_error() -> None:
     conn = FakeLibvirtConn(
         domains=[FakeDomain("vm", system_id=None, raise_code=libvirt.VIR_ERR_INTERNAL_ERROR)]

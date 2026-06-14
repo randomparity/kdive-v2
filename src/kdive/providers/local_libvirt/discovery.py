@@ -30,6 +30,7 @@ from kdive.providers.libvirt_xml import (
 )
 from kdive.providers.local_libvirt.settings import LIBVIRT_ALLOCATION_CAP, LIBVIRT_URI
 from kdive.providers.ports import OwnedInfra
+from kdive.providers.runtime_paths import system_id_from_domain_name
 
 _log = logging.getLogger(__name__)
 
@@ -191,22 +192,43 @@ class LocalLibvirtDiscovery:
         return descriptors
 
     def list_owned(self) -> list[OwnedInfra]:
-        """Return `{system_id, domain_name}` for each kdive-tagged domain."""
+        """Return ``{system_id, domain_name}`` for each kdive-owned domain.
+
+        Ownership is the kdive metadata tag when present, else the ``kdive-<uuid>`` naming
+        convention (ADR-0105): a convention-named domain whose tag is absent/empty/unparseable
+        is surfaced with ``system_id=""`` (the on-the-wire ``None``) so the reconciler falls
+        back to the name and can reap a genuinely orphaned domain. A domain that is neither
+        tagged nor convention-named is not ours and is skipped.
+        """
         conn = self._connect()
         owned: list[OwnedInfra] = []
         for domain in conn.listAllDomains():
-            try:
-                meta = domain.metadata(libvirt.VIR_DOMAIN_METADATA_ELEMENT, KDIVE_METADATA_NS, 0)
-            except libvirt.libvirtError as exc:
-                if exc.get_error_code() == libvirt.VIR_ERR_NO_DOMAIN_METADATA:
-                    continue  # untagged → not ours
-                raise CategorizedError(
-                    "libvirt error reading domain metadata",
-                    category=ErrorCategory.INFRASTRUCTURE_FAILURE,
-                    details={"domain": domain.name()},
-                ) from exc
-            system_id = parse_metadata_system_id(meta)
-            if system_id is None:
-                continue
-            owned.append(OwnedInfra(system_id=system_id, domain_name=domain.name()))
+            entry = self._owned_entry(domain)
+            if entry is not None:
+                owned.append(entry)
         return owned
+
+    def _owned_entry(self, domain: _LibvirtDomain) -> OwnedInfra | None:
+        """Resolve one domain to an ``OwnedInfra`` row, or ``None`` when it is not ours."""
+        name = domain.name()
+        try:
+            meta = domain.metadata(libvirt.VIR_DOMAIN_METADATA_ELEMENT, KDIVE_METADATA_NS, 0)
+        except libvirt.libvirtError as exc:
+            if exc.get_error_code() == libvirt.VIR_ERR_NO_DOMAIN_METADATA:
+                return self._name_fallback_entry(name)  # no tag → try the naming convention
+            raise CategorizedError(
+                "libvirt error reading domain metadata",
+                category=ErrorCategory.INFRASTRUCTURE_FAILURE,
+                details={"domain": name},
+            ) from exc
+        system_id = parse_metadata_system_id(meta)
+        if system_id is None:
+            return self._name_fallback_entry(name)  # empty/malformed tag → naming convention
+        return OwnedInfra(system_id=system_id, domain_name=name)
+
+    @staticmethod
+    def _name_fallback_entry(name: str) -> OwnedInfra | None:
+        """A convention-named domain with no usable tag is ours (``system_id=""``); else skip."""
+        if system_id_from_domain_name(name) is None:
+            return None  # not a kdive System domain → not ours
+        return OwnedInfra(system_id="", domain_name=name)
