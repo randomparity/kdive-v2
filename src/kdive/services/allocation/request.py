@@ -73,7 +73,7 @@ async def request_admission(
     except CategorizedError as exc:
         return RequestAdmissionResult(object_id, project, error=exc)
 
-    resource = await _select_target(conn, spec.resource_id, spec.kind, pcie_specs)
+    resource = await _select_target(conn, spec.resource_id, spec.kind, pcie_specs, project)
     if resource is None:
         return RequestAdmissionResult(
             object_id,
@@ -119,10 +119,12 @@ async def _select_target(
     resource_id: UUID | None,
     kind: ResourceKind,
     specs: tuple[str, ...],
+    project: str,
 ) -> Resource | None:
-    """Resolve the first schedulable target, PCIe-aware when specs are present."""
+    """Resolve the first schedulable target, affinity- and PCIe-aware when specs are present."""
     candidates = await resolve_placement_candidates(
-        conn, PlacementRequest(resource_id=resource_id, kind=kind, pcie_specs=specs)
+        conn,
+        PlacementRequest(resource_id=resource_id, kind=kind, pcie_specs=specs, project=project),
     )
     if candidates.resources:
         return candidates.resources[0]
