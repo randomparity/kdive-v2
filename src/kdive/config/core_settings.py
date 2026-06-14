@@ -310,6 +310,21 @@ IMAGE_PRIVATE_MAX_BYTES = Setting(
     suggest="an integer number of bytes, e.g. 53687091200 (50 GiB)",
 )
 
+SYSTEMS_TOML = Setting(
+    name="KDIVE_SYSTEMS_TOML",
+    parse=_str,
+    default="./systems.toml",
+    group="inventory",
+    processes=frozenset({"reconciler"}),
+    help=(
+        "Path to the declarative systems inventory file reconciled into the catalog "
+        "(ADR-0112). The reconciler's inventory pass reads it each loop; an absent default "
+        "file is the normal pre-config state (systems.toml is gitignored) and is a quiet "
+        "no-op, while a present-but-malformed file fails that pass without aborting siblings."
+    ),
+    suggest="a path to a systems.toml, e.g. ./systems.toml or /etc/kdive/systems.toml",
+)
+
 FAULT_INJECT = Setting(
     name="KDIVE_FAULT_INJECT",
     parse=_str,
@@ -396,6 +411,7 @@ SETTINGS = [
     IMAGE_PRIVATE_LIFETIME_MAX,
     IMAGE_PRIVATE_MAX_COUNT,
     IMAGE_PRIVATE_MAX_BYTES,
+    SYSTEMS_TOML,
     FAULT_INJECT,
     OTEL_ENABLED,
     OTEL_EXPORTER_OTLP_ENDPOINT,

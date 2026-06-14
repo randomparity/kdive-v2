@@ -50,6 +50,7 @@ from kdive.reconciler.images import (
 from kdive.reconciler.images import (
     repair_leaked_images as _repair_leaked_images,
 )
+from kdive.reconciler.inventory import InventoryReconcilePass
 from kdive.reconciler.loop_telemetry import ReconcilerTelemetry
 from kdive.reconciler.provider_reaping import repair_leaked_domains as _repair_leaked_domains
 from kdive.reconciler.provider_reaping import (
@@ -123,6 +124,12 @@ _NULL_DUMP_VOLUME_REAPER: DumpVolumeReaper = NullDumpVolumeReaper()
 
 # The default build-VM reaper (ADR-0100): a module-level stateless singleton (see above).
 _NULL_BUILD_VM_REAPER: BuildVmReaper = NullBuildVmReaper()
+
+# The process-singleton inventory reconcile pass (ADR-0112): held here so its last-good
+# parse cache (keyed by the systems.toml hash) survives across reconcile passes — the parse
+# step is skipped when the file is unchanged, but the reconcile-against-DB step still runs
+# every pass so DB drift is repaired even on an unchanged file.
+_INVENTORY_PASS = InventoryReconcilePass()
 
 DEFAULT_INTERVAL = timedelta(seconds=30)
 DEFAULT_DEBUG_SESSION_STALE_AFTER = timedelta(minutes=2)
@@ -257,6 +264,7 @@ def _repair_plan(
         )
     if config.image_store is not None:
         image_store = config.image_store
+        repairs.append(_RepairSpec("reconcile_inventory", _INVENTORY_PASS.make_repair(image_store)))
         repairs.extend(
             (
                 _RepairSpec(

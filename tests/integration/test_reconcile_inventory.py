@@ -40,6 +40,10 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.inventory.loader import load_inventory
 from kdive.inventory.reconcile import ReconcileDiff
 from kdive.inventory.reconcile_images import reconcile_images
+from kdive.provider_components.artifacts import ObjectListing
+from kdive.providers.reaping import NullReaper
+from kdive.reconciler.inventory import InventoryReconcilePass
+from kdive.reconciler.loop import ReconcileConfig, reconcile_once
 
 # `migrated_url` is provided as a fixture by tests/integration/conftest.py (re-exported from
 # tests.db.conftest), resolved by pytest at call time — no import (avoids the F811 shadow).
@@ -68,6 +72,11 @@ class _FakeImageStore:
                 category=ErrorCategory.INFRASTRUCTURE_FAILURE,
             )
         return key in self._present
+
+    def list_image_objects(self) -> list[ObjectListing]:
+        # Empty so the loop's sibling image sweeps (leaked/dangling) are clean no-ops when
+        # this fake is used as the full ImageSweepStore in the loop-config tests.
+        return []
 
     def delete(self, key: str) -> None:  # pragma: no cover - asserted never called
         self.deleted.append(key)
@@ -654,5 +663,139 @@ def test_concurrent_passes_do_not_abort_on_identity(migrated_url: str, tmp_path:
             await cur.execute("SELECT count(*) FROM image_catalog WHERE name = 'base'")
             row = await cur.fetchone()
         assert row is not None and row[0] == 1
+
+    asyncio.run(_run())
+
+
+# --- loop pass: fault isolation (plan Task 1.6) --------------------------------------
+
+
+def _config_with_inventory_spec() -> ReconcileConfig:
+    """A reconcile config that wires an image store, so the inventory pass is in the plan.
+
+    The inventory pass needs an :class:`ImageHeadStore`; the loop only adds the spec when
+    ``image_store`` is set (mirroring the image-sweep specs), so the fault-isolation tests
+    must hand one in for the ``reconcile_inventory`` pass to run at all.
+    """
+    return ReconcileConfig(image_store=_FakeImageStore())
+
+
+def test_loop_inventory_pass_is_fault_isolated(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A malformed systems.toml must NOT abort sibling reaper repairs: the inventory pass is
+    # recorded in report.failures while every other repair in the plan still ran (loop.py
+    # 350-356 contract). An inventory failure must never raise out of reconcile_once.
+    async def _run() -> None:
+        bad = tmp_path / "systems.toml"
+        bad.write_text("schema_version = 2\n[[image]\n")  # malformed TOML
+        monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(bad))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            report = await reconcile_once(pool, NullReaper(), config=_config_with_inventory_spec())
+        assert "reconcile_inventory" in report.failures  # this pass failed
+        assert report.reaped_active_allocations >= 0  # siblings still ran
+
+    asyncio.run(_run())
+
+
+def test_loop_inventory_pass_skips_quietly_when_default_file_absent(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # systems.toml is gitignored; an absent DEFAULT file is the normal pre-config state and
+    # must NOT mark the pass failed every loop iteration.
+    async def _run() -> None:
+        monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(tmp_path / "does-not-exist.toml"))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            report = await reconcile_once(pool, NullReaper(), config=_config_with_inventory_spec())
+        assert "reconcile_inventory" not in report.failures  # absent default != failure
+
+    asyncio.run(_run())
+
+
+def test_loop_inventory_pass_reconciles_a_present_file(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A present, valid file is reconciled into the catalog as a sibling repair: the config row
+    # is created and the pass is not a failure.
+    async def _run() -> None:
+        path = _write_toml(
+            tmp_path,
+            "schema_version = 2\n"
+            "[[image]]\n"
+            'provider = "remote-libvirt"\n'
+            'name = "loop-base"\n'
+            'arch = "x86_64"\n'
+            'format = "qcow2"\n'
+            'root_device = "/dev/vda"\n'
+            'visibility = "public"\n'
+            "[image.source]\n"
+            'kind = "staged"\n'
+            'volume = "loop-base.qcow2"\n',
+        )
+        monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(path))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            report = await reconcile_once(pool, NullReaper(), config=_config_with_inventory_spec())
+        assert "reconcile_inventory" not in report.failures
+        async with await _connect(migrated_url) as check:
+            row = await _one(check, "loop-base")
+        assert row["state"] == "registered"
+        assert row["managed_by"] == "config"
+
+    asyncio.run(_run())
+
+
+def test_loop_inventory_pass_absent_when_no_image_store(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # With no image store the inventory pass cannot run (it needs the store to HEAD s3
+    # objects), so even a malformed file is a no-op for the loop — the spec is simply absent.
+    async def _run() -> None:
+        bad = tmp_path / "systems.toml"
+        bad.write_text("schema_version = 2\n[[image]\n")
+        monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(bad))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            report = await reconcile_once(pool, NullReaper())  # default config: no image store
+        assert "reconcile_inventory" not in report.failures
+
+    asyncio.run(_run())
+
+
+def test_inventory_pass_repairs_drift_on_unchanged_file(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # ADR-0021 drift repair must NOT be gated on the file hash: a config-owned row manually
+    # deleted out from under an UNCHANGED systems.toml is re-created on the next pass. The
+    # content-hash cache may skip only the parse step; the reconcile-against-DB step runs every
+    # pass. The file's mtime/bytes never change between the two passes (a cache hit), so a
+    # re-created row proves the reconcile step is not skipped on a cache hit.
+    async def _run() -> None:
+        path = _write_toml(
+            tmp_path,
+            "schema_version = 2\n"
+            "[[image]]\n"
+            'provider = "remote-libvirt"\n'
+            'name = "drift-base"\n'
+            'arch = "x86_64"\n'
+            'format = "qcow2"\n'
+            'root_device = "/dev/vda"\n'
+            'visibility = "public"\n'
+            "[image.source]\n"
+            'kind = "staged"\n'
+            'volume = "drift-base.qcow2"\n',
+        )
+        monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(path))
+        store = _FakeImageStore()
+        pass_ = InventoryReconcilePass()
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            async with pool.connection() as conn:
+                created = await pass_.run(conn, store)
+            assert created == 1  # first pass creates + caches the parse by hash
+            async with await _connect(migrated_url) as drift:
+                await drift.execute("DELETE FROM image_catalog WHERE name = 'drift-base'")
+            async with pool.connection() as conn:
+                repaired = await pass_.run(conn, store)  # same file → cache hit, must still repair
+            assert repaired == 1  # the deleted config row is re-created (drift repaired)
+            async with await _connect(migrated_url) as check:
+                assert await _exists(check, "drift-base")
 
     asyncio.run(_run())

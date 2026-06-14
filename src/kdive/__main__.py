@@ -188,6 +188,42 @@ def _handle_build_rootfs(
     run_build_rootfs(args)
 
 
+def _add_reconcile_systems_arguments(parser: argparse.ArgumentParser) -> None:
+    from pathlib import Path
+
+    parser.add_argument(
+        "--path",
+        type=Path,
+        default=None,
+        help="path to systems.toml (default: KDIVE_SYSTEMS_TOML, then ./systems.toml)",
+    )
+
+
+def _handle_reconcile_systems(
+    args: argparse.Namespace, secret_registry: SecretRegistry, telemetry: Telemetry | None
+) -> None:
+    del secret_registry, telemetry
+    from kdive.cli.reconcile_systems import reconcile_systems
+    from kdive.store.objectstore import object_store_from_env
+
+    store = _optional_reconciler_object_store(object_store_from_env)
+    if store is None:
+        raise SystemExit(
+            "reconcile-systems requires an object store; set KDIVE_S3_ENDPOINT_URL / "
+            "KDIVE_S3_BUCKET / KDIVE_S3_REGION (the pass HEADs s3 image objects)."
+        )
+    pool = create_pool(min_size=1)
+
+    async def _run() -> int:
+        await pool.open()
+        try:
+            return await reconcile_systems(args.path, pool=pool, store=store)
+        finally:
+            await pool.close()
+
+    raise SystemExit(asyncio.run(_run()))
+
+
 _COMMANDS: tuple[_Command, ...] = (
     _Command("server", "run the MCP streamable-HTTP server", _handle_server, runnable=True),
     _Command("worker", "run the job-queue worker loop", _handle_worker, runnable=True),
@@ -212,6 +248,12 @@ _COMMANDS: tuple[_Command, ...] = (
         "build the default local-libvirt rootfs image",
         _handle_build_rootfs,
         custom_register=add_build_rootfs_parser,
+    ),
+    _Command(
+        "reconcile-systems",
+        "reconcile systems.toml into the catalog once",
+        _handle_reconcile_systems,
+        add_arguments=_add_reconcile_systems_arguments,
     ),
 )
 _COMMAND_BY_NAME = {command.name: command for command in _COMMANDS}

@@ -76,6 +76,12 @@
 |----------|-----------|---------|----------|-------|
 | `KDIVE_INSTALL_STAGING` | worker | `/var/lib/kdive/install` | no | Worker staging root for install artifacts. |
 
+## inventory
+
+| Variable | Processes | Default | Required | Value |
+|----------|-----------|---------|----------|-------|
+| `KDIVE_SYSTEMS_TOML` | reconciler | `./systems.toml` | no | Path to the declarative systems inventory file reconciled into the catalog (ADR-0112). The reconciler's inventory pass reads it each loop; an absent default file is the normal pre-config state (systems.toml is gitignored) and is a quiet no-op, while a present-but-malformed file fails that pass without aborting siblings. |
+
 ## lease
 
 | Variable | Processes | Default | Required | Value |
