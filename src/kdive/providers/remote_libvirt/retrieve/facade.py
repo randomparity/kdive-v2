@@ -48,32 +48,6 @@ from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_en
 from kdive.store.objectstore import object_store_from_env
 
 
-def _build_kdump_capturer(
-    *,
-    secret_registry: SecretRegistry,
-    config_factory: Callable[[], RemoteLibvirtConfig],
-    open_connection: OpenRetrieveConnection,
-    store_factory: Callable[[], StorePort],
-    secret_backend_factory: Callable[[], SecretBackend],
-    pki_base_dir: Path | None,
-) -> KdumpCapturer:
-    return KdumpCapturer(
-        secret_registry=secret_registry,
-        config_factory=config_factory,
-        open_connection=open_connection,
-        store_factory=store_factory,
-        agent_command=qemu_agent_command,
-        agent_exec_factory=None,
-        secret_backend_factory=secret_backend_factory,
-        pki_base_dir=pki_base_dir,
-        put_expiry_s=DEFAULT_PUT_EXPIRY_S,
-        readiness_timeout_s=DEFAULT_READINESS_TIMEOUT_S,
-        readiness_poll_s=DEFAULT_READINESS_POLL_S,
-        sleep=time.sleep,
-        monotonic=time.monotonic,
-    )
-
-
 class RemoteLibvirtRetrieve:
     """The realized remote `Retriever` + `CrashPostmortem` facade (ADR-0084)."""
 
@@ -95,13 +69,20 @@ class RemoteLibvirtRetrieve:
         secret_backend_factory = secret_backend_factory or (
             lambda: secret_backend_from_env(registry=secret_registry)
         )
-        self._kdump = kdump_capturer or _build_kdump_capturer(
+        self._kdump = kdump_capturer or KdumpCapturer(
             secret_registry=secret_registry,
             config_factory=config_factory,
             open_connection=open_connection,
             store_factory=store_factory,
+            agent_command=qemu_agent_command,
+            agent_exec_factory=None,
             secret_backend_factory=secret_backend_factory,
             pki_base_dir=pki_base_dir,
+            put_expiry_s=DEFAULT_PUT_EXPIRY_S,
+            readiness_timeout_s=DEFAULT_READINESS_TIMEOUT_S,
+            readiness_poll_s=DEFAULT_READINESS_POLL_S,
+            sleep=time.sleep,
+            monotonic=time.monotonic,
         )
         self._host_dump = host_dump_capturer or HostDumpCapturer(
             secret_registry=secret_registry,
