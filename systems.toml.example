@@ -15,8 +15,9 @@
 # secret *refs* (filenames the SecretRegistry resolves), never secret material.
 #
 # NOTE: the coverage-campaign tooling (`scripts/coverage_campaign/systems.py`,
-# `render-env`/`setup-commands`) reads the pre-v2 descriptor format. Its migration to this v2
-# schema is Phase 3 (#394); until then run the campaign against its own pre-v2 descriptor.
+# `render-env`/`setup-commands`) reads THIS v2 file (#395): it parses the `[[remote_libvirt]]` /
+# `[[image]]` connection via the shared inventory loader and reads campaign-only deployment knobs
+# from the `[campaign]` table at the bottom (which the app's inventory loader ignores).
 
 schema_version = 2
 
@@ -138,3 +139,38 @@ volume = "fedora-kdive-remote-base-43.qcow2"
 # base_image_volume = "fedora-kdive-remote-base-43.qcow2"
 # workspace_root = "/var/lib/kdive/build"
 # max_concurrent = 2
+
+# ---------------------------------------------------------------------------------------------
+# COVERAGE-CAMPAIGN KNOBS — read ONLY by scripts/coverage_campaign/systems.py, ignored by the
+# app's inventory loader. These are the per-deployment facts the campaign needs that are not part
+# of the declarative inventory: workstation paths, the remote host's network/SSH/ACL facts, and
+# the k8s port-forward topology. The campaign's render-env points the app at this file via
+# KDIVE_SYSTEMS_TOML and reads the remote *connection* (uri/cert refs/gdb addr/gdbstub range) from
+# the [[remote_libvirt]] block above — these tables carry only what the inventory model lacks.
+# ---------------------------------------------------------------------------------------------
+
+# [campaign.workstation]
+# fault_inject = true
+# secrets_root = "/home/you/.kdive-secrets"
+# build_workspace = "/work/.live-build"
+# build_component_roots = "/work/fixtures/local-libvirt:/work/.live-components"
+# s3_endpoint_url = "http://<workstation-lan-ip>:9000"   # reachable FROM the remote guest
+# lan_ip = "<workstation-lan-ip>"
+
+# [campaign.remote_libvirt]
+# host_fqdn = "ub24-big.example"
+# host_ip = "192.168.10.20"
+# ssh_target = "you@ub24-big.example"
+# tls_port = 16514
+# acl_source_ip = "<workstation-lan-ip>"   # defaults to campaign.workstation.lan_ip
+
+# [campaign.k8s]
+# context = "kdive-d2"
+# namespace = "kdive"
+# oidc_forward = "svc/oidc"
+# oidc_local_port = 8080
+# oidc_service_port = 80
+# server_forward = "svc/server"
+# server_local_port = 8081
+# server_service_port = 80
+# in_cluster_issuer = "http://oidc.kdive.svc/realms/kdive"
