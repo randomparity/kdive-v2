@@ -1,4 +1,4 @@
-# ADR 0105 — Reap name-orphaned libvirt domains via the kdive naming convention
+# ADR 0111 — Reap name-orphaned libvirt domains via the kdive naming convention
 
 - **Status:** Proposed
 - **Date:** 2026-06-13

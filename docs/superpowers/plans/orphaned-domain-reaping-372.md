@@ -1,7 +1,7 @@
 # Plan — Reap name-orphaned libvirt domains (#372)
 
 - **Spec:** [`../specs/2026-06-13-orphaned-domain-reaping-design.md`](../specs/2026-06-13-orphaned-domain-reaping-design.md)
-- **ADR:** [`../../adr/0105-orphaned-domain-name-fallback-reaping.md`](../../adr/0105-orphaned-domain-name-fallback-reaping.md)
+- **ADR:** [`../../adr/0111-orphaned-domain-name-fallback-reaping.md`](../../adr/0111-orphaned-domain-name-fallback-reaping.md)
 - **Branch:** `feat/reap-orphaned-domain-372`
 
 TDD throughout: write the failing test, then the minimal code. Each step ends green before

@@ -28,7 +28,7 @@ async def repair_leaked_domains(conn: AsyncConnection, reaper: InfraReaper) -> i
     """Destroy provider domains whose owning System is gone and no teardown is in flight.
 
     The owning System is the domain's metadata tag when present, else the System encoded in
-    its ``kdive-<uuid>`` name (ADR-0105): a genuinely orphaned domain that lost its tag but
+    its ``kdive-<uuid>`` name (ADR-0111): a genuinely orphaned domain that lost its tag but
     matches the naming convention is still ours, and is reaped once no live ``systems`` row
     backs it. A name that does not match the convention is foreign/unmanaged and never
     reaped. The metadata tag stays authoritative when present; the name is a fallback only.

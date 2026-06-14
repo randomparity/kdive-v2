@@ -1,4 +1,4 @@
-"""Local-libvirt reconciler ``InfraReaper`` adapter (ADR-0105).
+"""Local-libvirt reconciler ``InfraReaper`` adapter (ADR-0111).
 
 Realizes the reconciler's :class:`~kdive.providers.reaping.InfraReaper` port over the
 local-libvirt discovery + provisioning planes, so the periodic ``leaked_domains`` sweep

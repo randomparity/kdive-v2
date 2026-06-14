@@ -1,4 +1,4 @@
-"""Tests for the local-libvirt reconciler ``InfraReaper`` adapter (ADR-0105)."""
+"""Tests for the local-libvirt reconciler ``InfraReaper`` adapter (ADR-0111)."""
 
 from __future__ import annotations
 

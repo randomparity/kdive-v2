@@ -195,7 +195,7 @@ class LocalLibvirtDiscovery:
         """Return ``{system_id, domain_name}`` for each kdive-owned domain.
 
         Ownership is the kdive metadata tag when present, else the ``kdive-<uuid>`` naming
-        convention (ADR-0105): a convention-named domain whose tag is absent/empty/unparseable
+        convention (ADR-0111): a convention-named domain whose tag is absent/empty/unparseable
         is surfaced with ``system_id=""`` (the on-the-wire ``None``) so the reconciler falls
         back to the name and can reap a genuinely orphaned domain. A domain that is neither
         tagged nor convention-named is not ours and is skipped.

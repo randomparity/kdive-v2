@@ -10,7 +10,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 
 _CONSOLE_DIR = "/var/lib/kdive/console"
 
-# The deterministic System domain name carries the owning System's UUID (ADR-0105). Anchored
+# The deterministic System domain name carries the owning System's UUID (ADR-0111). Anchored
 # so the ephemeral build-VM form (kdive-build-<uuid>) cannot match: the "build-" infix is not
 # hex, so it never satisfies the leading hex group. Hex is matched case-insensitively.
 _SYSTEM_DOMAIN_RE = re.compile(

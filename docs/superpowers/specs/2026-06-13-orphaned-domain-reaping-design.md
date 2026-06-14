@@ -1,6 +1,6 @@
 # Spec — Reap name-orphaned libvirt domains (#372)
 
-- **ADR:** [`../../adr/0105-orphaned-domain-name-fallback-reaping.md`](../../adr/0105-orphaned-domain-name-fallback-reaping.md)
+- **ADR:** [`../../adr/0111-orphaned-domain-name-fallback-reaping.md`](../../adr/0111-orphaned-domain-name-fallback-reaping.md)
 - **Issue:** [#372](https://github.com/randomparity/kdive/issues/372)
 - **Date:** 2026-06-13
 

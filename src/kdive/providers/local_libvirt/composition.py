@@ -74,7 +74,7 @@ def _discovery_target() -> DiscoveryRegistrationTarget:
 
 
 def build_reaper() -> InfraReaper:
-    """Build the local-libvirt reconciler reaper (ADR-0105); opens no connection here."""
+    """Build the local-libvirt reconciler reaper (ADR-0111); opens no connection here."""
     return LibvirtInfraReaper.from_env()
 
 

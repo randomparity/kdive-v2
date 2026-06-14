@@ -169,7 +169,7 @@ class ProviderComposition:
         """Assemble the provider-aware leaked-infra reaper for reconciliation.
 
         Local-libvirt is always-on (``KDIVE_LIBVIRT_URI`` defaults to ``qemu:///system`` and
-        the local runtime is always registered), so the libvirt-backed reaper (ADR-0105) is
+        the local runtime is always registered), so the libvirt-backed reaper (ADR-0111) is
         always present — a stock deployment is no longer ``NullReaper``-backed, so an orphaned
         ``kdive-<uuid>`` domain reaches ``repair_leaked_domains``. The fault-inject reaper is
         composed in when enabled. ``libvirt_reaper`` is an injection seam for tests (the real
