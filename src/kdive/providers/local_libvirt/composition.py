@@ -32,8 +32,10 @@ from kdive.providers.local_libvirt.lifecycle.control import LocalLibvirtControl
 from kdive.providers.local_libvirt.lifecycle.install import LocalLibvirtInstall
 from kdive.providers.local_libvirt.lifecycle.provisioning import LocalLibvirtProvisioning
 from kdive.providers.local_libvirt.profile_policy import LocalLibvirtProfilePolicy
+from kdive.providers.local_libvirt.reaping import LibvirtInfraReaper
 from kdive.providers.local_libvirt.retrieve import LocalLibvirtRetrieve
 from kdive.providers.local_libvirt.rootfs_build import LocalLibvirtRootfsBuildPlane
+from kdive.providers.reaping import InfraReaper
 from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
 from kdive.security.secrets.redaction import Redactor
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -69,6 +71,11 @@ def discovery_registration() -> ProviderDiscoveryRegistration:
 def _discovery_target() -> DiscoveryRegistrationTarget:
     discovery = LocalLibvirtDiscovery.from_env()
     return DiscoveryRegistrationTarget(discovery=discovery, resource_id=discovery.host_uri)
+
+
+def build_reaper() -> InfraReaper:
+    """Build the local-libvirt reconciler reaper (ADR-0105); opens no connection here."""
+    return LibvirtInfraReaper.from_env()
 
 
 def build_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
