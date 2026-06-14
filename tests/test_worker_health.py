@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
-from kdive.health import HealthProbe
+from kdive.health.probe import HealthProbe
 from kdive.process_health.worker import build_worker_probe
 
 
@@ -70,8 +70,8 @@ def test_readyz_over_aux_listener_omits_oidc() -> None:
     async def _run() -> None:
         import httpx
 
-        from kdive.health import Heartbeat
         from kdive.health.aux_listener import build_aux_app
+        from kdive.health.heartbeat import Heartbeat
 
         probe = build_worker_probe(
             postgres_ping=_pg_ok, object_store_factory=lambda: _FakeStore(ok=True)

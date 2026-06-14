@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from typing import cast
 from uuid import UUID
 
 import psycopg
@@ -76,21 +77,32 @@ def _reap(store: _FakeStore):
     return lambda conn: _repair_abandoned_uploads(conn, store)
 
 
-def _manifest_request(
-    *,
-    owner_kind: str,
-    owner_id: UUID,
-    prefix: str,
-    entries: list[ManifestEntry],
-    ttl: timedelta,
-) -> upload_manifest.UploadManifestReplaceRequest:
-    return upload_manifest.UploadManifestReplaceRequest(
-        owner_kind=owner_kind,
-        owner_id=owner_id,
+def _run_manifest(
+    run_id: UUID, ttl: timedelta
+) -> tuple[str, upload_manifest.UploadManifestReplaceRequest]:
+    prefix = f"local/runs/{run_id}/"
+    request = upload_manifest.UploadManifestReplaceRequest(
+        owner_kind="runs",
+        owner_id=run_id,
         prefix=prefix,
-        entries=entries,
+        entries=[ManifestEntry("kernel", "a", 1)],
         ttl=ttl,
     )
+    return prefix, request
+
+
+def _system_manifest(
+    system_id: UUID, ttl: timedelta
+) -> tuple[str, upload_manifest.UploadManifestReplaceRequest]:
+    prefix = f"local/systems/{system_id}/"
+    request = upload_manifest.UploadManifestReplaceRequest(
+        owner_kind="systems",
+        owner_id=system_id,
+        prefix=prefix,
+        entries=[ManifestEntry("rootfs", "a", 1)],
+        ttl=ttl,
+    )
+    return prefix, request
 
 
 async def _defined_system_via_define(url: str) -> UUID:
@@ -112,17 +124,8 @@ def test_reaps_uncommitted_objects_past_deadline_for_created_run(migrated_url: s
         async with await connect(migrated_url) as seed:
             system_id = await seed_system(seed)
             run_id = await seed_run(seed, system_id, run_state=RunState.CREATED)
-            prefix = f"local/runs/{run_id}/"
-            await upload_manifest.replace_manifest(
-                seed,
-                _manifest_request(
-                    owner_kind="runs",
-                    owner_id=run_id,
-                    prefix=prefix,
-                    entries=[ManifestEntry("kernel", "a", 1)],
-                    ttl=timedelta(seconds=-1),
-                ),
-            )
+            prefix, request = _run_manifest(run_id, timedelta(seconds=-1))
+            await upload_manifest.replace_manifest(seed, request)
         store = _FakeStore({prefix: [f"{prefix}kernel", f"{prefix}stray"]})
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(pool, _reap(store))
@@ -137,18 +140,9 @@ def test_reaps_uncommitted_objects_past_deadline_for_created_run(migrated_url: s
 def test_reaps_uncommitted_objects_past_deadline_for_defined_system(migrated_url: str) -> None:
     async def _run() -> None:
         system_id = await _defined_system_via_define(migrated_url)
-        prefix = f"local/systems/{system_id}/"
+        prefix, request = _system_manifest(system_id, timedelta(seconds=-1))
         async with await connect(migrated_url) as seed:
-            await upload_manifest.replace_manifest(
-                seed,
-                _manifest_request(
-                    owner_kind="systems",
-                    owner_id=system_id,
-                    prefix=prefix,
-                    entries=[ManifestEntry("rootfs", "a", 1)],
-                    ttl=timedelta(seconds=-1),
-                ),
-            )
+            await upload_manifest.replace_manifest(seed, request)
         store = _FakeStore({prefix: [f"{prefix}rootfs", f"{prefix}stray"]})
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(pool, _reap(store))
@@ -163,21 +157,12 @@ def test_reaps_uncommitted_objects_past_deadline_for_defined_system(migrated_url
 def test_exempts_committed_object(migrated_url: str) -> None:
     async def _run() -> None:
         system_id = await _defined_system_via_define(migrated_url)
-        prefix = f"local/systems/{system_id}/"
+        prefix, request = _system_manifest(system_id, timedelta(seconds=-1))
         async with await connect(migrated_url) as seed:
             await _insert_artifact_row(
                 seed, owner_kind="systems", owner_id=system_id, object_key=f"{prefix}rootfs"
             )
-            await upload_manifest.replace_manifest(
-                seed,
-                _manifest_request(
-                    owner_kind="systems",
-                    owner_id=system_id,
-                    prefix=prefix,
-                    entries=[ManifestEntry("rootfs", "a", 1)],
-                    ttl=timedelta(seconds=-1),
-                ),
-            )
+            await upload_manifest.replace_manifest(seed, request)
         store = _FakeStore({prefix: [f"{prefix}rootfs"]})
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(pool, _reap(store))
@@ -194,17 +179,8 @@ def test_skips_owner_not_past_deadline(migrated_url: str) -> None:
         async with await connect(migrated_url) as seed:
             system_id = await seed_system(seed)
             run_id = await seed_run(seed, system_id, run_state=RunState.CREATED)
-            prefix = f"local/runs/{run_id}/"
-            await upload_manifest.replace_manifest(
-                seed,
-                _manifest_request(
-                    owner_kind="runs",
-                    owner_id=run_id,
-                    prefix=prefix,
-                    entries=[ManifestEntry("kernel", "a", 1)],
-                    ttl=timedelta(hours=1),
-                ),
-            )
+            prefix, request = _run_manifest(run_id, timedelta(hours=1))
+            await upload_manifest.replace_manifest(seed, request)
         store = _FakeStore({prefix: [f"{prefix}kernel"]})
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(pool, _reap(store))
@@ -225,20 +201,11 @@ def test_succeeded_run_with_lingering_manifest_reaps_chunks_not_final(migrated_u
         async with await connect(migrated_url) as seed:
             system_id = await seed_system(seed)
             run_id = await seed_run(seed, system_id, run_state=RunState.SUCCEEDED)
-            prefix = f"local/runs/{run_id}/"
+            prefix, request = _run_manifest(run_id, timedelta(seconds=-1))
             await _insert_artifact_row(
                 seed, owner_kind="runs", owner_id=run_id, object_key=f"{prefix}kernel"
             )
-            await upload_manifest.replace_manifest(
-                seed,
-                _manifest_request(
-                    owner_kind="runs",
-                    owner_id=run_id,
-                    prefix=prefix,
-                    entries=[ManifestEntry("kernel", "a", 1)],
-                    ttl=timedelta(seconds=-1),
-                ),
-            )
+            await upload_manifest.replace_manifest(seed, request)
         store = _FakeStore({prefix: [f"{prefix}kernel", f"{prefix}kernel.part0001"]})
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(pool, _reap(store))
@@ -257,17 +224,8 @@ def test_finalized_system_with_lingering_manifest_is_not_reaped(migrated_url: st
     async def _run() -> None:
         async with await connect(migrated_url) as seed:
             system_id = await seed_system(seed)  # seed_system inserts a READY (finalized) System
-            prefix = f"local/systems/{system_id}/"
-            await upload_manifest.replace_manifest(
-                seed,
-                _manifest_request(
-                    owner_kind="systems",
-                    owner_id=system_id,
-                    prefix=prefix,
-                    entries=[ManifestEntry("rootfs", "a", 1)],
-                    ttl=timedelta(seconds=-1),
-                ),
-            )
+            prefix, request = _system_manifest(system_id, timedelta(seconds=-1))
+            await upload_manifest.replace_manifest(seed, request)
         store = _FakeStore({prefix: [f"{prefix}rootfs"]})
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(pool, _reap(store))
@@ -284,17 +242,8 @@ def test_reap_one_owner_declines_renewed_manifest(migrated_url: str) -> None:
         async with await connect(migrated_url) as conn:
             system_id = await seed_system(conn)
             run_id = await seed_run(conn, system_id, run_state=RunState.CREATED)
-            prefix = f"local/runs/{run_id}/"
-            await upload_manifest.replace_manifest(
-                conn,
-                _manifest_request(
-                    owner_kind="runs",
-                    owner_id=run_id,
-                    prefix=prefix,
-                    entries=[ManifestEntry("kernel", "a", 1)],
-                    ttl=timedelta(hours=1),
-                ),
-            )
+            prefix, request = _run_manifest(run_id, timedelta(hours=1))
+            await upload_manifest.replace_manifest(conn, request)
             store = _FakeStore({prefix: [f"{prefix}kernel"]})
             assert await _reap_one_owner(conn, store, "runs", run_id, LockScope.RUN) is False
             assert store.deleted == []
@@ -307,7 +256,9 @@ def test_owner_pre_finalize_rejects_unknown_owner_kind_before_sql(migrated_url: 
         async with await connect(migrated_url) as conn:
             system_id = await seed_system(conn)
             try:
-                await _owner_pre_finalize(conn, "allocations", system_id)
+                await _owner_pre_finalize(
+                    conn, cast(upload_manifest.UploadOwnerKind, "allocations"), system_id
+                )
             except ValueError as exc:
                 assert str(exc) == "unsupported upload owner kind: allocations"
             else:

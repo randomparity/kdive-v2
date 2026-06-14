@@ -33,15 +33,8 @@ from kdive.providers.remote_libvirt.retrieve.common import (
 from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
     HostDumpCapturer,
     HostDumpOptions,
-    host_dump_volume_name,
     read_core_build_id_from_file,
     read_core_dmesg_from_file,
-)
-from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
-    file_sha256_b64 as _file_sha256_b64,
-)
-from kdive.providers.remote_libvirt.retrieve.host_dump_capture import (
-    pool_type_and_target as _pool_type_and_target,
 )
 from kdive.providers.remote_libvirt.retrieve.kdump_capture import (
     DEFAULT_PUT_EXPIRY_S,
@@ -53,57 +46,6 @@ from kdive.providers.remote_libvirt.retrieve.postmortem import CrashPostmortemAd
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
 from kdive.store.objectstore import object_store_from_env
-
-
-def _build_kdump_capturer(
-    *,
-    secret_registry: SecretRegistry,
-    config_factory: Callable[[], RemoteLibvirtConfig],
-    open_connection: OpenRetrieveConnection,
-    store_factory: Callable[[], StorePort],
-    secret_backend_factory: Callable[[], SecretBackend],
-    pki_base_dir: Path | None,
-) -> KdumpCapturer:
-    return KdumpCapturer(
-        secret_registry=secret_registry,
-        config_factory=config_factory,
-        open_connection=open_connection,
-        store_factory=store_factory,
-        agent_command=qemu_agent_command,
-        agent_exec_factory=None,
-        secret_backend_factory=secret_backend_factory,
-        pki_base_dir=pki_base_dir,
-        put_expiry_s=DEFAULT_PUT_EXPIRY_S,
-        readiness_timeout_s=DEFAULT_READINESS_TIMEOUT_S,
-        readiness_poll_s=DEFAULT_READINESS_POLL_S,
-        sleep=time.sleep,
-        monotonic=time.monotonic,
-    )
-
-
-def _build_host_dump_capturer(
-    *,
-    secret_registry: SecretRegistry,
-    config_factory: Callable[[], RemoteLibvirtConfig],
-    open_connection: OpenRetrieveConnection,
-    store_factory: Callable[[], StorePort],
-    secret_backend_factory: Callable[[], SecretBackend],
-    pki_base_dir: Path | None,
-) -> HostDumpCapturer:
-    return HostDumpCapturer(
-        secret_registry=secret_registry,
-        config_factory=config_factory,
-        open_connection=open_connection,
-        store_factory=store_factory,
-        secret_backend_factory=secret_backend_factory,
-        pki_base_dir=pki_base_dir,
-        options=HostDumpOptions(
-            core_build_id_from_file=read_core_build_id_from_file,
-            core_dmesg_from_file=read_core_dmesg_from_file,
-            dump_format=libvirt.VIR_DOMAIN_CORE_DUMP_FORMAT_RAW,
-            max_core_bytes=MAX_CORE_BYTES,
-        ),
-    )
 
 
 class RemoteLibvirtRetrieve:
@@ -127,21 +69,34 @@ class RemoteLibvirtRetrieve:
         secret_backend_factory = secret_backend_factory or (
             lambda: secret_backend_from_env(registry=secret_registry)
         )
-        self._kdump = kdump_capturer or _build_kdump_capturer(
+        self._kdump = kdump_capturer or KdumpCapturer(
             secret_registry=secret_registry,
             config_factory=config_factory,
             open_connection=open_connection,
             store_factory=store_factory,
+            agent_command=qemu_agent_command,
+            agent_exec_factory=None,
             secret_backend_factory=secret_backend_factory,
             pki_base_dir=pki_base_dir,
+            put_expiry_s=DEFAULT_PUT_EXPIRY_S,
+            readiness_timeout_s=DEFAULT_READINESS_TIMEOUT_S,
+            readiness_poll_s=DEFAULT_READINESS_POLL_S,
+            sleep=time.sleep,
+            monotonic=time.monotonic,
         )
-        self._host_dump = host_dump_capturer or _build_host_dump_capturer(
+        self._host_dump = host_dump_capturer or HostDumpCapturer(
             secret_registry=secret_registry,
             config_factory=config_factory,
             open_connection=open_connection,
             store_factory=store_factory,
             secret_backend_factory=secret_backend_factory,
             pki_base_dir=pki_base_dir,
+            options=HostDumpOptions(
+                core_build_id_from_file=read_core_build_id_from_file,
+                core_dmesg_from_file=read_core_dmesg_from_file,
+                dump_format=libvirt.VIR_DOMAIN_CORE_DUMP_FORMAT_RAW,
+                max_core_bytes=MAX_CORE_BYTES,
+            ),
         )
         self._postmortem = CrashPostmortemAdapter(
             secret_registry=secret_registry,
@@ -186,9 +141,4 @@ class RemoteLibvirtRetrieve:
 
 __all__ = [
     "RemoteLibvirtRetrieve",
-    "_file_sha256_b64",
-    "_pool_type_and_target",
-    "host_dump_volume_name",
-    "read_core_build_id_from_file",
-    "read_core_dmesg_from_file",
 ]

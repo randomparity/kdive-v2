@@ -50,6 +50,8 @@ from kdive.store.objectstore import (
 _log = logging.getLogger(__name__)
 
 _TENANT = "local"
+_CREATE_RUN_UPLOAD_TOOL = "artifacts.create_run_upload"
+_CREATE_SYSTEM_UPLOAD_TOOL = "artifacts.create_system_upload"
 _BUILD_ARTIFACT_NAMES = frozenset({"effective_config", "kernel", "initrd", "vmlinux"})
 _ROOTFS_NAME = "rootfs"
 _RETENTION_CLASS = "build"
@@ -85,7 +87,7 @@ type ArtifactDeclaration = Mapping[str, object]
 
 @dataclass(frozen=True)
 class _UploadOwnerSpec:
-    owner_kind: str
+    owner_kind: upload_manifest.UploadOwnerKind
     lock_scope: LockScope
     allowed_names: frozenset[str]
     next_action: str
@@ -156,7 +158,7 @@ def _validate_chunks(
 def _materialize_uploads(
     entries: list[ManifestEntry],
     *,
-    kind: str,
+    kind: upload_manifest.UploadOwnerKind,
     owner_id: UUID,
     store: _PresignStore,
 ) -> list[_MaterializedUpload]:
@@ -240,7 +242,7 @@ async def _system_accepts_upload(
 
 
 _RUN_UPLOAD = _UploadOwnerSpec(
-    owner_kind="runs",
+    owner_kind=upload_manifest.RUN_UPLOAD_OWNER,
     lock_scope=LockScope.RUN,
     allowed_names=_BUILD_ARTIFACT_NAMES,
     next_action="runs.complete_build",
@@ -248,7 +250,7 @@ _RUN_UPLOAD = _UploadOwnerSpec(
     accepts_upload=_run_accepts_upload,
 )
 _SYSTEM_UPLOAD = _UploadOwnerSpec(
-    owner_kind="systems",
+    owner_kind=upload_manifest.SYSTEM_UPLOAD_OWNER,
     lock_scope=LockScope.SYSTEM,
     allowed_names=frozenset({_ROOTFS_NAME}),
     next_action="systems.provision_defined",
@@ -267,10 +269,15 @@ async def _create_upload(
     resolver: ProviderResolver,
     store: _PresignStore | None = None,
 ) -> ToolResponse:
-    store = store or object_store_from_env()
     uid = _as_uuid(owner_id)
     if uid is None:
         return _config_error(owner_id)
+    try:
+        store = store or object_store_from_env()
+    except CategorizedError as exc:
+        return ToolResponse.failure_from_error(
+            owner_id, exc, suggested_next_actions=[_upload_tool_name(spec)]
+        )
 
     with bind_context(principal=ctx.principal):
         async with pool.connection() as conn:
@@ -337,6 +344,12 @@ def _upload_response(upload: _MaterializedUpload, *, next_action: str) -> ToolRe
             **upload.presigned.required_headers,
         },
     )
+
+
+def _upload_tool_name(spec: _UploadOwnerSpec) -> str:
+    if spec.owner_kind == upload_manifest.RUN_UPLOAD_OWNER:
+        return _CREATE_RUN_UPLOAD_TOOL
+    return _CREATE_SYSTEM_UPLOAD_TOOL
 
 
 async def create_run_upload(

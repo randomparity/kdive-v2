@@ -10,7 +10,8 @@ import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.provider_components.artifacts import PresignedUpload
-from kdive.providers.build_host.transport import CommandResult, LocalBuildTransport
+from kdive.providers.build_host.transport import LocalBuildTransport
+from kdive.providers.ports.build_transport import CommandResult
 
 _RUN_TARGET = "kdive.providers.build_host.transport.subprocess.run"
 

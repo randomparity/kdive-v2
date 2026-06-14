@@ -12,6 +12,7 @@ import pytest
 from psycopg_pool import AsyncConnectionPool
 
 import kdive.config as config
+from kdive.db.build_hosts import BuildHostKind
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind, Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
@@ -41,7 +42,7 @@ from kdive.providers.remote_libvirt.lifecycle.control import RemoteLibvirtContro
 from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
 from kdive.providers.remote_libvirt.lifecycle.provisioning import RemoteLibvirtProvisioning
 from kdive.providers.remote_libvirt.profile_policy import RemoteLibvirtProfilePolicy
-from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
+from kdive.providers.remote_libvirt.retrieve.facade import RemoteLibvirtRetrieve
 from kdive.providers.remote_libvirt.rootfs_build import RemoteLibvirtRootfsBuildPlane
 from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -461,8 +462,11 @@ def test_console_hosting_delegates_to_remote_when_enabled(
     expected_registry = SecretRegistry()
     seen: dict[str, object] = {}
 
-    async def _build_console_hosting(*, secret_registry: SecretRegistry) -> object:
+    async def _build_console_hosting(
+        *, secret_registry: SecretRegistry, running_systems_factory: object
+    ) -> object:
         seen["secret_registry"] = secret_registry
+        seen["running_systems_factory"] = running_systems_factory
         return expected_hosting
 
     monkeypatch.setattr(
@@ -476,6 +480,7 @@ def test_console_hosting_delegates_to_remote_when_enabled(
         is expected_hosting
     )
     assert seen["secret_registry"] is expected_registry
+    assert seen["running_systems_factory"] is composition.DbRunningRemoteSystems
 
 
 def test_fault_inject_opt_in_reads_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -549,6 +554,19 @@ def test_remote_runtime_buildable_without_operator_config(
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
     assert runtime.discovery_registrar is not None
+
+
+def test_build_host_transport_factories_follow_remote_libvirt_opt_in() -> None:
+    provider_composition = composition.ProviderComposition(secret_registry=SecretRegistry())
+
+    assert (
+        provider_composition.build_build_host_transport_factories(enable_remote_libvirt=False) == {}
+    )
+    factories = provider_composition.build_build_host_transport_factories(
+        enable_remote_libvirt=True
+    )
+
+    assert set(factories) == {BuildHostKind.EPHEMERAL_LIBVIRT}
 
 
 def test_remote_runtime_advertises_all_four_capture_methods() -> None:

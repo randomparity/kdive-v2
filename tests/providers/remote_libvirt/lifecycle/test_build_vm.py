@@ -23,7 +23,7 @@ from kdive.providers.remote_libvirt.lifecycle.build_vm import (
 from kdive.providers.remote_libvirt.lifecycle.xml import recorded_gdb_port
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.providers.remote_libvirt.conftest import RecordingBackend
-from tests.providers.remote_libvirt.test_provisioning import (
+from tests.providers.remote_libvirt.lifecycle.test_provisioning import (
     _BASE_VOLUME,
     FakePool,
     FakeProvisionConn,

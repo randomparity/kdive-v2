@@ -41,7 +41,10 @@ from kdive.providers.fault_inject.lifecycle.faulted import FaultedInstall, Fault
 from kdive.providers.fault_inject.lifecycle.install import FaultInjectInstall
 from kdive.providers.fault_inject.lifecycle.provisioning import FaultInjectProvisioning
 from kdive.providers.ports import InstallRequest
-from kdive.reconciler import loop
+from kdive.reconciler.debug_sessions import repair_dead_sessions
+from kdive.reconciler.jobs import repair_abandoned_jobs
+from kdive.reconciler.provider_reaping import repair_leaked_domains
+from kdive.reconciler.systems import repair_orphaned_systems
 from tests.reconciler.conftest import (
     connect,
     run_repair,
@@ -83,7 +86,7 @@ def test_leaked_fault_inject_domain_is_reaped(migrated_url: str) -> None:
         assert any(d.name == domain for d in inventory.owned_domains())
         reaper = FaultInjectReaper(inventory)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, lambda conn: loop._repair_leaked_domains(conn, reaper))
+            count = await run_repair(pool, lambda conn: repair_leaked_domains(conn, reaper))
         assert count == 1
         # The real mock seam forgot the domain (idempotent destroy) -> no longer owned.
         assert all(d.name != domain for d in inventory.owned_domains())
@@ -100,7 +103,7 @@ def test_fault_inject_domain_with_live_row_not_reaped(migrated_url: str) -> None
         FaultInjectProvisioning(inventory).provision(system_id, _PROFILE)
         reaper = FaultInjectReaper(inventory)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, lambda conn: loop._repair_leaked_domains(conn, reaper))
+            count = await run_repair(pool, lambda conn: repair_leaked_domains(conn, reaper))
         assert count == 0
         assert any(d.name == domain for d in inventory.owned_domains())  # live row protects it
 
@@ -133,7 +136,7 @@ def test_orphaned_system_after_successful_fault_inject_provision(migrated_url: s
                 (AllocationState.RELEASED.value, system_id),
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._repair_orphaned_systems)
+            count = await run_repair(pool, repair_orphaned_systems)
         assert count == 1
         async with await connect(migrated_url) as check:
             cur = await check.execute(
@@ -158,7 +161,7 @@ def test_fail_drawn_system_is_failed_not_orphan_reaped(migrated_url: str) -> Non
                 seed, system_state=SystemState.FAILED, alloc_state=AllocationState.RELEASED
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._repair_orphaned_systems)
+            count = await run_repair(pool, repair_orphaned_systems)
         assert count == 0  # a failed System is not orphan-reaped
         async with await connect(migrated_url) as check:
             cur = await check.execute(
@@ -188,7 +191,7 @@ def test_abandoned_run_bearing_job_dead_lettered_and_run_compensated(migrated_ur
                 max_attempts=3,
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._repair_abandoned_jobs)
+            count = await run_repair(pool, repair_abandoned_jobs)
         assert count == 1
         async with await connect(migrated_url) as check:
             cur = await check.execute(
@@ -236,9 +239,7 @@ def test_dead_session_from_connect_transport_drop_is_detached(migrated_url: str)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             count = await run_repair(
                 pool,
-                lambda conn: loop._repair_dead_sessions(
-                    conn, loop.DEFAULT_DEBUG_SESSION_STALE_AFTER, NullResetter()
-                ),
+                lambda conn: repair_dead_sessions(conn, timedelta(minutes=2), NullResetter()),
             )
         assert count == 1
         async with await connect(migrated_url) as check:
@@ -293,7 +294,7 @@ def test_lease_expiry_mid_install_fails_run_lease_expired_not_canceled(migrated_
                 max_attempts=3,
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._repair_abandoned_jobs)
+            count = await run_repair(pool, repair_abandoned_jobs)
         assert count == 1
         async with await connect(migrated_url) as check:
             cur = await check.execute(

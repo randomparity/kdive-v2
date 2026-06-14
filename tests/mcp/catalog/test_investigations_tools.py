@@ -135,7 +135,7 @@ def test_get_cross_project_is_not_found(migrated_url: str) -> None:
             resp = await inv_tools.get_investigation(
                 pool, _ctx(projects=("other",)), opened.object_id
             )
-        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.status == "error" and resp.error_category == "not_found"
 
     asyncio.run(_run())
 
@@ -247,7 +247,7 @@ def test_close_cross_project_is_not_found(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             inv_id = await _seed_investigation(pool, InvestigationState.OPEN)
             resp = await inv_tools.close_investigation(pool, _ctx(projects=("other",)), inv_id)
-        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.status == "error" and resp.error_category == "not_found"
 
     asyncio.run(_run())
 

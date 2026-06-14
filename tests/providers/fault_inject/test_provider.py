@@ -27,7 +27,7 @@ from kdive.providers.fault_inject.lifecycle.control import FaultInjectControl
 from kdive.providers.fault_inject.lifecycle.install import FaultInjectInstall
 from kdive.providers.fault_inject.lifecycle.provisioning import FaultInjectProvisioning
 from kdive.providers.fault_inject.retrieve import FaultInjectRetrieve
-from kdive.providers.ports import InstallRequest, SystemHandle
+from kdive.providers.ports import DebugTransportKind, InstallRequest, SystemHandle
 from kdive.providers.ports.lifecycle import TransportHandleData
 
 _SYSTEM = UUID("11111111-1111-1111-1111-111111111111")
@@ -148,7 +148,9 @@ def test_open_transport_rejects_an_unknown_transport_kind() -> None:
     connect = FaultInjectConnect()
 
     with pytest.raises(CategorizedError) as exc:
-        connect.open_transport(SystemHandle("fault-inject-domain"), "carrier-pigeon")
+        connect.open_transport(
+            SystemHandle("fault-inject-domain"), cast(DebugTransportKind, "carrier-pigeon")
+        )
 
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
@@ -173,7 +175,7 @@ def test_open_transport_rejects_the_legacy_ssh_kind() -> None:
     connect = FaultInjectConnect()
 
     with pytest.raises(CategorizedError) as exc:
-        connect.open_transport(SystemHandle("fault-inject-domain"), "ssh")
+        connect.open_transport(SystemHandle("fault-inject-domain"), cast(DebugTransportKind, "ssh"))
 
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 

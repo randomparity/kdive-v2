@@ -25,6 +25,7 @@ from kdive.domain.state import AllocationState, ResourceStatus, SystemState
 from kdive.providers.reaping import NullReaper
 from kdive.reconciler import allocations as allocation_repairs
 from kdive.reconciler import loop
+from kdive.reconciler.gc import gc_idempotency_keys
 from kdive.services.accounting import ledger as accounting
 from tests.db_waits import wait_until_any_backend_waiting
 from tests.reconciler.conftest import connect, run_repair
@@ -256,7 +257,7 @@ def test_idempotency_gc_deletes_old_rows_only(migrated_url: str) -> None:
             )
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             deleted = await run_repair(
-                pool, lambda conn: loop._gc_idempotency_keys(conn, timedelta(days=7))
+                pool, lambda conn: gc_idempotency_keys(conn, timedelta(days=7))
             )
         assert deleted == 1  # only the 30-day-old row
         async with await connect(migrated_url) as check:

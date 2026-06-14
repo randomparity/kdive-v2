@@ -13,9 +13,11 @@ test-vs-Postgres skew.
 from __future__ import annotations
 
 import asyncio
+import logging
 from uuid import UUID, uuid4
 
 import psycopg
+import pytest
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
@@ -90,6 +92,11 @@ class _FakeProbe:
     async def probe(self, host_uri: str) -> bool:
         self.probed.append(host_uri)
         return self._results.get(host_uri, False)
+
+
+class _RaisingProbe:
+    async def probe(self, host_uri: str) -> bool:
+        raise RuntimeError(f"probe failed for {host_uri}")
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +295,33 @@ def test_unexpired_lease_is_not_probed(migrated_url: str) -> None:
 
         assert count == 0
         assert probe.probed == []
+
+    asyncio.run(_run())
+
+
+def test_reap_candidate_failure_logs_exception_context(
+    migrated_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed per-resource probe is isolated and logged with traceback context."""
+
+    async def _run() -> None:
+        host = "qemu+tls://boom.example/system"
+        async with await connect(migrated_url) as seed:
+            await _seed_resource(seed, managed_by="runtime", lease_seconds=-60, host_uri=host)
+
+        caplog.set_level(logging.WARNING, logger="kdive.reconciler.runtime_resources")
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            count = await run_repair(
+                pool, lambda c: reap_expired_runtime_resources(c, _RaisingProbe())
+            )
+
+        assert count == 0
+        warnings = [
+            record for record in caplog.records if "reaping runtime resource" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].exc_info is not None
+        assert isinstance(warnings[0].exc_info[1], RuntimeError)
 
     asyncio.run(_run())
 

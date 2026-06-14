@@ -360,8 +360,8 @@ Operator steps:
 2. **Register the build host** (`platform_admin`):
 
    ```bash
-   kdivectl tool call build_hosts.register --json '{
-     "name": "builders", "kind": "ephemeral_libvirt",
+   kdivectl tool call build_hosts.register_ephemeral_libvirt --json '{
+     "name": "builders",
      "base_image_volume": "kdive-build-base.qcow2",
      "workspace_root": "/build", "max_concurrent": 2 }'
    ```

@@ -41,24 +41,28 @@ async def _pool(url: str) -> AsyncIterator[AsyncConnectionPool]:
         await pool.close()
 
 
-def _ctx(
-    *,
-    platform_roles: frozenset[PlatformRole] = frozenset(),
-    roles: dict[str, Role] | None = None,
-    projects: tuple[str, ...] = (),
-    client_id: str | None = None,
-) -> RequestContext:
-    return RequestContext(
-        principal="op-1",
-        agent_session="sess-1",
-        projects=projects,
-        roles=roles or {},
-        platform_roles=platform_roles,
-        client_id=client_id,
-    )
-
-
-_OPERATOR = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}), client_id="kdivectl")
+_PROJECT_ADMIN = RequestContext(
+    principal="op-1",
+    agent_session="sess-1",
+    projects=("proj-a",),
+    roles={"proj-a": Role.ADMIN},
+    platform_roles=frozenset(),
+)
+_PLATFORM_ADMIN = RequestContext(
+    principal="op-1",
+    agent_session="sess-1",
+    projects=(),
+    roles={},
+    platform_roles=frozenset({PlatformRole.PLATFORM_ADMIN}),
+)
+_OPERATOR = RequestContext(
+    principal="op-1",
+    agent_session="sess-1",
+    projects=(),
+    roles={},
+    platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}),
+    client_id="kdivectl",
+)
 
 
 def _registry_with_secret() -> SecretRegistry:
@@ -79,8 +83,7 @@ async def _platform_audit_rows(url: str) -> list[tuple[object, ...]]:
 def test_denies_non_platform_principal_unaudited(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(roles={"proj-a": Role.ADMIN}, projects=("proj-a",))
-            resp = await secrets.list_secrets_tool(pool, _registry_with_secret(), ctx)
+            resp = await secrets.list_secrets_tool(pool, _registry_with_secret(), _PROJECT_ADMIN)
             assert resp.status == "error"
             assert resp.error_category == "authorization_denied"
             assert _SECRET_VALUE not in str(resp.model_dump())
@@ -94,8 +97,7 @@ def test_platform_admin_alone_denied_but_audited(migrated_url: str) -> None:
     # and because it holds a platform role the over-reach IS audited.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_ADMIN}))
-            resp = await secrets.list_secrets_tool(pool, _registry_with_secret(), ctx)
+            resp = await secrets.list_secrets_tool(pool, _registry_with_secret(), _PLATFORM_ADMIN)
             assert resp.status == "error"
             assert resp.error_category == "authorization_denied"
             assert _SECRET_VALUE not in str(resp.model_dump())

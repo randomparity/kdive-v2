@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -15,33 +15,24 @@ from kdive.mcp.responses import ResponseData, ToolResponse, current_status_data,
 from kdive.mcp.tools import _common
 
 _NOW = dt.datetime(2026, 6, 3, 12, 0, tzinfo=dt.UTC)
-
-
-def _job(
-    state: JobState,
-    *,
-    result_ref: str | None = None,
-    error_category: ErrorCategory | None = None,
-    failure_context: dict[str, str] | None = None,
-) -> Job:
-    return Job(
-        id=uuid4(),
-        created_at=_NOW,
-        updated_at=_NOW,
-        kind=JobKind.BUILD,
-        payload={},
-        state=state,
-        max_attempts=3,
-        result_ref=result_ref,
-        error_category=error_category,
-        failure_context=failure_context or {},
-        authorizing={"principal": "p", "agent_session": None, "project": "proj"},
-        dedup_key=str(uuid4()),
-    )
+_BUILD_JOB = Job(
+    id=UUID("00000000-0000-0000-0000-000000000001"),
+    created_at=_NOW,
+    updated_at=_NOW,
+    kind=JobKind.BUILD,
+    payload={},
+    state=JobState.RUNNING,
+    max_attempts=3,
+    result_ref=None,
+    error_category=None,
+    failure_context={},
+    authorizing={"principal": "p", "agent_session": None, "project": "proj"},
+    dedup_key="build-job",
+)
 
 
 def test_from_job_running_has_no_refs_and_polling_actions() -> None:
-    job = _job(JobState.RUNNING)
+    job = _BUILD_JOB
     resp = ToolResponse.from_job(job)
     assert resp.object_id == str(job.id)
     assert resp.status == "running"
@@ -52,7 +43,9 @@ def test_from_job_running_has_no_refs_and_polling_actions() -> None:
 
 
 def test_from_job_succeeded_exposes_result_ref() -> None:
-    job = _job(JobState.SUCCEEDED, result_ref="tenant/run/abc/kernel")
+    job = _BUILD_JOB.model_copy(
+        update={"state": JobState.SUCCEEDED, "result_ref": "tenant/run/abc/kernel"}
+    )
     resp = ToolResponse.from_job(job)
     assert resp.status == "succeeded"
     assert resp.refs == {"result": "tenant/run/abc/kernel"}
@@ -60,7 +53,9 @@ def test_from_job_succeeded_exposes_result_ref() -> None:
 
 
 def test_from_job_failed_carries_category() -> None:
-    job = _job(JobState.FAILED, error_category=ErrorCategory.BUILD_FAILURE)
+    job = _BUILD_JOB.model_copy(
+        update={"state": JobState.FAILED, "error_category": ErrorCategory.BUILD_FAILURE}
+    )
     resp = ToolResponse.from_job(job)
     assert resp.status == "failed"
     assert resp.error_category == "build_failure"
@@ -68,10 +63,15 @@ def test_from_job_failed_carries_category() -> None:
 
 
 def test_from_job_failed_exposes_failure_context() -> None:
-    job = _job(
-        JobState.FAILED,
-        error_category=ErrorCategory.BUILD_FAILURE,
-        failure_context={"failure_message": "make failed", "failure_detail_run_id": "r1"},
+    job = _BUILD_JOB.model_copy(
+        update={
+            "state": JobState.FAILED,
+            "error_category": ErrorCategory.BUILD_FAILURE,
+            "failure_context": {
+                "failure_message": "make failed",
+                "failure_detail_run_id": "r1",
+            },
+        }
     )
     resp = ToolResponse.from_job(job)
     assert resp.data == {
@@ -82,7 +82,7 @@ def test_from_job_failed_exposes_failure_context() -> None:
 
 
 def test_from_job_canceled_has_no_actions() -> None:
-    resp = ToolResponse.from_job(_job(JobState.CANCELED))
+    resp = ToolResponse.from_job(_BUILD_JOB.model_copy(update={"state": JobState.CANCELED}))
     assert resp.status == "canceled"
     assert resp.suggested_next_actions == []
 
@@ -223,7 +223,9 @@ def test_common_failure_helpers_build_expected_error_envelopes() -> None:
 
 def test_common_job_envelope_preserves_job_fields_and_adds_object_key() -> None:
     object_id = uuid4()
-    job = _job(JobState.SUCCEEDED, result_ref="tenant/run/abc/kernel")
+    job = _BUILD_JOB.model_copy(
+        update={"state": JobState.SUCCEEDED, "result_ref": "tenant/run/abc/kernel"}
+    )
 
     resp = _common.job_envelope(job, "run_id", object_id)
 

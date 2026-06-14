@@ -24,7 +24,7 @@ from kdive.provider_components.artifacts import (
 from kdive.providers.ports import CrashResult
 from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, TlsCertRefs
 from kdive.providers.remote_libvirt.guest.agent import AgentExecResult, qemu_agent_command
-from kdive.providers.remote_libvirt.retrieve import RemoteLibvirtRetrieve
+from kdive.providers.remote_libvirt.retrieve.facade import RemoteLibvirtRetrieve
 from kdive.providers.remote_libvirt.retrieve.kdump_capture import (
     DEFAULT_PUT_EXPIRY_S,
     DEFAULT_READINESS_POLL_S,

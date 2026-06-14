@@ -366,7 +366,7 @@ def test_get_cross_project_is_not_found(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_run(pool, state=RunState.CREATED)
             resp = await get_run(pool, _ctx(projects=("other",)), run_id)
-        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.status == "error" and resp.error_category == "not_found"
 
     asyncio.run(_run())
 
@@ -1726,7 +1726,7 @@ async def _enqueue_build_job(pool: AsyncConnectionPool, run_id: str) -> Job:
         return await queue.enqueue(
             conn,
             JobKind.BUILD,
-            BuildPayload(run_id=run_id),
+            BuildPayload(run_id=run_id, build_host_id=str(WORKER_LOCAL_ID)),
             {"principal": "user-1", "agent_session": "s", "project": "proj"},
             f"{run_id}:build",
         )

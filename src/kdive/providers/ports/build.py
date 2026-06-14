@@ -7,7 +7,7 @@ from uuid import UUID
 
 from kdive.profiles.build import ServerBuildProfile
 from kdive.provider_components.build_results import BuildOutput
-from kdive.providers.build_host.transport import BuildTransport
+from kdive.providers.ports.build_transport import BuildTransport
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 

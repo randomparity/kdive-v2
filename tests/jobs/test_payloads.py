@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 
+from kdive.db.build_hosts import WORKER_LOCAL_ID
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ImageVisibility, Job, JobKind, PowerAction
 from kdive.domain.state import JobState
@@ -29,7 +30,14 @@ def test_build_payload_round_trips_with_optional_cmdline() -> None:
     run_id = uuid4()
     now = datetime.now(UTC)
 
-    payload = dump_payload(JobKind.BUILD, {"run_id": str(run_id), "cmdline": "panic=1"})
+    payload = dump_payload(
+        JobKind.BUILD,
+        {
+            "run_id": str(run_id),
+            "build_host_id": str(WORKER_LOCAL_ID),
+            "cmdline": "panic=1",
+        },
+    )
     job = Job(
         id=uuid4(),
         created_at=now,
@@ -43,9 +51,18 @@ def test_build_payload_round_trips_with_optional_cmdline() -> None:
     )
     decoded = load_payload(job, BuildPayload)
 
-    assert payload == {"run_id": str(run_id), "cmdline": "panic=1"}
+    assert payload == {
+        "run_id": str(run_id),
+        "build_host_id": str(WORKER_LOCAL_ID),
+        "cmdline": "panic=1",
+    }
     assert decoded.run_id == str(run_id)
     assert decoded.cmdline == "panic=1"
+
+
+def test_build_payload_requires_build_host_id() -> None:
+    with pytest.raises(PayloadValidationError, match="build_host_id"):
+        dump_payload(JobKind.BUILD, {"run_id": str(uuid4())})
 
 
 def test_payload_validation_rejects_wrong_shape_for_kind() -> None:
@@ -56,7 +73,13 @@ def test_payload_validation_rejects_wrong_shape_for_kind() -> None:
 def test_run_id_from_payload_returns_uuid_for_run_jobs() -> None:
     run_id = uuid4()
 
-    assert run_id_from_payload(JobKind.BUILD, {"run_id": str(run_id)}) == run_id
+    assert (
+        run_id_from_payload(
+            JobKind.BUILD,
+            {"run_id": str(run_id), "build_host_id": str(WORKER_LOCAL_ID)},
+        )
+        == run_id
+    )
     assert run_id_from_payload(JobKind.INSTALL, {"run_id": str(run_id)}) == run_id
     assert run_id_from_payload(JobKind.BOOT, {"run_id": str(run_id)}) == run_id
 

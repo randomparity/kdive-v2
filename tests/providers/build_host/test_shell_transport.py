@@ -17,7 +17,7 @@ from kdive.providers.build_host.shell_transport import (
     _MAX_REMOTE_READ_B64_BYTES,
     ShellBuildTransport,
 )
-from kdive.providers.build_host.transport import CommandResult
+from kdive.providers.ports.build_transport import CommandResult
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 

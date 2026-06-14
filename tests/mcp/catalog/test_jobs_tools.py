@@ -6,18 +6,21 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 from uuid import uuid4
 
 import pytest
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.build_hosts import WORKER_LOCAL_ID
 from kdive.domain.models import JobKind
 from kdive.jobs import queue
 from kdive.jobs.payloads import Authorizing, BuildPayload
 from kdive.mcp.auth import RequestContext
+from kdive.mcp.middleware import DenialAuditMiddleware
 from kdive.mcp.tools.catalog import jobs as jobs_tools
-from kdive.security.authz.rbac import Role
+from kdive.security.authz.rbac import Role, RoleDenied
 
 CTX = RequestContext(principal="user-1", agent_session="s", projects=("proj",))
 OP_CTX = RequestContext(
@@ -28,8 +31,19 @@ VIEWER_CTX = RequestContext(
 )
 
 
+class _FakeMessage:
+    def __init__(self, name: str, arguments: dict[str, object] | None = None) -> None:
+        self.name = name
+        self.arguments = arguments
+
+
+class _FakeContext:
+    def __init__(self, tool: str, arguments: dict[str, object] | None = None) -> None:
+        self.message = _FakeMessage(tool, arguments)
+
+
 def _build_payload() -> BuildPayload:
-    return BuildPayload(run_id=str(uuid4()))
+    return BuildPayload(run_id=str(uuid4()), build_host_id=str(WORKER_LOCAL_ID))
 
 
 @asynccontextmanager
@@ -85,7 +99,7 @@ def test_get_unknown_job_is_error_envelope(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             resp = await jobs_tools.get_job(pool, CTX, str(uuid4()))
         assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
+        assert resp.error_category == "not_found"
 
     asyncio.run(_run())
 
@@ -317,7 +331,7 @@ def test_get_job_in_unowned_project_is_indistinguishable_from_not_found(migrated
             # _OTHER is a member of "other", not "proj": the job must look absent (no leak).
             resp = await jobs_tools.get_job(pool, _OTHER, job_id)
         assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
+        assert resp.error_category == "not_found"
         assert resp.object_id == job_id
 
     asyncio.run(_run())
@@ -329,7 +343,7 @@ def test_wait_job_in_unowned_project_is_not_found(migrated_url: str) -> None:
             job_id = await _enqueue_in(pool, "d1", "proj")
             resp = await jobs_tools.wait_job(pool, _OTHER, job_id, timeout_s=0.0)
         assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
+        assert resp.error_category == "not_found"
 
     asyncio.run(_run())
 
@@ -338,10 +352,11 @@ def test_get_job_requires_viewer_role(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             job_id = await _enqueue(pool, "d1")
-            resp = await jobs_tools.get_job(pool, CTX, job_id)
-        assert resp.status == "error"
-        assert resp.error_category == "authorization_denied"
-        assert resp.object_id == job_id
+            with pytest.raises(RoleDenied) as excinfo:
+                await jobs_tools.get_job(pool, CTX, job_id)
+        assert excinfo.value.principal == "user-1"
+        assert excinfo.value.project == "proj"
+        assert excinfo.value.required is Role.VIEWER
 
     asyncio.run(_run())
 
@@ -350,10 +365,11 @@ def test_wait_job_requires_viewer_role(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             job_id = await _enqueue(pool, "d1")
-            resp = await jobs_tools.wait_job(pool, CTX, job_id, timeout_s=0.0)
-        assert resp.status == "error"
-        assert resp.error_category == "authorization_denied"
-        assert resp.object_id == job_id
+            with pytest.raises(RoleDenied) as excinfo:
+                await jobs_tools.wait_job(pool, CTX, job_id, timeout_s=0.0)
+        assert excinfo.value.principal == "user-1"
+        assert excinfo.value.project == "proj"
+        assert excinfo.value.required is Role.VIEWER
 
     asyncio.run(_run())
 
@@ -366,7 +382,7 @@ def test_cancel_job_in_unowned_project_is_denied_and_does_not_mutate(migrated_ur
             # The owning project's member still sees it queued — the cancel did not land.
             owned = await jobs_tools.get_job(pool, VIEWER_CTX, job_id)
         assert denied.status == "error"
-        assert denied.error_category == "configuration_error"
+        assert denied.error_category == "not_found"
         assert owned.status == "queued"
 
     asyncio.run(_run())
@@ -376,12 +392,42 @@ def test_cancel_job_requires_operator_role(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             job_id = await _enqueue(pool, "d1")
-            denied = await jobs_tools.cancel_job(pool, VIEWER_CTX, job_id)
+            with pytest.raises(RoleDenied) as excinfo:
+                await jobs_tools.cancel_job(pool, VIEWER_CTX, job_id)
             owned = await jobs_tools.get_job(pool, VIEWER_CTX, job_id)
-        assert denied.status == "error"
-        assert denied.error_category == "authorization_denied"
-        assert denied.object_id == job_id
+        assert excinfo.value.principal == "user-1"
+        assert excinfo.value.project == "proj"
+        assert excinfo.value.held is Role.VIEWER
+        assert excinfo.value.required is Role.OPERATOR
         assert owned.status == "queued"
+
+    asyncio.run(_run())
+
+
+def test_cancel_job_member_overreach_is_audited_at_dispatch_boundary(
+    migrated_url: str,
+) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            job_id = await _enqueue(pool, "d1")
+            middleware = DenialAuditMiddleware(pool, agent_session=lambda: "s")
+
+            async def _call_next(_ctx: Any) -> object:
+                return await jobs_tools.cancel_job(pool, VIEWER_CTX, job_id)
+
+            resp = await middleware.on_call_tool(
+                _FakeContext("jobs.cancel", {"job_id": job_id}), _call_next
+            )
+            owned = await jobs_tools.get_job(pool, VIEWER_CTX, job_id)
+            async with pool.connection() as conn, conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT principal, agent_session, project, tool, transition "
+                    "FROM audit_log ORDER BY ts"
+                )
+                rows = await cur.fetchall()
+        assert resp.error_category == "authorization_denied"
+        assert owned.status == "queued"
+        assert rows == [("user-1", "s", "proj", "jobs.cancel", "denied")]
 
     asyncio.run(_run())
 
@@ -390,11 +436,13 @@ def test_cancel_job_requires_a_project_role(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             job_id = await _enqueue(pool, "d1")
-            denied = await jobs_tools.cancel_job(pool, CTX, job_id)
+            with pytest.raises(RoleDenied) as excinfo:
+                await jobs_tools.cancel_job(pool, CTX, job_id)
             owned = await jobs_tools.get_job(pool, VIEWER_CTX, job_id)
-        assert denied.status == "error"
-        assert denied.error_category == "authorization_denied"
-        assert denied.object_id == job_id
+        assert excinfo.value.principal == "user-1"
+        assert excinfo.value.project == "proj"
+        assert excinfo.value.held is None
+        assert excinfo.value.required is Role.OPERATOR
         assert owned.status == "queued"
 
     asyncio.run(_run())

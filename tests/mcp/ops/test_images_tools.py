@@ -37,8 +37,10 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.state import SystemState
 from kdive.jobs.payloads import ImageBuildPayload
 from kdive.mcp.responses import ToolResponse
-from kdive.mcp.tools.ops import images as ops_images
+from kdive.mcp.tools.ops.images import build_publish as image_build_publish
+from kdive.mcp.tools.ops.images import delete as image_delete
 from kdive.mcp.tools.ops.images import registrar as images_registrar
+from kdive.mcp.tools.ops.images import retention as image_retention
 from kdive.mcp.tools.ops.images._common import (
     DELETE_TOOL,
     EXTEND_TOOL,
@@ -54,6 +56,7 @@ from tests.reconciler.conftest import connect, seed_system
 
 _TARGET_PROJECT = "tenant-x"
 _DELETE_MODULE = importlib.import_module("kdive.mcp.tools.ops.images.delete")
+_UPLOAD_MODULE = importlib.import_module("kdive.mcp.tools.ops.images.upload")
 
 
 class _FakeImageStore:
@@ -231,7 +234,7 @@ async def _call_registered_tool(tool: object, *args: object) -> ToolResponse:
 
 
 def _build(pool: AsyncConnectionPool, ctx: RequestContext):
-    return ops_images.build(
+    return image_build_publish.build(
         pool,
         ctx,
         payload=ImageBuildPayload(
@@ -248,7 +251,7 @@ def _build(pool: AsyncConnectionPool, ctx: RequestContext):
 
 
 def _publish(pool: AsyncConnectionPool, ctx: RequestContext):
-    return ops_images.publish(
+    return image_build_publish.publish(
         pool,
         ctx,
         payload=ImageBuildPayload(
@@ -386,7 +389,7 @@ def test_delete_project_operator_removes_row_and_audits(migrated_url: str) -> No
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             image_id = await _insert_private_image(pool)
-            resp = await ops_images.delete(
+            resp = await image_delete.delete(
                 pool, _member_ctx(role=Role.OPERATOR), image_id=str(image_id)
             )
         assert resp.status not in {"error", "failed"}
@@ -400,10 +403,10 @@ def test_delete_project_operator_removes_row_and_audits(migrated_url: str) -> No
 def test_delete_rejects_invalid_or_missing_image(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            invalid = await ops_images.delete(
+            invalid = await image_delete.delete(
                 pool, _member_ctx(role=Role.OPERATOR), image_id="not-a-uuid"
             )
-            missing = await ops_images.delete(
+            missing = await image_delete.delete(
                 pool, _member_ctx(role=Role.OPERATOR), image_id=str(UUID(int=1))
             )
         assert invalid.error_category == ErrorCategory.CONFIGURATION_ERROR.value
@@ -417,7 +420,7 @@ def test_delete_rejects_public_image_without_audit(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             image_id = await _insert_public_image(pool)
-            resp = await ops_images.delete(
+            resp = await image_delete.delete(
                 pool, _member_ctx(role=Role.OPERATOR), image_id=str(image_id)
             )
         assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
@@ -444,7 +447,7 @@ def test_delete_member_overreach_denied_and_audited(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             image_id = await _insert_private_image(pool)
-            resp = await ops_images.delete(
+            resp = await image_delete.delete(
                 pool, _member_ctx(role=Role.VIEWER), image_id=str(image_id)
             )
         assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
@@ -461,7 +464,7 @@ def test_delete_cross_project_denied_without_project_audit(migrated_url: str) ->
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             image_id = await _insert_private_image(pool, owner="tenant-x")
-            resp = await ops_images.delete(
+            resp = await image_delete.delete(
                 pool,
                 _member_ctx(project="tenant-y", role=Role.OPERATOR),
                 image_id=str(image_id),
@@ -495,7 +498,7 @@ def test_delete_declines_a_referenced_image(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             image_id = await _insert_private_image(pool, name="referenced")
             await _reference_image(migrated_url, provider="local-libvirt", name="referenced")
-            resp = await ops_images.delete(
+            resp = await image_delete.delete(
                 pool, _member_ctx(role=Role.OPERATOR), image_id=str(image_id)
             )
         assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
@@ -509,11 +512,11 @@ def test_upload_unprivileged_denied_audited_even_without_store(migrated_url: str
     # unprivileged caller is denied and audited even on an S3-less deployment.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await ops_images.upload(
+            resp = await _UPLOAD_MODULE.upload(
                 pool,
                 _member_ctx(role=Role.VIEWER),
                 None,
-                ops_images.ImageUploadRequest(
+                _UPLOAD_MODULE.ImageUploadRequest(
                     project=_TARGET_PROJECT,
                     name="custom",
                     arch="x86_64",
@@ -532,11 +535,11 @@ def test_upload_cross_project_denied_without_project_audit(migrated_url: str) ->
     # arbitrary requested project names.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await ops_images.upload(
+            resp = await _UPLOAD_MODULE.upload(
                 pool,
                 _member_ctx(project="tenant-y", role=Role.OPERATOR),
                 None,
-                ops_images.ImageUploadRequest(
+                _UPLOAD_MODULE.ImageUploadRequest(
                     project=_TARGET_PROJECT,
                     name="custom",
                     arch="x86_64",
@@ -554,11 +557,11 @@ def test_upload_rejects_quarantine_key_in_published_prefix(migrated_url: str) ->
     # another project's owner-scoped private image — it is rejected with a config error.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await ops_images.upload(
+            resp = await _UPLOAD_MODULE.upload(
                 pool,
                 _member_ctx(role=Role.OPERATOR),
                 cast(UploadObjectStore, _UnusedUploadStore()),
-                ops_images.ImageUploadRequest(
+                _UPLOAD_MODULE.ImageUploadRequest(
                     project=_TARGET_PROJECT,
                     name="evil",
                     arch="x86_64",
@@ -570,6 +573,15 @@ def test_upload_rejects_quarantine_key_in_published_prefix(migrated_url: str) ->
     asyncio.run(_run())
 
 
+def test_upload_default_expiry_uses_configured_private_lifetime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(_UPLOAD_MODULE.config, "require", lambda _setting: 123)
+
+    assert _UPLOAD_MODULE._default_expiry(now) == now + timedelta(seconds=123)
+
+
 # --- prune_expired / extend: platform_admin break-glass -------------------------------------
 
 
@@ -577,7 +589,7 @@ def test_prune_expired_admin_runs_sweep_and_audits(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             expired = await _insert_private_image(pool, expires_in=timedelta(seconds=-3600))
-            resp = await ops_images.prune_expired(
+            resp = await image_retention.prune_expired(
                 pool, _admin_ctx(), reason="cleanup", image_store=_FakeImageStore()
             )
         assert resp.status not in {"error", "failed"}
@@ -595,7 +607,7 @@ def test_prune_expired_blank_reason_rejects_before_sweep_or_audit(migrated_url: 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             expired = await _insert_private_image(pool, expires_in=timedelta(seconds=-3600))
-            resp = await ops_images.prune_expired(
+            resp = await image_retention.prune_expired(
                 pool, _admin_ctx(), reason="  ", image_store=store
             )
         assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
@@ -611,7 +623,7 @@ def test_prune_expired_operator_denied_and_audited(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             await _insert_private_image(pool, expires_in=timedelta(seconds=-3600))
-            resp = await ops_images.prune_expired(
+            resp = await image_retention.prune_expired(
                 pool, _operator_ctx(), reason="cleanup", image_store=_FakeImageStore()
             )
         assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
@@ -628,7 +640,7 @@ def test_extend_admin_rearms_expiry_and_audits(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             image_id = await _insert_private_image(pool, expires_in=timedelta(minutes=1))
             before = await _image_expires_at(migrated_url, image_id)
-            resp = await ops_images.extend(
+            resp = await image_retention.extend(
                 pool, _admin_ctx(), image_id=str(image_id), seconds=86400, reason="keep"
             )
             after = await _image_expires_at(migrated_url, image_id)
@@ -655,7 +667,7 @@ def test_extend_rejects_invalid_seconds_or_reason_before_audit(
         async with _pool(migrated_url) as pool:
             image_id = await _insert_private_image(pool, expires_in=timedelta(minutes=1))
             before = await _image_expires_at(migrated_url, image_id)
-            resp = await ops_images.extend(
+            resp = await image_retention.extend(
                 pool, _admin_ctx(), image_id=str(image_id), seconds=seconds, reason=reason
             )
             after = await _image_expires_at(migrated_url, image_id)
@@ -670,11 +682,26 @@ def test_extend_rejects_public_image_after_breakglass_audit(migrated_url: str) -
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             image_id = await _insert_public_image(pool)
-            resp = await ops_images.extend(
+            resp = await image_retention.extend(
                 pool, _admin_ctx(), image_id=str(image_id), seconds=3600, reason="keep"
             )
         assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         assert await _image_exists(migrated_url, image_id) is True
+        audit = await _platform_audit_rows(migrated_url)
+        assert audit == [("ops-admin", "platform_admin", "images.extend", f"image:{image_id}")]
+
+    asyncio.run(_run())
+
+
+def test_extend_rejects_missing_image_after_breakglass_audit(migrated_url: str) -> None:
+    image_id = UUID(int=1)
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            resp = await image_retention.extend(
+                pool, _admin_ctx(), image_id=str(image_id), seconds=3600, reason="keep"
+            )
+        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
         audit = await _platform_audit_rows(migrated_url)
         assert audit == [("ops-admin", "platform_admin", "images.extend", f"image:{image_id}")]
 
@@ -693,7 +720,7 @@ def test_extend_clamps_to_lifetime_ceiling(
         async with _pool(migrated_url) as pool:
             image_id = await _insert_private_image(pool, expires_in=timedelta(minutes=1))
             before = datetime.now(UTC)
-            resp = await ops_images.extend(
+            resp = await image_retention.extend(
                 pool,
                 _admin_ctx(),
                 image_id=str(image_id),
@@ -716,9 +743,13 @@ def test_extend_operator_denied_and_audited(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             image_id = await _insert_private_image(pool, expires_in=timedelta(minutes=1))
-            resp = await ops_images.extend(
+            resp = await image_retention.extend(
                 pool, _operator_ctx(), image_id=str(image_id), seconds=3600, reason="x"
             )
         assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
+        audit = await _platform_audit_rows(migrated_url)
+        assert audit == [
+            ("ops-operator", "platform_operator", "images.extend", f"denied:{image_id}")
+        ]
 
     asyncio.run(_run())

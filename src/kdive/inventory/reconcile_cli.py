@@ -24,7 +24,8 @@ from pathlib import Path
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.config.core_settings import SYSTEMS_TOML
-from kdive.inventory import InventoryError, load_inventory, load_inventory_optional
+from kdive.inventory.errors import InventoryError
+from kdive.inventory.loader import load_inventory, load_inventory_optional
 from kdive.inventory.model import InventoryDoc
 from kdive.inventory.reconcile import ReconcileDiff
 from kdive.inventory.reconcile_images import ImageHeadStore, reconcile_images

@@ -18,6 +18,7 @@ _log = logging.getLogger(__name__)
 ROOTFS_DIR = "/var/lib/kdive/rootfs"
 _QEMU_IMG_TIMEOUT_S = 5 * 60
 _QEMU_IMG = "qemu-img"
+_QEMU_IMG_ERROR_TAIL_CHARS = 2000
 
 
 def overlay_path(system_id: UUID | str) -> str:
@@ -71,7 +72,7 @@ def _real_make_overlay(base: str, overlay: str) -> None:
             category=ErrorCategory.PROVISIONING_FAILURE,
             details={
                 **_overlay_error_details("create_overlay", overlay, tool=_QEMU_IMG),
-                "stderr": result.stderr[-2000:],
+                "stderr": result.stderr[-_QEMU_IMG_ERROR_TAIL_CHARS:],
             },
         )
 

@@ -206,6 +206,17 @@ def test_duplicate_remote_instance_name_rejected() -> None:
         InventoryDoc.parse(d)
 
 
+def test_multiple_remote_instances_rejected_until_per_op_selection_is_wired() -> None:
+    d = _doc()
+    second = {**d["remote_libvirt"][0], "name": "h2", "uri": "qemu+tls://h2/system"}
+    d["remote_libvirt"] = [d["remote_libvirt"][0], second]
+    with pytest.raises(InventoryError) as excinfo:
+        InventoryDoc.parse(d)
+    assert excinfo.value.entry == "remote_libvirt"
+    assert excinfo.value.field == "instances"
+    assert "multiple instances are not supported" in str(excinfo.value)
+
+
 def test_duplicate_fault_inject_name_rejected() -> None:
     inst = {
         "name": "fi",

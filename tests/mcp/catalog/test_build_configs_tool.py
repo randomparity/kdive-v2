@@ -95,3 +95,38 @@ def test_buildconfig_get_tool_maps_unknown_name_to_failure_envelope(
         assert result.suggested_next_actions == ["buildconfig.get"]
 
     asyncio.run(_run())
+
+
+def test_buildconfig_get_tool_maps_store_resolution_error(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    error = CategorizedError("store missing", category=ErrorCategory.CONFIGURATION_ERROR)
+
+    def _raise_store() -> ObjectStore:
+        raise error
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            monkeypatch.setattr(build_configs, "_resolve_store", _raise_store)
+            monkeypatch.setattr(
+                build_configs,
+                "current_context",
+                lambda: RequestContext(
+                    principal="dev-1",
+                    agent_session="sess-dev",
+                    projects=(),
+                    roles={},
+                    platform_roles=frozenset(),
+                ),
+            )
+            app = FastMCP("build-config-test")
+            build_configs.register(app, pool)
+            tools = {tool.name: tool for tool in await app.list_tools()}
+            result = await cast(Any, tools["buildconfig.get"]).fn("kdump")
+
+        assert isinstance(result, ToolResponse)
+        assert result.object_id == "kdump"
+        assert result.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+        assert result.suggested_next_actions == ["buildconfig.get"]
+
+    asyncio.run(_run())

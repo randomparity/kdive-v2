@@ -50,6 +50,7 @@ from kdive.providers.runtime import DebugCapabilities, ProviderRuntime
 from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.resources.discovery import register_discovered_resource
+from tests.mcp.systems_support import provider_resolver
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -135,6 +136,23 @@ def _raising_attach(*, host: str, port: int, run_id: str, transcript_path: Path)
 def _runtime(attach: Any) -> DebugEngineRuntime:
     return DebugEngineRuntime(
         engine=GdbMiEngine(), attach=attach, transcript_dir=Path(tempfile.mkdtemp())
+    )
+
+
+class _FixedDebugRuntimeResolver:
+    def __init__(self, runtime: DebugEngineRuntime) -> None:
+        self._runtime = runtime
+
+    def runtime_for_binding(self, binding: Any, *, object_id: str) -> DebugEngineRuntime:
+        del binding, object_id
+        return self._runtime
+
+
+def _session_handlers(runtime: DebugEngineRuntime) -> debug_tools.DebugSessionHandlers:
+    return debug_tools.DebugSessionHandlers.from_resolver(
+        provider_resolver(connector=_FakeConnector(), profile_policy=_PROFILE_POLICY),
+        runtime_resolver=cast(Any, _FixedDebugRuntimeResolver(runtime)),
+        secret_registry=SecretRegistry(),
     )
 
 
@@ -576,12 +594,7 @@ def test_end_session_reaps_engine(migrated_url: str) -> None:
                 pool, _ctx(), session_id, runtime, _op_for("list_breakpoints", runtime, session_id)
             )
             # The engine is registered; end_session must exit + drop it.
-            handlers = debug_tools.DebugSessionHandlers.from_fixed_connector(
-                _FakeConnector(),
-                profile_policy=_PROFILE_POLICY,
-                runtime=runtime,
-                secret_registry=SecretRegistry(),
-            )
+            handlers = _session_handlers(runtime)
             resp = await handlers.end_session(pool, _ctx(), session_id)
             assert resp.status == "detached"
             assert attach.controller.exited is True
@@ -599,12 +612,7 @@ def test_end_session_reap_is_noop_without_engine(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             session_id = await _seed_live_session(pool, state=DebugSessionState.LIVE)
             runtime = _runtime(_CountingAttach())
-            handlers = debug_tools.DebugSessionHandlers.from_fixed_connector(
-                _FakeConnector(),
-                profile_policy=_PROFILE_POLICY,
-                runtime=runtime,
-                secret_registry=SecretRegistry(),
-            )
+            handlers = _session_handlers(runtime)
             resp = await handlers.end_session(pool, _ctx(), session_id)
         assert resp.status == "detached"  # reap of a never-attached session is a no-op
 

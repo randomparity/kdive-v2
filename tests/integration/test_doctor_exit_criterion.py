@@ -56,7 +56,7 @@ from kdive.diagnostics.egress_probe import (
     SingleFlight,
 )
 from kdive.diagnostics.service import DiagnosticsService
-from kdive.health import HealthProbe
+from kdive.health.probe import HealthProbe
 from kdive.health.server_checks import build_server_checks
 from kdive.health.worker_checks import build_worker_checks
 from kdive.mcp.tools.ops import diagnostics

@@ -7,7 +7,7 @@ from uuid import UUID
 
 from psycopg import AsyncConnection
 
-from kdive.db.build_hosts import list_probeable_ssh_hosts, mark_state
+from kdive.db.build_hosts import BuildHostState, list_probeable_ssh_hosts, mark_state
 from kdive.providers.build_host.reachability import BuildHostProber
 from kdive.providers.reaping import BuildVmReaper
 
@@ -74,7 +74,7 @@ async def probe_build_host_reachability(conn: AsyncConnection, prober: BuildHost
     for host in hosts:
         try:
             reachable = await prober.probe(host)
-            new_state = "ready" if reachable else "unreachable"
+            new_state = BuildHostState.READY if reachable else BuildHostState.UNREACHABLE
             if new_state != host.state:
                 async with conn.transaction():
                     changed += await mark_state(

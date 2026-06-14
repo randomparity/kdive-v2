@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-from kdive.db.build_hosts import BuildHost
+from kdive.db.build_hosts import BuildHost, BuildHostKind, BuildHostState
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.build_host.reachability import BuildHostProber, SshBuildHostProber
 from kdive.providers.build_host.ssh_transport import SshBuildTransport
@@ -28,13 +28,13 @@ def _ssh_host(
     return BuildHost(
         id=uuid4(),
         name="builder-1",
-        kind="ssh",
+        kind=BuildHostKind.SSH,
         address=address,
         ssh_credential_ref=credential_ref,
         base_image_volume=None,
         workspace_root="/build",
         max_concurrent=2,
-        state="ready",
+        state=BuildHostState.READY,
         enabled=True,
     )
 

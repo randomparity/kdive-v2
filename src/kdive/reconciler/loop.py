@@ -29,6 +29,7 @@ from psycopg_pool import AsyncConnectionPool
 import kdive.config as config
 from kdive.config.core_settings import IMAGE_PUBLISH_GRACE
 from kdive.providers.build_host.reachability import BuildHostProber
+from kdive.providers.console_hosting import CollectorRegistry
 from kdive.providers.reaping import (
     BuildVmReaper,
     DumpVolumeReaper,
@@ -43,7 +44,6 @@ from kdive.reconciler import debug_sessions as debug_session_repairs
 from kdive.reconciler import gc as gc_repairs
 from kdive.reconciler import jobs as job_repairs
 from kdive.reconciler import systems as system_repairs
-from kdive.reconciler.console_hosting import CollectorRegistry
 from kdive.reconciler.images import (
     repair_dangling_images as _repair_dangling_images,
 )
@@ -74,7 +74,7 @@ from kdive.services.images.retention import (
 )
 
 if TYPE_CHECKING:
-    from kdive.health import Heartbeat
+    from kdive.health.heartbeat import Heartbeat
 
 _log = logging.getLogger(__name__)
 

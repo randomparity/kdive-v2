@@ -86,9 +86,9 @@ password or S3 secret keys into `config.*` in production.
 ### File-ref secrets (`secrets.secretName`)
 
 The file-ref secret backend (ADR-0027/ADR-0088 decision 3) resolves credentials from
-files under `KDIVE_SECRETS_ROOT` — the remote-libvirt TLS client cert/key/CA
-(`KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF` etc.) and debug-session secrets. Create a
-Secret whose keys are the credential filenames, then point `secrets.secretName` at it:
+files under `KDIVE_SECRETS_ROOT` — remote-libvirt TLS client cert/key/CA refs in
+`systems.toml` and debug-session secrets. Create a Secret whose keys are the credential
+filenames, then point `secrets.secretName` at it:
 
 ```sh
 kubectl create secret generic kdive-remote-tls \
@@ -96,21 +96,56 @@ kubectl create secret generic kdive-remote-tls \
   --from-file=clientkey.pem=clientkey.pem \
   --from-file=cacert.pem=ca.pem
 
+cat >systems.toml <<'EOF'
+schema_version = 2
+
+[[image]]
+provider = "remote-libvirt"
+name = "fedora-kdive-ready"
+arch = "x86_64"
+format = "qcow2"
+root_device = "/dev/vda"
+visibility = "private"
+[image.source]
+kind = "staged"
+volume = "fedora-kdive-ready.qcow2"
+
+[[remote_libvirt]]
+name = "lab-remote"
+uri = "qemu+tls://host.example/system"
+gdb_addr = "192.0.2.20"
+gdbstub_range = "47000:47099"
+client_cert_ref = "clientcert.pem"
+client_key_ref = "clientkey.pem" # pragma: allowlist secret
+ca_cert_ref = "cacert.pem"
+base_image = "fedora-kdive-ready"
+cost_class = "remote"
+concurrent_allocation_cap = 4
+EOF
+kubectl create configmap kdive-systems --from-file=systems.toml=systems.toml
+
 helm install kdive deploy/helm/kdive \
   --set secrets.secretName=kdive-remote-tls \
-  --set config.KDIVE_REMOTE_LIBVIRT_URI='qemu+tls://host.example/system' \
-  --set config.KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF=clientcert.pem \
-  --set config.KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF=clientkey.pem \
-  --set config.KDIVE_REMOTE_LIBVIRT_CA_CERT_REF=cacert.pem \
+  --set systems.configMapName=kdive-systems \
+  --set config.KDIVE_REMOTE_LIBVIRT_STORAGE_POOL=default \
+  --set config.KDIVE_REMOTE_LIBVIRT_NETWORK=default \
+  --set config.KDIVE_REMOTE_LIBVIRT_MACHINE=pc \
   --set config.KDIVE_DATABASE_URL=... --set config.KDIVE_OIDC_ISSUER=...
 ```
 
-The chart mounts the Secret **read-only** (`defaultMode 0400`) at `secrets.mountPath`
+The chart mounts the Secret **read-only** (`defaultMode 0440`) at `secrets.mountPath`
 (default `/etc/kdive/secrets`) on the server, worker, and reconciler, and sets
 `KDIVE_SECRETS_ROOT` to that path. Refs are resolved **relative to the root**, so a
 bare key name like `clientcert.pem` is enough — the Kubernetes Secret volume's `..data`
 symlink indirection resolves correctly, and a ref escaping the root is rejected. Leaving
 `secrets.secretName` empty mounts nothing.
+
+When `systems.configMapName` is set, the chart mounts that ConfigMap read-only at
+`systems.mountPath` (default `/etc/kdive/systems`) on migrate, server, worker, and
+reconciler, and sets `KDIVE_SYSTEMS_TOML` to the mounted `systems.fileName`. Use
+`config.*` only for the remaining remote-libvirt host-topology env vars that are not
+inventory identity: `KDIVE_REMOTE_LIBVIRT_STORAGE_POOL`, `KDIVE_REMOTE_LIBVIRT_NETWORK`,
+and `KDIVE_REMOTE_LIBVIRT_MACHINE`.
 
 For S3, prefer IRSA/workload identity, or a managed Secret you `envFrom` onto the pods.
 The fixed `demoCredentials` are non-secret by design: the demo data they guard is

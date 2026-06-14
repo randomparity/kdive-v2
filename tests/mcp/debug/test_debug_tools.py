@@ -56,6 +56,7 @@ from kdive.security.authz.rbac import AuthorizationError, Role
 from kdive.security.secrets.paths import PathSafetyError
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.services.resources.discovery import register_discovered_resource
+from tests.mcp.systems_support import provider_resolver
 from tests.providers.local_libvirt.fakes import FakeLibvirtConn
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -122,6 +123,15 @@ class _UnexpectedRaisingCloseConnector(_FakeConnector):
         raise RuntimeError("close blew up unexpectedly")
 
 
+class _FixedDebugRuntimeResolver:
+    def __init__(self, runtime: Any) -> None:
+        self._runtime = runtime
+
+    def runtime_for_binding(self, binding: Any, *, object_id: str) -> Any:
+        del binding, object_id
+        return self._runtime
+
+
 def _ctx(
     role: Role | None = Role.OPERATOR, *, projects: tuple[str, ...] = ("proj",)
 ) -> RequestContext:
@@ -145,10 +155,10 @@ def _handlers(
 
         secret_backend_factory = _backend_factory
     registry = secret_registry if secret_registry is not None else SecretRegistry()
-    return debug_tools.DebugSessionHandlers.from_fixed_connector(
-        connector,
-        profile_policy=profile_policy,
-        runtime=runtime,
+    runtime_resolver = None if runtime is None else _FixedDebugRuntimeResolver(runtime)
+    return debug_tools.DebugSessionHandlers.from_resolver(
+        provider_resolver(connector=connector, profile_policy=profile_policy),
+        runtime_resolver=cast(Any, runtime_resolver),
         secret_backend_factory=secret_backend_factory,
         secret_registry=registry,
     )

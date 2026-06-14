@@ -23,6 +23,7 @@ import pytest
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.build_hosts import WORKER_LOCAL_ID
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
@@ -198,7 +199,11 @@ def test_force_crash_allowed_when_all_gate_checks_present(migrated_url: str) -> 
 async def _enqueue_build(pool: AsyncConnectionPool, run_id: str) -> Job:
     async with pool.connection() as conn:
         return await queue.enqueue(
-            conn, JobKind.BUILD, BuildPayload(run_id=run_id), _AUTH, f"{run_id}:build"
+            conn,
+            JobKind.BUILD,
+            BuildPayload(run_id=run_id, build_host_id=str(WORKER_LOCAL_ID)),
+            _AUTH,
+            f"{run_id}:build",
         )
 
 

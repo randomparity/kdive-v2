@@ -1,31 +1,37 @@
-"""Build-handler transport selection + build-host lease release (Task 11, ADR-0342).
+"""Build-handler build-host dispatch + build-host lease release (ADR-0342).
 
 The build handler reads ``build_host_id`` from the BUILD payload and dispatches:
 
 - a ``local`` (worker-local) host runs the resolved runtime builder directly (the historical
   path, byte-for-byte) and touches no lease;
-- an ``ssh`` host constructs a transport-bound :class:`RemoteLibvirtBuild` inside the
-  materialized-identity context manager and runs it, then releases the capacity lease on a
-  committed path so a failure reliably frees the slot.
+- remote hosts delegate transport setup to ``providers.build_host.dispatch`` and release the
+  capacity lease on a committed success path.
 
-These tests substitute the transport-bound-builder factory (a module function) so no real ssh
-runs, and seed real ``build_hosts``/``build_host_leases`` rows so the committed lease release is
-asserted against the database.
+These tests substitute the provider-side transport seams so no real ssh or build VM runs, and
+seed real ``build_hosts``/``build_host_leases`` rows so committed lease release is asserted
+against the database.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, contextmanager
-from typing import Any
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.db.build_hosts import BuildHost, get_by_name, try_acquire_lease
+from kdive.db.build_hosts import (
+    BuildHost,
+    BuildHostKind,
+    BuildHostState,
+    get_by_name,
+    try_acquire_lease,
+)
+from kdive.db.repositories import RUNS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import JobKind
 from kdive.domain.state import SystemState
@@ -33,7 +39,10 @@ from kdive.jobs import queue
 from kdive.jobs.handlers import runs as runs_handlers
 from kdive.jobs.payloads import BuildPayload
 from kdive.provider_components.build_results import BuildOutput
+from kdive.providers.build_host import dispatch as build_host_dispatch
+from kdive.providers.build_host.dispatch import BuildHostTransportFactories
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
+from kdive.providers.ports.build_transport import BuildTransport
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.integration._seed import (
@@ -97,12 +106,7 @@ def _fake_from_host(host: BuildHost, secret_registry: SecretRegistry):
 
 
 def _ssh_resolver(builder: object):
-    """A resolver whose remote-libvirt runtime builder is a RemoteLibvirtBuild instance.
-
-    The handler's ssh path requires ``isinstance(runtime.builder, RemoteLibvirtBuild)``; a
-    real ``from_env`` builder satisfies that without spawning make or S3 (its seams only run
-    inside ``build()``, which the transport factory replaces).
-    """
+    """A resolver whose runtime builder is supplied by the test."""
     return provider_resolver(builder=builder)
 
 
@@ -125,6 +129,17 @@ def _fake_ephemeral_session(
 
 
 _EPHEMERAL_EVENTS: list[tuple[str, UUID]] = []
+
+
+def _fake_ephemeral_factory(
+    host: BuildHost, secret_registry: SecretRegistry, run_id: UUID
+) -> AbstractContextManager[BuildTransport]:
+    assert host.base_image_volume is not None
+    return _fake_ephemeral_session(host.base_image_volume, secret_registry, run_id=run_id)
+
+
+def _ephemeral_factories() -> BuildHostTransportFactories:
+    return {BuildHostKind.EPHEMERAL_LIBVIRT: _fake_ephemeral_factory}
 
 
 async def _seed_ephemeral_host(pool: AsyncConnectionPool) -> BuildHost:
@@ -163,7 +178,7 @@ async def _acquire_lease(pool: AsyncConnectionPool, host: BuildHost, run_id: str
     assert ok
 
 
-async def _enqueue(pool: AsyncConnectionPool, run_id: str, build_host_id: str | None):
+async def _enqueue(pool: AsyncConnectionPool, run_id: str, build_host_id: str):
     async with pool.connection() as conn:
         return await queue.enqueue(
             conn,
@@ -202,7 +217,7 @@ def test_local_host_uses_runtime_builder_no_transport(
     def _boom(*args: object, **kwargs: object):
         raise AssertionError("ssh transport must not be constructed for a local host")
 
-    monkeypatch.setattr(runs_handlers, "ssh_build_transport_from_host", _boom)
+    monkeypatch.setattr(build_host_dispatch, "ssh_build_transport_from_host", _boom)
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -248,8 +263,8 @@ def test_ssh_host_success_releases_lease(
         captured["kwargs"] = kwargs
         return transport_builder
 
-    monkeypatch.setattr(runs_handlers, "ssh_build_transport_from_host", _fake_from_host)
-    monkeypatch.setattr(runs_handlers, "bind_over_transport", _fake_factory)
+    monkeypatch.setattr(build_host_dispatch, "ssh_build_transport_from_host", _fake_from_host)
+    monkeypatch.setattr(build_host_dispatch, "bind_over_transport", _fake_factory)
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -289,9 +304,11 @@ def test_ssh_host_local_provider_builder_succeeds_releases_lease(
     capability check admits it. The bind seam is faked so no real ssh/over_transport runs.
     """
     transport_builder = _RecordingBuilder()
-    monkeypatch.setattr(runs_handlers, "ssh_build_transport_from_host", _fake_from_host)
+    monkeypatch.setattr(build_host_dispatch, "ssh_build_transport_from_host", _fake_from_host)
     monkeypatch.setattr(
-        runs_handlers, "bind_over_transport", lambda builder, transport, **kw: transport_builder
+        build_host_dispatch,
+        "bind_over_transport",
+        lambda builder, transport, **kw: transport_builder,
     )
 
     async def _run() -> None:
@@ -331,9 +348,9 @@ def test_ssh_host_build_failure_retains_lease(
     job is terminal, when the reconciler reclaims it.
     """
     failing = _FailingBuilder()
-    monkeypatch.setattr(runs_handlers, "ssh_build_transport_from_host", _fake_from_host)
+    monkeypatch.setattr(build_host_dispatch, "ssh_build_transport_from_host", _fake_from_host)
     monkeypatch.setattr(
-        runs_handlers, "bind_over_transport", lambda builder, transport, **kw: failing
+        build_host_dispatch, "bind_over_transport", lambda builder, transport, **kw: failing
     )
 
     async def _run() -> None:
@@ -373,7 +390,7 @@ def test_ssh_host_non_remote_builder_not_implemented(
     This pre-build failure will recur on every retry (a non-remote builder can't use ssh), so the
     run fails all attempts and the reconciler reclaims the lease once the job is dead-lettered.
     """
-    monkeypatch.setattr(runs_handlers, "ssh_build_transport_from_host", _fake_from_host)
+    monkeypatch.setattr(build_host_dispatch, "ssh_build_transport_from_host", _fake_from_host)
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -439,9 +456,10 @@ def test_ephemeral_host_success_provisions_builds_and_releases_lease(
     """An ephemeral build provisions a VM (enter), builds, tears down (exit), frees the lease."""
     _EPHEMERAL_EVENTS.clear()
     transport_builder = _RecordingBuilder()
-    monkeypatch.setattr(runs_handlers, "ephemeral_build_session", _fake_ephemeral_session)
     monkeypatch.setattr(
-        runs_handlers, "bind_over_transport", lambda builder, transport, **kw: transport_builder
+        build_host_dispatch,
+        "bind_over_transport",
+        lambda builder, transport, **kw: transport_builder,
     )
 
     async def _run() -> None:
@@ -458,6 +476,7 @@ def test_ephemeral_host_success_provisions_builds_and_releases_lease(
                         RemoteLibvirtBuild.from_env(secret_registry=SecretRegistry())
                     ),
                     secret_registry=SecretRegistry(),
+                    transport_factories=_ephemeral_factories(),
                 )
             assert transport_builder.calls == [UUID(run_id)]
             # Session entered before and exited after the build (provision → build → teardown).
@@ -474,9 +493,8 @@ def test_ephemeral_host_build_failure_tears_down_and_retains_lease(
     """A failed ephemeral build still tears the VM down (session exit) and RETAINS the lease."""
     _EPHEMERAL_EVENTS.clear()
     failing = _FailingBuilder()
-    monkeypatch.setattr(runs_handlers, "ephemeral_build_session", _fake_ephemeral_session)
     monkeypatch.setattr(
-        runs_handlers, "bind_over_transport", lambda builder, transport, **kw: failing
+        build_host_dispatch, "bind_over_transport", lambda builder, transport, **kw: failing
     )
 
     async def _run() -> None:
@@ -494,6 +512,7 @@ def test_ephemeral_host_build_failure_tears_down_and_retains_lease(
                             RemoteLibvirtBuild.from_env(secret_registry=SecretRegistry())
                         ),
                         secret_registry=SecretRegistry(),
+                        transport_factories=_ephemeral_factories(),
                     )
             # Teardown ran even though the build raised (session exit recorded).
             assert [("enter", UUID(run_id)), ("exit", UUID(run_id))] == _EPHEMERAL_EVENTS
@@ -504,10 +523,9 @@ def test_ephemeral_host_build_failure_tears_down_and_retains_lease(
 
 
 def test_ephemeral_host_non_remote_builder_not_implemented(
-    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+    migrated_url: str,
 ) -> None:
     """An ephemeral host selected for a non-remote-libvirt builder fails NOT_IMPLEMENTED."""
-    monkeypatch.setattr(runs_handlers, "ephemeral_build_session", _fake_ephemeral_session)
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -522,9 +540,51 @@ def test_ephemeral_host_non_remote_builder_not_implemented(
                         job,
                         resolver=provider_resolver(builder=_RecordingBuilder()),
                         secret_registry=SecretRegistry(),
+                        transport_factories=_ephemeral_factories(),
                     )
             assert exc.value.category is ErrorCategory.NOT_IMPLEMENTED
             assert await _run_state(pool, run_id) == "failed"
             assert await _lease_count(pool, run_id) == 1
+
+    asyncio.run(_run())
+
+
+def test_unsupported_build_host_kind_fails_before_ephemeral_session(
+    migrated_url: str,
+) -> None:
+    """An unknown host kind is rejected instead of falling into the ephemeral build path."""
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_run(pool, _GIT_PROFILE)
+            host = BuildHost(
+                id=uuid4(),
+                name="future-kind",
+                kind=cast(BuildHostKind, "future_transport"),
+                address=None,
+                ssh_credential_ref=None,
+                base_image_volume="base.qcow2",
+                workspace_root="/build",
+                max_concurrent=1,
+                enabled=True,
+                state=BuildHostState.READY,
+            )
+            async with pool.connection() as conn:
+                run = await RUNS.get(conn, UUID(run_id))
+                assert run is not None
+                parsed = runs_handlers.BuildProfile.parse(run.build_profile)
+                assert isinstance(parsed, runs_handlers.ServerBuildProfile)
+                with pytest.raises(CategorizedError) as exc:
+                    await runs_handlers._run_build(
+                        conn,
+                        run,
+                        parsed,
+                        host=host,
+                        resolver=_ssh_resolver(
+                            RemoteLibvirtBuild.from_env(secret_registry=SecretRegistry())
+                        ),
+                        secret_registry=SecretRegistry(),
+                    )
+            assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
     asyncio.run(_run())

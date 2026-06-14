@@ -34,12 +34,13 @@ from kdive.config.core_settings import (
 from kdive.db.pool import create_pool
 from kdive.domain.errors import CategorizedError
 from kdive.images.rootfs_command import add_build_rootfs_parser, run_build_rootfs
-from kdive.reconciler.console_assembly import start_console_hosting
+from kdive.providers.console_hosting import start_console_hosting
 from kdive.version import full_version
 
 if TYPE_CHECKING:
-    from kdive.health import HealthProbe, Heartbeat
-    from kdive.observability import Telemetry
+    from kdive.health.heartbeat import Heartbeat
+    from kdive.health.probe import HealthProbe
+    from kdive.observability.facade import Telemetry
     from kdive.providers.resolver import ProviderResolver
     from kdive.security.secrets.secret_registry import SecretRegistry
     from kdive.store.objectstore import ObjectStore
@@ -281,8 +282,10 @@ def build_parser() -> argparse.ArgumentParser:
 async def _run_server(
     host: str, port: int, secret_registry: SecretRegistry, telemetry: Telemetry
 ) -> None:
-    from kdive.health import HealthProbe, Heartbeat, build_aux_app, serve_aux
     from kdive.health.aux_bind import resolve_health_bind
+    from kdive.health.aux_listener import build_aux_app, serve_aux
+    from kdive.health.heartbeat import Heartbeat
+    from kdive.health.probe import HealthProbe
     from kdive.health.server_checks import build_server_checks
     from kdive.mcp.app import build_app
     from kdive.process_health.server import build_oidc_ping, build_postgres_ping
@@ -355,8 +358,9 @@ def _readiness(probe: HealthProbe) -> Callable[[], Awaitable[bool]]:
 
 
 async def _run_worker(secret_registry: SecretRegistry, telemetry: Telemetry) -> None:
-    from kdive.health import Heartbeat, build_aux_app, serve_aux
     from kdive.health.aux_bind import resolve_health_bind
+    from kdive.health.aux_listener import build_aux_app, serve_aux
+    from kdive.health.heartbeat import Heartbeat
     from kdive.jobs.worker import Worker, WorkerConfig
     from kdive.jobs.worker_telemetry import WorkerTelemetry
     from kdive.mcp.app import build_handler_registry
@@ -398,8 +402,9 @@ async def _run_worker(secret_registry: SecretRegistry, telemetry: Telemetry) -> 
 
 
 async def _run_reconciler(secret_registry: SecretRegistry, telemetry: Telemetry) -> None:
-    from kdive.health import Heartbeat, build_aux_app, serve_aux
     from kdive.health.aux_bind import resolve_health_bind
+    from kdive.health.aux_listener import build_aux_app, serve_aux
+    from kdive.health.heartbeat import Heartbeat
     from kdive.process_health.server import build_postgres_ping
     from kdive.process_health.worker import build_worker_probe
     from kdive.providers.composition import ProviderComposition
@@ -507,7 +512,7 @@ async def _register_provider_resources(
 def main(argv: list[str] | None = None) -> None:
     """Parse arguments, configure logging, and dispatch to the chosen subcommand."""
     args = build_parser().parse_args(argv)
-    from kdive.observability import bootstrap_stdout_floor, init_telemetry
+    from kdive.observability.facade import bootstrap_stdout_floor, init_telemetry
     from kdive.security.secrets.secret_registry import SecretRegistry
 
     # Snapshot the environment before any setting is read, including the logging

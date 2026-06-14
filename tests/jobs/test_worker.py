@@ -13,11 +13,12 @@ import pytest
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.build_hosts import WORKER_LOCAL_ID
 from kdive.db.repositories import JOBS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
-from kdive.health import Heartbeat
+from kdive.health.heartbeat import Heartbeat
 from kdive.jobs import queue
 from kdive.jobs import worker as worker_module
 from kdive.jobs.models import HandlerRegistry
@@ -37,7 +38,7 @@ class _CountingHeartbeat:
 
 
 def _build_payload() -> BuildPayload:
-    return BuildPayload(run_id=str(uuid4()))
+    return BuildPayload(run_id=str(uuid4()), build_host_id=str(WORKER_LOCAL_ID))
 
 
 async def _final_state(url: str, job_id: UUID) -> Job:
@@ -659,7 +660,7 @@ def test_background_ticker_keeps_livez_live_across_a_long_blocking_job(
     """
 
     async def _run() -> None:
-        from kdive.health import Heartbeat
+        from kdive.health.heartbeat import Heartbeat
 
         # Real monotonic clock; a tiny stale bound and a sub-stale tick cadence.
         hb = Heartbeat(stale_after=0.05)

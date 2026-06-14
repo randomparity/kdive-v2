@@ -1,4 +1,4 @@
-"""``resources.register`` / ``deregister`` / ``renew`` runtime-mutation tools (M2.6 #396).
+"""``resources.register_*`` / ``deregister`` / ``renew`` runtime-mutation tools (M2.6 #396).
 
 Handlers are driven directly with an injected pool + RequestContext and an injected probe /
 secrets root, so the per-kind preflight and authz gates are exercised deterministically without
@@ -26,9 +26,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import psycopg
+import pytest
+from fastmcp import FastMCP
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
@@ -36,9 +39,20 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import ManagedBy, ResourceKind
 from kdive.domain.state import AllocationState
 from kdive.mcp.responses import ToolResponse
-from kdive.mcp.tools.ops.resources._common import ResourceProbe
+from kdive.mcp.tools.ops.resources import registrar as resources_registrar
+from kdive.mcp.tools.ops.resources._common import (
+    DEREGISTER_TOOL,
+    REGISTER_FAULT_INJECT_TOOL,
+    REGISTER_LOCAL_LIBVIRT_TOOL,
+    REGISTER_REMOTE_LIBVIRT_TOOL,
+    RENEW_TOOL,
+    ResourceProbe,
+)
 from kdive.mcp.tools.ops.resources.deregister import deregister_resource
-from kdive.mcp.tools.ops.resources.register import register_resource
+from kdive.mcp.tools.ops.resources.register import (
+    register_fault_inject_resource,
+    register_remote_libvirt_resource,
+)
 from kdive.mcp.tools.ops.resources.renew import renew_resource
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import PlatformRole
@@ -186,16 +200,93 @@ async def _audit_rows(url: str) -> list[tuple[object, ...]]:
         return list(await cur.fetchall())
 
 
+def _destructive_hint(tool: object) -> bool | None:
+    annotations = getattr(tool, "annotations", None)
+    value = getattr(annotations, "destructiveHint", None)
+    return value if isinstance(value, bool) else None
+
+
+async def _call_registered_tool(tool: object, *args: object) -> ToolResponse:
+    fn = cast(Any, tool).fn
+    result = await fn(*args)
+    assert isinstance(result, ToolResponse)
+    return result
+
+
+# --- registrar boundary ---
+
+
+def test_registrar_exposes_annotations_and_invokes_wrappers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, RequestContext, dict[str, object]]] = []
+    pool = cast(AsyncConnectionPool, object())
+    ctx = _admin_ctx(principal="registrar-admin", projects=("registrar-team",))
+
+    async def fake_register_fault_inject(
+        bound_pool: AsyncConnectionPool,
+        bound_ctx: RequestContext,
+        **kwargs: object,
+    ) -> ToolResponse:
+        calls.append((bound_pool, bound_ctx, kwargs))
+        return ToolResponse.success("resource:fi-registrar", "registered")
+
+    async def _run() -> None:
+        monkeypatch.setattr(resources_registrar, "current_context", lambda: ctx)
+        monkeypatch.setattr(
+            resources_registrar, "register_fault_inject_resource", fake_register_fault_inject
+        )
+        app = FastMCP("resources-registrar-test")
+        resources_registrar.register_mutation_tools(app, pool)
+        tools = {tool.name: tool for tool in await app.list_tools()}
+
+        assert set(tools) == {
+            REGISTER_REMOTE_LIBVIRT_TOOL,
+            REGISTER_LOCAL_LIBVIRT_TOOL,
+            REGISTER_FAULT_INJECT_TOOL,
+            DEREGISTER_TOOL,
+            RENEW_TOOL,
+        }
+        assert _destructive_hint(tools[REGISTER_FAULT_INJECT_TOOL]) is False
+        assert _destructive_hint(tools[RENEW_TOOL]) is False
+        assert _destructive_hint(tools[DEREGISTER_TOOL]) is True
+
+        resp = await _call_registered_tool(
+            tools[REGISTER_FAULT_INJECT_TOOL],
+            "fi-registrar",
+            "standard",
+            4,
+            ["ref-a", "ref-b"],
+            "*",
+        )
+
+        assert resp.status == "registered"
+        assert calls == [
+            (
+                pool,
+                ctx,
+                {
+                    "name": "fi-registrar",
+                    "cost_class": "standard",
+                    "concurrent_allocation_cap": 4,
+                    "secret_refs": ("ref-a", "ref-b"),
+                    "owner_project": "*",
+                },
+            )
+        ]
+
+    asyncio.run(_run())
+
+
 # --- authorization gate ---
 
 
 def test_non_admin_register_denied(migrated_url: str, tmp_path: Path) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await register_resource(
+            resp = await register_fault_inject_resource(
                 pool,
                 _non_admin_ctx(),
-                block="fault_inject",
                 name="fi-1",
                 cost_class="standard",
                 probe=_Reachable(),
@@ -223,10 +314,9 @@ def test_non_admin_deregister_and_renew_denied(migrated_url: str) -> None:
 def test_platform_auditor_overreach_denied_and_audited(migrated_url: str, tmp_path: Path) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await register_resource(
+            resp = await register_fault_inject_resource(
                 pool,
                 _auditor_ctx(),
-                block="fault_inject",
                 name="fi-aud",
                 cost_class="standard",
                 owner_project="*",
@@ -235,7 +325,9 @@ def test_platform_auditor_overreach_denied_and_audited(migrated_url: str, tmp_pa
             )
         assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
         rows = await _audit_rows(migrated_url)
-        assert any(r[2] == "resources.register" and "denied" in str(r[3]) for r in rows)
+        assert any(
+            r[2] == "resources.register_fault_inject" and "denied" in str(r[3]) for r in rows
+        )
 
     asyncio.run(_run())
 
@@ -246,10 +338,9 @@ def test_platform_auditor_overreach_denied_and_audited(migrated_url: str, tmp_pa
 def test_register_allocate_renew_deregister_round_trip(migrated_url: str, tmp_path: Path) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            reg = await register_resource(
+            reg = await register_fault_inject_resource(
                 pool,
                 _admin_ctx(),
-                block="fault_inject",
                 name="fi-roundtrip",
                 cost_class="standard",
                 probe=_Reachable(),
@@ -307,19 +398,17 @@ def test_register_defaults_owner_to_single_project_and_star_is_global(
 ) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            scoped = await register_resource(
+            scoped = await register_fault_inject_resource(
                 pool,
                 _admin_ctx(projects=("only-proj",)),
-                block="fault_inject",
                 name="fi-scoped",
                 cost_class="standard",
                 probe=_Reachable(),
                 secrets_root=_secrets_root(tmp_path),
             )
-            glob = await register_resource(
+            glob = await register_fault_inject_resource(
                 pool,
                 _admin_ctx(projects=("only-proj",)),
-                block="fault_inject",
                 name="fi-global",
                 cost_class="standard",
                 owner_project="*",
@@ -337,10 +426,9 @@ def test_register_defaults_owner_to_single_project_and_star_is_global(
 def test_register_ambiguous_project_requires_explicit(migrated_url: str, tmp_path: Path) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await register_resource(
+            resp = await register_fault_inject_resource(
                 pool,
                 _admin_ctx(projects=("a", "b")),
-                block="fault_inject",
                 name="fi-amb",
                 cost_class="standard",
                 probe=_Reachable(),
@@ -364,10 +452,9 @@ def test_register_rejects_config_name_collision(migrated_url: str, tmp_path: Pat
                 managed_by=ManagedBy.CONFIG.value,
                 host_uri="fault-inject://local",
             )
-            resp = await register_resource(
+            resp = await register_fault_inject_resource(
                 pool,
                 _admin_ctx(),
-                block="fault_inject",
                 name="fi-config",
                 cost_class="standard",
                 probe=_Reachable(),
@@ -384,10 +471,9 @@ def test_register_duplicate_runtime_name_conflict(migrated_url: str, tmp_path: P
             root = _secrets_root(tmp_path)
 
             async def _reg() -> ToolResponse:
-                return await register_resource(
+                return await register_fault_inject_resource(
                     pool,
                     _admin_ctx(),
-                    block="fault_inject",
                     name="fi-dup",
                     cost_class="standard",
                     probe=_Reachable(),
@@ -412,10 +498,9 @@ def test_remote_libvirt_register_requires_reachable_secrets_and_registered_base_
         async with _pool(migrated_url) as pool:
             await _seed_registered_image(pool, name="base-img", provider="remote-libvirt")
             root = _secrets_root(tmp_path, "client.pem", "client.key", "ca.pem")
-            ok = await register_resource(
+            ok = await register_remote_libvirt_resource(
                 pool,
                 _admin_ctx(),
-                block="remote_libvirt",
                 name="rl-ok",
                 cost_class="standard",
                 host_uri="qemu+tls://host/system",
@@ -427,10 +512,9 @@ def test_remote_libvirt_register_requires_reachable_secrets_and_registered_base_
             )
             assert ok.status == "registered", ok.model_dump()
 
-            unreachable = await register_resource(
+            unreachable = await register_remote_libvirt_resource(
                 pool,
                 _admin_ctx(),
-                block="remote_libvirt",
                 name="rl-unreach",
                 cost_class="standard",
                 host_uri="qemu+tls://host/system",
@@ -442,10 +526,9 @@ def test_remote_libvirt_register_requires_reachable_secrets_and_registered_base_
             )
             assert unreachable.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
-            missing_secret = await register_resource(
+            missing_secret = await register_remote_libvirt_resource(
                 pool,
                 _admin_ctx(),
-                block="remote_libvirt",
                 name="rl-nosecret",
                 cost_class="standard",
                 host_uri="qemu+tls://host/system",
@@ -457,10 +540,9 @@ def test_remote_libvirt_register_requires_reachable_secrets_and_registered_base_
             )
             assert missing_secret.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
-            no_image = await register_resource(
+            no_image = await register_remote_libvirt_resource(
                 pool,
                 _admin_ctx(),
-                block="remote_libvirt",
                 name="rl-noimage",
                 cost_class="standard",
                 host_uri="qemu+tls://host/system",
@@ -482,13 +564,11 @@ def test_fault_inject_register_ignores_base_image_and_reachability(
         async with _pool(migrated_url) as pool:
             # No base_image, an unreachable probe, no registered image: a fault-inject register
             # must still succeed (synthetic — preflight is secret-ref only).
-            resp = await register_resource(
+            resp = await register_fault_inject_resource(
                 pool,
                 _admin_ctx(),
-                block="fault_inject",
                 name="fi-synthetic",
                 cost_class="standard",
-                base_image=None,
                 probe=_Unreachable(),
                 owner_project="*",
                 secrets_root=_secrets_root(tmp_path),
@@ -505,10 +585,9 @@ def test_fault_inject_register_fails_on_unresolvable_secret(
 ) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await register_resource(
+            resp = await register_fault_inject_resource(
                 pool,
                 _admin_ctx(),
-                block="fault_inject",
                 name="fi-badsecret",
                 cost_class="standard",
                 secret_refs=("absent.key",),
@@ -593,10 +672,9 @@ def test_no_secret_bytes_in_audit_or_envelope(migrated_url: str, tmp_path: Path)
         async with _pool(migrated_url) as pool:
             await _seed_registered_image(pool, name="leak-img", provider="remote-libvirt")
             root = _secrets_root(tmp_path, "client.pem")
-            resp = await register_resource(
+            resp = await register_remote_libvirt_resource(
                 pool,
                 _admin_ctx(),
-                block="remote_libvirt",
                 name="rl-leak",
                 cost_class="standard",
                 host_uri="qemu+tls://host/system",
@@ -610,24 +688,6 @@ def test_no_secret_bytes_in_audit_or_envelope(migrated_url: str, tmp_path: Path)
         assert _SECRET_BYTES not in str(resp.model_dump())
         rows = await _audit_rows(migrated_url)
         assert all(_SECRET_BYTES not in str(r) for r in rows)
-
-    asyncio.run(_run())
-
-
-def test_unsupported_block_is_config_error(migrated_url: str, tmp_path: Path) -> None:
-    async def _run() -> None:
-        async with _pool(migrated_url) as pool:
-            resp = await register_resource(
-                pool,
-                _admin_ctx(),
-                block="not_a_kind",
-                name="x",
-                cost_class="standard",
-                owner_project="*",
-                probe=_Reachable(),
-                secrets_root=_secrets_root(tmp_path),
-            )
-        assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
     asyncio.run(_run())
 

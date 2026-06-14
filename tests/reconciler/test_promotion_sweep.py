@@ -35,6 +35,7 @@ from kdive.domain.state import AllocationState, ResourceStatus
 from kdive.mcp.auth import RequestContext
 from kdive.providers.reaping import NullReaper
 from kdive.reconciler import loop
+from kdive.reconciler.allocations import promote_pending, reap_queue_timeouts
 from kdive.security.audit import args_digest
 from kdive.services.allocation.admission import AllocationRequest, admit
 from tests.db_waits import wait_until_any_backend_waiting
@@ -195,7 +196,7 @@ def test_freed_slot_promotes_and_charges_at_grant(migrated_url: str) -> None:
             await ALLOCATIONS.update_state(seed, holder.id, AllocationState.RELEASING)
             await ALLOCATIONS.update_state(seed, holder.id, AllocationState.RELEASED)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._promote_pending)
+            count = await run_repair(pool, promote_pending)
         assert count == 1
         async with await connect(migrated_url) as check:
             row = await _row(check, queued)
@@ -227,7 +228,7 @@ def test_missing_sizing_snapshot_does_not_promote_as_zero(
             await ALLOCATIONS.update_state(seed, holder.id, AllocationState.RELEASED)
         caplog.set_level(logging.WARNING, logger="kdive.services.allocation.promotion")
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._promote_pending)
+            count = await run_repair(pool, promote_pending)
         assert count == 0
         return queued
 
@@ -273,7 +274,7 @@ def test_work_conserving_fills_free_host_behind_busy_global_oldest(migrated_url:
             await ALLOCATIONS.update_state(seed, hold_b.id, AllocationState.RELEASED)
             assert hold_a.state is AllocationState.GRANTED  # A still occupied
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._promote_pending)
+            count = await run_repair(pool, promote_pending)
         assert count == 1
         async with await connect(migrated_url) as check:
             assert await _state(check, oldest) == "requested"  # still waits on busy A
@@ -294,9 +295,9 @@ def test_over_budget_at_promotion_terminates_not_requeue(migrated_url: str) -> N
             # Drain the budget AFTER enqueue so promotion's budget recheck fails.
             await seed.execute("UPDATE budgets SET limit_kcu = 0 WHERE project='proj'")
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._promote_pending)
+            count = await run_repair(pool, promote_pending)
             # A second pass must NOT retry the now-failed row (no infinite retry).
-            again = await run_repair(pool, loop._promote_pending)
+            again = await run_repair(pool, promote_pending)
         assert count == 0  # nothing promoted
         assert again == 0
         async with await connect(migrated_url) as check:
@@ -318,7 +319,7 @@ def test_host_full_and_over_budget_terminates_on_budget(migrated_url: str) -> No
             queued = await _enqueue(seed, res)
             await seed.execute("UPDATE budgets SET limit_kcu = 0 WHERE project='proj'")
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._promote_pending)
+            count = await run_repair(pool, promote_pending)
         assert count == 0
         async with await connect(migrated_url) as check:
             assert await _state(check, queued) == "failed"  # budget terminates over host-wait
@@ -347,7 +348,7 @@ def test_grant_quota_headroom_one_promotes_exactly_one(migrated_url: str) -> Non
             await ALLOCATIONS.update_state(seed, quota_holder.id, AllocationState.RELEASING)
             await ALLOCATIONS.update_state(seed, quota_holder.id, AllocationState.RELEASED)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._promote_pending)
+            count = await run_repair(pool, promote_pending)
         assert count == 1
         async with await connect(migrated_url) as check:
             states = sorted([await _state(check, first), await _state(check, second)])
@@ -368,7 +369,7 @@ def test_cordoned_host_skipped(migrated_url: str) -> None:
             # Cordon the (now-free) host: placement must skip it.
             await seed.execute("UPDATE resources SET cordoned = true WHERE id = %s", (res.id,))
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._promote_pending)
+            count = await run_repair(pool, promote_pending)
         assert count == 0
         async with await connect(migrated_url) as check:
             assert await _state(check, queued) == "requested"  # cordoned host not used
@@ -399,11 +400,11 @@ def test_pcie_aware_promotion_claims_a_freed_device(migrated_url: str) -> None:
             async with await connect(migrated_url) as free:
                 await ALLOCATIONS.update_state(free, slot_holder.id, AllocationState.RELEASING)
                 await ALLOCATIONS.update_state(free, slot_holder.id, AllocationState.RELEASED)
-            first = await run_repair(pool, loop._promote_pending)
+            first = await run_repair(pool, promote_pending)
             async with await connect(migrated_url) as free:
                 await ALLOCATIONS.update_state(free, nic_holder.id, AllocationState.RELEASING)
                 await ALLOCATIONS.update_state(free, nic_holder.id, AllocationState.RELEASED)
-            second = await run_repair(pool, loop._promote_pending)
+            second = await run_repair(pool, promote_pending)
         assert first == 0  # NIC busy -> stayed requested
         assert second == 1  # NIC freed -> promoted
         async with await connect(migrated_url) as check:
@@ -435,7 +436,7 @@ def test_pcie_promotion_logs_malformed_persisted_spec(
             await ALLOCATIONS.update_state(seed, holder.id, AllocationState.RELEASED)
         caplog.set_level(logging.WARNING, logger="kdive.services.allocation.promotion")
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            count = await run_repair(pool, loop._promote_pending)
+            count = await run_repair(pool, promote_pending)
         assert count == 0
         return queued, res.id
 
@@ -459,7 +460,7 @@ def test_grant_audit_attributed_to_original_principal(migrated_url: str) -> None
             await ALLOCATIONS.update_state(seed, holder.id, AllocationState.RELEASING)
             await ALLOCATIONS.update_state(seed, holder.id, AllocationState.RELEASED)
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
-            await run_repair(pool, loop._promote_pending)
+            await run_repair(pool, promote_pending)
         async with await connect(migrated_url) as check:
             cur = await check.execute(
                 "SELECT principal, agent_session FROM audit_log "
@@ -492,7 +493,7 @@ def test_released_while_queued_is_not_promoted(migrated_url: str) -> None:
                     advisory_xact_lock(blocker, LockScope.PROJECT, "proj"),
                     advisory_xact_lock(blocker, LockScope.ALLOCATION, queued),
                 ):
-                    task = asyncio.ensure_future(run_repair(pool, loop._promote_pending))
+                    task = asyncio.ensure_future(run_repair(pool, promote_pending))
                     await wait_until_any_backend_waiting(blocker, locktype="advisory")
                     assert not task.done()  # blocked on the locks the release holds
                     # Cancel the queued row while the sweep waits.
@@ -516,7 +517,7 @@ def test_never_placeable_past_max_wait_failed_queue_timeout(migrated_url: str) -
             queued = await _enqueue(seed, res, created_offset=timedelta(hours=-48))
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             reaped = await run_repair(
-                pool, lambda conn: loop._reap_queue_timeouts(conn, timedelta(hours=24))
+                pool, lambda conn: reap_queue_timeouts(conn, timedelta(hours=24))
             )
         assert reaped == 1
         async with await connect(migrated_url) as check:
@@ -550,7 +551,7 @@ def test_fresh_queued_row_not_reaped(migrated_url: str) -> None:
             queued = await _enqueue(seed, res)  # just enqueued, well within the window
         async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
             reaped = await run_repair(
-                pool, lambda conn: loop._reap_queue_timeouts(conn, timedelta(hours=24))
+                pool, lambda conn: reap_queue_timeouts(conn, timedelta(hours=24))
             )
         assert reaped == 0
         async with await connect(migrated_url) as check:

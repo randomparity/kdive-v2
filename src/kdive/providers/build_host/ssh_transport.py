@@ -31,8 +31,8 @@ from kdive.providers.build_host.shell_transport import (
     _MAX_REMOTE_READ_B64_BYTES as _MAX_REMOTE_READ_B64_BYTES,
 )
 from kdive.providers.build_host.shell_transport import _UNSAFE_CHARS, ShellBuildTransport
-from kdive.providers.build_host.transport import CommandResult
 from kdive.providers.build_host.workspace import redacted_tail
+from kdive.providers.ports.build_transport import CommandResult
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import FileRefBackend, secrets_root_from_env
 

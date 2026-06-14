@@ -56,12 +56,14 @@ from kdive.mcp.tools.ops import inventory as inventory_tools
 from kdive.mcp.tools.ops import queue as ops_queue_tools
 from kdive.mcp.tools.ops import reconcile as ops_reconcile_tools
 from kdive.mcp.tools.ops import reconcile_systems as ops_reconcile_systems_tools
-from kdive.mcp.tools.ops import resources as ops_resources_tools
 from kdive.mcp.tools.ops import secrets as ops_secrets_tools
 from kdive.mcp.tools.ops import tuning as ops_tuning_tools
 from kdive.mcp.tools.ops.build_hosts import registrar as ops_build_hosts_tools
 from kdive.mcp.tools.ops.images import registrar as ops_images_tools
-from kdive.providers.composition import ProviderComposition, build_provider_resolver
+from kdive.mcp.tools.ops.resources import host_ops as ops_resource_host_tools
+from kdive.mcp.tools.ops.resources import registrar as ops_resource_mutation_tools
+from kdive.providers.build_host.dispatch import BuildHostTransportFactories
+from kdive.providers.composition import ProviderComposition
 from kdive.providers.reaping import BuildVmReaper, DumpVolumeReaper, InfraReaper
 from kdive.providers.resolver import ProviderResolver
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -79,7 +81,9 @@ class AppAssembly:
 
 
 type PlaneRegistrar = Callable[[FastMCP, AsyncConnectionPool, AppAssembly], None]
-type HandlerRegistrar = Callable[[HandlerRegistry, ProviderResolver, SecretRegistry], None]
+type HandlerRegistrar = Callable[
+    [HandlerRegistry, ProviderResolver, SecretRegistry, BuildHostTransportFactories | None], None
+]
 
 
 def _pool_only_plane_registrar(
@@ -115,6 +119,18 @@ def _register_reconcile_systems_tools(
     ops_reconcile_systems_tools.register(
         app, pool, image_store=ops_reconcile_tools.resolve_image_store()
     )
+
+
+def _register_ops_resource_host_tools(
+    app: FastMCP, pool: AsyncConnectionPool, _assembly: AppAssembly
+) -> None:
+    ops_resource_host_tools.register(app, pool)
+
+
+def _register_ops_resource_mutation_tools(
+    app: FastMCP, pool: AsyncConnectionPool, _assembly: AppAssembly
+) -> None:
+    ops_resource_mutation_tools.register_mutation_tools(app, pool)
 
 
 def _register_systems_tools(app: FastMCP, pool: AsyncConnectionPool, assembly: AppAssembly) -> None:
@@ -181,25 +197,42 @@ def _register_ops_secrets_tools(
 
 
 def _register_system_handlers(
-    registry: HandlerRegistry, resolver: ProviderResolver, _secret_registry: SecretRegistry
+    registry: HandlerRegistry,
+    resolver: ProviderResolver,
+    _secret_registry: SecretRegistry,
+    _transport_factories: BuildHostTransportFactories | None,
 ) -> None:
     systems.register_handlers(registry, resolver=resolver)
 
 
 def _register_run_handlers(
-    registry: HandlerRegistry, resolver: ProviderResolver, secret_registry: SecretRegistry
+    registry: HandlerRegistry,
+    resolver: ProviderResolver,
+    secret_registry: SecretRegistry,
+    transport_factories: BuildHostTransportFactories | None,
 ) -> None:
-    runs.register_handlers(registry, resolver=resolver, secret_registry=secret_registry)
+    runs.register_handlers(
+        registry,
+        resolver=resolver,
+        secret_registry=secret_registry,
+        transport_factories=transport_factories,
+    )
 
 
 def _register_control_handlers(
-    registry: HandlerRegistry, resolver: ProviderResolver, _secret_registry: SecretRegistry
+    registry: HandlerRegistry,
+    resolver: ProviderResolver,
+    _secret_registry: SecretRegistry,
+    _transport_factories: BuildHostTransportFactories | None,
 ) -> None:
     control.register_handlers(registry, resolver=resolver)
 
 
 def _register_vmcore_handlers(
-    registry: HandlerRegistry, resolver: ProviderResolver, _secret_registry: SecretRegistry
+    registry: HandlerRegistry,
+    resolver: ProviderResolver,
+    _secret_registry: SecretRegistry,
+    _transport_factories: BuildHostTransportFactories | None,
 ) -> None:
     vmcore.register_handlers(registry, resolver=resolver)
 
@@ -216,7 +249,8 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
     _pool_only_plane_registrar(register_accounting_admin),
     _register_reconcile_tools,
     _register_reconcile_systems_tools,
-    _pool_only_plane_registrar(ops_resources_tools.register),
+    _register_ops_resource_host_tools,
+    _register_ops_resource_mutation_tools,
     _pool_only_plane_registrar(allocations.register),
     _pool_only_plane_registrar(ops_breakglass_tools.register),
     _register_systems_tools,
@@ -242,7 +276,10 @@ _PLANE_REGISTRARS: tuple[PlaneRegistrar, ...] = (
 
 
 def _register_image_build_handler(
-    registry: HandlerRegistry, resolver: ProviderResolver, _secret_registry: SecretRegistry
+    registry: HandlerRegistry,
+    resolver: ProviderResolver,
+    _secret_registry: SecretRegistry,
+    _transport_factories: BuildHostTransportFactories | None,
 ) -> None:
     """Bind the IMAGE_BUILD handler, preserving setup errors as job failures.
 
@@ -363,7 +400,10 @@ def build_app(
 
 
 def build_handler_registry(
-    *, provider_resolver: ProviderResolver | None = None, secret_registry: SecretRegistry
+    *,
+    provider_resolver: ProviderResolver | None = None,
+    secret_registry: SecretRegistry,
+    build_host_transport_factories: BuildHostTransportFactories | None = None,
 ) -> HandlerRegistry:
     """Build the worker's `HandlerRegistry` from provider-aware handler registrars.
 
@@ -373,7 +413,13 @@ def build_handler_registry(
         secret_registry: Worker-owned registry shared by redaction boundaries and logging.
     """
     registry = HandlerRegistry()
-    resolver = provider_resolver or build_provider_resolver(secret_registry=secret_registry)
+    composition = ProviderComposition(secret_registry=secret_registry)
+    resolver = provider_resolver or composition.build_provider_resolver()
+    transport_factories = (
+        build_host_transport_factories
+        if build_host_transport_factories is not None
+        else composition.build_build_host_transport_factories()
+    )
     for register in _HANDLER_REGISTRARS:
-        register(registry, resolver, secret_registry)
+        register(registry, resolver, secret_registry, transport_factories)
     return registry

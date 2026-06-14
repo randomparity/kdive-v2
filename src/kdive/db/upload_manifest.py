@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -20,6 +20,10 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from kdive.provider_components.uploads import ChunkEntry, ManifestEntry
+
+UploadOwnerKind = Literal["runs", "systems"]
+RUN_UPLOAD_OWNER: UploadOwnerKind = "runs"
+SYSTEM_UPLOAD_OWNER: UploadOwnerKind = "systems"
 
 
 class UploadManifest(NamedTuple):
@@ -34,7 +38,7 @@ class UploadManifest(NamedTuple):
 class UploadManifestReplaceRequest:
     """A full replacement for one owner's upload manifest."""
 
-    owner_kind: str
+    owner_kind: UploadOwnerKind
     owner_id: UUID
     prefix: str
     entries: Sequence[ManifestEntry]
@@ -75,7 +79,7 @@ async def replace_manifest(
 
 
 async def refresh_deadline(
-    conn: AsyncConnection, owner_kind: str, owner_id: UUID, ttl: timedelta
+    conn: AsyncConnection, owner_kind: UploadOwnerKind, owner_id: UUID, ttl: timedelta
 ) -> bool:
     """Set ``deadline = now() + ttl`` if a non-expired manifest exists; report whether it did.
 
@@ -94,7 +98,7 @@ async def refresh_deadline(
 
 
 async def get_manifest(
-    conn: AsyncConnection, owner_kind: str, owner_id: UUID
+    conn: AsyncConnection, owner_kind: UploadOwnerKind, owner_id: UUID
 ) -> UploadManifest | None:
     """Return the owner's manifest, or ``None`` if none is recorded.
 
@@ -131,7 +135,9 @@ def _entry_from_payload(payload: Any) -> ManifestEntry:
     )
 
 
-async def delete_manifest(conn: AsyncConnection, owner_kind: str, owner_id: UUID) -> None:
+async def delete_manifest(
+    conn: AsyncConnection, owner_kind: UploadOwnerKind, owner_id: UUID
+) -> None:
     """Delete the owner's manifest row (idempotent — absent is fine).
 
     Args:

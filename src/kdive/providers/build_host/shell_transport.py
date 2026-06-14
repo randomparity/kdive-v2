@@ -16,8 +16,8 @@ import logging
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.provider_components.artifacts import PresignedUpload
-from kdive.providers.build_host.transport import CommandResult
 from kdive.providers.build_host.workspace import redacted_tail
+from kdive.providers.ports.build_transport import CommandResult
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 _log = logging.getLogger(__name__)

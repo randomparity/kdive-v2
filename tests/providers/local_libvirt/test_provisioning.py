@@ -475,6 +475,29 @@ def test_real_make_overlay_uses_resolved_qemu_img_path(
     assert calls[0][0] == "/usr/bin/qemu-img"
 
 
+def test_real_make_overlay_nonzero_return_is_provisioning_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stderr = "x" * (storage_module._QEMU_IMG_ERROR_TAIL_CHARS + 10)
+
+    def _failed(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(storage_module.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.setattr(storage_module.subprocess, "run", _failed)
+
+    with pytest.raises(CategorizedError) as caught:
+        storage_module._real_make_overlay("/base.qcow2", "/overlay.qcow2")
+
+    assert caught.value.category is ErrorCategory.PROVISIONING_FAILURE
+    assert caught.value.details == {
+        "op": "create_overlay",
+        "overlay": "overlay.qcow2",
+        "tool": "qemu-img",
+        "stderr": stderr[-storage_module._QEMU_IMG_ERROR_TAIL_CHARS :],
+    }
+
+
 def test_real_make_overlay_launch_oserror_is_infrastructure_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

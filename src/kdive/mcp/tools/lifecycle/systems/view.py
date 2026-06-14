@@ -18,6 +18,7 @@ from kdive.log import bind_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
+from kdive.mcp.tools._common import not_found as _not_found
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 
@@ -75,7 +76,7 @@ async def get_system(
         async with pool.connection() as conn:
             system = await SYSTEMS.get(conn, uid)
         if system is None or system.project not in ctx.projects:
-            return _config_error(system_id)
+            return _not_found(system_id)
         require_role(ctx, system.project, Role.VIEWER)
         return system_envelope(system)
 

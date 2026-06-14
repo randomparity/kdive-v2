@@ -366,7 +366,7 @@ class _RemoteTransport:
     cleanups: list[str] = field(default_factory=list)
 
     def run(self, argv: list[str], *, cwd: str, timeout_s: int) -> Any:
-        from kdive.providers.build_host.transport import CommandResult
+        from kdive.providers.ports.build_transport import CommandResult
 
         self.runs.append(argv)
         if argv[0] == "sha256sum":

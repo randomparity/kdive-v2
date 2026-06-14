@@ -68,19 +68,47 @@ List Resources, optional kind. Requires a valid token; no project membership nee
 |---|---|---|---|
 | `kind` | `any` | no | Filter by resource kind (e.g. 'local-libvirt'); omit for all. |
 
-## `resources.register`
+## `resources.register_fault_inject`
 
 `implemented`
 
-Register a runtime provider resource (per-kind preflight). Requires platform_admin.
+Register a runtime fault-inject resource. Requires platform_admin.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `base_image` | `any` | no | Registered base image name (remote_libvirt only; preflight-checked). |
-| `block` | `string` | yes | The systems.toml block name: 'remote_libvirt', 'local_libvirt', or 'fault_inject'. |
 | `concurrent_allocation_cap` | `integer` | no | Per-host concurrent-allocation cap (> 0). |
 | `cost_class` | `string` | yes | The cost class for pricing. |
-| `host_uri` | `any` | no | Provider host URI (required for remote_libvirt/local_libvirt; synthetic for fault_inject). |
+| `name` | `string` | yes | The (kind, name) identity for the new resource. |
+| `owner_project` | `any` | no | Owning project; defaults to the single registering project. Pass '*' for a global (any-project) resource. |
+| `secret_refs` | `any` | no | Credential reference strings to preflight-resolve, e.g. cert/key/CA refs. Only the references are stored — secret bytes are never fetched or logged. |
+
+## `resources.register_local_libvirt`
+
+`implemented`
+
+Register a runtime local-libvirt resource. Requires platform_admin.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `concurrent_allocation_cap` | `integer` | no | Per-host concurrent-allocation cap (> 0). |
+| `cost_class` | `string` | yes | The cost class for pricing. |
+| `host_uri` | `string` | yes | Local-libvirt provider host URI. |
+| `name` | `string` | yes | The (kind, name) identity for the new resource. |
+| `owner_project` | `any` | no | Owning project; defaults to the single registering project. Pass '*' for a global (any-project) resource. |
+| `secret_refs` | `any` | no | Credential reference strings to preflight-resolve, e.g. cert/key/CA refs. Only the references are stored — secret bytes are never fetched or logged. |
+
+## `resources.register_remote_libvirt`
+
+`implemented`
+
+Register a runtime remote-libvirt resource. Requires platform_admin.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `base_image` | `string` | yes | Registered remote-libvirt base image name. |
+| `concurrent_allocation_cap` | `integer` | no | Per-host concurrent-allocation cap (> 0). |
+| `cost_class` | `string` | yes | The cost class for pricing. |
+| `host_uri` | `string` | yes | Remote-libvirt provider host URI. |
 | `name` | `string` | yes | The (kind, name) identity for the new resource. |
 | `owner_project` | `any` | no | Owning project; defaults to the single registering project. Pass '*' for a global (any-project) resource. |
 | `secret_refs` | `any` | no | Credential reference strings to preflight-resolve, e.g. cert/key/CA refs. Only the references are stored — secret bytes are never fetched or logged. |

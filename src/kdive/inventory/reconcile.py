@@ -52,7 +52,7 @@ __all__ = [
 def resource_identity_lock_key(kind: ResourceKind, name: str) -> str:
     """The advisory-lock key serializing all mutation of one ``(kind, name)`` resource identity.
 
-    Both the inventory reconcile (adopt/prune) and the imperative ``resources.register`` take a
+    Both the inventory reconcile (adopt/prune) and the imperative ``resources.register_*`` take a
     :attr:`~kdive.db.locks.LockScope.RESOURCE` lock on this key, so a reconcile pass and a
     concurrent ``register`` of the same name never interleave — prune cannot delete a row a
     register is creating, and adopt cannot race a register flipping ownership (ADR-0112).
@@ -67,7 +67,7 @@ async def resource_identity_lock(
     """Hold the transaction-scoped per-identity lock for ``(kind, name)`` over the block.
 
     Wraps :func:`~kdive.db.locks.advisory_xact_lock` with the shared
-    :func:`resource_identity_lock_key`, so the inventory reconcile and ``resources.register``
+    :func:`resource_identity_lock_key`, so the inventory reconcile and ``resources.register_*``
     serialize on the same key. Must run inside an open transaction (the xact lock releases on
     commit/rollback); a whole reconcile pass already holds it under one transaction per phase.
     """
@@ -171,7 +171,7 @@ async def prune_or_cordon_resource(
     its own transaction so the liveness re-check and the delete/cordon are atomic per row.
 
     The transaction first takes the per-identity :func:`resource_identity_lock` so a prune and a
-    concurrent ``resources.register`` of the same ``(kind, name)`` serialize — prune cannot
+    concurrent ``resources.register_*`` of the same ``(kind, name)`` serialize — prune cannot
     delete a row a register is re-creating, and vice versa (ADR-0112).
 
     Args:

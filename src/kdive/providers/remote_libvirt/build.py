@@ -60,7 +60,6 @@ from kdive.providers.build_host.artifact_publish import (
     publish_artifact_source,
 )
 from kdive.providers.build_host.orchestration import BuildHostOrchestrator, WorkspaceCleanup
-from kdive.providers.build_host.transport import BuildTransport
 from kdive.providers.build_host.transport_seams import (
     transport_git_checkout,
     transport_read_build_id,
@@ -69,6 +68,7 @@ from kdive.providers.build_host.transport_seams import (
     transport_run_modules_install,
     transport_run_olddefconfig,
 )
+from kdive.providers.ports.build_transport import BuildTransport
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.store.objectstore import object_store_from_env
 

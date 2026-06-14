@@ -25,7 +25,8 @@ from psycopg_pool import AsyncConnectionPool
 import kdive.config as config
 from kdive.config.core_settings import SYSTEMS_TOML
 from kdive.domain.errors import ErrorCategory
-from kdive.inventory import InventoryError, load_inventory_optional
+from kdive.inventory.errors import InventoryError
+from kdive.inventory.loader import load_inventory_optional
 from kdive.inventory.model import InventoryDoc
 from kdive.inventory.reconcile import ReconcileDiff, ReconcileRecord
 from kdive.inventory.reconcile_build_hosts import reconcile_build_hosts

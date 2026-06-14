@@ -17,7 +17,13 @@ from uuid import UUID
 
 from psycopg import AsyncConnection
 
-from kdive.db.build_hosts import BuildHost, get_by_name, try_acquire_lease
+from kdive.db.build_hosts import (
+    BuildHost,
+    BuildHostKind,
+    BuildHostState,
+    get_by_name,
+    try_acquire_lease,
+)
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.build import ServerBuildProfile, is_git_source
 
@@ -61,28 +67,28 @@ async def resolve_and_admit(
             details={"build_host": name},
         )
 
-    if not host.enabled or host.state == "unreachable":
+    if not host.enabled or host.state is BuildHostState.UNREACHABLE:
         raise CategorizedError(
             f"build host '{name}' is not available",
             category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"build_host": name, "enabled": host.enabled, "state": host.state},
+            details={"build_host": name, "enabled": host.enabled, "state": host.state.value},
         )
 
     git = is_git_source(parsed_profile)
-    if host.kind == "local" and git:
+    if host.kind is BuildHostKind.LOCAL and git:
         raise CategorizedError(
             "a local build host requires a warm-tree kernel_source_ref, not a git ref",
             category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"build_host": name, "host_kind": host.kind},
+            details={"build_host": name, "host_kind": host.kind.value},
         )
-    if host.kind != "local" and not git:
+    if host.kind is not BuildHostKind.LOCAL and not git:
         raise CategorizedError(
             "a remote build host requires a git kernel_source_ref",
             category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"build_host": name, "host_kind": host.kind},
+            details={"build_host": name, "host_kind": host.kind.value},
         )
 
-    if host.kind != "local":
+    if host.kind is not BuildHostKind.LOCAL:
         ok = await try_acquire_lease(conn, host, run_id)
         if not ok:
             raise CategorizedError(

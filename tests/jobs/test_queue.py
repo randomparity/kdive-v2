@@ -12,6 +12,7 @@ import pytest
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from kdive.db.build_hosts import WORKER_LOCAL_ID
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Job, JobKind
 from kdive.domain.state import JobState
@@ -22,7 +23,7 @@ _AUTHORIZING = Authorizing(principal="p", agent_session=None, project="a")
 
 
 def _build_payload() -> BuildPayload:
-    return BuildPayload(run_id=str(uuid4()))
+    return BuildPayload(run_id=str(uuid4()), build_host_id=str(WORKER_LOCAL_ID))
 
 
 def _system_payload() -> SystemPayload:

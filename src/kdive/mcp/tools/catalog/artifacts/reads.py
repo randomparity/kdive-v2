@@ -78,11 +78,17 @@ class ArtifactReadHandlers:
         *,
         request: ArtifactSearchRequest,
     ) -> ToolResponse:
+        try:
+            store = self.search_store_factory()
+        except CategorizedError as exc:
+            return ToolResponse.failure_from_error(
+                request.artifact_id, exc, suggested_next_actions=["artifacts.search_text"]
+            )
         return await _artifacts_search_text(
             pool,
             ctx,
             request=request,
-            store=self.search_store_factory(),
+            store=store,
         )
 
 

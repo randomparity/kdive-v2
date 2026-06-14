@@ -13,8 +13,9 @@ import httpx
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
-from kdive.health import BackendCheck, HealthProbe, Heartbeat
 from kdive.health.aux_listener import build_aux_app
+from kdive.health.heartbeat import Heartbeat
+from kdive.health.probe import BackendCheck, HealthProbe
 
 
 def _client(app: object) -> httpx.AsyncClient:

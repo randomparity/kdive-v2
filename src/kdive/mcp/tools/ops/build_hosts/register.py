@@ -1,6 +1,6 @@
-"""``build_hosts.register`` handler — register a new remote build host.
+"""``build_hosts.register_*`` handlers — register new remote build hosts.
 
-Two remote kinds are registerable: ``ssh`` (default) and ``ephemeral_libvirt``. The
+Two remote kinds are registerable: ``ssh`` and ``ephemeral_libvirt``. The
 ``worker-local`` ``local`` seed is injected at migration time and is not reproduced
 through this path.
 
@@ -17,6 +17,7 @@ import psycopg.errors
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.build_hosts import BuildHostKind
 from kdive.domain.errors import ErrorCategory
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._platform_auth import actor_for, audit_platform_denial, held_platform_roles
@@ -26,12 +27,13 @@ from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_
 
 _log = logging.getLogger(__name__)
 
-REGISTER_TOOL = "build_hosts.register"
+REGISTER_SSH_TOOL = "build_hosts.register_ssh"
+REGISTER_EPHEMERAL_LIBVIRT_TOOL = "build_hosts.register_ephemeral_libvirt"
 
 
-def _denied(object_id: str) -> ToolResponse:
+def _denied(object_id: str, tool: str) -> ToolResponse:
     return ToolResponse.failure(
-        object_id, ErrorCategory.AUTHORIZATION_DENIED, suggested_next_actions=[REGISTER_TOOL]
+        object_id, ErrorCategory.AUTHORIZATION_DENIED, suggested_next_actions=[tool]
     )
 
 
@@ -53,12 +55,12 @@ def _validate_credential_ref(ref: str | None) -> bool:
 _SSH_INSERT: LiteralString = (
     "INSERT INTO build_hosts "
     "  (name, kind, address, ssh_credential_ref, workspace_root, max_concurrent) "
-    "VALUES (%s, 'ssh', %s, %s, %s, %s) RETURNING id"
+    "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id"
 )
 _EPHEMERAL_INSERT: LiteralString = (
     "INSERT INTO build_hosts "
     "  (name, kind, base_image_volume, workspace_root, max_concurrent) "
-    "VALUES (%s, 'ephemeral_libvirt', %s, %s, %s) RETURNING id"
+    "VALUES (%s, %s, %s, %s, %s) RETURNING id"
 )
 
 
@@ -76,7 +78,14 @@ def _ssh_plan(
         return _config_error(name, "an ssh build host requires an address")
     if base_image_volume:
         return _config_error(name, "base_image_volume is not valid for an ssh build host")
-    return _SSH_INSERT, (name, address, ssh_credential_ref, workspace_root, max_concurrent)
+    return _SSH_INSERT, (
+        name,
+        BuildHostKind.SSH.value,
+        address,
+        ssh_credential_ref,
+        workspace_root,
+        max_concurrent,
+    )
 
 
 def _ephemeral_plan(
@@ -93,17 +102,24 @@ def _ephemeral_plan(
         return _config_error(
             name, "address/ssh_credential_ref are not valid for an ephemeral_libvirt build host"
         )
-    return _EPHEMERAL_INSERT, (name, base_image_volume, workspace_root, max_concurrent)
+    return _EPHEMERAL_INSERT, (
+        name,
+        BuildHostKind.EPHEMERAL_LIBVIRT.value,
+        base_image_volume,
+        workspace_root,
+        max_concurrent,
+    )
 
 
-async def register_build_host(
+async def _register_build_host(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
     *,
+    tool: str,
+    kind: BuildHostKind,
     name: str,
     workspace_root: str,
     max_concurrent: int,
-    kind: str = "ssh",
     address: str | None = None,
     ssh_credential_ref: str | None = None,
     base_image_volume: str | None = None,
@@ -113,7 +129,7 @@ async def register_build_host(
     Two remote kinds are registerable (the ``local`` ``worker-local`` seed is injected at
     migration time, not through this path):
 
-    - ``ssh`` (default) — requires ``address`` + ``ssh_credential_ref``; ``base_image_volume``
+    - ``ssh`` — requires ``address`` + ``ssh_credential_ref``; ``base_image_volume``
       must be absent.
     - ``ephemeral_libvirt`` — requires ``base_image_volume``; ``address``/``ssh_credential_ref``
       must be absent (the build VM lives on the configured remote-libvirt host; it has no SSH
@@ -125,7 +141,7 @@ async def register_build_host(
         name: Unique human-readable identifier for the new host.
         workspace_root: Absolute path where builds are staged (in-guest for ephemeral).
         max_concurrent: Maximum simultaneous build leases (must be > 0).
-        kind: ``'ssh'`` (default) or ``'ephemeral_libvirt'``.
+        kind: ``'ssh'`` or ``'ephemeral_libvirt'``.
         address: SSH hostname or IP (ssh only).
         ssh_credential_ref: Credential secret reference (ssh only) — only the reference string
             is stored and returned; secret bytes are never fetched or logged.
@@ -141,25 +157,25 @@ async def register_build_host(
         await audit_platform_denial(
             pool,
             ctx,
-            tool=REGISTER_TOOL,
+            tool=tool,
             scope=f"denied:{name}",
             args={"name": name},
         )
-        return _denied(name)
+        return _denied(name, tool)
 
     if max_concurrent <= 0:
         return _config_error(name, "max_concurrent must be a positive integer")
 
-    if kind == "ssh":
+    if kind is BuildHostKind.SSH:
         plan = _ssh_plan(
             name, address, ssh_credential_ref, base_image_volume, workspace_root, max_concurrent
         )
-    elif kind == "ephemeral_libvirt":
+    elif kind is BuildHostKind.EPHEMERAL_LIBVIRT:
         plan = _ephemeral_plan(
             name, address, ssh_credential_ref, base_image_volume, workspace_root, max_concurrent
         )
     else:
-        return _config_error(name, f"unsupported build host kind {kind!r}")
+        return _config_error(name, f"unsupported build host kind {kind.value!r}")
     if isinstance(plan, ToolResponse):
         return plan
     insert_sql, values = plan
@@ -177,11 +193,11 @@ async def register_build_host(
                 principal=ctx.principal,
                 agent_session=ctx.agent_session,
                 event=audit.PlatformAuditEvent(
-                    tool=REGISTER_TOOL,
+                    tool=tool,
                     scope=f"build_host:{host_id}",
                     args={
                         "name": name,
-                        "kind": kind,
+                        "kind": kind.value,
                         "address": address,
                         "ssh_credential_ref": ssh_credential_ref,
                         "base_image_volume": base_image_volume,
@@ -206,3 +222,57 @@ async def register_build_host(
         suggested_next_actions=["build_hosts.list", "runs.build"],
         data={"id": str(host_id), "name": name},
     )
+
+
+async def register_ssh_build_host(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    name: str,
+    address: str,
+    ssh_credential_ref: str,
+    workspace_root: str,
+    max_concurrent: int,
+) -> ToolResponse:
+    """INSERT a new SSH build host row. Requires ``platform_admin``."""
+    return await _register_build_host(
+        pool,
+        ctx,
+        tool=REGISTER_SSH_TOOL,
+        kind=BuildHostKind.SSH,
+        name=name,
+        address=address,
+        ssh_credential_ref=ssh_credential_ref,
+        workspace_root=workspace_root,
+        max_concurrent=max_concurrent,
+    )
+
+
+async def register_ephemeral_libvirt_build_host(
+    pool: AsyncConnectionPool,
+    ctx: RequestContext,
+    *,
+    name: str,
+    base_image_volume: str,
+    workspace_root: str,
+    max_concurrent: int,
+) -> ToolResponse:
+    """INSERT a new ephemeral-libvirt build host row. Requires ``platform_admin``."""
+    return await _register_build_host(
+        pool,
+        ctx,
+        tool=REGISTER_EPHEMERAL_LIBVIRT_TOOL,
+        kind=BuildHostKind.EPHEMERAL_LIBVIRT,
+        name=name,
+        base_image_volume=base_image_volume,
+        workspace_root=workspace_root,
+        max_concurrent=max_concurrent,
+    )
+
+
+__all__ = [
+    "REGISTER_EPHEMERAL_LIBVIRT_TOOL",
+    "REGISTER_SSH_TOOL",
+    "register_ephemeral_libvirt_build_host",
+    "register_ssh_build_host",
+]

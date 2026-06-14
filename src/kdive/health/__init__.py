@@ -13,18 +13,3 @@ This package supplies the building blocks the ``server`` (this issue) and the
   MCP port and **bound loopback by default** (the bind address is a config key, so the
   trust boundary is the config contract, not implementation memory).
 """
-
-from __future__ import annotations
-
-from kdive.health.aux_listener import build_aux_app, serve_aux
-from kdive.health.heartbeat import Heartbeat
-from kdive.health.probe import BackendCheck, HealthProbe, ReadyResult
-
-__all__ = [
-    "BackendCheck",
-    "Heartbeat",
-    "HealthProbe",
-    "ReadyResult",
-    "build_aux_app",
-    "serve_aux",
-]

@@ -13,6 +13,7 @@ from kdive.domain.models import DebugSession
 from kdive.domain.state import DebugSessionState
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import as_uuid as _as_uuid
+from kdive.providers.ports import DebugTransportKind
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import Role, require_role
 
@@ -43,7 +44,7 @@ async def resolve_debug_session_context(
     ctx: RequestContext,
     session_id: str,
     *,
-    required_transport: str | None = None,
+    required_transport: DebugTransportKind | None = None,
     require_live: bool = False,
     include_system: bool = False,
 ) -> DebugSessionContext | ToolResponse:

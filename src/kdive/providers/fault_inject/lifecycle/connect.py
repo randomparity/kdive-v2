@@ -5,11 +5,15 @@ from __future__ import annotations
 import hashlib
 from typing import cast
 
-from kdive.providers.ports import SystemHandle, TransportHandle
+from kdive.providers.ports import (
+    DEBUG_TRANSPORT_KINDS,
+    DebugTransportKind,
+    SystemHandle,
+    TransportHandle,
+)
 from kdive.providers.ports._common import config_error
 from kdive.providers.ports.lifecycle import TransportHandleData, TransportHandleKind
 
-_TRANSPORT_KINDS: frozenset[TransportHandleKind] = frozenset(("gdbstub", "drgn-live"))
 _LOOPBACK_HOST = "127.0.0.1"
 
 
@@ -22,8 +26,8 @@ def synthetic_port(handle: str) -> int:
 class FaultInjectConnect:
     """Connector port: open and close a loopback debug transport."""
 
-    def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle:
-        if kind not in _TRANSPORT_KINDS:
+    def open_transport(self, system: SystemHandle, kind: DebugTransportKind) -> TransportHandle:
+        if kind not in DEBUG_TRANSPORT_KINDS:
             raise config_error(f"unknown transport kind {kind!r}")
         handle_kind = cast(TransportHandleKind, kind)
         endpoint = TransportHandleData(handle_kind, _LOOPBACK_HOST, synthetic_port(str(system)))

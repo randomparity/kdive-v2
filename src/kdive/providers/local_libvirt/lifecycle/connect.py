@@ -23,10 +23,15 @@ from collections.abc import Callable
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.debug_common.rsp import rsp_reachable
-from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
+from kdive.providers.ports import (
+    DebugTransportKind,
+    SystemHandle,
+    TransportHandle,
+    TransportHandleData,
+)
 
-_GDBSTUB = "gdbstub"
-_DRGN_LIVE = "drgn-live"  # the agent-facing transport kind (ADR-0085)
+_GDBSTUB: DebugTransportKind = "gdbstub"
+_DRGN_LIVE: DebugTransportKind = "drgn-live"  # the agent-facing transport kind (ADR-0085)
 _SSH_SCHEME = "ssh"  # the handle scheme local emits — its SSH realization (ADR-0039)
 
 type _ResolveEndpoint = Callable[[SystemHandle], tuple[str, int]]
@@ -81,7 +86,7 @@ class LocalLibvirtConnect:
             ssh_connect=_real_ssh_connect,
         )
 
-    def open_transport(self, system: SystemHandle, kind: str) -> TransportHandle:
+    def open_transport(self, system: SystemHandle, kind: DebugTransportKind) -> TransportHandle:
         """Open a single-attach transport (gdbstub or ssh) and return its handle.
 
         Resolves the System's endpoint, enforces loopback-only before any IO, and probes

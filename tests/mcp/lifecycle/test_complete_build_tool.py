@@ -501,6 +501,32 @@ def test_complete_build_rejects_expired_window(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_chunked_complete_build_store_factory_error_returns_envelope(migrated_url: str) -> None:
+    def _failing_store() -> _ReassemblyStore:
+        raise CategorizedError("store unavailable", category=ErrorCategory.INFRASTRUCTURE_FAILURE)
+
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            run_id = await _seed_external_run_with_manifest(pool, entries=[_CHUNKED_KERNEL])
+            handlers = RunBuildHandlers(
+                _TEST_COMPONENT_SOURCES,
+                validate_complete_build=_FakeValidator(
+                    BuildOutput(f"local/runs/{run_id}/kernel", "", "")
+                ),
+                object_store_factory=_failing_store,
+            )
+            resp = await handlers.complete_build(
+                pool, _ctx(), str(run_id), build_id=None, cmdline="x"
+            )
+            async with pool.connection() as conn:
+                run = await RUNS.get(conn, run_id)
+        assert resp.status == "error"
+        assert resp.error_category == ErrorCategory.INFRASTRUCTURE_FAILURE.value
+        assert run is not None and run.state is RunState.CREATED
+
+    asyncio.run(_run())
+
+
 def test_chunked_finalize_deletes_chunks_and_manifest(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:

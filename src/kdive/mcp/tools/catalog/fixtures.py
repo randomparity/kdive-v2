@@ -48,7 +48,7 @@ async def list_fixtures_tool(pool: AsyncConnectionPool) -> ToolResponse:
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
-    """Register ``fixtures.list`` on ``app`` (the ``_plain`` registrar seam)."""
+    """Register ``fixtures.list`` on ``app``."""
 
     @app.tool(
         name="fixtures.list",

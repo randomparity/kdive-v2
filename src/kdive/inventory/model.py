@@ -11,6 +11,9 @@ Parse-time validation enforces three structural invariants:
 2. instance ``name`` is unique within each provider kind;
 3. every instance ``base_image`` cross-reference names a declared ``[[image]]``.
 
+Remote-libvirt is temporarily stricter: only one ``[[remote_libvirt]]`` instance is accepted
+until provider operations carry selected Resource identity into remote config resolution.
+
 :meth:`InventoryDoc.parse` is the sanctioned entry point: it wraps
 :meth:`~pydantic.BaseModel.model_validate` and re-raises pydantic's structural
 ``ValidationError`` (e.g. a bad discriminator) as :class:`InventoryError`, so callers
@@ -160,6 +163,17 @@ class InventoryDoc(BaseModel):
             if dupes:
                 raise InventoryError(kind, "name", f"duplicate instance names {dupes}")
 
+    def _check_remote_libvirt_singleton(self) -> None:
+        if len(self.remote_libvirt) <= 1:
+            return
+        names = sorted(inst.name for inst in self.remote_libvirt)
+        raise InventoryError(
+            "remote_libvirt",
+            "instances",
+            "multiple instances are not supported until per-op remote resource selection is wired "
+            f"{names}",
+        )
+
     @classmethod
     def parse(cls, data: dict[str, Any]) -> Self:
         """Validate ``data`` into an :class:`InventoryDoc`.
@@ -190,4 +204,5 @@ class InventoryDoc(BaseModel):
         doc._check_image_identities()
         doc._check_base_image_refs()
         doc._check_instance_name_uniqueness()
+        doc._check_remote_libvirt_singleton()
         return doc

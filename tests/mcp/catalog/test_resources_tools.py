@@ -20,7 +20,7 @@ from kdive.domain.models import Allocation, System
 from kdive.domain.state import AllocationState, SystemState
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.tools.catalog import resources as catalog_resources_tools
-from kdive.mcp.tools.ops import resources as resources_tools
+from kdive.mcp.tools.ops.resources import host_ops as resources_tools
 from kdive.providers.local_libvirt.discovery import LocalLibvirtDiscovery
 from kdive.security.authz.rbac import PlatformRole
 from kdive.services.allocation.release import ReleaseOutcome

@@ -1,8 +1,9 @@
 """``build_hosts.*`` MCP tool registration (ADR-0099, issue #342).
 
-Registers four tools on the FastMCP ``app``:
+Registers five tools on the FastMCP ``app``:
 
-* ``build_hosts.register`` — add a new SSH build host (platform_admin, mutating).
+* ``build_hosts.register_ssh`` — add a new SSH build host (platform_admin, mutating).
+* ``build_hosts.register_ephemeral_libvirt`` — add a new ephemeral-libvirt build host.
 * ``build_hosts.list``    — enumerate all hosts (read-only).
 * ``build_hosts.disable`` — set enabled=false on a host (platform_admin, mutating).
 * ``build_hosts.remove``  — delete a host row (platform_admin, mutating).
@@ -19,7 +20,7 @@ from pydantic import Field
 from kdive.mcp.auth import current_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
-from kdive.mcp.tools.ops.build_hosts.manage import (
+from kdive.mcp.tools.ops.build_hosts.lifecycle import (
     DISABLE_TOOL,
     LIST_TOOL,
     REMOVE_TOOL,
@@ -27,54 +28,80 @@ from kdive.mcp.tools.ops.build_hosts.manage import (
     list_build_hosts,
     remove_build_host,
 )
-from kdive.mcp.tools.ops.build_hosts.register import REGISTER_TOOL, register_build_host
+from kdive.mcp.tools.ops.build_hosts.register import (
+    REGISTER_EPHEMERAL_LIBVIRT_TOOL,
+    REGISTER_SSH_TOOL,
+    register_ephemeral_libvirt_build_host,
+    register_ssh_build_host,
+)
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
     """Register the ``build_hosts.*`` tools on ``app``, bound to ``pool``."""
 
-    @app.tool(name=REGISTER_TOOL, annotations=_docmeta.mutating(), meta={"maturity": "implemented"})
-    async def build_hosts_register(
+    @app.tool(
+        name=REGISTER_SSH_TOOL,
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "implemented"},
+    )
+    async def build_hosts_register_ssh(
         name: Annotated[
             str, Field(description="Unique human-readable identifier for the new host.")
         ],
-        workspace_root: Annotated[
+        address: Annotated[str, Field(description="SSH hostname or IP address.")],
+        ssh_credential_ref: Annotated[
             str,
-            Field(description="Absolute path where builds are staged (in-guest for ephemeral)."),
+            Field(
+                description=(
+                    "Credential secret reference, e.g. 'ssh://build-host-key'. "
+                    "Only the reference string is stored — secret bytes are never fetched."
+                )
+            ),
+        ],
+        workspace_root: Annotated[
+            str, Field(description="Absolute path where builds are staged on the SSH host.")
         ],
         max_concurrent: Annotated[
             int, Field(description="Maximum simultaneous build leases this host may hold (> 0).")
         ],
-        kind: Annotated[
-            str, Field(description="Build host kind: 'ssh' (default) or 'ephemeral_libvirt'.")
-        ] = "ssh",
-        address: Annotated[
-            str | None, Field(description="SSH hostname or IP address (ssh kind only).")
-        ] = None,
-        ssh_credential_ref: Annotated[
-            str | None,
-            Field(
-                description=(
-                    "Credential secret reference, e.g. 'ssh://build-host-key' (ssh kind only). "
-                    "Only the reference string is stored — secret bytes are never fetched."
-                )
-            ),
-        ] = None,
-        base_image_volume: Annotated[
-            str | None,
-            Field(description="Base build-image volume name (ephemeral_libvirt kind only)."),
-        ] = None,
     ) -> ToolResponse:
-        """Register a new remote build host (ssh or ephemeral_libvirt). Requires platform_admin."""
-        return await register_build_host(
+        """Register a new SSH build host. Requires platform_admin."""
+        return await register_ssh_build_host(
             pool,
             current_context(),
             name=name,
             workspace_root=workspace_root,
             max_concurrent=max_concurrent,
-            kind=kind,
             address=address,
             ssh_credential_ref=ssh_credential_ref,
+        )
+
+    @app.tool(
+        name=REGISTER_EPHEMERAL_LIBVIRT_TOOL,
+        annotations=_docmeta.mutating(),
+        meta={"maturity": "implemented"},
+    )
+    async def build_hosts_register_ephemeral_libvirt(
+        name: Annotated[
+            str, Field(description="Unique human-readable identifier for the new host.")
+        ],
+        base_image_volume: Annotated[
+            str, Field(description="Base build-image volume name in the remote storage pool.")
+        ],
+        workspace_root: Annotated[
+            str, Field(description="Absolute path where builds are staged inside the build VM.")
+        ],
+        max_concurrent: Annotated[
+            int, Field(description="Maximum simultaneous build leases this host may hold (> 0).")
+        ],
+    ) -> ToolResponse:
+        """Register a new ephemeral-libvirt build host. Requires platform_admin."""
+        return await register_ephemeral_libvirt_build_host(
+            pool,
+            current_context(),
+            name=name,
+            workspace_root=workspace_root,
+            max_concurrent=max_concurrent,
             base_image_volume=base_image_volume,
         )
 

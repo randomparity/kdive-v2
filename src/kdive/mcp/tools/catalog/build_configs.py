@@ -102,10 +102,10 @@ def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
         nonlocal _store
         ctx = current_context()
         _ = ctx  # authenticated caller established; no project RBAC for shared catalog
-        if _store is None:
-            _store = _resolve_store()
-        async with pool.connection() as conn:
-            try:
+        try:
+            if _store is None:
+                _store = _resolve_store()
+            async with pool.connection() as conn:
                 return await read_build_config(conn, _store, name=name)
-            except CategorizedError as exc:
-                return ToolResponse.failure_from_error(name, exc, suggested_next_actions=[_TOOL])
+        except CategorizedError as exc:
+            return ToolResponse.failure_from_error(name, exc, suggested_next_actions=[_TOOL])

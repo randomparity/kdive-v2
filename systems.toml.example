@@ -8,6 +8,8 @@
 #                             and the `REMOTE_BASE_IMAGE_NAME` literal — all removed in Phase 1).
 #   * `[[remote_libvirt]]` / `[[local_libvirt]]` / `[[fault_inject]]` / `[[build_host]]`
 #                           -> reconciled into `resources` / `build_hosts` (Phases 2-3).
+#                             Remote-libvirt is currently singleton until provider ops carry
+#                             selected Resource identity into remote config resolution.
 #
 # Load it with `kdive reconcile-systems` (or the deploy `migrate` step, or the reconciler loop).
 # Path is `KDIVE_SYSTEMS_TOML` (default `./systems.toml`; in k8s a mounted ConfigMap).
@@ -82,6 +84,9 @@ volume = "fedora-kdive-remote-base-43.qcow2"
 # PROVIDER INSTANCES — reconciled into resources (Phase 2-3; shown here for reference).
 # ---------------------------------------------------------------------------------------------
 
+# Remote-libvirt currently accepts one instance. Per-op provider config still resolves a
+# singleton; declaring multiple [[remote_libvirt]] blocks is rejected until selected Resource
+# identity is threaded into remote provider operations.
 # [[remote_libvirt]]
 # name = "ub24-big"
 # uri = "qemu+tls://ub24-big.example/system"

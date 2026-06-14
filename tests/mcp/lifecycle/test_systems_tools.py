@@ -158,7 +158,7 @@ def test_get_cross_project_is_not_found(migrated_url: str) -> None:
             sys_id = await _seed_system(pool, alloc_id, SystemState.READY)
             resp = await get_system(pool, _ctx(projects=("other",)), sys_id)
         assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
+        assert resp.error_category == "not_found"
 
     asyncio.run(_run())
 
@@ -170,9 +170,6 @@ def test_get_platform_only_token_is_not_found_not_authorization_denied(migrated_
     # owning project, finds the caller is not a member, and returns not-found *before*
     # require_role; the held platform role (even platform_admin) is never consulted.
     #
-    # The assertion is robust to issue #338 (which is moving some absent/ungranted reads from
-    # configuration_error/exit-2 to not_found/exit-4): it pins the invariant — error, not
-    # success, and specifically NOT authorization_denied — rather than a single category.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
             alloc_id = await _granted_allocation(pool)
@@ -185,14 +182,11 @@ def test_get_platform_only_token_is_not_found_not_authorization_denied(migrated_
                 platform_roles=frozenset({PlatformRole.PLATFORM_ADMIN}),
             )
             resp = await get_system(pool, platform_only, sys_id)
-        # The invariant pinned here (robust to #338's category move): the read fails as a
-        # not-found-shaped result and is NOT an authorization denial — the held platform role
-        # buys no project data, and a non-member never surfaces a distinct denial code. The
-        # exact not-found category is `configuration_error` today and may become `not_found`
-        # under #338; either is a not-found shape, so this asserts the negative invariant.
+        # The held platform role buys no project data, and a non-member gets the same
+        # not_found envelope as an absent ID.
         assert resp.status == "error"
         assert resp.error_category != ErrorCategory.AUTHORIZATION_DENIED.value
-        assert resp.error_category in {"configuration_error", "not_found"}
+        assert resp.error_category == "not_found"
 
     asyncio.run(_run())
 

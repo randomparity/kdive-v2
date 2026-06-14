@@ -126,7 +126,7 @@ def _reconcile_inventory_images(database_url: str) -> int:
     import asyncio
     from pathlib import Path
 
-    from kdive.inventory import load_inventory_optional
+    from kdive.inventory.loader import load_inventory_optional
     from kdive.inventory.reconcile_images import reconcile_images
 
     raw_path = config.get(SYSTEMS_TOML) or "./systems.toml"

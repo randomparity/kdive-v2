@@ -25,7 +25,7 @@ from kdive.provider_components.artifacts import (
     StoredArtifact,
     artifact_key,
 )
-from kdive.providers.build_host.transport import BuildTransport
+from kdive.providers.ports.build_transport import BuildTransport
 
 _MAX_PRESIGN_TTL_S = 3600
 _MAX_SINGLE_PUT_BYTES = 5 * 1024**3

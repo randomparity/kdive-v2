@@ -35,8 +35,9 @@ from kdive.mcp.auth import current_context
 from kdive.mcp.responses import JsonValue, ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
+from kdive.mcp.tools._common import not_found as _not_found
 from kdive.security.authz.context import RequestContext
-from kdive.security.authz.rbac import AuthorizationError, Role, require_role
+from kdive.security.authz.rbac import AuthorizationError, Role, RoleDenied, require_role
 
 _log = logging.getLogger(__name__)
 
@@ -93,6 +94,8 @@ def _require_job_role(
 ) -> ToolResponse | None:
     try:
         require_role(ctx, _project(job), role)
+    except RoleDenied:
+        raise
     except AuthorizationError:
         return _error(object_id, ErrorCategory.AUTHORIZATION_DENIED)
     return None
@@ -112,7 +115,7 @@ async def get_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str) -
         async with pool.connection() as conn:
             job = await JOBS.get(conn, uid)
         if job is None or not _in_scope(job, ctx):
-            return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
+            return _not_found(job_id)
         denied = _require_job_role(job, ctx, Role.VIEWER, job_id)
         if denied is not None:
             return denied
@@ -144,7 +147,7 @@ async def wait_job(
             async with pool.connection() as conn:
                 job = await JOBS.get(conn, uid)
             if job is None or not _in_scope(job, ctx):
-                return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
+                return _not_found(job_id)
             denied = _require_job_role(job, ctx, Role.VIEWER, job_id)
             if denied is not None:
                 return denied
@@ -175,7 +178,7 @@ async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str
         async with pool.connection() as conn:
             existing = await JOBS.get(conn, uid)
         if existing is None or not _in_scope(existing, ctx):
-            return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
+            return _not_found(job_id)
         denied = _require_job_role(existing, ctx, Role.OPERATOR, job_id)
         if denied is not None:
             return denied
@@ -183,7 +186,7 @@ async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str
             async with pool.connection() as conn:
                 job = await JOBS.update_state(conn, uid, JobState.CANCELED)
         except ObjectNotFound:
-            return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
+            return _not_found(job_id)
         except IllegalTransition:
             async with pool.connection() as conn:
                 current = await JOBS.get(conn, uid)

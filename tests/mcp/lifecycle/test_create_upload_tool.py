@@ -34,6 +34,7 @@ from kdive.domain.state import (
 )
 from kdive.mcp.auth import RequestContext
 from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools.catalog.artifacts import uploads as artifact_uploads
 from kdive.mcp.tools.catalog.artifacts.uploads import (
     ArtifactDeclaration,
     create_system_upload,
@@ -99,6 +100,29 @@ def _ctx(
 ) -> RequestContext:
     roles = {"proj": role} if role is not None else {}
     return RequestContext(principal="user-1", agent_session="s", projects=projects, roles=roles)
+
+
+def test_create_run_upload_maps_store_resolution_error(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    error = CategorizedError("store missing", category=ErrorCategory.CONFIGURATION_ERROR)
+
+    def _raise_store() -> object:
+        raise error
+
+    async def _run() -> ToolResponse:
+        async with _pool(migrated_url) as pool:
+            monkeypatch.setattr(artifact_uploads, "object_store_from_env", _raise_store)
+            return await create_run_upload(
+                pool,
+                _ctx(),
+                run_id=str(uuid4()),
+                artifacts=[],
+            )
+
+    resp = asyncio.run(_run())
+    assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
+    assert resp.suggested_next_actions == ["artifacts.create_run_upload"]
 
 
 @asynccontextmanager

@@ -47,6 +47,7 @@ from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandle
 from kdive.security.authz.rbac import Role
 from kdive.security.secrets.secret_registry import SecretRegistry
 from tests.adversarial.conftest import seed_allocation, seed_resource
+from tests.mcp.systems_support import provider_resolver
 
 _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _PROFILE_POLICY = LocalLibvirtProfilePolicy()
@@ -95,6 +96,14 @@ class _TrackingConnector:
     def close_transport(self, handle: TransportHandle) -> None:
         self.closed.append(str(handle))
         self.live.discard(str(handle))
+
+
+def _handlers(connector: _TrackingConnector) -> debug_tools.DebugSessionHandlers:
+    return debug_tools.DebugSessionHandlers.from_resolver(
+        provider_resolver(connector=connector, profile_policy=_PROFILE_POLICY),
+        runtime_resolver=None,
+        secret_registry=SecretRegistry(),
+    )
 
 
 def _ctx() -> RequestContext:
@@ -215,9 +224,7 @@ def test_concurrent_start_session_keeps_single_attach_and_leaks_no_transport(
                 run_a = await _seed_booted_run(pool, system_id)
                 run_b = await _seed_booted_run(pool, system_id)
                 conn = _TrackingConnector()
-                handlers = debug_tools.DebugSessionHandlers.from_fixed_connector(
-                    conn, profile_policy=_PROFILE_POLICY, secret_registry=SecretRegistry()
-                )
+                handlers = _handlers(conn)
 
                 async def start(
                     run_id: str, handlers: debug_tools.DebugSessionHandlers = handlers
@@ -245,9 +252,7 @@ def test_concurrent_end_session_is_idempotent_and_closes_once(migrated_url: str)
                 run_id = await _seed_booted_run(pool, system_id)
                 session_id = await _seed_live_session(pool, run_id)
                 conn = _TrackingConnector()
-                handlers = debug_tools.DebugSessionHandlers.from_fixed_connector(
-                    conn, profile_policy=_PROFILE_POLICY, secret_registry=SecretRegistry()
-                )
+                handlers = _handlers(conn)
 
                 async def end(
                     sid: str = session_id,

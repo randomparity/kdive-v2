@@ -7,13 +7,15 @@ endpoint paths are `live_vm`-gated seams exercised only under the gate.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.debug_common.rsp import rsp_frame, valid_rsp_frame
 from kdive.providers.local_libvirt.lifecycle import connect as connect_mod
 from kdive.providers.local_libvirt.lifecycle.connect import LocalLibvirtConnect
-from kdive.providers.ports import SystemHandle, TransportHandleData
+from kdive.providers.ports import DebugTransportKind, SystemHandle, TransportHandleData
 
 # --- RSP framing codec ---------------------------------------------------------------------
 
@@ -121,7 +123,7 @@ _SYSTEM = SystemHandle("kdive-x")
 def test_open_transport_non_gdbstub_kind_is_configuration_error_without_probing() -> None:
     probe = _FakeProbe()
     with pytest.raises(CategorizedError) as exc:
-        _connector(probe).open_transport(_SYSTEM, "tcp")
+        _connector(probe).open_transport(_SYSTEM, cast(DebugTransportKind, "tcp"))
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
     assert probe.calls == []  # rejected before any IO
 
@@ -257,7 +259,9 @@ def test_open_ssh_transport_socket_fault_is_transport_failure() -> None:
 
 def test_open_unsupported_kind_is_configuration_error() -> None:
     with pytest.raises(CategorizedError) as exc:
-        _ssh_connector(_FakeSshConnect()).open_transport(_SYSTEM, "telnet")
+        _ssh_connector(_FakeSshConnect()).open_transport(
+            _SYSTEM, cast(DebugTransportKind, "telnet")
+        )
     assert exc.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 

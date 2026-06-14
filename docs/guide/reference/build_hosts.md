@@ -18,21 +18,32 @@ Disable a build host so the scheduler will not select it. Requires platform_admi
 
 List all registered build hosts (id, name, kind, address, credential ref, state).
 
-## `build_hosts.register`
+## `build_hosts.register_ephemeral_libvirt`
 
 `implemented`
 
-Register a new remote build host (ssh or ephemeral_libvirt). Requires platform_admin.
+Register a new ephemeral-libvirt build host. Requires platform_admin.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `address` | `any` | no | SSH hostname or IP address (ssh kind only). |
-| `base_image_volume` | `any` | no | Base build-image volume name (ephemeral_libvirt kind only). |
-| `kind` | `string` | no | Build host kind: 'ssh' (default) or 'ephemeral_libvirt'. |
+| `base_image_volume` | `string` | yes | Base build-image volume name in the remote storage pool. |
 | `max_concurrent` | `integer` | yes | Maximum simultaneous build leases this host may hold (> 0). |
 | `name` | `string` | yes | Unique human-readable identifier for the new host. |
-| `ssh_credential_ref` | `any` | no | Credential secret reference, e.g. 'ssh://build-host-key' (ssh kind only). Only the reference string is stored — secret bytes are never fetched. |
-| `workspace_root` | `string` | yes | Absolute path where builds are staged (in-guest for ephemeral). |
+| `workspace_root` | `string` | yes | Absolute path where builds are staged inside the build VM. |
+
+## `build_hosts.register_ssh`
+
+`implemented`
+
+Register a new SSH build host. Requires platform_admin.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `address` | `string` | yes | SSH hostname or IP address. |
+| `max_concurrent` | `integer` | yes | Maximum simultaneous build leases this host may hold (> 0). |
+| `name` | `string` | yes | Unique human-readable identifier for the new host. |
+| `ssh_credential_ref` | `string` | yes | Credential secret reference, e.g. 'ssh://build-host-key'. Only the reference string is stored — secret bytes are never fetched. |
+| `workspace_root` | `string` | yes | Absolute path where builds are staged on the SSH host. |
 
 ## `build_hosts.remove`
 

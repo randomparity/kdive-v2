@@ -9,14 +9,14 @@ Identity is the build-host **``name``** (already ``text UNIQUE NOT NULL`` in ``0
 upsert keys on it directly — no migration change. Adopt-on-collision: a config-declared host
 whose ``name`` matches an existing ``managed_by='runtime'`` row is **adopted** (flipped to
 ``config``), never duplicated; the seeded ``worker-local`` baseline from ``0027`` is
-``runtime``, so declaring it in config adopts it. (A runtime ``build_hosts.register`` of a name
-that already exists is rejected by the ``name`` UNIQUE constraint, regardless of ownership.)
+``runtime``, so declaring it in config adopts it. (A runtime ``build_hosts.register_ssh`` of a
+name that already exists is rejected by the ``name`` UNIQUE constraint, regardless of ownership.)
 
 Kind coverage: the v2 ``[[build_host]]`` model carries no ``address`` / ``ssh_credential_ref``,
 so only ``local`` and ``ephemeral_libvirt`` hosts (which need neither) are fully expressible in
 config. A config-declared ``ssh`` host cannot satisfy the ``build_hosts_fields_check`` CHECK, so
 it is **warned and skipped** rather than aborting the pass — ssh hosts are registered
-imperatively via ``build_hosts.register``, which carries those fields.
+imperatively via ``build_hosts.register_ssh``, which carries those fields.
 
 Prune is DB-guarded: ``build_host_leases`` FKs ``build_hosts(id) ON DELETE RESTRICT``, so a host
 with an in-flight build lease cannot be deleted. Prune therefore **cordons** a busy host
@@ -44,6 +44,7 @@ from uuid import UUID
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
+from kdive.db.build_hosts import BuildHostKind
 from kdive.domain.models import ManagedBy
 from kdive.inventory.model import BuildHostInstance, InventoryDoc
 from kdive.inventory.reconcile import (
@@ -59,7 +60,7 @@ _CONFIG = ManagedBy.CONFIG.value
 
 # Kinds the v2 [[build_host]] model can fully express (it carries no address/ssh_credential_ref,
 # which the build_hosts_fields_check CHECK requires for the 'ssh' kind).
-_CONFIG_EXPRESSIBLE_KINDS = ("local", "ephemeral_libvirt")
+_CONFIG_EXPRESSIBLE_KINDS = (BuildHostKind.LOCAL, BuildHostKind.EPHEMERAL_LIBVIRT)
 
 
 async def reconcile_build_hosts(conn: AsyncConnection, doc: InventoryDoc) -> ReconcileDiff:
@@ -107,16 +108,25 @@ def _unexpressible_reason(inst: BuildHostInstance) -> str | None:
     ``ephemeral_libvirt`` host must carry one (the ``build_hosts_fields_check`` CHECK). Catching
     these here keeps an invalid declaration from aborting the whole pass on a CHECK violation.
     """
-    if inst.kind not in _CONFIG_EXPRESSIBLE_KINDS:
+    try:
+        kind = BuildHostKind(inst.kind)
+    except ValueError:
         return (
             f"kind {inst.kind!r} is not config-expressible "
-            f"(only {', '.join(_CONFIG_EXPRESSIBLE_KINDS)}); register it imperatively"
+            f"(only {', '.join(kind.value for kind in _CONFIG_EXPRESSIBLE_KINDS)}); "
+            "register it imperatively"
         )
-    if inst.kind == "ephemeral_libvirt" and not (
+    if kind not in _CONFIG_EXPRESSIBLE_KINDS:
+        return (
+            f"kind {inst.kind!r} is not config-expressible "
+            f"(only {', '.join(kind.value for kind in _CONFIG_EXPRESSIBLE_KINDS)}); "
+            "register it imperatively"
+        )
+    if kind is BuildHostKind.EPHEMERAL_LIBVIRT and not (
         inst.base_image_volume and inst.base_image_volume.strip()
     ):
         return "an ephemeral_libvirt build host requires a base_image_volume"
-    if inst.kind == "local" and inst.base_image_volume:
+    if kind is BuildHostKind.LOCAL and inst.base_image_volume:
         return "base_image_volume is not valid for a local build host"
     return None
 
@@ -136,7 +146,8 @@ async def _upsert_one(cur: Any, inst: BuildHostInstance, diff: ReconcileDiff) ->
         (inst.name,),
     )
     row = await cur.fetchone()
-    base_image_volume = inst.base_image_volume if inst.kind == "ephemeral_libvirt" else None
+    kind = BuildHostKind(inst.kind)
+    base_image_volume = inst.base_image_volume if kind is BuildHostKind.EPHEMERAL_LIBVIRT else None
     if row is None:
         await cur.execute(
             "INSERT INTO build_hosts "
@@ -144,7 +155,7 @@ async def _upsert_one(cur: Any, inst: BuildHostInstance, diff: ReconcileDiff) ->
             "VALUES (%s, %s, %s, %s, %s, true, %s)",
             (
                 inst.name,
-                inst.kind,
+                kind.value,
                 base_image_volume,
                 inst.workspace_root,
                 inst.max_concurrent,
@@ -154,7 +165,7 @@ async def _upsert_one(cur: Any, inst: BuildHostInstance, diff: ReconcileDiff) ->
         diff.created.append(_record(inst.name))
         return
     changed = (
-        row["kind"] != inst.kind
+        row["kind"] != kind.value
         or row["base_image_volume"] != base_image_volume
         or row["workspace_root"] != inst.workspace_root
         or row["max_concurrent"] != inst.max_concurrent
@@ -166,7 +177,7 @@ async def _upsert_one(cur: Any, inst: BuildHostInstance, diff: ReconcileDiff) ->
             "UPDATE build_hosts SET kind = %s, base_image_volume = %s, workspace_root = %s, "
             "max_concurrent = %s, enabled = true, managed_by = %s WHERE id = %s",
             (
-                inst.kind,
+                kind.value,
                 base_image_volume,
                 inst.workspace_root,
                 inst.max_concurrent,

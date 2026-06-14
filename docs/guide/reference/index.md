@@ -24,7 +24,8 @@
 | [`audit.query`](audit.md#auditquery) | `implemented` |
 | [`build_hosts.disable`](build_hosts.md#build_hostsdisable) | `implemented` |
 | [`build_hosts.list`](build_hosts.md#build_hostslist) | `implemented` |
-| [`build_hosts.register`](build_hosts.md#build_hostsregister) | `implemented` |
+| [`build_hosts.register_ephemeral_libvirt`](build_hosts.md#build_hostsregister_ephemeral_libvirt) | `implemented` |
+| [`build_hosts.register_ssh`](build_hosts.md#build_hostsregister_ssh) | `implemented` |
 | [`build_hosts.remove`](build_hosts.md#build_hostsremove) | `implemented` |
 | [`buildconfig.get`](buildconfig.md#buildconfigget) | `implemented` |
 | [`control.force_crash`](control.md#controlforce_crash) | `partial` |
@@ -76,7 +77,9 @@
 | [`resources.describe`](resources.md#resourcesdescribe) | `implemented` |
 | [`resources.drain`](resources.md#resourcesdrain) | `implemented` |
 | [`resources.list`](resources.md#resourceslist) | `implemented` |
-| [`resources.register`](resources.md#resourcesregister) | `implemented` |
+| [`resources.register_fault_inject`](resources.md#resourcesregister_fault_inject) | `implemented` |
+| [`resources.register_local_libvirt`](resources.md#resourcesregister_local_libvirt) | `implemented` |
+| [`resources.register_remote_libvirt`](resources.md#resourcesregister_remote_libvirt) | `implemented` |
 | [`resources.renew`](resources.md#resourcesrenew) | `implemented` |
 | [`resources.set_status`](resources.md#resourcesset_status) | `implemented` |
 | [`resources.uncordon`](resources.md#resourcesuncordon) | `implemented` |

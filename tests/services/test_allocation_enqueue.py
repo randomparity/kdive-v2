@@ -52,25 +52,16 @@ async def _conn(url: str) -> AsyncIterator[psycopg.AsyncConnection]:
         await conn.close()
 
 
-def _request(
-    resource: Resource,
-    *,
-    on_capacity: Literal["deny", "queue"] = "queue",
-    idempotency_key: str | None = None,
-    requested_kind: ResourceKind | None = ResourceKind.LOCAL_LIBVIRT,
-    pcie_specs: tuple[str, ...] = (),
-) -> AllocationRequest:
+def _queued_request(resource: Resource) -> AllocationRequest:
     return AllocationRequest(
         ctx=CTX,
         resource=resource,
         project="proj",
         selector=SEL,
         window=1,
-        on_capacity=on_capacity,
-        idempotency_key=idempotency_key,
+        on_capacity="queue",
         disk_gb=10,
-        requested_kind=requested_kind,
-        pcie_specs=pcie_specs,
+        requested_kind=ResourceKind.LOCAL_LIBVIRT,
     )
 
 
@@ -162,7 +153,7 @@ def test_host_cap_denial_with_queue_enqueues_a_requested_row(migrated_url: str) 
             res = await _seed_resource(conn, cap=1)
             await _seed_quota(conn)
             await _seed_granted(conn, res.id)  # fills the single host slot
-            outcome = await admit(conn, _request(res))
+            outcome = await admit(conn, _queued_request(res))
             assert outcome.granted is True
             alloc = outcome.allocation
             assert alloc is not None
@@ -189,7 +180,7 @@ def test_grant_quota_denial_with_queue_enqueues(migrated_url: str) -> None:
             res = await _seed_resource(conn, cap=10)
             await _seed_quota(conn, allocs=1)
             await _seed_granted(conn, res.id)  # occupies the single grant-quota slot
-            outcome = await admit(conn, _request(res))
+            outcome = await admit(conn, _queued_request(res))
             assert outcome.granted is True
             assert outcome.allocation is not None
             assert outcome.allocation.state is AllocationState.REQUESTED
@@ -207,7 +198,20 @@ def test_pcie_capacity_denial_with_queue_enqueues(migrated_url: str) -> None:
                 res.id,
                 pcie_claim=[PCIeClaim(bdf="0000:3b:00.0", vendor_id="8086", device_id="1572")],
             )
-            outcome = await admit(conn, _request(res, pcie_specs=("8086:1572",)))
+            outcome = await admit(
+                conn,
+                AllocationRequest(
+                    ctx=CTX,
+                    resource=res,
+                    project="proj",
+                    selector=SEL,
+                    window=1,
+                    on_capacity="queue",
+                    disk_gb=10,
+                    requested_kind=ResourceKind.LOCAL_LIBVIRT,
+                    pcie_specs=("8086:1572",),
+                ),
+            )
             assert outcome.granted is True
             alloc = outcome.allocation
             assert alloc is not None
@@ -225,7 +229,19 @@ def test_default_deny_path_unchanged(migrated_url: str) -> None:
             res = await _seed_resource(conn, cap=1)
             await _seed_quota(conn)
             await _seed_granted(conn, res.id)
-            outcome = await admit(conn, _request(res, on_capacity="deny"))
+            outcome = await admit(
+                conn,
+                AllocationRequest(
+                    ctx=CTX,
+                    resource=res,
+                    project="proj",
+                    selector=SEL,
+                    window=1,
+                    on_capacity="deny",
+                    disk_gb=10,
+                    requested_kind=ResourceKind.LOCAL_LIBVIRT,
+                ),
+            )
             assert outcome.granted is False
             assert outcome.category is ErrorCategory.ALLOCATION_DENIED
             assert outcome.reason == "at_capacity"
@@ -243,7 +259,7 @@ def test_budget_denial_with_queue_still_hard_denies(migrated_url: str) -> None:
         async with _conn(migrated_url) as conn:
             res = await _seed_resource(conn, cap=10)
             await _seed_quota(conn, limit="0")  # zero budget → budget denial
-            outcome = await admit(conn, _request(res))
+            outcome = await admit(conn, _queued_request(res))
             assert outcome.granted is False
             assert outcome.category is ErrorCategory.ALLOCATION_DENIED
             assert await _scalar(conn, "SELECT count(*) FROM allocations") == 0
@@ -257,7 +273,7 @@ def test_configuration_denial_with_queue_still_hard_denies(migrated_url: str) ->
         async with _conn(migrated_url) as conn:
             res = await _seed_resource(conn, cap=-1)  # invalid cap → configuration_error
             await _seed_quota(conn)
-            outcome = await admit(conn, _request(res))
+            outcome = await admit(conn, _queued_request(res))
             assert outcome.granted is False
             assert outcome.category is ErrorCategory.CONFIGURATION_ERROR
             assert await _scalar(conn, "SELECT count(*) FROM allocations") == 0
@@ -271,9 +287,9 @@ def test_pending_cap_full_denies_quota_exceeded(migrated_url: str) -> None:
             res = await _seed_resource(conn, cap=1)
             await _seed_quota(conn, pending=1)
             await _seed_granted(conn, res.id)
-            first = await admit(conn, _request(res))
+            first = await admit(conn, _queued_request(res))
             assert first.granted is True  # first enqueue uses the single pending slot
-            second = await admit(conn, _request(res))
+            second = await admit(conn, _queued_request(res))
             assert second.granted is False
             assert second.category is ErrorCategory.QUOTA_EXCEEDED
             assert (
@@ -290,7 +306,7 @@ def test_zero_pending_cap_denies_enqueue(migrated_url: str) -> None:
             res = await _seed_resource(conn, cap=1)
             await _seed_quota(conn, pending=0)
             await _seed_granted(conn, res.id)
-            outcome = await admit(conn, _request(res))
+            outcome = await admit(conn, _queued_request(res))
             assert outcome.granted is False
             assert outcome.category is ErrorCategory.QUOTA_EXCEEDED
             assert (
@@ -306,8 +322,34 @@ def test_idempotent_enqueue_returns_the_same_row(migrated_url: str) -> None:
             res = await _seed_resource(conn, cap=1)
             await _seed_quota(conn)
             await _seed_granted(conn, res.id)
-            first = await admit(conn, _request(res, idempotency_key="k1"))
-            second = await admit(conn, _request(res, idempotency_key="k1"))
+            first = await admit(
+                conn,
+                AllocationRequest(
+                    ctx=CTX,
+                    resource=res,
+                    project="proj",
+                    selector=SEL,
+                    window=1,
+                    idempotency_key="k1",
+                    on_capacity="queue",
+                    disk_gb=10,
+                    requested_kind=ResourceKind.LOCAL_LIBVIRT,
+                ),
+            )
+            second = await admit(
+                conn,
+                AllocationRequest(
+                    ctx=CTX,
+                    resource=res,
+                    project="proj",
+                    selector=SEL,
+                    window=1,
+                    idempotency_key="k1",
+                    on_capacity="queue",
+                    disk_gb=10,
+                    requested_kind=ResourceKind.LOCAL_LIBVIRT,
+                ),
+            )
             assert first.allocation is not None and second.allocation is not None
             assert first.allocation.id == second.allocation.id  # same queued row
             assert (
@@ -330,10 +372,10 @@ def test_concurrent_enqueue_past_cap_serializes_on_project_lock(migrated_url: st
             await _seed_quota(seed, pending=1)
             await _seed_granted(seed, res.id)
             async with a.transaction(), advisory_xact_lock(a, LockScope.PROJECT, "proj"):
-                task = asyncio.ensure_future(admit(b, _request(res)))
+                task = asyncio.ensure_future(admit(b, _queued_request(res)))
                 await wait_until_backend_waiting(a, b.info.backend_pid, locktype="advisory")
                 assert not task.done()  # B blocked on the PROJECT lock A holds
-                first = await admit(a, _request(res))  # A enqueues under its own lock
+                first = await admit(a, _queued_request(res))  # A enqueues under its own lock
             second = await task  # B proceeds after A releases
             granted = [o for o in (first, second) if o.granted]
             denied = [o for o in (first, second) if not o.granted]
@@ -354,7 +396,19 @@ def test_grant_path_unaffected_when_under_cap(
         async with _conn(migrated_url) as conn:
             res = await _seed_resource(conn, cap=2)
             await _seed_quota(conn)
-            outcome = await admit(conn, _request(res, on_capacity=on_capacity))
+            outcome = await admit(
+                conn,
+                AllocationRequest(
+                    ctx=CTX,
+                    resource=res,
+                    project="proj",
+                    selector=SEL,
+                    window=1,
+                    on_capacity=on_capacity,
+                    disk_gb=10,
+                    requested_kind=ResourceKind.LOCAL_LIBVIRT,
+                ),
+            )
             assert outcome.granted is True
             assert outcome.allocation is not None
             assert outcome.allocation.state is AllocationState.GRANTED

@@ -26,7 +26,6 @@ import pytest
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.providers.build_host.orchestration import BuildHostOrchestrator
-from kdive.providers.build_host.transport import CommandResult
 from kdive.providers.build_host.transport_seams import (
     transport_git_checkout,
     transport_read_config,
@@ -34,6 +33,7 @@ from kdive.providers.build_host.transport_seams import (
     transport_run_olddefconfig,
     transport_run_step,
 )
+from kdive.providers.ports.build_transport import CommandResult
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 _RUN = UUID("44444444-4444-4444-4444-444444444444")

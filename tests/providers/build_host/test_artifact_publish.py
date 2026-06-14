@@ -29,7 +29,7 @@ from kdive.providers.build_host.artifact_publish import (
     ArtifactRemoteFile,
     publish_artifact_source,
 )
-from kdive.providers.build_host.transport import CommandResult
+from kdive.providers.ports.build_transport import CommandResult
 
 _RUN = UUID("33333333-3333-3333-3333-333333333333")
 

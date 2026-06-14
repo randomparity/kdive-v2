@@ -333,8 +333,8 @@ RESOURCE_LEASE_TTL_SECONDS = Setting(
     group="inventory",
     processes=_SERVER,
     help=(
-        "Lease window in seconds for a runtime-registered resource (resources.register). "
-        "register sets lease_expires_at = now() + this window and resources.renew extends it "
+        "Lease window in seconds for a runtime-registered resource (resources.register_*). "
+        "register_* sets lease_expires_at = now() + this window and resources.renew extends it "
         "by the same window; the reconciler reaps a runtime resource once its lease expires "
         "(ADR-0112). Tunes the leak-resistance horizon for imperatively-registered capacity."
     ),

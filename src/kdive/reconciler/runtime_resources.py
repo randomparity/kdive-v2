@@ -1,6 +1,6 @@
 """Lease + reachability reaping for runtime-registered resources (M2.6 #398, ADR-0112).
 
-Imperative agent tools (``resources.register``/``renew``) write ``managed_by='runtime'``
+Imperative agent tools (``resources.register_*``/``renew``) write ``managed_by='runtime'``
 resource rows carrying a ``lease_expires_at`` the agent must renew. This reaper is the
 leak backstop: a runtime resource whose lease has lapsed (the agent vanished without
 deregistering) is removed so a disappeared agent never leaves permanent shared capacity.
@@ -42,7 +42,7 @@ _log = logging.getLogger(__name__)
 class ResourceProbe(Protocol):
     """Report whether a resource host is reachable (the reachability-confirmation port).
 
-    Structurally identical to ``resources.register``'s probe port so the same
+    Structurally identical to ``resources.register_*``'s probe port so the same
     ``TcpResourceProbe`` satisfies both without the reconciler importing the mcp layer (a
     lower layer must not depend on a higher one). The reaper uses it only to log whether a
     lapsed-lease host is also unreachable; reaping never depends on the probe.
@@ -88,7 +88,11 @@ async def reap_expired_runtime_resources(
                 await _log_reachability(probe, row_id, host_uri)
             outcome = await _prune_or_cordon_runtime_resource(conn, row_id)
         except Exception:  # noqa: BLE001 - isolate one candidate; one failure must not starve the rest
-            _log.warning("reconciler: reaping runtime resource %s failed this pass", row_id)
+            _log.warning(
+                "reconciler: reaping runtime resource %s failed this pass",
+                row_id,
+                exc_info=True,
+            )
             continue
         if outcome.pruned:
             acted += 1

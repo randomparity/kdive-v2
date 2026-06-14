@@ -14,6 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Sensitivity
 from kdive.mcp.auth import RequestContext
+from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools.catalog.artifacts.reads import (
     ArtifactReadHandlers,
     ArtifactSearchRequest,
@@ -132,6 +133,24 @@ def _search_request(
         after_lines=after_lines,
         max_matches=max_matches,
     )
+
+
+def test_artifacts_search_text_maps_store_factory_failure() -> None:
+    error = CategorizedError("store missing", category=ErrorCategory.CONFIGURATION_ERROR)
+
+    def _raise_store() -> _SearchStore:
+        raise error
+
+    async def _run() -> ToolResponse:
+        pool = AsyncConnectionPool("postgresql://unused", open=False)
+        request = _search_request("artifact-1", "panic")
+        return await ArtifactReadHandlers(_raise_store).artifacts_search_text(
+            pool, _ctx(), request=request
+        )
+
+    resp = asyncio.run(_run())
+    assert resp.object_id == "artifact-1"
+    assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
 
 def test_artifacts_list_returns_redacted_only(migrated_url: str) -> None:

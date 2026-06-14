@@ -95,6 +95,32 @@ def test_build_app_registers_jobs_tools() -> None:
     asyncio.run(_run())
 
 
+def test_resource_host_and_mutation_tools_have_separate_plane_registrars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def _register_host(_app: FastMCP, _pool: AsyncConnectionPool) -> None:
+        calls.append("host")
+
+    def _register_mutation(_app: FastMCP, _pool: AsyncConnectionPool) -> None:
+        calls.append("mutation")
+
+    monkeypatch.setattr(app_module.ops_resource_host_tools, "register", _register_host)
+    monkeypatch.setattr(
+        app_module.ops_resource_mutation_tools, "register_mutation_tools", _register_mutation
+    )
+    pool = AsyncConnectionPool("postgresql://unused", open=False)
+    assembly = cast(app_module.AppAssembly, object())
+
+    assert app_module._register_ops_resource_host_tools in app_module._PLANE_REGISTRARS
+    assert app_module._register_ops_resource_mutation_tools in app_module._PLANE_REGISTRARS
+    app_module._register_ops_resource_host_tools(FastMCP(name="host"), pool, assembly)
+    app_module._register_ops_resource_mutation_tools(FastMCP(name="mutation"), pool, assembly)
+
+    assert calls == ["host", "mutation"]
+
+
 def test_build_app_produces_a_streamable_http_asgi_app() -> None:
     # The server entrypoint serves build_app(...).http_app() over streamable HTTP;
     # assert the ASGI app assembles (no DB/network needed) so the run path is covered
@@ -168,7 +194,9 @@ def test_image_build_handler_preserves_store_config_error(
         raise error
 
     monkeypatch.setattr("kdive.store.objectstore.object_store_from_env", _raise_store)
-    app_module._register_image_build_handler(registry, cast(Any, None), SecretRegistry())
+    app_module._register_image_build_handler(
+        registry, cast(Any, None), SecretRegistry(), cast(Any, None)
+    )
     handler = registry.get(JobKind.IMAGE_BUILD)
     assert handler is not None
 

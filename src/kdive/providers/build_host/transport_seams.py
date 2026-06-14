@@ -1,6 +1,6 @@
 """Transport-backed seam factories for BuildHostOrchestrator (Task 7 — ADR-0342).
 
-These factories wrap a :class:`~kdive.providers.build_host.transport.BuildTransport`
+These factories wrap a :class:`~kdive.providers.ports.build_transport.BuildTransport`
 and return the ``RunStep``, ``ReadConfig``, and ``Checkout`` callables that
 :class:`~kdive.providers.build_host.orchestration.BuildHostOrchestrator` expects.
 
@@ -28,8 +28,8 @@ from kdive.providers.build_host.execution import (
     RunStep,
     build_failure,
 )
-from kdive.providers.build_host.transport import BuildTransport
 from kdive.providers.build_host.workspace import GIT_APPLY_TIMEOUT_S, Checkout, redacted_tail
+from kdive.providers.ports.build_transport import BuildTransport
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 # ---------------------------------------------------------------------------

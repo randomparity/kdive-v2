@@ -26,8 +26,8 @@ from kdive.diagnostics.egress_probe import redact_presigned
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.provider_components.artifacts import PresignedUpload
 from kdive.providers.build_host.shell_transport import ShellBuildTransport
-from kdive.providers.build_host.transport import CommandResult
 from kdive.providers.build_host.workspace import redacted_tail
+from kdive.providers.ports.build_transport import CommandResult
 from kdive.providers.remote_libvirt.guest.agent import (
     AgentCommand,
     GuestAgentExec,

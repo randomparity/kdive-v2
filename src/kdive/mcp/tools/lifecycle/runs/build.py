@@ -93,6 +93,18 @@ type CompleteBuildValidation = Callable[
 type ObjectStoreFactory = Callable[[], ExternalBuildStore]
 
 
+@dataclass(frozen=True, slots=True)
+class _ExternalBuildCompletion:
+    """Prepared external-build completion inputs."""
+
+    run: Run
+    manifest_row: upload_manifest.UploadManifest
+    keys: dict[str, str]
+    requirements: ConfigRequirements | None
+    has_chunks: bool
+    store: ExternalBuildStore | None
+
+
 async def _build_locked(
     conn: AsyncConnection,
     ctx: RequestContext,
@@ -259,44 +271,23 @@ class RunBuildHandlers:
             )
         with bind_context(principal=ctx.principal):
             async with pool.connection() as conn:
-                run = await RUNS.get(conn, uid)
-                if run is None or run.project not in ctx.projects:
-                    return _config_error(run_id)
-                require_role(ctx, run.project, Role.OPERATOR)
-
-                recorded = await _existing_build_result(conn, uid)
-                if recorded is not None:
-                    return _complete_envelope(uid, recorded)
-
-                try:
-                    profile = _external_build_profile(run)
-                except CategorizedError as exc:
-                    return ToolResponse.failure_from_error(run_id, exc)
-                guard = _created_run_guard(run)
-                if guard is not None:
-                    return guard
-
-                manifest_row = await upload_manifest.get_manifest(conn, "runs", uid)
-                if manifest_row is None:
-                    return _config_error(run_id, data={"reason": "no_upload_manifest"})
-                has_chunks = any(e.chunks is not None for e in manifest_row.entries)
-                keys = {e.name: f"{manifest_row.prefix}{e.name}" for e in manifest_row.entries}
-                store = self.object_store_factory() if has_chunks else None
-                if store is not None:
+                prepared = await self._prepare_external_build_completion(conn, ctx, uid, run_id)
+                if isinstance(prepared, ToolResponse):
+                    return prepared
+                if prepared.store is not None:
                     guard = await _reassemble_chunked_artifacts(
-                        conn, uid, run_id, manifest_row, store
+                        conn, uid, run_id, prepared.manifest_row, prepared.store
                     )
                     if guard is not None:
                         return guard
 
                 try:
-                    requirements = _external_config_requirements(profile)
                     validated = await asyncio.to_thread(
                         self._validate_complete_build,
-                        list(manifest_row.entries),
-                        keys,
+                        list(prepared.manifest_row.entries),
+                        prepared.keys,
                         build_id,
-                        requirements,
+                        prepared.requirements,
                     )
                 except CategorizedError as exc:
                     return ToolResponse.failure_from_error(run_id, exc)
@@ -304,16 +295,59 @@ class RunBuildHandlers:
                 return await _finalize_external_build(
                     conn,
                     ctx,
-                    run,
+                    prepared.run,
                     validated.output,
                     cmdline,
-                    keys,
+                    prepared.keys,
                     validated.heads,
-                    store=store,
-                    entries=manifest_row.entries,
-                    prefix=manifest_row.prefix,
-                    chunked=has_chunks,
+                    store=prepared.store,
+                    entries=prepared.manifest_row.entries,
+                    prefix=prepared.manifest_row.prefix,
+                    chunked=prepared.has_chunks,
                 )
+
+    async def _prepare_external_build_completion(
+        self,
+        conn: AsyncConnection,
+        ctx: RequestContext,
+        uid: UUID,
+        run_id: str,
+    ) -> _ExternalBuildCompletion | ToolResponse:
+        run = await RUNS.get(conn, uid)
+        if run is None or run.project not in ctx.projects:
+            return _config_error(run_id)
+        require_role(ctx, run.project, Role.OPERATOR)
+
+        recorded = await _existing_build_result(conn, uid)
+        if recorded is not None:
+            return _complete_envelope(uid, recorded)
+
+        try:
+            profile = _external_build_profile(run)
+            requirements = _external_config_requirements(profile)
+        except CategorizedError as exc:
+            return ToolResponse.failure_from_error(run_id, exc)
+        guard = _created_run_guard(run)
+        if guard is not None:
+            return guard
+
+        manifest_row = await upload_manifest.get_manifest(conn, "runs", uid)
+        if manifest_row is None:
+            return _config_error(run_id, data={"reason": "no_upload_manifest"})
+        has_chunks = any(entry.chunks is not None for entry in manifest_row.entries)
+        keys = {entry.name: f"{manifest_row.prefix}{entry.name}" for entry in manifest_row.entries}
+        try:
+            store = self.object_store_factory() if has_chunks else None
+        except CategorizedError as exc:
+            return ToolResponse.failure_from_error(run_id, exc)
+        return _ExternalBuildCompletion(
+            run=run,
+            manifest_row=manifest_row,
+            keys=keys,
+            requirements=requirements,
+            has_chunks=has_chunks,
+            store=store,
+        )
 
     def _validate_complete_build(
         self,

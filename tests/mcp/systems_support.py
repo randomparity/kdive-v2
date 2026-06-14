@@ -94,6 +94,7 @@ def provider_resolver(
     builder: object | None = None,
     installer: object | None = None,
     booter: object | None = None,
+    connector: object | None = None,
     controller: object | None = None,
     retriever: object | None = None,
     crash_postmortem: object | None = None,
@@ -110,7 +111,7 @@ def provider_resolver(
         builder=cast(Any, builder if builder is not None else unused_port),
         installer=cast(Any, installer if installer is not None else unused_port),
         booter=cast(Any, booter if booter is not None else unused_port),
-        connector=unused_port,
+        connector=cast(Any, connector if connector is not None else unused_port),
         controller=cast(Any, controller if controller is not None else unused_port),
         retriever=cast(Any, retriever if retriever is not None else unused_port),
         crash_postmortem=cast(
