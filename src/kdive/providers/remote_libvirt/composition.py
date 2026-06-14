@@ -27,7 +27,7 @@ from kdive.providers.discovery_registration import (
 from kdive.providers.reaping import BuildVmReaper, DumpVolumeReaper
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.build_vm_reaper import RemoteLibvirtBuildVmReaper
-from kdive.providers.remote_libvirt.config import remote_config_from_env
+from kdive.providers.remote_libvirt.config import remote_config_from_inventory
 from kdive.providers.remote_libvirt.console.collector import ConsoleCollector
 from kdive.providers.remote_libvirt.console.wiring import (
     RemoteConsolePartStore,
@@ -98,7 +98,7 @@ async def build_console_hosting(*, secret_registry: SecretRegistry) -> ConsoleHo
     try:
         conninfo = database_url()
         store = object_store_from_env()
-        remote_config = remote_config_from_env()
+        remote_config = remote_config_from_inventory()
         secret_backend = secret_backend_from_env(registry=secret_registry)
     except CategorizedError:
         return None

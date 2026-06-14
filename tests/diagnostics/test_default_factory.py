@@ -33,36 +33,14 @@ def test_factory_builds_a_service_with_a_secret_ref_check(monkeypatch, tmp_path:
     assert "secret_ref" in ids
 
 
-def test_secret_ref_passes_when_every_configured_ref_resolves(monkeypatch, tmp_path: Path) -> None:
-    (tmp_path / "client.pem").write_text("cert", encoding="utf-8")
-    (tmp_path / "client.key").write_text("key", encoding="utf-8")
-    (tmp_path / "ca.pem").write_text("ca", encoding="utf-8")
-    _set_env(
-        monkeypatch,
-        tmp_path,
-        KDIVE_REMOTE_LIBVIRT_URI="qemu+tls://host/system",
-        KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF=str(tmp_path / "client.pem"),
-        KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF=str(tmp_path / "client.key"),
-        KDIVE_REMOTE_LIBVIRT_CA_CERT_REF=str(tmp_path / "ca.pem"),
-    )
+def test_secret_ref_passes_when_no_ref_is_required(monkeypatch, tmp_path: Path) -> None:
+    # The default registry has no conditionally-required secret refs (the remote mTLS refs that
+    # used to drive this moved to systems.toml, #395), so the assembled check resolves the empty
+    # set and passes. The FAIL behavior is unit-covered in test_secret_ref.py with injected refs.
+    _set_env(monkeypatch, tmp_path)
     check = next(c for c in default_service_factory(None)._checks if isinstance(c, SecretRefCheck))
     result = asyncio.run(check.run())
     assert result.status is CheckStatus.PASS
-
-
-def test_secret_ref_fails_when_a_configured_ref_is_missing(monkeypatch, tmp_path: Path) -> None:
-    _set_env(
-        monkeypatch,
-        tmp_path,
-        KDIVE_REMOTE_LIBVIRT_URI="qemu+tls://host/system",
-        KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF=str(tmp_path / "absent.pem"),
-        KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF=str(tmp_path / "absent.key"),
-        KDIVE_REMOTE_LIBVIRT_CA_CERT_REF=str(tmp_path / "absent-ca.pem"),
-    )
-    check = next(c for c in default_service_factory(None)._checks if isinstance(c, SecretRefCheck))
-    result = asyncio.run(check.run())
-    assert result.status is CheckStatus.FAIL
-    assert result.fix is not None
 
 
 def test_with_egress_fails_fast_when_no_probe_image_is_wired(monkeypatch, tmp_path: Path) -> None:

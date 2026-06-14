@@ -29,7 +29,7 @@ import libvirt
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.build_host.guest_exec_transport import GuestExecBuildTransport
 from kdive.providers.libvirt_xml import KDIVE_METADATA_NS, register_kdive_namespace
-from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_inventory
 from kdive.providers.remote_libvirt.guest.agent import AgentCommand, qemu_agent_command
 from kdive.providers.remote_libvirt.lifecycle.provisioning import (
     OpenProvisionConnection,
@@ -138,16 +138,17 @@ class _BuildConn(Protocol):
 class EphemeralBuildVm:
     """Provision/teardown a throwaway remote-libvirt build VM (ADR-0100).
 
-    Buildable without operator config (ADR-0076): the ``KDIVE_REMOTE_LIBVIRT_*`` config is read
-    per op via ``config_factory``. All slow seams (connection opener, agent command, clock,
-    sleep) are injected; unit tests never touch a real host.
+    Buildable without operator config (ADR-0076): the remote connection config is resolved per op
+    from the ``systems.toml`` ``[[remote_libvirt]]`` instance via ``config_factory`` (ADR-0112).
+    All slow seams (connection opener, agent command, clock, sleep) are injected; unit tests never
+    touch a real host.
     """
 
     def __init__(
         self,
         *,
         secret_registry: SecretRegistry,
-        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_env,
+        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_inventory,
         open_connection: OpenProvisionConnection = open_libvirt_provision,
         agent_command: AgentCommand = qemu_agent_command,
         secret_backend_factory: Callable[[], SecretBackend] | None = None,

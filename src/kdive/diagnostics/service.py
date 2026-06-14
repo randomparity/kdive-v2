@@ -165,8 +165,8 @@ def _configured_secret_refs() -> list[tuple[str, bool]]:
     A setting is checked only when its ``required_when`` predicate holds against the same
     environment snapshot the registry resolves against — the contract :func:`config.validate`
     enforces at startup. This scopes ``secret_ref`` to the refs the deployment actually depends
-    on (e.g. the remote-libvirt mTLS refs once ``KDIVE_REMOTE_LIBVIRT_URI`` is set) instead of
-    flagging a provider-default ref no active provider needs.
+    on (only the settings whose ``required_when`` predicate holds) instead of flagging a
+    provider-default ref no active provider needs.
 
     Every ``KDIVE_*`` secret setting is operator-owned platform config (not tenant data), so
     each is flagged ``is_platform=True`` — naming an unresolved one in the verdict is safe.

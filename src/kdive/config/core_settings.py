@@ -315,11 +315,12 @@ SYSTEMS_TOML = Setting(
     parse=_str,
     default="./systems.toml",
     group="inventory",
-    processes=frozenset({"reconciler"}),
+    processes=frozenset({"reconciler", "worker"}),
     help=(
         "Path to the declarative systems inventory file reconciled into the catalog "
-        "(ADR-0112). The reconciler's inventory pass reads it each loop; an absent default "
-        "file is the normal pre-config state (systems.toml is gitignored) and is a quiet "
+        "(ADR-0112). The reconciler's inventory pass reads it each loop; the worker resolves "
+        "the per-op remote-libvirt connection config from it (ADR-0112 §connection). An absent "
+        "default file is the normal pre-config state (systems.toml is gitignored) and is a quiet "
         "no-op, while a present-but-malformed file fails that pass without aborting siblings."
     ),
     suggest="a path to a systems.toml, e.g. ./systems.toml or /etc/kdive/systems.toml",

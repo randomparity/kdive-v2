@@ -23,7 +23,7 @@ from uuid import UUID
 import libvirt
 
 from kdive.providers.reaping import BuildVm
-from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_inventory
 from kdive.providers.remote_libvirt.lifecycle.build_vm import (
     BUILD_DOMAIN_PREFIX,
     build_overlay_volume_name,
@@ -82,7 +82,7 @@ class RemoteLibvirtBuildVmReaper:
         self,
         *,
         secret_registry: SecretRegistry,
-        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_env,
+        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_inventory,
         open_connection: OpenReaperConnection = open_libvirt_reaper,
         secret_backend_factory: Callable[[], SecretBackend] | None = None,
         pki_base_dir: Path | None = None,

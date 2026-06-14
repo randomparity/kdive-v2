@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
 from uuid import UUID
 
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
+import kdive.config as config
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind, Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
@@ -45,6 +47,37 @@ from kdive.providers.runtime import ProviderRuntime
 from kdive.security.secrets.secret_registry import SecretRegistry
 
 _RUN = UUID("22222222-2222-2222-2222-222222222222")
+
+_REMOTE_INVENTORY = """
+schema_version = 2
+[[image]]
+provider = "remote-libvirt"
+name = "base"
+arch = "x86_64"
+format = "qcow2"
+root_device = "/dev/vda"
+visibility = "public"
+[image.source]
+kind = "staged"
+volume = "base.qcow2"
+[[remote_libvirt]]
+name = "host"
+uri = "qemu+tls://host.example/system"
+gdb_addr = "192.168.10.20"
+gdbstub_range = "47000:47099"
+client_cert_ref = "clientcert.pem"
+client_key_ref = "clientkey.pem"  # pragma: allowlist secret
+ca_cert_ref = "cacert.pem"
+base_image = "base"
+cost_class = "remote"
+"""
+
+
+def _declare_remote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "systems.toml"
+    path.write_text(_REMOTE_INVENTORY)
+    monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(path))
+    config.load()
 
 
 def _build_profile() -> ServerBuildProfile:
@@ -479,16 +512,20 @@ def test_fault_inject_runtime_with_engine_wraps_ports_in_faulting_decorators() -
     assert isinstance(runtime.booter, FaultedInstall)
 
 
-def test_remote_libvirt_registers_via_env_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("KDIVE_REMOTE_LIBVIRT_URI", "qemu+tls://host.example/system")
+def test_remote_libvirt_registers_via_inventory_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _declare_remote(tmp_path, monkeypatch)
 
     resolver = composition.build_provider_resolver()
 
     assert ResourceKind.REMOTE_LIBVIRT in resolver.registered_kinds()
 
 
-def test_remote_libvirt_explicit_flag_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("KDIVE_REMOTE_LIBVIRT_URI", "qemu+tls://host.example/system")
+def test_remote_libvirt_explicit_flag_wins_over_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _declare_remote(tmp_path, monkeypatch)
 
     resolver = composition.build_provider_resolver(enable_remote_libvirt=False)
 

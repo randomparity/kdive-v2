@@ -877,7 +877,7 @@ def test_provision_without_gdb_addr_opens_no_connection(tmp_path: Path) -> None:
         provisioner.provision(SYSTEM_ID, _remote_profile())
 
     assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
-    assert "KDIVE_REMOTE_LIBVIRT_GDB_ADDR" in str(excinfo.value)
+    assert "gdb_addr" in str(excinfo.value)
     assert opened == []
 
 

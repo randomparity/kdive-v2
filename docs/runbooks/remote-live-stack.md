@@ -35,20 +35,30 @@ present, so `just test-live-stack` is safe to run on any host.
 The remote provider is **opt-in**: composition registers it only when the host URI is set
 (`providers/remote_libvirt/config.py`). The TLS client cert, key, and CA are
 **secrets-by-reference** — the worker resolves the refs, materializes them into a private per-op
-`pkipath`, points the URI at it, and deletes them on every exit path. Export the provider config:
+`pkipath`, points the URI at it, and deletes them on every exit path. The connection identity now
+lives in a `[[remote_libvirt]]` instance in the `systems.toml` inventory (ADR-0112), pointed at by
+`KDIVE_SYSTEMS_TOML`; declaring one is the provider opt-in gate:
 
-| var | value | role |
-|-----|-------|------|
-| `KDIVE_REMOTE_LIBVIRT_URI` | `qemu+tls://host.example/system` | the opt-in gate + control transport |
-| `KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF` | a `SecretBackend` ref | mutual-TLS client cert |
-| `KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF` | a `SecretBackend` ref | mutual-TLS client key | <!-- pragma: allowlist secret -->
-| `KDIVE_REMOTE_LIBVIRT_CA_CERT_REF` | a `SecretBackend` ref | CA to verify the libvirtd server cert |
-| `KDIVE_REMOTE_LIBVIRT_STORAGE_POOL` | e.g. `default` | pool holding the base image + overlays |
+```toml
+[[remote_libvirt]]
+name = "host"
+uri = "qemu+tls://host.example/system"          # control transport
+gdb_addr = "10.0.0.5"                            # ACL'd gdbstub listen address (see §2)
+gdbstub_range = "47000:47099"                    # per-System port range
+client_cert_ref = "clientcert.pem"               # mutual-TLS client cert (SecretBackend ref)
+client_key_ref = "clientkey.pem"                 # mutual-TLS client key  <!-- pragma: allowlist secret -->
+ca_cert_ref = "cacert.pem"                       # CA to verify the libvirtd server cert
+base_image = "fedora-kdive-remote-base-43"       # an [[image]] name (the staged base volume)
+cost_class = "remote"
+```
+
+The libvirt storage pool / network / machine knobs that the inventory model does not carry stay
+operational env settings (`KDIVE_REMOTE_LIBVIRT_STORAGE_POOL`, `_NETWORK`, `_MACHINE`).
 
 Confirm the worker host can actually reach libvirtd over TLS before running the spine:
 
 ```bash
-virsh -c "$KDIVE_REMOTE_LIBVIRT_URI" list --all
+virsh -c "qemu+tls://host.example/system" list --all
 ```
 
 A failure here surfaces in the spine as a `transport_failure` at the provision or discovery
@@ -62,16 +72,14 @@ port — `qemu+tls://` does not tunnel it. The gdbstub is unauthenticated and un
 unreachable by other tenants/guests. Each running System gets a distinct port the provisioning
 profile allocates and records in the domain XML; the Connect port reads it back.
 
-| var | value | role |
-|-----|-------|------|
-| `KDIVE_REMOTE_LIBVIRT_GDB_ADDR` | the ACL'd listen address (e.g. `10.0.0.5`) | **no default**; the security boundary |
-| `KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN` | e.g. `47000` | per-System port range floor |
-| `KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX` | e.g. `47099` | per-System port range ceiling |
+The `[[remote_libvirt]]` instance's `gdb_addr` is the ACL'd listen address (e.g. `10.0.0.5`) — the
+security boundary — and `gdbstub_range` (e.g. `47000:47099`) is the per-System port range. Both
+are required instance fields.
 
-`KDIVE_REMOTE_LIBVIRT_GDB_ADDR` has **no default** and provisioning **fails closed** without it,
-so the remote preflight requires it — an unset address skips the suite rather than letting it
-fail at the provision phase. Restrict the address + port range to the worker pool's source at the
-host firewall; this is a security boundary, not a convenience note.
+`gdb_addr` is a required field and provisioning **fails closed** without it, so the remote
+preflight requires it — an unset address skips the suite rather than letting it fail at the
+provision phase. Restrict the address + port range to the worker pool's source at the host
+firewall; this is a security boundary, not a convenience note.
 
 ## 3. Object-store reachability for the presigned PUT
 
@@ -89,13 +97,21 @@ in-guest upload with an `infrastructure_failure`.
 
 ## 4. The base-image volume (a test/runbook input)
 
-`KDIVE_REMOTE_BASE_IMAGE_VOLUME` names the operator-staged qcow2 volume the spine feeds into the
-provision profile's `base_image_volume` field. It is a **test/runbook input**, not part of the
-`KDIVE_REMOTE_LIBVIRT_*` provider-config surface — it parameterizes the e2e's profile, nothing
-else.
+The operator-staged qcow2 base volume is declared as a `staged` `[[image]]` in `systems.toml` and
+referenced by the `[[remote_libvirt]]` instance's `base_image` field (ADR-0112); the spine feeds
+it into the provision profile's `base_image_volume`.
 
-```bash
-export KDIVE_REMOTE_BASE_IMAGE_VOLUME=kdive-base-fedora.qcow2
+```toml
+[[image]]
+provider = "remote-libvirt"
+name = "fedora-kdive-remote-base-43"
+arch = "x86_64"
+format = "qcow2"
+root_device = "/dev/vda"
+visibility = "public"
+[image.source]
+kind = "staged"
+volume = "kdive-base-fedora.qcow2"   # the operator-staged libvirt volume name
 ```
 
 ## 5. Run the suite
@@ -158,7 +174,7 @@ Operator notes:
 **Local-libvirt is not deprecated.** With remote at 4/4, [#198](https://github.com/randomparity/kdive/issues/198)
 is reframed from "deprecate local" to the narrower **production default vs. opt-in
 dev/CI/reference provider** distinction. Local stays the in-tree default; remote is the opt-in
-production provider (gated on `KDIVE_REMOTE_LIBVIRT_URI`). The two providers' advertised capture
+production provider (gated on a declared `[[remote_libvirt]]` instance). The two providers' advertised capture
 sets remain **disjoint on `kdump`**: remote advertises `kdump`, local does not (local stays
 `{console, host_dump, gdbstub}`). That disjointness — pinned by the
 `tests/scripts/test_m2_portability_gate.py` drift guard against the real `build_*_runtime` sets —

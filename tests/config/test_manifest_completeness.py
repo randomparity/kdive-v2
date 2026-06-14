@@ -11,18 +11,19 @@ def test_provider_settings_present_without_enabling_them() -> None:
     names = {s.name for s in config.all_settings()}
     assert "KDIVE_LIBVIRT_URI" in names
     assert "KDIVE_FAULT_INJECT_SEED" in names
-    assert "KDIVE_REMOTE_LIBVIRT_URI" in names
-    assert "KDIVE_REMOTE_LIBVIRT_CA_CERT_REF" in names
+    assert "KDIVE_REMOTE_LIBVIRT_STORAGE_POOL" in names
+
+
+def test_remote_libvirt_connection_singletons_are_gone() -> None:
+    # The connection identity moved to the systems.toml [[remote_libvirt]] instance (#395); only
+    # the libvirt host knobs the v2 model omits remain env settings.
+    names = {s.name for s in config.all_settings()}
+    assert "KDIVE_REMOTE_LIBVIRT_URI" not in names
+    assert "KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF" not in names
+    assert "KDIVE_REMOTE_LIBVIRT_CA_CERT_REF" not in names
+    assert "KDIVE_REMOTE_LIBVIRT_GDB_ADDR" not in names
 
 
 def test_no_duplicate_setting_names() -> None:
     names = [s.name for s in config.all_settings()]
     assert len(names) == len(set(names))
-
-
-def test_remote_cert_refs_are_conditionally_required() -> None:
-    by_name = {s.name for s in config.all_settings()}
-    assert "KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF" in by_name
-    ca = next(s for s in config.all_settings() if s.name == "KDIVE_REMOTE_LIBVIRT_CA_CERT_REF")
-    assert ca.required_when({"KDIVE_REMOTE_LIBVIRT_URI": "qemu+tls://h/system"}) is True
-    assert ca.required_when({}) is False

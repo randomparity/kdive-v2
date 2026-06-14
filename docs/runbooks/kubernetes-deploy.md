@@ -95,12 +95,13 @@ helm install kdive deploy/helm/kdive \
   --set config.KDIVE_OIDC_ISSUER='https://idp.example/realms/kdive' \
   --set config.KDIVE_OIDC_JWKS_URI='https://idp.example/realms/kdive/protocol/openid-connect/certs' \
   --set config.KDIVE_S3_ENDPOINT_URL='https://s3.example' \
-  --set secrets.secretName=kdive-remote-tls \
-  --set config.KDIVE_REMOTE_LIBVIRT_URI='qemu+tls://host.example/system' \
-  --set config.KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF=clientcert.pem \
-  --set config.KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF=clientkey.pem \
-  --set config.KDIVE_REMOTE_LIBVIRT_CA_CERT_REF=cacert.pem
+  --set secrets.secretName=kdive-remote-tls
 ```
+
+To enable the remote-libvirt provider, declare a `[[remote_libvirt]]` instance in the mounted
+`systems.toml` ConfigMap (`KDIVE_SYSTEMS_TOML`) — uri, gdb addr, gdbstub range, and the TLS
+cert/key/CA refs live there now, not in `config.KDIVE_REMOTE_LIBVIRT_*` (#395). See the
+remote-libvirt host-setup runbook for the instance block.
 
 The migrate Job runs as a **`pre-install`/`pre-upgrade` hook** on the external-backend path, and
 its ConfigMap is a hook-weighted pre-install resource so the migrate pod has its env before the

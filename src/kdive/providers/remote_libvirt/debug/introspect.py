@@ -27,7 +27,7 @@ from kdive.providers.debug_common.drgn_program import (
 )
 from kdive.providers.debug_common.introspect import assemble_report
 from kdive.providers.ports import IntrospectOutput
-from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_inventory
 from kdive.providers.remote_libvirt.guest.agent import (
     AgentCommand,
     AgentExecResult,
@@ -181,7 +181,7 @@ class RemoteLibvirtLiveIntrospect:
         self,
         *,
         secret_registry: SecretRegistry,
-        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_env,
+        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_inventory,
         open_connection: _OpenConnection | None = None,
         agent_command: AgentCommand = qemu_agent_command,
         secret_backend_factory: Callable[[], SecretBackend] | None = None,

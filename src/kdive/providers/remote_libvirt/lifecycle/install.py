@@ -29,7 +29,7 @@ import libvirt
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.providers.ports import InstallRequest
-from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_inventory
 from kdive.providers.remote_libvirt.endpoint_preflight import validate_guest_routable_endpoint
 from kdive.providers.remote_libvirt.guest.agent import (
     AgentCommand,
@@ -100,15 +100,16 @@ def open_libvirt_install(uri: str) -> _InstallConn:
 class RemoteLibvirtInstall:
     """The realized remote `Installer` + `Booter` (ADR-0082).
 
-    Buildable without operator config (ADR-0076): ``KDIVE_REMOTE_LIBVIRT_*`` is read per op via
-    ``config_factory``, never at construction.
+    Buildable without operator config (ADR-0076): the remote connection config is resolved per op
+    from the ``systems.toml`` ``[[remote_libvirt]]`` instance via ``config_factory`` (ADR-0112),
+    never at construction.
     """
 
     def __init__(
         self,
         *,
         secret_registry: SecretRegistry,
-        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_env,
+        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_inventory,
         open_connection: OpenInstallConnection = open_libvirt_install,
         store_factory: Callable[[], _StorePort] = object_store_from_env,
         agent_command: AgentCommand = qemu_agent_command,

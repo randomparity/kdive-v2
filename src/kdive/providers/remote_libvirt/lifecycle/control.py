@@ -25,7 +25,7 @@ import libvirt
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import PowerAction
 from kdive.providers.ports import Controller as Controller
-from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_inventory
 from kdive.providers.remote_libvirt.transport import open_libvirt_protocol, remote_connection
 from kdive.security.secrets.secret_registry import SecretRegistry
 from kdive.security.secrets.secrets import SecretBackend, secret_backend_from_env
@@ -61,7 +61,7 @@ class RemoteLibvirtControl:
         self,
         *,
         secret_registry: SecretRegistry,
-        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_env,
+        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_inventory,
         open_connection: OpenControlConnection = open_libvirt_control,
         secret_backend_factory: Callable[[], SecretBackend] | None = None,
         pki_base_dir: Path | None = None,

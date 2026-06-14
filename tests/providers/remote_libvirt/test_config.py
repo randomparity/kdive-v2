@@ -1,6 +1,13 @@
-"""Operator config for the remote-libvirt provider (ADR-0076, ADR-0077)."""
+"""Inventory-backed config for the remote-libvirt provider (ADR-0076, ADR-0077, ADR-0112).
+
+Phase 3 (#395) deletes the ``KDIVE_REMOTE_LIBVIRT_{URI,*_CERT_REF,GDB_ADDR}`` singletons; the
+remote connection config is now resolved per op from the ``systems.toml`` ``[[remote_libvirt]]``
+instance. The libvirt storage-pool / network / machine knobs stay operational env settings.
+"""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -8,142 +15,149 @@ import kdive.config as config
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.remote_libvirt.config import (
     is_remote_libvirt_configured,
-    remote_config_from_env,
+    remote_config_from_inventory,
 )
 
-_ENV = {
-    "KDIVE_REMOTE_LIBVIRT_URI": "qemu+tls://host.example/system",
-    "KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF": "remote/clientcert.pem",
-    "KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF": "remote/clientkey.pem",  # pragma: allowlist secret
-    "KDIVE_REMOTE_LIBVIRT_CA_CERT_REF": "remote/cacert.pem",
-}
+_INSTANCE = """
+name = "ub24-big"
+uri = "qemu+tls://host.example/system"
+gdb_addr = "192.168.10.20"
+gdbstub_range = "47000:47099"
+client_cert_ref = "remote/clientcert.pem"
+client_key_ref = "remote/clientkey.pem"  # pragma: allowlist secret
+ca_cert_ref = "remote/cacert.pem"
+base_image = "fedora-kdive-remote-base-43"
+cost_class = "remote"
+"""
+
+_IMAGE = """
+[[image]]
+provider = "remote-libvirt"
+name = "fedora-kdive-remote-base-43"
+arch = "x86_64"
+format = "qcow2"
+root_device = "/dev/vda"
+visibility = "public"
+[image.source]
+kind = "staged"
+volume = "fedora-kdive-remote-base-43.qcow2"
+"""
 
 
-def _set_env(monkeypatch: pytest.MonkeyPatch, **overrides: str | None) -> None:
-    merged: dict[str, str | None] = {**_ENV, **overrides}
-    for name, value in merged.items():
-        if value is None:
-            monkeypatch.delenv(name, raising=False)
-        else:
-            monkeypatch.setenv(name, value)
-    # Re-snapshot so the registry reflects this env change (the config read is scoped to a
-    # snapshot, not live os.environ; production calls load() once at startup, ADR-0087).
+def _write_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    instances: str = _INSTANCE,
+    image: str = _IMAGE,
+) -> Path:
+    blocks = "".join(f"[[remote_libvirt]]{block}" for block in instances.split("---") if block)
+    doc = f"schema_version = 2\n{image}\n{blocks}\n"
+    path = tmp_path / "systems.toml"
+    path.write_text(doc)
+    monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(path))
+    config.load()
+    return path
+
+
+def _no_inventory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(tmp_path / "absent.toml"))
     config.load()
 
 
-def test_full_env_builds_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_env(monkeypatch)
-    config = remote_config_from_env()
-    assert config.uri == "qemu+tls://host.example/system"
-    assert config.cert_refs.client_cert_ref == "remote/clientcert.pem"
-    assert config.cert_refs.client_key_ref == "remote/clientkey.pem"  # pragma: allowlist secret
-    assert config.cert_refs.ca_cert_ref == "remote/cacert.pem"
-    assert config.concurrent_allocation_cap == 1  # default
+def test_single_instance_builds_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_inventory(tmp_path, monkeypatch)
+    cfg = remote_config_from_inventory()
+    assert cfg.uri == "qemu+tls://host.example/system"
+    assert cfg.cert_refs.client_cert_ref == "remote/clientcert.pem"
+    assert cfg.cert_refs.client_key_ref == "remote/clientkey.pem"  # pragma: allowlist secret
+    assert cfg.cert_refs.ca_cert_ref == "remote/cacert.pem"
+    assert cfg.gdb_addr == "192.168.10.20"
+    assert cfg.gdb_port_min == 47000
+    assert cfg.gdb_port_max == 47099
+    assert cfg.concurrent_allocation_cap == 1  # model default
 
 
-def test_configured_detection_tracks_uri(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_env(monkeypatch, KDIVE_REMOTE_LIBVIRT_URI=None)
+def test_configured_detection_tracks_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_inventory(tmp_path, monkeypatch)
     assert not is_remote_libvirt_configured()
-    _set_env(monkeypatch)
+    _write_inventory(tmp_path, monkeypatch)
     assert is_remote_libvirt_configured()
 
 
-@pytest.mark.parametrize(
-    "missing",
-    [
-        "KDIVE_REMOTE_LIBVIRT_URI",
-        "KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF",
-        "KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF",
-        "KDIVE_REMOTE_LIBVIRT_CA_CERT_REF",
-    ],
-)
-def test_missing_env_is_configuration_error(monkeypatch: pytest.MonkeyPatch, missing: str) -> None:
-    _set_env(monkeypatch, **{missing: None})
-    with pytest.raises(CategorizedError) as excinfo:
-        remote_config_from_env()
-    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
-    assert missing in str(excinfo.value)
-
-
-def test_non_integer_cap_is_configuration_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_env(monkeypatch, KDIVE_REMOTE_LIBVIRT_ALLOCATION_CAP="two")
-    with pytest.raises(CategorizedError) as excinfo:
-        remote_config_from_env()
-    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
-
-
-def test_explicit_cap_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_env(monkeypatch, KDIVE_REMOTE_LIBVIRT_ALLOCATION_CAP="4")
-    assert remote_config_from_env().concurrent_allocation_cap == 4
-
-
-def test_uri_with_no_verify_is_rejected_at_config_time(
-    monkeypatch: pytest.MonkeyPatch,
+def test_no_instance_is_configuration_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _set_env(
-        monkeypatch,
-        KDIVE_REMOTE_LIBVIRT_URI="qemu+tls://host.example/system?no_verify=1",
-    )
+    _no_inventory(tmp_path, monkeypatch)
     with pytest.raises(CategorizedError) as excinfo:
-        remote_config_from_env()
+        remote_config_from_inventory()
     assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
-def test_provisioning_knob_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_env(monkeypatch)
-    config = remote_config_from_env()
-    assert config.storage_pool == "default"
-    assert config.network == "default"
-    assert config.machine == "pc"
-    assert config.gdb_addr is None
-    assert config.gdb_port_min == 47000
-    assert config.gdb_port_max == 47099
-
-
-def test_provisioning_knobs_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_env(
-        monkeypatch,
-        KDIVE_REMOTE_LIBVIRT_STORAGE_POOL="kdive-pool",
-        KDIVE_REMOTE_LIBVIRT_NETWORK="lab-net",
-        KDIVE_REMOTE_LIBVIRT_MACHINE="q35",
-        KDIVE_REMOTE_LIBVIRT_GDB_ADDR="10.0.0.5",
-        KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN="48000",
-        KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX="48010",
-    )
-    config = remote_config_from_env()
-    assert config.storage_pool == "kdive-pool"
-    assert config.network == "lab-net"
-    assert config.machine == "q35"
-    assert config.gdb_addr == "10.0.0.5"
-    assert config.gdb_port_min == 48000
-    assert config.gdb_port_max == 48010
-
-
-def test_non_integer_gdb_port_is_configuration_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_env(monkeypatch, KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN="low")
+def test_multiple_instances_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    second = _INSTANCE.replace('name = "ub24-big"', 'name = "ub24-small"')
+    _write_inventory(tmp_path, monkeypatch, instances=f"{_INSTANCE}---{second}")
     with pytest.raises(CategorizedError) as excinfo:
-        remote_config_from_env()
+        remote_config_from_inventory()
     assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+    assert "multiple" in str(excinfo.value)
 
 
-@pytest.mark.parametrize("port", ["0", "65536", "-1"])
-def test_out_of_range_gdb_port_is_configuration_error(
-    monkeypatch: pytest.MonkeyPatch, port: str
+def test_malformed_inventory_is_configuration_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _set_env(monkeypatch, KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX=port)
+    path = tmp_path / "systems.toml"
+    path.write_text("schema_version = 2\n[[remote_libvirt]\n")  # malformed table header
+    monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(path))
+    config.load()
     with pytest.raises(CategorizedError) as excinfo:
-        remote_config_from_env()
+        remote_config_from_inventory()
     assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
 
 
-def test_inverted_gdb_port_range_is_configuration_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _set_env(
-        monkeypatch,
-        KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN="48010",
-        KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX="48000",
+def test_uri_with_no_verify_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    instance = _INSTANCE.replace(
+        "qemu+tls://host.example/system", "qemu+tls://host.example/system?no_verify=1"
     )
+    _write_inventory(tmp_path, monkeypatch, instances=instance)
     with pytest.raises(CategorizedError) as excinfo:
-        remote_config_from_env()
+        remote_config_from_inventory()
+    assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR
+
+
+def test_explicit_cap_is_used(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    instance = f"{_INSTANCE}concurrent_allocation_cap = 4\n"
+    _write_inventory(tmp_path, monkeypatch, instances=instance)
+    assert remote_config_from_inventory().concurrent_allocation_cap == 4
+
+
+def test_provisioning_knob_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_inventory(tmp_path, monkeypatch)
+    cfg = remote_config_from_inventory()
+    assert cfg.storage_pool == "default"
+    assert cfg.network == "default"
+    assert cfg.machine == "pc"
+
+
+def test_provisioning_knobs_explicit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KDIVE_REMOTE_LIBVIRT_STORAGE_POOL", "kdive-pool")
+    monkeypatch.setenv("KDIVE_REMOTE_LIBVIRT_NETWORK", "lab-net")
+    monkeypatch.setenv("KDIVE_REMOTE_LIBVIRT_MACHINE", "q35")
+    _write_inventory(tmp_path, monkeypatch)
+    cfg = remote_config_from_inventory()
+    assert cfg.storage_pool == "kdive-pool"
+    assert cfg.network == "lab-net"
+    assert cfg.machine == "q35"
+
+
+@pytest.mark.parametrize("bad", ["low:47099", "47000", "0:47099", "47099:47000"])
+def test_bad_gdbstub_range_is_configuration_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    instance = _INSTANCE.replace('gdbstub_range = "47000:47099"', f'gdbstub_range = "{bad}"')
+    _write_inventory(tmp_path, monkeypatch, instances=instance)
+    with pytest.raises(CategorizedError) as excinfo:
+        remote_config_from_inventory()
     assert excinfo.value.category is ErrorCategory.CONFIGURATION_ERROR

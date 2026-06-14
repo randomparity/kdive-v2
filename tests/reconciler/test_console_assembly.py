@@ -44,7 +44,7 @@ def test_build_console_hosting_returns_none_when_remote_config_missing(
                 "remote config missing", category=ErrorCategory.CONFIGURATION_ERROR
             )
 
-        monkeypatch.setattr(remote_composition, "remote_config_from_env", _missing_config)
+        monkeypatch.setattr(remote_composition, "remote_config_from_inventory", _missing_config)
 
         hosting = await remote_composition.build_console_hosting(secret_registry=SecretRegistry())
         assert hosting is None
@@ -60,7 +60,7 @@ def test_build_console_hosting_opens_host_pool_and_returns_registry(
         host_pool = _FakePool()
         monkeypatch.setattr(remote_composition, "database_url", lambda: "postgresql://db/kdive")
         monkeypatch.setattr(remote_composition, "object_store_from_env", lambda: object())
-        monkeypatch.setattr(remote_composition, "remote_config_from_env", lambda: object())
+        monkeypatch.setattr(remote_composition, "remote_config_from_inventory", lambda: object())
         monkeypatch.setattr(remote_composition, "secret_backend_from_env", lambda **_: object())
         monkeypatch.setattr(remote_composition, "create_pool", lambda **_: host_pool)
 

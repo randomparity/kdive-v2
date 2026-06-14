@@ -20,7 +20,7 @@ from kdive.providers.debug_common.crash_postmortem import (
     default_run_crash,
 )
 from kdive.providers.ports import CaptureOutput, CrashOutput
-from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_inventory
 from kdive.providers.remote_libvirt.guest.agent import (
     qemu_agent_command,
 )
@@ -113,7 +113,7 @@ class RemoteLibvirtRetrieve:
         self,
         *,
         secret_registry: SecretRegistry,
-        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_env,
+        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_inventory,
         open_connection: OpenRetrieveConnection = open_libvirt_capture,
         store_factory: Callable[[], StorePort] = object_store_from_env,
         secret_backend_factory: Callable[[], SecretBackend] | None = None,

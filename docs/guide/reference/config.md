@@ -81,7 +81,7 @@
 | Variable | Processes | Default | Required | Value |
 |----------|-----------|---------|----------|-------|
 | `KDIVE_RESOURCE_LEASE_TTL_SECONDS` | server | `86400` | no | Lease window in seconds for a runtime-registered resource (resources.register). register sets lease_expires_at = now() + this window and resources.renew extends it by the same window; the reconciler reaps a runtime resource once its lease expires (ADR-0112). Tunes the leak-resistance horizon for imperatively-registered capacity. |
-| `KDIVE_SYSTEMS_TOML` | reconciler | `./systems.toml` | no | Path to the declarative systems inventory file reconciled into the catalog (ADR-0112). The reconciler's inventory pass reads it each loop; an absent default file is the normal pre-config state (systems.toml is gitignored) and is a quiet no-op, while a present-but-malformed file fails that pass without aborting siblings. |
+| `KDIVE_SYSTEMS_TOML` | reconciler, worker | `./systems.toml` | no | Path to the declarative systems inventory file reconciled into the catalog (ADR-0112). The reconciler's inventory pass reads it each loop; the worker resolves the per-op remote-libvirt connection config from it (ADR-0112 §connection). An absent default file is the normal pre-config state (systems.toml is gitignored) and is a quiet no-op, while a present-but-malformed file fails that pass without aborting siblings. |
 
 ## lease
 
@@ -132,17 +132,9 @@
 
 | Variable | Processes | Default | Required | Value |
 |----------|-----------|---------|----------|-------|
-| `KDIVE_REMOTE_LIBVIRT_ALLOCATION_CAP` | reconciler, worker | `1` | no | Per-host concurrent-Allocation cap. |
-| `KDIVE_REMOTE_LIBVIRT_CA_CERT_REF` | reconciler, worker | — | conditional | secret (ref only) |
-| `KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF` | reconciler, worker | — | conditional | secret (ref only) |
-| `KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF` | reconciler, worker | — | conditional | secret (ref only) |
-| `KDIVE_REMOTE_LIBVIRT_GDB_ADDR` | reconciler, worker | — | no | gdbstub listen address (ACL'd boundary; no default, fails closed if unset). |
-| `KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX` | reconciler, worker | `47099` | no | High end of the gdbstub port range. |
-| `KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN` | reconciler, worker | `47000` | no | Low end of the gdbstub port range. |
 | `KDIVE_REMOTE_LIBVIRT_MACHINE` | reconciler, worker | `pc` | no | QEMU machine type (pc/i440fx by default; q35 opt-in). |
 | `KDIVE_REMOTE_LIBVIRT_NETWORK` | reconciler, worker | `default` | no | libvirt network for guests. |
 | `KDIVE_REMOTE_LIBVIRT_STORAGE_POOL` | reconciler, worker | `default` | no | libvirt storage pool for guest disks. |
-| `KDIVE_REMOTE_LIBVIRT_URI` | reconciler, worker | — | no | qemu+tls host URI; its presence enables the remote-libvirt provider. |
 
 ## secrets
 

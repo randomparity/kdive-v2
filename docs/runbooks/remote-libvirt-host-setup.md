@@ -238,35 +238,55 @@ sudo iptables -A INPUT -p tcp --dport 16514       -s "$WORKER_CIDR" -j ACCEPT
 sudo iptables -A INPUT -p tcp --dport 16514       -j DROP
 ```
 
-Persist the rules with your firewall manager. The default gdbstub range is `47000..47099`
-(`KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN/MAX`); `KDIVE_REMOTE_LIBVIRT_GDB_ADDR` has no default and
-provisioning fails closed without it.
+Persist the rules with your firewall manager. The gdbstub range and the ACL'd listen address come
+from the instance's `gdbstub_range` (e.g. `47000:47099`) and `gdb_addr` fields (see step 7);
+`gdb_addr` has no default and provisioning fails closed without it.
 
 ## 7. Register remote-libvirt on the deployment
 
-The provider is opt-in: it registers only when `KDIVE_REMOTE_LIBVIRT_URI` is set. The TLS
-materials are **secrets-by-reference** — the worker resolves the refs through the file-ref backend
-under `KDIVE_SECRETS_ROOT` and materializes a per-op `pkipath`. The Helm chart projects a
-Kubernetes Secret as files and sets `KDIVE_SECRETS_ROOT` for you.
+The provider is opt-in: it registers only when a `[[remote_libvirt]]` instance is declared in the
+`systems.toml` inventory (ADR-0112), reconciled into the catalog (`KDIVE_SYSTEMS_TOML`; a mounted
+ConfigMap in k8s). The TLS materials are **secrets-by-reference** — the inventory carries the refs
+(filenames), and the worker resolves them through the file-ref backend under `KDIVE_SECRETS_ROOT`
+and materializes a per-op `pkipath`. The Helm chart projects a Kubernetes Secret as files and sets
+`KDIVE_SECRETS_ROOT` for you.
 
 ```bash
 # the client materials from step 2
 kubectl -n kdive-demo create secret generic kdive-remote-tls \
   --from-file=clientcert.pem --from-file=clientkey.pem --from-file=cacert.pem
-
-helm upgrade kdive deploy/helm/kdive -n kdive-demo --reuse-values \
-  --set secrets.secretName=kdive-remote-tls \
-  --set config.KDIVE_REMOTE_LIBVIRT_URI=qemu+tls://HOST.FQDN/system \
-  --set config.KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF=clientcert.pem \
-  --set config.KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF=clientkey.pem \
-  --set config.KDIVE_REMOTE_LIBVIRT_CA_CERT_REF=cacert.pem \
-  --set config.KDIVE_REMOTE_LIBVIRT_STORAGE_POOL=default \
-  --set config.KDIVE_REMOTE_LIBVIRT_GDB_ADDR=HOST.IP
 ```
 
-The full config surface is `KDIVE_REMOTE_LIBVIRT_{URI,CLIENT_CERT_REF,CLIENT_KEY_REF,CA_CERT_REF,
-STORAGE_POOL,NETWORK,MACHINE,GDB_ADDR,GDB_PORT_MIN,GDB_PORT_MAX,ALLOCATION_CAP}`. Leave `MACHINE`
-at its `pc` (i440fx) default unless your host topology powers q35 pcie-root-ports correctly.
+Declare the host as a `[[remote_libvirt]]` instance (plus its `staged` base `[[image]]`) in the
+`systems.toml` ConfigMap the deployment mounts:
+
+```toml
+[[image]]
+provider = "remote-libvirt"
+name = "fedora-kdive-remote-base-43"
+arch = "x86_64"
+format = "qcow2"
+root_device = "/dev/vda"
+visibility = "public"
+[image.source]
+kind = "staged"
+volume = "fedora-kdive-remote-base-43.qcow2"
+
+[[remote_libvirt]]
+name = "host"
+uri = "qemu+tls://HOST.FQDN/system"
+gdb_addr = "HOST.IP"
+gdbstub_range = "47000:47099"
+client_cert_ref = "clientcert.pem"
+client_key_ref = "clientkey.pem"   # pragma: allowlist secret - filename ref
+ca_cert_ref = "cacert.pem"
+base_image = "fedora-kdive-remote-base-43"
+cost_class = "remote"
+```
+
+The libvirt host knobs the inventory model does not carry stay env settings
+(`KDIVE_REMOTE_LIBVIRT_{STORAGE_POOL,NETWORK,MACHINE}`). Leave `MACHINE` at its `pc` (i440fx)
+default unless your host topology powers q35 pcie-root-ports correctly.
 
 **Object-store reachability for the guest — `KDIVE_S3_ENDPOINT_URL` must be guest-routable.**
 Both the remote **install** (the in-guest helper `curl`s the kernel bundle from a presigned GET)
@@ -302,7 +322,7 @@ kubectl -n kdive-demo exec "$WK" -- python3 -c '
 import os, tempfile, shutil, libvirt
 src="/etc/kdive/secrets"; pki=tempfile.mkdtemp()
 for f in ("cacert.pem","clientcert.pem","clientkey.pem"): shutil.copy(src+"/"+f, pki+"/"+f)
-c=libvirt.openReadOnly(os.environ["KDIVE_REMOTE_LIBVIRT_URI"]+"?pkipath="+pki)
+c=libvirt.openReadOnly("qemu+tls://HOST.FQDN/system?pkipath="+pki)
 print("connected:", c.getHostname())
 print("base volume present:", "fedora-kdive-remote-base-43.qcow2" in
       [v for p in c.listAllStoragePools() for v in p.listVolumes()])

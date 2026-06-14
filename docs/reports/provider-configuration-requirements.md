@@ -84,20 +84,23 @@ config and the easy-to-miss network rule are below.
 
 ### 3.1 Control-plane env
 
-The opt-in gate is the **presence of the URI**. Required:
+The opt-in gate is a **declared `[[remote_libvirt]]` instance** in `systems.toml` (ADR-0112,
+`KDIVE_SYSTEMS_TOML`). The connection identity is instance fields, not env:
 
-| Env | Value / default |
+| `[[remote_libvirt]]` field | Value |
 |---|---|
-| `KDIVE_REMOTE_LIBVIRT_URI` | `qemu+tls://<host-fqdn>/system` — the FQDN must match the server cert CN/SAN. |
-| `KDIVE_REMOTE_LIBVIRT_CLIENT_CERT_REF` | secret ref → `clientcert.pem` under `KDIVE_SECRETS_ROOT`. |
-| `KDIVE_REMOTE_LIBVIRT_CLIENT_KEY_REF` | secret ref → `clientkey.pem`. |
-| `KDIVE_REMOTE_LIBVIRT_CA_CERT_REF` | secret ref → `cacert.pem`. |
-| `KDIVE_REMOTE_LIBVIRT_GDB_ADDR` | gdbstub listen address — **no default, fails closed if unset**. |
+| `uri` | `qemu+tls://<host-fqdn>/system` — the FQDN must match the server cert CN/SAN. |
+| `client_cert_ref` | secret ref → `clientcert.pem` under `KDIVE_SECRETS_ROOT`. |
+| `client_key_ref` | secret ref → `clientkey.pem`. |
+| `ca_cert_ref` | secret ref → `cacert.pem`. |
+| `gdb_addr` | gdbstub listen address — required field, fails closed if unset. |
+| `gdbstub_range` | per-System port range, e.g. `47000:47099`. |
+| `base_image` | an `[[image]]` name (the staged base volume). |
+| `concurrent_allocation_cap` | per-host cap (default `1`). |
 
-Optional (defaults shown): `KDIVE_REMOTE_LIBVIRT_ALLOCATION_CAP=1`,
+The libvirt host knobs the inventory model does not carry stay env (defaults shown):
 `KDIVE_REMOTE_LIBVIRT_STORAGE_POOL=default`, `KDIVE_REMOTE_LIBVIRT_NETWORK=default`,
-`KDIVE_REMOTE_LIBVIRT_MACHINE=pc`, `KDIVE_REMOTE_LIBVIRT_GDB_PORT_MIN=47000`,
-`KDIVE_REMOTE_LIBVIRT_GDB_PORT_MAX=47099`.
+`KDIVE_REMOTE_LIBVIRT_MACHINE=pc`.
 
 Capture methods advertised: **all four** — `KDUMP`, `HOST_DUMP`, `GDBSTUB`, `CONSOLE`
 (`providers/remote_libvirt/composition.py`).
@@ -165,7 +168,7 @@ the RBAC caveat:
 
 | Concern | How |
 |---|---|
-| Provider env | Put `KDIVE_*` provider knobs (incl. `KDIVE_FAULT_INJECT`, the `KDIVE_REMOTE_LIBVIRT_*` set) in chart `config.*` values → rendered to a ConfigMap consumed via `envFrom`. |
+| Provider env | Put `KDIVE_*` provider knobs (incl. `KDIVE_FAULT_INJECT`, the `KDIVE_REMOTE_LIBVIRT_{STORAGE_POOL,NETWORK,MACHINE}` host knobs) in chart `config.*` values → rendered to a ConfigMap consumed via `envFrom`. The remote-libvirt connection identity is a `[[remote_libvirt]]` instance in the mounted `systems.toml` ConfigMap (`KDIVE_SYSTEMS_TOML`), not env. |
 | TLS secret | `secrets.secretName` → mounted read-only at `secrets.mountPath`; `KDIVE_SECRETS_ROOT` is set to that path automatically. |
 | remote-libvirt from k8s | The **cluster node subnet** must be in the host's `16514` + gdbstub ACL allowlist. This is the design-intended remote-driver path (the worker pool runs in-cluster). |
 | Reconciler restart | Same rule as §0 — after changing provider config, the reconciler pod must roll to register the resource. |
@@ -208,4 +211,4 @@ in-process DNS override in the test client. Otherwise every token is rejected as
 |---|---|---|---|---|---|
 | local-libvirt | none (default) | KVM + libvirt + qemu | — | — | CONSOLE, HOST_DUMP, GDBSTUB |
 | fault-inject | `KDIVE_FAULT_INJECT=1` (+ reconciler restart) | none | — | — | n/a (error-path provider) |
-| remote-libvirt | presence of `KDIVE_REMOTE_LIBVIRT_URI` | remote libvirt+qemu+mutual-TLS host | ca/client cert+key under `KDIVE_SECRETS_ROOT` | worker→host `16514` **and** `47000–47099`; guest→object store | KDUMP, HOST_DUMP, GDBSTUB, CONSOLE |
+| remote-libvirt | a declared `[[remote_libvirt]]` instance | remote libvirt+qemu+mutual-TLS host | ca/client cert+key under `KDIVE_SECRETS_ROOT` | worker→host `16514` **and** `47000–47099`; guest→object store | KDUMP, HOST_DUMP, GDBSTUB, CONSOLE |

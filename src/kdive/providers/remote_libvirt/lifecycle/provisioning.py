@@ -32,7 +32,7 @@ from kdive.profiles.provisioning import (
     RemoteLibvirtProfile,
     require_concrete_sizing,
 )
-from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_inventory
 from kdive.providers.remote_libvirt.lifecycle.gdb import (
     DOMAIN_PREFIX,
     allocate_gdb_port,
@@ -115,17 +115,17 @@ def open_libvirt_provision(uri: str) -> _ProvisionConn:
 class RemoteLibvirtProvisioning:
     """The realized Provisioner port for a remote qemu+tls host (ADR-0080).
 
-    Buildable without operator config (ADR-0076): the ``KDIVE_REMOTE_LIBVIRT_*``
-    config is read per op via ``config_factory``, never at construction. All slow
-    seams (connection opener, clock, sleep) are injected; unit tests never touch a
-    real host.
+    Buildable without operator config (ADR-0076): the remote connection config is
+    resolved per op from the ``systems.toml`` ``[[remote_libvirt]]`` instance via
+    ``config_factory`` (ADR-0112), never at construction. All slow seams (connection
+    opener, clock, sleep) are injected; unit tests never touch a real host.
     """
 
     def __init__(
         self,
         *,
         secret_registry: SecretRegistry,
-        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_env,
+        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_inventory,
         open_connection: OpenProvisionConnection = open_libvirt_provision,
         secret_backend_factory: Callable[[], SecretBackend] | None = None,
         pki_base_dir: Path | None = None,
@@ -168,8 +168,9 @@ class RemoteLibvirtProvisioning:
         gdb_addr = config.gdb_addr
         if gdb_addr is None:
             raise CategorizedError(
-                "KDIVE_REMOTE_LIBVIRT_GDB_ADDR is not set; the gdbstub listen address "
-                "is the ACL'd security boundary and must be named explicitly (ADR-0080)",
+                "the remote-libvirt instance has no gdb_addr; the gdbstub listen address "
+                "is the ACL'd security boundary and must be named explicitly in systems.toml "
+                "(ADR-0080)",
                 category=ErrorCategory.CONFIGURATION_ERROR,
             )
         domain_name = domain_name_for(system_id)

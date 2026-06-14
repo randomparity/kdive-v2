@@ -17,7 +17,7 @@ from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.providers.debug_common.hostpolicy import allow_acl_remote
 from kdive.providers.debug_common.rsp import rsp_reachable
 from kdive.providers.ports import SystemHandle, TransportHandle, TransportHandleData
-from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_inventory
 
 _GDBSTUB = "gdbstub"
 _DRGN_LIVE = "drgn-live"
@@ -36,7 +36,7 @@ class RemoteLibvirtConnect:
     def __init__(
         self,
         *,
-        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_env,
+        config_factory: Callable[[], RemoteLibvirtConfig] = remote_config_from_inventory,
         resolve_port: _ResolvePort | None = None,
         probe: _Probe | None = None,
     ) -> None:
@@ -68,7 +68,7 @@ class RemoteLibvirtConnect:
             raise _config_error(f"unsupported transport kind: {kind!r}")
         config = self._config_factory()
         if not config.gdb_addr:
-            raise _config_error("remote gdbstub host (KDIVE_REMOTE_LIBVIRT_GDB_ADDR) is unset")
+            raise _config_error("remote gdbstub host (instance gdb_addr in systems.toml) is unset")
         host = config.gdb_addr
         allow_acl_remote(host)
         port = self._resolve_port(system)

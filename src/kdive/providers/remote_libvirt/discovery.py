@@ -5,9 +5,8 @@ touch a real host; the real ``libvirt.open`` adapter is the production opener) a
 advertises arch/cpu/memory, the gdbstub transport, the connect URI + TLS secret refs,
 and the per-host concurrent-Allocation cap into ``resources.capabilities``.
 
-The env config is authoritative for connections; the capabilities row is advertisory
-(insert-if-absent, refreshed only by re-registration). Later issues must not read
-connection config from the row without an explicit upsert design.
+The ``systems.toml`` ``[[remote_libvirt]]`` instance is authoritative for connections (ADR-0112);
+the capabilities row is advertisory (insert-if-absent, refreshed only by re-registration).
 
 PCIe enumeration and ``list_owned`` reaping are deferred to the provisioning issue,
 which creates the domains they would inspect.
@@ -23,7 +22,7 @@ from kdive.domain.models import ResourceKind
 from kdive.domain.resource_capabilities import CONCURRENT_ALLOCATION_CAP_KEY
 from kdive.domain.state import ResourceStatus
 from kdive.providers.libvirt_xml import parse_capabilities_arch
-from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_env
+from kdive.providers.remote_libvirt.config import RemoteLibvirtConfig, remote_config_from_inventory
 from kdive.providers.remote_libvirt.transport import (
     OpenConnection,
     open_libvirt,
@@ -52,14 +51,14 @@ class RemoteLibvirtDiscovery:
 
     @classmethod
     def from_env(cls, *, secret_registry: SecretRegistry) -> RemoteLibvirtDiscovery:
-        """Build from ``KDIVE_REMOTE_LIBVIRT_*``.
+        """Build from the declared ``[[remote_libvirt]]`` inventory instance (ADR-0112).
 
         Raises:
-            CategorizedError: ``CONFIGURATION_ERROR`` when the operator config is
-                absent or invalid (see :func:`remote_config_from_env`).
+            CategorizedError: ``CONFIGURATION_ERROR`` when the inventory config is
+                absent or invalid (see :func:`remote_config_from_inventory`).
         """
         return cls(
-            config=remote_config_from_env(),
+            config=remote_config_from_inventory(),
             secret_backend=secret_backend_from_env(registry=secret_registry),
             open_connection=open_libvirt,
         )
