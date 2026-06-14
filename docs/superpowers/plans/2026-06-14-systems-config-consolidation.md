@@ -810,22 +810,24 @@ Outcome: an agent can add/remove a system live, scoped to its project, with leak
 
 One **epic** + sub-issues, one milestone. Sub-issues are sized for parallel `/work-issue` worktree agents. **Pre-assign disjoint ADR/migration numbers in the dispatch prompt** (lesson: parallel agents otherwise all grab "next free" — see `preassign-adr-migration-numbers` memory). Only the Phase-1 migration `0030` exists; later phases author **no new migrations** (they populate Phase-1 columns) — make that explicit in each sub-issue to prevent migration-number collisions.
 
-| # | Sub-issue | Phase | Depends on | Files (primary) |
-|---|---|---|---|---|
-| A | Migration `0030` + `system→image` ref | 1 | — | `db/schema/0030_*.sql`, `test_migrate.py` |
-| B | Inventory model + loader | 1 | — (parallel with A) | `inventory/{model,loader,errors}.py` |
-| C | Engine core + `reconcile_images` | 1 | A, B | `inventory/{reconcile,reconcile_images}.py` |
-| D | CLI + `reconcile_inventory` loop pass | 1 | C | `cli/reconcile_systems.py`, `reconciler/loop.py` |
-| E | Delete in-code image defs + guard test | 1 | C, D | `images/seed_data/` (del), `default_fixtures.py`, `rootfs_build.py`, `tests/guards/` |
-| F | `reconcile_resources` overlay + #385 fix | 2 | C, E | `inventory/reconcile_resources.py`, `fault_inject/discovery.py` |
-| G | Multi-instance + `reconcile_build_hosts` | 3 | F | `inventory/reconcile_build_hosts.py` |
-| H | Delete `KDIVE_REMOTE_LIBVIRT_*` singletons + rewire remote lifecycle | 3 | G | `providers/remote_libvirt/*`, guard test |
-| I | `resources.register/deregister/renew` tools | 4 | F | `mcp/tools/ops/resources/*` |
-| J | Affinity admission check | 4 | A | `services/allocation/admission.py` |
-| K | Lease + reachability reaping spec | 4 | A, I | `reconciler/loop.py` |
-| L | Adopt-on-collision + `ops.reconcile_systems` gating | 4 | C, I, J | `inventory/reconcile_resources.py`, `mcp/tools/ops/` |
+Epic: **#387** (milestone M2.6 — Systems inventory config).
 
-**Wave plan:** Wave 1 = {A, B} parallel. Wave 2 = {C}. Wave 3 = {D, E}. Phase-1 ships. Wave 4 = {F}. Wave 5 = {G}, then {H}. Phase-2/3 ship. Wave 6 = {I, J} parallel, then {K, L}. Phase-4 ships.
+| # | Issue | Sub-issue | Phase | Depends on | Files (primary) |
+|---|---|---|---|---|---|
+| A | #388 | Migration `0030` + `system→image` ref | 1 | — | `db/schema/0030_*.sql`, `test_migrate.py` |
+| B | #389 | Inventory model + loader | 1 | — (parallel with A) | `inventory/{model,loader,errors}.py` |
+| C | #390 | Engine core + `reconcile_images` | 1 | #388, #389 | `inventory/{reconcile,reconcile_images}.py` |
+| D | #391 | CLI + `reconcile_inventory` loop pass | 1 | #390 | `cli/reconcile_systems.py`, `reconciler/loop.py` |
+| E | #392 | Delete in-code image defs + guard test | 1 | #390, #391 | `images/seed_data/` (del), `default_fixtures.py`, `rootfs_build.py`, `tests/guards/` |
+| F | #393 | `reconcile_resources` overlay + #385 fix | 2 | #390, #392 | `inventory/reconcile_resources.py`, `fault_inject/discovery.py` |
+| G | #394 | Multi-instance + `reconcile_build_hosts` | 3 | #393 | `inventory/reconcile_build_hosts.py` |
+| H | #395 | Delete `KDIVE_REMOTE_LIBVIRT_*` singletons + rewire remote lifecycle | 3 | #394 | `providers/remote_libvirt/*`, guard test |
+| I | #396 | `resources.register/deregister/renew` tools | 4 | #393 | `mcp/tools/ops/resources/*` |
+| J | #397 | Affinity admission check | 4 | #388 | `services/allocation/admission.py` |
+| K | #398 | Lease + reachability reaping spec | 4 | #388, #396 | `reconciler/loop.py` |
+| L | #399 | Adopt-on-collision + `ops.reconcile_systems` gating | 4 | #390, #396, #397 | `inventory/reconcile_resources.py`, `mcp/tools/ops/` |
+
+**Wave plan:** Wave 1 = {#388, #389} parallel. Wave 2 = {#390}. Wave 3 = {#391, #392}. Phase-1 ships. Wave 4 = {#393}. Wave 5 = {#394}, then {#395}. Phase-2/3 ship. Wave 6 = {#396, #397} parallel, then {#398, #399}. Phase-4 ships.
 
 **Recurring rebase zones** (serialize merges here, per prior orchestration lessons): `reconciler/loop.py` (D, K), `mcp/tools/ops/` registry + generated tool docs (I, L), `services/allocation/admission.py` (F overlay vs J affinity), `tests/integration/test_migrate.py` (A only — no later migrations).
 
