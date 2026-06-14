@@ -9,6 +9,11 @@ KDIVE's first public, open-source release. The code is feature-complete (M2.x sh
 effort builds the *release surface* so a newcomer — human operator or coding agent — can adopt
 KDIVE without reading the source.
 
+**Falsifiable acceptance signal:** a new operator reaches a running local-libvirt deployment
+using only `operating/install.md` plus `just check-local-libvirt` — no source reading, no
+tribal knowledge. (Navigation quality is otherwise qualitative; this is the one end-to-end
+check that makes the goal testable.)
+
 ## Scope
 
 In scope:
@@ -137,7 +142,9 @@ Cross-referenced from the service `doctor` docs (preflight = pre-deploy, doctor 
 ### Phase 2 — Deployment & systemd
 
 - `docs/operating/install.md` — install paths (PyPI-future/source/container), host
-  prerequisites (links the Phase 1 preflight scripts), and the three run modes below.
+  prerequisites (cites the Phase 1 preflight by recipe name, `just check-local-libvirt` /
+  `just check-remote-libvirt`, to keep Phase 2 decoupled from Phase 1's files), and the three
+  run modes below.
 - `docs/operating/docker-compose.md` — run via root `docker-compose.yml`; links existing
   `deploy/compose/README.md`.
 - `docs/operating/kubernetes.md` — Helm install; links `deploy/helm/kdive/README.md` and the
@@ -202,9 +209,14 @@ add a CHANGELOG `[Unreleased]` entry; confirm `just ci` (with both new doc gates
 
 ## Sequencing
 
-Phase 0 is the hard prerequisite (new docs must be authored into the final tree). Phases 1–4
-are independent and can fan out (each in its own external worktree if parallelized). Phase 5
-closes out after 1–4 land. Each phase is a small, logically-scoped commit set (no squash).
+Phase 0 is the hard prerequisite (new docs must be authored into the final tree). The
+remaining dependency graph is **not** fully flat: Phase 2's `install.md` documents the
+Phase 1 preflight, so **Phase 1 → Phase 2**. Phases 3 (governance) and 4 (agent onboarding)
+are independent of 1/2 and each other, so they can fan out into their own external worktrees;
+Phase 1 and Phase 2 either run in order or, to decouple them, `install.md` cites the preflight
+by `just` recipe name (`just check-local-libvirt`) rather than linking the script files — a
+recipe name is not a file the `docs-links` gate must resolve. Phase 5 closes out after 1–4
+land. Each phase is a small, logically-scoped commit set (no squash).
 
 ## Risks
 
