@@ -57,12 +57,18 @@ Reclaim allocation `a` iff **all** hold:
    _NON_TERMINAL_SYSTEM`. (The "no rows" arm is defensive; per the model an `active`
    allocation has a System, but a manual/foreign-key-less edge must still be reclaimable
    rather than wedge forever.)
-3. **Mid-provision-race grace:** `a.updated_at < now() - GRACE`. The allocation's
-   `updated_at` is bumped by the `→active` stamp (and any later state write). Requiring the
-   row to have been settled for at least `GRACE` keeps the reaper away from an allocation
-   whose System is being recreated/reprovisioned right now. Because System-terminal is a
-   one-way door, this grace is belt-and-suspenders against the narrow window where another
-   transaction is mid-flight against the same allocation under the allocation lock.
+3. **Mid-provision-race grace:** `a.updated_at < now() - GRACE`. The `allocations_set_updated_at`
+   trigger rewrites `updated_at := now()` on **every** row-changing UPDATE, so `updated_at` is
+   precisely "time since the last write to the allocation row" — bumped by the `→active` stamp
+   and by a `renew` that extends the lease, but **not** by a System-state change (which writes
+   the `systems` row, not `allocations`). So a torn-down System leaves the allocation's
+   `updated_at` frozen at its last allocation-write — exactly the leak signal — while a freshly
+   renewed/touched allocation is protected. Requiring the row settled ≥ `GRACE` keeps the reaper
+   away from an allocation whose System is being recreated right now. Because System-terminal is
+   a one-way door, this grace is belt-and-suspenders against the narrow window where another
+   transaction is mid-flight against the same allocation under the allocation lock. (Tests age
+   `updated_at` by disabling the trigger for the single aging UPDATE, since a plain UPDATE would
+   be clobbered back to `now()`.)
 
 The candidate SQL (read phase, no lock):
 

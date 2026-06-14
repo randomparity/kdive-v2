@@ -137,6 +137,7 @@ def test_reconcile_now_clean_state_returns_zero_summary(migrated_url: str) -> No
         assert resp.status == "ok"
         assert resp.data["orphaned_systems"] == "0"
         assert resp.data["expired_allocations"] == "0"
+        assert resp.data["reaped_active_allocations"] == "0"
         assert resp.data["promoted_allocations"] == "0"
         assert resp.data["queue_timeouts"] == "0"
         assert resp.data["failures"] == ""
