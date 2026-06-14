@@ -12,10 +12,9 @@ Drives every reachable MCP tool over the live transport across the three provide
 | D1 workstation | local-libvirt, fault-inject, remote-libvirt | PASS (6 roles) | source-checkout host path; MCP at `127.0.0.1:8000/mcp` |
 | D2 k8s (`kdive-demo`) | remote-libvirt, fault-inject | PASS (6 roles) | helm `kdive-0.2.0`/app `0.3.0`; **87 tools vs 91 HEAD** (image predates build-host tools) |
 
-Setup is now captured in a single gitignored descriptor,
-`artifacts/coverage-campaign/systems.toml` (scaffold:
-`scripts/coverage_campaign/systems.toml.template`). The loader renders the workstation env and
-the per-deployment setup commands:
+Setup is now captured in a single root-level gitignored descriptor, `systems.toml` (scaffold:
+the committed `systems.toml.example`). The loader renders the workstation env and the
+per-deployment setup commands:
 
 ```
 uv run python -m scripts.coverage_campaign.systems render-env > artifacts/coverage-campaign/d1.env

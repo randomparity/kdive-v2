@@ -7,10 +7,16 @@ verdicts, and renders the coverage grid. Companion setup reference:
 `docs/reports/provider-configuration-requirements.md`.
 
 Committed tooling used here:
+- `systems.toml.example` — root-level scaffold for the **systems descriptor** (see below).
+- `scripts/coverage_campaign/systems.py` — load the descriptor; `render-env` emits `d1.env`,
+  `setup-commands` emits the remote iptables ACL + k8s port-forwards.
 - `scripts/coverage_campaign/gridgen.py` — enumerate the 91-tool census from the live app.
 - `scripts/coverage_campaign/results.py` — `CellResult` + `merge_and_render` (grid markdown).
 - `scripts/coverage_campaign/drive.py` — mint a role token + call one tool over MCP.
-- `scripts/coverage_campaign/d1.env.template` — D1 provider env (copy + fill placeholders).
+
+**Systems descriptor (do this first):** copy `systems.toml.example` to `systems.toml` at the
+repo root (GITIGNORED — it holds host FQDNs/IPs + TLS secret refs) and fill in your environment.
+Everything below derives from it via `scripts/coverage_campaign/systems.py`.
 
 Run-local state (gitignored): `artifacts/coverage-campaign/` (results.jsonl, grid.md, manifest,
 fetched TLS certs, guest helpers).
@@ -34,8 +40,9 @@ fetched TLS certs, guest helpers).
    asyncio.run((lambda: (lambda conn: None))())" # see seed snippet in the report; or run: kdive seed-demo
    ```
    (Simplest: open an async connection + object store and call `seed_build_configs`.)
-3. `cp scripts/coverage_campaign/d1.env.template artifacts/coverage-campaign/d1.env` and fill the
-   placeholders (remote FQDN/IP, workstation LAN IP for `KDIVE_S3_ENDPOINT_URL` — F8/#375).
+3. Render `d1.env` from the root `systems.toml` (fill it from `systems.toml.example` first):
+   `uv run python -m scripts.coverage_campaign.systems render-env > artifacts/coverage-campaign/d1.env`.
+   (`setup-commands` likewise prints the remote iptables ACL + k8s port-forwards.)
 4. Start the host stack **under bash** (env.sh uses `${BASH_SOURCE[0]}`, empty under zsh →
    broken `//.live-build` paths):
    ```

@@ -40,7 +40,9 @@ kdive-live-stack-artifacts/
 # Local operator deploy artifacts (may embed backend credentials)
 .live-deploy/
 
-# Coverage-campaign run-local result artifacts + the systems descriptor
-# (artifacts/coverage-campaign/systems.toml — real per-environment facts; embeds host
-# FQDNs/IPs + secret refs. Scaffold from scripts/coverage_campaign/systems.toml.template.)
+# Live-test systems descriptor — real per-environment facts (host FQDNs/IPs + secret refs).
+# Root-level, gitignored; scaffold from the committed ./systems.toml.example.
+/systems.toml
+
+# Coverage-campaign run-local result artifacts (results.jsonl, grid.md, drivers, fetched certs)
 /artifacts/coverage-campaign/

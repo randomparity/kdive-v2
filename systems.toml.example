@@ -1,10 +1,13 @@
-# MCP coverage-campaign systems descriptor (TEMPLATE).
+# kdive live-test systems descriptor (EXAMPLE).
 #
-# Copy to artifacts/coverage-campaign/systems.toml (GITIGNORED) and fill in the values for
-# your environment. One source of truth for the per-deployment facts the runbook otherwise
-# re-derives each run. Consumed by scripts/coverage_campaign/systems.py:
-#   render-env       -> the d1.env workstation provider env
-#   setup-commands   -> the remote-host iptables ACL + k8s port-forward commands
+# Copy to `systems.toml` (repo root, GITIGNORED) and fill in the values for your environment.
+# One source of truth for the per-deployment facts the live MCP coverage-campaign rerun
+# otherwise re-derives by hand each run (remote host FQDN/IP, k8s namespace + forward ports,
+# the workstation LAN IP remote guests must reach, TLS secret refs).
+#
+# Consumed by scripts/coverage_campaign/systems.py:
+#   uv run python -m scripts.coverage_campaign.systems render-env      -> the d1.env workstation env
+#   uv run python -m scripts.coverage_campaign.systems setup-commands  -> remote iptables ACL + k8s port-forwards
 #
 # See docs/runbooks/mcp-coverage-campaign-rerun.md and
 # docs/reports/provider-configuration-requirements.md.
@@ -14,7 +17,7 @@ schema_version = 1
 [workstation]              # D1 — control plane: Docker app-tier + local-libvirt provider
 lan_ip = "<workstation-lan-ip>"                  # reachable FROM remote guests (F8)
 s3_endpoint_url = "http://<workstation-lan-ip>:9000"
-secrets_root = "$HOME/.kdive-secrets"
+secrets_root = "$HOME/.kdive-secrets"            # use $HOME, not ~ (tilde does not expand in quotes)
 fault_inject = true
 mcp_base_url = "http://127.0.0.1:8000/mcp"
 build_workspace = "<repo>/.live-build"           # absolute (zsh-source guard)
@@ -23,7 +26,7 @@ build_component_roots = "<repo>/fixtures/local-libvirt:<repo>/.live-components"
 [remote_libvirt]           # ub24-big — qemu+tls libvirt host
 host_fqdn = "<remote-host-fqdn>"
 host_ip = "<remote-host-ip>"
-ssh_target = "<user>@<remote-host-ip>"
+ssh_target = "<user>@<remote-host-fqdn>"          # the login user + FQDN, e.g. dave@host.example
 libvirt_uri = "qemu+tls://<remote-host-fqdn>/system"
 tls_port = 16514
 gdbstub_range = "47000:47099"

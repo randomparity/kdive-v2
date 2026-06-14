@@ -3,8 +3,8 @@
 The campaign spans three deployments whose per-environment facts (remote host FQDN/IP,
 k8s namespace + forward ports, the workstation LAN IP that remote guests must reach) are
 otherwise re-derived by hand each run. This loader promotes those facts into one
-gitignored TOML file (`artifacts/coverage-campaign/systems.toml`, scaffolded from
-`scripts/coverage_campaign/systems.toml.template`) and renders the two things setup needs:
+gitignored TOML file (`systems.toml` at the repo root, scaffolded from
+`systems.toml.example`) and renders the two things setup needs:
 
   render-env       emit the `d1.env` exports (the workstation provider env)
   setup-commands   emit the per-deployment copy-paste setup commands
@@ -21,14 +21,14 @@ import sys
 import tomllib
 from pathlib import Path
 
-DEFAULT_DESCRIPTOR = Path("artifacts/coverage-campaign/systems.toml")
+DEFAULT_DESCRIPTOR = Path("systems.toml")  # repo root, gitignored (scaffold: systems.toml.example)
 
 
 def _load(path: Path) -> dict:
     if not path.exists():
         raise SystemExit(
             f"systems descriptor not found: {path}\n"
-            "Copy scripts/coverage_campaign/systems.toml.template there and fill it in."
+            "Copy systems.toml.example to ./systems.toml (repo root) and fill it in."
         )
     with path.open("rb") as fh:
         return tomllib.load(fh)
