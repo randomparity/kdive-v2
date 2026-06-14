@@ -19,13 +19,15 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from typing import Any
 from uuid import UUID
 
-from psycopg import AsyncConnection
+from psycopg import AsyncConnection, AsyncCursor
 from psycopg.rows import dict_row
 
 from kdive.db.locks import INVENTORY_RECONCILE, session_advisory_lock
 from kdive.domain.models import ManagedBy
+from kdive.services.allocation.pcie_claim import NON_TERMINAL_STATES_VALUES
 from kdive.services.images.retention import image_referenced_by_live_system
 
 __all__ = [
@@ -35,6 +37,7 @@ __all__ = [
     "PruneOutcome",
     "inventory_pass_lock",
     "prune_or_cordon_image",
+    "prune_or_cordon_resource",
 ]
 
 
@@ -120,3 +123,45 @@ async def prune_or_cordon_image(conn: AsyncConnection, row_id: UUID, name: str) 
             return PruneOutcome(pruned=False, cordoned=True)
         await cur.execute("DELETE FROM image_catalog WHERE id = %s", (row_id,))
     return PruneOutcome(pruned=True, cordoned=False)
+
+
+async def prune_or_cordon_resource(conn: AsyncConnection, row_id: UUID, name: str) -> PruneOutcome:
+    """Apply the non-destructive prune contract to one config resource row (ADR-0112).
+
+    Mirrors :func:`prune_or_cordon_image`: a config resource that left the file is **deleted**
+    only when it is idle. A resource with a **live** (non-terminal) allocation is **cordoned**
+    (``cordoned=true``, stops new placement) and surfaced — never deleted, so a file edit can
+    never evict a running System (eviction stays the explicit ``resources.drain`` op). Runs in
+    its own transaction so the liveness re-check and the delete/cordon are atomic per row.
+
+    Args:
+        conn: The reconcile pass connection (a fresh transaction is opened here).
+        row_id: The config resource row's id.
+        name: The resource name (for the returned record).
+
+    Returns:
+        A :class:`PruneOutcome` recording whether the row was pruned or cordoned.
+    """
+    async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT id FROM resources WHERE id = %s AND managed_by = %s FOR UPDATE",
+            (row_id, ManagedBy.CONFIG.value),
+        )
+        if await cur.fetchone() is None:
+            return PruneOutcome(pruned=False, cordoned=False)
+        if await _resource_has_live_allocation(cur, row_id):
+            await cur.execute(
+                "UPDATE resources SET cordoned = true WHERE id = %s AND NOT cordoned", (row_id,)
+            )
+            return PruneOutcome(pruned=False, cordoned=True)
+        await cur.execute("DELETE FROM resources WHERE id = %s", (row_id,))
+    return PruneOutcome(pruned=True, cordoned=False)
+
+
+async def _resource_has_live_allocation(cur: AsyncCursor[dict[str, Any]], row_id: UUID) -> bool:
+    """True when the resource backs a non-terminal allocation (the refuse-if-live predicate)."""
+    await cur.execute(
+        "SELECT 1 FROM allocations WHERE resource_id = %s AND state = ANY(%s) LIMIT 1",
+        (row_id, list(NON_TERMINAL_STATES_VALUES)),
+    )
+    return await cur.fetchone() is not None

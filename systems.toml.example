@@ -100,6 +100,10 @@ volume = "fedora-kdive-remote-base-43.qcow2"
 # cost_class = "local"
 # concurrent_allocation_cap = 1
 
+# Fault-inject (the synthetic, hardware-free provider) is now created ONLY from this file
+# (Phase 2, #393): reconcile_resources is its sole creator and the vcpus/memory_mb below are
+# the billable sizing the row advertises to admission — without them allocations.request(
+# kind=fault-inject) is denied configuration_error (#385). Uncomment to make it allocatable.
 # [[fault_inject]]
 # name = "synthetic-1"
 # cost_class = "local"

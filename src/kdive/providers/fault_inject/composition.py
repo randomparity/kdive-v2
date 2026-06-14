@@ -60,14 +60,16 @@ def _component_sources() -> ComponentSourceCapabilities:
 
 
 def discovery_registration() -> ProviderDiscoveryRegistration:
-    # Insert-if-absent (like local): the happy path's capabilities are inert, so this never
-    # updates an existing row. Mutable fault-inject resource config needs an explicit upsert
-    # path or a fresh resource row, not a restart-only refresh.
+    # Bind-only (creates=False): fault-inject has no host to enumerate, so its row exists only
+    # when declared in systems.toml. reconcile_resources is the sole creator (ADR-0112 #393);
+    # the config overlay supplies the vcpus/memory_mb #385 needed. Letting discovery also insert
+    # would produce a second, sizing-less row that collides on the (kind, name) identity.
     return ProviderDiscoveryRegistration(
         target_factory=_discovery_target,
         kind=ResourceKind.FAULT_INJECT,
         pool_name=_POOL,
         cost_class=_COST_CLASS,
+        creates=False,
     )
 
 
