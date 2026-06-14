@@ -54,6 +54,7 @@ from tests.reconciler.conftest import connect, seed_system
 
 _TARGET_PROJECT = "tenant-x"
 _DELETE_MODULE = importlib.import_module("kdive.mcp.tools.ops.images.delete")
+_UPLOAD_MODULE = importlib.import_module("kdive.mcp.tools.ops.images.upload")
 
 
 class _FakeImageStore:
@@ -509,11 +510,11 @@ def test_upload_unprivileged_denied_audited_even_without_store(migrated_url: str
     # unprivileged caller is denied and audited even on an S3-less deployment.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await ops_images.upload(
+            resp = await _UPLOAD_MODULE.upload(
                 pool,
                 _member_ctx(role=Role.VIEWER),
                 None,
-                ops_images.ImageUploadRequest(
+                _UPLOAD_MODULE.ImageUploadRequest(
                     project=_TARGET_PROJECT,
                     name="custom",
                     arch="x86_64",
@@ -532,11 +533,11 @@ def test_upload_cross_project_denied_without_project_audit(migrated_url: str) ->
     # arbitrary requested project names.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await ops_images.upload(
+            resp = await _UPLOAD_MODULE.upload(
                 pool,
                 _member_ctx(project="tenant-y", role=Role.OPERATOR),
                 None,
-                ops_images.ImageUploadRequest(
+                _UPLOAD_MODULE.ImageUploadRequest(
                     project=_TARGET_PROJECT,
                     name="custom",
                     arch="x86_64",
@@ -554,11 +555,11 @@ def test_upload_rejects_quarantine_key_in_published_prefix(migrated_url: str) ->
     # another project's owner-scoped private image — it is rejected with a config error.
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            resp = await ops_images.upload(
+            resp = await _UPLOAD_MODULE.upload(
                 pool,
                 _member_ctx(role=Role.OPERATOR),
                 cast(UploadObjectStore, _UnusedUploadStore()),
-                ops_images.ImageUploadRequest(
+                _UPLOAD_MODULE.ImageUploadRequest(
                     project=_TARGET_PROJECT,
                     name="evil",
                     arch="x86_64",
@@ -568,6 +569,15 @@ def test_upload_rejects_quarantine_key_in_published_prefix(migrated_url: str) ->
         assert resp.error_category == ErrorCategory.CONFIGURATION_ERROR.value
 
     asyncio.run(_run())
+
+
+def test_upload_default_expiry_uses_configured_private_lifetime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(_UPLOAD_MODULE.config, "require", lambda _setting: 123)
+
+    assert _UPLOAD_MODULE._default_expiry(now) == now + timedelta(seconds=123)
 
 
 # --- prune_expired / extend: platform_admin break-glass -------------------------------------
