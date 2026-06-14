@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "kdive": {
+      "type": "http",
+      "url": "https://kdive.internal/mcp",
+      "headers": {
+        "Authorization": "Bearer ${KDIVE_TOKEN}"
+      }
+    }
+  }
+}

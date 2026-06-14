@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "kdive": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://kdive.internal/mcp",
+        "--header",
+        "Authorization:${KDIVE_AUTH_HEADER}"
+      ],
+      "env": {
+        "KDIVE_AUTH_HEADER": "Bearer ${KDIVE_TOKEN}"
+      }
+    }
+  }
+}
