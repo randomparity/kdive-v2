@@ -1,8 +1,8 @@
 """``build_hosts.list``, ``build_hosts.disable``, and ``build_hosts.remove`` handlers.
 
-``list`` is read-only-by-policy: returns id, name, kind, address, ssh_credential_ref
-(the reference string only — never key bytes), workspace_root, max_concurrent, enabled,
-and state for every row in ``build_hosts``.
+``list`` is ``platform_auditor``-gated: returns id, name, kind, address,
+ssh_credential_ref (the reference string only — never key bytes), workspace_root,
+max_concurrent, enabled, and state for every row in ``build_hosts``.
 
 ``disable`` and ``remove`` are ``platform_admin``-gated mutating ops. Both reject the
 protected ``worker-local`` seed (CONFLICT). ``remove`` also rejects a host that still
@@ -20,7 +20,13 @@ from psycopg_pool import AsyncConnectionPool
 from kdive.db.build_hosts import WORKER_LOCAL_ID, get_by_name
 from kdive.domain.errors import ErrorCategory
 from kdive.mcp.responses import ToolResponse
-from kdive.mcp.tools._platform_auth import actor_for, audit_platform_denial, held_platform_roles
+from kdive.mcp.tools._platform_auth import (
+    ALL_PROJECTS_SCOPE,
+    actor_for,
+    audit_platform_denial,
+    held_platform_roles,
+)
+from kdive.mcp.tools.ops import _reads
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import AuthorizationError, PlatformRole, require_platform_role
@@ -52,18 +58,27 @@ async def list_build_hosts(
     pool: AsyncConnectionPool,
     ctx: RequestContext,
 ) -> ToolResponse:
-    """Return all build host rows (read-only, no auth gate required).
+    """Return all build host rows. Requires ``platform_auditor``.
 
     The response includes only the ``ssh_credential_ref`` reference string — never
     key bytes.
     """
-    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT id, name, kind, address, ssh_credential_ref, workspace_root, "
-            "       max_concurrent, enabled, state "
-            "FROM build_hosts ORDER BY name"
-        )
-        rows = await cur.fetchall()
+    args: dict[str, object] = {"scope": ALL_PROJECTS_SCOPE}
+    try:
+        require_platform_role(ctx, PlatformRole.PLATFORM_AUDITOR)
+    except AuthorizationError:
+        await _reads.audit_denial(pool, ctx, tool=LIST_TOOL, args=args)
+        return _denied("build_hosts", LIST_TOOL)
+
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, name, kind, address, ssh_credential_ref, workspace_root, "
+                "       max_concurrent, enabled, state "
+                "FROM build_hosts ORDER BY name"
+            )
+            rows = await cur.fetchall()
+        await _reads.record_read(conn, ctx, tool=LIST_TOOL, args=args)
 
     items = [
         ToolResponse.success(

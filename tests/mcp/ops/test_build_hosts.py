@@ -169,6 +169,38 @@ def test_non_admin_remove_denied(migrated_url: str) -> None:
     asyncio.run(_run())
 
 
+def test_non_admin_list_denied_without_audit_write(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _insert_host(pool)
+            resp = await list_build_hosts(pool, _non_admin_ctx())
+        assert resp.error_category == ErrorCategory.AUTHORIZATION_DENIED.value
+        assert await _platform_audit_rows(migrated_url) == []
+
+    asyncio.run(_run())
+
+
+def test_platform_auditor_list_allowed_and_audited(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _pool(migrated_url) as pool:
+            await _insert_host(pool, name="build-worker-1")
+            resp = await list_build_hosts(pool, _auditor_ctx())
+        assert resp.status == "ok"
+        assert any(item.data.get("name") == "build-worker-1" for item in resp.items)
+
+        rows = await _platform_audit_rows(migrated_url)
+        assert len(rows) == 1
+        principal, platform_role, tool, scope, digest = rows[0]
+        assert principal == "ops-auditor"
+        assert platform_role == "platform_auditor"
+        assert tool == "build_hosts.list"
+        assert scope == "all-projects"
+        assert isinstance(digest, str)
+        assert len(digest) == 64
+
+    asyncio.run(_run())
+
+
 def test_platform_auditor_overreach_denied_and_audited(migrated_url: str) -> None:
     # A platform_auditor holds a platform role but not platform_admin: every mutating
     # build_hosts tool denies it AND records the over-reach via audit_platform_denial.
@@ -226,7 +258,7 @@ def test_register_creates_ssh_row_list_shows_ref_only(migrated_url: str) -> None
             assert "build_hosts.list" in resp.suggested_next_actions
             assert "runs.build" in resp.suggested_next_actions
 
-            list_resp = await list_build_hosts(pool, _admin_ctx())
+            list_resp = await list_build_hosts(pool, _auditor_ctx())
 
         assert list_resp.status == "ok"
         # Find our row in items
@@ -357,7 +389,7 @@ def test_register_ephemeral_creates_row(migrated_url: str) -> None:
                 max_concurrent=2,
             )
             assert resp.status == "registered"
-            list_resp = await list_build_hosts(pool, _admin_ctx())
+            list_resp = await list_build_hosts(pool, _auditor_ctx())
         item = next(i for i in list_resp.items if i.data.get("name") == "builders")
         assert item.data["kind"] == "ephemeral_libvirt"
         assert item.data["address"] == ""
