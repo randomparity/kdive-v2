@@ -6,6 +6,8 @@ build-backend = "uv_build"
 name = "kdive"
 version = "0.3.0"
 description = "Kernel Debug, Inspect, Validate, Explore — MCP platform for kernel build-boot-debug workflows"
+license = "Apache-2.0"
+authors = [{ name = "David Christensen" }]
 readme = "README.md"
 requires-python = "==3.13.*"
 dependencies = [
@@ -28,6 +30,12 @@ dependencies = [
   "starlette==1.3.0",
   "uvicorn==0.49.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/randomparity/kdive"
+Repository = "https://github.com/randomparity/kdive"
+Issues = "https://github.com/randomparity/kdive/issues"
+Changelog = "https://github.com/randomparity/kdive/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
