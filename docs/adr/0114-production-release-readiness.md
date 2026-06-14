@@ -27,7 +27,7 @@ Several concerns are coupled to code, not just prose:
 
 - The two doc generators hardcode `docs/guide/reference/` (`gen_tool_reference.py` `_REF_DIR`,
   `gen_config_reference.py` `_OUT`), and `just docs-check` / `config-docs-check` are PR gates
-  that `diff` against that exact path. Moving it breaks CI silently.
+  that `diff` against that exact path. Moving it breaks those gates.
 - `AGENTS.md`, `README.md`, and `scripts/m2_portability_gate.py` hardcode `docs/specs/` paths.
 - Nothing in CI checks intra-doc links, so any reorganization rots cross-references with no
   signal.
@@ -73,7 +73,7 @@ Markdown-link refs are caught by the link-checker (decision 2); the non-markdown
 bare code-span refs are **not** — they are an explicit implementation checklist, also guarded
 by the path-existence check in decision 2.
 
-### 2. Markdown link-check is a CI gate
+### 2. Two CI guards: markdown link-check + `docs/…` path-existence
 
 Add **two** guards, wired into `just ci` and `ci.yml`, because the failure modes split across
 two surfaces:
