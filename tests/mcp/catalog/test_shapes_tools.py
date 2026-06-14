@@ -39,24 +39,34 @@ _DT = datetime(2026, 1, 1, tzinfo=UTC)
 _SEED_NAMES = ["large", "max", "medium", "small"]  # sorted by name
 
 
-def _ctx(
-    *,
-    platform_roles: frozenset[PlatformRole] = frozenset(),
-    roles: dict[str, Role] | None = None,
-    projects: tuple[str, ...] = (),
-    principal: str = "op-1",
-) -> RequestContext:
-    return RequestContext(
-        principal=principal,
-        agent_session="sess-1",
-        projects=projects,
-        roles=roles or {},
-        platform_roles=platform_roles,
-    )
-
-
-_OPERATOR = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}))
-_VIEWER = _ctx(roles={"proj-a": Role.VIEWER}, projects=("proj-a",), principal="viewer-1")
+_OPERATOR = RequestContext(
+    principal="op-1",
+    agent_session="sess-1",
+    projects=(),
+    roles={},
+    platform_roles=frozenset({PlatformRole.PLATFORM_OPERATOR}),
+)
+_VIEWER = RequestContext(
+    principal="viewer-1",
+    agent_session="sess-1",
+    projects=("proj-a",),
+    roles={"proj-a": Role.VIEWER},
+    platform_roles=frozenset(),
+)
+_PROJECT_ADMIN = RequestContext(
+    principal="op-1",
+    agent_session="sess-1",
+    projects=("proj-a",),
+    roles={"proj-a": Role.ADMIN},
+    platform_roles=frozenset(),
+)
+_PLATFORM_AUDITOR = RequestContext(
+    principal="op-1",
+    agent_session="sess-1",
+    projects=(),
+    roles={},
+    platform_roles=frozenset({PlatformRole.PLATFORM_AUDITOR}),
+)
 
 
 async def _set_shape(
@@ -338,8 +348,9 @@ def test_set_rejects_non_positive_dims(migrated_url: str) -> None:
 def test_set_denied_for_project_only_token_unaudited(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(roles={"proj-a": Role.ADMIN}, projects=("proj-a",))
-            resp = await _set_shape(pool, ctx, name="gpu", vcpus=8, memory_mb=8192, disk_gb=100)
+            resp = await _set_shape(
+                pool, _PROJECT_ADMIN, name="gpu", vcpus=8, memory_mb=8192, disk_gb=100
+            )
             assert resp.status == "error"
             assert resp.error_category == "authorization_denied"
             async with pool.connection() as conn:
@@ -352,8 +363,9 @@ def test_set_denied_for_project_only_token_unaudited(migrated_url: str) -> None:
 def test_set_denied_for_auditor_but_audited(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(platform_roles=frozenset({PlatformRole.PLATFORM_AUDITOR}))
-            resp = await _set_shape(pool, ctx, name="gpu", vcpus=8, memory_mb=8192, disk_gb=100)
+            resp = await _set_shape(
+                pool, _PLATFORM_AUDITOR, name="gpu", vcpus=8, memory_mb=8192, disk_gb=100
+            )
             assert resp.status == "error"
             assert resp.error_category == "authorization_denied"
             async with pool.connection() as conn:
@@ -412,8 +424,7 @@ def test_delete_unknown_is_configuration_error_unaudited(migrated_url: str) -> N
 def test_delete_denied_for_project_only_token_unaudited(migrated_url: str) -> None:
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
-            ctx = _ctx(roles={"proj-a": Role.ADMIN}, projects=("proj-a",))
-            resp = await shapes.delete_shape(pool, ctx, name="small")
+            resp = await shapes.delete_shape(pool, _PROJECT_ADMIN, name="small")
             assert resp.status == "error"
             assert resp.error_category == "authorization_denied"
             async with pool.connection() as conn:
