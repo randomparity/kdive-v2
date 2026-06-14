@@ -75,3 +75,13 @@ def test_design_and_archive_not_link_checked(tmp_path: Path) -> None:
     (tmp_path / "docs" / "design" / "spec.md").write_text("[y](does-not-exist.md)\n")
     result = _run(tmp_path)
     assert result.returncode == 0, result.stderr
+
+
+def test_vendored_tool_dirs_not_link_checked(tmp_path: Path) -> None:
+    # Vendored agent-tooling config (.claude/, .agents/, .codex/) is not project docs;
+    # its illustrative links must not be resolved against the filesystem.
+    skill = tmp_path / ".agents" / "skills" / "x" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("[x](nope.md)\n")
+    result = _run(tmp_path)
+    assert result.returncode == 0, result.stderr

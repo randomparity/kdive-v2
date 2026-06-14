@@ -5,7 +5,11 @@
 # non-markdown rot (e.g. justfile m2-report output, AGENTS.md code spans). NOT scanned:
 #   - docs/design/** — design specs narrate path moves (e.g. specs/ -> design/), so their
 #     docs/... mentions are intentional and must not be policed here;
-#   - docs/archive/** — frozen history references paths as they were when written.
+#   - docs/archive/** — frozen history references paths as they were when written;
+#   - .claude/**, .agents/**, .codex/** — vendored agent-tooling config, not project docs;
+#     their example strings (e.g. docs/<overlay>.md) are illustrative, not real references.
+# The docs/ token is anchored on a left word boundary so substrings like mkdocs/ or
+# subdocs/ are not mistaken for a docs/ reference.
 # Generator constants built from slash-joined string literals are also out of scope
 # (covered by `just docs-check`/`config-docs-check`).
 # Usage: check-doc-paths.sh [ROOT]
@@ -16,13 +20,15 @@ cd "${ROOT}"
 
 mapfile -t files < <(
   { git ls-files 'justfile' 'scripts/*' '*.yml' '*.yaml' '*.md' 2>/dev/null || true; } |
-    grep -vE '^docs/(design|archive)/'
+    grep -vE '^docs/(design|archive)/|^\.(claude|agents|codex)/'
 )
 if ((${#files[@]} == 0)); then
   mapfile -t files < <(
     find . -type f \( -name justfile -o -path './scripts/*' -o -name '*.yml' \
       -o -name '*.yaml' -o -name '*.md' \) \
-      -not -path './docs/design/*' -not -path './docs/archive/*' -printf '%P\n'
+      -not -path './docs/design/*' -not -path './docs/archive/*' \
+      -not -path './.claude/*' -not -path './.agents/*' -not -path './.codex/*' \
+      -printf '%P\n'
   )
 fi
 
@@ -45,7 +51,7 @@ for f in "${files[@]}"; do
       missing=1
     fi
   done < <(awk 'BEGIN { fence = 0 } /^\140\140\140/ { fence = !fence; next } !fence' "$f" |
-    grep -oE 'docs/[A-Za-z0-9._/-]+' | sort -u)
+    grep -oP '(?<![A-Za-z0-9_./-])docs/[A-Za-z0-9._/-]+' | sort -u)
 done
 
 if ((missing)); then

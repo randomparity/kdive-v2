@@ -138,6 +138,6 @@ To make generation honest and drift-proof:
 - **Sidecar metadata module** (descriptions in a separate table). Rejected: a non-idiomatic
   indirection FastMCP does not read, so it would not improve the live schema and would
   itself drift from the registrations.
-- **Published doc site (MkDocs/Sphinx).** Deferred, not rejected: adds a dependency and
+- **Published doc site (mkdocs/Sphinx).** Deferred, not rejected: adds a dependency and
   build infra the repo lacks today, against the YAGNI/justify-dependencies rule. It layers
   cleanly on the Markdown later when a reader needs a hosted site.

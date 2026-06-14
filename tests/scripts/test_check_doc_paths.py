@@ -63,3 +63,21 @@ def test_paths_inside_code_fences_ignored(tmp_path: Path) -> None:
     (tmp_path / "a.md").write_text(f"{fence}\ncat docs/operating/not-yet.md\n{fence}\n")
     result = _run(tmp_path)
     assert result.returncode == 0, result.stderr
+
+
+def test_substring_docs_not_matched(tmp_path: Path) -> None:
+    # The docs/ token is anchored on a left word boundary, so a substring inside a larger
+    # word (mkdocs/, subdocs/) is not mistaken for a docs/ reference.
+    (tmp_path / "a.md").write_text("see mkdocs/foo and subdocs/bar for the tool\n")
+    result = _run(tmp_path)
+    assert result.returncode == 0, result.stderr
+
+
+def test_vendored_tool_dirs_not_scanned(tmp_path: Path) -> None:
+    # Vendored agent-tooling config (.claude/, .agents/, .codex/) is not project docs;
+    # its illustrative docs/... example strings must not be policed.
+    skill = tmp_path / ".claude" / "skills" / "x" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("e.g. your overlay doc `docs/nope.md`\n")
+    result = _run(tmp_path)
+    assert result.returncode == 0, result.stderr

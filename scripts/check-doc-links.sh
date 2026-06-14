@@ -2,9 +2,11 @@
 # Resolve relative markdown links in tracked *.md files against the filesystem.
 # Reports only; exits 1 if any relative link target is missing. External (scheme://,
 # mailto:) and pure-anchor (#...) links are ignored — only on-disk targets are checked.
-# NOT scanned: docs/archive/** (frozen history) and docs/design/** (narrative specs) —
-# same exemption as check-doc-paths.sh, so a restructure that re-nests archived docs does
-# not turn their now-stale links into gate failures we'd have to "fix" by editing history.
+# NOT scanned: docs/archive/** (frozen history), docs/design/** (narrative specs), and the
+# vendored agent-tooling dirs .claude/**, .agents/**, .codex/** (not project docs) — same
+# exemptions as check-doc-paths.sh, so a restructure that re-nests archived docs does not
+# turn their now-stale links into gate failures we'd have to "fix" by editing history, and
+# vendored skill files with illustrative links are not policed.
 # Usage: check-doc-links.sh [ROOT]   (ROOT defaults to the repo root / cwd)
 set -euo pipefail
 
@@ -13,15 +15,19 @@ cd "${ROOT}"
 
 # Collect markdown files: tracked files when in a git tree, else every *.md under ROOT
 # (the test harness passes a non-git tmp dir). NOT scanned: docs/archive/** (frozen
-# history — its links pointed at the tree as it was and must not be rewritten) and
-# docs/design/** (design specs narrate moves and may show illustrative links).
+# history — its links pointed at the tree as it was and must not be rewritten),
+# docs/design/** (design specs narrate moves and may show illustrative links), and the
+# vendored agent-tooling dirs .claude/**, .agents/**, .codex/** (not project docs).
 mapfile -t files < <(
-  { git ls-files '*.md' 2>/dev/null || true; } | grep -vE '^docs/(design|archive)/'
+  { git ls-files '*.md' 2>/dev/null || true; } |
+    grep -vE '^docs/(design|archive)/|^\.(claude|agents|codex)/'
 )
 if ((${#files[@]} == 0)); then
   mapfile -t files < <(
     find . -type f -name '*.md' \
-      -not -path './docs/design/*' -not -path './docs/archive/*' -printf '%P\n'
+      -not -path './docs/design/*' -not -path './docs/archive/*' \
+      -not -path './.claude/*' -not -path './.agents/*' -not -path './.codex/*' \
+      -printf '%P\n'
   )
 fi
 
