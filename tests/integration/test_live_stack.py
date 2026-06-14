@@ -69,7 +69,11 @@ def _spine_preflight() -> tuple[OidcIssuer, str, str]:
     """Resolve issuer + stack URL + DB URL, or skip with the exact fix (ADR-0035 §4)."""
     image = os.environ.get(_GUEST_IMAGE_ENV)
     if not image or not Path(image).exists():
-        pytest.skip(f"{_GUEST_IMAGE_ENV} unset or missing; run `python -m kdive build-rootfs`")
+        pytest.skip(
+            f"{_GUEST_IMAGE_ENV} unset or points at a missing file; build the local-libvirt "
+            f"rootfs with `python -m kdive build-rootfs` and set {_GUEST_IMAGE_ENV} to its "
+            "--dest path (see docs/runbooks/image-lifecycle.md)"
+        )
     tree = os.environ.get(_KERNEL_TREE_ENV)
     if not tree or not Path(tree).exists():
         pytest.skip(
