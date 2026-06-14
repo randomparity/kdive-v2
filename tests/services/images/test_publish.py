@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -66,26 +67,17 @@ class _FakeStore:
         return artifact_types.HeadResult(size_bytes=len(data), checksum_sha256=None, etag="etag")
 
 
-def _request(
-    *,
-    visibility: ImageVisibility = ImageVisibility.PUBLIC,
-    owner: str | None = None,
-    expires_at: datetime | None = None,
-    digest: str = _DIGEST,
-) -> PublishRequest:
-    return PublishRequest(
-        provider="local-libvirt",
-        name="base",
-        arch="x86_64",
-        format="qcow2",
-        root_device="/dev/vda",
-        digest=digest,
-        capabilities=("console", "kdump"),
-        provenance={"releasever": "43"},
-        visibility=visibility,
-        owner=owner,
-        expires_at=expires_at,
-    )
+_PUBLIC_REQUEST = PublishRequest(
+    provider="local-libvirt",
+    name="base",
+    arch="x86_64",
+    format="qcow2",
+    root_device="/dev/vda",
+    digest=_DIGEST,
+    capabilities=("console", "kdump"),
+    provenance={"releasever": "43"},
+    visibility=ImageVisibility.PUBLIC,
+)
 
 
 async def _connect(url: str) -> psycopg.AsyncConnection:
@@ -100,13 +92,13 @@ def _qcow2_source(tmp_path: Path) -> Path:
 
 def test_publish_request_rejects_scope_fields_that_do_not_match_visibility() -> None:
     with pytest.raises(ValueError, match="owner must be set iff visibility is private"):
-        _request(visibility=ImageVisibility.PRIVATE, expires_at=_DT)
+        replace(_PUBLIC_REQUEST, visibility=ImageVisibility.PRIVATE, expires_at=_DT)
 
     with pytest.raises(ValueError, match="expires_at must be set iff visibility is private"):
-        _request(visibility=ImageVisibility.PRIVATE, owner="proj")
+        replace(_PUBLIC_REQUEST, visibility=ImageVisibility.PRIVATE, owner="proj")
 
     with pytest.raises(ValueError, match="owner must be set iff visibility is private"):
-        _request(owner="proj")
+        replace(_PUBLIC_REQUEST, owner="proj")
 
 
 def test_publish_leaves_registered_row_that_heads_and_resolves(
@@ -117,7 +109,7 @@ def test_publish_leaves_registered_row_that_heads_and_resolves(
 
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
-            entry = await publish_image(conn, store, request=_request(), source=source)
+            entry = await publish_image(conn, store, request=_PUBLIC_REQUEST, source=source)
             assert entry.state is ImageState.REGISTERED
             assert entry.object_key is not None
             assert store.head(entry.object_key) is not None
@@ -138,7 +130,7 @@ def test_crash_after_pending_before_object_leaves_adoptable_state(
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
             with pytest.raises(CategorizedError):
-                await publish_image(conn, failing, request=_request(), source=source)
+                await publish_image(conn, failing, request=_PUBLIC_REQUEST, source=source)
             # The pending row survives, with an object_key set but no object behind it.
             rows = await IMAGE_CATALOG.list_all(conn)
             assert len(rows) == 1
@@ -148,7 +140,7 @@ def test_crash_after_pending_before_object_leaves_adoptable_state(
 
             # A re-run adopts the pending row (no unique-violation wedge) and registers it.
             healthy = _FakeStore()
-            entry = await publish_image(conn, healthy, request=_request(), source=source)
+            entry = await publish_image(conn, healthy, request=_PUBLIC_REQUEST, source=source)
             assert entry.id == rows[0].id
             assert entry.state is ImageState.REGISTERED
             assert (await IMAGE_CATALOG.list_all(conn)) == [
@@ -165,7 +157,7 @@ def test_rerun_adopts_pending_and_rearms_pending_since(migrated_url: str, tmp_pa
         async with await _connect(migrated_url) as conn:
             failing = _FakeStore(fail_put=True)
             with pytest.raises(CategorizedError):
-                await publish_image(conn, failing, request=_request(), source=source)
+                await publish_image(conn, failing, request=_PUBLIC_REQUEST, source=source)
             pending = (await IMAGE_CATALOG.list_all(conn))[0]
             original_since = pending.pending_since
 
@@ -176,7 +168,7 @@ def test_rerun_adopts_pending_and_rearms_pending_since(migrated_url: str, tmp_pa
             )
 
             healthy = _FakeStore()
-            entry = await publish_image(conn, healthy, request=_request(), source=source)
+            entry = await publish_image(conn, healthy, request=_PUBLIC_REQUEST, source=source)
             assert entry.id == pending.id
             assert entry.pending_since > original_since - timedelta(hours=2)
 
@@ -210,7 +202,7 @@ def test_realizing_defined_baseline_follows_same_path(migrated_url: str, tmp_pat
             )
             inserted = await IMAGE_CATALOG.insert(conn, seeded)
 
-            entry = await publish_image(conn, store, request=_request(), source=source)
+            entry = await publish_image(conn, store, request=_PUBLIC_REQUEST, source=source)
             # The seeded defined row is realized in place (defined -> pending -> registered).
             assert entry.id == inserted.id
             assert entry.state is ImageState.REGISTERED
@@ -228,7 +220,7 @@ def test_publish_fails_when_object_does_not_head(migrated_url: str, tmp_path: Pa
     async def _run() -> None:
         async with await _connect(migrated_url) as conn:
             with pytest.raises(CategorizedError) as err:
-                await publish_image(conn, store, request=_request(), source=source)
+                await publish_image(conn, store, request=_PUBLIC_REQUEST, source=source)
             assert err.value.category is ErrorCategory.INFRASTRUCTURE_FAILURE
             row = (await IMAGE_CATALOG.list_all(conn))[0]
             assert row.state is ImageState.PENDING
@@ -247,7 +239,10 @@ def test_publish_rejects_source_digest_mismatch(migrated_url: str, tmp_path: Pat
         async with await _connect(migrated_url) as conn:
             with pytest.raises(CategorizedError) as err:
                 await publish_image(
-                    conn, store, request=_request(digest=wrong_digest), source=source
+                    conn,
+                    store,
+                    request=replace(_PUBLIC_REQUEST, digest=wrong_digest),
+                    source=source,
                 )
             assert err.value.category is ErrorCategory.CONFIGURATION_ERROR
             rows = await IMAGE_CATALOG.list_all(conn)
@@ -270,16 +265,22 @@ def test_two_owners_same_identity_do_not_collide(migrated_url: str, tmp_path: Pa
             a = await publish_image(
                 conn,
                 store,
-                request=_request(
-                    visibility=ImageVisibility.PRIVATE, owner="proj-a", expires_at=expires
+                request=replace(
+                    _PUBLIC_REQUEST,
+                    visibility=ImageVisibility.PRIVATE,
+                    owner="proj-a",
+                    expires_at=expires,
                 ),
                 source=source,
             )
             b = await publish_image(
                 conn,
                 store,
-                request=_request(
-                    visibility=ImageVisibility.PRIVATE, owner="proj-b", expires_at=expires
+                request=replace(
+                    _PUBLIC_REQUEST,
+                    visibility=ImageVisibility.PRIVATE,
+                    owner="proj-b",
+                    expires_at=expires,
                 ),
                 source=source,
             )
@@ -311,15 +312,18 @@ def test_public_publish_does_not_adopt_a_private_pending(migrated_url: str, tmp_
                 await publish_image(
                     conn,
                     failing,
-                    request=_request(
-                        visibility=ImageVisibility.PRIVATE, owner="proj-a", expires_at=expires
+                    request=replace(
+                        _PUBLIC_REQUEST,
+                        visibility=ImageVisibility.PRIVATE,
+                        owner="proj-a",
+                        expires_at=expires,
                     ),
                     source=source,
                 )
             private_pending = (await IMAGE_CATALOG.list_all(conn))[0]
 
             healthy = _FakeStore()
-            public = await publish_image(conn, healthy, request=_request(), source=source)
+            public = await publish_image(conn, healthy, request=_PUBLIC_REQUEST, source=source)
             assert public.id != private_pending.id
             assert public.visibility is ImageVisibility.PUBLIC
             # The private pending row is untouched (still pending, still owned by proj-a).
@@ -341,8 +345,11 @@ def test_private_publish_records_owner_and_expiry(migrated_url: str, tmp_path: P
             entry = await publish_image(
                 conn,
                 store,
-                request=_request(
-                    visibility=ImageVisibility.PRIVATE, owner="proj", expires_at=expires
+                request=replace(
+                    _PUBLIC_REQUEST,
+                    visibility=ImageVisibility.PRIVATE,
+                    owner="proj",
+                    expires_at=expires,
                 ),
                 source=source,
             )
