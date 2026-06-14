@@ -49,6 +49,12 @@ _log = logging.getLogger(__name__)
 # this plane lets through GuestAgentExec.
 _HELPER = "/usr/local/sbin/kdive-install-kernel"
 _TRANSCRIPT_OWNER_KIND = "systems"
+# Bounded tail of the redacted in-guest transcript surfaced in an install_failure so the
+# in-guest reason (a grubby/dracut/curl step) is diagnosable from the worker log without a guest
+# shell, while a runaway helper log cannot bloat the job error (#386). The *redacted* snippet is
+# used, never the raw result streams — guest stderr echoes the presigned capability URL (a curl
+# progress line), and only the registry-masked transcript is safe to log (ADR-0078).
+_TRANSCRIPT_TAIL = 2048
 # The presigned GET must outlive a worst-case in-guest download of a hundreds-of-MB bundle
 # (ADR-0081), not the shortest possible window (ADR-0082 §2).
 _DEFAULT_GET_EXPIRY_S = 3600
@@ -188,6 +194,7 @@ class RemoteLibvirtInstall:
                 details={
                     "system_id": str(request.system_id),
                     "exit_status": output.result.exit_status,
+                    "transcript": output.transcript_snippet[-_TRANSCRIPT_TAIL:],
                 },
             )
 
