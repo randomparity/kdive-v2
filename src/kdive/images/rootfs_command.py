@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shlex
 import shutil
 from pathlib import Path
 
@@ -54,8 +55,9 @@ def run_build_rootfs(args: argparse.Namespace) -> None:
     if plane is None:
         raise RuntimeError("local-libvirt runtime has no rootfs build plane")
     output = plane.build(spec)
-    dest = Path(args.dest)
+    dest = Path(args.dest).resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(output.qcow2_path), str(dest))
     dest.chmod(0o644)
-    _log.info("built rootfs %s digest=%s", dest, output.digest)
+    _log.info("built rootfs %s digest=%s; set KDIVE_GUEST_IMAGE to this path", dest, output.digest)
+    print(f"export KDIVE_GUEST_IMAGE={shlex.quote(str(dest))}")
