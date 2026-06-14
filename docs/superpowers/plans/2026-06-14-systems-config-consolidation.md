@@ -124,14 +124,10 @@ UPDATE resources SET managed_by = 'discovery';        -- discovered hosts: never
 UPDATE image_catalog SET managed_by = 'config' WHERE visibility = 'public' AND owner IS NULL;
 -- affinity already defaults global (owner_project NULL); no allocation regresses.
 
--- system -> image reference (prune-guard prerequisite; folded in here, see Task 1.5 note).
--- Confirmed: no such reference exists in the schema today. Nullable; the live provision path
--- populates it so reconcile can resolve an image's dependent systems for the cordon guard.
--- ON DELETE SET NULL is load-bearing: the image prune deletes an IDLE image (no live deps),
--- but a TERMINAL System (done, not "live" per ADR-0109) may still carry image_id. NO ACTION
--- would make that terminal reference abort the prune with an FK violation; SET NULL lets the
--- idle delete proceed while the cordon guard still protects LIVE (non-terminal) dependents.
-ALTER TABLE systems ADD COLUMN image_id uuid REFERENCES image_catalog (id) ON DELETE SET NULL;
+-- NOTE: NO new system->image column. A reference already exists — the prune guard reuses
+-- services/images/retention.py:image_referenced_by_live_system, which resolves "a non-terminal
+-- System references this image" via a JSONB-containment probe on systems.provisioning_profile
+-- keyed by (provider, name), already ADR-0109 terminal-state-filtered. See Task 1.4 / Task 1.5.
 ```
 
 - [ ] **Step 4: Run to verify it passes**
@@ -146,7 +142,9 @@ git add src/kdive/db/schema/0030_systems_inventory.sql tests/integration/test_mi
 git commit -m "feat(inventory): author systems-inventory schema migration (ADR-0112)"
 ```
 
-**Note for the implementer:** the `managed_by` backfill is the most failure-prone line in the whole effort. `resources → 'discovery'` so the first reconcile does **not** prune a real discovered host that is not yet declared in `systems.toml`. Seeded `image_catalog → 'config'` so reconcile fully owns the catalog (a previously-seeded image the operator did not migrate into the file is then pruned **under the cordon guard**, not stranded as an unowned orphan). Do not collapse these two into one default.
+**Note for the implementer:** the `managed_by` backfill is the most failure-prone line in the whole effort. `resources → 'discovery'` so the first reconcile does **not** prune a real discovered host that is not yet declared in `systems.toml`. Seeded `image_catalog → 'config'` so reconcile fully owns the catalog (a previously-seeded image the operator did not migrate into the file is then pruned **under the cordon guard**, not stranded as an unowned orphan). Do not collapse these two into one default. **`build_hosts` is intentionally NOT backfilled** — it keeps the `'runtime'` default because build hosts are imperatively registered (`build_hosts.register`, ssh hosts #342/#359), so the first reconcile never prunes them; a config-declared `[[build_host]]` is adopted in Phase 3 (see Task 3.2).
+
+**Rollout safety valve for prune object-reclaim (load-bearing):** the first post-migration reconcile prunes any config image absent from `systems.toml`. The cordon guard protects in-use images, but an **idle baseline the operator forgot to list** would be deleted row + S3 object — irreversibly, since there is no public-image GC (Task 1.4). So **object reclamation is not done on the first pass blind**: object deletion is **deferred behind a grace TTL** (tombstone the row, reclaim the object only on a later pass once it is *still* absent past the TTL) — **recommended default**, because it is self-tracking (timestamp-based) and needs no out-of-band confirm. The alternative — **report-only first pass** (emit the `ReconcileDiff`, delete nothing, until an explicit `kdive reconcile-systems --apply` / `ops.reconcile_systems`) — also works but requires persisting "first pass already reported, a later pass may apply" state plus a human to act, so prefer the grace TTL unless an interactive confirm is wanted. Never reclaim a public image's bytes on an unconfirmed first pass. Every object reclamation is logged + surfaced in the diff.
 
 ### Task 1.2: The pydantic model + discriminated source union
 
@@ -600,6 +598,22 @@ async def test_prune_of_in_use_image_cordons_not_deletes(pg_conn, write_toml):
     assert "busy" in {c.name for c in diff.cordoned}
 
 
+async def test_relaxed_check_rejects_both_or_neither(pg_conn):
+    # Invariant 7 (the constraint half): the relaxed image_object_present CHECK must reject a
+    # non-'defined' row with BOTH object_key+volume or NEITHER. A typo in the CHECK passes the
+    # happy-path tests but silently allows an invalid row, so assert the rejection directly.
+    import psycopg
+    with pytest.raises(psycopg.errors.CheckViolation):
+        await _raw_insert_image(pg_conn, state="registered", object_key="k", volume="v")  # both
+    with pytest.raises(psycopg.errors.CheckViolation):
+        await _raw_insert_image(pg_conn, state="registered", object_key=None, volume=None)  # neither
+    with pytest.raises(psycopg.errors.CheckViolation):
+        await _raw_insert_image(pg_conn, state="defined", object_key="k", volume=None)  # defined w/ key
+    # valid shapes succeed:
+    await _raw_insert_image(pg_conn, state="registered", object_key="k", volume=None)
+    await _raw_insert_image(pg_conn, state="registered", object_key=None, volume="v")
+
+
 async def test_reconcile_is_idempotent(pg_conn, write_toml):
     body = """
         schema_version = 2
@@ -617,7 +631,7 @@ async def test_reconcile_is_idempotent(pg_conn, write_toml):
     assert not diff2.created and not diff2.updated and not diff2.pruned
 ```
 
-(Provide the `_one`/`_exists`/`_insert_*`/`_attach_dependent_system` helpers in the test module — direct SQL against `pg_conn`. The dependent-system link uses the `systems.image_id` reference **added in the Task 1.1 migration** (it exists before this task runs — the issue decomposition orders #388 migration before #390 engine), so this test asserts the **tight** guard directly: a registered image with a dependent `systems.image_id` row is cordoned, an idle one is pruned. There is no degraded fallback — both `test_prune_removes_only_config_rows_absent_from_config` (which prunes an *idle* registered staged row) and `test_prune_of_in_use_image_cordons_not_deletes` (which cordons a *dependent* one) require the `systems.image_id` reference to distinguish idle from in-use; that is why it lives in the migration, not a later task.)
+(Provide the `_one`/`_exists`/`_insert_*`/`_attach_dependent_system` helpers in the test module — direct SQL against `pg_conn`. The dependent-system link reuses the **existing** `image_referenced_by_live_system` (`services/images/retention.py:60-83`): a non-terminal System whose `provisioning_profile` JSONB references the image by `(provider, name)`. `_attach_dependent_system` inserts a non-terminal `systems` row with that profile shape. So `test_prune_of_in_use_image_cordons_not_deletes` cordons a *referenced* image and `test_prune_removes_only_config_rows_absent_from_config` prunes an *unreferenced* one — both driven by the same guard the private-image expiry already trusts. No new schema column.)
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -628,7 +642,7 @@ Expected: FAIL — `reconcile_images` missing.
 
 `reconcile.py` provides: `ManagedBy` enum; `ReconcileDiff` dataclass (`created`, `updated`, `pruned`, `cordoned`, `warned` lists of small records); a `per_identity_lock(conn, key)` helper using `advisory_xact_lock` (reuse `kdive.store...advisory_xact_lock`); and a `_prune_or_cordon(conn, row, is_live)` helper encoding the non-destructive contract.
 
-**Serialize whole-inventory passes (load-bearing):** three triggers run this engine (CLI, loop pass, `ops.reconcile_systems`), and `image_catalog`/inventory rows have **no** pre-existing per-object advisory lock (unlike Project/Allocation/System, which the existing `reconcile_once` serializes on). Two concurrent passes both "load existing → compute prune set → insert/delete" and race: concurrent inserts hit the `(provider,name,arch)` unique constraint → one transaction aborts (a spurious pass failure); prune+recreate can flap. So each pass **takes a single inventory-scoped `advisory_xact_lock`** (a new `LockScope.INVENTORY`, one lock per pass) before reading, so CLI/loop/MCP passes serialize. Add a concurrent-pass test (two reconciles in flight → no unique-violation abort; second is a clean no-op).
+**Serialize whole-inventory passes (load-bearing):** three triggers run this engine (CLI, loop pass, `ops.reconcile_systems`), and `image_catalog`/inventory rows have **no** pre-existing per-object advisory lock (unlike Project/Allocation/System, which the existing `reconcile_once` serializes on). Two concurrent passes both "load existing → compute prune set → insert/delete" and race: concurrent inserts hit the `(provider,name,arch)` unique constraint → one transaction aborts (a spurious pass failure); prune+recreate can flap. So each pass holds a **session-scoped** inventory advisory lock for its **whole** duration — `pg_advisory_lock(LockScope.INVENTORY)` … `pg_advisory_unlock` in a `try/finally`. **It must be session-scoped, not `advisory_xact_lock`:** the pass spans *multiple* transactions (the batched upsert transaction + a separate per-image transaction per prune-with-reclaim, see Transaction boundaries below), and an xact lock auto-releases at the end of the first transaction — too early to serialize the prunes. Add a concurrent-pass test (two reconciles in flight → no unique-violation abort; second is a clean no-op).
 
 `reconcile_images.py`:
 - Load existing `image_catalog` rows.
@@ -638,8 +652,12 @@ Expected: FAIL — `reconcile_images` missing.
   - `staged` → set `volume`, `state='registered'` (no S3).
   - `s3` → HEAD the object (existence). If digest supplied (config) → `state='registered'`, set `object_key`+`digest`; else leave `state='defined'` + append a `warned` entry (invariant 8). **Degrade on both "object absent" (404) AND "object store unconfigured/unreachable"** (a HEAD against an unwired store throws a client/connection error, not a clean 404 — matching the spec's `_seed_build_configs_step` no-S3 tolerance): catch both → row stays `defined` + warn, the pass still succeeds; it realizes on a later reconcile once S3 is up. Only a *configured-and-reachable-but-erroring* store is a hard failure. Test: no object store configured → row stays `defined`, pass succeeds (does not abort).
   - `build` → ensure a `defined` row exists; never downgrade a realized row (invariant 1). If the row's `base_image` is referenced but not yet `registered`, append a `warned`/degraded marker.
-- Prune: for each existing `managed_by='config'` row whose `(provider,name,arch)` is absent from config, call `_prune_or_cordon` — delete if idle, cordon + `diff.cordoned` if it has dependent systems (live per ADR-0109 non-terminal predicate). Never delete S3 bytes inline (GC owns that). Runtime/discovery rows: skip (invariant 2/3).
-- All image work in **one transaction** (all-or-nothing per entity type).
+- Prune: for each existing `managed_by='config'` row whose `(provider,name,arch)` is absent from config, call `_prune_or_cordon`.
+  - **Liveness guard must be kind-aware (load-bearing — not local-only):** `image_referenced_by_live_system` (`retention.py`) probes only the **`local-libvirt`** `provisioning_profile` rootfs section, so as-is it would report a live **remote** base image as unreferenced and prune could delete an in-use remote/staged image (and its bytes). The guard MUST cover every kind this design prunes — generalize the probe to match remote-libvirt references too, or guard remote/staged images by an active allocation/System on a resource whose `base_image` is this image (see Task 1.5). Until a kind is demonstrably covered, prune of that kind is **cordon-only** (never reclaim).
+  - If referenced → **cordon** + `diff.cordoned` (no delete). If idle → delete, and **reclaim the S3 object inline** for `s3`/`build`-backed rows: `store.delete(object_key)` **then** `DELETE FROM image_catalog`, mirroring `expire_one_private_image` (object-before-row). A `staged` row (`object_key IS NULL`) just deletes the row.
+  - **Why inline, not "GC owns it":** the existing reclamation (`expire_one_private_image`) is **catalog-driven** (it needs the row's `object_key`) **and private-only** (`visibility=private` + `expires_at`); there is no S3-enumeration orphan sweep and no public-image GC, so deleting a public config row without deleting its object would leak the bytes forever.
+  - Runtime/discovery rows: skip (invariant 2/3).
+- **Transaction boundaries (load-bearing — `store.delete` is not transactional):** batch the **upserts** in one transaction (all-or-nothing for the create/update phase). Run each **prune-with-reclaim in its own per-image transaction** (object-before-row, like `expire_one_private_image`) — do **not** issue inline `store.delete`s inside a single batch transaction, because a mid-batch rollback would revert row state while the S3 deletes already happened (irreversible). Per-image isolation means a crash leaves at most a dangling row the next pass re-prunes idempotently (`store.delete` of a missing key is a no-op).
 
 - [ ] **Step 4: Run to verify they pass**
 
@@ -653,26 +671,23 @@ git add src/kdive/inventory/reconcile.py src/kdive/inventory/reconcile_images.py
 git commit -m "feat(inventory): reconcile engine core + reconcile_images merge contract"
 ```
 
-### Task 1.5: Populate `systems.image_id` in the live provision path
+### Task 1.5: Extend the live-reference guard to cover every pruned kind
 
-The `systems.image_id` **column** already exists (added in the Task 1.1 migration — confirmed: no
-such reference existed in the schema before). This task makes the live provision path **write** it,
-so the Task 1.4 prune guard can resolve an image's dependent systems for real (not just in tests
-that insert it directly).
+**No new schema.** The Task 1.4 prune cordon-guard builds on `image_referenced_by_live_system`
+(`services/images/retention.py:60-83`). But that probe is **`local-libvirt`-only** (hardwired
+`_LOCAL_LIBVIRT_SECTION`), and this design prunes **remote/staged** base images too — so reusing it
+unchanged would report a live remote base image as unreferenced and let prune delete an in-use
+image. This task makes the guard cover the kinds prune touches; it is a **correctness prerequisite**
+for prune reclaiming any non-local image, not a confirmation step.
 
-**Files:**
-- Modify: the System-creation path (provision/install) so a newly provisioned System records the
-  `image_catalog.id` it booted from into `systems.image_id`. Find it: `rg -ln "INSERT INTO systems" src/kdive`.
-- Test: extend `tests/integration/test_reconcile_inventory.py` — a System created through the live
-  path (not a raw insert) populates `image_id`, and the cordon guard resolves it.
-
-- [ ] **Step 1:** Locate the `INSERT INTO systems` site(s) and the image identity available there (the resolved `image_catalog` row for the boot image).
-- [ ] **Step 2:** Thread the image's `id` into the insert (nullable — a System with no resolvable image, e.g. a legacy row, leaves it NULL and the guard treats it as not-a-dependent).
-- [ ] **Step 3:** Run the cordon + prune tests (1.4) against a live-path-created System and confirm the tight guard fires.
-- [ ] **Step 4: Commit**
+- [ ] **Step 1:** Read `image_referenced_by_live_system` / `_LOCAL_LIBVIRT_SECTION`; confirm the local-libvirt JSONB path.
+- [ ] **Step 2:** Determine how a **live remote/staged System references its base image** — the remote-libvirt `provisioning_profile` section, or an active allocation/System on a resource whose `base_image` is this image. Generalize the probe (a kind-parameterized section, or a union with an allocation-based check) so a live System of **any** provider that uses the image returns referenced.
+- [ ] **Step 3:** Write a **remote-dependent cordon test:** a live remote System on a `staged`/`s3` base image → reconcile **cordons** (does not delete/`store.delete`) that base image. Also make Task 1.4's `_attach_dependent_system` build the **real** profile shape so the local case exercises the production probe, not a stub.
+- [ ] **Step 4:** Until a kind is demonstrably covered by the guard, prune of that kind stays **cordon-only** in Task 1.4 (never reclaim) — assert that fallback in a test.
+- [ ] **Step 5: Commit**
 
 ```bash
-git add -A && git commit -m "feat(inventory): populate systems.image_id so image prune resolves dependents"
+git add -A && git commit -m "feat(inventory): extend live-image reference guard to remote/staged base images before prune reclaims them"
 ```
 
 ### Task 1.6: `kdive reconcile-systems` CLI + loop spec `reconcile_inventory`
@@ -814,7 +829,9 @@ Outcome: multiple instances per provider; the last hardcoded host config gone.
 
 ### Task 3.2: `reconcile_build_hosts`
 - **Files:** create `src/kdive/inventory/reconcile_build_hosts.py`; reconcile `[[build_host]]` into the `build_hosts` table (`0027`/`0029`), carrying `base_image_volume`, `workspace_root`, `max_concurrent`, `managed_by='config'`.
-- **Test:** a `[[build_host]]` reconciles to a `build_hosts` row; prune/cordon contract holds.
+- **Identity + collision:** key the upsert by the build-host **`name`** — already `text UNIQUE NOT NULL` (`0027_build_hosts.sql:8`), no migration change needed. A config-declared host whose `name` matches an existing `managed_by='runtime'` row → **adopt** (flip to `config`), mirroring the resource adopt-on-collision (Task 4.4); a runtime `build_hosts.register` of a name that already exists as a `config` row is **rejected**. (The seeded baseline `build_hosts` row from `0027` is `managed_by='runtime'`; declaring it in config adopts it.)
+- **Prune is DB-guarded too:** `build_host_leases` FKs `build_hosts(id)` `ON DELETE RESTRICT` (`0027`), so a host with an in-flight build lease **cannot** be deleted — prune of a busy host must **cordon** (the RESTRICT would otherwise abort the pass), naturally matching the refuse-if-live contract.
+- **Test:** a `[[build_host]]` reconciles to a `build_hosts` row; an existing runtime host declared in config is adopted, not duplicated; a config host with an in-flight lease is cordoned, not deleted.
 
 ### Task 3.3: Delete the singleton remote env vars
 - **Delete:** `KDIVE_REMOTE_LIBVIRT_{URI,CLIENT_CERT_REF,CLIENT_KEY_REF,GDB_ADDR,BASE_IMAGE}` reads in `src/kdive/providers/remote_libvirt/{config.py,settings.py,discovery.py}` and their consumers; the remote provider now resolves its connection from the reconciled `resources` row (per instance). Delete `scripts/coverage_campaign/d1.env.template`.
@@ -860,8 +877,9 @@ Outcome: an agent can add/remove a system live, scoped to its project, with leak
 - **Contract:** a config identity (`name`) matching a `runtime` row → adopt: flip `managed_by → config`, **clear `lease_expires_at`**, **take the config-declared affinity** (default global). Registration + reconcile **serialize on the identity** (advisory lock on `name`) so prune cannot race re-`register`.
 - **Test (invariant 6):** adoption clears the lease and applies config affinity (widening a previously project-scoped runtime resource to global unless the file declares a scope).
 
-### Task 4.5: `ops.reconcile_now` gating for inventory prune
-- The existing `ops.reconcile_now` is gated `platform_operator` (`mcp/tools/ops/reconcile.py`). Because the inventory pass can **prune**, an inventory-triggering MCP path must be `platform_admin`. Either add a dedicated `ops.reconcile_systems` tool (platform_admin) or gate the inventory pass within `reconcile_now` behind a platform_admin check. **Decide at execution; default: a dedicated `ops.reconcile_systems` tool** (keeps `reconcile_now`'s existing contract untouched).
+### Task 4.5: `ops.reconcile_systems` MCP trigger (gated + audited)
+- The existing `ops.reconcile_now` is gated `platform_operator` and **audits to `platform_audit_log`** (`mcp/tools/ops/reconcile.py`). Because the inventory pass can **prune** (and reclaim S3 bytes), an inventory-triggering MCP path must be `platform_admin`. **Default: a dedicated `ops.reconcile_systems` tool** (platform_admin) — keeps `reconcile_now`'s existing contract untouched.
+- **Audit (load-bearing — it's destructive-tier):** `ops.reconcile_systems` audits to `platform_audit_log` like `reconcile_now`, recording the actor and the resulting `ReconcileDiff` (especially prunes and object reclamations), so a config-driven deletion is attributable.
 
 **Phase-4 done check:** agent register→use→handoff-renew→deregister works; leaked runtime resource auto-reaped (cordon-if-live); affinity no-op proven for existing allocations; `just test` green.
 
@@ -875,7 +893,7 @@ Epic: **#387** (milestone M2.6 — Systems inventory config).
 
 | # | Issue | Sub-issue | Phase | Depends on | Files (primary) |
 |---|---|---|---|---|---|
-| A | #388 | Migration `0030` + `system→image` ref | 1 | — | `db/schema/0030_*.sql`, `test_migrate.py` |
+| A | #388 | Migration `0030` (all schema; no system→image col — reuse existing probe) | 1 | — | `db/schema/0030_*.sql`, `test_migrate.py` |
 | B | #389 | Inventory model + loader | 1 | — (parallel with A) | `inventory/{model,loader,errors}.py` |
 | C | #390 | Engine core + `reconcile_images` | 1 | #388, #389 | `inventory/{reconcile,reconcile_images}.py` |
 | D | #391 | CLI + `reconcile_inventory` loop pass | 1 | #390 | `cli/reconcile_systems.py`, `reconciler/loop.py` |
@@ -884,18 +902,18 @@ Epic: **#387** (milestone M2.6 — Systems inventory config).
 | G | #394 | Multi-instance + `reconcile_build_hosts` | 3 | #393 | `inventory/reconcile_build_hosts.py` |
 | H | #395 | Delete `KDIVE_REMOTE_LIBVIRT_*` singletons + rewire remote lifecycle | 3 | #394 | `providers/remote_libvirt/*`, guard test |
 | I | #396 | `resources.register/deregister/renew` tools | 4 | #393 | `mcp/tools/ops/resources/*` |
-| J | #397 | Affinity admission check | 4 | #388 | `services/allocation/admission.py` |
+| J | #397 | Affinity selection filter + admission backstop | 4 | #388 | `services/allocation/placement.py`, `services/allocation/admission.py` |
 | K | #398 | Lease + reachability reaping spec | 4 | #388, #396 | `reconciler/loop.py` |
 | L | #399 | Adopt-on-collision + `ops.reconcile_systems` gating | 4 | #390, #396, #397 | `inventory/reconcile_resources.py`, `mcp/tools/ops/` |
 
 **Wave plan:** Wave 1 = {#388, #389} parallel. Wave 2 = {#390}. Wave 3 = {#391, #392}. Phase-1 ships. Wave 4 = {#393}. Wave 5 = {#394}, then {#395}. Phase-2/3 ship. Wave 6 = {#396, #397} parallel, then {#398, #399}. Phase-4 ships.
 
-**Recurring rebase zones** (serialize merges here, per prior orchestration lessons): `reconciler/loop.py` (D, K), `mcp/tools/ops/` registry + generated tool docs (I, L), `services/allocation/admission.py` (F overlay vs J affinity), `tests/integration/test_migrate.py` (A only — no later migrations).
+**Recurring rebase zones** (serialize merges here, per prior orchestration lessons): `reconciler/loop.py` (D, K), `mcp/tools/ops/` registry + generated tool docs (I, L), `services/allocation/` (J touches `placement.py`+`admission.py`; F touches `reconcile_resources.py`+`fault_inject/discovery.py`, **not** `admission.py` — the #385 fix is the capabilities overlay), `tests/integration/test_migrate.py` (A only — no later migrations).
 
 ---
 
 ## Self-review
 
-- **Spec coverage:** three ownership layers → Tasks 1.1 (managed_by) + 2.1 (overlay) + 4.2 (affinity). Operating model (declarative/imperative disjoint) → 1.1 backfill + 4.1 runtime rows. Adopt-on-collision → 4.4. Three reload triggers → 1.6 (CLI + loop) + 4.5 (MCP). Engine parser/validator → 1.2/1.3. Per-entity reconcilers → 1.4/2.1/3.2. Existence-vs-overlay split → 2.1. Image realization (s3/build/staged + CHECK relax) → 1.1 + 1.4. Runtime mutation (register/deregister/renew + auth) → 4.1. Affinity → 4.2. Lease/reaping → 4.3. Schema v2 → 1.2. All four phases → Phases 1–4. Deletes → 1.7 + 2.2 + 3.3. Error handling (fault-isolation) → 1.6. All 8 test invariants → 1.4 (1,2,3,5,7,8), 2.1 (4), 4.3/4.4 (6). Guard test → 1.7 + 3.3. Every spec section maps to a task.
+- **Spec coverage:** three ownership layers → Tasks 1.1 (managed_by) + 2.1 (overlay) + 4.2 (affinity). Operating model (declarative/imperative disjoint) → 1.1 backfill + 4.1 runtime rows. Adopt-on-collision → 4.4 (resources) + 3.2 (build hosts). Three reload triggers → 1.6 (CLI + loop) + 4.5 (MCP, gated+audited). Engine parser/validator → 1.2/1.3. Per-entity reconcilers → 1.4/2.1/3.2. Existence-vs-overlay split → 2.1. Image realization (s3/build/staged + CHECK relax) → 1.1 + 1.4. Non-destructive prune (kind-aware live-reference guard, reuse `image_referenced_by_live_system`; inline per-image S3 reclaim; rollout grace valve) → 1.4 + 1.5. Runtime mutation (register/deregister/renew + auth) → 4.1. Affinity (selection + admission) → 4.2. Lease/reaping → 4.3. Schema v2 → 1.2. All four phases → Phases 1–4. Deletes → 1.7 + 2.2 + 3.3. Campaign v2 consumer → 3.4. Error handling (fault-isolation, missing-default tolerance, s3 store-unconfigured degrade) → 1.6 + 1.4. All 8 test invariants → 1.4 (1,2,3,5,8 + 7 via `test_relaxed_check_rejects_both_or_neither`), 2.1 (4), 4.3/4.4 (6). Guard test → 1.7 + 3.3. Every spec section maps to a task.
 - **Placeholder scan:** Phase 1 carries complete code (migration SQL, model, loader, test bodies). Phases 2–4 are sub-issue specs with concrete file paths + test invariants, each getting its own bite-sized plan at execution (per the spec's "four phases, each its own implementation plan"). No "TBD"/"add validation"/"handle edge cases" left unspecified.
-- **Type consistency:** `InventoryDoc`/`ImageEntry`/`ImageSource`/`*Instance` names match across model, loader, and reconcile tasks. `ReconcileDiff` fields (`created/updated/pruned/cordoned/warned`) are used consistently in 1.4's tests and 1.6/2.1. `managed_by` values (`config/discovery/runtime`) match the migration CHECK. `(provider,name,arch)` for images vs `(kind,name)` for resources is consistent throughout.
+- **Type consistency:** `InventoryDoc`/`ImageEntry`/`ImageSource`/`*Instance` names match across model, loader, and reconcile tasks. `ReconcileDiff` fields (`created/updated/pruned/cordoned/warned`) are used consistently in 1.4's tests and 1.6/2.1. `managed_by` values (`config/discovery/runtime`) match the migration CHECK. `(provider,name,arch)` for images vs `(kind,name)` for resources vs `name` (already-UNIQUE) for build hosts is consistent throughout. No `systems.image_id` column — the prune guard reuses the existing `image_referenced_by_live_system` probe (extended per Task 1.5 to cover remote/staged).
