@@ -62,28 +62,6 @@ def _registration(
     )
 
 
-def _upload_request(
-    *,
-    tenant: str = "proj-a",
-    sha256: str,
-    size_bytes: int = 42,
-    ttl: timedelta = timedelta(hours=1),
-) -> ComponentUploadIntentRequest:
-    return ComponentUploadIntentRequest(
-        registration=ComponentUploadRegistration(
-            tenant=tenant,
-            provider="local-libvirt",
-            component_kind="rootfs",
-            visibility="project",
-            project="proj-a",
-            principal="alice",
-        ),
-        sha256=sha256,
-        size_bytes=size_bytes,
-        ttl=ttl,
-    )
-
-
 def _component_row(**overrides: object) -> dict[str, object]:
     row: dict[str, object] = {
         "id": UUID("00000000-0000-0000-0000-000000000001"),
@@ -323,7 +301,19 @@ def test_component_upload_finalization_is_idempotent(migrated_url: str) -> None:
             await pool.open()
             upload_id, key = await create_component_upload_intent(
                 pool,
-                _upload_request(sha256="sha256:" + "2" * 64),
+                ComponentUploadIntentRequest(
+                    registration=ComponentUploadRegistration(
+                        tenant="proj-a",
+                        provider="local-libvirt",
+                        component_kind="rootfs",
+                        visibility="project",
+                        project="proj-a",
+                        principal="alice",
+                    ),
+                    sha256="sha256:" + "2" * 64,
+                    size_bytes=42,
+                    ttl=timedelta(hours=1),
+                ),
             )
             assert key == component_upload_object_key(
                 tenant="proj-a",
@@ -364,7 +354,19 @@ def test_expired_component_upload_cannot_finalize(migrated_url: str) -> None:
             await pool.open()
             upload_id, key = await create_component_upload_intent(
                 pool,
-                _upload_request(sha256="sha256:" + "7" * 64, ttl=timedelta(seconds=-1)),
+                ComponentUploadIntentRequest(
+                    registration=ComponentUploadRegistration(
+                        tenant="proj-a",
+                        provider="local-libvirt",
+                        component_kind="rootfs",
+                        visibility="project",
+                        project="proj-a",
+                        principal="alice",
+                    ),
+                    sha256="sha256:" + "7" * 64,
+                    size_bytes=42,
+                    ttl=timedelta(seconds=-1),
+                ),
             )
             store = _ObjectStore(
                 {key: HeadResult(size_bytes=42, checksum_sha256="sha256:" + "7" * 64, etag="e")}
@@ -390,7 +392,19 @@ def test_failed_component_upload_cannot_finalize(migrated_url: str) -> None:
             await pool.open()
             upload_id, key = await create_component_upload_intent(
                 pool,
-                _upload_request(sha256="sha256:" + "8" * 64),
+                ComponentUploadIntentRequest(
+                    registration=ComponentUploadRegistration(
+                        tenant="proj-a",
+                        provider="local-libvirt",
+                        component_kind="rootfs",
+                        visibility="project",
+                        project="proj-a",
+                        principal="alice",
+                    ),
+                    sha256="sha256:" + "8" * 64,
+                    size_bytes=42,
+                    ttl=timedelta(hours=1),
+                ),
             )
             async with pool.connection() as conn:
                 await conn.execute(
@@ -421,7 +435,19 @@ def test_component_upload_finalization_uses_persisted_tenant(migrated_url: str) 
             await pool.open()
             upload_id, key = await create_component_upload_intent(
                 pool,
-                _upload_request(tenant="local", sha256="sha256:" + "3" * 64),
+                ComponentUploadIntentRequest(
+                    registration=ComponentUploadRegistration(
+                        tenant="local",
+                        provider="local-libvirt",
+                        component_kind="rootfs",
+                        visibility="project",
+                        project="proj-a",
+                        principal="alice",
+                    ),
+                    sha256="sha256:" + "3" * 64,
+                    size_bytes=42,
+                    ttl=timedelta(hours=1),
+                ),
             )
             assert key == component_upload_object_key(
                 tenant="local",
@@ -454,7 +480,19 @@ def test_component_upload_finalization_accepts_s3_base64_sha256(migrated_url: st
             digest = bytes.fromhex("4" * 64)
             upload_id, key = await create_component_upload_intent(
                 pool,
-                _upload_request(tenant="local", sha256="sha256:" + digest.hex()),
+                ComponentUploadIntentRequest(
+                    registration=ComponentUploadRegistration(
+                        tenant="local",
+                        provider="local-libvirt",
+                        component_kind="rootfs",
+                        visibility="project",
+                        project="proj-a",
+                        principal="alice",
+                    ),
+                    sha256="sha256:" + digest.hex(),
+                    size_bytes=42,
+                    ttl=timedelta(hours=1),
+                ),
             )
             store = _ObjectStore(
                 {
@@ -483,7 +521,19 @@ def test_component_upload_finalization_rejects_s3_checksum_mismatch(
             await pool.open()
             upload_id, key = await create_component_upload_intent(
                 pool,
-                _upload_request(tenant="local", sha256="sha256:" + "5" * 64),
+                ComponentUploadIntentRequest(
+                    registration=ComponentUploadRegistration(
+                        tenant="local",
+                        provider="local-libvirt",
+                        component_kind="rootfs",
+                        visibility="project",
+                        project="proj-a",
+                        principal="alice",
+                    ),
+                    sha256="sha256:" + "5" * 64,
+                    size_bytes=42,
+                    ttl=timedelta(hours=1),
+                ),
             )
             wrong_digest = bytes.fromhex("6" * 64)
             store = _ObjectStore(
