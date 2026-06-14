@@ -11,7 +11,7 @@ from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
 from kdive.db import build_hosts
-from kdive.db.build_hosts import BuildHost
+from kdive.db.build_hosts import BuildHost, BuildHostKind
 from kdive.db.idempotency import abandon_run_step, claim_run_step, complete_run_step
 from kdive.db.locks import LockScope, advisory_xact_lock
 from kdive.db.repositories import ARTIFACTS, RUNS, SYSTEMS
@@ -231,10 +231,10 @@ async def _run_build(
     """Run the build on ``host``: local runs the runtime builder; ssh/ephemeral go via transport."""
     run_id = run.id
     builder = (await _run_runtime(conn, run_id, resolver)).builder
-    if host.kind == "local":
+    if host.kind is BuildHostKind.LOCAL:
         return await asyncio.to_thread(builder.build, run_id, parsed)
     capable = _require_transport_capable(builder, host, run_id)
-    if host.kind == "ssh":
+    if host.kind is BuildHostKind.SSH:
         with ssh_build_transport_from_host(host, secret_registry) as transport:
             bound = _bind_transport(
                 capable,
@@ -245,7 +245,7 @@ async def _run_build(
                 secret_registry=secret_registry,
             )
             return await asyncio.to_thread(bound.build, run_id, parsed)
-    if host.kind == "ephemeral_libvirt":
+    if host.kind is BuildHostKind.EPHEMERAL_LIBVIRT:
         base_image = _require_base_image(host, run_id)
         with ephemeral_build_session(base_image, secret_registry, run_id=run_id) as transport:
             bound = _bind_transport(
@@ -263,7 +263,7 @@ async def _run_build(
         details={
             "run_id": str(run_id),
             "build_host": host.name,
-            "build_host_kind": host.kind,
+            "build_host_kind": str(host.kind),
         },
     )
 

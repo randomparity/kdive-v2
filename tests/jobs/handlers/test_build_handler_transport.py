@@ -18,14 +18,20 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from kdive.db.build_hosts import BuildHost, get_by_name, try_acquire_lease
+from kdive.db.build_hosts import (
+    BuildHost,
+    BuildHostKind,
+    BuildHostState,
+    get_by_name,
+    try_acquire_lease,
+)
 from kdive.db.repositories import RUNS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import JobKind
@@ -547,14 +553,14 @@ def test_unsupported_build_host_kind_fails_before_ephemeral_session(
             host = BuildHost(
                 id=uuid4(),
                 name="future-kind",
-                kind="future_transport",
+                kind=cast(BuildHostKind, "future_transport"),
                 address=None,
                 ssh_credential_ref=None,
                 base_image_volume="base.qcow2",
                 workspace_root="/build",
                 max_concurrent=1,
                 enabled=True,
-                state="ready",
+                state=BuildHostState.READY,
             )
             async with pool.connection() as conn:
                 run = await RUNS.get(conn, UUID(run_id))

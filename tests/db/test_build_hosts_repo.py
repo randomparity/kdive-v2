@@ -16,6 +16,8 @@ import pytest
 from kdive.db.build_hosts import (
     WORKER_LOCAL_ID,
     BuildHost,
+    BuildHostKind,
+    BuildHostState,
     get_by_id,
     get_by_name,
     lease_count,
@@ -61,9 +63,9 @@ def test_get_by_name_seeded_row_and_missing(migrated_url: str) -> None:
             host = await get_by_name(conn, "worker-local")
             assert host is not None
             assert host.id == WORKER_LOCAL_ID
-            assert host.kind == "local"
+            assert host.kind is BuildHostKind.LOCAL
             assert host.enabled is True
-            assert host.state == "ready"
+            assert host.state is BuildHostState.READY
             assert host.address is None
             assert host.ssh_credential_ref is None
 
@@ -82,7 +84,7 @@ def test_get_by_id_seeded_row_and_missing(migrated_url: str) -> None:
             assert host is not None
             assert host.id == WORKER_LOCAL_ID
             assert host.name == "worker-local"
-            assert host.kind == "local"
+            assert host.kind is BuildHostKind.LOCAL
 
             missing = await get_by_id(conn, uuid4())
             assert missing is None
@@ -271,7 +273,7 @@ def test_list_probeable_ssh_hosts_only_enabled_ssh(migrated_url: str) -> None:
         assert disabled_ssh.name not in names
         # the seeded worker-local row is kind='local' and must be excluded
         assert "worker-local" not in names
-        assert all(h.kind == "ssh" and h.enabled for h in probeable)
+        assert all(h.kind is BuildHostKind.SSH and h.enabled for h in probeable)
 
     asyncio.run(_run())
 
@@ -297,7 +299,10 @@ def test_mark_state_cas_matching_expected_writes(migrated_url: str) -> None:
             assert await _state_of(conn, host.id) == "ready"
 
             changed = await mark_state(
-                conn, host.id, new_state="unreachable", expected_state="ready"
+                conn,
+                host.id,
+                new_state=BuildHostState.UNREACHABLE,
+                expected_state=BuildHostState.READY,
             )
             assert changed == 1
             assert await _state_of(conn, host.id) == "unreachable"
@@ -313,7 +318,10 @@ def test_mark_state_cas_mismatch_is_noop(migrated_url: str) -> None:
             host = await _insert_ssh_host(conn)  # state defaults to 'ready'
 
             changed = await mark_state(
-                conn, host.id, new_state="ready", expected_state="unreachable"
+                conn,
+                host.id,
+                new_state=BuildHostState.READY,
+                expected_state=BuildHostState.UNREACHABLE,
             )
             assert changed == 0
             assert await _state_of(conn, host.id) == "ready"

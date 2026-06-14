@@ -15,6 +15,7 @@ with whatever work is enqueued alongside it (e.g. a ``runs.build`` job).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import cast
 from uuid import UUID
 
@@ -26,6 +27,21 @@ from kdive.db.locks import LockScope, advisory_xact_lock
 WORKER_LOCAL_ID = UUID("00000000-0000-0000-0000-0000000000c0")
 
 
+class BuildHostKind(StrEnum):
+    """Closed set of supported build-host transport kinds."""
+
+    LOCAL = "local"
+    SSH = "ssh"
+    EPHEMERAL_LIBVIRT = "ephemeral_libvirt"
+
+
+class BuildHostState(StrEnum):
+    """Closed set of build-host reachability states."""
+
+    READY = "ready"
+    UNREACHABLE = "unreachable"
+
+
 @dataclass(slots=True, frozen=True)
 class BuildHost:
     """A row from the ``build_hosts`` table.
@@ -33,7 +49,7 @@ class BuildHost:
     Attributes:
         id: Primary key.
         name: Unique human-readable identifier (e.g. ``worker-local``).
-        kind: Transport kind — ``'local'``, ``'ssh'``, or ``'ephemeral_libvirt'``.
+        kind: Transport kind.
         address: SSH hostname or IP; ``None`` for local and ephemeral-libvirt hosts.
         ssh_credential_ref: Credential secret reference; ``None`` for local and
             ephemeral-libvirt hosts.
@@ -43,33 +59,33 @@ class BuildHost:
             ``ephemeral_libvirt``).
         max_concurrent: Maximum simultaneous build leases this host may hold.
         enabled: Whether the scheduler may select this host.
-        state: Operational state — ``'ready'`` or ``'unreachable'``.
+        state: Operational reachability state.
     """
 
     id: UUID
     name: str
-    kind: str
+    kind: BuildHostKind
     address: str | None
     ssh_credential_ref: str | None
     base_image_volume: str | None
     workspace_root: str
     max_concurrent: int
     enabled: bool
-    state: str
+    state: BuildHostState
 
 
 def _row_to_host(row: dict[str, object]) -> BuildHost:
     return BuildHost(
         id=cast(UUID, row["id"]),
         name=cast(str, row["name"]),
-        kind=cast(str, row["kind"]),
+        kind=BuildHostKind(str(row["kind"])),
         address=cast("str | None", row["address"]),
         ssh_credential_ref=cast("str | None", row["ssh_credential_ref"]),
         base_image_volume=cast("str | None", row["base_image_volume"]),
         workspace_root=cast(str, row["workspace_root"]),
         max_concurrent=cast(int, row["max_concurrent"]),
         enabled=cast(bool, row["enabled"]),
-        state=cast(str, row["state"]),
+        state=BuildHostState(str(row["state"])),
     )
 
 
@@ -117,14 +133,19 @@ async def list_probeable_ssh_hosts(conn: AsyncConnection) -> list[BuildHost]:
     """
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "SELECT * FROM build_hosts WHERE kind = 'ssh' AND enabled = true ORDER BY name"
+            "SELECT * FROM build_hosts WHERE kind = %s AND enabled = true ORDER BY name",
+            (BuildHostKind.SSH.value,),
         )
         rows = await cur.fetchall()
     return [_row_to_host(row) for row in rows]
 
 
 async def mark_state(
-    conn: AsyncConnection, host_id: UUID, *, new_state: str, expected_state: str
+    conn: AsyncConnection,
+    host_id: UUID,
+    *,
+    new_state: BuildHostState,
+    expected_state: BuildHostState,
 ) -> int:
     """Compare-and-swap a build host's ``state`` (ADR-0103).
 
@@ -137,7 +158,7 @@ async def mark_state(
         conn: An async psycopg connection. The caller wraps the call in a committed
             transaction so the flip is durable.
         host_id: The build host's primary key.
-        new_state: The state to write (``'ready'`` or ``'unreachable'``).
+        new_state: The state to write.
         expected_state: The state the caller observed; the write is skipped if it no longer
             holds.
 
@@ -147,7 +168,7 @@ async def mark_state(
     """
     cur = await conn.execute(
         "UPDATE build_hosts SET state = %s WHERE id = %s AND state = %s",
-        (new_state, host_id, expected_state),
+        (new_state.value, host_id, expected_state.value),
     )
     return cur.rowcount
 
