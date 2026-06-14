@@ -57,7 +57,7 @@ _LIVE_SYSTEM_STATE_VALUES = tuple(state.value for state in _LIVE_SYSTEM_STATES)
 
 # An `active` allocation whose System turned terminal (or is absent) is reclaimed only after
 # its row has been settled this long, a belt-and-suspenders guard against the narrow window of
-# a concurrent mid-provision write against the same allocation (ADR-0105). Mirrors the 2-min
+# a concurrent mid-provision write against the same allocation (ADR-0108). Mirrors the 2-min
 # `DEFAULT_DEBUG_SESSION_STALE_AFTER` "settled long enough to be safe" precedent.
 DEFAULT_ORPHANED_ACTIVE_GRACE = timedelta(minutes=2)
 
@@ -156,7 +156,7 @@ async def _lease_elapsed(conn: AsyncConnection, allocation_id: UUID) -> bool:
 async def reap_orphaned_active_allocations(
     conn: AsyncConnection, grace: timedelta = DEFAULT_ORPHANED_ACTIVE_GRACE
 ) -> int:
-    """Release each `active` allocation whose System is terminal/absent (ADR-0105, #371).
+    """Release each `active` allocation whose System is terminal/absent (ADR-0108, #371).
 
     A failed/interrupted lifecycle run leaves an allocation `active` while its single System
     reached a terminal state (`torn_down`/`failed`) — the teardown job never releases the

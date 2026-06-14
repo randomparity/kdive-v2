@@ -2,7 +2,7 @@
 
 - **Date:** 2026-06-13
 - **Issue:** [#371](https://github.com/randomparity/kdive/issues/371)
-- **ADR:** [ADR-0105](../../adr/0105-reap-leaked-active-allocation.md)
+- **ADR:** [ADR-0108](../../adr/0108-reap-leaked-active-allocation.md)
 
 ## Problem
 
