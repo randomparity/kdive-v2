@@ -82,10 +82,17 @@ per-tier opt-in. Read-only stays the zero-flag default; mutation requires a deli
 4. **The server contract is unchanged.** `tool call` still lists the server's tools, classifies the
    requested one from the *server's* live annotations (not a client-side allowlist), and on admission
    makes the identical `client.call_tool` it makes today. No new tool, no annotation change, no authz
-   change, no audit change. The token-`exp` preflight that guards the curated destructive verbs
-   (ADR-0089) is extended to `DESTRUCTIVE` passthrough calls so a near-expired token is refused up
-   front rather than risking a mid-operation 401 — consistent with "destructive verbs are single-call
-   and re-runnable."
+   change, no audit change. Two behaviors carry over from the curated verbs so the passthrough mutation
+   path stays consistent with the break-glass path:
+   - The token-`exp` preflight (ADR-0089) is applied to **both** `MUTATING` and `DESTRUCTIVE`
+     passthrough calls (the curated verbs preflight even the non-destructive cordon/drain), so a
+     near-expired token is refused up front rather than risking a mid-operation 401 — consistent with
+     "mutating verbs are single-call and re-runnable."
+   - The exit code of an admitted call is **derived from the response envelope**
+     (`exit_code_for_envelope`), not hard-coded to 0, so a server-side denial returned as a failure
+     `ToolResponse` (e.g. `authorization_denied` from the break-glass role gate) is observable to a
+     script as exit 3 rather than a silent success — preserving the server-authz observability the
+     issue requires.
 
 ## Consequences
 

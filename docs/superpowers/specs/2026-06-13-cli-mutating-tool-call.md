@@ -106,13 +106,22 @@ else `READ_ONLY`.
 2. `tier = assert_tool_allowed(name, tools.get(name), max_tier=max_tier)`; on
    `ToolNotAllowedError` print the message and return `_TIER_NOT_ALLOWED_EXIT` (3, the existing
    value, renamed from `_NOT_READ_ONLY_EXIT`).
-3. If `tier is DESTRUCTIVE`: run the token-`exp` preflight (reuse
+3. If `tier` is `MUTATING` or `DESTRUCTIVE`: run the token-`exp` preflight (reuse
    `kdive.cli.commands.mutations.ensure_token_valid` against `session.token`); on
-   `TokenExpiringError` print the message and return 3. Then require confirmation: if `args.yes`,
-   proceed; elif stdin is a TTY, prompt `type 'yes' to call <destructive tool>:` and proceed only on
-   exact `yes`; else (non-TTY, no `--yes`) refuse with a message telling the caller to pass `--yes`
-   and return 3.
-4. `client.call_tool(name, arguments)`, print the envelope JSON, return 0.
+   `TokenExpiringError` print the message and return 3. The preflight covers both mutating tiers,
+   matching the curated break-glass verbs, which preflight even the non-destructive `resources.cordon`
+   / `resources.drain` (`mutations._call`) — a near-expired token can 401 mid-operation on a mutating
+   call too, so an exemption is not warranted.
+4. If `tier is DESTRUCTIVE`, require confirmation via `_confirm_destructive`: if `args.yes`, proceed;
+   elif stdin is a TTY, prompt `type 'yes' to call <destructive tool>:` and proceed only on exact
+   `yes`; else (non-TTY, no `--yes`) refuse with a message that **names `--yes`** ("destructive call
+   needs confirmation: re-run with --yes for non-interactive use") and return 3.
+5. `result = client.call_tool(name, arguments)`; print the envelope JSON. For an admitted call, derive
+   the exit code from the envelope via `kdive.cli.errors.exit_code_for_envelope(tool_envelope(result))`
+   — exactly as the curated `_run` does — so a server-side denial returned as a failure `ToolResponse`
+   (the normal denial shape: `authorization_denied` from the break-glass role gate) surfaces as exit 3,
+   not a silent exit 0. A clean success envelope carries no `error_category` and maps to 0, so existing
+   read behavior is preserved.
 
 The confirmation prompt and TTY check live in a small testable helper
 (`_confirm_destructive(name, *, assume_yes, is_tty, prompt) -> bool`) so the decision is unit-tested
@@ -143,13 +152,16 @@ replace.
 4. `_tool_call` against a mutating tool: refused (exit 3) with no flag; dispatched (calls
    `client.call_tool`) with `--allow-mutating`; no confirmation prompt shown.
 5. `_tool_call` against a destructive tool with `--allow-destructive`: prompts on a TTY and proceeds
-   only on `yes`; with `--yes` proceeds without prompting; non-TTY without `--yes` refuses (exit 3)
-   and never calls `client.call_tool`.
-6. A destructive call with `--allow-destructive --yes` and an expired token is refused by the
-   preflight (exit 3) before `client.call_tool`.
-7. Default `tool call somereadtool` behavior is unchanged (read tool dispatched; mutating/destructive
-   refused exit 3).
-8. `just lint`, `just type`, `just test` green; the existing annotation-guard tests
+   only on `yes`; with `--yes` proceeds without prompting; non-TTY without `--yes` refuses (exit 3),
+   never calls `client.call_tool`, and the refusal message **names `--yes`**.
+6. A `MUTATING` or `DESTRUCTIVE` call with an expired token is refused by the preflight (exit 3)
+   before `client.call_tool`; a `READ_ONLY` call is not subject to the preflight.
+7. An admitted `MUTATING`/`DESTRUCTIVE` call whose server response is an `authorization_denied`
+   envelope exits 3 (derived from the envelope), not 0; an admitted call whose response is a clean
+   success envelope exits 0.
+8. Default `tool call somereadtool` behavior is unchanged (read tool dispatched, exit 0;
+   mutating/destructive refused exit 3).
+9. `just lint`, `just type`, `just test` green; the existing annotation-guard tests
    (`tests/mcp/test_read_tools_annotated.py`) still pass unchanged.
 
 ## Edge cases
@@ -165,6 +177,22 @@ replace.
 - **Truthy-non-`True` `readOnlyHint`** (e.g. `1`) → `UNKNOWN`, never reachable — preserves the
   existing fail-closed test.
 - **Confirmation read returns EOF / empty** → treated as "not yes" → refused (no dispatch).
+- **Agent (non-interactive) driving a destructive tool** must pass `--allow-destructive --yes`
+  together: `--allow-destructive` authorizes the tier, `--yes` discharges the otherwise-unanswerable
+  confirmation. This is the documented contract for the primary (agent) caller; the non-TTY refusal
+  message names `--yes` so the missing flag is self-evident.
+
+## Review dispositions (spec adversarial review, 2026-06-13)
+
+- **HIGH — success path returned exit 0 unconditionally, masking server denials:** `accepted-fixed`.
+  The `_tool_call` flow now derives the exit code from the envelope via `exit_code_for_envelope`
+  for every admitted call (step 5), matching the curated `_run`; success criterion 7 added.
+- **MEDIUM — token-`exp` preflight scoped to DESTRUCTIVE only:** `accepted-fixed`. The preflight
+  now covers both `MUTATING` and `DESTRUCTIVE` (step 3), matching the curated cordon/drain verbs;
+  success criterion 6 covers a near-expired-token mutating call.
+- **LOW — non-TTY destructive-without-`--yes` refusal under-specified for agents:** `accepted-fixed`.
+  The refusal message now names `--yes` (step 4), the agent-must-pass-both contract is documented
+  (edge cases), and success criterion 5 asserts the message names `--yes`.
 
 ## Out-of-scope / explicitly deferred
 
