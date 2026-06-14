@@ -22,7 +22,17 @@ Prune is DB-guarded: ``build_host_leases`` FKs ``build_hosts(id) ON DELETE RESTR
 with an in-flight build lease cannot be deleted. Prune therefore **cordons** a busy host
 (``enabled = false`` — the disable mechanism the scheduler and reachability probe both honor)
 and only **deletes** an idle config host's row, matching the reaper-style refuse-if-live
-contract. Prune touches only ``managed_by='config'`` rows.
+contract. Prune touches only ``managed_by='config'`` rows. The cordon path SELECTs the
+``build_hosts`` row ``FOR UPDATE`` before checking the lease, which conflicts with the implicit
+``FOR KEY SHARE`` a concurrent ``build_host_leases`` INSERT takes on the parent row (the FK
+check). The two therefore serialize: a lease can never land between the liveness check and the
+delete to make the delete hit ``ON DELETE RESTRICT`` and abort the pass.
+
+Declarative ownership note: re-declaring (or adopting) a config host always resets
+``enabled = true``, so config is the source of truth for a config-owned host's schedulability.
+A consequence is that ``build_hosts.disable`` on a config-owned host is reverted on the next
+reconcile pass — to take a config host out of rotation, remove it from ``systems.toml`` (an
+idle host's row is then pruned; a busy one is cordoned until its lease drains).
 """
 
 from __future__ import annotations

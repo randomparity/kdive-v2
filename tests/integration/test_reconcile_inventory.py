@@ -1562,6 +1562,102 @@ def test_build_host_prune_of_idle_config_host_deletes(migrated_url: str, tmp_pat
     asyncio.run(_run())
 
 
+def test_build_host_prune_serializes_against_concurrent_lease_no_abort(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # Load-bearing TOCTOU guard: prune_or_cordon_build_host SELECT ... FOR UPDATE on the
+    # build_hosts row, while a concurrent build_host_leases INSERT takes Postgres' implicit
+    # FOR KEY SHARE on that same parent row (FK check). FOR UPDATE conflicts with FOR KEY
+    # SHARE, so the two serialize: a lease cannot slip in between the liveness check and the
+    # DELETE to make the DELETE hit ON DELETE RESTRICT and abort the pass. Here the prune wins
+    # the lock first; the concurrent lease INSERT must block, then fail FK after the row is gone
+    # (no orphan, no pass abort). This test exercises the lock ordering with raw SQL mirroring
+    # prune_or_cordon_build_host's SELECT ... FOR UPDATE → DELETE sequence.
+    async def _run() -> None:
+        async with await _connect(migrated_url) as seed:
+            await seed.execute(
+                "INSERT INTO build_hosts (name, kind, workspace_root, max_concurrent, managed_by) "
+                "VALUES ('race-bh', 'local', '/w', 5, 'config')"
+            )
+            row = await _build_host_by_name(seed, "race-bh")
+            hid = row["id"]
+            assert isinstance(hid, UUID)
+
+        prune_conn = await psycopg.AsyncConnection.connect(migrated_url, autocommit=False)
+        lease_conn = await psycopg.AsyncConnection.connect(migrated_url, autocommit=False)
+        try:
+            # Hold the build_hosts row under FOR UPDATE on a separate connection, then fire the
+            # concurrent lease insert and assert it BLOCKS (cannot acquire FOR KEY SHARE).
+            async with prune_conn.transaction():
+                cur = await prune_conn.execute(
+                    "SELECT id FROM build_hosts WHERE id = %s FOR UPDATE", (hid,)
+                )
+                await cur.fetchone()
+
+                async def _insert_lease() -> None:
+                    async with lease_conn.transaction():
+                        await lease_conn.execute(
+                            "INSERT INTO build_host_leases (run_id, build_host_id) VALUES (%s, %s)",
+                            (uuid4(), hid),
+                        )
+
+                task = asyncio.create_task(_insert_lease())
+                await asyncio.sleep(0.3)
+                assert not task.done()  # blocked behind the prune's FOR UPDATE
+
+                # The prune sees no lease and deletes the row, then commits.
+                await prune_conn.execute("DELETE FROM build_hosts WHERE id = %s", (hid,))
+
+            # After the prune commits, the blocked lease insert fails FK (parent row gone) — it
+            # never orphans a lease and never aborts the prune.
+            with pytest.raises(psycopg.errors.ForeignKeyViolation):
+                await task
+        finally:
+            await prune_conn.close()
+            await lease_conn.close()
+
+        async with await _connect(migrated_url) as check:
+            assert await _build_host_count(check, "race-bh") == 0  # pruned cleanly
+
+    asyncio.run(_run())
+
+
+def test_build_host_prune_cordons_when_lease_wins_lock_first(
+    migrated_url: str, tmp_path: Path
+) -> None:
+    # The other ordering: a lease lands (committed) before prune runs. prune_or_cordon_build_host
+    # then sees the lease and CORDONS (enabled=false), never attempting the RESTRICT-aborting
+    # DELETE. This is the same as the busy-host test but via the helper directly, closing the
+    # "lease committed first" half of the race.
+    from kdive.inventory.reconcile import prune_or_cordon_build_host
+
+    async def _run() -> None:
+        async with await _connect(migrated_url) as seed:
+            await seed.execute(
+                "INSERT INTO build_hosts (name, kind, workspace_root, max_concurrent, managed_by) "
+                "VALUES ('race-bh2', 'local', '/w', 5, 'config')"
+            )
+            row = await _build_host_by_name(seed, "race-bh2")
+            hid = row["id"]
+            assert isinstance(hid, UUID)
+            await seed.execute(
+                "INSERT INTO build_host_leases (run_id, build_host_id) VALUES (%s, %s)",
+                (uuid4(), hid),
+            )
+        async with (
+            AsyncConnectionPool(migrated_url, min_size=1, max_size=2) as pool,
+            pool.connection() as conn,
+        ):
+            outcome = await prune_or_cordon_build_host(conn, hid, "race-bh2")  # must not raise
+        assert outcome.cordoned is True
+        assert outcome.pruned is False
+        async with await _connect(migrated_url) as check:
+            row = await _build_host_by_name(check, "race-bh2")
+        assert row["enabled"] is False
+
+    asyncio.run(_run())
+
+
 def test_build_host_reconcile_is_idempotent(migrated_url: str, tmp_path: Path) -> None:
     # A second pass over an unchanged doc is a clean no-op (change-detecting upserts).
     from kdive.inventory.reconcile_build_hosts import reconcile_build_hosts
