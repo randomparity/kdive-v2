@@ -107,14 +107,15 @@ class InventoryReconcilePass:
         except FileNotFoundError:
             self.reset()  # an absent file invalidates any cached parse
             return None
+        except OSError:
+            # Present but unreadable (permissions, is-a-directory, …): defer to the loader so
+            # the failure surfaces as an InventoryError, not a bare OSError. Falling through to
+            # load_inventory_optional below re-attempts the read there and wraps the error.
+            return self._parse(path)
         digest = hashlib.sha256(raw).hexdigest()
         if digest == self._cached_hash and self._cached_doc is not None:
             return self._cached_doc
-        try:
-            doc = load_inventory_optional(path)
-        except InventoryError:
-            _log.warning("inventory: %s is present but malformed; pass failed this iteration", path)
-            raise
+        doc = self._parse(path)
         if doc is None:
             # The file vanished between the hash read above and the loader's read (a rare
             # mid-pass delete); treat it as an absent-file no-op and drop any cached parse.
@@ -123,3 +124,11 @@ class InventoryReconcilePass:
         self._cached_hash = digest
         self._cached_doc = doc
         return doc
+
+    def _parse(self, path: Path) -> InventoryDoc | None:
+        """Parse via the loader, logging then re-raising an :class:`InventoryError`."""
+        try:
+            return load_inventory_optional(path)
+        except InventoryError:
+            _log.warning("inventory: %s is present but malformed; pass failed this iteration", path)
+            raise
