@@ -26,9 +26,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import psycopg
+import pytest
+from fastmcp import FastMCP
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
@@ -36,7 +39,15 @@ from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import ManagedBy, ResourceKind
 from kdive.domain.state import AllocationState
 from kdive.mcp.responses import ToolResponse
-from kdive.mcp.tools.ops.resources._common import ResourceProbe
+from kdive.mcp.tools.ops.resources import registrar as resources_registrar
+from kdive.mcp.tools.ops.resources._common import (
+    DEREGISTER_TOOL,
+    REGISTER_FAULT_INJECT_TOOL,
+    REGISTER_LOCAL_LIBVIRT_TOOL,
+    REGISTER_REMOTE_LIBVIRT_TOOL,
+    RENEW_TOOL,
+    ResourceProbe,
+)
 from kdive.mcp.tools.ops.resources.deregister import deregister_resource
 from kdive.mcp.tools.ops.resources.register import (
     register_fault_inject_resource,
@@ -187,6 +198,84 @@ async def _audit_rows(url: str) -> list[tuple[object, ...]]:
             "FROM platform_audit_log ORDER BY id"
         )
         return list(await cur.fetchall())
+
+
+def _destructive_hint(tool: object) -> bool | None:
+    annotations = getattr(tool, "annotations", None)
+    value = getattr(annotations, "destructiveHint", None)
+    return value if isinstance(value, bool) else None
+
+
+async def _call_registered_tool(tool: object, *args: object) -> ToolResponse:
+    fn = cast(Any, tool).fn
+    result = await fn(*args)
+    assert isinstance(result, ToolResponse)
+    return result
+
+
+# --- registrar boundary ---
+
+
+def test_registrar_exposes_annotations_and_invokes_wrappers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, RequestContext, dict[str, object]]] = []
+    pool = cast(AsyncConnectionPool, object())
+    ctx = _admin_ctx(principal="registrar-admin", projects=("registrar-team",))
+
+    async def fake_register_fault_inject(
+        bound_pool: AsyncConnectionPool,
+        bound_ctx: RequestContext,
+        **kwargs: object,
+    ) -> ToolResponse:
+        calls.append((bound_pool, bound_ctx, kwargs))
+        return ToolResponse.success("resource:fi-registrar", "registered")
+
+    async def _run() -> None:
+        monkeypatch.setattr(resources_registrar, "current_context", lambda: ctx)
+        monkeypatch.setattr(
+            resources_registrar, "register_fault_inject_resource", fake_register_fault_inject
+        )
+        app = FastMCP("resources-registrar-test")
+        resources_registrar.register_mutation_tools(app, pool)
+        tools = {tool.name: tool for tool in await app.list_tools()}
+
+        assert set(tools) == {
+            REGISTER_REMOTE_LIBVIRT_TOOL,
+            REGISTER_LOCAL_LIBVIRT_TOOL,
+            REGISTER_FAULT_INJECT_TOOL,
+            DEREGISTER_TOOL,
+            RENEW_TOOL,
+        }
+        assert _destructive_hint(tools[REGISTER_FAULT_INJECT_TOOL]) is False
+        assert _destructive_hint(tools[RENEW_TOOL]) is False
+        assert _destructive_hint(tools[DEREGISTER_TOOL]) is True
+
+        resp = await _call_registered_tool(
+            tools[REGISTER_FAULT_INJECT_TOOL],
+            "fi-registrar",
+            "standard",
+            4,
+            ["ref-a", "ref-b"],
+            "*",
+        )
+
+        assert resp.status == "registered"
+        assert calls == [
+            (
+                pool,
+                ctx,
+                {
+                    "name": "fi-registrar",
+                    "cost_class": "standard",
+                    "concurrent_allocation_cap": 4,
+                    "secret_refs": ("ref-a", "ref-b"),
+                    "owner_project": "*",
+                },
+            )
+        ]
+
+    asyncio.run(_run())
 
 
 # --- authorization gate ---

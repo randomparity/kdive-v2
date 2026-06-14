@@ -20,18 +20,28 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import psycopg
+import pytest
+from fastmcp import FastMCP
 from psycopg_pool import AsyncConnectionPool
 
 from kdive.domain.errors import ErrorCategory
+from kdive.mcp.responses import ToolResponse
+from kdive.mcp.tools.ops.build_hosts import registrar as build_hosts_registrar
 from kdive.mcp.tools.ops.build_hosts.lifecycle import (
+    DISABLE_TOOL,
+    LIST_TOOL,
+    REMOVE_TOOL,
     disable_build_host,
     list_build_hosts,
     remove_build_host,
 )
 from kdive.mcp.tools.ops.build_hosts.register import (
+    REGISTER_EPHEMERAL_LIBVIRT_TOOL,
+    REGISTER_SSH_TOOL,
     register_ephemeral_libvirt_build_host,
     register_ssh_build_host,
 )
@@ -126,6 +136,88 @@ async def _insert_lease(pool: AsyncConnectionPool, host_id: UUID) -> UUID:
             (run_id, host_id),
         )
     return run_id
+
+
+def _destructive_hint(tool: object) -> bool | None:
+    annotations = getattr(tool, "annotations", None)
+    value = getattr(annotations, "destructiveHint", None)
+    return value if isinstance(value, bool) else None
+
+
+def _read_only_hint(tool: object) -> bool | None:
+    annotations = getattr(tool, "annotations", None)
+    value = getattr(annotations, "readOnlyHint", None)
+    return value if isinstance(value, bool) else None
+
+
+async def _call_registered_tool(tool: object, *args: object) -> ToolResponse:
+    fn = cast(Any, tool).fn
+    result = await fn(*args)
+    assert isinstance(result, ToolResponse)
+    return result
+
+
+# --- registrar boundary ---
+
+
+def test_registrar_exposes_annotations_and_invokes_wrappers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, RequestContext, dict[str, object]]] = []
+    pool = cast(AsyncConnectionPool, object())
+    ctx = _admin_ctx(principal="registrar-admin")
+
+    async def fake_register_ssh(
+        bound_pool: AsyncConnectionPool,
+        bound_ctx: RequestContext,
+        **kwargs: object,
+    ) -> ToolResponse:
+        calls.append((bound_pool, bound_ctx, kwargs))
+        return ToolResponse.success("build-host:registrar-worker", "registered")
+
+    async def _run() -> None:
+        monkeypatch.setattr(build_hosts_registrar, "current_context", lambda: ctx)
+        monkeypatch.setattr(build_hosts_registrar, "register_ssh_build_host", fake_register_ssh)
+        app = FastMCP("build-hosts-registrar-test")
+        build_hosts_registrar.register(app, pool)
+        tools = {tool.name: tool for tool in await app.list_tools()}
+
+        assert set(tools) == {
+            REGISTER_SSH_TOOL,
+            REGISTER_EPHEMERAL_LIBVIRT_TOOL,
+            LIST_TOOL,
+            DISABLE_TOOL,
+            REMOVE_TOOL,
+        }
+        assert _destructive_hint(tools[REGISTER_SSH_TOOL]) is False
+        assert _read_only_hint(tools[LIST_TOOL]) is True
+        assert _destructive_hint(tools[REMOVE_TOOL]) is False
+
+        resp = await _call_registered_tool(
+            tools[REGISTER_SSH_TOOL],
+            "registrar-worker",
+            "10.0.0.10",
+            "ssh://build/registrar-key",
+            "/srv/build",
+            3,
+        )
+
+        assert resp.status == "registered"
+        assert calls == [
+            (
+                pool,
+                ctx,
+                {
+                    "name": "registrar-worker",
+                    "address": "10.0.0.10",
+                    "ssh_credential_ref": "ssh://build/registrar-key",
+                    "workspace_root": "/srv/build",
+                    "max_concurrent": 3,
+                },
+            )
+        ]
+
+    asyncio.run(_run())
 
 
 # --- authorization gate ---
