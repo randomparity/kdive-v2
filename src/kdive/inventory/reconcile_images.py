@@ -33,6 +33,7 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from psycopg import AsyncConnection
+from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 
 from kdive.domain.errors import CategorizedError
@@ -56,10 +57,6 @@ _log = logging.getLogger(__name__)
 _CONFIG = ManagedBy.CONFIG.value
 _DEFINED = ImageState.DEFINED.value
 _REGISTERED = ImageState.REGISTERED.value
-
-# Config-owned fields the upsert overlays. Runtime-owned object_key/digest/state are written
-# only by realization below (and never downgraded), so they are absent from this set.
-_CONFIG_FIELDS = ("format", "root_device", "visibility", "capabilities")
 
 
 @runtime_checkable
@@ -122,8 +119,14 @@ async def reconcile_images(
 ) -> ReconcileDiff:
     """Merge ``doc``'s images into ``image_catalog`` and prune departed config rows.
 
+    The pass owns ``conn`` for its whole duration: it toggles the connection to autocommit
+    and holds a session-scoped lock across multiple transactions on it, so ``conn`` must be
+    a connection the caller is not concurrently using and that has **no open transaction**
+    on entry (every current caller hands a fresh pooled connection). Calling this inside an
+    already-open ``conn.transaction()`` fails fast (see :func:`_autocommit`).
+
     Args:
-        conn: The reconcile pass connection (the whole pass holds one session lock on it).
+        conn: The reconcile pass connection (exclusive for the pass; no open transaction).
         doc: The parsed inventory document.
         store: The object store, used only to HEAD ``s3`` objects for existence.
 
@@ -144,9 +147,20 @@ async def reconcile_images(
 
 @asynccontextmanager
 async def _autocommit(conn: AsyncConnection) -> AsyncIterator[None]:
-    """Set ``conn`` to autocommit for the block, restoring the prior mode on exit."""
+    """Set ``conn`` to autocommit for the block, restoring the prior mode on exit.
+
+    Raises:
+        RuntimeError: ``conn`` has a transaction already in progress — psycopg cannot switch
+            autocommit then, so fail fast with an actionable message instead of psycopg's
+            opaque ``ProgrammingError`` (the pass must own a transaction-free connection).
+    """
     previous = conn.autocommit
     if not previous:
+        if conn.info.transaction_status != TransactionStatus.IDLE:
+            raise RuntimeError(
+                "reconcile_images requires a connection with no open transaction; "
+                "call it on a fresh pooled connection, not inside conn.transaction()."
+            )
         await conn.set_autocommit(True)
     try:
         yield
