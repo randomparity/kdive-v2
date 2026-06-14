@@ -13,6 +13,7 @@
 - Commit messages: Conventional Commits, ≤72-char subject, imperative, no squash. End each with the `Co-Authored-By` trailer this repo uses.
 - `KDIVE_*` env reads must live in `kdive.config` — none of these scripts are Python service code, so the shell scripts read `KDIVE_*` directly; do **not** add `os.environ` reads to `src/`.
 - This repo's CI **invokes justfile recipes individually** (`.github/workflows/ci.yml`), so adding a recipe to the `ci` aggregate is necessary but **not sufficient** — every new gate also needs an explicit `ci.yml` step.
+- Any literal `docs/<path>` written into a **script** (`scripts/*`), the `justfile`, or a `*.yml` must name a path that **currently exists** — `docs-paths` always scans those files (the `docs/design/**`/`docs/archive/**` exemption applies to markdown only). Reference a future or just-moved doc by name (or as an excluded `docs/<placeholder>` form), never as a literal current/old path, or the guard fails on it.
 - Whole-tree `just type` and `just lint` must stay green; new tests live under `tests/` mirroring source paths.
 
 ---
@@ -306,8 +307,8 @@ Expected: FAIL (script missing).
 # *.md points at a target that does not exist. Illustrative ellipses (docs/... and the
 # unicode docs/…) and angle-bracket placeholders (docs/<seg>) are excluded. Catches
 # non-markdown rot (e.g. justfile m2-report output, AGENTS.md code spans). NOT scanned:
-#   - docs/design/** — design specs narrate path moves (docs/specs -> docs/design etc.),
-#     so their docs/... mentions are intentional and must not be policed here;
+#   - docs/design/** — design specs narrate path moves (e.g. specs/ -> design/), so their
+#     docs/... mentions are intentional and must not be policed here;
 #   - docs/archive/** — frozen history references paths as they were when written.
 # Generator constants built from slash-joined string literals are also out of scope
 # (covered by `just docs-check`/`config-docs-check`).
@@ -783,7 +784,7 @@ main() {
   fi
 
   [[ -d "${PKI_DIR}" ]] && compgen -G "${PKI_DIR}/*.pem" >/dev/null 2>&1 ||
-    note_fail "no TLS PKI material in ${PKI_DIR}" "provision client cert/key per docs/operating/providers/remote-libvirt.md"
+    note_fail "no TLS PKI material in ${PKI_DIR}" "provision client cert/key — see the remote-libvirt provider guide"
 
   if command -v virsh >/dev/null 2>&1; then
     virsh -c "${uri}" list >/dev/null 2>&1 ||
