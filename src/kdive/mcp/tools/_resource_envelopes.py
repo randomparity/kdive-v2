@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from kdive.domain.errors import ErrorCategory
 from kdive.domain.models import Resource
+from kdive.domain.resource_capabilities import (
+    CONCURRENT_ALLOCATION_CAP_KEY,
+    MEMORY_MB_KEY,
+    VCPUS_KEY,
+)
 from kdive.mcp.responses import ToolResponse
 
-_FLAT_CAP_KEYS = ("arch", "vcpus", "memory_mb", "concurrent_allocation_cap")
+_FLAT_CAP_KEYS = ("arch", VCPUS_KEY, MEMORY_MB_KEY, CONCURRENT_ALLOCATION_CAP_KEY)
 
 
 def resource_config_error(object_id: str) -> ToolResponse:

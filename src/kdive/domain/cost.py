@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
+from kdive.domain.resource_capabilities import MEMORY_MB_KEY, VCPUS_KEY
 from kdive.domain.sizing import MB_PER_GB
 
 if TYPE_CHECKING:
@@ -41,8 +42,6 @@ if TYPE_CHECKING:
 # Resource-capabilities keys advertising the host's billable size ceiling (the discovery
 # provider populates them). A selector may not exceed these — the admission-only
 # ≤ resource-caps check (ADR-0007 §2): you cannot be billed for more than the host has.
-_CAP_VCPUS_KEY = "vcpus"
-_CAP_MEMORY_MB_KEY = "memory_mb"
 
 # Global reference weights (ADR-0007 §1): one vcpu-hour costs 1.0 kcu, one GB-hour 0.25.
 W_CPU = Decimal("1.0")
@@ -186,8 +185,8 @@ def validate_against_resource(selector: Selector, resource: Resource) -> None:
         CategorizedError: ``CONFIGURATION_ERROR`` if the resource has no valid
             ``vcpus`` / ``memory_mb`` capability, or the selector exceeds either.
     """
-    cap_vcpus = _resource_cap(resource, _CAP_VCPUS_KEY)
-    cap_memory_mb = _resource_cap(resource, _CAP_MEMORY_MB_KEY)
+    cap_vcpus = _resource_cap(resource, VCPUS_KEY)
+    cap_memory_mb = _resource_cap(resource, MEMORY_MB_KEY)
     if selector.vcpus > cap_vcpus:
         raise _caps_error("vcpus", selector.vcpus, cap_vcpus, resource)
     requested_mb = selector.memory_gb * MB_PER_GB
