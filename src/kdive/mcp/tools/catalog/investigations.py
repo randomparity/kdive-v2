@@ -33,6 +33,7 @@ from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools import _docmeta
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
+from kdive.mcp.tools._common import not_found as _not_found
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext, require_project
 from kdive.security.authz.rbac import Role, require_role
@@ -147,7 +148,7 @@ async def get_investigation(
         async with pool.connection() as conn:
             inv = await INVESTIGATIONS.get(conn, uid)
         if inv is None or inv.project not in ctx.projects:
-            return _config_error(investigation_id)
+            return _not_found(investigation_id)
         require_role(ctx, inv.project, Role.VIEWER)
         return _envelope_for_investigation(inv)
 
@@ -158,7 +159,7 @@ async def _resolve_operator_investigation(
     """Resolve an operator-owned Investigation row or return the not-found-shaped error."""
     inv = await INVESTIGATIONS.get(conn, uid)
     if inv is None or inv.project not in ctx.projects:
-        return _config_error(raw_id)
+        return _not_found(raw_id)
     require_role(ctx, inv.project, Role.OPERATOR)
     return inv
 
@@ -169,7 +170,7 @@ async def _close_locked(
     async with conn.transaction(), advisory_xact_lock(conn, LockScope.INVESTIGATION, uid):
         current = await INVESTIGATIONS.get(conn, uid)
         if current is None:
-            return _config_error(str(uid))
+            return _not_found(str(uid))
         if current.state is InvestigationState.CLOSED:
             return ToolResponse.success(
                 str(uid),
@@ -217,8 +218,9 @@ async def close_investigation(
                 # non-advisory writer). Caught OUTSIDE the rolled-back transaction; re-read.
                 async with pool.connection() as conn2:
                     latest = await INVESTIGATIONS.get(conn2, uid)
-                data = {"current_status": latest.state.value} if latest else {}
-                return _config_error(investigation_id, data=data)
+                if latest is None:
+                    return _not_found(investigation_id)
+                return _config_error(investigation_id, data={"current_status": latest.state.value})
 
 
 async def _get_for_update(conn: AsyncConnection, uid: UUID) -> Investigation | None:

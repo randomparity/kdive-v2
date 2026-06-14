@@ -114,7 +114,7 @@ async def get_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str) -
         async with pool.connection() as conn:
             job = await JOBS.get(conn, uid)
         if job is None or not _in_scope(job, ctx):
-            return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
+            return _error(job_id, ErrorCategory.NOT_FOUND)
         denied = _require_job_role(job, ctx, Role.VIEWER, job_id)
         if denied is not None:
             return denied
@@ -146,7 +146,7 @@ async def wait_job(
             async with pool.connection() as conn:
                 job = await JOBS.get(conn, uid)
             if job is None or not _in_scope(job, ctx):
-                return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
+                return _error(job_id, ErrorCategory.NOT_FOUND)
             denied = _require_job_role(job, ctx, Role.VIEWER, job_id)
             if denied is not None:
                 return denied
@@ -177,7 +177,7 @@ async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str
         async with pool.connection() as conn:
             existing = await JOBS.get(conn, uid)
         if existing is None or not _in_scope(existing, ctx):
-            return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
+            return _error(job_id, ErrorCategory.NOT_FOUND)
         denied = _require_job_role(existing, ctx, Role.OPERATOR, job_id)
         if denied is not None:
             return denied
@@ -185,7 +185,7 @@ async def cancel_job(pool: AsyncConnectionPool, ctx: RequestContext, job_id: str
             async with pool.connection() as conn:
                 job = await JOBS.update_state(conn, uid, JobState.CANCELED)
         except ObjectNotFound:
-            return _error(job_id, ErrorCategory.CONFIGURATION_ERROR)
+            return _error(job_id, ErrorCategory.NOT_FOUND)
         except IllegalTransition:
             async with pool.connection() as conn:
                 current = await JOBS.get(conn, uid)

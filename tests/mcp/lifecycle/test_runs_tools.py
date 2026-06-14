@@ -366,7 +366,7 @@ def test_get_cross_project_is_not_found(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             run_id = await _seed_run(pool, state=RunState.CREATED)
             resp = await get_run(pool, _ctx(projects=("other",)), run_id)
-        assert resp.status == "error" and resp.error_category == "configuration_error"
+        assert resp.status == "error" and resp.error_category == "not_found"
 
     asyncio.run(_run())
 

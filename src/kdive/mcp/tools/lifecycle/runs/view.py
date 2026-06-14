@@ -9,6 +9,7 @@ from kdive.log import bind_context
 from kdive.mcp.responses import ToolResponse
 from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._common import config_error as _config_error
+from kdive.mcp.tools._common import not_found as _not_found
 from kdive.mcp.tools.lifecycle.runs.common import envelope_for_run
 from kdive.providers.resolver import ProviderResolver
 from kdive.security.authz.context import RequestContext
@@ -32,7 +33,7 @@ async def get_run(
         async with pool.connection() as conn:
             run = await RUNS.get(conn, uid)
             if run is None or run.project not in ctx.projects:
-                return _config_error(run_id)
+                return _not_found(run_id)
             require_role(ctx, run.project, Role.VIEWER)
             system = await SYSTEMS.get(conn, run.system_id)
             runtime = await resolver.runtime_for_run(conn, run.id) if system is not None else None

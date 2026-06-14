@@ -99,7 +99,7 @@ def test_get_unknown_job_is_error_envelope(migrated_url: str) -> None:
         async with _pool(migrated_url) as pool:
             resp = await jobs_tools.get_job(pool, CTX, str(uuid4()))
         assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
+        assert resp.error_category == "not_found"
 
     asyncio.run(_run())
 
@@ -331,7 +331,7 @@ def test_get_job_in_unowned_project_is_indistinguishable_from_not_found(migrated
             # _OTHER is a member of "other", not "proj": the job must look absent (no leak).
             resp = await jobs_tools.get_job(pool, _OTHER, job_id)
         assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
+        assert resp.error_category == "not_found"
         assert resp.object_id == job_id
 
     asyncio.run(_run())
@@ -343,7 +343,7 @@ def test_wait_job_in_unowned_project_is_not_found(migrated_url: str) -> None:
             job_id = await _enqueue_in(pool, "d1", "proj")
             resp = await jobs_tools.wait_job(pool, _OTHER, job_id, timeout_s=0.0)
         assert resp.status == "error"
-        assert resp.error_category == "configuration_error"
+        assert resp.error_category == "not_found"
 
     asyncio.run(_run())
 
@@ -382,7 +382,7 @@ def test_cancel_job_in_unowned_project_is_denied_and_does_not_mutate(migrated_ur
             # The owning project's member still sees it queued — the cancel did not land.
             owned = await jobs_tools.get_job(pool, VIEWER_CTX, job_id)
         assert denied.status == "error"
-        assert denied.error_category == "configuration_error"
+        assert denied.error_category == "not_found"
         assert owned.status == "queued"
 
     asyncio.run(_run())
