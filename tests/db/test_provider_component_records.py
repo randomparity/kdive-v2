@@ -78,20 +78,6 @@ def _local_request(
     )
 
 
-def _artifact_request(
-    *,
-    artifact_id: UUID,
-    sha256: str,
-    visibility: Visibility = "project",
-    project: str | None = "proj-a",
-) -> ArtifactComponentRequest:
-    return ArtifactComponentRequest(
-        registration=_registration(visibility=visibility, project=project),
-        artifact_id=artifact_id,
-        sha256=sha256,
-    )
-
-
 def _upload_request(
     *,
     tenant: str = "proj-a",
@@ -275,7 +261,11 @@ def test_artifact_component_visible_only_to_same_project(migrated_url: str) -> N
             artifact_id = UUID("00000000-0000-0000-0000-000000000001")
             component_id = await create_artifact_component(
                 pool,
-                _artifact_request(artifact_id=artifact_id, sha256="sha256:" + "1" * 64),
+                ArtifactComponentRequest(
+                    registration=_registration(),
+                    artifact_id=artifact_id,
+                    sha256="sha256:" + "1" * 64,
+                ),
             )
 
             same_project = await list_visible_components(
@@ -298,7 +288,8 @@ def test_create_artifact_component_rejects_bad_sha(migrated_url: str) -> None:
             try:
                 await create_artifact_component(
                     pool,
-                    _artifact_request(
+                    ArtifactComponentRequest(
+                        registration=_registration(),
                         artifact_id=UUID("00000000-0000-0000-0000-000000000001"),
                         sha256="not-a-sha",
                     ),
