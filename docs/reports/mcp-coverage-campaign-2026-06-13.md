@@ -58,6 +58,23 @@ F4 and F5 together mean a single failed remote run wedges the provider until an 
 manually breaks glass and reaps the host — directly the §5.1 partial-failure / two-control-plane
 hazards the spec predicted, now reproduced.
 
+## Arc 6 (platform ops) + Arc 7 (RBAC) — partial, no-boot breadth
+
+Driven on D1 over the real transport with admin + full platform roles:
+
+- **PASS (driven to success):** `investigations.open/get/close`, `shapes.set/list/delete`,
+  `accounting.set_budget/set_quota`, `ops.set_cost_class_coeff/queue_pause/queue_resume/reconcile_now/diagnostics`,
+  `build_hosts.list`, `secrets.list`, `inventory.list`, plus the Arc-1 reads. With
+  `ops.force_release` and the remote build-plane tools, **~30 distinct tools are confirmed
+  drivable to success** over MCP.
+- **RBAC denial enforced (viewer correctly denied):** `shapes.set`, `accounting.set_budget`,
+  `ops.queue_pause`, `ops.reconcile_now`. Denials appear as either an `authorization_denied`
+  envelope or a raised `RoleDenied` — both are correct.
+- **Reachable, arg-refinement pending (not failures):** `ops.set_host_capacity`,
+  `build_hosts.register`, `accounting.estimate`, `audit.query`, `ops.jobs_list` (each returned
+  a precise validation error for the campaign driver's argument shape, i.e. the tool validates
+  input correctly).
+
 ## Not yet executed
 
 The boot/debug/capture/control plane on remote-libvirt is **blocked downstream by F7** (no
