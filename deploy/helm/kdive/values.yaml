@@ -75,3 +75,17 @@ demo:
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
   oidc:
     image: ghcr.io/navikt/mock-oauth2-server:3.0.3
+    # Demo-only claim set the bundled issuer stamps on every token. The issuer mints a
+    # valid kdive token for ANY caller, so this is the grant every such token carries.
+    # The default grants full RBAC over the seeded `demo` project (admin) plus all three
+    # platform roles so a stock demo deploy can exercise the entire RBAC/authz surface.
+    # NEVER front a real RBAC boundary with this issuer. `aud` is pinned to ["kdive"] by
+    # the template and cannot be overridden here. To test a denial, narrow the grant, e.g.
+    # `--set demo.oidc.claims.roles.demo=viewer` or drop platform_roles. If you change the
+    # project name, run `kdive seed-demo --project <name>` so it has a budget/quota row.
+    claims:
+      sub: kdive-demo
+      projects: ["demo"]
+      roles:
+        demo: admin
+      platform_roles: ["platform_admin", "platform_operator", "platform_auditor"]

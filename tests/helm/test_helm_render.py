@@ -295,6 +295,48 @@ def test_bundled_oidc_pins_audience_kdive() -> None:
     assert '"aud":["kdive"]' in res.stdout
 
 
+def test_bundled_oidc_mints_role_claims() -> None:
+    # The default demo claim set must carry a usable RBAC grant so a stock demo deploy can
+    # exercise the authz surface (#369): admin on the seeded `demo` project + all three
+    # platform roles. toJson sorts keys, so these JSON substrings are stable.
+    res = _template("bundledBackends=true", "demoAcknowledged=true")
+    assert res.returncode == 0, res.stderr
+    assert '"projects":["demo"]' in res.stdout
+    assert '"roles":{"demo":"admin"}' in res.stdout
+    for role in ("platform_admin", "platform_operator", "platform_auditor"):
+        assert f'"{role}"' in res.stdout, role
+
+
+def test_bundled_oidc_claims_value_is_wired() -> None:
+    # An operator narrows the grant to test a denial; --set deep-merges into the default
+    # map, overriding only the targeted leaf and leaving the other claims defaulted.
+    res = _template(
+        "bundledBackends=true",
+        "demoAcknowledged=true",
+        "demo.oidc.claims.roles.demo=viewer",
+    )
+    assert res.returncode == 0, res.stderr
+    assert '"roles":{"demo":"viewer"}' in res.stdout
+    assert '"roles":{"demo":"admin"}' not in res.stdout
+    # The other defaults survive the targeted override (deep-merge, not replace).
+    assert '"projects":["demo"]' in res.stdout
+    assert '"platform_admin"' in res.stdout
+    assert '"aud":["kdive"]' in res.stdout
+
+
+def test_bundled_oidc_aud_pin_survives_override() -> None:
+    # `aud` is a template invariant, not a value: an operator override can never break
+    # audience verification and lock the demo out.
+    res = _template(
+        "bundledBackends=true",
+        "demoAcknowledged=true",
+        "demo.oidc.claims.aud=nope",
+    )
+    assert res.returncode == 0, res.stderr
+    assert '"aud":["kdive"]' in res.stdout
+    assert "nope" not in res.stdout
+
+
 def test_bundled_demo_services_are_clusterip() -> None:
     res = _template("bundledBackends=true", "demoAcknowledged=true")
     assert res.returncode == 0, res.stderr
