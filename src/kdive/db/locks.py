@@ -47,6 +47,7 @@ class LockScope(StrEnum):
     INVESTIGATION = "investigation"
     RUN = "run"
     BUILD_HOST = "build_host"
+    INVENTORY = "inventory"
 
 
 def _lock_key(scope: LockScope, key: UUID | str) -> int:
@@ -97,6 +98,11 @@ async def advisory_xact_lock(
 # The leadership name for the single reconciler that hosts console collectors (ADR-0095).
 CONSOLE_HOSTING_LEADER = "console-hosting-leader"
 
+# The single global inventory-reconcile pass name (ADR-0112). A whole reconcile pass spans
+# multiple transactions (the batched upsert + per-row prunes), so it serializes on a
+# session-scoped lock (released by Postgres if the holding connection drops), not an xact lock.
+INVENTORY_RECONCILE = "inventory-reconcile"
+
 # Salt that keeps the session-lock key space disjoint from the transaction-scoped
 # scope-lock space: both fold onto the single-bigint advisory space, but a leadership
 # claim must never serialize against a per-object op that happened to hash equal.
@@ -113,6 +119,33 @@ def _session_lock_key(name: str) -> int:
     digest.update(_SESSION_LOCK_SALT)
     digest.update(name.encode())
     return int.from_bytes(digest.digest(), "big", signed=True)
+
+
+@asynccontextmanager
+async def session_advisory_lock(conn: AsyncConnection, name: str) -> AsyncIterator[None]:
+    """Hold a **session-scoped** advisory lock named ``name`` for the whole ``with`` block.
+
+    Unlike :func:`advisory_xact_lock`, this lock survives transaction boundaries: it is
+    acquired with ``pg_advisory_lock`` and released with ``pg_advisory_unlock`` in a
+    ``finally``, so a multi-transaction operation (e.g. an inventory reconcile pass whose
+    upsert and per-row prunes are separate transactions) serializes for its entire duration.
+    The key space is salted apart from the transaction-scoped scope-lock space, so it never
+    collides with a per-object op.
+
+    The lock blocks until any current holder releases, then yields. The connection must not
+    be in autocommit-with-implicit-transaction surprise: ``pg_advisory_lock`` taken outside a
+    transaction is held at session scope, which is exactly the intent here.
+
+    Args:
+        conn: The connection that runs the whole guarded pass.
+        name: The lock name (e.g. :data:`INVENTORY_RECONCILE`).
+    """
+    key = _session_lock_key(name)
+    await conn.execute("SELECT pg_advisory_lock(%s)", (key,))
+    try:
+        yield
+    finally:
+        await conn.execute("SELECT pg_advisory_unlock(%s)", (key,))
 
 
 class SessionAdvisoryLock:
