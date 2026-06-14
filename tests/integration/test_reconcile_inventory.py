@@ -760,6 +760,23 @@ def test_loop_inventory_pass_absent_when_no_image_store(
     asyncio.run(_run())
 
 
+def test_loop_inventory_pass_unreadable_file_is_fault_isolated(
+    migrated_url: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A present-but-unreadable path (here a directory at the configured path) must surface as a
+    # failed-this-pass spec via the loader's OSError->InventoryError wrap, not crash the pass —
+    # the hash-read fast path catches OSError and defers to the loader.
+    async def _run() -> None:
+        as_dir = tmp_path / "systems.toml"
+        as_dir.mkdir()  # a directory: read_bytes raises IsADirectoryError (an OSError)
+        monkeypatch.setenv("KDIVE_SYSTEMS_TOML", str(as_dir))
+        async with AsyncConnectionPool(migrated_url, min_size=1, max_size=4) as pool:
+            report = await reconcile_once(pool, NullReaper(), config=_config_with_inventory_spec())
+        assert "reconcile_inventory" in report.failures
+
+    asyncio.run(_run())
+
+
 def test_inventory_pass_repairs_drift_on_unchanged_file(
     migrated_url: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
