@@ -320,14 +320,46 @@ def test_unknown_discriminator_always_raises_inventory_error(kind: str) -> None:
         InventoryDoc.parse(d)
 
 
-def test_inventory_error_carries_entry_and_field() -> None:
+def test_cross_ref_error_preserves_precise_entry_and_field() -> None:
+    # A semantic failure must surface its precise entry/field, not be flattened to
+    # the generic ('inventory', 'schema') locator a pydantic after-validator would force.
     d = _doc()
     d["remote_libvirt"][0]["base_image"] = "nope"
     try:
         InventoryDoc.parse(d)
     except InventoryError as exc:
-        assert exc.entry
-        assert exc.field
+        assert exc.entry == "remote_libvirt[h1]"
+        assert exc.field == "base_image"
         assert "nope" in str(exc)
+    else:  # pragma: no cover - parse must raise
+        pytest.fail("expected InventoryError")
+
+
+def test_duplicate_identity_error_preserves_precise_entry_and_field() -> None:
+    img = {
+        "provider": "local-libvirt",
+        "name": "dup",
+        "arch": "x86_64",
+        "format": "qcow2",
+        "root_device": "/dev/vda",
+        "visibility": "public",
+        "source": {"kind": "staged", "volume": "v.qcow2"},
+    }
+    try:
+        InventoryDoc.parse(_doc(image=[img, dict(img)], remote_libvirt=[]))
+    except InventoryError as exc:
+        assert exc.entry == "image[dup]"
+        assert exc.field == "identity"
+    else:  # pragma: no cover - parse must raise
+        pytest.fail("expected InventoryError")
+
+
+def test_duplicate_instance_name_error_preserves_kind_and_field() -> None:
+    inst = {"name": "fi", "cost_class": "local", "vcpus": 2, "memory_mb": 1024}
+    try:
+        InventoryDoc.parse(_doc(remote_libvirt=[], fault_inject=[inst, dict(inst)]))
+    except InventoryError as exc:
+        assert exc.entry == "fault_inject"
+        assert exc.field == "name"
     else:  # pragma: no cover - parse must raise
         pytest.fail("expected InventoryError")

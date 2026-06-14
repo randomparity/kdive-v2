@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError
 
 from kdive.inventory.errors import InventoryError
 
@@ -127,13 +127,6 @@ class InventoryDoc(BaseModel):
     fault_inject: list[FaultInjectInstance] = Field(default_factory=list)
     build_host: list[BuildHostInstance] = Field(default_factory=list)
 
-    @model_validator(mode="after")
-    def _check_identities_and_refs(self) -> Self:
-        self._check_image_identities()
-        self._check_base_image_refs()
-        self._check_instance_name_uniqueness()
-        return self
-
     def _check_image_identities(self) -> None:
         seen: set[tuple[str, str, str]] = set()
         for img in self.image:
@@ -171,10 +164,15 @@ class InventoryDoc(BaseModel):
     def parse(cls, data: dict[str, Any]) -> Self:
         """Validate ``data`` into an :class:`InventoryDoc`.
 
-        Wraps :meth:`model_validate` and re-raises pydantic's structural
+        First runs pydantic structural validation, re-raising pydantic's
         ``ValidationError`` (e.g. an unknown source discriminator, a missing
-        required field, or a bad ``schema_version``) as :class:`InventoryError`,
-        so callers always observe one exception type.
+        required field, or a bad ``schema_version``) as :class:`InventoryError`.
+        Then runs the semantic checks (image-identity uniqueness, ``base_image``
+        cross-reference, per-kind instance-name uniqueness) directly, so their
+        :class:`InventoryError` propagates with its precise ``entry``/``field``
+        intact rather than being flattened by a pydantic after-validator.
+
+        Either way the caller observes exactly one exception type.
 
         Args:
             data: The decoded TOML mapping.
@@ -186,6 +184,10 @@ class InventoryDoc(BaseModel):
             InventoryError: On any structural or semantic validation failure.
         """
         try:
-            return cls.model_validate(data)
+            doc = cls.model_validate(data)
         except ValidationError as exc:
             raise InventoryError("inventory", "schema", str(exc)) from exc
+        doc._check_image_identities()
+        doc._check_base_image_refs()
+        doc._check_instance_name_uniqueness()
+        return doc
