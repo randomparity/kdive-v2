@@ -337,6 +337,16 @@ def test_bundled_oidc_aud_pin_survives_override() -> None:
     assert "nope" not in res.stdout
 
 
+def test_bundled_oidc_blanked_claims_degrade_to_floor() -> None:
+    # Blanking the claims map (a plausible "token with no grant" override) must render the
+    # safe {sub,aud} floor, not a nil-pointer template error.
+    res = _template("bundledBackends=true", "demoAcknowledged=true", "demo.oidc.claims=null")
+    assert res.returncode == 0, res.stderr
+    assert '"aud":["kdive"]' in res.stdout
+    assert '"sub":"kdive-demo"' in res.stdout
+    assert '"roles"' not in res.stdout
+
+
 def test_bundled_demo_services_are_clusterip() -> None:
     res = _template("bundledBackends=true", "demoAcknowledged=true")
     assert res.returncode == 0, res.stderr

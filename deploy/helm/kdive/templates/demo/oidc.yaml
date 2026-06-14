@@ -27,8 +27,10 @@ spec:
             # `demo`, so a stock demo deploy is RBAC-testable — ADR-0105). `sub` and `aud`
             # are template invariants layered over any override: `aud` stays ["kdive"]
             # (config KDIVE_OIDC_AUDIENCE) so an override can never break audience
-            # verification and lock the demo out; `sub` defaults to kdive-demo.
-            {{- $claims := merge (dict "sub" (default "kdive-demo" .Values.demo.oidc.claims.sub) "aud" (list "kdive")) (omit .Values.demo.oidc.claims "aud" "sub") }}
+            # verification and lock the demo out; `sub` defaults to kdive-demo. A blanked
+            # override (claims=null/empty) degrades to the safe {sub,aud} floor, not an error.
+            {{- $demoClaims := .Values.demo.oidc.claims | default dict }}
+            {{- $claims := merge (dict "sub" (default "kdive-demo" $demoClaims.sub) "aud" (list "kdive")) (omit $demoClaims "aud" "sub") }}
             - name: JSON_CONFIG
               value: '{"interactiveLogin":false,"tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"grant_type","match":"*","claims":{{ $claims | toJson }}}]}]}'
           ports:
