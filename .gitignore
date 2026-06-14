@@ -27,10 +27,9 @@ build/
 !tests/providers/remote_libvirt/build/
 *.egg-info/
 
-# Live-stack report artifacts (default is out-of-tree; this guards a repo-local override)
+# Live-stack report artifacts (default is out-of-tree; this guards a repo-local override).
+# .live-stack-logs/ and .live-stack.pid are covered by the broader .live-* globs below.
 kdive-live-stack-artifacts/
-.live-stack-logs/
-.live-stack.pid
 scorecard.png
 
 # Agents and orchestration
