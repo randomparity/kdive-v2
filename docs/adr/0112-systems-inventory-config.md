@@ -48,12 +48,25 @@ declared attributes onto the resource's `capabilities` jsonb keyed by `uri`/`hos
 overlay supplies the fault-inject `vcpus`/`memory_mb` that #385 lacks.
 
 The engine runs both as a `kdive reconcile-systems` CLI (deploy `migrate → seed` + on demand) and
-as a reconciler-loop pass (drift). The file path is `KDIVE_SYSTEMS_TOML` (default `./systems.toml`);
-in k8s it is a mounted ConfigMap. Operational/secret config stays in the `KDIVE_*` registry.
+as a reconciler-loop pass (drift); an `ops.reconcile_now`-style MCP trigger lets an agent force it.
+The file path is `KDIVE_SYSTEMS_TOML` (default `./systems.toml`); in k8s it is a mounted ConfigMap.
+Operational/secret config stays in the `KDIVE_*` registry.
 
-Delivered in three phases: (1) schema + engine + images (removes image definitions from code);
+`managed_by` is also the **declarative/imperative boundary**: declarative bring-up writes
+`managed_by='config'` rows the reconciler owns; agent-native MCP tools write `managed_by='runtime'`
+rows the reconciler never prunes/overwrites. The two own disjoint row-sets; on identity collision
+declarative wins (adopt). Runtime resource registration (`resources.register`/`deregister`,
+platform_admin; deregister-with-live destructive) defaults a resource to the registering
+**project's affinity** (a new owner/allowlist column; admission checks it — config-declared
+default global), and carries a **`lease_expires_at`** the agent renews; the reconciler reaps a
+runtime resource on lease expiry or sustained unreachability but cordons+drains / refuses rather
+than destroying live work (mirrors the project-private image `expires_at` TTL, the leaked-`active`
+allocation reaper, ADR-0109, and the probe-guest heartbeat reaping).
+
+Delivered in four phases: (1) schema + engine + images (removes image definitions from code);
 (2) resources — capacity/cost merged with discovery (fixes #385); (3) multi-instance + build
-hosts (removes the singleton `KDIVE_REMOTE_LIBVIRT_*` env vars).
+hosts (removes the singleton `KDIVE_REMOTE_LIBVIRT_*` env vars); (4) runtime mutation —
+`resources.register`/`deregister`/`renew`, per-project affinity, lease + reachability reaping.
 
 ## Consequences
 
@@ -62,6 +75,9 @@ hosts (removes the singleton `KDIVE_REMOTE_LIBVIRT_*` env vars).
   lifecycle over MCP.
 - Multiple instances per provider are expressible and independently allocatable (selection by
   `resource_id`, or any-available by `kind` — no allocation-API change).
+- An agent can add/remove a system live (platform_admin), scoped to its project by default, with
+  leaked additions auto-reaped — no permanent shared capacity left by a vanished agent. Adds a
+  resource owner/affinity column (admission now checks it) and a `lease_expires_at` column.
 - Revises ADR-0092/0093 (catalog source) and sharpens the ADR-0087 boundary; the DB remains the
   runtime S3 index, now loaded from config rather than packaged YAML.
 - New operational dependency: the reconciler must be able to read `systems.toml` (a ConfigMap in

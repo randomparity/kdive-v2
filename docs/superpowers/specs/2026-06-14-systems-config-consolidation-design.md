@@ -6,7 +6,7 @@ build hosts, and their capacity/cost attributes — into a single declarative fi
 and host definitions currently embedded in the code, and adds first-class support for **multiple
 instances per provider** (multiple remote-libvirt hosts, etc.).
 
-Status: design. Companion ADR: `docs/adr/0112-systems-inventory-config.md`. Delivered in three
+Status: design. Companion ADR: `docs/adr/0112-systems-inventory-config.md`. Delivered in four
 phases, each its own implementation plan.
 
 ## Problem
@@ -43,6 +43,30 @@ The design rests on a strict separation of which layer owns which fields of a ro
 This revises ADR-0092/0093: the rootfs catalog source moves from "read-only YAML seeded into the
 DB" to "config → merge-reconcile → DB." The DB remains the runtime index of S3-carried images
 (`object_key`/`digest` per row); config owns only the declared identity and source-intent.
+
+## Operating model: declarative file + runtime tools
+
+Both bring-up and runtime changes are supported by partitioning ownership with `managed_by`, so
+the two write paths own **disjoint** row-sets and never fight:
+
+- **Declarative (bring-up / GitOps):** declare in `systems.toml`; reconcile makes the DB match.
+  Rows are `managed_by='config'` — the reconciler updates them to the file and **prunes** them
+  when their identity leaves the file. Reproducible, version-controlled, the way a fleet is stood
+  up. In k8s the file is a mounted ConfigMap; an edit there (or `helm upgrade`) is the declarative
+  runtime-change path.
+- **Imperative (ad-hoc / agent-native):** MCP tools mutate the DB directly as
+  `managed_by='runtime'` rows the reconciler **never** prunes or overwrites (the same invariant
+  that protects project-private images). This is how an agent adds/removes a system live without
+  editing a file.
+
+**Adopt on collision:** if an identity appears in **both** the file and as a runtime row,
+declarative wins — reconcile adopts it (flips `managed_by` to `config`), like `kubectl apply`
+adopting an imperatively-created object. The reverse (removing it from the file) then prunes it,
+which the operator is warned about by the reconcile diff.
+
+**Reload trigger (three, same engine):** the reconciler loop auto-applies file changes within a
+poll interval (content-hash-gated); `kdive reconcile-systems` forces an immediate apply; and an
+`ops.reconcile_now`-style MCP trigger lets an agent force it. `KDIVE_SYSTEMS_TOML` sets the path.
 
 ## The reconcile engine
 
@@ -88,6 +112,43 @@ step, and on demand) **and** a reconciler-loop spec (`reconcile_inventory`) for 
 
 In k8s the reconciler reads `systems.toml` from a mounted **ConfigMap**; the path is configurable
 (`KDIVE_SYSTEMS_TOML`, default `./systems.toml`). Operational/secret config stays `KDIVE_*` env.
+
+## Runtime mutation: registration, ownership, lifecycle
+
+The imperative path an agent uses to add/remove inventory live.
+
+### Registration tools + authorization
+
+Adding a provider instance is **adding shared platform capacity**, so the new
+`resources.register` / `resources.deregister` tools are **`platform_admin`, mutating** — mirroring
+the existing `build_hosts.register` (platform_admin). `register` takes the same fields as a
+`[[remote_libvirt]]`/`[[local_libvirt]]`/`[[fault_inject]]` block, **preflights** (reachability
+probe, secret refs resolve, `base_image` is registered), then writes a `managed_by='runtime'`
+resource row. `deregister` of a resource with **live allocations** is **destructive-tier**
+(platform_admin + typed confirmation / `--force`), like `ops.force_teardown`. Images and build
+hosts reuse the existing `images.*` / `build_hosts.*` mutation tools as their runtime surface.
+
+### Per-project resource affinity (new capability)
+
+Today `resources` is **platform-global** (`0001_init.sql` has no `project`/`owner` column), so any
+project can allocate against any resource. This design adds an **owner/affinity** column: a
+resource may be **global** (any project) or **scoped** to an owning project and an optional
+allowlist of projects. Config-declared instances default global (a fleet is shared); an
+**agent-registered (runtime) resource defaults to the registering agent's project**. Allocation
+admission (`allocations._resolve_resource`) gains an affinity check: a project may only place on a
+global resource or one it is on the allowlist of. New column + admission-path change + tests.
+
+### Lease + reachability reaping (leak resistance)
+
+A `managed_by='runtime'` resource carries a **`lease_expires_at`**: the registering agent renews
+it (a `resources.renew` tool / heartbeat) while in use. The reconciler reaps a runtime resource
+when the lease **expires** OR it is **unreachable past a TTL** (extending the #359 reachability
+probe) — but it **never silently destroys live work**: a resource with live allocations is
+**cordoned + drained**, or the reap is **refused and surfaced**, mirroring the leaked-`active`
+allocation reaper that preserves a `crashed` System under live crash-debug (ADR-0109) and the
+probe-guest heartbeat reaping (`reconciler/provider_reaping.py`). Config-managed resources are
+removed by editing the file (no lease); only runtime resources carry a lease. This mirrors the
+project-private image `expires_at` TTL already in `image_catalog`.
 
 ## The `systems.toml` schema (v2)
 
@@ -185,6 +246,21 @@ Outcome: #385 fixed; cost/capacity declared, not hardcoded.
   and the superseded `scripts/coverage_campaign/d1.env.template`.
 
 Outcome: multiple instances per provider; the last hardcoded host config is gone.
+
+### Phase 4 — runtime inventory mutation (agent-native)
+
+The imperative path, built on the Phases 1–3 `managed_by` foundation.
+
+- `resources.register` / `resources.deregister` / `resources.renew` tools (platform_admin;
+  deregister-with-live is destructive-tier) writing `managed_by='runtime'` rows.
+- Per-project resource **affinity** column + admission-path check; runtime-registered resources
+  default to the registering project's scope; config-declared default global.
+- `lease_expires_at` on runtime resources + a reconciler **reap spec** (lease expiry OR
+  unreachable past TTL), with cordon+drain / refuse-if-live (no silent destruction).
+- Adopt-on-collision in the reconcile engine (a config identity adopts a matching runtime row).
+
+Outcome: an agent can add/remove a system live, scoped to its project, with leaked additions
+auto-reaped — no permanent shared capacity left by a vanished agent.
 
 ## What gets deleted (replace, don't deprecate)
 
