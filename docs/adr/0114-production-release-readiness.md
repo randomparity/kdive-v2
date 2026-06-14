@@ -82,12 +82,15 @@ two surfaces:
    cross-links **only**; it does not resolve bare code-span paths (`` `docs/...` ``) or paths
    embedded in non-markdown files.
 2. `just docs-paths` — a path-existence check over **concrete** `docs/<path>` references in
-   `justfile`, `scripts/`, `*.yml`, and `*.md` code spans. It matches anchored
-   `docs/<segment>/…` patterns and explicitly excludes the illustrative ellipses this doc
-   itself uses (`docs/…`, `docs/...`), then fails when a referenced target no longer exists.
-   It catches the **greppable** non-markdown rot vectors — `m2-report`'s output path
-   (`justfile:140`), `m2_portability_gate.py`'s `docs/specs/…` string, and `AGENTS.md` code
-   spans — which a markdown link-checker cannot see.
+   `justfile`, `scripts/`, `*.yml`, and operational `*.md`. It matches anchored
+   `docs/<segment>/…` patterns and excludes the illustrative placeholders design docs use
+   (`docs/…`, `docs/...`, `docs/<seg>`), then fails when a referenced target no longer
+   exists. **Exempt from scanning:** `docs/design/**` (design specs narrate the path moves,
+   so their `docs/...` mentions are intentional) and `docs/archive/**` (frozen history
+   references paths as they were when written) — without this exemption the guard fails on
+   its own design specs and the entire archive. It catches the **greppable** non-markdown rot
+   vectors — `m2-report`'s output path (`justfile:140`), `m2_portability_gate.py`'s
+   `docs/specs/…` string, and `AGENTS.md` code spans — which a markdown link-checker cannot see.
 
 The generators' own path constants are **not** greppable and are deliberately out of
 `docs-paths` scope: `gen_tool_reference.py` `_REF_DIR` and `gen_config_reference.py` `_OUT`

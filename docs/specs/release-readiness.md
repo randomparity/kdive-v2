@@ -105,13 +105,16 @@ the `docs-paths` check, below).
 - Add **two** CI guards (the failure modes split across two surfaces):
   - `just docs-links` — markdown link-checker over tracked `*.md` (markdown cross-links only).
   - `just docs-paths` — path-existence check over **concrete** `docs/<path>` references in
-    `justfile`, `scripts/`, `*.yml`, and `*.md` code spans (anchored `docs/<segment>/…`
-    patterns, excluding the illustrative `docs/…`/`docs/...` ellipses); fails when a
-    referenced target is missing. Catches the greppable non-markdown refs (`m2-report` at
-    `justfile:140`, `m2_portability_gate.py`, `AGENTS.md` code spans). The generators'
-    `_REF_DIR`/`_OUT` are slash-joined literals (no `docs/…` substring) and are **not** in
-    `docs-paths` scope — they are covered by `docs-check`/`config-docs-check`, which run the
-    generators and diff output.
+    `justfile`, `scripts/`, `*.yml`, and operational `*.md` (anchored `docs/<segment>/…`
+    patterns, excluding the illustrative `docs/…`/`docs/...`/`docs/<seg>` placeholders);
+    fails when a referenced target is missing. Catches the greppable non-markdown refs
+    (`m2-report` at `justfile:140`, `m2_portability_gate.py`, `AGENTS.md` code spans).
+    **Exempt from scanning:** `docs/design/**` (design specs narrate path moves, so their
+    `docs/...` mentions are intentional) and `docs/archive/**` (frozen history references
+    paths as they were) — otherwise the guard would fail on this very spec and the archive.
+    The generators' `_REF_DIR`/`_OUT` are slash-joined literals (no `docs/…` substring) and
+    are also **not** in `docs-paths` scope — they are covered by `docs-check`/`config-docs-check`,
+    which run the generators and diff output.
   Wire both into the `ci` recipe and `ci.yml`.
 - Verify `just docs-check`, `config-docs-check`, `check-mermaid` still pass (paths unchanged).
 
