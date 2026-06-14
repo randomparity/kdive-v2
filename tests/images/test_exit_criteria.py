@@ -455,8 +455,15 @@ def test_criterion_1_regression_lives_with_both_kernel_planes() -> None:
     # stays closed for BOTH planes (the #227 class is per-plane, not a shared helper).
     root = pathlib.Path(__file__).resolve().parents[2]
     name = "def test_exit_criterion_noop_patch_fails_patch_applied_verification"
-    for plane in ("local_libvirt", "remote_libvirt"):
-        text = (root / "tests" / "providers" / plane / "test_build.py").read_text(encoding="utf-8")
+    build_tests = (
+        ("local_libvirt", root / "tests" / "providers" / "local_libvirt" / "test_build.py"),
+        (
+            "remote_libvirt",
+            root / "tests" / "providers" / "remote_libvirt" / "build" / "test_build.py",
+        ),
+    )
+    for plane, path in build_tests:
+        text = path.read_text(encoding="utf-8")
         assert name in text, f"missing the criterion-1 no-op regression for the {plane} plane"
 
 

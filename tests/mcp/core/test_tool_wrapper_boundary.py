@@ -31,7 +31,7 @@ from kdive.mcp.tools.debug import sessions as debug_sessions_tools
 from kdive.mcp.tools.lifecycle import allocations as allocations_tools
 from kdive.mcp.tools.lifecycle.runs import registrar as runs_tools
 from kdive.mcp.tools.lifecycle.systems import registrar as systems_tools
-from kdive.mcp.tools.ops import resources as ops_resources_tools
+from kdive.mcp.tools.ops.resources import host_ops as ops_resources_tools
 from kdive.provider_components.artifacts import PresignedUpload, PresignPutRequest
 from kdive.providers import composition
 from kdive.providers.fault_inject.discovery import FaultInjectDiscovery

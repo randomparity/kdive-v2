@@ -11,6 +11,7 @@ import psycopg
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.build_hosts import WORKER_LOCAL_ID
 from kdive.domain.state import AllocationState, DebugSessionState, RunState, SystemState
 from kdive.providers.reaping import DumpVolume, InfraReaper, NullReaper
 from kdive.reconciler import loop
@@ -173,7 +174,7 @@ def test_zombie_job_compensates_owning_run(migrated_url: str) -> None:
             await seed_running_job(
                 seed,
                 "dk-run-zombie",
-                payload={"run_id": str(run_id)},
+                payload={"run_id": str(run_id), "build_host_id": str(WORKER_LOCAL_ID)},
                 lease_seconds=-60,
                 attempt=3,
                 max_attempts=3,

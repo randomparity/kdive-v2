@@ -16,6 +16,7 @@ import psycopg
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
+from kdive.db.build_hosts import WORKER_LOCAL_ID
 from kdive.reconciler.loop import _repair_abandoned_jobs
 from tests.adversarial.conftest import one, open_conn, seed_run
 
@@ -23,7 +24,10 @@ _AUTHORIZING = {"principal": "reconciler-test", "agent_session": None, "project"
 
 
 async def _make_zombie(conn: psycopg.AsyncConnection, run_id: UUID | None) -> UUID:
-    payload = "{}" if run_id is None else f'{{"run_id": "{run_id}"}}'
+    if run_id is None:
+        payload = "{}"
+    else:
+        payload = f'{{"run_id": "{run_id}", "build_host_id": "{WORKER_LOCAL_ID}"}}'
     async with conn.cursor() as cur:
         await cur.execute(
             "INSERT INTO jobs (kind, payload, state, attempt, max_attempts, worker_id, "

@@ -39,6 +39,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.build_hosts import WORKER_LOCAL_ID
 from kdive.db.repositories import ALLOCATIONS, INVESTIGATIONS, RUNS, SYSTEMS
 from kdive.domain.cost import cost, quantize_kcu, rate
 from kdive.domain.models import Allocation, Investigation, Job, Run, System
@@ -776,7 +777,12 @@ def test_c4_abandoned_job_fails_run_lease_expired(migrated_url: str) -> None:
                     "VALUES ('build', %s, 'running', 3, 3, 'w-dead', "
                     "    now() - interval '1 minute', %s, %s)",
                     (
-                        Jsonb({"run_id": str(run.id)}),
+                        Jsonb(
+                            {
+                                "run_id": str(run.id),
+                                "build_host_id": str(WORKER_LOCAL_ID),
+                            }
+                        ),
                         Jsonb(
                             {
                                 "principal": "allocation-test",
