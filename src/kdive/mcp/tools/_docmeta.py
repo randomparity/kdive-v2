@@ -24,6 +24,7 @@ DESTRUCTIVE_TOOLS = frozenset(
         "ops.force_teardown",
         "ops.force_release",
         "resources.drain",
+        "resources.deregister",
         "images.delete",
         "images.prune_expired",
         "images.extend",

@@ -34,6 +34,7 @@ def test_destructive_tools_set_is_the_reviewed_set() -> None:
                 "ops.force_teardown",
                 "ops.force_release",
                 "resources.drain",
+                "resources.deregister",
                 "images.delete",
                 "images.prune_expired",
                 "images.extend",

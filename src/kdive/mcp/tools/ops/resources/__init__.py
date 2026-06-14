@@ -29,6 +29,7 @@ from kdive.mcp.tools._common import as_uuid as _as_uuid
 from kdive.mcp.tools._platform_auth import actor_for, audit_platform_denial, held_platform_roles
 from kdive.mcp.tools._resource_envelopes import resource_config_error, resource_envelope
 from kdive.mcp.tools.ops.breakglass import breakglass_release_allocation
+from kdive.mcp.tools.ops.resources.registrar import register_mutation_tools
 from kdive.security import audit
 from kdive.security.authz.context import RequestContext
 from kdive.security.authz.rbac import (
@@ -282,7 +283,12 @@ async def drain_resource(
 
 
 def register(app: FastMCP, pool: AsyncConnectionPool) -> None:
-    """Register platform resource operation tools on ``app``."""
+    """Register platform resource operation tools on ``app``.
+
+    Wires both the operator host-ops (set_status/cordon/uncordon/drain, ADR-0062) and the
+    runtime resource-mutation tools (register/deregister/renew, ADR-0112).
+    """
+    register_mutation_tools(app, pool)
 
     @app.tool(
         name="resources.set_status",

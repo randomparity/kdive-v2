@@ -25,6 +25,17 @@ Mark a host unschedulable; placement skips/rejects it. Requires platform operato
 |---|---|---|---|
 | `resource_id` | `string` | yes | The host Resource UUID to cordon. |
 
+## `resources.deregister`
+
+`implemented` · `destructive`
+
+Deregister a runtime resource (force required if live). Requires platform_admin.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `force` | `boolean` | no | Typed confirmation required to deregister a resource with live allocations (destructive-tier). |
+| `resource_id` | `string` | yes | The runtime Resource UUID to deregister. |
+
 ## `resources.describe`
 
 `implemented` · `read-only`
@@ -56,6 +67,33 @@ List Resources, optional kind. Requires a valid token; no project membership nee
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `kind` | `any` | no | Filter by resource kind (e.g. 'local-libvirt'); omit for all. |
+
+## `resources.register`
+
+`implemented`
+
+Register a runtime provider resource (per-kind preflight). Requires platform_admin.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `base_image` | `any` | no | Registered base image name (remote_libvirt only; preflight-checked). |
+| `block` | `string` | yes | The systems.toml block name: 'remote_libvirt', 'local_libvirt', or 'fault_inject'. |
+| `concurrent_allocation_cap` | `integer` | no | Per-host concurrent-allocation cap (> 0). |
+| `cost_class` | `string` | yes | The cost class for pricing. |
+| `host_uri` | `any` | no | Provider host URI (required for remote_libvirt/local_libvirt; synthetic for fault_inject). |
+| `name` | `string` | yes | The (kind, name) identity for the new resource. |
+| `owner_project` | `any` | no | Owning project; defaults to the single registering project. Pass '*' for a global (any-project) resource. |
+| `secret_refs` | `any` | no | Credential reference strings to preflight-resolve, e.g. cert/key/CA refs. Only the references are stored — secret bytes are never fetched or logged. |
+
+## `resources.renew`
+
+`implemented`
+
+Extend a runtime resource's lease (keyed to the id). Requires platform_admin.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `resource_id` | `string` | yes | The runtime Resource UUID whose lease to renew. |
 
 ## `resources.set_status`
 

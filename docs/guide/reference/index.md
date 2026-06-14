@@ -71,9 +71,12 @@
 | [`postmortem.triage`](postmortem.md#postmortemtriage) | `partial` |
 | [`resources.availability`](resources.md#resourcesavailability) | `implemented` |
 | [`resources.cordon`](resources.md#resourcescordon) | `implemented` |
+| [`resources.deregister`](resources.md#resourcesderegister) | `implemented` |
 | [`resources.describe`](resources.md#resourcesdescribe) | `implemented` |
 | [`resources.drain`](resources.md#resourcesdrain) | `implemented` |
 | [`resources.list`](resources.md#resourceslist) | `implemented` |
+| [`resources.register`](resources.md#resourcesregister) | `implemented` |
+| [`resources.renew`](resources.md#resourcesrenew) | `implemented` |
 | [`resources.set_status`](resources.md#resourcesset_status) | `implemented` |
 | [`resources.uncordon`](resources.md#resourcesuncordon) | `implemented` |
 | [`runs.boot`](runs.md#runsboot) | `partial` |
