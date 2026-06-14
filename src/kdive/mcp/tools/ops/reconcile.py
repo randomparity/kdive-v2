@@ -134,6 +134,7 @@ def _reconcile_response(report: ReconcileReport) -> ToolResponse:
         suggested_next_actions=["ops.reconcile_now"],
         data={
             "expired_allocations": str(report.expired_allocations),
+            "reaped_active_allocations": str(report.reaped_active_allocations),
             "promoted_allocations": str(report.promoted_allocations),
             "queue_timeouts": str(report.queue_timeouts),
             "orphaned_systems": str(report.orphaned_systems),

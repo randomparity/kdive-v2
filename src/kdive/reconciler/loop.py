@@ -82,6 +82,7 @@ _gc_idempotency_keys = gc_repairs.gc_idempotency_keys
 _promote_pending = allocation_repairs.promote_pending
 _reap_console_collectors = gc_repairs.reap_console_collectors
 _reap_orphaned_dump_volumes = gc_repairs.reap_orphaned_dump_volumes
+_reap_orphaned_active_allocations = allocation_repairs.reap_orphaned_active_allocations
 _reap_queue_timeouts = allocation_repairs.reap_queue_timeouts
 _reap_queue_timeouts_for = allocation_repairs.reap_queue_timeouts_for
 _reclaim_build_host_leases = build_host_repairs.reclaim_orphan_build_host_leases
@@ -100,6 +101,7 @@ __all__ = [
     "_gc_idempotency_keys",
     "_probe_build_host_reachability",
     "_promote_pending",
+    "_reap_orphaned_active_allocations",
     "_reap_console_collectors",
     "_reap_orphaned_dump_volumes",
     "_reap_queue_timeouts",
@@ -150,6 +152,7 @@ class ReconcileReport:
     idempotency_keys_gc_count: int
     failures: tuple[str, ...]
     abandoned_uploads: int = 0
+    reaped_active_allocations: int = 0
     promoted_allocations: int = 0
     queue_timeouts: int = 0
     leaked_probe_guests: int = 0
@@ -195,6 +198,9 @@ def _repair_plan(
 ) -> tuple[_RepairSpec, ...]:
     repairs = [
         _RepairSpec("expired_allocations", _sweep_expired_allocations),
+        # Release leaked `active` allocations whose System is terminal/absent (ADR-0105) BEFORE
+        # the promotion sweep, so a host-cap slot this reaper frees is filled in the same pass.
+        _RepairSpec("reaped_active_allocations", _reap_orphaned_active_allocations),
         _RepairSpec("promoted_allocations", _promote_pending),
         _RepairSpec("queue_timeouts", _reap_queue_timeouts_for(config.queue_max_wait)),
         _RepairSpec("orphaned_systems", _repair_orphaned_systems),
@@ -312,6 +318,7 @@ async def reconcile_once(
         idempotency_keys_gc_count=counts["idempotency_keys_gc_count"],
         failures=tuple(failures),
         abandoned_uploads=counts["abandoned_uploads"],
+        reaped_active_allocations=counts["reaped_active_allocations"],
         promoted_allocations=counts["promoted_allocations"],
         queue_timeouts=counts["queue_timeouts"],
         leaked_probe_guests=counts["leaked_probe_guests"],
