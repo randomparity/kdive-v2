@@ -408,7 +408,7 @@ def _catalog_name_declared(provider: str, name: str) -> bool:
     """
     import kdive.config as config
     from kdive.config.core_settings import SYSTEMS_TOML
-    from kdive.inventory import load_inventory_optional
+    from kdive.inventory.loader import load_inventory_optional
 
     raw = config.get(SYSTEMS_TOML) or "./systems.toml"
     doc = load_inventory_optional(Path(raw))
