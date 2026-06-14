@@ -13,6 +13,7 @@ from kdive.domain.models import Resource, ResourceKind
 from kdive.domain.pcie import MatchOutcome
 from kdive.domain.state import ResourceStatus
 from kdive.services.allocation import pcie_claim
+from kdive.services.allocation.affinity import project_may_place
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +21,7 @@ class PlacementRequest:
     resource_id: UUID | None
     kind: ResourceKind | None = None
     pcie_specs: tuple[str, ...] = ()
+    project: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,8 +33,16 @@ class PlacementCandidates:
 async def resolve_placement_candidates(
     conn: AsyncConnection, request: PlacementRequest
 ) -> PlacementCandidates:
-    """Return schedulable placement candidates, filtered by free PCIe matches when requested."""
-    candidates = await _schedulable_candidates(conn, request.resource_id, request.kind)
+    """Return schedulable placement candidates, filtered by affinity and free PCIe matches.
+
+    Candidates are first filtered by the per-project affinity predicate (a disallowed scoped
+    resource is never selected, so an any-available request falls through to a legal global
+    one — ADR-0112, Task 4.2). When ``request.project`` is ``None`` no affinity filtering is
+    applied. The PCIe-spec filtering then narrows the affinity-allowed set.
+    """
+    candidates = await _schedulable_candidates(
+        conn, request.resource_id, request.kind, request.project
+    )
     if not request.pcie_specs:
         return PlacementCandidates(resources=candidates)
 
@@ -51,14 +61,22 @@ async def resolve_placement_candidates(
 
 
 async def _schedulable_candidates(
-    conn: AsyncConnection, resource_id: UUID | None, kind: ResourceKind | None
+    conn: AsyncConnection,
+    resource_id: UUID | None,
+    kind: ResourceKind | None,
+    project: str | None,
 ) -> list[Resource]:
-    """Return schedulable candidates for either an explicit host or a resource kind."""
+    """Return schedulable candidates for either an explicit host or a resource kind.
+
+    Candidates are filtered by the per-project affinity predicate when ``project`` is set;
+    a disallowed scoped resource is excluded so it is never selected (Task 4.2). An explicit
+    ``resource_id`` targeting a disallowed scoped host yields no candidate.
+    """
     if resource_id is not None:
         resource = await RESOURCES.get(conn, resource_id)
         if resource is None or resource.cordoned or resource.status is not ResourceStatus.AVAILABLE:
             return []
-        return [resource]
+        return [resource] if _affinity_ok(resource, project) else []
     if kind is None:
         return []
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -68,4 +86,10 @@ async def _schedulable_candidates(
             (kind.value,),
         )
         rows = await cur.fetchall()
-    return [Resource.model_validate(row) for row in rows]
+    candidates = [Resource.model_validate(row) for row in rows]
+    return [candidate for candidate in candidates if _affinity_ok(candidate, project)]
+
+
+def _affinity_ok(resource: Resource, project: str | None) -> bool:
+    """Apply the affinity predicate; a ``None`` project disables filtering."""
+    return project is None or project_may_place(resource, project)

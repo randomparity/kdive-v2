@@ -54,6 +54,7 @@ from kdive.domain.state import AllocationState
 from kdive.security import audit
 from kdive.services.accounting import ledger as accounting
 from kdive.services.allocation import pcie_claim
+from kdive.services.allocation.affinity import project_may_place
 from kdive.services.allocation.error_details import categorized_details
 from kdive.services.allocation.idempotency import (
     record_key,
@@ -265,6 +266,18 @@ async def admission_gate(
         CategorizedError: ``CONFIGURATION_ERROR`` if the host cap is invalid or a PCIe spec
             is malformed grammar (the caller's transaction rolls back — no durable write).
     """
+    if not project_may_place(request.resource, request.project):
+        # Per-project affinity backstop for an explicit ``resource_id`` (the selection filter
+        # already excludes scoped hosts from any-available selection — ADR-0112, Task 4.2). A
+        # foreign project can never legally occupy a scoped host, so this is NOT queueable:
+        # waiting cannot make the host placeable. A global host (``owner_project`` NULL) is a
+        # strict no-op here, so no existing allocation regresses.
+        return _GateResult(
+            denial=AdmissionOutcome(
+                granted=False, allocation=None, category=ErrorCategory.ALLOCATION_DENIED
+            ),
+            devices=[],
+        )
     if not await _within_alloc_quota(conn, request.project):
         return _GateResult(
             denial=AdmissionOutcome(

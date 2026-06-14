@@ -47,22 +47,27 @@ async def _conn(url: str) -> AsyncIterator[psycopg.AsyncConnection]:
         await conn.close()
 
 
-def _admit(conn: psycopg.AsyncConnection, resource: Resource):  # type: ignore[no-untyped-def]
+def _admit(conn: psycopg.AsyncConnection, resource: Resource, *, project: str = "proj"):  # type: ignore[no-untyped-def]
+    ctx = (
+        CTX
+        if project == "proj"
+        else RequestContext(principal="alice", agent_session="s", projects=(project,))
+    )
     return admit(
         conn,
-        AllocationRequest(ctx=CTX, resource=resource, project="proj", selector=SEL, window=1),
+        AllocationRequest(ctx=ctx, resource=resource, project=project, selector=SEL, window=1),
     )
 
 
-async def _seed_budget_quota(conn: psycopg.AsyncConnection) -> None:
+async def _seed_budget_quota(conn: psycopg.AsyncConnection, *, project: str = "proj") -> None:
     await BUDGETS.upsert(
         conn,
-        Budget(project="proj", limit_kcu=Decimal("1000000"), spent_kcu=Decimal(0), updated_at=_DT),
+        Budget(project=project, limit_kcu=Decimal("1000000"), spent_kcu=Decimal(0), updated_at=_DT),
     )
     await QUOTAS.upsert(
         conn,
         Quota(
-            project="proj",
+            project=project,
             max_concurrent_allocations=1_000_000,
             max_concurrent_systems=1_000_000,
             updated_at=_DT,
@@ -70,7 +75,13 @@ async def _seed_budget_quota(conn: psycopg.AsyncConnection) -> None:
     )
 
 
-async def _seed_resource(conn: psycopg.AsyncConnection, *, cap: object) -> Resource:
+async def _seed_resource(
+    conn: psycopg.AsyncConnection,
+    *,
+    cap: object,
+    owner_project: str | None = None,
+    affinity_allowlist: list[str] | None = None,
+) -> Resource:
     return await RESOURCES.insert(
         conn,
         Resource(
@@ -83,6 +94,8 @@ async def _seed_resource(conn: psycopg.AsyncConnection, *, cap: object) -> Resou
             cost_class="local",
             status=ResourceStatus.AVAILABLE,
             host_uri="qemu:///system",
+            owner_project=owner_project,
+            affinity_allowlist=affinity_allowlist or [],
         ),
     )
 
@@ -272,5 +285,57 @@ def test_admit_two_calls_at_cap_one_grant_one_deny(migrated_url: str) -> None:
             assert first.granted is True
             assert second.granted is False
             assert await _count_allocs(conn) == 1
+
+    asyncio.run(_run())
+
+
+def test_admit_denies_explicit_scoped_resource_for_foreign_project(migrated_url: str) -> None:
+    # The selection filter excludes a foreign-scoped host, but an explicit resource_id can
+    # still target one; admit is the backstop and hard-denies it (Task 4.2).
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            res = await _seed_resource(conn, cap=2, owner_project="other")
+            await _seed_budget_quota(conn, project="mine")
+            outcome = await _admit(conn, res, project="mine")
+            assert outcome.granted is False
+            assert outcome.allocation is None
+            assert outcome.category is ErrorCategory.ALLOCATION_DENIED
+            assert await _count_allocs(conn) == 0  # no durable write
+            assert await _count_audit(conn) == 0
+
+    asyncio.run(_run())
+
+
+def test_admit_grants_global_resource_to_any_project(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            res = await _seed_resource(conn, cap=2)  # owner_project NULL == global
+            await _seed_budget_quota(conn, project="mine")
+            outcome = await _admit(conn, res, project="mine")
+            assert outcome.granted is True
+
+    asyncio.run(_run())
+
+
+def test_admit_grants_owned_resource_to_owner(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            res = await _seed_resource(conn, cap=2, owner_project="mine")
+            await _seed_budget_quota(conn, project="mine")
+            outcome = await _admit(conn, res, project="mine")
+            assert outcome.granted is True
+
+    asyncio.run(_run())
+
+
+def test_admit_grants_allowlisted_project(migrated_url: str) -> None:
+    async def _run() -> None:
+        async with _conn(migrated_url) as conn:
+            res = await _seed_resource(
+                conn, cap=2, owner_project="other", affinity_allowlist=["mine"]
+            )
+            await _seed_budget_quota(conn, project="mine")
+            outcome = await _admit(conn, res, project="mine")
+            assert outcome.granted is True
 
     asyncio.run(_run())

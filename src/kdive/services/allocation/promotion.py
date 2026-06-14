@@ -281,7 +281,11 @@ async def _candidate_hosts(conn: AsyncConnection, alloc: Allocation) -> list[Res
     except CategorizedError as exc:
         unfiltered = await resolve_placement_candidates(
             conn,
-            PlacementRequest(resource_id=alloc.requested_resource_id, kind=alloc.requested_kind),
+            PlacementRequest(
+                resource_id=alloc.requested_resource_id,
+                kind=alloc.requested_kind,
+                project=alloc.project,
+            ),
         )
         for resource in unfiltered.resources:
             _log.warning(
@@ -299,6 +303,7 @@ async def _candidate_hosts(conn: AsyncConnection, alloc: Allocation) -> list[Res
             resource_id=alloc.requested_resource_id,
             kind=alloc.requested_kind,
             pcie_specs=tuple(alloc.requested_pcie_specs),
+            project=alloc.project,
         ),
     )
     return candidates.resources

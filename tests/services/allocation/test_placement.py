@@ -43,6 +43,8 @@ async def _resource(
     status: ResourceStatus = ResourceStatus.AVAILABLE,
     cordoned: bool = False,
     pcie: bool = False,
+    owner_project: str | None = None,
+    affinity_allowlist: list[str] | None = None,
 ) -> Resource:
     capabilities: dict[str, object] = {
         CONCURRENT_ALLOCATION_CAP_KEY: 10,
@@ -64,6 +66,8 @@ async def _resource(
             status=status,
             host_uri="qemu:///system",
             cordoned=cordoned,
+            owner_project=owner_project,
+            affinity_allowlist=affinity_allowlist or [],
         ),
     )
     created_at = _DT + created_offset
@@ -159,3 +163,59 @@ def test_pcie_resolution_reports_busy_capacity_candidate(migrated_url: str) -> N
     matched_ids, capacity_id, free_id, busy_id = asyncio.run(_run())
     assert matched_ids == [free_id]
     assert capacity_id == busy_id
+
+
+def test_any_available_skips_scoped_and_lands_on_global(migrated_url: str) -> None:
+    """An any-available request skips a foreign-scoped host and selects the global one.
+
+    The scoped host is older (sorts first), so absent the affinity filter selection would
+    pick it and then be hard-denied at admit. The filter must exclude it so selection falls
+    through to the legal global host (Task 4.2, the load-bearing selection path).
+    """
+
+    async def _run() -> tuple[list[UUID], UUID, UUID]:
+        async with _conn(migrated_url) as conn:
+            scoped = await _resource(conn, owner_project="other")
+            glob = await _resource(conn, created_offset=timedelta(minutes=1))
+            candidates = await resolve_placement_candidates(
+                conn,
+                PlacementRequest(resource_id=None, kind=ResourceKind.LOCAL_LIBVIRT, project="mine"),
+            )
+        return [resource.id for resource in candidates.resources], glob.id, scoped.id
+
+    ids, global_id, scoped_id = asyncio.run(_run())
+    assert ids == [global_id]
+    assert scoped_id not in ids
+
+
+def test_any_available_keeps_owned_and_allowlisted(migrated_url: str) -> None:
+    async def _run() -> tuple[list[UUID], UUID, UUID, UUID]:
+        async with _conn(migrated_url) as conn:
+            owned = await _resource(conn, owner_project="mine")
+            allowed = await _resource(
+                conn,
+                created_offset=timedelta(minutes=1),
+                owner_project="o",
+                affinity_allowlist=["mine"],
+            )
+            glob = await _resource(conn, created_offset=timedelta(minutes=2))
+            candidates = await resolve_placement_candidates(
+                conn,
+                PlacementRequest(resource_id=None, kind=ResourceKind.LOCAL_LIBVIRT, project="mine"),
+            )
+        return [r.id for r in candidates.resources], owned.id, allowed.id, glob.id
+
+    ids, owned_id, allowed_id, global_id = asyncio.run(_run())
+    assert ids == [owned_id, allowed_id, global_id]
+
+
+def test_explicit_scoped_resource_filtered_for_foreign_project(migrated_url: str) -> None:
+    async def _run() -> list[UUID]:
+        async with _conn(migrated_url) as conn:
+            scoped = await _resource(conn, owner_project="other")
+            candidates = await resolve_placement_candidates(
+                conn, PlacementRequest(resource_id=scoped.id, project="mine")
+            )
+        return [r.id for r in candidates.resources]
+
+    assert asyncio.run(_run()) == []
