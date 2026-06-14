@@ -59,7 +59,7 @@ class RunPayload(_PayloadBase):
 
 class BuildPayload(RunPayload):
     cmdline: str | None = None
-    build_host_id: str | None = None
+    build_host_id: str
 
     @field_validator("cmdline")
     @classmethod
@@ -73,9 +73,7 @@ class BuildPayload(RunPayload):
 
     @field_validator("build_host_id")
     @classmethod
-    def _valid_build_host_id(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def _valid_build_host_id(cls, value: str) -> str:
         UUID(value)
         return value
 
@@ -157,7 +155,10 @@ _RUN_PAYLOAD_MODELS: dict[JobKind, type[RunPayload]] = {
 
 
 def _validation_error(label: str, exc: ValidationError) -> PayloadValidationError:
-    return PayloadValidationError(f"invalid {label}: {exc.errors()[0]['msg']}")
+    error = exc.errors()[0]
+    loc = ".".join(str(part) for part in error.get("loc", ()))
+    detail = f"{loc}: {error['msg']}" if loc else str(error["msg"])
+    return PayloadValidationError(f"invalid {label}: {detail}")
 
 
 def dump_authorizing(authorizing: Authorizing | JobAuthorizing) -> JobAuthorizing:

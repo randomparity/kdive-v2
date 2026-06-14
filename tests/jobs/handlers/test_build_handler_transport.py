@@ -163,7 +163,7 @@ async def _acquire_lease(pool: AsyncConnectionPool, host: BuildHost, run_id: str
     assert ok
 
 
-async def _enqueue(pool: AsyncConnectionPool, run_id: str, build_host_id: str | None):
+async def _enqueue(pool: AsyncConnectionPool, run_id: str, build_host_id: str):
     async with pool.connection() as conn:
         return await queue.enqueue(
             conn,

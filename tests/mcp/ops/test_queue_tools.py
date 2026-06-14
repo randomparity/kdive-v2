@@ -21,6 +21,7 @@ import psycopg
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.build_hosts import WORKER_LOCAL_ID
 from kdive.domain.models import JobKind
 from kdive.jobs import queue
 from kdive.jobs.payloads import Authorizing, BuildPayload
@@ -64,7 +65,7 @@ def _authorizing(project: str) -> Authorizing:
 
 
 def _build_payload() -> BuildPayload:
-    return BuildPayload(run_id=str(uuid4()))
+    return BuildPayload(run_id=str(uuid4()), build_host_id=str(WORKER_LOCAL_ID))
 
 
 async def _paused(url: str) -> bool:

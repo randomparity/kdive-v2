@@ -13,6 +13,7 @@ import pytest
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.build_hosts import WORKER_LOCAL_ID
 from kdive.db.repositories import JOBS
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import Job, JobKind
@@ -37,7 +38,7 @@ class _CountingHeartbeat:
 
 
 def _build_payload() -> BuildPayload:
-    return BuildPayload(run_id=str(uuid4()))
+    return BuildPayload(run_id=str(uuid4()), build_host_id=str(WORKER_LOCAL_ID))
 
 
 async def _final_state(url: str, job_id: UUID) -> Job:

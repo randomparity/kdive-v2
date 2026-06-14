@@ -261,13 +261,13 @@ async def _run_build(
 async def _resolve_build_host(
     conn: AsyncConnection, payload: BuildPayload, run_id: UUID
 ) -> BuildHost:
-    """Resolve the BUILD payload's host id (or worker-local back-compat) to a live row.
+    """Resolve the BUILD payload's admitted host id to a live row.
 
     Raises:
         CategorizedError: ``INFRASTRUCTURE_FAILURE`` when the admitted host row has vanished
             (its lease/host disappeared between admission and build).
     """
-    host_id = UUID(payload.build_host_id) if payload.build_host_id else build_hosts.WORKER_LOCAL_ID
+    host_id = UUID(payload.build_host_id)
     host = await build_hosts.get_by_id(conn, host_id)
     if host is None:
         raise CategorizedError(

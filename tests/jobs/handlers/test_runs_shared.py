@@ -10,6 +10,7 @@ from uuid import UUID
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.build_hosts import WORKER_LOCAL_ID
 from kdive.db.repositories import RUNS
 from kdive.domain.models import JobKind
 from kdive.domain.state import RunState, SystemState
@@ -45,7 +46,7 @@ async def _job(pool: AsyncConnectionPool, run_id: str):
         return await queue.enqueue(
             conn,
             JobKind.BUILD,
-            BuildPayload(run_id=run_id),
+            BuildPayload(run_id=run_id, build_host_id=str(WORKER_LOCAL_ID)),
             {"principal": "user-1", "agent_session": "s", "project": "proj"},
             f"{run_id}:build",
         )

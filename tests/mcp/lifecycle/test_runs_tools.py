@@ -1726,7 +1726,7 @@ async def _enqueue_build_job(pool: AsyncConnectionPool, run_id: str) -> Job:
         return await queue.enqueue(
             conn,
             JobKind.BUILD,
-            BuildPayload(run_id=run_id),
+            BuildPayload(run_id=run_id, build_host_id=str(WORKER_LOCAL_ID)),
             {"principal": "user-1", "agent_session": "s", "project": "proj"},
             f"{run_id}:build",
         )
