@@ -75,8 +75,7 @@ def _resolve_owner_project(
     )
 
 
-async def _preflight(
-    conn: AsyncConnection,
+async def _network_preflight(
     *,
     kind: ResourceKind,
     name: str,
@@ -86,10 +85,14 @@ async def _preflight(
     probe: ResourceProbe,
     secrets_root: Path,
 ) -> ToolResponse | None:
-    """Run the per-kind preflight; return a failure envelope, or ``None`` when it passes.
+    """Run the non-DB preflight (secret refs + reachability); fail envelope, or ``None``.
 
-    * ``remote-libvirt`` — reachability probe + every cert/secret ref resolves + ``base_image``
-      names a ``registered`` image.
+    Deliberately runs **before** any DB connection/transaction is opened so the bounded TCP
+    probe and the filesystem secret-ref reads never stall a pooled connection (or hold a row
+    lock) for the network round-trip.
+
+    * ``remote-libvirt`` — every cert/secret ref resolves + reachability probe + ``base_image``
+      is present (its ``registered`` status is checked under the DB transaction).
     * ``local-libvirt`` — host reachability only (no ``base_image``).
     * ``fault-inject`` — secret ref resolves only (synthetic host; **no** reachability, **no**
       ``base_image`` — a missing ``base_image`` never fails a fault-inject register).
@@ -101,9 +104,26 @@ async def _preflight(
         return None
     if not await probe.probe(host_uri):
         return config_error(name, f"host {host_uri!r} is not reachable")
+    if kind is ResourceKind.REMOTE_LIBVIRT and not base_image:
+        return config_error(name, "remote-libvirt requires a base_image")
+    return None
+
+
+async def _db_preflight(
+    conn: AsyncConnection, *, kind: ResourceKind, name: str, base_image: str | None
+) -> ToolResponse | None:
+    """Run the DB-dependent preflight (config-name collision + base_image registered).
+
+    Held inside the write transaction so the collision check and the INSERT are atomic.
+    """
+    if await _reject_config_name(conn, kind, name):
+        return ToolResponse.failure(
+            name,
+            ErrorCategory.CONFLICT,
+            data={"reason": f"{name!r} is a config-managed resource; edit systems.toml"},
+        )
     if kind is ResourceKind.REMOTE_LIBVIRT:
-        if not base_image:
-            return config_error(name, "remote-libvirt requires a base_image")
+        assert base_image is not None  # _network_preflight rejected a missing base_image
         if not await _base_image_registered(conn, kind, base_image):
             return config_error(
                 name, f"base_image {base_image!r} is not a registered image for {kind.value}"
@@ -198,6 +218,20 @@ async def register_resource(
     probe = probe or TcpResourceProbe()
     secrets_root = secrets_root or secrets_root_from_env()
 
+    # Non-DB preflight (bounded TCP probe + filesystem secret-ref reads) runs before any
+    # connection is acquired, so a slow/unreachable host never holds a pooled connection.
+    network_failure = await _network_preflight(
+        kind=kind,
+        name=name,
+        host_uri=effective_host_uri,
+        secret_refs=secret_refs,
+        base_image=base_image,
+        probe=probe,
+        secrets_root=secrets_root,
+    )
+    if network_failure is not None:
+        return network_failure
+
     return await _insert_with_preflight(
         pool,
         ctx,
@@ -209,8 +243,6 @@ async def register_resource(
         cap=concurrent_allocation_cap,
         secret_refs=secret_refs,
         owner_project=resolved_owner,
-        probe=probe,
-        secrets_root=secrets_root,
     )
 
 
@@ -226,30 +258,13 @@ async def _insert_with_preflight(
     cap: int,
     secret_refs: tuple[str, ...],
     owner_project: str | None,
-    probe: ResourceProbe,
-    secrets_root: Path,
 ) -> ToolResponse:
-    """Run preflight + the guarded INSERT in one transaction; map conflicts to envelopes."""
+    """Run the DB preflight + the guarded INSERT in one transaction; map conflicts to envelopes."""
     lease = _lease_deadline()
     caps = {CONCURRENT_ALLOCATION_CAP_KEY: cap}
     try:
         async with pool.connection() as conn, conn.transaction():
-            if await _reject_config_name(conn, kind, name):
-                return ToolResponse.failure(
-                    name,
-                    ErrorCategory.CONFLICT,
-                    data={"reason": f"{name!r} is a config-managed resource; edit systems.toml"},
-                )
-            failure = await _preflight(
-                conn,
-                kind=kind,
-                name=name,
-                host_uri=host_uri,
-                secret_refs=secret_refs,
-                base_image=base_image,
-                probe=probe,
-                secrets_root=secrets_root,
-            )
+            failure = await _db_preflight(conn, kind=kind, name=name, base_image=base_image)
             if failure is not None:
                 return failure
             resource_id = await _do_insert(
