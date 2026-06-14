@@ -1,0 +1,135 @@
+#!/bin/bash
+# kdive-capture-vmcore — operator-provided in-guest helper (ADR-0084 §2 contract).
+#
+# Reference implementation for a Fedora (kdump-utils) remote-libvirt base image. The
+# remote-libvirt Retrieve plane allowlists EXACTLY this program at
+# /usr/local/sbin/kdive-capture-vmcore and invokes it with fixed argv (never a shell string):
+#
+#   inspect
+#       Print ONE JSON object describing the local kdump core for the worker to sign a
+#       presigned PUT and verify provenance:
+#         {"present":bool,"sha256":"<base64>","size_bytes":int,
+#          "build_id":"<hex>","dmesg_b64":"<base64>"}
+#       sha256 is the base64 SHA-256 of the raw core (the value S3 signs into the PUT, matching
+#       the worker's file_sha256_b64). dmesg_b64 is byte-capped in-guest so an oversized ring
+#       buffer cannot exceed the qemu-guest-agent reply ceiling (ADR-0084 §2.1). present=false
+#       (no core) is a clean, non-error reply the worker maps to READINESS_FAILURE.
+#   upload --url <presigned-put> --header <k:v> [--header <k:v> …]
+#       curl --upload-file the same core to the presigned PUT, passing every --header through
+#       verbatim (the signed-checksum + metadata headers). Non-zero exit on any curl failure.
+#
+# The core is the newest <crash-dir>/*/vmcore (kdump-utils default /var/crash), overridable via
+# KDIVE_VMCORE_PATH for a non-default kdump `path` (or KDIVE_CRASH_DIR for a non-default dir).
+# "No core" AND "no dump directory" are treated uniformly: inspect prints present=false and exits
+# 0, which the worker maps to READINESS_FAILURE and the readiness poll retries. /var/crash does
+# not exist until kdump-utils has run once, so its absence must not be an error. Only a malformed
+# invocation or a real IO failure exits non-zero.
+set -euo pipefail
+
+CRASH_DIR="${KDIVE_CRASH_DIR:-/var/crash}"
+DMESG_CAP_BYTES="${KDIVE_DMESG_CAP_BYTES:-1048576}" # 1 MiB cap on the inline dmesg
+
+die() {
+  echo "kdive-capture-vmcore: $*" >&2
+  exit 1
+}
+
+# Resolve the kdump core path: explicit override, else the newest <CRASH_DIR>/*/vmcore. An absent
+# dump directory or no matching core yields an empty string (a clean "no core", not an error);
+# guarding the directory keeps `find`'s non-zero exit from aborting inspect under set -e/pipefail.
+core_path() {
+  if [ -n "${KDIVE_VMCORE_PATH:-}" ]; then
+    printf '%s\n' "$KDIVE_VMCORE_PATH"
+    return 0
+  fi
+  [ -d "$CRASH_DIR" ] || return 0
+  find "$CRASH_DIR" -maxdepth 2 -type f -name vmcore -printf '%T@\t%p\n' 2>/dev/null |
+    sort -rn | head -n1 | cut -f2-
+}
+
+# base64 SHA-256 of the core — exactly what the worker signs into the presigned PUT.
+core_sha256_b64() {
+  openssl dgst -binary -sha256 "$1" | openssl base64 -A
+}
+
+# Best-effort GNU build-id of the running kernel (advisory metadata; never fails inspect).
+running_build_id() {
+  local notes="/sys/kernel/notes"
+  [ -r "$notes" ] || {
+    printf ''
+    return 0
+  }
+  # Extract the 20-byte SHA-1 build-id from the NT_GNU_BUILD_ID (type 3) note and hex it.
+  python3 - "$notes" 2>/dev/null <<'PY' || printf ''
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+off = 0
+while off + 12 <= len(data):
+    namesz, descsz, ntype = struct.unpack_from("<III", data, off)
+    off += 12
+    name = data[off:off + namesz]
+    off += (namesz + 3) & ~3
+    desc = data[off:off + descsz]
+    off += (descsz + 3) & ~3
+    if ntype == 3 and name.rstrip(b"\x00") == b"GNU":
+        sys.stdout.write(desc.hex())
+        break
+PY
+}
+
+# Byte-capped, base64-encoded kernel log buffer (inline dmesg; oversized buffers truncated).
+dmesg_b64() {
+  # `dmesg` without --read-clear leaves the buffer intact; head -c bounds the reply size.
+  (dmesg 2>/dev/null || true) | head -c "$DMESG_CAP_BYTES" | openssl base64 -A
+}
+
+do_inspect() {
+  local core
+  core="$(core_path)"
+  if [ -z "$core" ] || [ ! -f "$core" ]; then
+    printf '{"present":false,"sha256":"","size_bytes":0,"build_id":"","dmesg_b64":""}\n'
+    return 0
+  fi
+
+  local sha size build dmesg
+  sha="$(core_sha256_b64 "$core")" || die "sha256 of $core failed"
+  size="$(stat -c '%s' "$core")" || die "stat of $core failed"
+  build="$(running_build_id)"
+  dmesg="$(dmesg_b64)"
+
+  printf '{"present":true,"sha256":"%s","size_bytes":%s,"build_id":"%s","dmesg_b64":"%s"}\n' \
+    "$sha" "$size" "$build" "$dmesg"
+}
+
+do_upload() {
+  local url="" core
+  local -a headers=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+    --url)
+      url="$2"
+      shift 2
+      ;;
+    --header)
+      headers+=("-H" "$2")
+      shift 2
+      ;;
+    *) die "unknown upload arg: $1" ;;
+    esac
+  done
+  [ -n "$url" ] || die "upload requires --url"
+
+  core="$(core_path)"
+  [ -n "$core" ] && [ -f "$core" ] || die "no kdump core to upload"
+
+  curl -fsS --retry 3 -X PUT "${headers[@]}" --upload-file "$core" "$url" ||
+    die "presigned PUT of $core failed"
+}
+
+cmd="${1:-}"
+shift || true
+case "$cmd" in
+inspect) do_inspect ;;
+upload) do_upload "$@" ;;
+*) die "unknown subcommand: ${cmd:-<none>} (expected inspect|upload)" ;;
+esac

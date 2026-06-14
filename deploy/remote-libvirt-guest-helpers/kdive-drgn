@@ -1,0 +1,140 @@
+#!/bin/bash
+# kdive-drgn — operator-provided in-guest helper (ADR-0085 §5 / ADR-0079 contract).
+#
+# Reference implementation for a remote-libvirt base image carrying drgn. The remote-libvirt
+# live-debug plane allowlists EXACTLY this program at /usr/local/sbin/kdive-drgn and invokes it
+# with fixed argv: one of the three fixed sub-helpers, never a shell string:
+#
+#   tasks     Print {"tasks":[{pid,tgid,comm,state,kernel_stack:[…]},…],"truncated":bool}
+#             — D-state (uninterruptible/blocked) tasks only, bounded.
+#   modules   Print {"modules":[{name,size,refcount,used_by:[…],state},…],
+#                     "decode_errors":int,"all_failed":bool}
+#   sysinfo   Print {release,version,machine,nodename,boot_cmdline,cpus_online,mem_total_pages}
+#
+# Each prints ONE JSON object that the worker passes verbatim to
+# debug_common.introspect.assemble_report as the matching section, so the shape MUST match the
+# worker-side helper_tasks/helper_modules/helper_sysinfo producers. drgn runs against the LIVE
+# kernel (-k: /proc/kcore + the running kernel's debuginfo). A non-zero exit (drgn cannot attach,
+# e.g. missing kernel debuginfo) is the worker's DEBUG_ATTACH_FAILURE; undecodable stdout is its
+# INFRASTRUCTURE_FAILURE.
+set -euo pipefail
+
+helper="${1:-}"
+case "$helper" in
+tasks | modules | sysinfo) ;;
+*)
+  echo "kdive-drgn: unknown helper: ${helper:-<none>} (expected tasks|modules|sysinfo)" >&2
+  exit 2
+  ;;
+esac
+
+# Stage the embedded drgn script to a temp file so drgn can run it with the helper name as
+# argv[1] (drgn reads its script from a path, not stdin). `prog` is injected by drgn.
+script="$(mktemp)"
+trap 'rm -f "$script"' EXIT
+cat >"$script" <<'PY'
+# This embedded drgn script mirrors the worker-side DrgnProgramAdapter +
+# debug_common/introspect.py helpers field-for-field, so the in-guest live output is shape- and
+# value-identical to the offline path (same _BLOCKED_STATES, _TASK_LIMIT, and per-field reads).
+# Keep it in sync with src/kdive/providers/debug_common/{drgn_program,introspect}.py. `prog` is
+# the drgn.Program drgn injects when running a script.
+import json
+import sys
+
+from drgn import ProgramFlags
+from drgn.helpers.linux import cpumask, module, pid, sched
+
+_TASK_LIMIT = 200
+_BLOCKED_STATES = frozenset({"D"})  # uninterruptible-sleep tasks only
+
+
+def _task_state(task):
+    return sched.task_state_to_char(task)
+
+
+def _kernel_stack(task):
+    try:
+        return [str(frame) for frame in prog.stack_trace(task)]  # noqa: F821 - drgn injects prog
+    except Exception as exc:  # noqa: BLE001 - degrade one task, never crash the helper
+        return ["<stack unavailable: %s>" % type(exc).__name__]
+
+
+def helper_tasks():
+    rows = []
+    truncated = False
+    for task in pid.for_each_task(prog):  # noqa: F821
+        if _task_state(task) not in _BLOCKED_STATES:
+            continue
+        if len(rows) >= _TASK_LIMIT:
+            truncated = True
+            break
+        rows.append(
+            {
+                "pid": int(task.pid),
+                "tgid": int(task.tgid),
+                "comm": task.comm.string_().decode("utf-8", "replace"),
+                "state": _task_state(task),
+                "kernel_stack": _kernel_stack(task),
+            }
+        )
+    return {"tasks": rows, "truncated": truncated}
+
+
+def _module_size(mod):
+    try:
+        return int(mod.mem[0].size)  # layout varies by kernel; size is advisory
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def helper_modules():
+    rows = []
+    decode_errors = 0
+    for mod in module.for_each_module(prog):  # noqa: F821
+        try:
+            rows.append(
+                {
+                    "name": mod.name.string_().decode("utf-8", "replace"),
+                    "size": _module_size(mod),
+                    "refcount": int(mod.refcnt.counter),
+                    "used_by": [],
+                    "state": str(int(mod.state)),
+                }
+            )
+        except Exception:  # noqa: BLE001 - count and continue (struct/offset skew)
+            decode_errors += 1
+    all_failed = not rows and decode_errors > 0
+    return {"modules": rows, "decode_errors": decode_errors, "all_failed": all_failed}
+
+
+def _mem_total_pages():
+    try:
+        return int(prog["_totalram_pages"].counter)  # noqa: F821 - symbol name varies by version
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def helper_sysinfo():
+    uts = prog["init_uts_ns"].name  # noqa: F821
+    return {
+        "release": uts.release.string_().decode("utf-8", "replace"),
+        "version": uts.version.string_().decode("utf-8", "replace"),
+        "machine": uts.machine.string_().decode("utf-8", "replace"),
+        "nodename": uts.nodename.string_().decode("utf-8", "replace"),
+        "boot_cmdline": prog["saved_command_line"].string_().decode("utf-8", "replace"),  # noqa: F821
+        "cpus_online": sum(1 for _ in cpumask.for_each_online_cpu(prog)),  # noqa: F821
+        "mem_total_pages": _mem_total_pages(),
+    }
+
+
+_HELPERS = {"tasks": helper_tasks, "modules": helper_modules, "sysinfo": helper_sysinfo}
+
+# drgn runs this script with the helper name as argv[1].
+if not (prog.flags & ProgramFlags.IS_LIVE):  # noqa: F821 - live-kernel contract
+    sys.stderr.write("kdive-drgn: program is not a live kernel\n")
+    sys.exit(1)
+json.dump(_HELPERS[sys.argv[1]](), sys.stdout)
+sys.stdout.write("\n")
+PY
+
+exec drgn -k -q "$script" "$helper"

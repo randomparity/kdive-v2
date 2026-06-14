@@ -117,8 +117,8 @@ compose-down:
 
 # Lint and format-check the shell scripts (recursively under scripts/).
 lint-shell:
-    shfmt -f scripts | xargs shellcheck
-    shfmt -i 2 -d scripts
+    shfmt -f scripts deploy/remote-libvirt-guest-helpers | xargs shellcheck
+    shfmt -i 2 -d scripts deploy/remote-libvirt-guest-helpers
 
 # Lint and security-scan the GitHub Actions workflows.
 lint-workflows:
