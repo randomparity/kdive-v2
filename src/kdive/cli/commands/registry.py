@@ -32,7 +32,7 @@ class Verb:
     ``destructive()``-annotated server tool. The gate test only holds read-only verbs to
     the read-only hint; the mutating verbs are never reachable through the *read-only* default
     of the ``tool call`` passthrough (a destructive tool needs an explicit ``--allow-destructive``
-    opt-in there — ADR-0105).
+    opt-in there — ADR-0107).
 
     ``required_options`` are ``--`` options the underlying tool declares as required
     arguments (no server-side default); the CLI marks them ``required=True`` so an omission

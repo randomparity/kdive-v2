@@ -1,4 +1,4 @@
-# ADR 0105 — `kdivectl tool call` reaches mutating/destructive tools by explicit opt-in (#368)
+# ADR 0107 — `kdivectl tool call` reaches mutating/destructive tools by explicit opt-in (#368)
 
 - **Status:** Proposed
 - **Date:** 2026-06-13

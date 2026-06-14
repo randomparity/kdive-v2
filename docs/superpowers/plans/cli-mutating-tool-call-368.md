@@ -1,7 +1,7 @@
 # Plan — `kdivectl tool call` mutating/destructive opt-in (#368)
 
 - **Spec:** [`../specs/2026-06-13-cli-mutating-tool-call.md`](../specs/2026-06-13-cli-mutating-tool-call.md)
-- **ADR:** [ADR-0105](../../adr/0105-cli-mutating-tool-call-opt-in.md)
+- **ADR:** [ADR-0107](../../adr/0107-cli-mutating-tool-call-opt-in.md)
 - **Issue:** #368
 - **Branch:** `feat/kdivectl-mutating-tools-368`
 

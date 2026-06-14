@@ -10,7 +10,7 @@ and re-run (ADR-0089).
 
 These tools are ``destructive()``-annotated server-side. The curated verb is the ergonomic,
 argument-validated path; the generic ``tool call`` passthrough can also reach a destructive tool,
-but only with an explicit ``--allow-destructive`` opt-in plus confirmation (ADR-0105), so neither
+but only with an explicit ``--allow-destructive`` opt-in plus confirmation (ADR-0107), so neither
 path is silent.
 
 ``_session_factory`` is the seam the tests replace with a fake session.
