@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -40,6 +40,8 @@ from kdive.jobs.handlers import runs as runs_handlers
 from kdive.jobs.payloads import BuildPayload
 from kdive.provider_components.build_results import BuildOutput
 from kdive.providers.build_host import dispatch as build_host_dispatch
+from kdive.providers.build_host.dispatch import BuildHostTransportFactories
+from kdive.providers.build_host.transport import BuildTransport
 from kdive.providers.local_libvirt.build import LocalLibvirtBuild
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.security.secrets.secret_registry import SecretRegistry
@@ -127,6 +129,17 @@ def _fake_ephemeral_session(
 
 
 _EPHEMERAL_EVENTS: list[tuple[str, UUID]] = []
+
+
+def _fake_ephemeral_factory(
+    host: BuildHost, secret_registry: SecretRegistry, run_id: UUID
+) -> AbstractContextManager[BuildTransport]:
+    assert host.base_image_volume is not None
+    return _fake_ephemeral_session(host.base_image_volume, secret_registry, run_id=run_id)
+
+
+def _ephemeral_factories() -> BuildHostTransportFactories:
+    return {BuildHostKind.EPHEMERAL_LIBVIRT: _fake_ephemeral_factory}
 
 
 async def _seed_ephemeral_host(pool: AsyncConnectionPool) -> BuildHost:
@@ -444,9 +457,6 @@ def test_ephemeral_host_success_provisions_builds_and_releases_lease(
     _EPHEMERAL_EVENTS.clear()
     transport_builder = _RecordingBuilder()
     monkeypatch.setattr(
-        build_host_dispatch, "ephemeral_build_transport_from_host", _fake_ephemeral_session
-    )
-    monkeypatch.setattr(
         build_host_dispatch,
         "bind_over_transport",
         lambda builder, transport, **kw: transport_builder,
@@ -466,6 +476,7 @@ def test_ephemeral_host_success_provisions_builds_and_releases_lease(
                         RemoteLibvirtBuild.from_env(secret_registry=SecretRegistry())
                     ),
                     secret_registry=SecretRegistry(),
+                    transport_factories=_ephemeral_factories(),
                 )
             assert transport_builder.calls == [UUID(run_id)]
             # Session entered before and exited after the build (provision → build → teardown).
@@ -482,9 +493,6 @@ def test_ephemeral_host_build_failure_tears_down_and_retains_lease(
     """A failed ephemeral build still tears the VM down (session exit) and RETAINS the lease."""
     _EPHEMERAL_EVENTS.clear()
     failing = _FailingBuilder()
-    monkeypatch.setattr(
-        build_host_dispatch, "ephemeral_build_transport_from_host", _fake_ephemeral_session
-    )
     monkeypatch.setattr(
         build_host_dispatch, "bind_over_transport", lambda builder, transport, **kw: failing
     )
@@ -504,6 +512,7 @@ def test_ephemeral_host_build_failure_tears_down_and_retains_lease(
                             RemoteLibvirtBuild.from_env(secret_registry=SecretRegistry())
                         ),
                         secret_registry=SecretRegistry(),
+                        transport_factories=_ephemeral_factories(),
                     )
             # Teardown ran even though the build raised (session exit recorded).
             assert [("enter", UUID(run_id)), ("exit", UUID(run_id))] == _EPHEMERAL_EVENTS
@@ -514,12 +523,9 @@ def test_ephemeral_host_build_failure_tears_down_and_retains_lease(
 
 
 def test_ephemeral_host_non_remote_builder_not_implemented(
-    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+    migrated_url: str,
 ) -> None:
     """An ephemeral host selected for a non-remote-libvirt builder fails NOT_IMPLEMENTED."""
-    monkeypatch.setattr(
-        build_host_dispatch, "ephemeral_build_transport_from_host", _fake_ephemeral_session
-    )
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:
@@ -534,6 +540,7 @@ def test_ephemeral_host_non_remote_builder_not_implemented(
                         job,
                         resolver=provider_resolver(builder=_RecordingBuilder()),
                         secret_registry=SecretRegistry(),
+                        transport_factories=_ephemeral_factories(),
                     )
             assert exc.value.category is ErrorCategory.NOT_IMPLEMENTED
             assert await _run_state(pool, run_id) == "failed"
@@ -543,16 +550,9 @@ def test_ephemeral_host_non_remote_builder_not_implemented(
 
 
 def test_unsupported_build_host_kind_fails_before_ephemeral_session(
-    migrated_url: str, monkeypatch: pytest.MonkeyPatch
+    migrated_url: str,
 ) -> None:
     """An unknown host kind is rejected instead of falling into the ephemeral build path."""
-
-    def _unexpected_ephemeral_session(*args: object, **kwargs: object):
-        raise AssertionError("unsupported host kind must not start an ephemeral build session")
-
-    monkeypatch.setattr(
-        build_host_dispatch, "ephemeral_build_transport_from_host", _unexpected_ephemeral_session
-    )
 
     async def _run() -> None:
         async with _pool(migrated_url) as pool:

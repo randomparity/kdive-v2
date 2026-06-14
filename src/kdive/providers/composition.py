@@ -14,7 +14,9 @@ from psycopg_pool import AsyncConnectionPool
 
 import kdive.config as config
 from kdive.config.core_settings import FAULT_INJECT
+from kdive.db.build_hosts import BuildHostKind
 from kdive.domain.models import ResourceKind
+from kdive.providers.build_host.dispatch import BuildHostTransportFactory
 from kdive.providers.build_host.reachability import BuildHostProber, SshBuildHostProber
 from kdive.providers.console_hosting import DbRunningRemoteSystems
 from kdive.providers.discovery_registration import ProviderDiscoveryRegistration
@@ -210,6 +212,19 @@ class ProviderComposition:
         if _remote_libvirt_enabled(enable_remote_libvirt):
             return remote_composition.build_build_vm_reaper(secret_registry=self._secret_registry)
         return NullBuildVmReaper()
+
+    def build_build_host_transport_factories(
+        self, *, enable_remote_libvirt: bool | None = None
+    ) -> dict[BuildHostKind, BuildHostTransportFactory]:
+        """Assemble provider-owned build-host transport factories."""
+        factories: dict[BuildHostKind, BuildHostTransportFactory] = {}
+        if _remote_libvirt_enabled(enable_remote_libvirt):
+            factories[BuildHostKind.EPHEMERAL_LIBVIRT] = (
+                remote_composition.build_ephemeral_build_transport_factory(
+                    secret_registry=self._secret_registry
+                )
+            )
+        return factories
 
     def build_reconciler_build_host_prober(self) -> BuildHostProber:
         """Assemble the reconciler's SSH build-host reachability prober (ADR-0103).

@@ -194,7 +194,9 @@ def test_image_build_handler_preserves_store_config_error(
         raise error
 
     monkeypatch.setattr("kdive.store.objectstore.object_store_from_env", _raise_store)
-    app_module._register_image_build_handler(registry, cast(Any, None), SecretRegistry())
+    app_module._register_image_build_handler(
+        registry, cast(Any, None), SecretRegistry(), cast(Any, None)
+    )
     handler = registry.get(JobKind.IMAGE_BUILD)
     assert handler is not None
 

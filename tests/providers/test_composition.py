@@ -12,6 +12,7 @@ import pytest
 from psycopg_pool import AsyncConnectionPool
 
 import kdive.config as config
+from kdive.db.build_hosts import BuildHostKind
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind, Sensitivity
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
@@ -553,6 +554,19 @@ def test_remote_runtime_buildable_without_operator_config(
     runtime = composition.build_remote_runtime(secret_registry=SecretRegistry())
 
     assert runtime.discovery_registrar is not None
+
+
+def test_build_host_transport_factories_follow_remote_libvirt_opt_in() -> None:
+    provider_composition = composition.ProviderComposition(secret_registry=SecretRegistry())
+
+    assert (
+        provider_composition.build_build_host_transport_factories(enable_remote_libvirt=False) == {}
+    )
+    factories = provider_composition.build_build_host_transport_factories(
+        enable_remote_libvirt=True
+    )
+
+    assert set(factories) == {BuildHostKind.EPHEMERAL_LIBVIRT}
 
 
 def test_remote_runtime_advertises_all_four_capture_methods() -> None:

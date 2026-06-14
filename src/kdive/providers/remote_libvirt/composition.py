@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from uuid import UUID
 
 import psycopg
 from psycopg_pool import AsyncConnectionPool
 
+from kdive.db.build_hosts import BuildHost
 from kdive.db.locks import CONSOLE_HOSTING_LEADER, SessionAdvisoryLock
 from kdive.db.pool import create_pool, database_url
 from kdive.domain.capture import CaptureMethod
-from kdive.domain.errors import CategorizedError
+from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.domain.models import ResourceKind
 from kdive.provider_components.references import (
     CONFIG_COMPONENT,
@@ -20,6 +22,8 @@ from kdive.provider_components.references import (
     ComponentSourceKind,
 )
 from kdive.provider_components.validation import ComponentSourceCapabilities
+from kdive.providers.build_host.dispatch import BuildHostTransportFactory
+from kdive.providers.build_host.transport import BuildTransport
 from kdive.providers.console_hosting import (
     AsyncioPumpRunner,
     CollectorRegistry,
@@ -49,6 +53,7 @@ from kdive.providers.remote_libvirt.debug.introspect import (
 )
 from kdive.providers.remote_libvirt.discovery import RemoteLibvirtDiscovery
 from kdive.providers.remote_libvirt.dump_volume_reaper import RemoteLibvirtDumpVolumeReaper
+from kdive.providers.remote_libvirt.lifecycle.build_vm import ephemeral_build_session
 from kdive.providers.remote_libvirt.lifecycle.connect import RemoteLibvirtConnect
 from kdive.providers.remote_libvirt.lifecycle.control import RemoteLibvirtControl
 from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
@@ -94,6 +99,25 @@ def build_dump_volume_reaper(*, secret_registry: SecretRegistry) -> DumpVolumeRe
 
 def build_build_vm_reaper(*, secret_registry: SecretRegistry) -> BuildVmReaper:
     return RemoteLibvirtBuildVmReaper.from_env(secret_registry=secret_registry)
+
+
+def build_ephemeral_build_transport_factory(
+    *, secret_registry: SecretRegistry
+) -> BuildHostTransportFactory:
+    """Build the remote-libvirt factory for ephemeral build-VM transports."""
+
+    def _factory(
+        host: BuildHost, _registry: SecretRegistry, run_id: UUID
+    ) -> AbstractContextManager[BuildTransport]:
+        if host.base_image_volume is None:
+            raise CategorizedError(
+                "ephemeral_libvirt build host has no base_image_volume",
+                category=ErrorCategory.CONFIGURATION_ERROR,
+                details={"run_id": str(run_id), "build_host": host.name},
+            )
+        return ephemeral_build_session(host.base_image_volume, secret_registry, run_id=run_id)
+
+    return _factory
 
 
 async def build_console_hosting(

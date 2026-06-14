@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from uuid import UUID
 
 from kdive.db.build_hosts import BuildHost, BuildHostKind
@@ -12,12 +14,26 @@ from kdive.provider_components.build_results import BuildOutput
 from kdive.providers.build_host.ssh_transport import SshBuildTransport
 from kdive.providers.build_host.transport import BuildTransport
 from kdive.providers.ports import Builder, TransportCapableBuilder
-from kdive.providers.remote_libvirt.lifecycle.build_vm import ephemeral_build_session
 from kdive.security.secrets.secret_registry import SecretRegistry
 
-# Patchable seams: tests substitute these to avoid real SSH or build-VM provisioning.
+# Patchable seam: tests substitute this to avoid real SSH.
 ssh_build_transport_from_host = SshBuildTransport.from_host
-ephemeral_build_transport_from_host = ephemeral_build_session
+
+type BuildHostTransportFactory = Callable[
+    [BuildHost, SecretRegistry, UUID], AbstractContextManager[BuildTransport]
+]
+type BuildHostTransportFactories = Mapping[BuildHostKind, BuildHostTransportFactory]
+
+
+def ssh_build_transport_factory(
+    host: BuildHost, secret_registry: SecretRegistry, _run_id: UUID
+) -> AbstractContextManager[BuildTransport]:
+    return ssh_build_transport_from_host(host, secret_registry)
+
+
+def default_build_host_transport_factories() -> dict[BuildHostKind, BuildHostTransportFactory]:
+    """Return shared build-host transport factories owned outside provider runtimes."""
+    return {BuildHostKind.SSH: ssh_build_transport_factory}
 
 
 async def run_build_on_host(
@@ -27,26 +43,16 @@ async def run_build_on_host(
     parsed: ServerBuildProfile,
     *,
     secret_registry: SecretRegistry,
+    transport_factories: BuildHostTransportFactories | None = None,
 ) -> BuildOutput:
     """Run ``builder`` on the selected build host."""
     if host.kind is BuildHostKind.LOCAL:
         return await asyncio.to_thread(builder.build, run_id, parsed)
     capable = _require_transport_capable(builder, host, run_id)
-    if host.kind is BuildHostKind.SSH:
-        with ssh_build_transport_from_host(host, secret_registry) as transport:
-            return await _run_over_transport(
-                capable,
-                transport,
-                host=host,
-                run_id=run_id,
-                parsed=parsed,
-                secret_registry=secret_registry,
-            )
-    if host.kind is BuildHostKind.EPHEMERAL_LIBVIRT:
-        base_image = _require_base_image(host, run_id)
-        with ephemeral_build_transport_from_host(
-            base_image, secret_registry, run_id=run_id
-        ) as transport:
+    factories = _transport_factories(transport_factories)
+    factory = factories.get(host.kind)
+    if factory is not None:
+        with factory(host, secret_registry, run_id) as transport:
             return await _run_over_transport(
                 capable,
                 transport,
@@ -64,6 +70,15 @@ async def run_build_on_host(
             "build_host_kind": str(host.kind),
         },
     )
+
+
+def _transport_factories(
+    injected: BuildHostTransportFactories | None,
+) -> dict[BuildHostKind, BuildHostTransportFactory]:
+    factories = default_build_host_transport_factories()
+    if injected is not None:
+        factories.update(injected)
+    return factories
 
 
 def bind_over_transport(
@@ -127,13 +142,3 @@ def _require_transport_capable(
             details={"run_id": str(run_id), "build_host": host.name},
         )
     return builder
-
-
-def _require_base_image(host: BuildHost, run_id: UUID) -> str:
-    if host.base_image_volume is None:
-        raise CategorizedError(
-            "ephemeral_libvirt build host has no base_image_volume",
-            category=ErrorCategory.CONFIGURATION_ERROR,
-            details={"run_id": str(run_id), "build_host": host.name},
-        )
-    return host.base_image_volume

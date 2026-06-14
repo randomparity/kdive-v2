@@ -25,7 +25,7 @@ from kdive.jobs.payloads import BuildPayload, RunPayload, load_payload
 from kdive.profiles.build import BuildProfile, ServerBuildProfile
 from kdive.provider_components.artifacts import ArtifactWriteRequest, StoredArtifact
 from kdive.provider_components.build_results import BuildOutput
-from kdive.providers.build_host.dispatch import run_build_on_host
+from kdive.providers.build_host.dispatch import BuildHostTransportFactories, run_build_on_host
 from kdive.providers.ports import Booter, InstallRequest
 from kdive.providers.resolver import ProviderResolver
 from kdive.providers.runtime import ProviderRuntime
@@ -134,6 +134,7 @@ async def _run_build(
     host: BuildHost,
     resolver: ProviderResolver,
     secret_registry: SecretRegistry,
+    transport_factories: BuildHostTransportFactories | None = None,
 ) -> BuildOutput:
     """Resolve the runtime builder and run it on ``host`` through the build-host seam."""
     run_id = run.id
@@ -144,6 +145,7 @@ async def _run_build(
         run_id,
         parsed,
         secret_registry=secret_registry,
+        transport_factories=transport_factories,
     )
 
 
@@ -173,6 +175,7 @@ async def build_handler(
     *,
     resolver: ProviderResolver,
     secret_registry: SecretRegistry,
+    transport_factories: BuildHostTransportFactories | None = None,
 ) -> str | None:
     """Build the Run's kernel on the selected host and drive it `running -> succeeded` or failed.
 
@@ -201,7 +204,14 @@ async def build_handler(
     result = await existing_build_result(conn, run_id)
     if result is None:
         result = await _build_and_record(
-            conn, job, run, parsed, payload, resolver=resolver, secret_registry=secret_registry
+            conn,
+            job,
+            run,
+            parsed,
+            payload,
+            resolver=resolver,
+            secret_registry=secret_registry,
+            transport_factories=transport_factories,
         )
     await finalize_build(conn, job, run, result)
     await _release_build_lease(conn, run_id)
@@ -217,6 +227,7 @@ async def _build_and_record(
     *,
     resolver: ProviderResolver,
     secret_registry: SecretRegistry,
+    transport_factories: BuildHostTransportFactories | None = None,
 ) -> BuildStepResult:
     """Resolve the host, run the build, and shape the ledger result; mark FAILED on error.
 
@@ -232,7 +243,13 @@ async def _build_and_record(
     try:
         host = await _resolve_build_host(conn, payload, run_id)
         output = await _run_build(
-            conn, run, parsed, host=host, resolver=resolver, secret_registry=secret_registry
+            conn,
+            run,
+            parsed,
+            host=host,
+            resolver=resolver,
+            secret_registry=secret_registry,
+            transport_factories=transport_factories,
         )
     except CategorizedError as exc:
         await _fail_build(conn, job, run, exc.category)
@@ -542,12 +559,17 @@ def register_handlers(
     *,
     resolver: ProviderResolver,
     secret_registry: SecretRegistry,
+    transport_factories: BuildHostTransportFactories | None = None,
 ) -> None:
     """Bind the `build`/`install`/`boot` job handlers."""
     registry.register(
         JobKind.BUILD,
         lambda conn, job: build_handler(
-            conn, job, resolver=resolver, secret_registry=secret_registry
+            conn,
+            job,
+            resolver=resolver,
+            secret_registry=secret_registry,
+            transport_factories=transport_factories,
         ),
     )
     registry.register(
