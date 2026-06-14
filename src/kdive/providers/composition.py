@@ -27,7 +27,6 @@ from kdive.providers.reaping import (
     InfraReaper,
     NullBuildVmReaper,
     NullDumpVolumeReaper,
-    NullReaper,
     OwnedDomain,
 )
 from kdive.providers.remote_libvirt import composition as remote_composition
@@ -161,13 +160,24 @@ class ProviderComposition:
             )
         return ProviderResolver(runtimes)
 
-    def build_reconciler_reaper(self, *, enable_fault_inject: bool | None = None) -> InfraReaper:
-        """Assemble the provider-aware leaked-infra reaper for reconciliation."""
-        reapers: list[InfraReaper] = []
+    def build_reconciler_reaper(
+        self,
+        *,
+        enable_fault_inject: bool | None = None,
+        libvirt_reaper: InfraReaper | None = None,
+    ) -> InfraReaper:
+        """Assemble the provider-aware leaked-infra reaper for reconciliation.
+
+        Local-libvirt is always-on (``KDIVE_LIBVIRT_URI`` defaults to ``qemu:///system`` and
+        the local runtime is always registered), so the libvirt-backed reaper (ADR-0105) is
+        always present — a stock deployment is no longer ``NullReaper``-backed, so an orphaned
+        ``kdive-<uuid>`` domain reaches ``repair_leaked_domains``. The fault-inject reaper is
+        composed in when enabled. ``libvirt_reaper`` is an injection seam for tests (the real
+        reaper opens a libvirt connection on ``list_owned``); production passes ``None``.
+        """
+        reapers: list[InfraReaper] = [libvirt_reaper or local_composition.build_reaper()]
         if _fault_inject_enabled(enable_fault_inject):
             reapers.append(fault_inject_composition.build_reaper(self._fault_inject_inventory))
-        if not reapers:
-            return NullReaper()
         if len(reapers) == 1:
             return reapers[0]
         return _CompositeReaper(tuple(reapers))

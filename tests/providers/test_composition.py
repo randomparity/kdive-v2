@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import cast
 from uuid import UUID
 
@@ -32,6 +33,7 @@ from kdive.providers.ports import (
     SystemHandle,
     TransportHandle,
 )
+from kdive.providers.reaping import OwnedDomain
 from kdive.providers.remote_libvirt.build import RemoteLibvirtBuild
 from kdive.providers.remote_libvirt.lifecycle.control import RemoteLibvirtControl
 from kdive.providers.remote_libvirt.lifecycle.install import RemoteLibvirtInstall
@@ -298,6 +300,46 @@ def test_fault_inject_runtime_provision_is_visible_to_a_reaper_on_the_same_inven
     assert [d.name for d in owned] == [domain]
 
 
+@dataclass(frozen=True)
+class _FakeOwnedDomain:
+    """An OwnedDomain stand-in (structural: ``name`` + ``system_id``)."""
+
+    name: str
+    system_id: UUID | None = None
+
+
+class _FakeLibvirtReaper:
+    """A hermetic stand-in for the libvirt-backed reaper (no live connection in tests)."""
+
+    def __init__(self, *owned: OwnedDomain) -> None:
+        self._owned: list[OwnedDomain] = list(owned)
+        self.destroyed: list[str] = []
+
+    async def list_owned(self) -> list[OwnedDomain]:
+        return list(self._owned)
+
+    async def destroy(self, name: str) -> None:
+        self.destroyed.append(name)
+
+
+def test_reconciler_reaper_is_libvirt_backed_without_fault_inject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #372: a stock deployment's reaper is the libvirt-backed reaper (not NullReaper), so a
+    # name-orphaned domain reaches repair_leaked_domains. (Previously asserted NullReaper —
+    # that encoded the inert-predicate bug.)
+    import asyncio
+
+    monkeypatch.delenv("KDIVE_FAULT_INJECT", raising=False)
+    owner = composition.ProviderComposition()
+
+    sentinel = _FakeOwnedDomain(name="kdive-sentinel")
+    reaper = owner.build_reconciler_reaper(libvirt_reaper=_FakeLibvirtReaper(sentinel))
+
+    # No fault-inject → the single libvirt reaper is returned directly (not composed/Null).
+    assert asyncio.run(reaper.list_owned()) == [sentinel]
+
+
 def test_configured_fault_inject_runtime_is_visible_to_reconciler_reaper() -> None:
     import asyncio
     from uuid import UUID
@@ -306,13 +348,18 @@ def test_configured_fault_inject_runtime_is_visible_to_reconciler_reaper() -> No
 
     owner = composition.ProviderComposition()
     resolver = owner.build_provider_resolver(enable_fault_inject=True)
-    reaper = owner.build_reconciler_reaper(enable_fault_inject=True)
+    # Inject a hermetic libvirt reaper so the composite never opens a live qemu:/// connection.
+    reaper = owner.build_reconciler_reaper(
+        enable_fault_inject=True, libvirt_reaper=_FakeLibvirtReaper()
+    )
     system_id = UUID("44444444-4444-4444-4444-444444444444")
 
     domain = resolver.resolve(ResourceKind.FAULT_INJECT).provisioner.provision(
         system_id, _provisioning_profile()
     )
 
+    # The composite unions the (empty) libvirt reaper rows with the fault-inject rows, so the
+    # fault-inject domain is still visible and reapable.
     owned = asyncio.run(reaper.list_owned())
     assert domain in [item.name for item in owned]
     asyncio.run(reaper.destroy(domain))
@@ -396,18 +443,6 @@ def test_console_hosting_delegates_to_remote_when_enabled(
         is expected_hosting
     )
     assert seen["secret_registry"] is expected_registry
-
-
-def test_reconciler_reaper_defaults_to_null_when_fault_inject_is_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from kdive.providers.reaping import NullReaper
-
-    monkeypatch.delenv("KDIVE_FAULT_INJECT", raising=False)
-
-    owner = composition.ProviderComposition()
-
-    assert isinstance(owner.build_reconciler_reaper(), NullReaper)
 
 
 def test_fault_inject_opt_in_reads_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
