@@ -12,8 +12,8 @@ from pathlib import Path
 
 from kdive.domain.errors import CategorizedError, ErrorCategory
 from kdive.images.distros import SUPPORTED_DISTROS, resolve_base_template
-from kdive.images.planes.base import RootfsBuildOutput, RootfsBuildSpec
-from kdive.providers.local_libvirt.rootfs_build import LocalLibvirtRootfsBuildPlane
+from kdive.images.planes.base import RootfsBuildOutput, RootfsBuildPlane, RootfsBuildSpec
+from kdive.providers.composition import build_local_rootfs_build_plane
 
 _log = logging.getLogger(__name__)
 
@@ -92,9 +92,9 @@ def add_build_fs_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]
     )
 
 
-def _build_local_rootfs_plane(workspace: Path) -> LocalLibvirtRootfsBuildPlane:
-    """Construct the local-libvirt rootfs build plane bound to ``workspace`` (test seam)."""
-    return LocalLibvirtRootfsBuildPlane.from_env(workspace=workspace)
+def _build_local_rootfs_plane(workspace: Path) -> RootfsBuildPlane:
+    """Resolve the local-libvirt rootfs build plane via the composition seam (test seam)."""
+    return build_local_rootfs_build_plane(workspace=workspace)
 
 
 def _ensure_workspace_writable(workspace: Path) -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from kdive.domain.capture import CaptureMethod
 from kdive.domain.models import ResourceKind
 from kdive.provider_components.references import (
@@ -76,6 +78,15 @@ def _discovery_target() -> DiscoveryRegistrationTarget:
 def build_reaper() -> InfraReaper:
     """Build the local-libvirt reconciler reaper (ADR-0111); opens no connection here."""
     return LibvirtInfraReaper.from_env()
+
+
+def build_rootfs_build_plane(*, workspace: Path | None = None) -> LocalLibvirtRootfsBuildPlane:
+    """Build the local-libvirt rootfs build plane; runs no tool and opens no connection.
+
+    ``workspace`` overrides the default build/publish location (the ``build-fs --workspace``
+    operator flag), so an image can be built under a user-writable path.
+    """
+    return LocalLibvirtRootfsBuildPlane.from_env(workspace=workspace)
 
 
 def build_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:

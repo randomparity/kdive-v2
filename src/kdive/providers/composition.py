@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from psycopg_pool import AsyncConnectionPool
@@ -17,6 +18,7 @@ import kdive.config as config
 from kdive.config.core_settings import FAULT_INJECT
 from kdive.db.build_hosts import BuildHostKind
 from kdive.domain.models import ResourceKind
+from kdive.images.planes.base import RootfsBuildPlane
 from kdive.providers.build_host.dispatch import BuildHostTransportFactory
 from kdive.providers.build_host.reachability import BuildHostProber, SshBuildHostProber
 from kdive.providers.console_hosting import DbRunningRemoteSystems
@@ -117,6 +119,15 @@ def build_remote_runtime(*, secret_registry: SecretRegistry) -> ProviderRuntime:
 
 async def ensure_local_host_registered(pool: AsyncConnectionPool) -> None:
     await _discovery_registrar(local_composition.discovery_registration())(pool)
+
+
+def build_local_rootfs_build_plane(*, workspace: Path | None = None) -> RootfsBuildPlane:
+    """Build the local-libvirt rootfs build plane (the ``build-fs`` CLI seam).
+
+    Routes the plane construction through this composition boundary so the CLI never imports a
+    provider's internals directly; ``workspace`` overrides the default build/publish location.
+    """
+    return local_composition.build_rootfs_build_plane(workspace=workspace)
 
 
 def _fault_inject_enabled(enable_fault_inject: bool | None) -> bool:
