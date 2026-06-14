@@ -29,6 +29,9 @@ build/
 
 # Live-stack report artifacts (default is out-of-tree; this guards a repo-local override)
 kdive-live-stack-artifacts/
+.live-stack-logs/
+.live-stack.pid
+scorecard.png
 
 # Agents and orchestration
 .claude-flow/
