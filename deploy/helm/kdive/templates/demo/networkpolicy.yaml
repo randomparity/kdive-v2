@@ -18,4 +18,32 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
+{{- if ne (.Values.demo.minio.service.type | default "ClusterIP") "ClusterIP" }}
+---
+# When the bundled object store is exposed off-cluster (demo.minio.service.type != ClusterIP),
+# the default-deny policy above still rejects external LoadBalancer/NodePort traffic to the MinIO
+# pod — the k3s NetworkPolicy controller rejects unmatched ingress with icmp-port-unreachable, so
+# the guest's install/capture S3 fetch and external build uploads fail. Allow ingress to the MinIO
+# pod on the S3 port from the configured source ranges (default: anywhere, demo only).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kdive.fullname" . }}-minio-ext
+  labels:
+    {{- include "kdive.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ include "kdive.fullname" . }}-minio
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        {{- range (.Values.demo.minio.service.sourceRanges | default (list "0.0.0.0/0")) }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 9000
+{{- end }}
 {{- end }}
