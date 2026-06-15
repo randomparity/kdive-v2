@@ -25,6 +25,10 @@ spec:
 # pod — the k3s NetworkPolicy controller rejects unmatched ingress with icmp-port-unreachable, so
 # the guest's install/capture S3 fetch and external build uploads fail. Allow ingress to the MinIO
 # pod on the S3 port from the configured source ranges (default: anywhere, demo only).
+# CAVEAT: this does NOT restrict by client IP. Under the Service's default externalTrafficPolicy
+# (Cluster) external traffic is SNAT'd to a node IP before this policy sees it (see the base
+# policy's comment above), so the ipBlock matches iff the node IP is in range — a coarse node/pod
+# CIDR gate, not per-client control. Real per-client restriction belongs at the LB/firewall.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

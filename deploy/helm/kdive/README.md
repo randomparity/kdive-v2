@@ -71,6 +71,14 @@ not). The cluster network/firewall must permit the chosen NodePort; a cluster th
 [Kubernetes deploy runbook §7](../../../docs/operating/runbooks/kubernetes-deploy.md) for the full
 topology (with a diagram).
 
+Exposing the store opens a companion NetworkPolicy on :9000 from `demo.minio.service.sourceRanges`
+(default `0.0.0.0/0`). That allowlist does **not** restrict by client IP: under the Service's
+default `externalTrafficPolicy: Cluster`, external traffic is SNAT'd to a node IP before the
+NetworkPolicy controller sees it, so the rule matches iff the node IP is in range — effectively
+all-or-nothing on the node/pod CIDR. The bundled store is fronted by static demo credentials, so
+restrict real access at your LoadBalancer or network firewall; treat `sourceRanges` as a coarse
+node-CIDR gate, not per-client access control.
+
 Every token the bundled issuer mints carries the claim set in `demo.oidc.claims`,
 defaulting to `admin` on project `demo` plus all three platform roles (`platform_admin`,
 `platform_operator`, `platform_auditor`) — a full RBAC grant, so a stock demo deploy can

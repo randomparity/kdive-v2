@@ -18,9 +18,11 @@ DEMO MODE (ephemeral — a pod restart drops all state).
 WARNING: the bundled object store is exposed off-cluster (demo.minio.service.type=
 {{ $minioSvc.type }}) and its NetworkPolicy admits :9000 from 0.0.0.0/0 (anywhere). It is
 fronted by static demo credentials — anyone who can route to it can read/write all stored
-kernel images and vmcores. Scope it to your guest/client network for anything but a
-throwaway lab:
-  --set 'demo.minio.service.sourceRanges={192.168.0.0/16}'
+kernel images and vmcores. Restrict access at your LoadBalancer or network firewall for
+anything but a throwaway lab. NOTE: demo.minio.service.sourceRanges canNOT restrict by client
+IP here — under the Service's default externalTrafficPolicy (Cluster) external traffic is
+SNAT'd to a node IP before the NetworkPolicy sees it, so the allowlist only gates the
+node/pod CIDR (all-or-nothing on whether the node IP is in range).
 {{- end }}
 
 Verify the whole stack (helm test waits for readiness itself; add --wait to the

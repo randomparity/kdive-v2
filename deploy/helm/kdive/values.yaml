@@ -89,8 +89,11 @@ demo:
       nodePort: ""
       # When exposed (type != ClusterIP), the demo default-deny NetworkPolicy is opened for the
       # MinIO S3 port from these CIDRs so the remote guest/uploader can reach it. Empty = anywhere
-      # (0.0.0.0/0, demo only); scope to your client/guest networks in anything less throwaway.
-      # NOTES.txt prints a loud warning whenever the effective range stays world-open.
+      # (0.0.0.0/0, demo only). NOTE: this does NOT restrict by client IP — under the Service's
+      # default externalTrafficPolicy (Cluster) external traffic is SNAT'd to a node IP before the
+      # NetworkPolicy sees it, so the allowlist effectively gates only the node/pod CIDR (the rule
+      # matches iff the node IP falls in range). For real per-client restriction, scope at your
+      # LoadBalancer or network firewall. NOTES.txt warns whenever the effective range is world-open.
       sourceRanges: []
   mc:
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
