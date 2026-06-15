@@ -33,15 +33,24 @@ def _template(*set_args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True, check=False)
 
 
-def _notes(*set_args: str) -> str:
-    """Render the chart's NOTES.txt (helm template omits NOTES; --dry-run=client emits it)."""
-    args = ["helm", "install", "kdive", CHART, "--dry-run=client"]
-    for s in set_args:
-        args += ["--set", s]
-    res = subprocess.run(args, capture_output=True, text=True, check=False)
-    assert res.returncode == 0, res.stderr
-    _, _, notes = res.stdout.partition("NOTES:")
-    return notes
+def _minio_ext_cidrs(res: subprocess.CompletedProcess[str]) -> list[str] | None:
+    """Return the ipBlock CIDRs of the `-minio-ext` NetworkPolicy, or None if it's not rendered.
+
+    This is the actual exposure control (NOTES only mirrors it in prose). Rendered by
+    `helm template`, so it works offline — unlike NOTES, which Helm only emits via
+    `helm install`, and that contacts the cluster.
+    """
+    for doc in yaml.safe_load_all(res.stdout):
+        if not (isinstance(doc, dict) and doc.get("kind") == "NetworkPolicy"):
+            continue
+        if not str(doc.get("metadata", {}).get("name", "")).endswith("-minio-ext"):
+            continue
+        cidrs: list[str] = []
+        for rule in doc["spec"]["ingress"]:
+            for src in rule["from"]:
+                cidrs.append(src["ipBlock"]["cidr"])
+        return cidrs
+    return None
 
 
 def _oidc_request_mappings(res: subprocess.CompletedProcess[str]) -> list[dict[str, Any]]:
@@ -487,26 +496,29 @@ def test_demo_token_script_client_ids_match_rendered_variants() -> None:
     )
 
 
-def test_notes_warns_when_exposed_object_store_is_world_open() -> None:
-    # Exposing the bundled object store (type != ClusterIP) with a world-open ingress range is
-    # a footgun (static demo creds + all artifacts reachable). NOTES must warn when the
-    # effective range is 0.0.0.0/0 — whether by the empty-default or an explicit entry — and
-    # stay quiet when it's scoped or the store stays in-cluster.
+def test_exposed_minio_networkpolicy_ingress_scope() -> None:
+    # The actual exposure control (the NOTES warning only mirrors this in prose, and NOTES can't
+    # render offline so it isn't asserted here). A ClusterIP store renders no companion policy;
+    # exposing it with the empty default opens :9000 to the world (0.0.0.0/0); a scoped override
+    # opens only that CIDR. Pins both the footgun default and that scoping actually narrows it.
     base = ("bundledBackends=true", "demoAcknowledged=true")
-    marker = "exposed off-cluster"
 
-    assert marker not in _notes(*base), "ClusterIP default must not warn"
-    assert marker in _notes(*base, "demo.minio.service.type=LoadBalancer"), (
-        "exposed + empty sourceRanges (world-open default) must warn"
-    )
-    assert marker in _notes(
-        *base, "demo.minio.service.type=NodePort", "demo.minio.service.sourceRanges={0.0.0.0/0}"
-    ), "explicit 0.0.0.0/0 must warn"
-    assert marker not in _notes(
+    clusterip = _template(*base)
+    assert clusterip.returncode == 0, clusterip.stderr
+    assert _minio_ext_cidrs(clusterip) is None, "ClusterIP store must render no -minio-ext policy"
+
+    exposed = _template(*base, "demo.minio.service.type=LoadBalancer")
+    assert exposed.returncode == 0, exposed.stderr
+    assert _minio_ext_cidrs(exposed) == ["0.0.0.0/0"], "empty sourceRanges must open to the world"
+
+    scoped = _template(
         *base,
         "demo.minio.service.type=LoadBalancer",
         "demo.minio.service.sourceRanges={192.168.16.0/24}",
-    ), "a scoped CIDR must not warn"
+    )
+    assert scoped.returncode == 0, scoped.stderr
+    cidrs = _minio_ext_cidrs(scoped)
+    assert cidrs == ["192.168.16.0/24"], f"scoped override must narrow the ingress, got {cidrs}"
 
 
 def test_bundled_oidc_blanked_claims_degrade_to_floor() -> None:
