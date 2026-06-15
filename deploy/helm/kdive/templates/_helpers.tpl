@@ -35,7 +35,14 @@ external-backend path.
 {{- end -}}
 
 {{- define "kdive.s3Endpoint" -}}
-{{- if .Values.bundledBackends -}}
+{{- if .Values.config.KDIVE_S3_ENDPOINT_URL -}}
+{{- /* An explicit override wins in BOTH modes. The bundled MinIO is reachable in-cluster as
+       <fullname>-minio:9000, but a remote-libvirt guest and an external uploader cannot resolve
+       that name — presigned URLs must carry an address all three (worker, uploader, guest)
+       reach. Set config.KDIVE_S3_ENDPOINT_URL to that address and expose the MinIO Service
+       (demo.minio.service.type) to make the bundled object store usable off-cluster. */ -}}
+{{- .Values.config.KDIVE_S3_ENDPOINT_URL -}}
+{{- else if .Values.bundledBackends -}}
 {{- printf "http://%s-minio:9000" (include "kdive.fullname" .) -}}
 {{- else -}}
 {{- .Values.config.KDIVE_S3_ENDPOINT_URL -}}

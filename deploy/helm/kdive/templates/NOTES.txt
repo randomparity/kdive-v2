@@ -10,6 +10,20 @@ a pod restart drops all state. Use external backends for anything but a throwawa
 {{- if .Values.bundledBackends }}
 
 DEMO MODE (ephemeral — a pod restart drops all state).
+{{- $minioSvc := .Values.demo.minio.service | default dict }}
+{{- $minioExposed := ne ($minioSvc.type | default "ClusterIP") "ClusterIP" }}
+{{- $minioRanges := $minioSvc.sourceRanges | default (list) }}
+{{- if and $minioExposed (or (not $minioRanges) (has "0.0.0.0/0" $minioRanges)) }}
+
+WARNING: the bundled object store is exposed off-cluster (demo.minio.service.type=
+{{ $minioSvc.type }}) and its NetworkPolicy admits :9000 from 0.0.0.0/0 (anywhere). It is
+fronted by static demo credentials — anyone who can route to it can read/write all stored
+kernel images and vmcores. Restrict access at your LoadBalancer or network firewall for
+anything but a throwaway lab. NOTE: demo.minio.service.sourceRanges canNOT restrict by client
+IP here — under the Service's default externalTrafficPolicy (Cluster) external traffic is
+SNAT'd to a node IP before the NetworkPolicy sees it, so the allowlist only gates the
+node/pod CIDR (all-or-nothing on whether the node IP is in range).
+{{- end }}
 
 Verify the whole stack (helm test waits for readiness itself; add --wait to the
 install above if you prefer the release to block until pods are Ready):
@@ -22,10 +36,15 @@ any caller; never expose it via NodePort/LoadBalancer/Ingress):
 Mint a demo token for your own client (expires per the issuer's tokenExpiry). The token
 carries the demo RBAC grant in demo.oidc.claims (default: admin on project `demo` + all
 three platform roles), so it can drive the whole authz surface; narrow it with
-`--set demo.oidc.claims...` to test a denial:
-  TOKEN=$(kubectl run mint --rm -i --restart=Never --image=curlimages/curl -q -- \
-    -s -d 'grant_type=client_credentials&client_id=kdive-demo&client_secret=x' \
-    http://{{ include "kdive.fullname" . }}-oidc:8080/default/token | sed -e 's/.*"access_token":"//' -e 's/".*//')
+`--set demo.oidc.claims...` to test a denial. Mint from inside a running pod (the demo
+NetworkPolicy blocks ad-hoc pods from the issuer, and the token's `iss` must be the
+in-cluster issuer URL the server validates against, not a port-forwarded localhost one):
+  TOKEN=$(kubectl exec deploy/{{ include "kdive.fullname" . }}-server -- python -c \
+    'import json,urllib.request as u; d=b"grant_type=client_credentials&client_id=kdive-demo&client_secret=x"; print(json.load(u.urlopen(u.Request("http://{{ include "kdive.fullname" . }}-oidc:8080/default/token",data=d),timeout=10))["access_token"])')
+From a source checkout the same mint is wrapped in a helper:
+  export KDIVE_TOKEN=$(scripts/demo-token.sh)     # KDIVE_DEMO_{NAMESPACE,FULLNAME,CONTEXT} override
+To demonstrate an RBAC denial, mint a narrowed token (project role only, no platform roles):
+  export KDIVE_TOKEN=$(scripts/demo-token.sh --role viewer)   # or: --role operator
 Then drive http://127.0.0.1:8000/mcp with an MCP client and `Authorization: Bearer $TOKEN`
 (the streamable-HTTP transport needs the MCP initialize handshake — a raw tools/list POST 307s).
 {{- end }}

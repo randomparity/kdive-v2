@@ -30,9 +30,35 @@ spec:
             # verification and lock the demo out; `sub` defaults to kdive-demo. A blanked
             # override (claims=null/empty) degrades to the safe {sub,aud} floor, not an error.
             {{- $demoClaims := .Values.demo.oidc.claims | default dict }}
-            {{- $claims := merge (dict "sub" (default "kdive-demo" $demoClaims.sub) "aud" (list "kdive")) (omit $demoClaims "aud" "sub") }}
+            {{- $sub := default "kdive-demo" $demoClaims.sub }}
+            {{- $adminClaims := merge (dict "sub" $sub "aud" (list "kdive")) (omit $demoClaims "aud" "sub") }}
+            {{- /* Role-scoped variants for demonstrating RBAC denials (ADR-0108 §4). A token
+                   request with client_id `kdive-demo-<role>` mints a token that DOWNGRADES the
+                   admin grant: every project in the configured `roles` map gets `<role>`
+                   instead of its admin role, and `platform_roles` is dropped — so a
+                   require_role/require_platform_role denial is a one-flag mint
+                   (`scripts/demo-token.sh --role <role>`) instead of a chart redeploy. The
+                   variant role-map keys come from the same `roles` map the admin grant uses
+                   (not `projects`), so the two paths can't diverge on which project is graded.
+                   These mappings come FIRST and mock-oauth2-server is first-match-wins, so the
+                   default client_id `kdive-demo` (and any unmatched id) falls through to the
+                   catch-all full-admin grant below — that ordering is load-bearing and pinned
+                   by test_bundled_oidc_variant_mappings_precede_catch_all. Variants are emitted
+                   only when a role grant exists; a blanked `claims` override degrades to the
+                   {sub,aud} floor with no variants. */ -}}
+            {{- $grantedRoles := default dict $demoClaims.roles }}
+            {{- $mappings := list }}
+            {{- if $grantedRoles }}
+            {{- range $role := (list "viewer" "operator") }}
+            {{- $roleMap := dict }}
+            {{- range $proj, $_admin := $grantedRoles }}{{- $_ := set $roleMap $proj $role }}{{- end }}
+            {{- $variant := merge (dict "sub" (printf "%s-%s" $sub $role) "roles" $roleMap) (omit $adminClaims "sub" "roles" "platform_roles") }}
+            {{- $mappings = append $mappings (dict "requestParam" "client_id" "match" (printf "kdive-demo-%s" $role) "claims" $variant) }}
+            {{- end }}
+            {{- end }}
+            {{- $mappings = append $mappings (dict "requestParam" "grant_type" "match" "*" "claims" $adminClaims) }}
             - name: JSON_CONFIG
-              value: '{"interactiveLogin":false,"tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"grant_type","match":"*","claims":{{ $claims | toJson }}}]}]}'
+              value: '{"interactiveLogin":false,"tokenCallbacks":[{"issuerId":"default","requestMappings":{{ $mappings | toJson }}}]}'
           ports:
             - containerPort: 8080
           readinessProbe:

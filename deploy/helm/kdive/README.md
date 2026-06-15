@@ -13,8 +13,11 @@ follow [`docs/operating/runbooks/kubernetes-deploy.md`](../../../docs/operating/
 > **Installing from a source checkout?** The chart's default image tag is `appVersion`,
 > which tracks the *next unreleased* version (ADR-0041) and has no published image until
 > that version is cut — a bare install would `ImagePullBackOff`. From a checkout, pin the
-> rolling image: add `--set image.tag=edge`. A bare `appVersion` default is correct only
-> when you install a cut release / published chart.
+> rolling image: add `--set image.tag=edge` **and `--set image.pullPolicy=Always`**. `:edge` is
+> mutable (overwritten on every push to `main`), so with the chart default `IfNotPresent` a node
+> that cached an older `edge` keeps serving stale code across `helm install`/`upgrade`; `Always`
+> forces a re-pull (`values-demo.yaml` sets it for you). A bare `appVersion` default is correct
+> only when you install a cut release / published chart.
 
 ```sh
 helm install kdive deploy/helm/kdive \
@@ -46,11 +49,44 @@ helm test kdive    # mints a token, asserts tools/list returns tools
 image the demo cannot pull. The demo migrate Job runs `post-install` behind a DB-readiness
 init container.
 
+### Single object store (remote-libvirt & external uploads)
+
+A deployment has **one** object store, and three parties use it over presigned URLs: the
+in-cluster worker, an external uploader (`runs.complete_build`), and the remote-libvirt guest
+(`install` fetch + `kdump` capture). The bundled MinIO defaults to **ClusterIP** with
+`KDIVE_S3_ENDPOINT_URL=http://<release>-minio:9000` — in-cluster only, so `host_dump` capture and
+`introspect.from_vmcore` work but external uploads and remote-libvirt `install`/`kdump` capture do
+not. To use the bundled store off-cluster, expose it and point the endpoint at an address all three
+parties resolve to the same store:
+
+```sh
+helm upgrade kdive deploy/helm/kdive -f deploy/helm/kdive/values-demo.yaml --reuse-values \
+  --set demo.minio.service.type=NodePort --set demo.minio.service.nodePort=30900 \
+  --set config.KDIVE_S3_ENDPOINT_URL=http://<node-ip>:30900
+```
+
+`config.KDIVE_S3_ENDPOINT_URL` now overrides the bundled default in both modes (it previously could
+not). The cluster network/firewall must permit the chosen NodePort; a cluster that only admits
+`:6443` needs a node firewall change or an external S3 all parties reach. See the
+[Kubernetes deploy runbook §7](../../../docs/operating/runbooks/kubernetes-deploy.md) for the full
+topology (with a diagram).
+
+Exposing the store opens a companion NetworkPolicy on :9000 from `demo.minio.service.sourceRanges`
+(default `0.0.0.0/0`). That allowlist does **not** restrict by client IP: under the Service's
+default `externalTrafficPolicy: Cluster`, external traffic is SNAT'd to a node IP before the
+NetworkPolicy controller sees it, so the rule matches iff the node IP is in range — effectively
+all-or-nothing on the node/pod CIDR. The bundled store is fronted by static demo credentials, so
+restrict real access at your LoadBalancer or network firewall; treat `sourceRanges` as a coarse
+node-CIDR gate, not per-client access control.
+
 Every token the bundled issuer mints carries the claim set in `demo.oidc.claims`,
 defaulting to `admin` on project `demo` plus all three platform roles (`platform_admin`,
 `platform_operator`, `platform_auditor`) — a full RBAC grant, so a stock demo deploy can
 exercise the whole authz surface. `aud` is pinned to `["kdive"]` by the chart and cannot
-be overridden. To test a denial, narrow the grant, e.g.
+be overridden. To test a denial per session, mint a narrowed token with
+`scripts/demo-token.sh --role viewer` (or `--role operator`) — the chart also registers
+`client_id: kdive-demo-<role>` issuer variants that carry only that project role and no
+platform roles. To change the *default* grant deploy-wide, narrow it with
 `--set demo.oidc.claims.roles.demo=viewer` or drop `platform_roles`. The grant only
 authorizes operations on a project with a budget/quota row; the demo seeds project `demo`
 via `kdive seed-demo`, so if you change the project name, seed it

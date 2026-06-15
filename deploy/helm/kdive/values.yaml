@@ -80,6 +80,21 @@ demo:
     image: postgres:17
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    # Expose the bundled object store off-cluster (needed for remote-libvirt guest
+    # install/capture and external build uploads — see the deploy README, "Single object
+    # store"). Default ClusterIP keeps it in-cluster; with NodePort also set a node-routable
+    # config.KDIVE_S3_ENDPOINT_URL so presigned URLs carry an address every party reaches.
+    service:
+      type: ClusterIP
+      nodePort: ""
+      # When exposed (type != ClusterIP), the demo default-deny NetworkPolicy is opened for the
+      # MinIO S3 port from these CIDRs so the remote guest/uploader can reach it. Empty = anywhere
+      # (0.0.0.0/0, demo only). NOTE: this does NOT restrict by client IP — under the Service's
+      # default externalTrafficPolicy (Cluster) external traffic is SNAT'd to a node IP before the
+      # NetworkPolicy sees it, so the allowlist effectively gates only the node/pod CIDR (the rule
+      # matches iff the node IP falls in range). For real per-client restriction, scope at your
+      # LoadBalancer or network firewall. NOTES.txt warns whenever the effective range is world-open.
+      sourceRanges: []
   mc:
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
   oidc:
@@ -89,9 +104,12 @@ demo:
     # The default grants full RBAC over the seeded `demo` project (admin) plus all three
     # platform roles so a stock demo deploy can exercise the entire RBAC/authz surface.
     # NEVER front a real RBAC boundary with this issuer. `aud` is pinned to ["kdive"] by
-    # the template and cannot be overridden here. To test a denial, narrow the grant, e.g.
-    # `--set demo.oidc.claims.roles.demo=viewer` or drop platform_roles. If you change the
-    # project name, run `kdive seed-demo --project <name>` so it has a budget/quota row.
+    # the template and cannot be overridden here. To test a denial per session, mint a
+    # narrowed token with `scripts/demo-token.sh --role viewer|operator` (the template also
+    # registers `client_id: kdive-demo-<role>` variants — project role only, no platform
+    # roles); to change the *default* grant deploy-wide use `--set demo.oidc.claims.roles.demo=
+    # viewer`. If you change the project name, run `kdive seed-demo --project <name>` so it
+    # has a budget/quota row.
     claims:
       sub: kdive-demo
       projects: ["demo"]

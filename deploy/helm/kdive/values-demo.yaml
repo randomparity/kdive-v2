@@ -4,5 +4,12 @@
 # valid kdive tokens for any caller). See deploy/helm/kdive/README.md.
 image:
   tag: edge
+  # `edge` is a MUTABLE rolling tag: it is overwritten on every push to main, but the
+  # image *reference* the pods carry never changes. With the chart default
+  # `pullPolicy: IfNotPresent`, a node that has ever cached an older `edge` keeps serving
+  # it across `helm install`/`upgrade` — silently running stale code (e.g. a missing
+  # systems.toml inventory loader, so a declared remote-libvirt host never registers).
+  # Force a re-pull so the demo actually tracks the published rolling image.
+  pullPolicy: Always
 bundledBackends: true
 demoAcknowledged: true

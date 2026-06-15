@@ -99,6 +99,58 @@ The token is short-lived; refresh `KDIVE_TOKEN` and reconnect when it expires. A
 `401` from the server means the token is missing, expired, or issued for the
 wrong audience.
 
+> **Claude Code reads `${KDIVE_TOKEN}` once, at startup.** It is expanded when the
+> MCP server is loaded, not per call — so export the token *before* launching
+> Claude Code (or before the `kdive` server connects), and when it expires,
+> re-export and reconnect the server. A token exported in a shell *after* Claude
+> Code is already running does not reach an already-loaded MCP entry.
+
+## Connecting to a bundled-backends demo (Kubernetes)
+
+The `values-demo.yaml` deployment (in-chart Postgres/MinIO/mock-OIDC) does **not**
+give you the stable `url` and external IdP this page otherwise assumes. Two demo
+specifics replace them:
+
+1. **There is no public URL — port-forward to localhost.** The demo Service is
+   `ClusterIP` (the bundled issuer mints valid tokens for any caller, so it must
+   never be exposed). Run a port-forward and keep it running for the whole session:
+
+   ```bash
+   kubectl -n <namespace> port-forward svc/<release>-server 8000:8000
+   ```
+
+   Then set the `.mcp.json` `url` to `http://127.0.0.1:8000/mcp` (not a remote
+   host). If the forward stops, every call fails until you restart it.
+
+2. **Mint the token from inside the cluster.** The mock issuer is in-cluster only,
+   and the token's `iss` must be the in-cluster issuer URL the server validates
+   against — so mint it via `kubectl exec` into the server pod, not from your
+   workstation (a port-forwarded mint stamps the wrong `iss` and 401s). The
+   bundled issuer also mints `aud=kdive` tokens for any caller, so no real IdP is
+   involved. From a source checkout a helper wraps the mint:
+
+   ```bash
+   export KDIVE_TOKEN=$(scripts/demo-token.sh)   # KDIVE_DEMO_{NAMESPACE,FULLNAME,CONTEXT} override
+   ```
+
+   (the raw `kubectl exec` form is also printed in the release notes, `helm get notes
+   <release>`, and the [Kubernetes deploy runbook](../../operating/runbooks/kubernetes-deploy.md)).
+   Export it **before** launching Claude Code — it reads `${KDIVE_TOKEN}` once at startup.
+   Demo tokens expire after ~1 hour: re-run the helper, re-export, and reconnect the server.
+
+   The default token is fully privileged (admin on project `demo` + all platform roles), so
+   every tool works out of the box. To **see RBAC enforce a denial**, mint a narrowed token —
+   `scripts/demo-token.sh --role viewer` (or `--role operator`) grants only that project role
+   and no platform roles, so privileged tools return `error_category: authorization_denied`.
+
+Driving a **remote-libvirt** host (e.g. a `qemu+tls://` target) from this demo is
+the same tool flow below — the host just has to be registered in the deployment's
+`systems.toml` inventory and reachable from the worker; see the
+[remote-libvirt host-setup runbook](../../operating/runbooks/remote-libvirt-host-setup.md).
+The worker pod is a lightweight app process, so a from-source `runs.build` needs a
+registered build host (runbook §"Offloading the from-source build to an ephemeral
+build VM"); `host_dump` capture and provisioning do not.
+
 ## First-call smoke sequence
 
 Once the server is connected, confirm the tools are reachable with a minimal

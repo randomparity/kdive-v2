@@ -131,9 +131,15 @@ in four non-obvious ways; fix them once:
 # (a) the appliance must read the host kernel
 sudo chmod 0644 /boot/vmlinuz-*
 
-# (b) passt (appliance user-net) self-sandboxes via unprivileged userns, blocked by default
+# (b) passt (appliance user-net) self-sandboxes via an unprivileged userns; TWO layers block it.
+#     (b1) the global unprivileged-userns restriction:
 echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-kdive-userns.conf
 sudo sysctl --system
+#     (b2) Ubuntu 24.04 also ships a per-binary AppArmor profile (usr.bin.passt) that confines
+#     passt independently of (b1). If `passt exited with status 1` persists after (b1), unload it
+#     (this is the actual blocker on a stock 24.04 host; (b1) alone is not enough):
+sudo apparmor_parser -R /etc/apparmor.d/usr.bin.passt 2>/dev/null || true
+sudo ln -sf /etc/apparmor.d/usr.bin.passt /etc/apparmor.d/disable/usr.bin.passt
 
 # (c) THE key fix: the appliance gets no IP without a DHCP client on the host.
 #     Install one and drop the stale supermin cache so it rebuilds with dhclient.
@@ -154,9 +160,11 @@ GF
 ```
 
 Symptom map (what each missing item looks like): `(a)` → libguestfs cannot read the kernel; `(b)`
-→ `passt exited with status 1` / `Failed to sandbox process`; `(c)` → eth0 stays `DOWN`, dnf
-reports `Could not resolve host mirrors.fedoraproject.org`. `(b)` can alternatively be sidestepped
-by removing passt so libguestfs falls back to qemu slirp, but `(c)` is required either way.
+→ `passt exited with status 1` / `Failed to sandbox process` (on a stock 24.04 host this is the
+`usr.bin.passt` AppArmor profile of `(b2)`, not the global sysctl of `(b1)`); `(c)` → eth0 stays
+`DOWN`, dnf reports `Could not resolve host mirrors.fedoraproject.org`. `(b)` can alternatively be
+sidestepped entirely by removing passt so libguestfs falls back to qemu slirp, but `(c)` is
+required either way.
 
 ## 5. Build the operator-staged base image
 
@@ -167,16 +175,20 @@ remote base image with the `RemoteLibvirtRootfsBuildPlane` recipe; the volume na
 `fedora-kdive-remote-base-43.qcow2` (the provisioning profile derives it from
 `REMOTE_BASE_IMAGE_NAME`).
 
+Build (and customize, step 5a) against a **writable working copy**, then stage it into the pool —
+the default pool dir `/var/lib/libvirt/images` is `root`-owned (`drwx--x--x`), so a non-root
+`virt-builder`/`virt-customize` cannot write there directly. `virt-builder` also needs `/dev/kvm`
+(`sudo chmod 0666 /dev/kvm` on a throwaway host, or finish the `kvm`-group login from step 1) or it
+falls back to slow software emulation.
+
 ```bash
 virt-builder fedora-43 --format qcow2 --size 10G \
-  --output /var/lib/libvirt/images/fedora-kdive-remote-base-43.qcow2 \
+  --output "$HOME/fedora-kdive-remote-base-43.qcow2" \
   --install qemu-guest-agent,drgn,kexec-tools,makedumpfile,kdump-utils,curl,tar,openssl,python3 \
   --run-command "systemctl enable qemu-guest-agent.service" \
   --run-command "systemctl enable kdump.service" \
   --run-command "sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config"
-sudo virsh pool-refresh default
-sudo virsh vol-list default
-sha256sum /var/lib/libvirt/images/fedora-kdive-remote-base-43.qcow2   # the image identity
+# (install the guest helpers into this copy next, step 5a, then stage it into the pool)
 ```
 
 The matching `vmlinux`/debuginfo and a crashkernel-capable kernel remain the operator's content
@@ -217,7 +229,18 @@ for h in $HELPERS; do
     --run-command "chmod 0755 /usr/local/sbin/$h"
     --run-command "restorecon -v /usr/local/sbin/$h")
 done
-virt-customize -a /var/lib/libvirt/images/fedora-kdive-remote-base-43.qcow2 "${args[@]}"
+virt-customize -a "$HOME/fedora-kdive-remote-base-43.qcow2" "${args[@]}"
+```
+
+Now stage the finished image into the (root-owned) storage pool and record its identity:
+
+```bash
+sudo install -m0644 -o root -g root \
+  "$HOME/fedora-kdive-remote-base-43.qcow2" \
+  /var/lib/libvirt/images/fedora-kdive-remote-base-43.qcow2
+sudo virsh pool-refresh default
+sudo virsh vol-list default
+sudo sha256sum /var/lib/libvirt/images/fedora-kdive-remote-base-43.qcow2   # the image identity
 ```
 
 The canonical install recipe, the exact argv/JSON contract each helper satisfies, and the
@@ -256,6 +279,13 @@ and materializes a per-op `pkipath`. The Helm chart projects a Kubernetes Secret
 kubectl -n kdive-demo create secret generic kdive-remote-tls \
   --from-file=clientcert.pem --from-file=clientkey.pem --from-file=cacert.pem
 ```
+
+The Secret **keys** and the `*_ref` values in the `systems.toml` block below must be the **same
+filenames** — the backend resolves each ref by its literal name under `KDIVE_SECRETS_ROOT`. The
+names here (`clientcert.pem`/`clientkey.pem`/`cacert.pem`) are an example; if you name them
+differently (e.g. `remote-clientcert.pem`), use that name in **both** the `--from-file` key and the
+matching `*_ref`. A mismatch fails ref resolution at provision time, after the host has already
+registered.
 
 Declare the host as a `[[remote_libvirt]]` instance (plus its `staged` base `[[image]]`) in the
 `systems.toml` ConfigMap the deployment mounts:
@@ -308,8 +338,14 @@ by the preflight and surfaces as the in-guest transfer failure.
 ## 8. Validate
 
 ```bash
-kdivectl doctor --provider remote-libvirt          # secret_ref → pass (the 3 refs resolve)
+kdivectl doctor --provider remote-libvirt          # secret_ref → pass
 ```
+
+The `secret_ref` check reports `pass` when the secret backend is healthy. With the **file-ref**
+backend it counts *registered* refs, of which there are none (refs are resolved on demand, not
+pre-registered) — so the detail reads `all 0 configured secret refs resolve`, which is the
+expected pass, not a sign the TLS refs are missing. The authoritative check that the three TLS
+refs actually resolve is the worker→host connect below.
 
 `doctor --with-egress` reports a configuration error unless a probe-guest-backed diagnostics
 factory is wired (deferred per ADR-0091/M2.4); that is expected, not a fault. To confirm the

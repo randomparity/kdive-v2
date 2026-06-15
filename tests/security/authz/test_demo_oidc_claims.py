@@ -45,6 +45,26 @@ def test_default_demo_claims_resolve_to_a_full_rbac_grant() -> None:
     )
 
 
+@pytest.mark.parametrize("role", [Role.VIEWER, Role.OPERATOR])
+def test_role_scoped_variant_claims_resolve_to_project_role_without_platform(
+    role: Role,
+) -> None:
+    # The chart's per-role variants (oidc.yaml, ADR-0108 §4) mint a token carrying only the
+    # project role and NO platform roles, so `--role viewer|operator` reaches a denial. Pin
+    # that the variant claim shape parses to exactly that grant: an empty platform-role set is
+    # what makes a require_platform_role check deny.
+    variant: dict[str, object] = {
+        "sub": f"kdive-demo-{role.value}",
+        "aud": ["kdive"],
+        "projects": ["demo"],
+        "roles": {"demo": role.value},
+    }
+    ctx = context_from_claims(variant)
+
+    assert ctx.roles == {"demo": role}
+    assert ctx.platform_roles == frozenset()
+
+
 def test_demo_claims_with_unknown_role_fail_closed() -> None:
     # The chart default must never trip this fail-closed path; the negative test documents
     # that an unknown role string is rejected, not silently dropped.

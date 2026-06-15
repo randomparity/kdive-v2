@@ -46,12 +46,19 @@ metadata:
   labels:
     {{- include "kdive.labels" . | nindent 4 }}
 spec:
-  type: ClusterIP
+  # Default ClusterIP keeps the bundled object store in-cluster. To drive remote-libvirt or
+  # accept external build uploads the guest/uploader must reach S3 too — set
+  # demo.minio.service.type=NodePort (and a node-routable KDIVE_S3_ENDPOINT_URL) to expose it.
+  # The cluster network/firewall must permit the chosen NodePort.
+  type: {{ .Values.demo.minio.service.type | default "ClusterIP" }}
   selector:
     app: {{ include "kdive.fullname" . }}-minio
   ports:
     - port: 9000
       targetPort: 9000
+      {{- if and (eq (.Values.demo.minio.service.type | default "ClusterIP") "NodePort") .Values.demo.minio.service.nodePort }}
+      nodePort: {{ .Values.demo.minio.service.nodePort }}
+      {{- end }}
 ---
 apiVersion: batch/v1
 kind: Job

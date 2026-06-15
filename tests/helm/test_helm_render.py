@@ -8,6 +8,8 @@ validates nothing, so CI must provide the binary for this gate to mean anything.
 
 from __future__ import annotations
 
+import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -29,6 +31,45 @@ def _template(*set_args: str) -> subprocess.CompletedProcess[str]:
     for s in set_args:
         args += ["--set", s]
     return subprocess.run(args, capture_output=True, text=True, check=False)
+
+
+def _minio_ext_cidrs(res: subprocess.CompletedProcess[str]) -> list[str] | None:
+    """Return the ipBlock CIDRs of the `-minio-ext` NetworkPolicy, or None if it's not rendered.
+
+    This is the actual exposure control (NOTES only mirrors it in prose). Rendered by
+    `helm template`, so it works offline — unlike NOTES, which Helm only emits via
+    `helm install`, and that contacts the cluster.
+    """
+    for doc in yaml.safe_load_all(res.stdout):
+        if not (isinstance(doc, dict) and doc.get("kind") == "NetworkPolicy"):
+            continue
+        if not str(doc.get("metadata", {}).get("name", "")).endswith("-minio-ext"):
+            continue
+        cidrs: list[str] = []
+        for rule in doc["spec"]["ingress"]:
+            for src in rule["from"]:
+                cidrs.append(src["ipBlock"]["cidr"])
+        return cidrs
+    return None
+
+
+def _oidc_request_mappings(res: subprocess.CompletedProcess[str]) -> list[dict[str, Any]]:
+    """Parse the demo issuer's ``requestMappings`` out of the rendered JSON_CONFIG env var.
+
+    Returns the ordered list of mappings (order is load-bearing: mock-oauth2-server is
+    first-match-wins). Raises if the oidc Deployment or its JSON_CONFIG is absent.
+    """
+    for doc in yaml.safe_load_all(res.stdout):
+        if not (isinstance(doc, dict) and doc.get("kind") == "Deployment"):
+            continue
+        if not str(doc.get("metadata", {}).get("name", "")).endswith("-oidc"):
+            continue
+        env = doc["spec"]["template"]["spec"]["containers"][0]["env"]
+        raw = next(e["value"] for e in env if e["name"] == "JSON_CONFIG")
+        mappings = json.loads(raw)["tokenCallbacks"][0]["requestMappings"]
+        assert isinstance(mappings, list)
+        return mappings
+    raise AssertionError("no -oidc Deployment with a JSON_CONFIG env var in the render")
 
 
 def test_renders_three_deployments_against_external_backends() -> None:
@@ -380,14 +421,117 @@ def test_bundled_oidc_aud_pin_survives_override() -> None:
     assert "nope" not in res.stdout
 
 
+def test_bundled_oidc_mints_role_scoped_variants() -> None:
+    # ADR-0108 §4: per-role client_id mappings let `demo-token.sh --role <role>` mint a
+    # narrowed token (project role only, no platform roles) so a denial is reachable without
+    # a chart redeploy. toJson sorts keys, so each variant's full claims object is a stable
+    # substring — pinning it proves the variant carries NO platform_roles.
+    res = _template("bundledBackends=true", "demoAcknowledged=true")
+    assert res.returncode == 0, res.stderr
+    assert '"match":"kdive-demo-viewer","requestParam":"client_id"' in res.stdout
+    assert '"match":"kdive-demo-operator","requestParam":"client_id"' in res.stdout
+    assert (
+        '{"aud":["kdive"],"projects":["demo"],"roles":{"demo":"viewer"},"sub":"kdive-demo-viewer"}'
+        in res.stdout
+    )
+    assert (
+        '{"aud":["kdive"],"projects":["demo"],"roles":{"demo":"operator"},"sub":"kdive-demo-operator"}'
+        in res.stdout
+    )
+
+
+def test_bundled_oidc_variant_mappings_precede_catch_all() -> None:
+    # The feature's load-bearing invariant: every per-role client_id mapping must come BEFORE
+    # the grant_type:"*" catch-all. mock-oauth2-server is first-match-wins, so if a reorder
+    # ever put the catch-all first, a client_id=kdive-demo-viewer request would match it and
+    # silently mint a FULL-ADMIN token — a privilege escalation for a request that asked for
+    # less. A presence-only assertion can't catch that; pin the order explicitly.
+    res = _template("bundledBackends=true", "demoAcknowledged=true")
+    assert res.returncode == 0, res.stderr
+    mappings = _oidc_request_mappings(res)
+    catch_all_idx = next(
+        i for i, m in enumerate(mappings) if m["requestParam"] == "grant_type" and m["match"] == "*"
+    )
+    client_id_idxs = [i for i, m in enumerate(mappings) if m["requestParam"] == "client_id"]
+    assert client_id_idxs, "expected per-role client_id mappings"
+    assert max(client_id_idxs) < catch_all_idx, (
+        "a client_id variant mapping is at/after the catch-all; first-match-wins would mint "
+        "an admin token for a narrowed-role request"
+    )
+    # The catch-all is the only mapping carrying platform_roles (the full admin grant); the
+    # variants must not, or the denial they exist to demonstrate would not occur.
+    for m in mappings:
+        if m["requestParam"] == "client_id":
+            assert "platform_roles" not in m["claims"], m["match"]
+
+
+def test_demo_token_script_client_ids_match_rendered_variants() -> None:
+    # The script (scripts/demo-token.sh) and the chart hold the client_id literals in two
+    # places; if they drift (e.g. the template prefix changes), `--role viewer` sends an
+    # unmatched client_id that falls through to the admin catch-all and silently mints a full
+    # token. Pin that every non-admin role the script can request maps to a client_id the
+    # chart actually registers as a variant.
+    res = _template("bundledBackends=true", "demoAcknowledged=true")
+    assert res.returncode == 0, res.stderr
+    rendered_variant_ids = {
+        m["match"] for m in _oidc_request_mappings(res) if m["requestParam"] == "client_id"
+    }
+
+    script = (Path(CHART).resolve().parents[2] / "scripts" / "demo-token.sh").read_text()
+    # Lines like: `viewer) client_id="kdive-demo-viewer" ;;`
+    script_map = {
+        m.group(1): m.group(2)
+        for m in re.finditer(r'^(\w+)\)\s*client_id="([^"]+)"', script, re.MULTILINE)
+    }
+    narrowed = {cid for role, cid in script_map.items() if role != "admin"}
+    assert narrowed, "no non-admin client_id literals parsed from demo-token.sh"
+    missing = narrowed - rendered_variant_ids
+    assert not missing, f"script client_ids with no chart variant mapping (drift): {missing}"
+
+    # The symmetric hole: `admin` must resolve via the grant_type catch-all, NOT a variant.
+    # If it ever pointed at a variant client_id, `--role admin` would silently mint a narrowed
+    # token and break the default full grant every first-run flow relies on.
+    assert script_map.get("admin") not in rendered_variant_ids, (
+        "demo-token.sh maps --role admin to a variant client_id; it must use the catch-all"
+    )
+
+
+def test_exposed_minio_networkpolicy_ingress_scope() -> None:
+    # The actual exposure control (the NOTES warning only mirrors this in prose, and NOTES can't
+    # render offline so it isn't asserted here). A ClusterIP store renders no companion policy;
+    # exposing it with the empty default opens :9000 to the world (0.0.0.0/0); a scoped override
+    # opens only that CIDR. Pins both the footgun default and that scoping actually narrows it.
+    base = ("bundledBackends=true", "demoAcknowledged=true")
+
+    clusterip = _template(*base)
+    assert clusterip.returncode == 0, clusterip.stderr
+    assert _minio_ext_cidrs(clusterip) is None, "ClusterIP store must render no -minio-ext policy"
+
+    exposed = _template(*base, "demo.minio.service.type=LoadBalancer")
+    assert exposed.returncode == 0, exposed.stderr
+    assert _minio_ext_cidrs(exposed) == ["0.0.0.0/0"], "empty sourceRanges must open to the world"
+
+    scoped = _template(
+        *base,
+        "demo.minio.service.type=LoadBalancer",
+        "demo.minio.service.sourceRanges={192.168.16.0/24}",
+    )
+    assert scoped.returncode == 0, scoped.stderr
+    cidrs = _minio_ext_cidrs(scoped)
+    assert cidrs == ["192.168.16.0/24"], f"scoped override must narrow the ingress, got {cidrs}"
+
+
 def test_bundled_oidc_blanked_claims_degrade_to_floor() -> None:
     # Blanking the claims map (a plausible "token with no grant" override) must render the
-    # safe {sub,aud} floor, not a nil-pointer template error.
+    # safe {sub,aud} floor, not a nil-pointer template error. With no role grant the
+    # role-scoped variants are suppressed (there is nothing to downgrade), so the catch-all
+    # mapping is the only one rendered.
     res = _template("bundledBackends=true", "demoAcknowledged=true", "demo.oidc.claims=null")
     assert res.returncode == 0, res.stderr
     assert '"aud":["kdive"]' in res.stdout
     assert '"sub":"kdive-demo"' in res.stdout
     assert '"roles"' not in res.stdout
+    assert '"requestParam":"client_id"' not in res.stdout
 
 
 def test_bundled_demo_services_are_clusterip() -> None:

@@ -61,6 +61,38 @@ No source change in `src/kdive/security/authz/`. The parser already accepts the 
 claim shapes; this ADR only changes what the demo issuer is configured to mint. The value
 is inert on the external-backend path (the OIDC Deployment is `bundledBackends`-gated).
 
+### 4. Per-role mint variants make a denial a one-flag mint
+
+The full-admin default (decision §1) makes the *whole* surface reachable, but the inverse —
+minting a *narrow* token to watch a tool deny — still cost a deploy-wide `--set
+demo.oidc.claims…` + redeploy, so in practice nobody exercised the denial paths. The issuer
+config carries an ordered `requestMappings` list (`mock-oauth2-server` is first-match-wins),
+so the template prepends per-role variants keyed on `client_id` ahead of the catch-all:
+
+- `client_id: kdive-demo-viewer` → `roles: {<project>: viewer}`, **no** `platform_roles`.
+- `client_id: kdive-demo-operator` → `roles: {<project>: operator}`, **no** `platform_roles`.
+- any other `client_id` (default `kdive-demo`) falls through to the unchanged catch-all
+  full-admin grant.
+
+Each variant is a *downgrade* of the admin grant: it reuses the admin claim's `projects` and
+pins `aud:["kdive"]`, but rebuilds `roles` by mapping every project in the **configured
+`roles` map** to `<role>` and drops `platform_roles`. The variant role-map keys come from the
+same `roles` map the admin grant uses — not from `projects` — so the admin and variant tokens
+can never disagree about which project is graded (an operator who renames the demo project
+updates one map and both paths follow). Variants are emitted **only when the `roles` map is
+non-empty**; a blanked-`claims` override still degrades to the `{sub,aud}` floor with no
+variants. `scripts/demo-token.sh --role {admin|operator|viewer}` selects the matching
+`client_id`; `admin` is the default and uses the catch-all, so existing callers are
+unaffected. Dropping `platform_roles` from the narrowed variants is what makes both a
+project-rank denial (viewer/operator under `require_role`) and a platform-role denial
+(`require_platform_role`) reachable from a stock demo without any chart edit.
+
+The variants-before-catch-all ordering is load-bearing (first-match-wins): a regression that
+reordered them, or drift between the script's `client_id` literals and the template's `match`
+values, would silently mint a *full-admin* token for a narrowed request. Both are pinned by
+render tests (`test_bundled_oidc_variant_mappings_precede_catch_all`,
+`test_demo_token_script_client_ids_match_rendered_variants`).
+
 ## Consequences
 
 - A stock demo deploy is RBAC-testable end to end: the minted token carries a usable
@@ -69,9 +101,10 @@ is inert on the external-backend path (the OIDC Deployment is `bundledBackends`-
   intended for a demo issuer that already mints a valid token for any caller and is forced
   ClusterIP-only; it is reinforced as demo-only / non-production in `values.yaml`, the
   README, and NOTES.
-- Operators testing denial paths set `--set demo.oidc.claims.roles.demo=viewer` (or drop
-  `platform_roles`) to mint a narrower token — the value makes the whole RBAC matrix
-  reachable from a stock chart.
+- Operators testing denial paths mint a narrowed token per call with
+  `scripts/demo-token.sh --role viewer|operator` (decision §4) — no redeploy. The deploy-wide
+  `--set demo.oidc.claims.roles.demo=viewer` override still works to change the *default*
+  grant; the per-role mint is the per-session lever.
 - A future change to the seeded demo project name must update this default in lockstep
   (the project in `roles`/`projects` must match the seeded budget/quota), noted in the
   README.

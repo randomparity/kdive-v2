@@ -17,8 +17,11 @@ and the generic-cluster equivalent is given alongside.
 - A cluster that can pull from `ghcr.io` (the default registry). The chart defaults to
   `ghcr.io/randomparity/kdive`; `:edge` (rolling, from `main`) and signed `:X.Y.Z` release
   tags are published there. From a source checkout pin `--set image.tag=edge` (the default
-  `appVersion` tag is unpublished until that version is cut). Only a fully offline cluster
-  needs the build-and-load path in step 1.
+  `appVersion` tag is unpublished until that version is cut), and **also pin
+  `--set image.pullPolicy=Always`**: `:edge` is a mutable tag overwritten on every push to `main`,
+  so with the chart default `IfNotPresent` a node that cached an older `edge` keeps serving it
+  across `helm install`/`upgrade` — silently running stale code (the demo `values-demo.yaml` sets
+  this for you). Only a fully offline cluster needs the build-and-load path in step 1.
 - **External backends** the cluster can reach: Postgres, an S3-compatible object store
   (MinIO/AWS S3), and an OIDC issuer. For a throwaway demo instead, the first-party bundled-backend
   path (`-f deploy/helm/kdive/values-demo.yaml`, verified with `helm test`) stands up in-chart
@@ -85,6 +88,12 @@ a **root-relative** ref (e.g. `clientcert.pem`) — the chart sets `KDIVE_SECRET
 path and the backend resolves refs under it (the Kubernetes Secret's `..data` symlink indirection
 resolves correctly; a ref escaping the root is rejected). Skip this step if you are not deploying
 remote-libvirt.
+
+> **The Secret keys must match the `*_ref` filenames in your `systems.toml` exactly.** The keys
+> above (`clientcert.pem`/`clientkey.pem`/`cacert.pem`) are only examples; the backend looks up
+> each ref by its literal filename. If your inventory says `client_cert_ref = "remote-clientcert.pem"`,
+> the Secret key must be `remote-clientcert.pem` — a mismatch fails ref resolution at provision time,
+> not at install, so the host registers but never connects.
 
 ## 4. Install the chart
 
@@ -165,13 +174,73 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   http://<mcp-host>/mcp | head
 ```
 
-## 7. Endpoints every party must agree on
+## 7. Architecture: one object store, three consumers
 
-The OIDC issuer and S3 endpoint are bound into tokens (`iss`) and presigned URLs, so the value the
-**in-cluster pods** use, the value **clients** use, and (for remote-libvirt) the value the
-**guest** uses to upload a vmcore must all resolve to the same service. If you expose them on
-NodePorts, set `config.KDIVE_OIDC_ISSUER` / `config.KDIVE_S3_ENDPOINT_URL` to the externally
-routable URL all three can reach — not a cluster-internal name only the pods resolve.
+There is exactly **one** object store (S3/MinIO) in a deployment, and **three different parties
+read and write it** over presigned URLs whose host is `KDIVE_S3_ENDPOINT_URL`: the in-cluster
+**worker**, an **external uploader** (an agent that built a kernel locally and uploads it via
+`runs.complete_build`), and the **remote-libvirt guest** (which `curl`s the kernel bundle on
+`install` and PUTs a vmcore on `kdump` capture). A presigned URL embeds the endpoint host, so that
+one value must resolve to the same store *over a network path each party can reach*.
+
+```mermaid
+flowchart LR
+    subgraph WS["Workstation (~/src/linux)"]
+      AG["Claude Code agent<br/>MCP client + local kernel build"]
+    end
+    subgraph K8S["Kubernetes cluster"]
+      SRV["server (MCP :8000)"]
+      WRK["worker"]
+      REC["reconciler"]
+      PG[("Postgres")]
+      OIDC["OIDC issuer"]
+      S3[("MinIO — the ONE object store<br/>KDIVE_S3_ENDPOINT_URL")]
+    end
+    subgraph HOST["Remote host (qemu+tls)"]
+      LV["libvirtd / virtproxyd :16514"]
+      GUEST["target guest VM<br/>kernel under debug"]
+    end
+
+    AG -- "MCP/HTTP + bearer" --> SRV
+    AG -- "upload build (presigned PUT)" --> S3
+    SRV --- PG
+    SRV --- OIDC
+    SRV --- S3
+    WRK -- "host_dump upload / vmcore read" --> S3
+    WRK -- "qemu+tls :16514 / gdbstub" --> LV
+    LV --- GUEST
+    GUEST -- "install fetch (GET) / kdump (PUT)" --> S3
+```
+
+The OIDC issuer is bound the same way (into a token's `iss`), but only the pods and the MCP client
+need it — the guest does not. The object store is the harder constraint because **all three**
+parties touch it.
+
+### The bundled demo's object store is in-cluster only — expose it for remote-libvirt
+
+`bundledBackends=true` runs MinIO as a **ClusterIP** Service and forces
+`KDIVE_S3_ENDPOINT_URL=http://<release>-minio:9000` — a name only in-cluster pods resolve. With
+that default, `host_dump` capture and `introspect.from_vmcore` work (worker-side, in-cluster), but
+**external uploads and any remote-libvirt `install`/`kdump` capture fail**: the uploader and the
+guest cannot reach a cluster-internal name. To use the bundled store off-cluster, expose it and
+point the endpoint at a node-routable address all three parties reach:
+
+```bash
+helm upgrade kdive deploy/helm/kdive -f deploy/helm/kdive/values-demo.yaml --reuse-values \
+  --set demo.minio.service.type=NodePort --set demo.minio.service.nodePort=30900 \
+  --set config.KDIVE_S3_ENDPOINT_URL=http://<node-ip>:30900
+kubectl rollout restart deploy -l app.kubernetes.io/name=kdive   # pick up the new endpoint
+```
+
+> **The cluster network/firewall must permit this.** A locked-down cluster that only admits the
+> API port (`:6443`) and blocks the NodePort range (and Traefik's `:80/:443`) cannot expose the
+> store this way — the worker→guest debug lifecycle then needs either a firewall change on the
+> nodes or an **external** S3 endpoint that the pods, the uploader, and the guest all reach
+> (e.g. a MinIO/S3 on a host on a shared network). `host_dump`-only capture of the base-image
+> kernel still works without any of this.
+
+If you expose OIDC similarly, set `config.KDIVE_OIDC_ISSUER` to the externally routable URL too —
+again, not a cluster-internal name only the pods resolve.
 
 ## 8. Remote-libvirt host prerequisites
 

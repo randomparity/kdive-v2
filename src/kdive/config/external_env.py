@@ -178,6 +178,24 @@ EXTERNAL_ENV_VARS: tuple[ExternalEnvVar, ...] = (
         "<repo>/.live-stack-logs",
         "Log directory the live-stack `start.sh` script writes process logs to.",
     ),
+    ExternalEnvVar(
+        "KDIVE_DEMO_NAMESPACE",
+        "script",
+        "kdive-demo",
+        "Release namespace `demo-token.sh` targets when minting a bundled-demo bearer token.",
+    ),
+    ExternalEnvVar(
+        "KDIVE_DEMO_FULLNAME",
+        "script",
+        "kdive-kdive",
+        "Chart fullname (`<release>-kdive`) `demo-token.sh` uses to address the server/oidc pods.",
+    ),
+    ExternalEnvVar(
+        "KDIVE_DEMO_CONTEXT",
+        "script",
+        None,
+        "kube context `demo-token.sh` uses (unset → the current context).",
+    ),
     # --- in-guest capture/install helpers -------------------------------------------------
     ExternalEnvVar(
         "KDIVE_VMCORE_PATH",
