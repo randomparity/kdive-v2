@@ -17,8 +17,11 @@ and the generic-cluster equivalent is given alongside.
 - A cluster that can pull from `ghcr.io` (the default registry). The chart defaults to
   `ghcr.io/randomparity/kdive`; `:edge` (rolling, from `main`) and signed `:X.Y.Z` release
   tags are published there. From a source checkout pin `--set image.tag=edge` (the default
-  `appVersion` tag is unpublished until that version is cut). Only a fully offline cluster
-  needs the build-and-load path in step 1.
+  `appVersion` tag is unpublished until that version is cut), and **also pin
+  `--set image.pullPolicy=Always`**: `:edge` is a mutable tag overwritten on every push to `main`,
+  so with the chart default `IfNotPresent` a node that cached an older `edge` keeps serving it
+  across `helm install`/`upgrade` — silently running stale code (the demo `values-demo.yaml` sets
+  this for you). Only a fully offline cluster needs the build-and-load path in step 1.
 - **External backends** the cluster can reach: Postgres, an S3-compatible object store
   (MinIO/AWS S3), and an OIDC issuer. For a throwaway demo instead, the first-party bundled-backend
   path (`-f deploy/helm/kdive/values-demo.yaml`, verified with `helm test`) stands up in-chart
@@ -85,6 +88,12 @@ a **root-relative** ref (e.g. `clientcert.pem`) — the chart sets `KDIVE_SECRET
 path and the backend resolves refs under it (the Kubernetes Secret's `..data` symlink indirection
 resolves correctly; a ref escaping the root is rejected). Skip this step if you are not deploying
 remote-libvirt.
+
+> **The Secret keys must match the `*_ref` filenames in your `systems.toml` exactly.** The keys
+> above (`clientcert.pem`/`clientkey.pem`/`cacert.pem`) are only examples; the backend looks up
+> each ref by its literal filename. If your inventory says `client_cert_ref = "remote-clientcert.pem"`,
+> the Secret key must be `remote-clientcert.pem` — a mismatch fails ref resolution at provision time,
+> not at install, so the host registers but never connects.
 
 ## 4. Install the chart
 

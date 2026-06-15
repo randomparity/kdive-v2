@@ -13,8 +13,11 @@ follow [`docs/operating/runbooks/kubernetes-deploy.md`](../../../docs/operating/
 > **Installing from a source checkout?** The chart's default image tag is `appVersion`,
 > which tracks the *next unreleased* version (ADR-0041) and has no published image until
 > that version is cut — a bare install would `ImagePullBackOff`. From a checkout, pin the
-> rolling image: add `--set image.tag=edge`. A bare `appVersion` default is correct only
-> when you install a cut release / published chart.
+> rolling image: add `--set image.tag=edge` **and `--set image.pullPolicy=Always`**. `:edge` is
+> mutable (overwritten on every push to `main`), so with the chart default `IfNotPresent` a node
+> that cached an older `edge` keeps serving stale code across `helm install`/`upgrade`; `Always`
+> forces a re-pull (`values-demo.yaml` sets it for you). A bare `appVersion` default is correct
+> only when you install a cut release / published chart.
 
 ```sh
 helm install kdive deploy/helm/kdive \

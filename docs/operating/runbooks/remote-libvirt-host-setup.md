@@ -257,6 +257,13 @@ kubectl -n kdive-demo create secret generic kdive-remote-tls \
   --from-file=clientcert.pem --from-file=clientkey.pem --from-file=cacert.pem
 ```
 
+The Secret **keys** and the `*_ref` values in the `systems.toml` block below must be the **same
+filenames** — the backend resolves each ref by its literal name under `KDIVE_SECRETS_ROOT`. The
+names here (`clientcert.pem`/`clientkey.pem`/`cacert.pem`) are an example; if you name them
+differently (e.g. `remote-clientcert.pem`), use that name in **both** the `--from-file` key and the
+matching `*_ref`. A mismatch fails ref resolution at provision time, after the host has already
+registered.
+
 Declare the host as a `[[remote_libvirt]]` instance (plus its `staged` base `[[image]]`) in the
 `systems.toml` ConfigMap the deployment mounts:
 
@@ -308,8 +315,14 @@ by the preflight and surfaces as the in-guest transfer failure.
 ## 8. Validate
 
 ```bash
-kdivectl doctor --provider remote-libvirt          # secret_ref → pass (the 3 refs resolve)
+kdivectl doctor --provider remote-libvirt          # secret_ref → pass
 ```
+
+The `secret_ref` check reports `pass` when the secret backend is healthy. With the **file-ref**
+backend it counts *registered* refs, of which there are none (refs are resolved on demand, not
+pre-registered) — so the detail reads `all 0 configured secret refs resolve`, which is the
+expected pass, not a sign the TLS refs are missing. The authoritative check that the three TLS
+refs actually resolve is the worker→host connect below.
 
 `doctor --with-egress` reports a configuration error unless a probe-guest-backed diagnostics
 factory is wired (deferred per ADR-0091/M2.4); that is expected, not a fault. To confirm the
