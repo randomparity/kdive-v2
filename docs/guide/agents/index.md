@@ -138,6 +138,11 @@ specifics replace them:
    Export it **before** launching Claude Code — it reads `${KDIVE_TOKEN}` once at startup.
    Demo tokens expire after ~1 hour: re-run the helper, re-export, and reconnect the server.
 
+   The default token is fully privileged (admin on project `demo` + all platform roles), so
+   every tool works out of the box. To **see RBAC enforce a denial**, mint a narrowed token —
+   `scripts/demo-token.sh --role viewer` (or `--role operator`) grants only that project role
+   and no platform roles, so privileged tools return `error_category: authorization_denied`.
+
 Driving a **remote-libvirt** host (e.g. a `qemu+tls://` target) from this demo is
 the same tool flow below — the host just has to be registered in the deployment's
 `systems.toml` inventory and reachable from the worker; see the

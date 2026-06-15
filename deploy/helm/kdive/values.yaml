@@ -100,9 +100,12 @@ demo:
     # The default grants full RBAC over the seeded `demo` project (admin) plus all three
     # platform roles so a stock demo deploy can exercise the entire RBAC/authz surface.
     # NEVER front a real RBAC boundary with this issuer. `aud` is pinned to ["kdive"] by
-    # the template and cannot be overridden here. To test a denial, narrow the grant, e.g.
-    # `--set demo.oidc.claims.roles.demo=viewer` or drop platform_roles. If you change the
-    # project name, run `kdive seed-demo --project <name>` so it has a budget/quota row.
+    # the template and cannot be overridden here. To test a denial per session, mint a
+    # narrowed token with `scripts/demo-token.sh --role viewer|operator` (the template also
+    # registers `client_id: kdive-demo-<role>` variants — project role only, no platform
+    # roles); to change the *default* grant deploy-wide use `--set demo.oidc.claims.roles.demo=
+    # viewer`. If you change the project name, run `kdive seed-demo --project <name>` so it
+    # has a budget/quota row.
     claims:
       sub: kdive-demo
       projects: ["demo"]

@@ -88,10 +88,11 @@ stack-stop:
     ./scripts/live-stack/stop.sh
 
 # Print a bearer token from the bundled Helm-demo mock-OIDC issuer (Kubernetes):
-#   export KDIVE_TOKEN=$(just demo-token)
+#   export KDIVE_TOKEN=$(just demo-token)                  # full admin grant (default)
+#   export KDIVE_TOKEN=$(just demo-token --role viewer)    # narrowed, to test an RBAC denial
 # Demo-only. KDIVE_DEMO_{NAMESPACE,FULLNAME,CONTEXT} override the target release.
-demo-token:
-    @./scripts/demo-token.sh
+demo-token *ARGS:
+    @./scripts/demo-token.sh {{ARGS}}
 
 # Run the live_stack suite (needs `just stack-up` + VM fixtures). --strict-markers fails a
 # mis-marked test instead of silently deselecting; pytest exit 5 ("no tests collected", e.g.

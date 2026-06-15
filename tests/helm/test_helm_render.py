@@ -380,14 +380,36 @@ def test_bundled_oidc_aud_pin_survives_override() -> None:
     assert "nope" not in res.stdout
 
 
+def test_bundled_oidc_mints_role_scoped_variants() -> None:
+    # ADR-0108 §4: per-role client_id mappings let `demo-token.sh --role <role>` mint a
+    # narrowed token (project role only, no platform roles) so a denial is reachable without
+    # a chart redeploy. toJson sorts keys, so each variant's full claims object is a stable
+    # substring — pinning it proves the variant carries NO platform_roles.
+    res = _template("bundledBackends=true", "demoAcknowledged=true")
+    assert res.returncode == 0, res.stderr
+    assert '"match":"kdive-demo-viewer","requestParam":"client_id"' in res.stdout
+    assert '"match":"kdive-demo-operator","requestParam":"client_id"' in res.stdout
+    assert (
+        '{"aud":["kdive"],"projects":["demo"],"roles":{"demo":"viewer"},"sub":"kdive-demo-viewer"}'
+        in res.stdout
+    )
+    assert (
+        '{"aud":["kdive"],"projects":["demo"],"roles":{"demo":"operator"},"sub":"kdive-demo-operator"}'
+        in res.stdout
+    )
+
+
 def test_bundled_oidc_blanked_claims_degrade_to_floor() -> None:
     # Blanking the claims map (a plausible "token with no grant" override) must render the
-    # safe {sub,aud} floor, not a nil-pointer template error.
+    # safe {sub,aud} floor, not a nil-pointer template error. With no project membership the
+    # role-scoped variants are suppressed (a project role is meaningless without a project),
+    # so the catch-all mapping is the only one rendered.
     res = _template("bundledBackends=true", "demoAcknowledged=true", "demo.oidc.claims=null")
     assert res.returncode == 0, res.stderr
     assert '"aud":["kdive"]' in res.stdout
     assert '"sub":"kdive-demo"' in res.stdout
     assert '"roles"' not in res.stdout
+    assert '"requestParam":"client_id"' not in res.stdout
 
 
 def test_bundled_demo_services_are_clusterip() -> None:

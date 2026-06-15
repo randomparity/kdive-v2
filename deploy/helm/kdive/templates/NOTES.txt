@@ -29,6 +29,8 @@ in-cluster issuer URL the server validates against, not a port-forwarded localho
     'import json,urllib.request as u; d=b"grant_type=client_credentials&client_id=kdive-demo&client_secret=x"; print(json.load(u.urlopen(u.Request("http://{{ include "kdive.fullname" . }}-oidc:8080/default/token",data=d),timeout=10))["access_token"])')
 From a source checkout the same mint is wrapped in a helper:
   export KDIVE_TOKEN=$(scripts/demo-token.sh)     # KDIVE_DEMO_{NAMESPACE,FULLNAME,CONTEXT} override
+To demonstrate an RBAC denial, mint a narrowed token (project role only, no platform roles):
+  export KDIVE_TOKEN=$(scripts/demo-token.sh --role viewer)   # or: --role operator
 Then drive http://127.0.0.1:8000/mcp with an MCP client and `Authorization: Bearer $TOKEN`
 (the streamable-HTTP transport needs the MCP initialize handshake — a raw tools/list POST 307s).
 {{- end }}

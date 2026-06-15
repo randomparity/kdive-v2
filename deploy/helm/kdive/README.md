@@ -75,7 +75,10 @@ Every token the bundled issuer mints carries the claim set in `demo.oidc.claims`
 defaulting to `admin` on project `demo` plus all three platform roles (`platform_admin`,
 `platform_operator`, `platform_auditor`) — a full RBAC grant, so a stock demo deploy can
 exercise the whole authz surface. `aud` is pinned to `["kdive"]` by the chart and cannot
-be overridden. To test a denial, narrow the grant, e.g.
+be overridden. To test a denial per session, mint a narrowed token with
+`scripts/demo-token.sh --role viewer` (or `--role operator`) — the chart also registers
+`client_id: kdive-demo-<role>` issuer variants that carry only that project role and no
+platform roles. To change the *default* grant deploy-wide, narrow it with
 `--set demo.oidc.claims.roles.demo=viewer` or drop `platform_roles`. The grant only
 authorizes operations on a project with a budget/quota row; the demo seeds project `demo`
 via `kdive seed-demo`, so if you change the project name, seed it

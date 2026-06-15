@@ -30,9 +30,31 @@ spec:
             # verification and lock the demo out; `sub` defaults to kdive-demo. A blanked
             # override (claims=null/empty) degrades to the safe {sub,aud} floor, not an error.
             {{- $demoClaims := .Values.demo.oidc.claims | default dict }}
-            {{- $claims := merge (dict "sub" (default "kdive-demo" $demoClaims.sub) "aud" (list "kdive")) (omit $demoClaims "aud" "sub") }}
+            {{- $sub := default "kdive-demo" $demoClaims.sub }}
+            {{- $adminClaims := merge (dict "sub" $sub "aud" (list "kdive")) (omit $demoClaims "aud" "sub") }}
+            {{- /* Role-scoped variants for demonstrating RBAC denials (ADR-0108 §4). A token
+                   request with client_id `kdive-demo-<role>` mints a token holding only that
+                   PROJECT role on the demo's projects and NO platform roles, so a
+                   require_role/require_platform_role denial is a one-flag mint
+                   (`scripts/demo-token.sh --role <role>`) instead of a chart redeploy. These
+                   mappings come first; mock-oauth2-server is first-match-wins, so the default
+                   client_id `kdive-demo` falls through to the catch-all full-admin grant
+                   below (unchanged behavior). Variants are emitted only when membership
+                   exists — a blanked `claims` override degrades to the {sub,aud} floor with
+                   no variants (a project role is meaningless without a project). */ -}}
+            {{- $projects := default (list) $demoClaims.projects }}
+            {{- $mappings := list }}
+            {{- if $projects }}
+            {{- range $role := (list "viewer" "operator") }}
+            {{- $roleMap := dict }}
+            {{- range $proj := $projects }}{{- $_ := set $roleMap $proj $role }}{{- end }}
+            {{- $variant := dict "sub" (printf "%s-%s" $sub $role) "aud" (list "kdive") "projects" $projects "roles" $roleMap }}
+            {{- $mappings = append $mappings (dict "requestParam" "client_id" "match" (printf "kdive-demo-%s" $role) "claims" $variant) }}
+            {{- end }}
+            {{- end }}
+            {{- $mappings = append $mappings (dict "requestParam" "grant_type" "match" "*" "claims" $adminClaims) }}
             - name: JSON_CONFIG
-              value: '{"interactiveLogin":false,"tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"grant_type","match":"*","claims":{{ $claims | toJson }}}]}]}'
+              value: '{"interactiveLogin":false,"tokenCallbacks":[{"issuerId":"default","requestMappings":{{ $mappings | toJson }}}]}'
           ports:
             - containerPort: 8080
           readinessProbe:
