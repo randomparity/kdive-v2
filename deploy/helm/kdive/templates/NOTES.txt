@@ -10,6 +10,18 @@ a pod restart drops all state. Use external backends for anything but a throwawa
 {{- if .Values.bundledBackends }}
 
 DEMO MODE (ephemeral — a pod restart drops all state).
+{{- $minioSvc := .Values.demo.minio.service | default dict }}
+{{- $minioExposed := ne ($minioSvc.type | default "ClusterIP") "ClusterIP" }}
+{{- $minioRanges := $minioSvc.sourceRanges | default (list) }}
+{{- if and $minioExposed (or (not $minioRanges) (has "0.0.0.0/0" $minioRanges)) }}
+
+WARNING: the bundled object store is exposed off-cluster (demo.minio.service.type=
+{{ $minioSvc.type }}) and its NetworkPolicy admits :9000 from 0.0.0.0/0 (anywhere). It is
+fronted by static demo credentials — anyone who can route to it can read/write all stored
+kernel images and vmcores. Scope it to your guest/client network for anything but a
+throwaway lab:
+  --set 'demo.minio.service.sourceRanges={192.168.0.0/16}'
+{{- end }}
 
 Verify the whole stack (helm test waits for readiness itself; add --wait to the
 install above if you prefer the release to block until pods are Ready):

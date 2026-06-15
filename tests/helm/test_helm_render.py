@@ -33,6 +33,17 @@ def _template(*set_args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True, check=False)
 
 
+def _notes(*set_args: str) -> str:
+    """Render the chart's NOTES.txt (helm template omits NOTES; --dry-run=client emits it)."""
+    args = ["helm", "install", "kdive", CHART, "--dry-run=client"]
+    for s in set_args:
+        args += ["--set", s]
+    res = subprocess.run(args, capture_output=True, text=True, check=False)
+    assert res.returncode == 0, res.stderr
+    _, _, notes = res.stdout.partition("NOTES:")
+    return notes
+
+
 def _oidc_request_mappings(res: subprocess.CompletedProcess[str]) -> list[dict[str, Any]]:
     """Parse the demo issuer's ``requestMappings`` out of the rendered JSON_CONFIG env var.
 
@@ -467,6 +478,28 @@ def test_demo_token_script_client_ids_match_rendered_variants() -> None:
     assert script_ids, "no non-admin client_id literals parsed from demo-token.sh"
     missing = script_ids - rendered_variant_ids
     assert not missing, f"script client_ids with no chart variant mapping (drift): {missing}"
+
+
+def test_notes_warns_when_exposed_object_store_is_world_open() -> None:
+    # Exposing the bundled object store (type != ClusterIP) with a world-open ingress range is
+    # a footgun (static demo creds + all artifacts reachable). NOTES must warn when the
+    # effective range is 0.0.0.0/0 — whether by the empty-default or an explicit entry — and
+    # stay quiet when it's scoped or the store stays in-cluster.
+    base = ("bundledBackends=true", "demoAcknowledged=true")
+    marker = "exposed off-cluster"
+
+    assert marker not in _notes(*base), "ClusterIP default must not warn"
+    assert marker in _notes(*base, "demo.minio.service.type=LoadBalancer"), (
+        "exposed + empty sourceRanges (world-open default) must warn"
+    )
+    assert marker in _notes(
+        *base, "demo.minio.service.type=NodePort", "demo.minio.service.sourceRanges={0.0.0.0/0}"
+    ), "explicit 0.0.0.0/0 must warn"
+    assert marker not in _notes(
+        *base,
+        "demo.minio.service.type=LoadBalancer",
+        "demo.minio.service.sourceRanges={192.168.16.0/24}",
+    ), "a scoped CIDR must not warn"
 
 
 def test_bundled_oidc_blanked_claims_degrade_to_floor() -> None:

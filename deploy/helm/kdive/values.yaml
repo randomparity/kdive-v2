@@ -90,6 +90,7 @@ demo:
       # When exposed (type != ClusterIP), the demo default-deny NetworkPolicy is opened for the
       # MinIO S3 port from these CIDRs so the remote guest/uploader can reach it. Empty = anywhere
       # (0.0.0.0/0, demo only); scope to your client/guest networks in anything less throwaway.
+      # NOTES.txt prints a loud warning whenever the effective range stays world-open.
       sourceRanges: []
   mc:
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
