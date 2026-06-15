@@ -127,11 +127,16 @@ specifics replace them:
    against — so mint it via `kubectl exec` into the server pod, not from your
    workstation (a port-forwarded mint stamps the wrong `iss` and 401s). The
    bundled issuer also mints `aud=kdive` tokens for any caller, so no real IdP is
-   involved. The exact command is printed in the release notes (`helm get notes
-   <release>`) and the [Kubernetes deploy runbook](../../operating/runbooks/kubernetes-deploy.md);
-   it returns an access token you `export KDIVE_TOKEN=...` **before** launching
-   Claude Code. Demo tokens expire after ~1 hour — re-mint, re-export, and
-   reconnect the server when they do.
+   involved. From a source checkout a helper wraps the mint:
+
+   ```bash
+   export KDIVE_TOKEN=$(scripts/demo-token.sh)   # KDIVE_DEMO_{NAMESPACE,FULLNAME,CONTEXT} override
+   ```
+
+   (the raw `kubectl exec` form is also printed in the release notes, `helm get notes
+   <release>`, and the [Kubernetes deploy runbook](../../operating/runbooks/kubernetes-deploy.md)).
+   Export it **before** launching Claude Code — it reads `${KDIVE_TOKEN}` once at startup.
+   Demo tokens expire after ~1 hour: re-run the helper, re-export, and reconnect the server.
 
 Driving a **remote-libvirt** host (e.g. a `qemu+tls://` target) from this demo is
 the same tool flow below — the host just has to be registered in the deployment's
