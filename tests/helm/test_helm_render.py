@@ -470,14 +470,21 @@ def test_demo_token_script_client_ids_match_rendered_variants() -> None:
 
     script = (Path(CHART).resolve().parents[2] / "scripts" / "demo-token.sh").read_text()
     # Lines like: `viewer) client_id="kdive-demo-viewer" ;;`
-    script_ids = {
-        m.group(2)
+    script_map = {
+        m.group(1): m.group(2)
         for m in re.finditer(r'^(\w+)\)\s*client_id="([^"]+)"', script, re.MULTILINE)
-        if m.group(1) != "admin"  # admin intentionally uses the catch-all, not a variant
     }
-    assert script_ids, "no non-admin client_id literals parsed from demo-token.sh"
-    missing = script_ids - rendered_variant_ids
+    narrowed = {cid for role, cid in script_map.items() if role != "admin"}
+    assert narrowed, "no non-admin client_id literals parsed from demo-token.sh"
+    missing = narrowed - rendered_variant_ids
     assert not missing, f"script client_ids with no chart variant mapping (drift): {missing}"
+
+    # The symmetric hole: `admin` must resolve via the grant_type catch-all, NOT a variant.
+    # If it ever pointed at a variant client_id, `--role admin` would silently mint a narrowed
+    # token and break the default full grant every first-run flow relies on.
+    assert script_map.get("admin") not in rendered_variant_ids, (
+        "demo-token.sh maps --role admin to a variant client_id; it must use the catch-all"
+    )
 
 
 def test_notes_warns_when_exposed_object_store_is_world_open() -> None:
