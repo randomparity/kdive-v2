@@ -49,6 +49,28 @@ helm test kdive    # mints a token, asserts tools/list returns tools
 image the demo cannot pull. The demo migrate Job runs `post-install` behind a DB-readiness
 init container.
 
+### Single object store (remote-libvirt & external uploads)
+
+A deployment has **one** object store, and three parties use it over presigned URLs: the
+in-cluster worker, an external uploader (`runs.complete_build`), and the remote-libvirt guest
+(`install` fetch + `kdump` capture). The bundled MinIO defaults to **ClusterIP** with
+`KDIVE_S3_ENDPOINT_URL=http://<release>-minio:9000` — in-cluster only, so `host_dump` capture and
+`introspect.from_vmcore` work but external uploads and remote-libvirt `install`/`kdump` capture do
+not. To use the bundled store off-cluster, expose it and point the endpoint at an address all three
+parties resolve to the same store:
+
+```sh
+helm upgrade kdive deploy/helm/kdive -f deploy/helm/kdive/values-demo.yaml --reuse-values \
+  --set demo.minio.service.type=NodePort --set demo.minio.service.nodePort=30900 \
+  --set config.KDIVE_S3_ENDPOINT_URL=http://<node-ip>:30900
+```
+
+`config.KDIVE_S3_ENDPOINT_URL` now overrides the bundled default in both modes (it previously could
+not). The cluster network/firewall must permit the chosen NodePort; a cluster that only admits
+`:6443` needs a node firewall change or an external S3 all parties reach. See the
+[Kubernetes deploy runbook §7](../../../docs/operating/runbooks/kubernetes-deploy.md) for the full
+topology (with a diagram).
+
 Every token the bundled issuer mints carries the claim set in `demo.oidc.claims`,
 defaulting to `admin` on project `demo` plus all three platform roles (`platform_admin`,
 `platform_operator`, `platform_auditor`) — a full RBAC grant, so a stock demo deploy can
